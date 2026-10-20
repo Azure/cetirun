@@ -132,14 +132,16 @@ type reconciledSandboxRenderer struct {
 }
 
 func (r reconciledSandboxRenderer) Run(_ *bytes.Buffer) (*bytes.Buffer, error) {
-	if err := r.prepared.checkSandboxReconcile(context.Background()); err != nil {
+	if err := r.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
 		return nil, err
 	}
 	return bytes.NewBuffer(bytes.Clone(r.prepared.manifest)), nil
 }
 
-func (p *PreparedRelease) checkSandboxReconcile(ctx context.Context) error {
-	if p.sandboxReconcile == nil || p.sandboxGuard == nil || p.sealedInput != p.inputDigest() {
+// AuthorizeSandboxApply rechecks authority and records submission intent before
+// an installer may write workloads. A failed or uncertain apply remains submitted.
+func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
+	if p == nil || p.sandboxReconcile == nil || p.sandboxGuard == nil || p.sealedInput != p.inputDigest() {
 		return fmt.Errorf("Sandbox apply requires unchanged current render and controller authority")
 	}
 	return p.sandboxGuard(ctx)

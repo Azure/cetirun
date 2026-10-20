@@ -37,7 +37,7 @@ const (
 )
 
 // Existing single-start receipts retain their original contract through upgrade.
-// Fresh enabled Agents use the shared reconciliation in AgentReconciler.
+// New lifetimes also use it until the separate reader-first opt-in is enabled.
 func (r *AgentReconciler) reconcileRecordedNativeSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
 	var namespaceErr, projectionErr error
 	if r.AIGateway.Enabled {

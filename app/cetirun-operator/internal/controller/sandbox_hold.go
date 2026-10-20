@@ -40,8 +40,10 @@ func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) 
 // It requests an existing workload to stop but is not a qualified node fence.
 // Once held, clearing spec fields cannot silently return an Agent to legacy mode.
 func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
-	if r.usesReconciledSandbox(agent) {
-		return r.holdReconciledSandbox(ctx, agent)
+	reconciled, err := r.usesReconciledSandbox(ctx, agent)
+	if reconciled || err != nil {
+		result, holdErr := r.holdReconciledSandbox(ctx, agent)
+		return result, errors.Join(err, holdErr)
 	}
 	return r.holdSandboxWithPolicyFence(ctx, agent, nil)
 }

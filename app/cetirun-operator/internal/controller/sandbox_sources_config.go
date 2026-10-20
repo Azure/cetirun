@@ -22,6 +22,7 @@ import (
 type SandboxSourcesConfig struct {
 	Enabled                     bool                    `json:"enabled"`
 	NativeExecution             bool                    `json:"nativeExecution"`
+	ReconciledExecution         bool                    `json:"reconciledExecution,omitempty"`
 	BootstrapOwnedPrerequisites bool                    `json:"bootstrapOwnedPrerequisites"`
 	PlatformConfigMapName       string                  `json:"platformConfigMapName"`
 	HomeClaimName               string                  `json:"homeClaimName"`
@@ -50,6 +51,9 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 }
 
 func (config SandboxSourcesConfig) validate() error {
+	if config.ReconciledExecution && !config.NativeExecution {
+		return fmt.Errorf("reconciled Sandbox execution requires native execution and a completed reader-first upgrade")
+	}
 	if config.CoordinationConfigMapName != "" || config.CoordinationConfigMapUID != "" {
 		if !config.Enabled || config.CoordinationConfigMapName == config.PlatformConfigMapName ||
 			config.CoordinationConfigMapName == config.PlacementConfigMapName ||
@@ -109,6 +113,7 @@ func (config SandboxSourcesConfig) validate() error {
 
 // NewKubernetesSandboxPreparation defaults to held preparation. NativeExecution
 // separately opts into Kubernetes single-start semantics, not physical fencing.
+// ReconciledExecution selects new common lifetimes after all readers are upgraded.
 // The default path still requires a qualified writer-exclusion adapter.
 func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.Reader,
 	installer SandboxHelmInstaller, namespace, chartVersion string,
@@ -124,7 +129,8 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		return nil, fmt.Errorf("Sandbox sources require an authoritative reader, installer, operator namespace and approved chart version")
 	}
 	preparation := &SandboxPreparation{
-		NativeExecution: config.NativeExecution,
+		NativeExecution:     config.NativeExecution,
+		ReconciledExecution: config.ReconciledExecution,
 		Configuration: &KubernetesSandboxConfigurationSource{
 			APIReader: reader, Namespace: namespace, Name: config.PlatformConfigMapName,
 		},

@@ -30,10 +30,27 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-func (r *AgentReconciler) usesReconciledSandbox(agent *api.Agent) bool {
-	return sandboxRequested(agent, nil) && agent.Spec.Agent.Type != api.AgentTypeCustom &&
-		r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution &&
-		!controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer)
+const (
+	sandboxApplyStateAnnotation = "sandbox.cetirun.microsoft.com/apply-state"
+	sandboxApplyPending         = "pending"
+	sandboxApplySubmitted       = "submitted"
+	sandboxApplyCancelled       = "cancelled"
+)
+
+func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
+	if !sandboxRequested(agent, nil) || agent.Spec.Agent.Type == api.AgentTypeCustom ||
+		r.SandboxPreparation == nil || !r.SandboxPreparation.NativeExecution ||
+		controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
+		return false, nil
+	}
+	_, receipt, err := r.readSandboxBootstrap(ctx, agent)
+	if apierrors.IsNotFound(err) && !controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
+		return r.SandboxPreparation.ReconciledExecution, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read Sandbox lifetime mode: %w", err)
+	}
+	return receipt.Reconciled, nil
 }
 
 func (r *AgentReconciler) bootstrapReconciledSandbox(ctx context.Context, agent *api.Agent) error {
@@ -136,10 +153,10 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		digests[w.SourceKey(source)] = digest
 	}
 	var published *corev1.ConfigMap
-	var reservation *sandboxcoordination.NativeIntent
+	var reservation *sandboxcoordination.NativeTicket
 	guard := func(ctx context.Context) error {
 		if reservation != nil {
-			if err := r.SandboxNativeCoordination.AuthorizeNativeStart(ctx, *reservation); err != nil {
+			if err := r.SandboxNativeCoordination.CheckNative(ctx, *reservation); err != nil {
 				return err
 			}
 		}
@@ -151,7 +168,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 			if _, err := w.ReadReconcileExpectation(current); err != nil {
 				return err
 			}
-			if current.UID != published.UID || !reflect.DeepEqual(current.Data, published.Data) {
+			if current.UID != published.UID || current.ResourceVersion != published.ResourceVersion ||
+				!reflect.DeepEqual(current.Data, published.Data) ||
+				current.Annotations[sandboxApplyStateAnnotation] == sandboxApplyCancelled {
 				return fmt.Errorf("Sandbox desired authority changed before apply")
 			}
 		}
@@ -192,7 +211,24 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 		return nil
 	}
-	result, err := prepared.ReconcileSandbox(values, bundle, guard)
+	applyGuard := func(ctx context.Context) error {
+		if published == nil {
+			return fmt.Errorf("Sandbox apply requires a published expectation")
+		}
+		if err := guard(ctx); err != nil {
+			return err
+		}
+		if published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending {
+			submitted := published.DeepCopy()
+			submitted.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
+			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+				return fmt.Errorf("record Sandbox apply submission: %w", err)
+			}
+			published = submitted
+		}
+		return guard(ctx)
+	}
+	result, err := prepared.ReconcileSandbox(values, bundle, applyGuard)
 	if err != nil {
 		return nil, err
 	}
@@ -320,24 +356,34 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err != nil {
 		return nil, err
 	}
-	if r.SandboxNativeCoordination != nil && !agent.Spec.Suspended {
-		intent, err := sandboxcoordination.ReconciledIntentFor(expected)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := r.SandboxNativeCoordination.AcquireNative(ctx, intent); err != nil {
-			return nil, err
-		}
-		reservation = &intent
-	}
+	unobserved := !slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
+		return workload.Identity.UID != ""
+	})
 	current := &corev1.ConfigMap{}
 	err = r.customReader().Get(ctx, client.ObjectKeyFromObject(desired), current)
 	if apierrors.IsNotFound(err) {
+		// Only the first journal/expectation publication proves that no earlier
+		// apply could have been submitted. Lost or older records stay uncertain.
+		if missingJournal && unobserved {
+			desired.Annotations[sandboxApplyStateAnnotation] = sandboxApplyPending
+		}
 		err = r.Create(ctx, desired)
 	} else if err == nil {
 		recorded, readErr := w.ReadReconcileExpectation(current)
 		if readErr != nil || recorded.Agent != expected.Agent || recorded.Namespace != expected.Namespace || recorded.Home != expected.Home {
 			return nil, fmt.Errorf("Sandbox expectation cannot replace a different recorded lifetime")
+		}
+		switch state := current.Annotations[sandboxApplyStateAnnotation]; state {
+		case sandboxApplyPending, sandboxApplyCancelled:
+			if !unobserved {
+				return nil, fmt.Errorf("unsubmitted Sandbox expectation has an observed workload")
+			}
+			desired.Annotations[sandboxApplyStateAnnotation] = sandboxApplyPending
+		case sandboxApplySubmitted:
+			desired.Annotations[sandboxApplyStateAnnotation] = state
+		case "":
+		default:
+			return nil, fmt.Errorf("Sandbox apply checkpoint is invalid")
 		}
 		if !reflect.DeepEqual(current.Data, desired.Data) || !reflect.DeepEqual(current.Annotations, desired.Annotations) {
 			base := current.DeepCopy()
@@ -351,6 +397,17 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	published = current.DeepCopy()
 	if published.UID == "" {
 		published = desired.DeepCopy()
+	}
+	if r.SandboxNativeCoordination != nil && !agent.Spec.Suspended {
+		intent, err := sandboxcoordination.ReconciledIntentFor(expected)
+		if err != nil {
+			return nil, err
+		}
+		ticket, err := r.SandboxNativeCoordination.AcquireNative(ctx, intent)
+		if err != nil {
+			return nil, err
+		}
+		reservation = &ticket
 	}
 	return result, guard(ctx)
 }
@@ -458,6 +515,26 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 		expected.Home != intent.Home || expected.Binding != intent.Binding {
 		return fmt.Errorf("common Sandbox cleanup differs from its source reservation")
 	}
+	applyState := state.Annotations[sandboxApplyStateAnnotation]
+	if applyState == sandboxApplyPending || applyState == sandboxApplyCancelled {
+		if slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
+			return workload.Identity.UID != ""
+		}) {
+			return fmt.Errorf("unsubmitted Sandbox expectation has a recorded workload")
+		}
+		if applyState == sandboxApplyPending {
+			// Compete with submission on the same resource version. A cancelled
+			// snapshot cannot authorize an in-flight or subsequently retried apply.
+			before := state.DeepCopy()
+			state.Annotations[sandboxApplyStateAnnotation] = sandboxApplyCancelled
+			if err := r.Patch(ctx, state, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+				return fmt.Errorf("cancel unsubmitted Sandbox apply: %w", err)
+			}
+			applyState = sandboxApplyCancelled
+		}
+	} else if applyState != "" && applyState != sandboxApplySubmitted {
+		return fmt.Errorf("Sandbox apply checkpoint is invalid")
+	}
 	for _, desired := range expected.Workloads {
 		key := client.ObjectKey{Namespace: expected.Namespace.Name, Name: desired.Identity.Name}
 		var current client.Object
@@ -474,6 +551,9 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 			current = workload
 			stopped = ptr.Deref(workload.Spec.Replicas, 1) == 0 &&
 				workload.Status.ObservedGeneration >= workload.Generation && workload.Status.Replicas == 0
+		}
+		if apierrors.IsNotFound(err) && desired.Kind == "StatefulSet" && applyState == sandboxApplyCancelled {
+			continue
 		}
 		if apierrors.IsNotFound(err) && desired.Kind == "Deployment" {
 			// A removed or never-created auxiliary has no HOME writer. Its

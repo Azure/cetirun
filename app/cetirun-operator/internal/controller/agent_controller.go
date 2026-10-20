@@ -223,7 +223,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// transitions from it, so that the periodic full reconcile of an Agent
 	// at steady state records no events.
 	startPhase := instance.Status.Phase
-	reconciledSandbox := r.usesReconciledSandbox(instance)
 
 	if ns := instanceNamespace(instance.Name); ns == r.registryNamespace() || ns == registryauth.DefaultNamespace {
 		return r.rejectReservedRegistryInstance(ctx, instance)
@@ -259,6 +258,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// breaking change; no migration path exists for the reserved legacy name.
 	if instance.Name == "ui" {
 		return r.rejectReservedUIInstance(ctx, instance)
+	}
+
+	reconciledSandbox, err := r.usesReconciledSandbox(ctx, instance)
+	if err != nil {
+		result, holdErr := r.holdReconciledSandbox(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
 	}
 
 	// Opted-in Agents remain policy-bound; never-governed Agents retain the
@@ -565,8 +570,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// determined that generation or operator config has changed, so an upgrade
 	// will happen. We only set the phase in-memory here; it will be persisted
 	// by the next updateStatus call (after Helm install or on error), avoiding
-	// an extra status write that would trigger a redundant reconcile.
-	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
+	// an extra status write that would trigger a redundant reconcile. Sandbox
+	// source/drift checks also run at steady state, so wait for an actual apply.
+	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
 		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
 	}
 
@@ -858,6 +864,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 				return ctrl.Result{}, err
 			}
 		}
+		if reconciledSandbox {
+			instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+		}
 		logger.Info("Installing/upgrading Helm chart", "release", releaseName, "namespace", ns)
 		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, prepared); err != nil {
 			logger.Error(err, "Helm install/upgrade failed", "release", releaseName)
@@ -888,6 +897,18 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if err := r.recoverRegistryPull(ctx, instance); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// Preserve the heartbeat between periodic passes; its own status event must
+	// not schedule an endless series of otherwise unchanged Sandbox reconciles.
+	reconciledAt := metav1.Now()
+	if reconciledSandbox && alreadyDeployed && startPhase == instance.Status.Phase &&
+		(startPhase == cetirunv1alpha1.PhaseReady || startPhase == cetirunv1alpha1.PhaseSuspended) &&
+		instance.Status.LastReconcileTime != nil {
+		elapsed := reconciledAt.Sub(instance.Status.LastReconcileTime.Time)
+		if elapsed >= 0 && elapsed < 10*time.Minute {
+			reconciledAt = *instance.Status.LastReconcileTime
+		}
 	}
 
 	// 10. Handle suspended instances.
@@ -943,11 +964,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			metav1.ConditionFalse, "Suspended", "Pod scaled to zero — instance is suspended")
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 			metav1.ConditionFalse, "InstanceSuspended", "Instance is suspended")
-		now := metav1.Now()
 		instance.Status.Phase = cetirunv1alpha1.PhaseSuspended
 		instance.Status.Namespace = ns
 		instance.Status.HelmReleaseName = releaseName
-		instance.Status.LastReconcileTime = &now
+		instance.Status.LastReconcileTime = &reconciledAt
 		if err := r.updateStatus(ctx, instance); err != nil {
 			logger.Error(err, "Failed to update status to Suspended", "alias", alias)
 			return ctrl.Result{}, err
@@ -1023,10 +1043,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 
 	// 12. Persist Ready after prerequisites and workload observation.
-	now := metav1.Now()
 	instance.Status.Namespace = ns
 	instance.Status.HelmReleaseName = releaseName
-	instance.Status.LastReconcileTime = &now
+	instance.Status.LastReconcileTime = &reconciledAt
 	if err := r.updateStatus(ctx, instance); err != nil {
 		logger.Error(err, "Failed to update status to Ready", "alias", alias)
 		return ctrl.Result{}, err
@@ -1663,7 +1682,11 @@ func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger lo
 // ensureVirtualService creates or updates the Istio VirtualService for this
 // instance and reports whether it created, updated or left it unchanged.
 func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent, access ...customAccess) (controllerutil.OperationResult, error) {
-	if r.usesReconciledSandbox(instance) {
+	reconciled, err := r.usesReconciledSandbox(ctx, instance)
+	if err != nil {
+		return controllerutil.OperationResultNone, err
+	}
+	if reconciled {
 		resolution, err := r.resolvePolicy(ctx, instance)
 		if err != nil {
 			return controllerutil.OperationResultNone, err
@@ -1681,7 +1704,6 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 	if desired == nil {
 		return controllerutil.OperationResultNone, fmt.Errorf("unsupported Agent native access")
 	}
-	reconciled := r.usesReconciledSandbox(instance)
 	if reconciled {
 		if err := controllerutil.SetControllerReference(instance, desired, r.Scheme); err != nil {
 			return controllerutil.OperationResultNone, err
@@ -1695,7 +1717,7 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 	vsNS := instanceNamespace(instance.Name)
 
 	existing := &istiov1beta1.VirtualService{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: vsNS, Name: vsName}, existing)
+	err = r.Get(ctx, types.NamespacedName{Namespace: vsNS, Name: vsName}, existing)
 	if errors.IsNotFound(err) {
 		logger.Info("Creating VirtualService", "name", vsName, "namespace", vsNS)
 		if err := r.Create(ctx, desired); err != nil {

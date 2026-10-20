@@ -52,15 +52,21 @@ const nativeSandboxSourcesJSON = `{
 
 func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 	for _, tc := range []struct {
-		name, raw string
-		native    bool
-		wantError bool
+		name, raw  string
+		native     bool
+		reconciled bool
+		wantError  bool
 	}{
 		{name: "unset"},
 		{name: "empty", raw: "{}"},
 		{name: "sources alone", raw: nativeSandboxSourcesJSON},
 		{name: "explicit false", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":false`, 1)},
 		{name: "explicit true", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true`, 1), native: true},
+		{name: "reader-first gate off", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"reconciledExecution":false`, 1), native: true},
+		{name: "reader-first gate on", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"reconciledExecution":true`, 1), native: true, reconciled: true},
+		{name: "reconciliation requires native execution", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"reconciledExecution":true`, 1), wantError: true},
+		{name: "reconciliation rejects string", raw: `{"reconciledExecution":"true"}`, wantError: true},
+		{name: "reconciliation rejects duplicate gate", raw: `{"reconciledExecution":false,"reconciledExecution":true}`, wantError: true},
 		{name: "native without claim name", raw: strings.Replace(strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true`, 1), `"skills-example"`, `""`, 1), native: true},
 		{name: "disabled starts retain empty claim setting", raw: strings.Replace(nativeSandboxSourcesJSON, `"skills-example"`, `""`, 1)},
 		{name: "catalog still needs claim name", raw: strings.Replace(strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"skillsCatalogConfigMapName":"skills-catalog"`, 1), `"skills-example"`, `""`, 1), wantError: true},
@@ -80,6 +86,9 @@ func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 			if config.NativeExecution != tc.native {
 				t.Fatalf("nativeExecution = %v, want %v", config.NativeExecution, tc.native)
 			}
+			if config.ReconciledExecution != tc.reconciled {
+				t.Fatalf("reconciledExecution = %v, want %v", config.ReconciledExecution, tc.reconciled)
+			}
 			_, kube, _ := aiGatewayTestReconciler(t)
 			preparation, err := NewKubernetesSandboxPreparation(config, kube, &nativeSandboxInstaller{}, "cetirun-system", "0.1.1")
 			if err != nil {
@@ -92,7 +101,8 @@ func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 				return
 			}
 			source, ok := preparation.Prerequisites.(*KubernetesSandboxPrerequisites)
-			if !ok || preparation.NativeExecution != tc.native || source.NativeExecution != tc.native || (source.NativeQuiescence != nil) != tc.native ||
+			if !ok || preparation.NativeExecution != tc.native || preparation.ReconciledExecution != tc.reconciled ||
+				source.NativeExecution != tc.native || (source.NativeQuiescence != nil) != tc.native ||
 				source.WriterExclusion != nil {
 				t.Fatal("factory did not preserve explicit opt-in or invented a writer-exclusion provider")
 			}
@@ -695,6 +705,37 @@ func newSandboxRuntimeFixtureForAgent(t *testing.T, native bool, skills []string
 	setup ...func(*AgentReconciler, client.Client),
 ) *nativeSandboxFixture {
 	t.Helper()
+	f, input := newUnreconciledSandboxRuntimeFixture(t, native, skills, reconciled, kind, shared, copilot, setup...)
+	f.reconcileOK(t)
+	namespace := &corev1.Namespace{}
+	if err := f.kube.Get(context.Background(), client.ObjectKey{Name: instanceNamespace(input.Agent.Name)}, namespace); err != nil {
+		t.Fatal("cold reconciliation did not bootstrap the namespace:", err)
+	}
+	f.assertNotReady(t)
+	// The fake API has no namespace controller to create the default account.
+	serviceAccount := input.ServiceAccount.DeepCopy()
+	serviceAccount.UID, serviceAccount.ResourceVersion = "", ""
+	if err := f.kube.Create(context.Background(), serviceAccount); err != nil && !(reconciled && apierrors.IsAlreadyExists(err)) {
+		t.Fatal(err)
+	}
+	if len(skills) != 0 {
+		claim := input.Input.Skills.DeepCopy()
+		claim.UID, claim.ResourceVersion = "", ""
+		claim.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Team", Name: input.Team.Name, UID: input.Team.UID}}
+		if err := f.kube.Create(context.Background(), claim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reconciled {
+		f.reconcileOK(t)
+	}
+	return f
+}
+
+func newUnreconciledSandboxRuntimeFixture(t *testing.T, native bool, skills []string, reconciled bool, kind string, shared, copilot bool,
+	setup ...func(*AgentReconciler, client.Client),
+) (*nativeSandboxFixture, testfixture.Fixture) {
+	t.Helper()
 	input := testfixture.New(kind)
 	input.Team.Spec.Skills = skills
 	input.Policy.Spec.Skills.Allowed = slices.Clone(skills)
@@ -797,7 +838,7 @@ func newSandboxRuntimeFixtureForAgent(t *testing.T, native bool, skills []string
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.NativeExecution = native
+	config.NativeExecution, config.ReconciledExecution = native, reconciled
 	installer := &nativeSandboxInstaller{kube: kube, chart: chrt}
 	if reconciled {
 		r.HelmClient = &sharedSandboxInstaller{nativeSandboxInstaller: installer}
@@ -810,47 +851,10 @@ func newSandboxRuntimeFixtureForAgent(t *testing.T, native bool, skills []string
 		configure(r, kube)
 	}
 	f := &nativeSandboxFixture{r: r, kube: kube, gateway: gateway, installer: installer, agent: input.Agent}
-	f.reconcileOK(t)
-	namespace := &corev1.Namespace{}
-	if err := kube.Get(context.Background(), client.ObjectKey{Name: instanceNamespace(input.Agent.Name)}, namespace); err != nil {
-		t.Fatal("cold reconciliation did not bootstrap the namespace:", err)
-	}
-	f.assertNotReady(t)
-	// The fake API has no namespace controller to create the default account.
-	serviceAccount := input.ServiceAccount.DeepCopy()
-	serviceAccount.UID, serviceAccount.ResourceVersion = "", ""
-	if err := kube.Create(context.Background(), serviceAccount); err != nil && !(reconciled && apierrors.IsAlreadyExists(err)) {
-		t.Fatal(err)
-	}
-	if len(skills) != 0 {
-		claim := input.Input.Skills.DeepCopy()
-		claim.UID, claim.ResourceVersion = "", ""
-		claim.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Team", Name: input.Team.Name, UID: input.Team.UID}}
-		if err := kube.Create(context.Background(), claim); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if reconciled {
-		f.reconcileOK(t)
-	}
-	return f
+	return f, input
 }
 
 func (f *nativeSandboxFixture) reconcile() (ctrl.Result, error) {
-	if f.r.HelmClient == nil {
-		agent := &api.Agent{}
-		if err := f.kube.Get(context.Background(), client.ObjectKey{Name: f.agent.Name}, agent); err != nil {
-			return ctrl.Result{}, err
-		}
-		// Seed a pre-upgrade single-start receipt with the retained implementation.
-		// Once persisted, exercise the public reconciler's upgrade/cleanup path.
-		if agent.DeletionTimestamp.IsZero() && !slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer) {
-			if _, err := f.r.reconcilePolicy(context.Background(), agent); err != nil {
-				return ctrl.Result{}, err
-			}
-			return f.r.reconcileRecordedNativeSandbox(context.Background(), agent)
-		}
-	}
 	return f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: f.agent.Name}})
 }
 
