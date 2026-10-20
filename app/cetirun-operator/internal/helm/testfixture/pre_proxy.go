@@ -27,6 +27,11 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 	}
 	// Reverse later source changes before verifying the immutable old fixture.
 	for name, replacements := range map[string][][2]string{
+		"agents/openclaw/config/native.tpl": {
+			{`{{- $contextSkills := and (or (not .Values.sandboxWorkload) (dig "reconciled" false (.Values.sandboxWorkload | default dict))) (dig "enabled" false (.Values.memoryContext | default dict)) }}`,
+				`{{- $contextSkills := and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict)) }}`},
+			{"{{- if $contextSkills }}\n{{- $plugins :=", "{{- if and (not .Values.sandboxWorkload) (dig \"enabled\" false (.Values.memoryContext | default dict)) }}\n{{- $plugins :="},
+		},
 		"values.schema.json": {
 			{"                        \"replicaCount\": {\"type\": [\"integer\", \"null\"], \"minimum\": 0, \"maximum\": 1, \"default\": null},\n", ""},
 			{`"executionHeld": {"type": "boolean"},

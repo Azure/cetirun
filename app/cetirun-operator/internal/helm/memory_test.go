@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -295,6 +296,98 @@ func TestSandboxRenderDoesNotInheritOrdinaryMemoryDefaults(t *testing.T) {
 			expected.ControllerRevision = workload.Status.UpdateRevision
 			if err := w.ValidatePod(testfixture.Pod(expected), expected); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestOpenClawMemoryRegistrationMatchesExecutionMode(t *testing.T) {
+	for _, mode := range []string{"ordinary", "reconciled", "single-start"} {
+		for _, enabled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/enabled=%t", mode, enabled), func(t *testing.T) {
+				chrt := testChart(t)
+				input := sampleInput("openclaw", "openai", false)
+				input["memoryOptions"] = MemoryOptions{Enabled: enabled, Image: "registry.example.com/memory:1.2.3"}
+				var prepared *PreparedRelease
+				var err error
+				if mode == "ordinary" {
+					prepared, err = PrepareChart(chrt, input)
+				} else {
+					fixture := testfixture.New("openclaw")
+					fixture.Input.Reconciled = mode == "reconciled"
+					bundle, buildErr := w.Build(fixture.Input)
+					if buildErr != nil {
+						t.Fatal(buildErr)
+					}
+					input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+					prepared, err = PrepareSandboxChart(chrt, input, nil, bundle)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				native := object(renderSnapshot(t, chrt, prepared.Values).Native["openclaw.json"])
+				plugins := object(native["plugins"])
+				entry := object(object(plugins["entries"])["cetirun-memory-context"])
+				registered := enabled && mode != "single-start"
+				if (entry["enabled"] == true) != registered ||
+					(object(entry["hooks"])["allowConversationAccess"] == true) != registered {
+					t.Fatal("native Memory plugin registration differs from the selected execution mode")
+				}
+				for _, list := range []struct {
+					values []any
+					item   string
+				}{
+					{array(plugins["allow"]), "cetirun-memory-context"},
+					{array(object(plugins["load"])["paths"]), "/opt/cetirun-memory/adapters/openclaw"},
+					{array(object(object(native["skills"])["load"])["extraDirs"]), "/home/vibe/.agents/skills"},
+				} {
+					count := 0
+					for _, value := range list.values {
+						if text(value) == list.item {
+							count++
+						}
+					}
+					want := 0
+					if registered {
+						want = 1
+					}
+					if count != want {
+						t.Fatalf("native configuration has %d copies of %q, want %d", count, list.item, want)
+					}
+				}
+				pod := registryRenderedTemplate(t, prepared).Spec
+				if assets := slices.ContainsFunc(pod.InitContainers, func(container corev1.Container) bool {
+					return container.Name == "memory-assets"
+				}); assets != registered {
+					t.Fatal("Memory asset installation and native adapter registration disagree")
+				}
+			})
+		}
+	}
+}
+
+func TestReconciledOpenClawMemoryRejectsDisabledPluginHooks(t *testing.T) {
+	for name, plugins := range map[string]map[string]any{
+		"plugins": {"enabled": false},
+		"adapter": {"entries": map[string]any{"cetirun-memory-context": map[string]any{"enabled": false}}},
+		"conversation hook": {"entries": map[string]any{"cetirun-memory-context": map[string]any{
+			"hooks": map[string]any{"allowConversationAccess": false},
+		}}},
+		"prompt hook": {"entries": map[string]any{"cetirun-memory-context": map[string]any{
+			"hooks": map[string]any{"allowPromptInjection": false},
+		}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bundle, input := reconciledSandboxInputs(t)
+			input["memoryOptions"] = MemoryOptions{Enabled: true, Image: "registry.example.com/memory:1.2.3"}
+			input["openclaw"] = map[string]any{"config": map[string]any{"plugins": plugins}}
+			if _, err := PrepareSandboxChart(testChart(t), input, nil, bundle); err == nil ||
+				!strings.Contains(err.Error(), "native config does not match the selected profile") {
+				t.Fatal("reconciled Memory accepted an explicitly disabled adapter or hook:", err)
+			}
+			input["memoryOptions"] = MemoryOptions{Enabled: false}
+			if _, err := PrepareSandboxChart(testChart(t), input, nil, bundle); err != nil {
+				t.Fatal("disabled Memory should not require its adapter or hook:", err)
 			}
 		})
 	}

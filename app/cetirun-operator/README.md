@@ -152,6 +152,10 @@ Ready and suspended Agents still recheck current sources and deployed controls.
 Unchanged passes retain their phase and reconcile timestamp between periodic
 refreshes instead of generating status-watch loops.
 
+When Memory Context is enabled, reconciled OpenClaw uses the same native plugin
+registration, conversation hook and composed skill path as ordinary OpenClaw,
+alongside the installed assets. Retained single-start templates remain disabled.
+
 Every disk-backed `emptyDir`, including extension and auxiliary volumes, must
 declare a positive `sizeLimit` no greater than the selected Sandbox scratch limit.
 The common chart bounds its context, empty-skills and Tailscale temporary storage

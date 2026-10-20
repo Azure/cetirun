@@ -1,9 +1,10 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Memory assets stay on the ordinary Agent path while Sandbox is independent."""
+"""Memory wiring follows the common executor while retained lifetimes stay unchanged."""
 
 import copy
+import json
 import shutil
 import unittest
 
@@ -13,7 +14,6 @@ from test_native_gateway_chart import RUNTIME_CHART, native_values, object_of_ki
 @unittest.skipUnless(shutil.which("helm"), "requires Helm")
 class MemorySandboxBoundaryTests(unittest.TestCase):
     def test_removed_memory_assets_switch_is_not_accepted_by_protected_schema(self):
-        import json
         schema = json.loads((RUNTIME_CHART / "values.schema.json").read_text())
         self.assertNotIn("memoryAssets", schema["properties"]["sandboxWorkload"]["properties"])
         self.assertEqual(schema["properties"]["skills"]["properties"]["mountPath"]["default"], "/home/vibe/.aks/skills")
@@ -38,6 +38,33 @@ class MemorySandboxBoundaryTests(unittest.TestCase):
                 if agent_type == "hermes":
                     config = object_of_kind(enabled, "ConfigMap")["data"]["hermes-config.yaml"]
                     self.assertNotIn("/home/vibe/.agents/skills", config)
+
+    def test_reconciled_openclaw_registers_the_installed_memory_adapter(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                values = native_values()
+                values["agentType"] = "openclaw"
+                values["sandboxWorkload"]["reconciled"] = True
+                values["sandboxWorkload"]["executionHeld"] = False
+                values["memoryContext"] = {"enabled": enabled, "image": "registry.example.com/memory:1.2.3"}
+                objects = render(RUNTIME_CHART, values)
+                pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
+                config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
+                plugin = config.get("plugins", {}).get("entries", {}).get("cetirun-memory-context", {})
+                self.assertEqual(plugin.get("enabled", False), enabled)
+                self.assertEqual(plugin.get("hooks", {}).get("allowConversationAccess", False), enabled)
+                self.assertEqual(
+                    config.get("plugins", {}).get("load", {}).get("paths", []).count("/opt/cetirun-memory/adapters/openclaw"),
+                    int(enabled),
+                )
+                self.assertEqual(
+                    config.get("plugins", {}).get("allow", []).count("cetirun-memory-context"), int(enabled),
+                )
+                self.assertEqual(
+                    config.get("skills", {}).get("load", {}).get("extraDirs", []).count("/home/vibe/.agents/skills"),
+                    int(enabled),
+                )
+                self.assertEqual("memory-assets" in [c["name"] for c in pod["initContainers"]], enabled)
 
     def test_ordinary_packaging_keeps_memory_enabled_by_default(self):
         for agent_type in ("openclaw", "hermes"):
