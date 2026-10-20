@@ -234,7 +234,9 @@ more setting. Measured on LiteLLM 1.105.1 with made-up deployment names in
 For Azure OpenAI, set `base_model`, which also prices the deployment: on Chat
 Completions, LiteLLM accepts a reasoning effort for an `azure/` deployment only
 when its name or `base_model` names an o-series, GPT-5 or GPT-6 model, and
-`supports_reasoning` does not change that. For a reasoning model under
+`supports_reasoning` does not change that. `base_model` does not decide whether
+a chat request with tools goes to the Responses API; see [Azure
+OpenAI](#azure-openai). For a reasoning model under
 `openai/`, such as one behind another OpenAI-compatible endpoint, whose name is
 not in LiteLLM's price table, set `model_info.supports_reasoning: true`;
 `base_model` does not stand in for it. A deployment named after its model, such
@@ -373,10 +375,11 @@ For newer reasoning models, Azure refuses function tools on
 > Function tools with reasoning_effort are not supported for this model in
 > /v1/chat/completions.
 
-LiteLLM knows this, and sends any chat request that carries tools to
-`/responses` instead. An agent's requests almost always carry tools, so in
-practice every agent turn goes through the Responses API, and `api_version`
-decides whether that endpoint exists. Measured directly against one deployment:
+LiteLLM knows this for a deployment named after such a model, and sends its
+chat requests that carry tools to `/responses` instead; for other names, see
+below. An agent's requests almost always carry tools, so in practice every
+agent turn goes through the Responses API, and `api_version` decides whether
+that endpoint exists. Measured directly against one deployment:
 
 | `api_version` | Chat | Chat with tools | Responses | Responses with tools |
 | --- | --- | --- | --- | --- |
@@ -398,6 +401,19 @@ and the Gateway log shows the request it made:
 Use `2025-04-01-preview` or later. The "Chat with tools" column stays at 400
 whatever the version; that refusal is the reason for the bridge, not a problem
 with it.
+
+LiteLLM goes by the deployment's own name, which in 1.105.1 has to begin with
+`gpt-5.4` or a later version, such as `gpt-5.4-nano`. Measured on LiteLLM
+1.105.1 with a mock provider: a chat request with tools to `azure/gpt-5.4-nano`
+went to `/responses`, while one to a deployment with a name of its own and
+`base_model: azure/gpt-5.4-nano` stayed on `/chat/completions`, where such a
+model refuses it. So name the deployment after the model it runs. Otherwise,
+`model_info.mode: responses` has LiteLLM send every chat request of that
+deployment to `/responses`: in the same test, plain and streamed chat requests
+got ordinary Chat Completions answers at the same price, and requests with
+tools were sent there too. Its health probes then call the Responses API as
+well, without the 16-token limit, and a moved request carries `store` only
+when the client sends it, so otherwise the provider's default applies.
 
 ### Upstream errors are not retried
 
@@ -1067,13 +1083,22 @@ one in `models` becomes an additional backend rather than an override.
 ### Upgrading with `--reuse-values`
 
 `helm upgrade --reuse-values` keeps the values of the chart version a release
-was installed with, without the defaults of settings added since. A release
-installed before `requestLog`, `spendLogs` and `metrics` existed upgrades with
-their defaults: the request log on, LiteLLM's spend log kept for seven days,
-metrics off. One
-installed before `router` gets its defaults too: `simple-shuffle`, failover,
-the affinity checks and health checks on, no fallbacks. One installed before
-`priceTable` keeps downloading the price table.
+was installed with, without the defaults of settings added since. The chart
+reads each such setting with its default, key by key, so a release whose
+`router` or `spendLogs` comes from an earlier version gets the defaults of the
+keys it lacks. A release installed before these settings existed upgrades
+with:
+
+- `requestLog`, `spendLogs` and `metrics`: the request log on, LiteLLM's spend
+  log kept, metrics off;
+- `spendLogs.retention`: `7d`, so LiteLLM starts deleting spend log rows older
+  than seven days;
+- `router`: `simple-shuffle`, failover and the affinity checks on, no
+  fallbacks, and health checks every 300 seconds, at most 8 probes at a time,
+  which start probing every deployment;
+- `budgetExceededStatusCode`: 402;
+- `podDisruptionBudget`: a PodDisruptionBudget above one replica;
+- `priceTable`: `remote`, so LiteLLM keeps downloading the price table.
 
 ## Availability
 
