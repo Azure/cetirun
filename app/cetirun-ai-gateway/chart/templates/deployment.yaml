@@ -43,7 +43,7 @@ spec:
       for each other and the later ones find nothing left to apply. Unlike a
       pre-install hook, an init container can wait for a database that is still
       starting: the bundled PostgreSQL does not yet exist when such a hook runs.
-      It gets the database connection and nothing else. */}}
+      It gets the database connection and no other credential. */}}
       initContainers:
         - name: migrate
           securityContext:
@@ -55,6 +55,9 @@ spec:
           env:
             {{- include "cetirun-ai-gateway.databaseEnv" . | nindent 12 }}
             {{- include "cetirun-ai-gateway.monitoringEnv" . | nindent 12 }}
+            {{- if eq (include "cetirun-ai-gateway.priceTable" .) "bundled" }}
+            {{- include "cetirun-ai-gateway.priceTableEnv" . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- end }}

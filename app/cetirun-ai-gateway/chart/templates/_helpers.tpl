@@ -368,6 +368,26 @@ setting upgrades with --reuse-values.
 {{- end }}
 
 {{/*
+Where LiteLLM's price table comes from, remote unless set, for the same reason
+as cetirun-ai-gateway.budgetExceededStatusCode: a release installed before the
+setting upgrades with --reuse-values.
+*/}}
+{{- define "cetirun-ai-gateway.priceTable" -}}
+{{- .Values.priceTable | default "remote" -}}
+{{- end }}
+
+{{/*
+A price table source the chart knows: anything else would quietly download the
+table, as remote does.
+*/}}
+{{- define "cetirun-ai-gateway.validatePriceTable" -}}
+{{- $source := include "cetirun-ai-gateway.priceTable" . -}}
+{{- if not (has $source (list "remote" "bundled")) }}
+{{- fail (printf "priceTable %q is not supported. Use remote (LiteLLM downloads the current price table when it starts and falls back to the copy in the image) or bundled (only the copy in the image)." $source) }}
+{{- end }}
+{{- end }}
+
+{{/*
 Whether to create the Gateway's PodDisruptionBudget: on unless turned off, and
 only above one replica, where it cannot block the drain of the only one.
 */}}

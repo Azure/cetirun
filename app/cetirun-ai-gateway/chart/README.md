@@ -1072,7 +1072,8 @@ installed before `requestLog`, `spendLogs` and `metrics` existed upgrades with
 their defaults: the request log on, LiteLLM's spend log kept for seven days,
 metrics off. One
 installed before `router` gets its defaults too: `simple-shuffle`, failover,
-the affinity checks and health checks on, no fallbacks.
+the affinity checks and health checks on, no fallbacks. One installed before
+`priceTable` keeps downloading the price table.
 
 ## Availability
 
@@ -1440,10 +1441,22 @@ Recorded and deferred: none of these stops the Gateway from serving agents.
 **Not in the chart yet.** Redis TLS, which Azure Cache for Redis requires; and
 anti-affinity for the Gateway replicas (set `affinity` by hand).
 
-**Prices are not pinned to the image.** LiteLLM fetches its price table from
-GitHub at startup and falls back to the copy it ships with when that fails, so
-a restart can change what `base_model` pricing resolves to. Set
-`LITELLM_LOCAL_MODEL_COST_MAP=True` to use the shipped copy only.
+**Prices are not pinned to the image by default.** LiteLLM downloads its price
+table from GitHub each time a Gateway pod starts, and falls back to the copy it
+ships with when that fails, so a restart can change what `base_model` pricing
+resolves to. `priceTable: bundled` uses only the copy in the image, for a
+cluster without internet access or prices that change only with the image: the
+chart then sets LiteLLM's `LITELLM_LOCAL_MODEL_COST_MAP` on the proxy and on the
+migrate step, which loads LiteLLM too, and a reload of the price table from the
+console, at once or on a schedule, loads the image's copy again. In exchange,
+new models and price changes arrive only with a new image, and a model missing
+from the image's table is unpriced: refused while `blockUnpricedModels` is on,
+unless its entry declares a price. With CetiRun, the operator prices the Agents'
+GitHub Copilot models from the table the Gateway loaded, so a Copilot model
+newer than the image is not offered. Measured on LiteLLM 1.105.1 with the
+table's address pointed at a mock: with the variable, neither the proxy's
+start, the migrate step's import of LiteLLM nor a reload requested the table;
+without it, each did.
 
 **GitOps.** Generated credentials rely on Helm's `lookup`, which returns nothing
 under `helm template`, so tools that render that way, such as Argo CD, must
