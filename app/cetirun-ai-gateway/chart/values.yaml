@@ -79,6 +79,12 @@ fullnameOverride: ""
 # Keep credentials out of this list: reference them as `os.environ/NAME` and
 # supply the value through providerCredentials below.
 #
+# A reasoning model under a name LiteLLM does not know may need one more
+# setting, or LiteLLM refuses a request that sets a reasoning effort with a
+# 400: model_info.base_model naming the model for an azure/ deployment,
+# model_info.supports_reasoning: true for one under openai/. See the README's
+# "Reasoning models".
+#
 # Names beginning with `cetirun-` are reserved for models the CetiRun operator
 # registers automatically, and are rejected here; so are names beginning with
 # `copilot/` while operatorIntegration is on.

@@ -212,6 +212,36 @@ does not replace the original. Both are served under the same name and traffic
 is split between two different backends, with nothing visible to the client to
 indicate it.
 
+### Reasoning models
+
+A request that sets a reasoning effort, `reasoning_effort` on Chat Completions
+or `reasoning.effort` on the Responses API, is refused by LiteLLM with a 400
+(`UnsupportedParamsError`), before anything reaches the provider, when LiteLLM
+does not take the deployment for a reasoning model. It decides by name and by
+its price table, so a reasoning model under a name of your own may need one
+more setting. Measured on LiteLLM 1.105.1 with made-up deployment names in
+`litellm_params.model` and a mock provider:
+
+| Deployment | Chat Completions | Responses API |
+| --- | --- | --- |
+| `azure/<deployment name>` | 400 | passed on |
+| the same with `model_info.base_model: azure/gpt-5.4-nano` | passed on | passed on |
+| the same with `model_info.supports_reasoning: true` | 400 | passed on |
+| `openai/<name>` | passed on | 400 |
+| the same with `model_info.base_model: gpt-5.4-nano` | passed on | 400 |
+| the same with `model_info.supports_reasoning: true` | passed on | passed on |
+
+For Azure OpenAI, set `base_model`, which also prices the deployment: on Chat
+Completions, LiteLLM accepts a reasoning effort for an `azure/` deployment only
+when its name or `base_model` names an o-series, GPT-5 or GPT-6 model, and
+`supports_reasoning` does not change that. For a reasoning model under
+`openai/`, such as one behind another OpenAI-compatible endpoint, whose name is
+not in LiteLLM's price table, set `model_info.supports_reasoning: true`;
+`base_model` does not stand in for it. A deployment named after its model, such
+as `azure/gpt-5.4-nano` or `openai/gpt-5.4-nano`, needs neither. LiteLLM's
+`drop_params`, which the chart does not set, would turn each 400 into a request
+sent without the reasoning effort, with nothing to tell the client.
+
 ## Budgets and unpriced models
 
 LiteLLM computes spend from a built-in price table, multiplying it by the tokens
