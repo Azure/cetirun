@@ -108,7 +108,9 @@ classifies how demanding the request is and sends it to the model of that
 tier. Administrators define routers on the Team page in the Portal, under
 **Smart routing**; members see only whether they may use a router name, never
 its configuration. Routers made in the Gateway's own console are not managed
-by CetiRun, and the routers of the Gateway chart's `models` stay as they are.
+by CetiRun, and the routers of the Gateway chart's `models` stay as they are;
+the operator gives those to instances under the same rule as a Team's routers,
+see [Choose a model](../models/#models-through-the-ai-gateway).
 
 Each router has:
 
@@ -153,8 +155,8 @@ The registrations appear in the Gateway's console under their internal
 the operator does not watch for edits.
 
 An instance gets a router only when it may use every model the router sends
-requests to, because the Gateway does not check a router's tier models against
-the instance's key:
+requests to, which the Gateway also holds the router to: it refuses, with HTTP
+403, a request a router sends to a model outside the instance's key. So:
 
 - with an Agent Policy, the Policy's allowed shared models must list the
   router's name and each shared tier, and GitHub Copilot tiers need Copilot to

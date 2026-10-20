@@ -705,11 +705,32 @@ the chart changes three of LiteLLM 1.105.1's router defaults:
   with a model whose declared window fits; set `max_input_tokens` in each
   model's `model_info` for that.
 
-**Using the router uses its models.** A key that may use the router reaches every
-model of its tiers, whether or not it may use them directly; a key that may use
-the models but not the router cannot use the router. With
-`operatorIntegration`, an AgentPolicy that grants the router grants its models.
-The chart rejects a tier, default model or classifier model that is not
+**A router is granted only with its models.** With `operatorIntegration`, the
+CetiRun operator puts a router on an Agent's key only when the Agent may use
+every model the router sends requests to. The models of its tiers, its default
+model and a context compaction model have to be shared models the Agent may
+use: with an AgentPolicy, models its shared-model list names, as it has to name
+the router. A classifier model, `classifier_llm_config.model`, a
+`jev_classifier_config.deployment_name` or the `embedding_model` of semantic
+keyword matching, has to be a shared model but need not be listed: the router
+calls it to classify the Agent's request, charged to the Agent's key. An Agent
+without a policy may use every shared model, so it gets every router whose
+models are all shared models. A router the operator cannot read completely is
+not given to Agents with a policy: one with a `complexity_router_config` field
+LiteLLM 1.105.1 does not have, a classifier or routing plugin, a jev classifier
+without a `deployment_name`, or another kind of LiteLLM auto router. A router
+an Agent may not use stays off its key and out of its model list; when the
+Agent's policy lists the router, the Agent's page in the Portal says why. The
+operator reads the routers from the Gateway's model list, so a changed router
+reaches the keys at its next listing, within about two minutes; a router's
+configuration is not part of an AgentPolicy's Gateway projection.
+
+For the keys the operator issues, the Gateway refuses with HTTP 403 a request a
+router sends to a model outside the key's access groups; the router's own
+classifier calls are exempt (see [The guard callback](#the-guard-callback)).
+Other keys reach every model of the router's tiers, whether or not they may use
+them directly. A key that may use the models but not the router cannot use the
+router. The chart rejects a tier, default model or classifier model that is not
 configured in `models`.
 
 **A conversation can change model.** Each request is classified on its own, so

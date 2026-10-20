@@ -36,10 +36,20 @@ directly, spreads requests for that name over every instance's proxy.
 
 A shared model can also be a router that the administrator configures in the
 Gateway: for each request it picks one of several shared models, such as a
-cheaper one for simple requests. An instance that may use the router reaches
-every model the router can pick. See the Gateway chart's
+cheaper one for simple requests. An instance gets such a router only when it
+may use every model the router sends requests to, as for a Team's routers. With
+an Agent Policy, the Policy must list the router and every model of its tiers,
+its default model and a context compaction model; a classifier model must be a
+shared model but need not be listed. An instance without a Policy gets every
+router whose models are all shared models. A router the operator cannot read
+completely, such as one with a setting it does not know or a classifier plugin,
+is not given to instances with a Policy. A router an instance cannot use is
+left out of its key and its models, and an instance whose Policy lists the
+router shows why on its page. A changed router reaches the instances' keys
+within about two minutes; it does not change the Policy's Gateway projection.
+See the Gateway chart's
 [Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
-section. A Team's own routers are granted per instance instead; see
+section. A Team's own routers are described under
 [Smart-routing models](#smart-routing-models).
 
 The create form offers both sources, on by default, and a new OpenClaw or Hermes
@@ -155,6 +165,7 @@ event on the Agent.
 
 Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller/ai_gateway.go" >}}),
 [shared-model catalog]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_catalog.go" >}}),
+[Gateway routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_shared_routers.go" >}}),
 [Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),
 and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login.go" >}}).
 
