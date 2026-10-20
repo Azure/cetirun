@@ -64,6 +64,14 @@ verification and independently checks the Agent-only Azure binding. MCP checks
 that Broker check and issuance responses agree on connection and binding
 revisions before sending a request.
 
+Workload authentication failures return HTTP 401 with `unauthenticated` when
+the proof is invalid or its live binding is missing, changed or inactive.
+Kubernetes API timeouts, failed API requests, invalid responses, and
+unavailable server credentials return HTTP 503 with
+`dependency_unavailable`. These failures stop the request before Broker or
+provider execution; they do not require reconnecting the Agent account.
+Failed notifications use the same HTTP status without a JSON-RPC body.
+
 The chart requires an MCP server TLS Secret (`tls.crt`, `tls.key`) and a
 dedicated Broker client TLS Secret (`tls.crt`, `tls.key`, `ca.crt`). The server
 certificate must cover the MCP service hostname used by clients. The Broker

@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"mime"
@@ -107,7 +108,11 @@ func (s *Server) handle(writer http.ResponseWriter, request *http.Request) {
 	defer cancel()
 	caller, err := s.service.Authenticate(ctx, bearer)
 	if err != nil {
-		s.writeResponseError(writer, message, -32001, "unauthenticated", http.StatusUnauthorized)
+		if errors.Is(err, identity.ErrUnauthenticated) {
+			s.writeResponseError(writer, message, -32001, "unauthenticated", http.StatusUnauthorized)
+		} else {
+			s.writeResponseError(writer, message, -32000, "dependency_unavailable", http.StatusServiceUnavailable)
+		}
 		return
 	}
 
@@ -212,7 +217,9 @@ func (s *Server) writeResponseResult(writer http.ResponseWriter, request rpcRequ
 }
 func (s *Server) writeResponseError(writer http.ResponseWriter, request rpcRequest, code int, message string, status int) {
 	if notification(request) {
-		writeNotification(writer)
+		// Notifications have no JSON-RPC response body, but transport errors
+		// must not be reported as successful HTTP acceptance.
+		writer.WriteHeader(status)
 		return
 	}
 	s.writeRPCError(writer, request.ID, code, message, status)

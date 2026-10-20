@@ -6,6 +6,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -22,12 +24,16 @@ type fakeService struct {
 	calls     int
 	result    map[string]any
 	err       error
+	authErr   error
 }
 
 func (f *fakeService) Authenticate(_ context.Context, bearer string) (identity.Caller, error) {
 	f.authCalls++
+	if f.authErr != nil {
+		return identity.Caller{}, f.authErr
+	}
 	if bearer != "synthetic-workload-proof" {
-		return identity.Caller{}, context.Canceled
+		return identity.Caller{}, identity.ErrUnauthenticated
 	}
 	return identity.Caller{Proof: bearer, InstanceUID: "00000000-0000-0000-0000-000000000001"}, nil
 }
@@ -119,6 +125,65 @@ func TestMCPRequiresBearerProof(t *testing.T) {
 	New(&fakeService{}).ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "unauthenticated") {
 		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestMCPAuthenticationFailureClassification(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+		code   int
+	}{
+		{"rejected credential", identity.ErrUnauthenticated, http.StatusUnauthorized, -32001},
+		{"wrapped rejection", fmt.Errorf("synthetic detail: %w", identity.ErrUnauthenticated), http.StatusUnauthorized, -32001},
+		{"dependency outage", identity.ErrDependencyUnavailable, http.StatusServiceUnavailable, -32000},
+		{"wrapped outage", fmt.Errorf("synthetic detail: %w", identity.ErrDependencyUnavailable), http.StatusServiceUnavailable, -32000},
+		{"deadline", context.DeadlineExceeded, http.StatusServiceUnavailable, -32000},
+		{"unexpected error", errors.New("synthetic private diagnostic"), http.StatusServiceUnavailable, -32000},
+	} {
+		for _, method := range []string{"initialize", "tools/list", "tools/call", "notifications/initialized"} {
+			t.Run(test.name+"/"+method, func(t *testing.T) {
+				fake := &fakeService{authErr: test.err}
+				message := map[string]any{"jsonrpc": "2.0", "method": method}
+				if method != "notifications/initialized" {
+					message["id"] = "request-1"
+				}
+				if method == "tools/call" {
+					message["params"] = map[string]any{"name": "connections_status", "arguments": map[string]any{}}
+				}
+				body, err := json.Marshal(message)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(string(body)))
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("Authorization", "Bearer synthetic-workload-proof")
+				request.Header.Set("MCP-Protocol-Version", protocolVersion)
+				response := httptest.NewRecorder()
+				New(fake).ServeHTTP(response, request)
+				if response.Code != test.status || fake.authCalls != 1 || fake.listCalls != 0 || fake.calls != 0 {
+					t.Fatalf("status/auth/list/call = %d/%d/%d/%d, want %d/1/0/0", response.Code, fake.authCalls, fake.listCalls, fake.calls, test.status)
+				}
+				if method == "notifications/initialized" {
+					if response.Body.Len() != 0 {
+						t.Fatal("notification returned a JSON-RPC response")
+					}
+					return
+				}
+				wantMessage := "dependency_unavailable"
+				if test.status == http.StatusUnauthorized {
+					wantMessage = "unauthenticated"
+				}
+				var payload rpcResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+					t.Fatal(err)
+				}
+				if payload.JSONRPC != "2.0" || string(payload.ID) != `"request-1"` || payload.Result != nil || payload.Error == nil || payload.Error.Code != test.code || payload.Error.Message != wantMessage || payload.Error.Data != nil {
+					t.Fatalf("unexpected authentication response: %s", response.Body.String())
+				}
+			})
+		}
 	}
 }
 

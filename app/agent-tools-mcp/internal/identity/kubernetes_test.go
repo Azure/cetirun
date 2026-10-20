@@ -6,6 +6,7 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,12 +20,18 @@ func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 		namespaceVariant string
 		mutate           func(map[string]any, map[string]any, map[string]any, map[string]any)
 		allowed          bool
+		wantErr          error
 	}{
 		{name: "pod bound without Entra identity", allowed: true},
 		{name: "missing namespace owner", namespaceVariant: "missing"},
 		{name: "duplicate namespace owner", namespaceVariant: "duplicate"},
 		{name: "deleting namespace", namespaceVariant: "deleting"},
-		{name: "unavailable namespace", namespaceVariant: "unavailable"},
+		{name: "unavailable namespace", namespaceVariant: "unavailable", wantErr: ErrDependencyUnavailable},
+		{name: "rejected token", mutate: func(review, pod, account, agent map[string]any) { review["authenticated"] = false }},
+		{name: "rejected expired token", mutate: func(review, pod, account, agent map[string]any) {
+			review["authenticated"] = false
+			review["error"] = "synthetic expired token diagnostic"
+		}},
 		{name: "wrong audience", mutate: func(review, pod, account, agent map[string]any) { review["audiences"] = []string{"other"} }},
 		{name: "no audiences", mutate: func(review, pod, account, agent map[string]any) { delete(review, "audiences") }},
 		{name: "recreated Agent", mutate: func(review, pod, account, agent map[string]any) {
@@ -105,8 +112,14 @@ func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 			if test.allowed && (err != nil || caller.InstanceUID != "instance-uid") {
 				t.Fatalf("valid workload rejected: %v", err)
 			}
-			if !test.allowed && err == nil {
-				t.Fatal("invalid workload accepted")
+			if !test.allowed {
+				wantErr := test.wantErr
+				if wantErr == nil {
+					wantErr = ErrUnauthenticated
+				}
+				if !errors.Is(err, wantErr) || caller != (Caller{}) {
+					t.Fatalf("authentication = %#v, %v; want empty caller, %v", caller, err, wantErr)
+				}
 			}
 		})
 	}

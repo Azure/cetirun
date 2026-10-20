@@ -10,7 +10,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -21,6 +20,14 @@ import (
 )
 
 const maxKubernetesResponse = 1 << 20
+
+// Authentication errors contain no credentials or Kubernetes response details.
+// Only a definitive credential or live-binding rejection is unauthenticated.
+var (
+	ErrUnauthenticated       = errors.New("unauthenticated")
+	ErrDependencyUnavailable = errors.New("dependency_unavailable")
+	errObjectNotFound        = errors.New("Kubernetes object not found")
+)
 
 type Kubernetes struct {
 	baseURL   string
@@ -122,7 +129,7 @@ func NewKubernetes(cfg config.Config) (*Kubernetes, error) {
 
 func (k *Kubernetes) Authenticate(ctx context.Context, bearer string) (Caller, error) {
 	if strings.TrimSpace(bearer) == "" {
-		return Caller{}, errors.New("missing workload token")
+		return Caller{}, ErrUnauthenticated
 	}
 	var review tokenReview
 	review.APIVersion, review.Kind = "authentication.k8s.io/v1", "TokenReview"
@@ -131,55 +138,76 @@ func (k *Kubernetes) Authenticate(ctx context.Context, bearer string) (Caller, e
 	if err := k.request(ctx, http.MethodPost, "/apis/authentication.k8s.io/v1/tokenreviews", review, &review); err != nil {
 		return Caller{}, err
 	}
+	// A completed negative TokenReview rejects the credential, including
+	// invalid or expired tokens described in its untrusted status.error text.
 	if !review.Status.Authenticated || !audienceMatches(review.Status.Audiences, k.audience) {
-		return Caller{}, errors.New("workload token is not authenticated")
+		return Caller{}, ErrUnauthenticated
 	}
 	namespace, serviceAccountName, ok := serviceAccountIdentity(review.Status.User.Username)
 	if !ok {
-		return Caller{}, errors.New("workload token is not a ServiceAccount")
+		return Caller{}, ErrUnauthenticated
 	}
 	podName, podUID := extraValue(review.Status.User.Extra, "authentication.kubernetes.io/pod-name"), extraValue(review.Status.User.Extra, "authentication.kubernetes.io/pod-uid")
 	serviceAccountUID := review.Status.User.UID
 	if !dnsLabel(podName) || podUID == "" || serviceAccountUID == "" {
-		return Caller{}, errors.New("workload token is not Pod bound")
+		return Caller{}, ErrUnauthenticated
 	}
 	var currentPod pod
-	if err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+namespace+"/pods/"+podName, nil, &currentPod); err != nil || currentPod.Metadata.DeletionTimestamp != nil || currentPod.Metadata.UID != podUID || currentPod.Metadata.Namespace != namespace || currentPod.Spec.ServiceAccountName != serviceAccountName {
-		return Caller{}, errors.New("workload Pod binding is invalid")
+	if err := k.getWorkload(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+podName, &currentPod); err != nil {
+		return Caller{}, err
+	}
+	if currentPod.Metadata.DeletionTimestamp != nil || currentPod.Metadata.UID != podUID || currentPod.Metadata.Namespace != namespace || currentPod.Spec.ServiceAccountName != serviceAccountName {
+		return Caller{}, ErrUnauthenticated
 	}
 	var currentServiceAccount serviceAccount
-	if err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+namespace+"/serviceaccounts/"+serviceAccountName, nil, &currentServiceAccount); err != nil || currentServiceAccount.Metadata.DeletionTimestamp != nil || currentServiceAccount.Metadata.UID != serviceAccountUID || currentServiceAccount.Metadata.UID != review.Status.User.UID {
-		return Caller{}, errors.New("workload ServiceAccount binding is invalid")
+	if err := k.getWorkload(ctx, "/api/v1/namespaces/"+namespace+"/serviceaccounts/"+serviceAccountName, &currentServiceAccount); err != nil {
+		return Caller{}, err
+	}
+	if currentServiceAccount.Metadata.DeletionTimestamp != nil || currentServiceAccount.Metadata.UID != serviceAccountUID || currentServiceAccount.Metadata.UID != review.Status.User.UID {
+		return Caller{}, ErrUnauthenticated
 	}
 	// Namespace ownership locates the Agent without a cluster-wide list. The
 	// owner reference is only a locator: compare it with the live Agent below.
 	var ns struct {
 		Metadata objectMeta `json:"metadata"`
 	}
-	if err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+namespace, nil, &ns); err != nil || ns.Metadata.DeletionTimestamp != nil || ns.Metadata.Name != namespace {
-		return Caller{}, errors.New("workload namespace is unavailable")
+	if err := k.getWorkload(ctx, "/api/v1/namespaces/"+namespace, &ns); err != nil {
+		return Caller{}, err
+	}
+	if ns.Metadata.DeletionTimestamp != nil || ns.Metadata.Name != namespace {
+		return Caller{}, ErrUnauthenticated
 	}
 	var owner ownerReference
 	foundOwner := false
 	for _, ref := range ns.Metadata.OwnerReferences {
 		if ref.Kind == "Agent" && ref.APIVersion == "cetirun.microsoft.com/v1alpha1" {
 			if foundOwner {
-				return Caller{}, errors.New("ambiguous namespace owner")
+				return Caller{}, ErrUnauthenticated
 			}
 			owner, foundOwner = ref, true
 		}
 	}
 	if owner.UID == "" || !dnsLabel(owner.Name) {
-		return Caller{}, errors.New("namespace has no Agent owner")
+		return Caller{}, ErrUnauthenticated
 	}
 	var item agent
-	if err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+owner.Name, nil, &item); err != nil {
-		return Caller{}, errors.New("instance binding is unavailable")
+	if err := k.getWorkload(ctx, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+owner.Name, &item); err != nil {
+		return Caller{}, err
 	}
 	if item.Metadata.Name != owner.Name || item.Metadata.UID != owner.UID || item.Metadata.DeletionTimestamp != nil || item.Spec.Suspended || item.Status.Phase != "Ready" || item.Status.Namespace != namespace || instanceServiceName(item.Metadata.Name) != serviceAccountName {
-		return Caller{}, errors.New("workload does not map to an executable instance")
+		return Caller{}, ErrUnauthenticated
 	}
 	return Caller{Proof: bearer, InstanceUID: item.Metadata.UID}, nil
+}
+
+func (k *Kubernetes) getWorkload(ctx context.Context, path string, result any) error {
+	err := k.request(ctx, http.MethodGet, path, nil, result)
+	if errors.Is(err, errObjectNotFound) {
+		// A missing bound object invalidates the workload proof. Other API
+		// failures do not establish whether the workload is still valid.
+		return ErrUnauthenticated
+	}
+	return err
 }
 
 func audienceMatches(audiences []string, expected string) bool {
@@ -205,23 +233,23 @@ func (k *Kubernetes) Update(ctx context.Context, path string, value, result any)
 
 func (k *Kubernetes) request(ctx context.Context, method, path string, body any, result any) error {
 	if !strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
-		return errors.New("invalid Kubernetes endpoint")
+		return ErrDependencyUnavailable
 	}
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return errors.New("cannot encode Kubernetes request")
+			return ErrDependencyUnavailable
 		}
 		reader = bytes.NewReader(encoded)
 	}
 	token, err := os.ReadFile(k.tokenFile)
 	if err != nil || strings.TrimSpace(string(token)) == "" {
-		return errors.New("Kubernetes service account token is unavailable")
+		return ErrDependencyUnavailable
 	}
 	request, err := http.NewRequestWithContext(ctx, method, k.baseURL+path, reader)
 	if err != nil {
-		return errors.New("cannot create Kubernetes request")
+		return ErrDependencyUnavailable
 	}
 	request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 	if body != nil {
@@ -229,19 +257,24 @@ func (k *Kubernetes) request(ctx context.Context, method, path string, body any,
 	}
 	response, err := k.client.Do(request)
 	if err != nil {
-		return errors.New("Kubernetes API is unavailable")
+		return ErrDependencyUnavailable
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, maxKubernetesResponse+1))
 	if err != nil || len(payload) > maxKubernetesResponse {
-		return errors.New("cannot read Kubernetes response")
+		return ErrDependencyUnavailable
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("Kubernetes API returned HTTP %d", response.StatusCode)
+		if method == http.MethodGet && response.StatusCode == http.StatusNotFound {
+			return errObjectNotFound
+		}
+		// This request uses the MCP server's credential, not the workload
+		// proof. Even HTTP 401/403 indicates a server dependency failure.
+		return ErrDependencyUnavailable
 	}
-	if result != nil && len(payload) > 0 {
-		if err := json.Unmarshal(payload, result); err != nil {
-			return errors.New("Kubernetes API returned invalid JSON")
+	if result != nil {
+		if err := json.Unmarshal(payload, result); err != nil || bytes.Equal(bytes.TrimSpace(payload), []byte("null")) {
+			return ErrDependencyUnavailable
 		}
 	}
 	return nil
