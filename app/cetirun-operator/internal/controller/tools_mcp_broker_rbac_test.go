@@ -14,6 +14,7 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -153,12 +154,40 @@ func TestReconcileToolsMCPBrokerRBACRetainsOwnedGrantWhenRuntimeIsDisabled(t *te
 	}
 }
 
-func TestEnsureToolsMCPBrokerCleanupRBACHandlesUpgradeDeletion(t *testing.T) {
+func TestEnsureToolsMCPBrokerCleanupRBACHandlesNamespaceLifecycle(t *testing.T) {
 	ctx := context.Background()
 	instance := toolsMCPTestAgent()
 	configure := func(reconciler *AgentReconciler) {
 		reconciler.ToolsMCPBrokerNamespace = "cetirun-credentials"
 		reconciler.ToolsMCPBrokerServiceAccount = "cetirun-agent-broker"
+	}
+	for _, name := range []string{"unowned namespace", "previous Agent UID"} {
+		t.Run(name, func(t *testing.T) {
+			namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instanceNamespace(instance.Name)}}
+			if name == "previous Agent UID" {
+				previous := instance.DeepCopy()
+				previous.UID = "previous-agent-uid"
+				namespace.OwnerReferences = toolsMCPBrokerOwner(previous)
+			}
+			reconciler, kube := toolsMCPTestReconciler(t, namespace)
+			configure(reconciler)
+			if err := reconciler.ensureToolsMCPBrokerCleanupRBAC(ctx, instance); err == nil {
+				t.Fatal("cleanup accepted a namespace without current Agent ownership")
+			}
+			current := &corev1.Namespace{}
+			if err := kube.Get(ctx, types.NamespacedName{Name: namespace.Name}, current); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(current.OwnerReferences, namespace.OwnerReferences) || current.ResourceVersion != namespace.ResourceVersion {
+				t.Fatal("cleanup adopted or modified the namespace")
+			}
+			key := types.NamespacedName{Namespace: namespace.Name, Name: toolsMCPBrokerRoleName}
+			for _, object := range []client.Object{&rbacv1.Role{}, &rbacv1.RoleBinding{}} {
+				if err := kube.Get(ctx, key, object); !apierrors.IsNotFound(err) {
+					t.Fatalf("cleanup created %T without namespace ownership: %v", object, err)
+				}
+			}
+		})
 	}
 	t.Run("live owned namespace creates grant", func(t *testing.T) {
 		namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{

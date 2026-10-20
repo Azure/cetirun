@@ -80,6 +80,23 @@ cleanup. These two storage settings do not install or enable an MCP server.
 The existing identity, encryption, authorization, and Istio settings are still
 required while the legacy flow coexists.
 
+Before enabling Operator Broker storage, each existing built-in Agent namespace
+must have an owner reference matching the current Agent name and UID. This
+requirement also applies to Agents without Connections. Automatic migration or
+adoption of older namespaces without owner references is not supported. For
+disposable development/test instances, delete and recreate the Agents while
+Broker storage is still disabled. To retain an instance, an administrator must
+verify its persisted Agent/namespace binding and repair ownership explicitly;
+a matching namespace name alone is not sufficient evidence.
+
+Unowned or conflicting namespaces block reconciliation and deletion cleanup;
+the finalizer remains until ownership is repaired. The Operator reports
+`BrokerStorageAccessFailed` events and logs the expected Agent name and UID.
+New namespaces receive the Agent owner reference at creation. If a built-in
+Agent's namespace is missing, the full reconcile recreates it and establishes
+Broker RBAC before continuing; namespace recovery does not restore lost records
+or other deleted namespace contents.
+
 The extra ClusterRole permissions only read namespaces, Pods, and
 ServiceAccounts and create TokenReviews. Secret permissions are granted in
 individual Agent namespaces, not cluster-wide. Client TLS material is mounted

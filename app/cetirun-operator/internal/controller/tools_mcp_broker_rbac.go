@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,7 +14,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -24,6 +24,10 @@ const (
 	toolsMCPBrokerRoleName        = "cetirun-agent-tools-broker"
 	toolsMCPBrokerRoleBindingName = "cetirun-agent-tools-broker"
 )
+
+// Only absence of the namespace permits the steady-state path to fall through
+// to namespace creation. A missing Role or RoleBinding is not this condition.
+var errToolsMCPBrokerNamespaceMissing = errors.New("Agent namespace is missing")
 
 // ParseToolsMCPBrokerStorageConfig validates the optional external Broker
 // identity that is granted access to individual Agent namespaces. The Broker
@@ -65,11 +69,20 @@ func toolsMCPBrokerOwned(obj metav1.Object, instance *api.Agent) bool {
 func (r *AgentReconciler) toolsMCPBrokerNamespaceOwned(ctx context.Context, instance *api.Agent) error {
 	namespace := &corev1.Namespace{}
 	key := types.NamespacedName{Name: instanceNamespace(instance.Name)}
-	if err := r.Get(ctx, key, namespace); err != nil {
+	if err := r.Get(ctx, key, namespace); apierrors.IsNotFound(err) {
+		return fmt.Errorf("%w: %w", errToolsMCPBrokerNamespaceMissing, err)
+	} else if err != nil {
 		return fmt.Errorf("get Agent namespace: %w", err)
 	}
-	if !namespace.DeletionTimestamp.IsZero() || !toolsMCPBrokerOwned(namespace, instance) {
-		return fmt.Errorf("Agent namespace ownership is invalid")
+	if !namespace.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("Agent namespace %q is terminating", namespace.Name)
+	}
+	return validateToolsMCPBrokerNamespaceOwner(namespace, instance)
+}
+
+func validateToolsMCPBrokerNamespaceOwner(namespace *corev1.Namespace, instance *api.Agent) error {
+	if !toolsMCPBrokerOwned(namespace, instance) {
+		return fmt.Errorf("Agent namespace %q must be owned by Agent %q (UID %q); automatic namespace adoption is not supported; verify ownership before manual repair", namespace.Name, instance.Name, instance.UID)
 	}
 	return nil
 }
@@ -103,8 +116,8 @@ func (r *AgentReconciler) ensureToolsMCPBrokerRBAC(ctx context.Context, instance
 	desiredRole, desiredBinding := r.desiredToolsMCPBrokerRBAC(instance)
 	role := &rbacv1.Role{}
 	roleKey := types.NamespacedName{Namespace: desiredRole.Namespace, Name: desiredRole.Name}
-	if err := r.Get(ctx, roleKey, role); errors.IsNotFound(err) {
-		if err := r.Create(ctx, desiredRole); err != nil && !errors.IsAlreadyExists(err) {
+	if err := r.Get(ctx, roleKey, role); apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, desiredRole); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create Broker Role: %w", err)
 		}
 		if err := r.Get(ctx, roleKey, role); err != nil {
@@ -125,8 +138,8 @@ func (r *AgentReconciler) ensureToolsMCPBrokerRBAC(ctx context.Context, instance
 	}
 	binding := &rbacv1.RoleBinding{}
 	bindingKey := types.NamespacedName{Namespace: desiredBinding.Namespace, Name: desiredBinding.Name}
-	if err := r.Get(ctx, bindingKey, binding); errors.IsNotFound(err) {
-		if err := r.Create(ctx, desiredBinding); err != nil && !errors.IsAlreadyExists(err) {
+	if err := r.Get(ctx, bindingKey, binding); apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, desiredBinding); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create Broker RoleBinding: %w", err)
 		}
 		if err := r.Get(ctx, bindingKey, binding); err != nil {
@@ -167,8 +180,8 @@ func (r *AgentReconciler) reconcileToolsMCPBrokerRBAC(ctx context.Context, insta
 	return r.ensureToolsMCPBrokerRBAC(ctx, instance)
 }
 
-// ensureToolsMCPBrokerCleanupRBAC makes a finalizer upgrade-safe without
-// creating a namespace solely for deletion. A live Agent-owned namespace can
+// ensureToolsMCPBrokerCleanupRBAC establishes cleanup access without creating
+// or adopting a namespace solely for deletion. A live Agent-owned namespace can
 // receive the narrowly scoped grant before the Broker is asked to remove its
 // records. A namespace already terminating is read-only: existing RBAC must be
 // correct, but the finalizer never races namespace garbage collection by
@@ -186,8 +199,8 @@ func (r *AgentReconciler) ensureToolsMCPBrokerCleanupRBAC(ctx context.Context, i
 	} else if err != nil {
 		return fmt.Errorf("get Agent namespace for Broker cleanup: %w", err)
 	}
-	if !toolsMCPBrokerOwned(namespace, instance) {
-		return fmt.Errorf("Agent namespace ownership is invalid")
+	if err := validateToolsMCPBrokerNamespaceOwner(namespace, instance); err != nil {
+		return err
 	}
 	if namespace.DeletionTimestamp.IsZero() {
 		return r.ensureToolsMCPBrokerRBAC(ctx, instance)
