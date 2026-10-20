@@ -49,7 +49,10 @@ router shows why on its page. A changed router reaches the instances' keys
 within about two minutes; it does not change the Policy's Gateway projection.
 See the Gateway chart's
 [Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
-section. A Team's own routers are described under
+section; its
+[Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
+part has Log Analytics queries that show how requests were routed. A Team's own
+routers are described under
 [Smart-routing models](#smart-routing-models).
 
 The create form offers both sources, on by default, and a new OpenClaw or Hermes
