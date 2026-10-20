@@ -3,20 +3,25 @@
 """Tests for the AI Gateway image's guard callback.
 
 LiteLLM is not installed for these tests: the callback only subclasses
-LiteLLM's CustomLogger, which is replaced by a stand-in. The deployments, keys
-and errors below follow what LiteLLM 1.105.1 hands its callbacks: deployments as
-model_list entries, the calling key as UserAPIKeyAuth in the request's metadata,
-and RouterRateLimitError's message.
+LiteLLM's CustomLogger, recognizes its UserAPIKeyAuth, logs to its proxy logger
+and raises FastAPI's HTTPException, which are replaced by stand-ins. The
+deployments, keys and errors below follow what LiteLLM 1.105.1 hands its
+callbacks: deployments as model_list entries, the calling key as
+UserAPIKeyAuth in the request's metadata, and RouterRateLimitError's message.
 """
 
 import asyncio
 import importlib.util
+import logging
 import pathlib
 import sys
 import types
 import unittest
 
 PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "app/cetirun-ai-gateway/cetirun_ai_gateway"
+# Stands in for LiteLLM's proxy logger.
+LOGGER = "cetirun-ai-gateway-guard-test"
+PROXY_SERVER = "litellm.proxy.proxy_server"
 
 
 class CustomLogger:
@@ -24,13 +29,40 @@ class CustomLogger:
         pass
 
 
+class Key:
+    """Stands in for LiteLLM's UserAPIKeyAuth, the key object the proxy authenticated."""
+
+    def __init__(self, models, team_id=None, key_alias=None, token=None):
+        self.models = models
+        self.team_id = team_id
+        self.key_alias = key_alias
+        self.token = token
+
+
+class HTTPException(Exception):
+    """Shaped like FastAPI's: a status code and a detail."""
+
+    def __init__(self, status_code, detail=None, headers=None):
+        super().__init__(status_code, detail)
+        self.status_code = status_code
+        self.detail = detail
+        self.headers = headers
+
+
 def load_guard():
     stubs = {
+        "fastapi": types.ModuleType("fastapi"),
         "litellm": types.ModuleType("litellm"),
+        "litellm._logging": types.ModuleType("litellm._logging"),
         "litellm.integrations": types.ModuleType("litellm.integrations"),
         "litellm.integrations.custom_logger": types.ModuleType("litellm.integrations.custom_logger"),
+        "litellm.proxy": types.ModuleType("litellm.proxy"),
+        "litellm.proxy._types": types.ModuleType("litellm.proxy._types"),
     }
+    stubs["fastapi"].HTTPException = HTTPException
+    stubs["litellm._logging"].verbose_proxy_logger = logging.getLogger(LOGGER)
     stubs["litellm.integrations.custom_logger"].CustomLogger = CustomLogger
+    stubs["litellm.proxy._types"].UserAPIKeyAuth = Key
     saved = {name: sys.modules.get(name) for name in stubs}
     sys.modules.update(stubs)
     try:
@@ -46,11 +78,18 @@ def load_guard():
                 sys.modules[name] = previous
 
 
-class Key:
-    """Stands in for LiteLLM's UserAPIKeyAuth: only models is read."""
+def live_router(groups, calls=None):
+    """The proxy module with a live router that lists these access groups for any model."""
 
-    def __init__(self, models):
-        self.models = models
+    class Router:
+        def get_model_access_groups(self, model_name=None, model_access_group=None, team_id=None):
+            if calls is not None:
+                calls.append((model_name, team_id))
+            return {group: [model_name] for group in groups}
+
+    proxy = types.ModuleType(PROXY_SERVER)
+    proxy.llm_router = Router()
+    return proxy
 
 
 def deployment(identifier, *groups):
@@ -61,12 +100,31 @@ def deployment(identifier, *groups):
     }
 
 
+def chart_model(name, suffix):
+    """A model from the Gateway chart's models with operatorIntegration: its own ID and access group."""
+    return {
+        "model_name": name,
+        "litellm_params": {"model": f"openai/{name}", "api_base": "http://models.example.com"},
+        "model_info": {"id": f"cetirun-shared-{suffix}", "access_groups": [f"cetirun-model-{suffix}"]},
+    }
+
+
 ALICE = deployment("cetirun-copilot-alice-gpt-5", "cetirun-copilot-alice")
 BOB = deployment("cetirun-copilot-bob-gpt-5", "cetirun-copilot-bob")
 SHARED = deployment("cetirun-shared-1234", "cetirun-shared", "cetirun-model-1234")
 UNGROUPED = {"model_name": "gpt-5", "litellm_params": {"model": "openai/gpt-5"}, "model_info": {"id": "plain"}}
 NO_INFO = {"model_name": "gpt-5", "litellm_params": {"model": "openai/gpt-5"}}
 ALL = [ALICE, BOB, SHARED, UNGROUPED, NO_INFO]
+
+# A router's tier models: small in the key's groups, large not. A deployment
+# added in the console under the same name belongs to no group.
+SMALL = chart_model("small", "aaaa")
+LARGE = chart_model("large", "cccc")
+LARGE_CONSOLE = {"model_name": "large", "litellm_params": {"model": "openai/large"}, "model_info": {"id": "console"}}
+# The key of an Agent granted a router and its small tier, as the operator creates it.
+ROUTER_KEY = Key(["cetirun-model-aaaa", "cetirun-router-0123456789abcdef"], team_id="cetirun-team-synthetic",
+                 key_alias="cetirun-synthetic-agent-0000", token="synthetic-hashed-token")
+REFUSAL = "This key may not use the model large."
 
 COOLDOWN_MESSAGE = (
     "No deployments available for selected model, Try again in 5.0 seconds. All deployments for selected "
@@ -97,11 +155,26 @@ class GuardTest(unittest.TestCase):
     def setUp(self):
         self.module = load_guard()
         self.guard = self.module.Guard()
+        # No live router unless a test provides one.
+        previous = sys.modules.pop(PROXY_SERVER, None)
+        self.addCleanup(self.restore_proxy_server, previous)
 
-    def filtered(self, request_kwargs, deployments=ALL):
+    @staticmethod
+    def restore_proxy_server(previous):
+        sys.modules.pop(PROXY_SERVER, None)
+        if previous is not None:
+            sys.modules[PROXY_SERVER] = previous
+
+    def filtered(self, request_kwargs, deployments=ALL, model="copilot/gpt-5"):
         return asyncio.run(self.guard.async_filter_deployments(
-            model="copilot/gpt-5", healthy_deployments=list(deployments), messages=None,
+            model=model, healthy_deployments=list(deployments), messages=None,
             request_kwargs=request_kwargs))
+
+    def refused(self, request_kwargs, deployments=(LARGE,), model="large"):
+        """The error the filter raised, which must be the refusal."""
+        with self.assertRaises(self.module.ModelRefused) as raised:
+            self.filtered(request_kwargs, deployments, model)
+        return raised.exception
 
     def ids(self, deployments):
         return [(d.get("model_info") or {}).get("id") for d in deployments]
@@ -134,10 +207,11 @@ class GuardTest(unittest.TestCase):
     # ----- Copilot routes -----
 
     def test_an_agent_key_reaches_only_its_own_copilot_route(self):
+        # The key the operator issued also reaches nothing outside its groups.
         for bucket in ("metadata", "litellm_metadata"):
             with self.subTest(bucket=bucket):
                 kept = self.filtered({bucket: {"user_api_key_auth": Key(["cetirun-shared", "cetirun-copilot-alice"])}})
-                self.assertEqual(self.ids(kept), ["cetirun-copilot-alice-gpt-5", "cetirun-shared-1234", "plain", None])
+                self.assertEqual(self.ids(kept), ["cetirun-copilot-alice-gpt-5", "cetirun-shared-1234"])
 
     def test_keys_granted_every_model_reach_no_copilot_route(self):
         # The master key has no models list: LiteLLM reads an empty one as
@@ -148,12 +222,16 @@ class GuardTest(unittest.TestCase):
                 self.assertEqual(self.ids(kept), ["cetirun-shared-1234", "plain", None])
 
     def test_a_group_name_must_match_exactly(self):
-        for models in (["cetirun-copilot-"], ["cetirun-copilot-alic"], ["CETIRUN-COPILOT-ALICE"], ["cetirun-copilot-*"]):
-            with self.subTest(models=models):
-                kept = self.filtered({"metadata": {"user_api_key_auth": Key(models)}})
-                self.assertEqual(self.ids(kept), ["cetirun-shared-1234", "plain", None])
+        for name in ("cetirun-copilot-", "cetirun-copilot-alic", "CETIRUN-COPILOT-ALICE", "cetirun-copilot-*"):
+            with self.subTest(name=name):
+                kept = self.ids(self.filtered({"metadata": {"user_api_key_auth": Key([name, "cetirun-shared"])}}))
+                self.assertNotIn("cetirun-copilot-alice-gpt-5", kept)
+                self.assertNotIn("cetirun-copilot-bob-gpt-5", kept)
+                self.assertIn("cetirun-shared-1234", kept)
 
     def test_a_key_given_as_a_dict_is_read_too(self):
+        # For the Copilot routes only: a dict is never taken for a key the
+        # operator issued.
         kept = self.filtered({"litellm_metadata": {"user_api_key_auth": {"models": ["cetirun-copilot-bob"]}}})
         self.assertEqual(self.ids(kept), ["cetirun-copilot-bob-gpt-5", "cetirun-shared-1234", "plain", None])
 
@@ -162,7 +240,7 @@ class GuardTest(unittest.TestCase):
             with self.subTest(request_kwargs=request_kwargs):
                 self.assertEqual(self.ids(self.filtered(request_kwargs)), ["cetirun-shared-1234", "plain", None])
 
-    def test_other_deployments_are_never_dropped(self):
+    def test_keys_granted_every_model_keep_every_other_deployment(self):
         kept = self.filtered({"metadata": {"user_api_key_auth": Key([])}}, [SHARED, UNGROUPED, NO_INFO])
         self.assertEqual(kept, [SHARED, UNGROUPED, NO_INFO])
 
@@ -171,6 +249,122 @@ class GuardTest(unittest.TestCase):
         # calling key is the same one.
         request = {"metadata": {"user_api_key_auth": Key(["auto-coding"])}}
         self.assertEqual(self.ids(self.filtered(request, [ALICE, SHARED])), ["cetirun-shared-1234"])
+
+    def test_a_merged_name_gives_a_key_holding_only_its_copilot_group_its_own_route(self):
+        # A shared deployment and the Agents' Copilot routes under one name.
+        request = {"metadata": {"user_api_key_auth": Key(["cetirun-copilot-alice"])}}
+        self.assertEqual(self.ids(self.filtered(request, [ALICE, BOB, SHARED])), ["cetirun-copilot-alice-gpt-5"])
+
+    # ----- keys the operator issued, through routers -----
+
+    def test_an_operator_key_reaches_only_the_deployments_in_its_groups(self):
+        request = {"metadata": {"user_api_key_auth": Key(["cetirun-model-cccc"])}}
+        self.assertEqual(self.filtered(request, [LARGE, LARGE_CONSOLE], "large"), [LARGE])
+
+    def test_a_tier_the_key_may_not_use_is_refused_with_403(self):
+        # LiteLLM checked the key against the router, then let the tier the
+        # router picked through: the key holds none of its groups.
+        for bucket in ("metadata", "litellm_metadata"):
+            with self.subTest(bucket=bucket):
+                error = self.refused({bucket: {"user_api_key_auth": ROUTER_KEY}}, [LARGE, LARGE_CONSOLE])
+                self.assertIsInstance(error, HTTPException)
+                self.assertEqual((error.status_code, error.detail), (403, REFUSAL))
+                # The proxy answers 429 for these.
+                self.assertNotIn("No deployments available", error.detail)
+                self.assertNotIn("No healthy deployment available", error.detail)
+
+    def test_the_tiers_the_key_holds_are_served(self):
+        request = {"metadata": {"user_api_key_auth": ROUTER_KEY}}
+        self.assertEqual(self.filtered(request, [SMALL], "small"), [SMALL])
+
+    def test_the_live_router_lists_every_group_of_the_model(self):
+        calls = []
+        sys.modules[PROXY_SERVER] = live_router(["cetirun-model-cccc"], calls)
+        self.assertEqual(self.refused({"metadata": {"user_api_key_auth": ROUTER_KEY}}).detail, REFUSAL)
+        self.assertEqual(calls, [("large", "cetirun-team-synthetic")])
+
+    def test_a_tier_the_key_holds_whose_deployments_are_unavailable_is_left_to_litellm(self):
+        # The key may use large, but its deployment in the key's group was
+        # removed for cooldown before the callback ran; LiteLLM reports that.
+        key = Key(["cetirun-model-cccc"], team_id="cetirun-team-synthetic")
+        sys.modules[PROXY_SERVER] = live_router(["cetirun-model-cccc"])
+        self.assertEqual(self.filtered({"metadata": {"user_api_key_auth": key}}, [LARGE_CONSOLE], "large"), [])
+        self.assertEqual(self.filtered({"metadata": {"user_api_key_auth": key}}, [], "large"), [])
+
+    def test_without_the_live_router_the_deployments_given_decide(self):
+        class FailingRouter:
+            def get_model_access_groups(self, **kwargs):
+                raise RuntimeError("synthetic")
+
+        key = Key(["cetirun-model-cccc"])
+        for router in (None, FailingRouter()):
+            with self.subTest(router=router):
+                proxy = types.ModuleType(PROXY_SERVER)
+                proxy.llm_router = router
+                sys.modules[PROXY_SERVER] = proxy
+                self.refused({"metadata": {"user_api_key_auth": key}}, [LARGE_CONSOLE])
+
+    def test_the_routers_classifier_call_is_exempt(self):
+        # The router calls its classifier model on the key's behalf, and the
+        # key need not hold it. LiteLLM marks the call in either bucket; the
+        # proxy drops the field from the metadata a client sends.
+        for key_bucket, origin_bucket in (("metadata", "metadata"), ("litellm_metadata", "litellm_metadata"),
+                                          ("metadata", "litellm_metadata")):
+            with self.subTest(key_bucket=key_bucket, origin_bucket=origin_bucket):
+                request = {key_bucket: {"user_api_key_auth": ROUTER_KEY}}
+                request.setdefault(origin_bucket, {})["internal_call_origin"] = "autorouter_classifier"
+                self.assertEqual(self.filtered(request, [LARGE], "large"), [LARGE])
+
+    def test_no_other_call_origin_is_exempt(self):
+        for origin in ("autorouter_classifier ", "AUTOROUTER_CLASSIFIER", "health_check", None,
+                       ["autorouter_classifier"]):
+            with self.subTest(origin=origin):
+                self.refused({"metadata": {"user_api_key_auth": ROUTER_KEY, "internal_call_origin": origin}})
+
+    def test_the_no_access_placeholder_is_an_operator_key(self):
+        self.refused({"metadata": {"user_api_key_auth": Key(["no-default-models"])}})
+
+    def test_other_keys_are_left_to_litellm(self):
+        # The master key (no models), keys granted every model, "*", models by
+        # name, or anything besides the operator's groups.
+        for models in ([], None, ["*"], ["all-proxy-models"], ["large"], ["cetirun-model-aaaa", "large"],
+                       ["CETIRUN-MODEL-AAAA"], ["cetirun-model-aaaa", "*"]):
+            with self.subTest(models=models):
+                request = {"metadata": {"user_api_key_auth": Key(models)}}
+                self.assertEqual(self.filtered(request, [LARGE, LARGE_CONSOLE], "large"), [LARGE, LARGE_CONSOLE])
+
+    def test_only_the_authenticated_key_object_counts(self):
+        for caller in ({"models": ["cetirun-model-aaaa"]}, types.SimpleNamespace(models=["cetirun-model-aaaa"])):
+            with self.subTest(caller=caller):
+                request = {"metadata": {"user_api_key_auth": caller}}
+                self.assertEqual(self.filtered(request, [LARGE, LARGE_CONSOLE], "large"), [LARGE, LARGE_CONSOLE])
+
+    def test_requests_without_a_key_are_left_to_litellm(self):
+        for request_kwargs in (None, {}, {"metadata": {}}, {"metadata": {"user_api_key_auth": None}}):
+            with self.subTest(request_kwargs=request_kwargs):
+                self.assertEqual(self.filtered(request_kwargs, [LARGE, LARGE_CONSOLE], "large"), [LARGE, LARGE_CONSOLE])
+
+    def test_when_the_copilot_rule_leaves_nothing_litellm_answers_as_before(self):
+        # Only another Agent's route, or nothing at all: LiteLLM's own error.
+        request = {"metadata": {"user_api_key_auth": Key(["cetirun-model-aaaa"])}}
+        self.assertEqual(self.filtered(request, [BOB]), [])
+        self.assertEqual(self.filtered(request, []), [])
+
+    def test_a_refusal_is_logged_once_without_key_material(self):
+        error = self.module.ModelRefused("large")
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            self.assertIsNone(asyncio.run(self.guard.async_post_call_failure_hook({}, error, ROUTER_KEY)))
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("large", logs.output[0])
+        self.assertIn("cetirun-synthetic-agent-0000", logs.output[0])
+        self.assertNotIn("synthetic-hashed-token", logs.output[0])
+        # The caller gets the error as it was raised.
+        self.assertEqual((error.status_code, error.detail), (403, REFUSAL))
+
+    def test_other_errors_are_not_logged(self):
+        for error in (RouterRateLimitError(COOLDOWN_MESSAGE), HTTPException(403, REFUSAL), ProviderError("x")):
+            with self.subTest(error=error), self.assertNoLogs(LOGGER, level="WARNING"):
+                asyncio.run(self.guard.async_post_call_failure_hook({}, error, ROUTER_KEY))
 
     # ----- errors -----
 

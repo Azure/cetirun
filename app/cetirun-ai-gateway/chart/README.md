@@ -932,8 +932,24 @@ the console cannot remove it. It:
   A key granted every model, such as the master key, a key holding `*` or a
   `copilot/` model name, and a request whose key LiteLLM does not pass on,
   reach none of them; asking for a `copilot/` model, such a key gets LiteLLM's
-  "No deployments available" 429. Every other deployment is left as it is. An
-  auto router's choice of tier is held to the same rule;
+  "No deployments available" 429. An auto router's choice of tier is held to
+  the same rule;
+- holds a key the CetiRun operator issued to the deployments in its access
+  groups, also where LiteLLM does not: LiteLLM checks a key against the model
+  a request names, and when that is an auto router, it does not check the
+  model the router picks. The operator grants a router only to Agents that may
+  use every model it sends requests to; the guard enforces that on each
+  request, also before the operator withdraws a grant after a configuration
+  change. A request the router sends to a model the key may not use gets a
+  403, "This key may not use the model <name>.", with no retry, fallback or
+  cooldown, and the Gateway logs a warning with the model and the key's alias.
+  When the key may use the model but none of its deployments is available,
+  LiteLLM's own error applies. The call a router makes to its classifier model
+  (`classifier_type: llm` and the other classifiers that ask a model) is made
+  on the key's behalf and is not held to the key's groups. The guard
+  recognizes the operator's keys by their model list: only `cetirun-` access
+  groups, or `no-default-models`. The master key, and keys granted models by
+  name, `*` or every model, are left to LiteLLM's own checks;
 - keeps error messages free of LiteLLM's internal deployment list: error
   messages returned to callers no longer include LiteLLM's internal list of
   deployments in cooldown. The response keeps its status, 429, the "Try again
@@ -943,7 +959,7 @@ the console cannot remove it. It:
 
 With `operatorIntegration` off, the guard's request fields and error messages
 apply all the same; a standalone Gateway has no `cetirun-copilot-` groups for
-it to separate.
+it to separate, and no keys the operator issued.
 
 Measured on LiteLLM 1.105.1 with two replicas and two Copilot routes added
 through the management API under one `copilot/` name: each of two Agent keys
@@ -951,6 +967,20 @@ reached only its own route, 6 of 6; a key granted every proxy model, a key
 granted the `copilot/` name and the master key got the 429; and the 429 for a
 model with every deployment in cooldown carried no deployment list on the
 Chat Completions, Responses and Anthropic Messages APIs.
+
+Measured on LiteLLM 1.105.1 with one replica, mock models each in an access
+group of its own, and routers over them configured as the chart renders them:
+a key granted a router and the models of its simple and medium tiers was
+served on those tiers and got the 403 for its complex tier, on the Chat
+Completions API, streamed or not, and on the Responses and Anthropic Messages
+APIs. That model received no call, and a key granted it was served by it right
+after. A router registered through the management API, as the operator
+registers a Team's routers, behaved the same, and its GitHub Copilot tier
+reached only the caller's own route, 6 of 6. A router with `classifier_type:
+llm` called its classifier model for a key not granted it, then served the
+tiers the key holds. A key granted the router by name and the master key
+reached every tier. The request log records a refused request with status
+`failure` and error code 403: one line, or two for a streamed request.
 
 ## Credentials
 
