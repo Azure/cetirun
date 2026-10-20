@@ -30,9 +30,9 @@ import (
 // Team model routers ("smart routing"). Administrators define them on a Team;
 // the operator registers each one in the AI Gateway as a LiteLLM complexity
 // router under an internal model name, and grants it to the Team's Agents
-// whose own entitlement covers every model the router uses. The Gateway never
-// re-checks a router's tier models against the calling key, so the grant is
-// the only place a router could widen an Agent's models; it is checked here.
+// whose own entitlement covers every model the router uses, so that a router
+// never widens an Agent's models. Routers configured in the Gateway itself
+// follow the same rule (ai_gateway_shared_routers.go).
 const (
 	// aiGatewayRouterPrefix prefixes the internal model name, access group
 	// and deployment ID of every Team model router.
@@ -83,6 +83,58 @@ type modelRouterPlan struct {
 // modelRouterTierNames are the CRD's tier names, in tier order.
 var modelRouterTierNames = []string{"simple", "medium", "complex", "reasoning"}
 
+// The wording of router refusals, for a Team's routers and for the routers
+// configured in the Gateway (ai_gateway_shared_routers.go) alike.
+const modelRouterNotAllowed = "the AgentPolicy does not allow this router"
+
+// modelRouterMisconfigured refuses a router whose configuration has the given
+// problems.
+func modelRouterMisconfigured(problems ...string) string {
+	return "the router is misconfigured: " + strings.Join(problems, "; ")
+}
+
+// routerModelNames says which model a router names for a use, to begin a
+// problem with it.
+func routerModelNames(model aigateway.RouterModel) string {
+	switch model.Use {
+	case aigateway.RouterTier:
+		return fmt.Sprintf("tier %s names %s", strings.ToLower(model.Tier), model.Name)
+	case aigateway.RouterDefault:
+		return fmt.Sprintf("the default model is %s", model.Name)
+	case aigateway.RouterCompactor:
+		return fmt.Sprintf("context compaction uses %s", model.Name)
+	}
+	return fmt.Sprintf("the classifier is %s", model.Name)
+}
+
+// routerModelNotShared is the problem of a router model that is not a shared
+// model of the Gateway.
+func routerModelNotShared(model aigateway.RouterModel) string {
+	if model.Use == aigateway.RouterClassifier {
+		return fmt.Sprintf("the classifier %s is not a shared model of the AI Gateway", model.Name)
+	}
+	return routerModelNames(model) + ", which is not a shared model of the AI Gateway"
+}
+
+// routerModelIsARouter is the problem of a router model that is a router
+// itself.
+func routerModelIsARouter(model aigateway.RouterModel) string {
+	if model.Use == aigateway.RouterClassifier {
+		return fmt.Sprintf("the classifier %s is a router, not a model", model.Name)
+	}
+	return routerModelNames(model) + ", which is a router, not a model"
+}
+
+// routerModelNotAllowed refuses a router that uses a model the Agent's
+// AgentPolicy does not allow.
+func routerModelNotAllowed(model aigateway.RouterModel) string {
+	uses := routerModelNames(model)
+	if model.Use == aigateway.RouterTier {
+		uses = fmt.Sprintf("tier %s uses %s", strings.ToLower(model.Tier), model.Name)
+	}
+	return uses + ", which the AgentPolicy does not allow"
+}
+
 // planModelRouters checks a Team's routers against the shared models of a
 // live catalog and builds their registrations.
 func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRouterPlan {
@@ -107,7 +159,7 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRou
 					plan.copilot = append(plan.copilot, model)
 				}
 			case !sharedNames[model]:
-				problems = append(problems, fmt.Sprintf("tier %s names %s, which is not a shared model of the AI Gateway", tier, model))
+				problems = append(problems, routerModelNotShared(aigateway.RouterModel{Use: aigateway.RouterTier, Tier: tier, Name: model}))
 			case !slices.Contains(plan.shared, model):
 				plan.shared = append(plan.shared, model)
 			}
@@ -118,7 +170,7 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRou
 		}
 		if classifier == api.ModelRouterClassifierLLM {
 			if !sharedNames[router.Classifier.Model] {
-				problems = append(problems, fmt.Sprintf("the classifier %s is not a shared model of the AI Gateway", router.Classifier.Model))
+				problems = append(problems, routerModelNotShared(aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: router.Classifier.Model}))
 			} else if !slices.Contains(plan.shared, router.Classifier.Model) {
 				plan.shared = append(plan.shared, router.Classifier.Model)
 			}
@@ -466,10 +518,10 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 // modelRouterRefusal is why the Agent may not use the router, or "".
 func (r *AgentReconciler) modelRouterRefusal(instance *api.Agent, plan modelRouterPlan, policy *api.AgentPolicy, copilot bool, registeredCopilot map[string]bool) string {
 	if plan.problem != "" {
-		return "the router is misconfigured: " + strings.TrimPrefix(plan.problem, "router "+plan.router.Name+": ")
+		return modelRouterMisconfigured(strings.TrimPrefix(plan.problem, "router "+plan.router.Name+": "))
 	}
 	if policy != nil && !slices.Contains(policy.Spec.ModelAccess.SharedModels.Allowed, plan.router.Name) {
-		return "the AgentPolicy does not allow this router"
+		return modelRouterNotAllowed
 	}
 	if len(plan.shared) > 0 && !instance.Spec.SharedModelsEnabled() {
 		return "the router uses shared models, which this Agent has turned off"
@@ -487,7 +539,7 @@ func (r *AgentReconciler) modelRouterRefusal(instance *api.Agent, plan modelRout
 			continue
 		}
 		if policy != nil && !slices.Contains(policy.Spec.ModelAccess.SharedModels.Allowed, model) {
-			return fmt.Sprintf("tier %s uses %s, which the AgentPolicy does not allow", tier, model)
+			return routerModelNotAllowed(aigateway.RouterModel{Use: aigateway.RouterTier, Tier: tier, Name: model})
 		}
 	}
 	if present, known := r.aiGatewayCatalog.has(plan.request.ID); !known || !present {
@@ -558,8 +610,10 @@ func (r *AgentReconciler) aiGatewayPolicySharedModels(ctx context.Context, model
 	}), nil
 }
 
-// aiGatewayRouterEntries are the Agent's granted routers as configured
-// models: the internal name the Agent sends and the router's own name to show.
+// aiGatewayRouterEntries are the Agent's granted Team routers as configured
+// models: the internal name the Agent sends and the router's own name to
+// show. A granted router configured in the Gateway is a shared model, which
+// the Agent is configured with as such.
 func aiGatewayRouterEntries(instance *api.Agent) []aiGatewayModelEntry {
 	status := instance.Status.AIGateway
 	if status == nil {
@@ -567,7 +621,7 @@ func aiGatewayRouterEntries(instance *api.Agent) []aiGatewayModelEntry {
 	}
 	var entries []aiGatewayModelEntry
 	for _, router := range status.ModelRouters {
-		if router.Granted && router.Model != "" {
+		if router.Granted && strings.HasPrefix(router.Model, aiGatewayRouterPrefix) {
 			entries = append(entries, aiGatewayModelEntry{
 				ID: router.Model, Name: router.Name, ContextWindow: router.ContextWindow, MaxTokens: router.MaxTokens,
 			})
@@ -617,6 +671,7 @@ func (r *AgentReconciler) refreshAIGatewayRouterGrant(ctx context.Context, clien
 		return nil
 	}
 	groups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, grant.team, grant.policy, grant.copilot)
+	routers = withSharedRouterStatuses(routers, grant.sharedRouters)
 	if slices.Equal(groups, grant.routerGroups) {
 		status.ModelRouters = routers
 		return nil

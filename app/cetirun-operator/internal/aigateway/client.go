@@ -325,6 +325,9 @@ type Deployment struct {
 	// /model/info fills unknown prices with zero, so such a model counts as
 	// unpriced here.
 	Priced bool
+	// Router is set for a LiteLLM auto router: the models it sends requests
+	// to, as far as its configuration shows them.
+	Router *Router
 }
 
 // ListModels returns every model deployment the Gateway serves.
@@ -362,6 +365,7 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 			FromDatabase: info.DBModel != nil && *info.DBModel, DatabaseSourceKnown: info.DBModel != nil,
 			MaxInputTokens: tokens(info.MaxInputTokens), MaxOutputTokens: tokens(info.MaxOutputTokens),
 			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
+			Router: parseRouter(item.LiteLLMParams),
 		})
 	}
 	return deployments, nil

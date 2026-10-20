@@ -156,6 +156,23 @@ func TestAIGatewayResponseNamesRoutersByTheirOwnNames(t *testing.T) {
 	}
 }
 
+// A router configured in the Gateway is granted under its own name, which is
+// also the model the Agent sends; a refused one keeps its reason.
+func TestAIGatewayResponseReportsTheGatewaysRouters(t *testing.T) {
+	agent := &cetirunv1alpha1.Agent{Status: cetirunv1alpha1.AgentStatus{AIGateway: &cetirunv1alpha1.AIGatewayStatus{
+		Routed: true, Models: []string{"auto-shared", "small-model"}, DefaultModel: "auto-shared",
+		ModelRouters: []cetirunv1alpha1.AIGatewayModelRouterStatus{
+			{Name: "auto-shared", Model: "auto-shared", Granted: true},
+			{Name: "auto-wide", Reason: "tier medium uses admin-wide, which the AgentPolicy does not allow"},
+		},
+	}}}
+	resp := aiGatewayResponse(agent)
+	if !slices.Equal(resp.Models, []string{"auto-shared", "small-model"}) || resp.DefaultModel != "auto-shared" || len(resp.ModelRouters) != 2 ||
+		!resp.ModelRouters[0].Granted || resp.ModelRouters[1].Granted || !strings.Contains(resp.ModelRouters[1].Reason, "does not allow") {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
 func TestCreationOptionsOfferThePolicysModelRouters(t *testing.T) {
 	team, policy := creationPolicy()
 	team.Spec.ModelRouters = []cetirunv1alpha1.TeamModelRouter{{Name: "auto"}, {Name: "auto-unlisted"}}

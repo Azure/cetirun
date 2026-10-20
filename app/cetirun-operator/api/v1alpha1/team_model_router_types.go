@@ -124,14 +124,17 @@ type TeamModelRouterStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
-// AIGatewayModelRouterStatus reports one smart-routing model of the Agent's
-// Team for this Agent: whether the Agent's key was granted it, and if not why.
+// AIGatewayModelRouterStatus reports one smart-routing model for the Agent, a
+// router of its Team or one configured in the Gateway: whether the Agent's key
+// was granted it, and if not why. A router is granted only when the Agent may
+// use every model it sends requests to.
 type AIGatewayModelRouterStatus struct {
 	// Name is the router's name, the model name the owner chooses.
 	Name string `json:"name"`
 
 	// Model is the Gateway model name the Agent sends requests for the
-	// router to. Set only when the router is granted.
+	// router to: a Team router's internal name, or the name of a router
+	// configured in the Gateway. Set only when the router is granted.
 	// +optional
 	Model string `json:"model,omitempty"`
 
@@ -142,8 +145,10 @@ type AIGatewayModelRouterStatus struct {
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
-	// ContextWindow and MaxTokens are the smallest limits among the router's
-	// tier models that the Gateway reports, which the Agent is configured with.
+	// ContextWindow and MaxTokens are, for a Team router, the smallest limits
+	// among its tier models that the Gateway reports, which the Agent is
+	// configured with. A router configured in the Gateway has the limits the
+	// Gateway reports for it.
 	// +optional
 	ContextWindow int64 `json:"contextWindow,omitempty"`
 	// +optional

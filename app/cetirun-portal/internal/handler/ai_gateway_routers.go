@@ -9,9 +9,10 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
-// AIGatewayModelRouterResponse is one smart-routing model of the Agent's Team
-// for the owner: its name, whether the Agent may use it and, if not, why. The
-// router's configuration stays with administrators.
+// AIGatewayModelRouterResponse is one smart-routing model of the Agent, its
+// Team's or one configured in the Gateway, for the owner: its name, whether
+// the Agent may use it and, if not, why. The router's configuration stays
+// with administrators.
 type AIGatewayModelRouterResponse struct {
 	Name    string `json:"name"`
 	Granted bool   `json:"granted"`

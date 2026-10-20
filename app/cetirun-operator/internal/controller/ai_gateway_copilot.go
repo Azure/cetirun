@@ -542,7 +542,8 @@ const aiGatewayMaxModels = 256
 
 // aiGatewayModelEntries lists the models the Agent is configured with and its
 // default: the shared models when the owner kept them, from the Gateway
-// catalog, then the Agent's registered Copilot models. The default is the
+// catalog, but for a router configured in the Gateway that the Agent may not
+// use, then the Agent's registered Copilot models. The default is the
 // Agent's own choice when available, then the deployment default, then the
 // first shared model, then the first Copilot model. An Agent without models
 // gets a placeholder its configuration requires; the Portal explains it.
@@ -564,6 +565,10 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		models, known := r.aiGatewayCatalog.sharedForGroups(groups)
 		if !sandboxRequested(instance, nil) {
 			models, known = r.aiGatewayCatalog.shared()
+			// The key of an Agent without a policy reaches every shared
+			// model but a router it may not use, which is left out here too.
+			refused := r.aiGatewaySharedRouterGrant(instance, nil).refused
+			models = slices.DeleteFunc(models, func(model aiGatewayCatalogModel) bool { return refused[model.Name] })
 		}
 		if known {
 			for _, model := range models {

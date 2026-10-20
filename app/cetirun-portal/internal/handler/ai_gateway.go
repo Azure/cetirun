@@ -37,9 +37,10 @@ type AIGatewayResponse struct {
 	Models       []string                  `json:"models"`
 	DefaultModel string                    `json:"defaultModel,omitempty"`
 	Copilot      *AIGatewayCopilotResponse `json:"copilot,omitempty"`
-	// ModelRouters are the Team's smart-routing models for this Agent, by
-	// name: whether the Agent may use each, and why not. Models and
-	// DefaultModel name granted routers by these names too.
+	// ModelRouters are the Agent's smart-routing models, its Team's and, with
+	// a policy, the Gateway's own routers the policy lists, by name: whether
+	// the Agent may use each, and why not. Models and DefaultModel name
+	// granted routers by these names too.
 	ModelRouters []AIGatewayModelRouterResponse `json:"modelRouters,omitempty"`
 }
 

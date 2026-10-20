@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -66,6 +67,13 @@ type aiGatewayCatalog struct {
 	// managed access groups. It changes when a same-name backend is replaced,
 	// even if the display-only Portal catalog is unchanged.
 	fingerprint string
+	// routers are the shared models that are LiteLLM auto routers, by name,
+	// and routerFingerprint identifies what they send requests to. It is
+	// compared like the shared models, so a changed router queues the Agents
+	// that use shared models, but it is kept out of fingerprint, and so out
+	// of every AgentPolicy's Gateway revision (ai_gateway_shared_routers.go).
+	routers           map[string]aigateway.Router
+	routerFingerprint string
 	// allowsUnpriced is the Gateway's setting from the last listing. The
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
@@ -93,6 +101,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	groupMembers := map[string]int{}
 	idMembers := map[string]int{}
 	priced := map[string]bool{}
+	// LiteLLM sends every request for a name with a router deployment through
+	// that router, whatever the name's other deployments.
+	routers := map[string]aigateway.Router{}
 	for _, deployment := range deployments {
 		if deployment.ID != "" {
 			idMembers[deployment.ID]++
@@ -102,6 +113,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		}
 		for _, group := range managedModelGroups(deployment.AccessGroups) {
 			groupMembers[group]++
+		}
+		if deployment.Router != nil {
+			routers[deployment.ModelName] = mergeRouters(routers[deployment.ModelName], *deployment.Router)
 		}
 	}
 	byName := map[string]aiGatewayCatalogModel{}
@@ -151,11 +165,20 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		slices.Sort(groups)
 		modelGroups[name] = slices.Compact(groups)
 	}
+	// Only shared routers are granted by the shared-router rule; the
+	// operator's own Team routers are not shared models.
+	maps.DeleteFunc(routers, func(name string, _ aigateway.Router) bool {
+		_, isShared := byName[name]
+		return !isShared
+	})
 	fingerprint := aiGatewayCatalogFingerprint(deployments, modelGroups)
+	routerFingerprint := aiGatewayRouterFingerprint(routers)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared) || c.fingerprint != fingerprint
+	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared) || c.fingerprint != fingerprint ||
+		c.routerFingerprint != routerFingerprint
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
+	c.routers, c.routerFingerprint = routers, routerFingerprint
 	c.allowsUnpriced = !blockUnpriced
 	return changed, skipped, unpriced
 }
