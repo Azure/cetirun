@@ -41,6 +41,7 @@ export function PolicyListPage() {
   const { data: policies, isLoading, error } = useQuery<AgentPolicyDTO[], Error>({
     queryKey: ["admin", "policies"],
     queryFn: listPolicies,
+    refetchInterval: 30_000,
   });
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -89,8 +90,8 @@ export function PolicyListPage() {
                 <TableCell>{policy.skills?.allowed?.length ?? 0}</TableCell>
                 <TableCell>{modelAccessLabel(policy)}</TableCell>
                 <TableCell>
-                  <Button size="small" appearance="subtle" icon={<Edit20Regular />} aria-label={`Edit ${policy.name}`} onClick={() => navigate(`/admin/policies/${policy.name}/edit`)} />
-                  <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={`Delete ${policy.name}`} onClick={() => { setDeleteError(null); setPendingDelete(policy.name); }} />
+                  <Button size="small" appearance="subtle" icon={<Edit20Regular />} aria-label={`Edit ${policy.name}`} disabled={policy.deleting} onClick={() => navigate(`/admin/policies/${policy.name}/edit`)} />
+                  <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={`Delete ${policy.name}`} disabled={policy.deleting} onClick={() => { setDeleteError(null); setPendingDelete(policy.name); }} />
                 </TableCell>
               </TableRow>
             ))}

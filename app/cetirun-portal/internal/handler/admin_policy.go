@@ -9,9 +9,12 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -62,27 +65,141 @@ type AgentPolicyModelAccessDTO struct {
 	GatewayBudget *AgentPolicyGatewayBudgetDTO     `json:"gatewayBudget,omitempty"`
 }
 
+type AgentPolicyAgentIdentityDTO struct {
+	Allowed            bool     `json:"allowed,omitempty"`
+	Required           bool     `json:"required,omitempty"`
+	CredentialServices []string `json:"credentialServices,omitempty"`
+}
+
+type AgentPolicyEntraIDDTO struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+type AgentPolicySandboxSelectionDTO struct {
+	AllowMultiple bool `json:"allowMultiple,omitempty"`
+}
+
+type AgentPolicySandboxSelectionRequestDTO struct {
+	AllowMultiple *bool `json:"allowMultiple,omitempty"`
+}
+
+type AgentPolicySecurityDTO struct {
+	ReadOnlyRootFilesystem *bool `json:"readOnlyRootFilesystem,omitempty"`
+}
+
+type AgentPolicyPortDTO struct {
+	Port     int32           `json:"port"`
+	Protocol corev1.Protocol `json:"protocol,omitempty"`
+}
+
+type AgentPolicyCIDRRuleDTO struct {
+	CIDR  string               `json:"cidr"`
+	Ports []AgentPolicyPortDTO `json:"ports"`
+}
+
+type AgentPolicyIngressDTO struct {
+	Mode        cetirunv1alpha1.AgentPolicyIngressMode `json:"mode,omitempty"`
+	RequireMTLS bool                                   `json:"requireMTLS,omitempty"`
+}
+
+type AgentPolicyNetworkDTO struct {
+	BlockedCIDRs         []string                 `json:"blockedCIDRs,omitempty"`
+	BlockedFQDNs         []string                 `json:"blockedFQDNs,omitempty"`
+	BlockedPorts         []AgentPolicyPortDTO     `json:"blockedPorts,omitempty"`
+	AllowedInternalCIDRs []AgentPolicyCIDRRuleDTO `json:"allowedInternalCIDRs,omitempty"`
+	Ingress              AgentPolicyIngressDTO    `json:"ingress,omitempty"`
+}
+
+type AgentPolicyRoleBindingDTO struct {
+	Namespace       string `json:"namespace"`
+	ClusterRoleName string `json:"clusterRoleName"`
+}
+
+type AgentPolicyClusterRoleBindingDTO struct {
+	ClusterRoleName string `json:"clusterRoleName"`
+}
+
+type AgentPolicyKubernetesAccessDTO struct {
+	ServiceAccountName  string                             `json:"serviceAccountName"`
+	RoleBindings        []AgentPolicyRoleBindingDTO        `json:"roleBindings,omitempty"`
+	ClusterRoleBindings []AgentPolicyClusterRoleBindingDTO `json:"clusterRoleBindings,omitempty"`
+}
+
+// Request-only types use pointers so an update can distinguish a field that
+// was omitted from an explicit empty value.
+type AgentPolicyIngressRequestDTO struct {
+	Mode        *cetirunv1alpha1.AgentPolicyIngressMode `json:"mode,omitempty"`
+	RequireMTLS *bool                                   `json:"requireMTLS,omitempty"`
+}
+
+type AgentPolicyNetworkRequestDTO struct {
+	BlockedCIDRs         *[]string                     `json:"blockedCIDRs,omitempty"`
+	BlockedFQDNs         *[]string                     `json:"blockedFQDNs,omitempty"`
+	BlockedPorts         *[]AgentPolicyPortDTO         `json:"blockedPorts,omitempty"`
+	AllowedInternalCIDRs *[]AgentPolicyCIDRRuleDTO     `json:"allowedInternalCIDRs,omitempty"`
+	Ingress              *AgentPolicyIngressRequestDTO `json:"ingress,omitempty"`
+}
+
 // AgentPolicyDTO exposes the fields managed by the Portal. Updates preserve
 // fields owned by runtime components that are not represented here.
 type AgentPolicyDTO struct {
-	Name            string                    `json:"name"`
-	UID             string                    `json:"uid"`
-	ResourceVersion string                    `json:"resourceVersion"`
-	Harnesses       AgentPolicyHarnessesDTO   `json:"harnesses"`
-	Skills          AgentPolicySkillsDTO      `json:"skills,omitempty"`
-	ModelAccess     AgentPolicyModelAccessDTO `json:"modelAccess,omitempty"`
-	CreatedAt       string                    `json:"createdAt,omitempty"`
+	Name               string                          `json:"name"`
+	UID                string                          `json:"uid"`
+	ResourceVersion    string                          `json:"resourceVersion"`
+	Harnesses          AgentPolicyHarnessesDTO         `json:"harnesses"`
+	Skills             AgentPolicySkillsDTO            `json:"skills,omitempty"`
+	ModelAccess        AgentPolicyModelAccessDTO       `json:"modelAccess,omitempty"`
+	AgentIdentity      AgentPolicyAgentIdentityDTO     `json:"agentIdentity,omitempty"`
+	EntraID            AgentPolicyEntraIDDTO           `json:"entraID,omitempty"`
+	SandboxSelection   AgentPolicySandboxSelectionDTO  `json:"sandboxSelection,omitempty"`
+	Security           AgentPolicySecurityDTO          `json:"security,omitempty"`
+	Network            AgentPolicyNetworkDTO           `json:"network,omitempty"`
+	KubernetesAccess   *AgentPolicyKubernetesAccessDTO `json:"kubernetesAccess,omitempty"`
+	Generation         int64                           `json:"generation,omitempty"`
+	ObservedGeneration int64                           `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition              `json:"conditions,omitempty"`
+	Deleting           bool                            `json:"deleting"`
+	CreatedAt          string                          `json:"createdAt,omitempty"`
 }
 
 // AgentPolicyUpsertRequest is the public create/update body.
 type AgentPolicyUpsertRequest struct {
-	Name            string                    `json:"name,omitempty"`
-	UID             string                    `json:"uid,omitempty"`
-	ResourceVersion string                    `json:"resourceVersion,omitempty"`
-	Harnesses       AgentPolicyHarnessesDTO   `json:"harnesses"`
-	Skills          AgentPolicySkillsDTO      `json:"skills,omitempty"`
-	ModelAccess     AgentPolicyModelAccessDTO `json:"modelAccess,omitempty"`
+	Name             string                                 `json:"name,omitempty"`
+	UID              string                                 `json:"uid,omitempty"`
+	ResourceVersion  string                                 `json:"resourceVersion,omitempty"`
+	Harnesses        AgentPolicyHarnessesDTO                `json:"harnesses"`
+	Skills           AgentPolicySkillsDTO                   `json:"skills,omitempty"`
+	ModelAccess      AgentPolicyModelAccessDTO              `json:"modelAccess,omitempty"`
+	AgentIdentity    *AgentPolicyAgentIdentityDTO           `json:"agentIdentity,omitempty"`
+	EntraID          *AgentPolicyEntraIDDTO                 `json:"entraID,omitempty"`
+	SandboxSelection *AgentPolicySandboxSelectionRequestDTO `json:"sandboxSelection,omitempty"`
+	Security         *AgentPolicySecurityDTO                `json:"security,omitempty"`
+	Network          *AgentPolicyNetworkRequestDTO          `json:"network,omitempty"`
+	KubernetesAccess *AgentPolicyKubernetesAccessDTO        `json:"kubernetesAccess,omitempty"`
+	present          map[string]bool
 }
+
+// UnmarshalJSON records top-level field presence so read-only fields can
+// distinguish omission from an explicit request to change them.
+func (r *AgentPolicyUpsertRequest) UnmarshalJSON(data []byte) error {
+	type plain AgentPolicyUpsertRequest
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = AgentPolicyUpsertRequest(decoded)
+	r.present = make(map[string]bool, len(raw))
+	for key := range raw {
+		r.present[key] = true
+	}
+	return nil
+}
+
+func (r AgentPolicyUpsertRequest) has(name string) bool { return r.present[name] }
 
 func toAgentPolicyDTO(policy *cetirunv1alpha1.AgentPolicy) AgentPolicyDTO {
 	return AgentPolicyDTO{
@@ -96,8 +213,63 @@ func toAgentPolicyDTO(policy *cetirunv1alpha1.AgentPolicy) AgentPolicyDTO {
 			SharedModels:  AgentPolicySharedModelsAccessDTO{Allowed: append([]string(nil), policy.Spec.ModelAccess.SharedModels.Allowed...)},
 			GatewayBudget: toAgentPolicyGatewayBudgetDTO(policy.Spec.ModelAccess.GatewayBudget),
 		},
-		CreatedAt: policy.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		AgentIdentity: AgentPolicyAgentIdentityDTO{
+			Allowed:            policy.Spec.AgentIdentity.Allowed,
+			Required:           policy.Spec.AgentIdentity.Required,
+			CredentialServices: append([]string(nil), policy.Spec.AgentIdentity.CredentialServices...),
+		},
+		EntraID:            AgentPolicyEntraIDDTO{Enabled: policy.Spec.EntraID.Enabled},
+		SandboxSelection:   AgentPolicySandboxSelectionDTO{AllowMultiple: policy.Spec.SandboxSelection.AllowMultiple},
+		Security:           AgentPolicySecurityDTO{ReadOnlyRootFilesystem: cloneBool(policy.Spec.Security.ReadOnlyRootFilesystem)},
+		Network:            toAgentPolicyNetworkDTO(policy.Spec.Network),
+		KubernetesAccess:   toAgentPolicyKubernetesAccessDTO(policy.Spec.KubernetesAccess),
+		Generation:         policy.Generation,
+		ObservedGeneration: policy.Status.ObservedGeneration,
+		Conditions:         append([]metav1.Condition(nil), policy.Status.Conditions...),
+		Deleting:           !policy.DeletionTimestamp.IsZero(),
+		CreatedAt:          policy.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func toAgentPolicyNetworkDTO(network cetirunv1alpha1.AgentPolicyNetwork) AgentPolicyNetworkDTO {
+	out := AgentPolicyNetworkDTO{
+		BlockedCIDRs: append([]string(nil), network.BlockedCIDRs...),
+		BlockedFQDNs: append([]string(nil), network.BlockedFQDNs...),
+		Ingress:      AgentPolicyIngressDTO{Mode: network.Ingress.Mode, RequireMTLS: network.Ingress.RequireMTLS},
+	}
+	for _, port := range network.BlockedPorts {
+		out.BlockedPorts = append(out.BlockedPorts, AgentPolicyPortDTO{Port: port.Port, Protocol: port.Protocol})
+	}
+	for _, rule := range network.AllowedInternalCIDRs {
+		dto := AgentPolicyCIDRRuleDTO{CIDR: rule.CIDR}
+		for _, port := range rule.Ports {
+			dto.Ports = append(dto.Ports, AgentPolicyPortDTO{Port: port.Port, Protocol: port.Protocol})
+		}
+		out.AllowedInternalCIDRs = append(out.AllowedInternalCIDRs, dto)
+	}
+	return out
+}
+
+func toAgentPolicyKubernetesAccessDTO(access *cetirunv1alpha1.AgentPolicyAdminKubernetesAccess) *AgentPolicyKubernetesAccessDTO {
+	if access == nil {
+		return nil
+	}
+	out := &AgentPolicyKubernetesAccessDTO{ServiceAccountName: access.ServiceAccountName}
+	for _, binding := range access.RoleBindings {
+		out.RoleBindings = append(out.RoleBindings, AgentPolicyRoleBindingDTO{Namespace: binding.Namespace, ClusterRoleName: binding.ClusterRoleName})
+	}
+	for _, binding := range access.ClusterRoleBindings {
+		out.ClusterRoleBindings = append(out.ClusterRoleBindings, AgentPolicyClusterRoleBindingDTO{ClusterRoleName: binding.ClusterRoleName})
+	}
+	return out
 }
 
 func toAgentPolicyGatewayBudgetDTO(budget *cetirunv1alpha1.AgentPolicyGatewayBudget) *AgentPolicyGatewayBudgetDTO {
@@ -111,7 +283,8 @@ func toAgentPolicyGatewayBudgetDTO(budget *cetirunv1alpha1.AgentPolicyGatewayBud
 }
 
 func toAgentPolicySpec(req AgentPolicyUpsertRequest) cetirunv1alpha1.AgentPolicySpec {
-	return cetirunv1alpha1.AgentPolicySpec{
+	readOnly := true
+	spec := cetirunv1alpha1.AgentPolicySpec{
 		Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: append([]cetirunv1alpha1.AgentType(nil), req.Harnesses.Allowed...)},
 		Skills:    cetirunv1alpha1.AgentPolicySkills{Allowed: append([]string(nil), req.Skills.Allowed...)},
 		ModelAccess: cetirunv1alpha1.AgentPolicyModelAccess{
@@ -119,7 +292,11 @@ func toAgentPolicySpec(req AgentPolicyUpsertRequest) cetirunv1alpha1.AgentPolicy
 			SharedModels:  cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: append([]string(nil), req.ModelAccess.SharedModels.Allowed...)},
 			GatewayBudget: toAgentPolicyGatewayBudget(req.ModelAccess.GatewayBudget),
 		},
+		Security: cetirunv1alpha1.AgentPolicySecurity{ReadOnlyRootFilesystem: &readOnly},
+		Network:  cetirunv1alpha1.AgentPolicyNetwork{Ingress: cetirunv1alpha1.AgentPolicyIngress{Mode: cetirunv1alpha1.AgentPolicyIngressAuthenticated}},
 	}
+	applyAgentPolicyRequest(&spec, req)
+	return spec
 }
 
 func toAgentPolicyGatewayBudget(budget *AgentPolicyGatewayBudgetDTO) *cetirunv1alpha1.AgentPolicyGatewayBudget {
@@ -130,6 +307,52 @@ func toAgentPolicyGatewayBudget(budget *AgentPolicyGatewayBudgetDTO) *cetirunv1a
 		DefaultMonthlyUSD: budget.DefaultMonthlyUSD,
 		MaxMonthlyUSD:     budget.MaxMonthlyUSD,
 	}
+}
+
+// applyAgentPolicyRequest applies only fields that a Portal administrator can
+// manage. The caller starts with the current spec for updates, which keeps
+// runtime-owned fields intact when old clients omit newly introduced fields.
+func applyAgentPolicyRequest(spec *cetirunv1alpha1.AgentPolicySpec, req AgentPolicyUpsertRequest) {
+	if req.SandboxSelection != nil && req.SandboxSelection.AllowMultiple != nil {
+		spec.SandboxSelection.AllowMultiple = *req.SandboxSelection.AllowMultiple
+	}
+	if req.Security != nil && req.Security.ReadOnlyRootFilesystem != nil {
+		spec.Security.ReadOnlyRootFilesystem = cloneBool(req.Security.ReadOnlyRootFilesystem)
+	}
+	if network := req.Network; network != nil {
+		if network.BlockedCIDRs != nil {
+			spec.Network.BlockedCIDRs = append([]string(nil), (*network.BlockedCIDRs)...)
+		}
+		if network.BlockedPorts != nil {
+			spec.Network.BlockedPorts = toAgentPolicyPorts(*network.BlockedPorts)
+		}
+		if network.AllowedInternalCIDRs != nil {
+			spec.Network.AllowedInternalCIDRs = toAgentPolicyCIDRRules(*network.AllowedInternalCIDRs)
+		}
+		if network.Ingress != nil && network.Ingress.Mode != nil {
+			spec.Network.Ingress.Mode = *network.Ingress.Mode
+		}
+	}
+}
+
+func toAgentPolicyPorts(ports []AgentPolicyPortDTO) []cetirunv1alpha1.AgentPolicyPort {
+	out := make([]cetirunv1alpha1.AgentPolicyPort, 0, len(ports))
+	for _, port := range ports {
+		protocol := port.Protocol
+		if protocol == "" {
+			protocol = corev1.ProtocolTCP
+		}
+		out = append(out, cetirunv1alpha1.AgentPolicyPort{Port: port.Port, Protocol: protocol})
+	}
+	return out
+}
+
+func toAgentPolicyCIDRRules(rules []AgentPolicyCIDRRuleDTO) []cetirunv1alpha1.AgentPolicyCIDRRule {
+	out := make([]cetirunv1alpha1.AgentPolicyCIDRRule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, cetirunv1alpha1.AgentPolicyCIDRRule{CIDR: rule.CIDR, Ports: toAgentPolicyPorts(rule.Ports)})
+	}
+	return out
 }
 
 func validateAgentPolicyRequest(req AgentPolicyUpsertRequest) string {
@@ -167,9 +390,157 @@ func validateAgentPolicyRequest(req AgentPolicyUpsertRequest) string {
 		}
 	}
 	for _, model := range req.ModelAccess.SharedModels.Allowed {
-		if strings.TrimSpace(model) == "" || strings.ContainsAny(model, "\t\r\n ") {
-			return "sharedModels.allowed entries must be non-empty model identifiers without whitespace"
+		if strings.TrimSpace(model) == "" || strings.ContainsAny(model, "\t\r\n ") || len(model) > 256 {
+			return "sharedModels.allowed entries must be non-empty identifiers without whitespace and at most 256 characters"
 		}
+	}
+	for _, skill := range req.Skills.Allowed {
+		if strings.TrimSpace(skill) == "" {
+			return "skills.allowed entries must not be blank"
+		}
+	}
+	if hasDuplicateStrings(req.Skills.Allowed) {
+		return "skills.allowed must not contain duplicate entries"
+	}
+	if hasDuplicateStrings(req.ModelAccess.SharedModels.Allowed) {
+		return "sharedModels.allowed must not contain duplicate entries"
+	}
+	return ""
+}
+
+func hasDuplicateStrings(values []string) bool {
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		if seen[value] {
+			return true
+		}
+		seen[value] = true
+	}
+	return false
+}
+
+func validateAgentPolicyReadOnlyCreate(req AgentPolicyUpsertRequest) string {
+	if req.KubernetesAccess != nil {
+		return "kubernetesAccess is read-only in the Portal"
+	}
+	if req.AgentIdentity != nil && (req.AgentIdentity.Allowed || req.AgentIdentity.Required || len(req.AgentIdentity.CredentialServices) != 0) {
+		return "agentIdentity is read-only in the Portal"
+	}
+	if req.EntraID != nil && req.EntraID.Enabled {
+		return "entraID is read-only in the Portal"
+	}
+	if req.Network != nil {
+		if req.Network.BlockedFQDNs != nil && len(*req.Network.BlockedFQDNs) != 0 {
+			return "network.blockedFQDNs is read-only in the Portal"
+		}
+		if req.Network.Ingress != nil && req.Network.Ingress.RequireMTLS != nil && *req.Network.Ingress.RequireMTLS {
+			return "network.ingress.requireMTLS is read-only in the Portal"
+		}
+	}
+	return ""
+}
+
+func validateAgentPolicyReadOnlyUpdate(req AgentPolicyUpsertRequest, current cetirunv1alpha1.AgentPolicySpec) string {
+	if req.has("kubernetesAccess") && !equalKubernetesAccess(req.KubernetesAccess, current.KubernetesAccess) {
+		return "kubernetesAccess is read-only in the Portal"
+	}
+	if req.AgentIdentity != nil && (req.AgentIdentity.Allowed != current.AgentIdentity.Allowed || req.AgentIdentity.Required != current.AgentIdentity.Required || !slices.Equal(req.AgentIdentity.CredentialServices, current.AgentIdentity.CredentialServices)) {
+		return "agentIdentity is read-only in the Portal"
+	}
+	if req.EntraID != nil && req.EntraID.Enabled != current.EntraID.Enabled {
+		return "entraID is read-only in the Portal"
+	}
+	if req.Network != nil {
+		if req.Network.BlockedFQDNs != nil && !slices.Equal(*req.Network.BlockedFQDNs, current.Network.BlockedFQDNs) {
+			return "network.blockedFQDNs is read-only in the Portal"
+		}
+		if req.Network.Ingress != nil && req.Network.Ingress.RequireMTLS != nil && *req.Network.Ingress.RequireMTLS != current.Network.Ingress.RequireMTLS {
+			return "network.ingress.requireMTLS is read-only in the Portal"
+		}
+	}
+	return ""
+}
+
+func equalKubernetesAccess(request *AgentPolicyKubernetesAccessDTO, current *cetirunv1alpha1.AgentPolicyAdminKubernetesAccess) bool {
+	if request == nil || current == nil {
+		return request == nil && current == nil
+	}
+	if request.ServiceAccountName != current.ServiceAccountName || len(request.RoleBindings) != len(current.RoleBindings) || len(request.ClusterRoleBindings) != len(current.ClusterRoleBindings) {
+		return false
+	}
+	for i, binding := range request.RoleBindings {
+		if binding.Namespace != current.RoleBindings[i].Namespace || binding.ClusterRoleName != current.RoleBindings[i].ClusterRoleName {
+			return false
+		}
+	}
+	for i, binding := range request.ClusterRoleBindings {
+		if binding.ClusterRoleName != current.ClusterRoleBindings[i].ClusterRoleName {
+			return false
+		}
+	}
+	return true
+}
+
+// validatePortalManagedPolicyFields mirrors the local shape checks for fields
+// Portal can edit. The operator keeps the authoritative admission checks; the
+// Portal validation makes malformed requests actionable before a cluster write.
+func validatePortalManagedPolicyFields(spec cetirunv1alpha1.AgentPolicySpec) string {
+	for _, cidr := range spec.Network.BlockedCIDRs {
+		if !validPolicyCIDR(cidr) {
+			return "network.blockedCIDRs entries must be IPv4 or IPv6 CIDRs"
+		}
+	}
+	if hasDuplicateStrings(spec.Network.BlockedCIDRs) {
+		return "network.blockedCIDRs must not contain duplicate entries"
+	}
+	if message := validatePolicyPorts(spec.Network.BlockedPorts, "network.blockedPorts"); message != "" {
+		return message
+	}
+	seenCIDRs := make(map[string]bool, len(spec.Network.AllowedInternalCIDRs))
+	for _, rule := range spec.Network.AllowedInternalCIDRs {
+		if !validPolicyCIDR(rule.CIDR) {
+			return "network.allowedInternalCIDRs CIDRs must be IPv4 or IPv6 CIDRs"
+		}
+		if seenCIDRs[rule.CIDR] {
+			return "network.allowedInternalCIDRs must not contain duplicate CIDRs"
+		}
+		seenCIDRs[rule.CIDR] = true
+		if len(rule.Ports) == 0 {
+			return "network.allowedInternalCIDRs ports must contain at least one port"
+		}
+		if message := validatePolicyPorts(rule.Ports, "network.allowedInternalCIDRs.ports"); message != "" {
+			return message
+		}
+	}
+	switch spec.Network.Ingress.Mode {
+	case "", cetirunv1alpha1.AgentPolicyIngressAuthenticated, cetirunv1alpha1.AgentPolicyIngressDisabled:
+	default:
+		return "network.ingress.mode must be authenticated or disabled"
+	}
+	if spec.Network.Ingress.Mode == cetirunv1alpha1.AgentPolicyIngressDisabled && spec.Network.Ingress.RequireMTLS {
+		return "network.ingress.disabled cannot require mTLS"
+	}
+	return ""
+}
+
+func validPolicyCIDR(value string) bool {
+	prefix, err := netip.ParsePrefix(value)
+	return err == nil && !prefix.Addr().Is4In6()
+}
+
+func validatePolicyPorts(ports []cetirunv1alpha1.AgentPolicyPort, field string) string {
+	seen := make(map[cetirunv1alpha1.AgentPolicyPort]bool, len(ports))
+	for _, port := range ports {
+		if port.Port < 1 || port.Port > 65535 {
+			return field + ".port must be between 1 and 65535"
+		}
+		if port.Protocol != corev1.ProtocolTCP && port.Protocol != corev1.ProtocolUDP && port.Protocol != corev1.ProtocolSCTP {
+			return field + ".protocol must be TCP, UDP, or SCTP"
+		}
+		if seen[port] {
+			return field + " must not contain duplicate ports"
+		}
+		seen[port] = true
 	}
 	return ""
 }
@@ -231,7 +602,16 @@ func (h *AdminPolicyHandler) CreatePolicy(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_policy", msg)
 		return
 	}
-	policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: req.Name}, Spec: toAgentPolicySpec(req)}
+	if msg := validateAgentPolicyReadOnlyCreate(req); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_policy", msg)
+		return
+	}
+	spec := toAgentPolicySpec(req)
+	if msg := validatePortalManagedPolicyFields(spec); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_policy", msg)
+		return
+	}
+	policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: req.Name}, Spec: spec}
 	created, err := h.Kube.CreateAgentPolicy(r.Context(), policy)
 	if err != nil {
 		if kube.IsAlreadyExists(err) {
@@ -240,6 +620,11 @@ func (h *AdminPolicyHandler) CreatePolicy(w http.ResponseWriter, r *http.Request
 		}
 		if kube.IsForbidden(err) {
 			writeError(w, http.StatusForbidden, "policy_forbidden", "Kubernetes policy or RBAC denied creating this AgentPolicy")
+			return
+		}
+		if apierrors.IsInvalid(err) {
+			slog.Error("admin: create agent policy rejected", "name", req.Name, "error", err)
+			writeError(w, http.StatusUnprocessableEntity, "invalid_policy", "AgentPolicy configuration was rejected by Kubernetes")
 			return
 		}
 		slog.Error("admin: create agent policy failed", "name", req.Name, "error", err)
@@ -274,7 +659,37 @@ func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusPreconditionRequired, "version_required", msg)
 		return
 	}
-	updated, err := h.Kube.UpdateAgentPolicySpec(r.Context(), name, toAgentPolicySpec(req), version)
+	current, err := h.Kube.GetAgentPolicy(r.Context(), name)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "policy_not_found", "AgentPolicy "+name+" not found")
+			return
+		}
+		if kube.IsForbidden(err) {
+			writeError(w, http.StatusForbidden, "policy_forbidden", "Kubernetes policy or RBAC denied reading this AgentPolicy")
+			return
+		}
+		slog.Error("admin: read agent policy for update failed", "name", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to read AgentPolicy")
+		return
+	}
+	if msg := validateAgentPolicyReadOnlyUpdate(req, current.Spec); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_policy", msg)
+		return
+	}
+	desired := *current.Spec.DeepCopy()
+	// The original fields remain required update fields. New fields are applied
+	// only when present, so older Portal clients retain them unchanged.
+	requested := toAgentPolicySpec(req)
+	desired.Harnesses = requested.Harnesses
+	desired.Skills = requested.Skills
+	desired.ModelAccess = requested.ModelAccess
+	applyAgentPolicyRequest(&desired, req)
+	if msg := validatePortalManagedPolicyFields(desired); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_policy", msg)
+		return
+	}
+	updated, err := h.Kube.UpdateAgentPolicySpec(r.Context(), name, desired, version)
 	if err != nil {
 		if kube.IsConfigurationCoordinationUnavailable(err) {
 			writeError(w, http.StatusServiceUnavailable, "policy_change_unavailable", "Policy coordination is unavailable or the write outcome is uncertain; do not resubmit until an administrator recovers the recorded operation")
@@ -294,6 +709,11 @@ func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request
 		}
 		if errors.Is(err, kube.ErrAgentPolicyChanged) || apierrors.IsConflict(err) {
 			writeError(w, http.StatusConflict, "policy_changed", kube.ErrAgentPolicyChanged.Error())
+			return
+		}
+		if apierrors.IsInvalid(err) {
+			slog.Error("admin: update agent policy rejected", "name", name, "error", err)
+			writeError(w, http.StatusUnprocessableEntity, "invalid_policy", "AgentPolicy configuration was rejected by Kubernetes")
 			return
 		}
 		slog.Error("admin: update agent policy failed", "name", name, "error", err)

@@ -1,76 +1,79 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Divider, Field, Input, MessageBar, Spinner, Switch, Text, Textarea, Title2 } from "@fluentui/react-components";
+import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Switch, Text, Textarea, Title2 } from "@fluentui/react-components";
 import {
-  createPolicy,
-  getPolicy,
-  updatePolicy,
-  type AgentPolicyDTO,
-  type AgentPolicyUpsertRequest,
+  createPolicy, getPolicy, updatePolicy, type AgentPolicyDTO,
+  type AgentPolicyPort, type AgentPolicyProtocol, type AgentPolicyUpsertRequest,
 } from "../../api/adminPolicy";
+import { InternalNetworkRules, formatInternalNetworkRules, parseInternalNetworkRules, validCIDR, type InternalNetworkRule } from "./InternalNetworkRules";
 
-interface FormState {
-  name: string;
-  uid: string;
-  resourceVersion: string;
-  openclaw: boolean;
-  hermes: boolean;
-  skills: string;
-  copilot: boolean;
-  sharedModels: string;
-  budgetEnabled: boolean;
-  defaultMonthlyUSD: string;
-  maxMonthlyUSD: string;
+export interface PolicyFormState {
+  name: string; uid: string; resourceVersion: string; openclaw: boolean; hermes: boolean; skills: string;
+  copilot: boolean; sharedModels: string; budgetEnabled: boolean; defaultMonthlyUSD: string; maxMonthlyUSD: string;
+  allowMultiple: boolean; readOnlyRootFilesystem: boolean; blockedCIDRs: string; blockedPorts: AgentPolicyPort[];
+  allowedInternalCIDRs: InternalNetworkRule[]; ingressMode: "authenticated" | "disabled";
 }
 
-const emptyForm: FormState = {
+const emptyForm: PolicyFormState = {
   name: "", uid: "", resourceVersion: "", openclaw: true, hermes: false, skills: "", copilot: false,
-  sharedModels: "", budgetEnabled: false, defaultMonthlyUSD: "", maxMonthlyUSD: "",
+  sharedModels: "", budgetEnabled: false, defaultMonthlyUSD: "", maxMonthlyUSD: "", allowMultiple: false,
+  readOnlyRootFilesystem: true, blockedCIDRs: "", blockedPorts: [], allowedInternalCIDRs: [], ingressMode: "authenticated",
 };
 
-function fromDTO(policy: AgentPolicyDTO): FormState {
+function lines(value: string): string[] { return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); }
+
+export function fromPolicyDTO(policy: AgentPolicyDTO): PolicyFormState {
   return {
-    name: policy.name,
-    uid: policy.uid,
-    resourceVersion: policy.resourceVersion,
-    openclaw: policy.harnesses.allowed.includes("openclaw"),
-    hermes: policy.harnesses.allowed.includes("hermes"),
-    skills: (policy.skills?.allowed || []).join("\n"),
-    copilot: !!policy.modelAccess?.copilot?.allowed,
-    sharedModels: (policy.modelAccess?.sharedModels?.allowed || []).join("\n"),
-    budgetEnabled: !!policy.modelAccess?.gatewayBudget,
-    defaultMonthlyUSD: policy.modelAccess?.gatewayBudget?.defaultMonthlyUSD || "",
-    maxMonthlyUSD: policy.modelAccess?.gatewayBudget?.maxMonthlyUSD || "",
+    name: policy.name, uid: policy.uid, resourceVersion: policy.resourceVersion,
+    openclaw: policy.harnesses.allowed.includes("openclaw"), hermes: policy.harnesses.allowed.includes("hermes"),
+    skills: (policy.skills?.allowed || []).join("\n"), copilot: !!policy.modelAccess?.copilot?.allowed,
+    sharedModels: (policy.modelAccess?.sharedModels?.allowed || []).join("\n"), budgetEnabled: !!policy.modelAccess?.gatewayBudget,
+    defaultMonthlyUSD: policy.modelAccess?.gatewayBudget?.defaultMonthlyUSD || "", maxMonthlyUSD: policy.modelAccess?.gatewayBudget?.maxMonthlyUSD || "",
+    allowMultiple: !!policy.sandboxSelection?.allowMultiple, readOnlyRootFilesystem: policy.security?.readOnlyRootFilesystem ?? true,
+    blockedCIDRs: (policy.network?.blockedCIDRs || []).join("\n"), blockedPorts: policy.network?.blockedPorts || [],
+    allowedInternalCIDRs: formatInternalNetworkRules(policy.network?.allowedInternalCIDRs || []), ingressMode: policy.network?.ingress?.mode || "authenticated",
   };
 }
 
-function toRequest(form: FormState): AgentPolicyUpsertRequest {
-  const lines = (value: string) => value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+export function toPolicyRequest(form: PolicyFormState): AgentPolicyUpsertRequest {
   const allowed = [] as ("openclaw" | "hermes")[];
   if (form.openclaw) allowed.push("openclaw");
   if (form.hermes) allowed.push("hermes");
   const request: AgentPolicyUpsertRequest = {
-    name: form.name.trim(),
-    uid: form.uid || undefined,
-    resourceVersion: form.resourceVersion || undefined,
-    harnesses: { allowed },
-    skills: { allowed: lines(form.skills) },
-    modelAccess: {
-      copilot: { allowed: form.copilot },
-      sharedModels: { allowed: lines(form.sharedModels) },
+    name: form.name.trim(), uid: form.uid || undefined, resourceVersion: form.resourceVersion || undefined,
+    harnesses: { allowed }, skills: { allowed: lines(form.skills) },
+    modelAccess: { copilot: { allowed: form.copilot }, sharedModels: { allowed: lines(form.sharedModels) } },
+    sandboxSelection: { allowMultiple: form.allowMultiple }, security: { readOnlyRootFilesystem: form.readOnlyRootFilesystem },
+    network: {
+      blockedCIDRs: lines(form.blockedCIDRs), blockedPorts: form.blockedPorts, allowedInternalCIDRs: parseInternalNetworkRules(form.allowedInternalCIDRs),
+      ingress: { mode: form.ingressMode },
     },
   };
-  if (form.budgetEnabled) {
-    request.modelAccess!.gatewayBudget = {
-      defaultMonthlyUSD: form.defaultMonthlyUSD.trim(),
-      maxMonthlyUSD: form.maxMonthlyUSD.trim(),
-    };
-  }
+  if (form.budgetEnabled) request.modelAccess!.gatewayBudget = { defaultMonthlyUSD: form.defaultMonthlyUSD.trim(), maxMonthlyUSD: form.maxMonthlyUSD.trim() };
   return request;
+}
+
+function validPort(port: AgentPolicyPort): boolean { return Number.isInteger(port.port) && port.port >= 1 && port.port <= 65535 && ["TCP", "UDP", "SCTP"].includes(port.protocol); }
+function updateAt<T>(items: T[], index: number, value: T): T[] { return items.map((item, itemIndex) => itemIndex === index ? value : item); }
+
+function validateRequest(request: AgentPolicyUpsertRequest, isCreate: boolean): string | null {
+  if (request.harnesses.allowed.length === 0) return "Choose at least one harness.";
+  const access = request.modelAccess;
+  const hasModelEntitlement = !!access?.copilot?.allowed || (access?.sharedModels?.allowed?.length || 0) > 0;
+  if (hasModelEntitlement && !access?.gatewayBudget) return "Model access requires a monthly Gateway budget.";
+  if (!hasModelEntitlement && access?.gatewayBudget) return "A Gateway budget requires Copilot or a shared model.";
+  if (isCreate && !/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(request.name || "")) return "Name must be a DNS-1123 label: lowercase, start with a letter, max 63 chars.";
+  const network = request.network;
+  if (network?.blockedCIDRs?.some((cidr) => !validCIDR(cidr))) return "Blocked CIDRs must be valid IPv4 or IPv6 CIDR values.";
+  const allPorts = [...(network?.blockedPorts || []), ...(network?.allowedInternalCIDRs || []).flatMap((rule) => rule.ports)];
+  if (allPorts.some((port) => !validPort(port))) return "Ports must be 1–65535 and use TCP, UDP, or SCTP.";
+  if (new Set((network?.blockedPorts || []).map((port) => `${port.port}/${port.protocol}`)).size !== (network?.blockedPorts || []).length) return "Blocked ports must be unique.";
+  if (network?.allowedInternalCIDRs?.some((rule) => !validCIDR(rule.cidr) || rule.ports.length === 0)) return "Each internal CIDR rule needs a valid CIDR and at least one port.";
+  return null;
 }
 
 export function PolicyEditPage() {
@@ -78,76 +81,92 @@ export function PolicyEditPage() {
   const isCreate = !name;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [form, setForm] = useState<FormState>(emptyForm);
+  const [form, setForm] = useState<PolicyFormState>(emptyForm);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const initializedPolicyUID = useRef<string | null>(null);
   const { data: existing, isLoading, error } = useQuery<AgentPolicyDTO, Error>({
-    queryKey: ["admin", "policy", name], queryFn: () => getPolicy(name!), enabled: !isCreate,
+    queryKey: ["admin", "policy", name], queryFn: () => getPolicy(name!), enabled: !isCreate, refetchInterval: 30_000,
   });
-  useEffect(() => { if (existing) setForm(fromDTO(existing)); }, [existing]);
-  const success = () => {
-    queryClient.invalidateQueries({ queryKey: ["admin", "policies"] });
-    if (name) queryClient.invalidateQueries({ queryKey: ["admin", "policy", name] });
-    navigate("/admin/policies");
-  };
-  const createMutation = useMutation({ mutationFn: createPolicy, onSuccess: success, onError: (error: Error) => setSubmitError(error.message) });
-  const updateMutation = useMutation({ mutationFn: (request: AgentPolicyUpsertRequest) => updatePolicy(name!, request), onSuccess: success, onError: (error: Error) => setSubmitError(error.message) });
+  useLayoutEffect(() => {
+    initializedPolicyUID.current = null;
+    setForm(emptyForm);
+  }, [name]);
+  useLayoutEffect(() => { if (existing && existing.name === name && initializedPolicyUID.current !== existing.uid) { initializedPolicyUID.current = existing.uid; setForm(fromPolicyDTO(existing)); } }, [existing, name]);
+  const success = () => { queryClient.invalidateQueries({ queryKey: ["admin", "policies"] }); if (name) queryClient.invalidateQueries({ queryKey: ["admin", "policy", name] }); navigate("/admin/policies"); };
+  const createMutation = useMutation({ mutationFn: createPolicy, onSuccess: success, onError: (mutationError: Error) => setSubmitError(mutationError.message) });
+  const updateMutation = useMutation({ mutationFn: (request: AgentPolicyUpsertRequest) => updatePolicy(name!, request), onSuccess: success, onError: (mutationError: Error) => setSubmitError(mutationError.message) });
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setSubmitError(null);
-    const request = toRequest(form);
-    if (request.harnesses.allowed.length === 0) {
-      setSubmitError("Choose at least one harness.");
+    let request: AgentPolicyUpsertRequest;
+    try {
+      request = toPolicyRequest(form);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Check the internal network rules.");
       return;
     }
-    const hasModelEntitlement = !!request.modelAccess?.copilot?.allowed ||
-      (request.modelAccess?.sharedModels?.allowed?.length || 0) > 0;
-    if (hasModelEntitlement && !request.modelAccess?.gatewayBudget) {
-      setSubmitError("Model access requires a monthly Gateway budget.");
-      return;
-    }
-    if (!hasModelEntitlement && request.modelAccess?.gatewayBudget) {
-      setSubmitError("A Gateway budget requires Copilot or a shared model.");
-      return;
-    }
-    if (isCreate && !/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(request.name || "")) {
-      setSubmitError("Name must be a DNS-1123 label: lowercase, start with a letter, max 63 chars.");
-      return;
-    }
+    const validationError = validateRequest(request, isCreate);
+    if (validationError) { setSubmitError(validationError); return; }
     if (isCreate) createMutation.mutate(request); else updateMutation.mutate(request);
   };
   if (!isCreate && isLoading) return <Spinner label="Loading policy..." />;
   if (!isCreate && error) return <MessageBar intent="error">Failed to load: {error.message}</MessageBar>;
   const pending = createMutation.isPending || updateMutation.isPending;
-  return (
-    <form onSubmit={submit} style={{ maxWidth: 720, display: "flex", flexDirection: "column", gap: 16 }}>
-      <Title2>{isCreate ? "New agent policy" : `Agent policy: ${name}`}</Title2>
-      <Text>This page manages the common Policy fields exposed by Portal. Gateway and Sandbox remain responsible for executing the fields they own.</Text>
-      <Field label="Name" required><Input value={form.name} disabled={!isCreate} onChange={(_, data) => setForm({ ...form, name: data.value })} placeholder="e.g. standard" /></Field>
-      <Divider />
-      <Text weight="semibold">Allowed harnesses</Text>
-      <Switch checked={form.openclaw} label="OpenClaw" onChange={(_, data) => setForm({ ...form, openclaw: data.checked })} />
-      <Switch checked={form.hermes} label="Hermes" onChange={(_, data) => setForm({ ...form, hermes: data.checked })} />
-      <Field label="Allowed skills" hint="Enter one skill identifier per line; commas are not separators. Leave empty to allow no Team or Agent skills."><Textarea rows={4} value={form.skills} onChange={(_, data) => setForm({ ...form, skills: data.value })} placeholder={"skill-a\nnpm:@scope/skill-b\nskill-c@1.2.0"} /></Field>
-      <Divider />
-      <Text weight="semibold">AI Gateway</Text>
-      <Switch checked={form.copilot} label="Allow GitHub Copilot" onChange={(_, data) => {
-        const copilot = data.checked;
-        setForm({ ...form, copilot, budgetEnabled: copilot || form.sharedModels.trim() !== "" ? form.budgetEnabled : false });
-      }} />
-      <Field label="Allowed shared models" hint="Enter one exact Gateway catalog model name per line; commas are not separators."><Textarea rows={4} value={form.sharedModels} onChange={(_, data) => {
-        const sharedModels = data.value;
-        setForm({ ...form, sharedModels, budgetEnabled: form.copilot || sharedModels.trim() !== "" ? form.budgetEnabled : false });
-      }} placeholder={"gpt-4.1\ngpt-4o-mini"} /></Field>
-      <Switch checked={form.budgetEnabled} label="Set monthly Gateway budget" onChange={(_, data) => setForm({ ...form, budgetEnabled: data.checked })} />
-      {form.budgetEnabled && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Default monthly USD" required><Input value={form.defaultMonthlyUSD} onChange={(_, data) => setForm({ ...form, defaultMonthlyUSD: data.value })} placeholder="e.g. 20" /></Field>
-        <Field label="Maximum monthly USD" required><Input value={form.maxMonthlyUSD} onChange={(_, data) => setForm({ ...form, maxMonthlyUSD: data.value })} placeholder="e.g. 50" /></Field>
-      </div>}
-      {submitError && <MessageBar intent="error">{submitError}</MessageBar>}
-      <div style={{ display: "flex", gap: 8 }}>
-        <Button appearance="primary" type="submit" disabled={pending}>{pending ? "Saving..." : isCreate ? "Create" : "Save"}</Button>
-        <Button appearance="secondary" type="button" onClick={() => navigate("/admin/policies")}>Cancel</Button>
-      </div>
-    </form>
-  );
+  const readonlyNetwork = existing?.network;
+  return <form onSubmit={submit} style={{ maxWidth: 820, display: "flex", flexDirection: "column", gap: 16 }}>
+    <Title2>{isCreate ? "New agent policy" : `Agent policy: ${name}`}</Title2>
+    <Text>Configure the harnesses, skills, model access, and Sandbox controls that Agents may use.</Text>
+    <Field label="Name" required><Input value={form.name} disabled={!isCreate} onChange={(_, data) => setForm({ ...form, name: data.value })} placeholder="e.g. standard" /></Field>
+    <Divider /><Text weight="semibold">Allowed harnesses</Text>
+    <Switch checked={form.openclaw} label="OpenClaw" onChange={(_, data) => setForm({ ...form, openclaw: data.checked })} />
+    <Switch checked={form.hermes} label="Hermes" onChange={(_, data) => setForm({ ...form, hermes: data.checked })} />
+    <Field label="Allowed skills" hint="Enter one skill identifier per line; commas are not separators. Leave empty to allow no Team or Agent skills."><Textarea rows={4} value={form.skills} onChange={(_, data) => setForm({ ...form, skills: data.value })} placeholder={"skill-a\nnpm:@scope/skill-b\nskill-c@1.2.0"} /></Field>
+    <Divider /><Text weight="semibold">AI Gateway</Text>
+    <Switch checked={form.copilot} label="Allow GitHub Copilot" onChange={(_, data) => {
+      const copilot = data.checked;
+      setForm({ ...form, copilot, budgetEnabled: copilot || form.sharedModels.trim() !== "" ? form.budgetEnabled : false });
+    }} />
+    <Field label="Allowed shared models" hint="Enter one exact Gateway catalog model name per line; commas are not separators."><Textarea rows={4} value={form.sharedModels} onChange={(_, data) => {
+      const sharedModels = data.value;
+      setForm({ ...form, sharedModels, budgetEnabled: form.copilot || sharedModels.trim() !== "" ? form.budgetEnabled : false });
+    }} placeholder={"gpt-4.1\ngpt-4o-mini"} /></Field>
+    <Switch checked={form.budgetEnabled} label="Set monthly Gateway budget" onChange={(_, data) => setForm({ ...form, budgetEnabled: data.checked })} />
+    {form.budgetEnabled && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Default monthly USD" required><Input value={form.defaultMonthlyUSD} onChange={(_, data) => setForm({ ...form, defaultMonthlyUSD: data.value })} placeholder="e.g. 20" /></Field><Field label="Maximum monthly USD" required><Input value={form.maxMonthlyUSD} onChange={(_, data) => setForm({ ...form, maxMonthlyUSD: data.value })} placeholder="e.g. 50" /></Field></div>}
+    <Divider /><Text weight="semibold">Sandbox selection and security</Text>
+    <Switch checked={form.allowMultiple} label="Allow multiple Sandboxes per Team" onChange={(_, data) => setForm({ ...form, allowMultiple: data.checked })} />
+    <Switch checked={form.readOnlyRootFilesystem} label="Use a read-only root filesystem" onChange={(_, data) => setForm({ ...form, readOnlyRootFilesystem: data.checked })} />
+    <Divider /><Text weight="semibold">Network</Text>
+    <Field label="Blocked CIDRs" hint="One IPv4 or IPv6 CIDR per line."><Textarea rows={3} value={form.blockedCIDRs} onChange={(_, data) => setForm({ ...form, blockedCIDRs: data.value })} placeholder={"10.0.0.0/8\n2001:db8::/32"} /></Field>
+    <Text size={300} weight="semibold">Blocked ports</Text>
+    {form.blockedPorts.map((port, index) => <div key={index} style={{ display: "flex", gap: 8 }}><Input aria-label={`Blocked port ${index + 1}`} type="number" value={String(port.port)} onChange={(_, data) => setForm({ ...form, blockedPorts: updateAt(form.blockedPorts, index, { ...port, port: Number(data.value) }) })} /><Select aria-label={`Blocked port protocol ${index + 1}`} value={port.protocol} onChange={(event) => setForm({ ...form, blockedPorts: updateAt(form.blockedPorts, index, { ...port, protocol: event.target.value as AgentPolicyProtocol }) })}><option>TCP</option><option>UDP</option><option>SCTP</option></Select><Button type="button" onClick={() => setForm({ ...form, blockedPorts: form.blockedPorts.filter((_, itemIndex) => itemIndex !== index) })}>Remove</Button></div>)}
+    <Button type="button" onClick={() => setForm({ ...form, blockedPorts: [...form.blockedPorts, { port: 443, protocol: "TCP" }] })}>Add blocked port</Button>
+    <InternalNetworkRules key={name || "__new__"} rules={form.allowedInternalCIDRs}
+      onChange={(allowedInternalCIDRs) => setForm({ ...form, allowedInternalCIDRs })} />
+    <Field label="Ingress mode"><Select value={form.ingressMode} onChange={(event) => setForm({ ...form, ingressMode: event.target.value as PolicyFormState["ingressMode"] })}><option value="authenticated">Authenticated</option><option value="disabled">Disabled</option></Select></Field>
+    <Divider />
+    <section aria-label="Read-only policy capabilities" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Text weight="semibold">Read-only policy capabilities</Text>
+      <Text size={200}>These values cannot be edited in the Portal. Saving other settings preserves them.</Text>
+      <section aria-label="Kubernetes API access" style={{ display: "flex", flexDirection: "column", gap: 8, overflowWrap: "anywhere" }}>
+        <Text weight="semibold">Kubernetes API access</Text>
+        <Text size={200}>Managed by your platform administrator. This policy records requested access; authorization is configured separately.</Text>
+        {existing?.kubernetesAccess ? <>
+          <Text>Service account: {existing.kubernetesAccess.serviceAccountName}</Text>
+          {!!existing.kubernetesAccess.roleBindings?.length && <>
+            <Text weight="semibold" size={300}>Requested namespace permissions</Text>
+            <ul style={{ margin: 0, paddingLeft: 24 }}>{existing.kubernetesAccess.roleBindings.map((binding, index) =>
+              <li key={index}>ClusterRole {binding.clusterRoleName} in namespace {binding.namespace}</li>)}</ul>
+          </>}
+          {!!existing.kubernetesAccess.clusterRoleBindings?.length && <>
+            <Text weight="semibold" size={300}>Requested cluster-wide permissions</Text>
+            <ul style={{ margin: 0, paddingLeft: 24 }}>{existing.kubernetesAccess.clusterRoleBindings.map((binding, index) =>
+              <li key={index}>ClusterRole {binding.clusterRoleName}</li>)}</ul>
+          </>}
+        </> : <Text>No Kubernetes API access is configured in this policy.</Text>}
+      </section>
+      <Text>Agent identity: allowed {String(!!existing?.agentIdentity?.allowed)}, required {String(!!existing?.agentIdentity?.required)}, credential services {(existing?.agentIdentity?.credentialServices || []).join(", ") || "none"}.</Text><Text>Entra ID enabled: {String(!!existing?.entraID?.enabled)}.</Text><Text>Blocked FQDNs: {(readonlyNetwork?.blockedFQDNs || []).join(", ") || "none"}.</Text><Text>Ingress mTLS required: {String(!!readonlyNetwork?.ingress?.requireMTLS)}.</Text>
+    </section>
+    {submitError && <MessageBar intent="error">{submitError}</MessageBar>}
+    <div style={{ display: "flex", gap: 8 }}><Button appearance="primary" type="submit" disabled={pending}>{pending ? "Saving..." : isCreate ? "Create" : "Save"}</Button><Button appearance="secondary" type="button" onClick={() => navigate("/admin/policies")}>Cancel</Button></div>
+  </form>;
 }

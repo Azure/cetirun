@@ -336,12 +336,38 @@ credential-service executor supplies matching read-back evidence.
 
 ### AgentPolicy administration
 
-The admin Portal manages a deliberately small subset of the cluster-scoped
-`AgentPolicy`: allowed Harnesses, allowed skills, Copilot access, shared model
-names, and the LiteLLM monthly budget expressed in US dollars. It does not
-interpret or enforce a Policy. Sandbox and AI Gateway components remain
-responsible for the fields they execute. Editing a Policy that is already bound
-outside the Portal can affect those consumers.
+The admin Portal displays the complete cluster-scoped `AgentPolicy` configuration.
+Administrators can edit allowed Harnesses and skills, Copilot and shared model
+access, monthly USD budgets, multiple-Sandbox selection, read-only root
+filesystem, network CIDR and port rules, and ingress mode.
+
+Kubernetes API access appears under Read-only policy capabilities in the Portal.
+The summary shows any requested ServiceAccount and namespace or cluster-wide permissions already recorded in the
+Policy. Platform administrators manage this configuration outside the Portal;
+authorization requires separately approved platform grants. Saving other Policy
+fields preserves the existing Kubernetes access configuration.
+
+The Internal network access editor groups each destination CIDR and its complete
+port list into one rule card, matching one `allowedInternalCIDRs` entry. Edit rule
+opens the entire rule; Update rule replaces its destination and ports together.
+Cancel discards the draft. Delete rule removes the entire entry. In the editor,
+ports are comma-separated, such as `443, 5432, 53/UDP`, and use TCP unless `/UDP`
+or `/SCTP` is specified. Rule changes are submitted when the Policy is saved.
+
+Agent Identity, Entra ID, blocked FQDNs, and ingress mTLS are read-only in this
+editor. Existing values remain visible and are preserved when other fields are
+saved. FQDN blocking and mTLS lack supported enforcement; Agent Identity lacks
+the credential-service evidence needed for aggregate `PolicyApplied`. Other
+controls also depend on the selected execution profile and platform capabilities.
+For example, native single-start rejects internal CIDR exceptions, SCTP blocked
+ports, Kubernetes access, and Entra ID.
+
+The Operator retains the Policy's `Accepted` condition for controller decisions
+and diagnostics; the Portal list and editor do not display this status.
+`Accepted=True` describes configuration acceptance only: Sandbox compatibility,
+Agent authorization, and runtime enforcement must still succeed. Saving a Policy
+does not prove that its consumers have applied it. Editing an already-bound
+Policy can affect those consumers.
 
 #### HTTP API
 
@@ -351,9 +377,18 @@ These admin-only endpoints manage `AgentPolicy` resources:
 - `GET`, `PUT`, and `DELETE /api/v1/admin/policies/{name}`
 
 Update and delete requests include the UID and resource version returned by a
-previous read. Stale requests fail with `409 Conflict`. Updates change only the
-Portal-managed fields and preserve security, network, identity, Kubernetes
-access, and other fields owned by their executing components.
+previous read. Stale requests fail with `409 Conflict`. Responses include all
+Policy configuration groups, `generation`, `observedGeneration`, `conditions`,
+and `deleting`. These status fields are read-only.
+
+For newly exposed fields, omission preserves the stored value, including omitted
+nested network fields. Explicit empty arrays clear editable lists.
+Kubernetes access, Identity, Entra ID, blocked FQDNs, and mTLS cannot be changed
+through this API. Attempts to change or clear Kubernetes access are rejected;
+omitting it preserves the existing configuration. Existing clients that
+send only Harnesses, skills, and model access continue to preserve all other
+configuration. Updates retain metadata, status, and the existing coordinated
+mutation and optimistic concurrency protections.
 
 When strict Sandbox admission uses a UID-pinned configuration authority, set
 the Portal chart's `configurationCoordination.namespace`, `name`, and `uid` to
@@ -418,13 +453,14 @@ available form choices do not establish Sandbox readiness.
 
 #### Activation boundary
 
-The Portal provides no control for `Team.spec.agentPolicyRef`, `sandboxRefs`,
-or `defaultSandboxRef`. An administrator must use another Kubernetes client to
-bind a Policy. Portal binding should be added only after the Sandbox and AI
-Gateway execution paths are completed and validated.
+The Team editor manages `agentPolicyRef`, `sandboxRefs`, and `defaultSandboxRef`.
+Multiple permitted Sandboxes require the selected Policy's
+`sandboxSelection.allowMultiple`. When switching to a restrictive Policy,
+existing selections remain visible and must be corrected before saving; the
+Portal does not silently remove bindings. Backend validation re-reads the Policy
+before accepting the Team request, and admission remains authoritative.
 
-Production Sandbox start and observation still require implementation and
-qualification. See the
+Available configuration controls do not establish runtime readiness. See the
 [operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})
 for the execution-hold, authority, and validation boundaries.
 

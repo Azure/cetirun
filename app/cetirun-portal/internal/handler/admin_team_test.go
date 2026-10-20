@@ -351,6 +351,32 @@ func TestAdminTeamRejectsIncompleteOrUnavailableBindings(t *testing.T) {
 	}
 }
 
+func TestAdminTeamRequiresPolicyForMultipleSandboxes(t *testing.T) {
+	request := TeamUpsertRequest{
+		Name: "example", AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard", "restricted"}, DefaultSandboxRef: "standard",
+	}
+	body, _ := json.Marshal(request)
+	h := newAdminTeamHandler()
+	w := httptest.NewRecorder()
+	h.CreateTeam(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body)))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "allows only one Sandbox") {
+		t.Fatalf("single-sandbox policy accepted multiple refs: %d %s", w.Code, w.Body.String())
+	}
+
+	allowMultiple := &cetirunv1alpha1.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "multi-policy"},
+		Spec:       cetirunv1alpha1.AgentPolicySpec{SandboxSelection: cetirunv1alpha1.SandboxSelectionPolicy{AllowMultiple: true}},
+	}
+	h = newAdminTeamHandler(allowMultiple)
+	request.AgentPolicyRef = "multi-policy"
+	body, _ = json.Marshal(request)
+	w = httptest.NewRecorder()
+	h.CreateTeam(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body)))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("multiple-sandbox policy rejected multiple refs: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAdminTeamRequiresCurrentVersion(t *testing.T) {
 	for _, version := range []string{"", "stale"} {
 		h := newAdminTeamHandler(&cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: "example"}})

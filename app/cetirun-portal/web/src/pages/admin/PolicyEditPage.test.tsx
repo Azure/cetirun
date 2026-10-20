@@ -2,10 +2,12 @@
 // Licensed under the MIT License.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PolicyEditPage } from "./PolicyEditPage";
+import { fromPolicyDTO, toPolicyRequest } from "./PolicyEditPage";
 import * as policyAPI from "../../api/adminPolicy";
 
 vi.mock("../../api/adminPolicy", async (importOriginal) => {
@@ -46,6 +48,27 @@ describe("PolicyEditPage", () => {
       "gpt-4.1\ngpt-4o-mini",
     );
     expect(screen.getAllByText(/commas are not separators/i)).toHaveLength(2);
+    const readonly = within(screen.getByRole("region", { name: "Read-only policy capabilities" }));
+    const kubernetes = within(readonly.getByRole("region", { name: "Kubernetes API access" }));
+    expect(kubernetes.getByText("No Kubernetes API access is configured in this policy.")).toBeInTheDocument();
+    expect(kubernetes.queryByRole("switch")).not.toBeInTheDocument();
+    expect(kubernetes.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(kubernetes.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("clears the Gateway budget when the last model source is removed", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={["/admin/policies/create"]}><Routes>
+      <Route path="/admin/policies/create" element={<PolicyEditPage />} />
+    </Routes></MemoryRouter></QueryClientProvider>);
+    const copilot = screen.getByRole("switch", { name: "Allow GitHub Copilot" });
+    const budget = screen.getByRole("switch", { name: "Set monthly Gateway budget" });
+    await user.click(copilot);
+    await user.click(budget);
+    expect(budget).toBeChecked();
+    await user.click(copilot);
+    expect(budget).not.toBeChecked();
   });
 
   it("edits a policy named new instead of entering create mode", async () => {
@@ -53,6 +76,11 @@ describe("PolicyEditPage", () => {
       name: "new",
       uid: "policy-uid",
       resourceVersion: "42",
+      kubernetesAccess: {
+        serviceAccountName: "agent-access",
+        roleBindings: [{ namespace: "tools", clusterRoleName: "view" }],
+        clusterRoleBindings: [{ clusterRoleName: "cluster-reader" }],
+      },
       harnesses: { allowed: ["openclaw"] },
       skills: { allowed: [] },
       modelAccess: {
@@ -80,6 +108,14 @@ describe("PolicyEditPage", () => {
 
     expect(await screen.findByText("Agent policy: new")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Name" })).toBeDisabled();
+    const readonly = within(screen.getByRole("region", { name: "Read-only policy capabilities" }));
+    const kubernetes = within(readonly.getByRole("region", { name: "Kubernetes API access" }));
+    expect(kubernetes.getByText("Service account: agent-access")).toBeInTheDocument();
+    expect(kubernetes.getByText("ClusterRole view in namespace tools")).toBeInTheDocument();
+    expect(kubernetes.getByText("ClusterRole cluster-reader")).toBeInTheDocument();
+    expect(kubernetes.queryByRole("switch")).not.toBeInTheDocument();
+    expect(kubernetes.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(kubernetes.queryByRole("button")).not.toBeInTheDocument();
     fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
 
     await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledWith("new", expect.objectContaining({
@@ -87,6 +123,148 @@ describe("PolicyEditPage", () => {
       uid: "policy-uid",
       resourceVersion: "42",
     })));
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1]).not.toHaveProperty("kubernetesAccess");
     expect(policyAPI.createPolicy).not.toHaveBeenCalled();
+  });
+
+  it("maps editable policy controls and excludes read-only capability fields", () => {
+    const request = toPolicyRequest({
+      ...fromPolicyDTO({
+        name: "standard", uid: "policy-uid", resourceVersion: "42", harnesses: { allowed: ["openclaw"] },
+        agentIdentity: { allowed: true, required: true, credentialServices: ["azure-resource-manager"] },
+        entraID: { enabled: true },
+        kubernetesAccess: { serviceAccountName: "portal.agent", roleBindings: [{ namespace: "tools", clusterRoleName: "reader" }] },
+        network: { blockedFQDNs: ["example.com"], ingress: { requireMTLS: true } },
+      }),
+      allowMultiple: true,
+      readOnlyRootFilesystem: false,
+      blockedCIDRs: "10.0.0.0/8\n2001:db8::/32",
+      blockedPorts: [{ port: 443, protocol: "TCP" }],
+      allowedInternalCIDRs: [{ cidr: "10.1.0.0/16", ports: "53/UDP" }],
+      ingressMode: "disabled",
+      budgetEnabled: true,
+      defaultMonthlyUSD: "20",
+      maxMonthlyUSD: "50",
+    });
+    expect(request).toMatchObject({
+      sandboxSelection: { allowMultiple: true }, security: { readOnlyRootFilesystem: false },
+      network: {
+        blockedCIDRs: ["10.0.0.0/8", "2001:db8::/32"], blockedPorts: [{ port: 443, protocol: "TCP" }],
+        allowedInternalCIDRs: [{ cidr: "10.1.0.0/16", ports: [{ port: 53, protocol: "UDP" }] }], ingress: { mode: "disabled" },
+      },
+      modelAccess: { gatewayBudget: { defaultMonthlyUSD: "20", maxMonthlyUSD: "50" } },
+    });
+    expect(request).not.toHaveProperty("kubernetesAccess");
+    expect(JSON.stringify(request)).not.toContain("agentIdentity");
+    expect(JSON.stringify(request)).not.toContain("entraID");
+    expect(JSON.stringify(request)).not.toContain("blockedFQDNs");
+    expect(JSON.stringify(request)).not.toContain("requireMTLS");
+  });
+
+  it("preserves every port and protocol when an existing policy is saved", () => {
+    const rules: policyAPI.AgentPolicyCIDRRule[] = [{
+      cidr: "10.20.0.0/24",
+      ports: [{ port: 443, protocol: "TCP" }, { port: 443, protocol: "UDP" }, { port: 5000, protocol: "SCTP" }],
+    }];
+    const form = fromPolicyDTO({
+      name: "standard", uid: "policy-uid", resourceVersion: "42", harnesses: { allowed: ["openclaw"] },
+      network: { allowedInternalCIDRs: rules },
+    });
+    expect(form.allowedInternalCIDRs[0].ports).toBe("443, 443/UDP, 5000/SCTP");
+    expect(toPolicyRequest(form).network?.allowedInternalCIDRs).toEqual(rules);
+  });
+
+  it("edits and deletes whole rule groups, and discards cancelled edits", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={["/admin/policies/create"]}><Routes>
+      <Route path="/admin/policies/create" element={<PolicyEditPage />} />
+      <Route path="/admin/policies" element={<div>Policy list</div>} />
+    </Routes></MemoryRouter></QueryClientProvider>);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "standard");
+    const section = within(screen.getByRole("region", { name: "Internal network access" }));
+    const setDraft = async (cidr: string, ports: string) => {
+      // Tabster temporarily applies aria-hidden while its portal modalizer settles in jsdom.
+      // Assert against the mounted dialog and wait for actual unmount before opening the next one.
+      const dialog = within(await screen.findByRole("dialog", { hidden: true }));
+      fireEvent.change(dialog.getByRole("textbox", { name: "Destination (CIDR)", hidden: true }), { target: { value: cidr } });
+      fireEvent.change(dialog.getByRole("textbox", { name: "Allowed ports", hidden: true }), { target: { value: ports } });
+      return dialog;
+    };
+    const closed = async () => {
+      await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument());
+      await section.findByRole("button", { name: "Add network rule" });
+    };
+    for (const [cidr, ports] of [["10.20.0.0/24", "443, 5432, 53/udp"], ["10.30.0.0/24", "80, 8080"]]) {
+      await user.click(section.getByRole("button", { name: "Add network rule" }));
+      const dialog = await setDraft(cidr, ports);
+      await user.click(dialog.getByRole("button", { name: "Add rule", exact: true, hidden: true }));
+      await closed();
+    }
+    expect(section.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(section.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(section.queryByRole("button", { name: /add port|remove/i })).not.toBeInTheDocument();
+    const first = within(section.getByRole("group", { name: "Internal network rule 1" }));
+    expect(first.getByText("10.20.0.0/24")).toBeInTheDocument();
+    expect(first.getByText("443, 5432, 53/UDP")).toBeInTheDocument();
+    await user.click(first.getByRole("button", { name: "Edit rule" }));
+    let dialog = await setDraft("10.40.0.0/24", "8443");
+    await user.click(dialog.getByRole("button", { name: "Cancel", exact: true, hidden: true }));
+    await closed();
+    expect(first.getByText("10.20.0.0/24")).toBeInTheDocument();
+    expect(first.getByText("443, 5432, 53/UDP")).toBeInTheDocument();
+    await user.click(first.getByRole("button", { name: "Edit rule" }));
+    dialog = await setDraft("10.30.0.0/24", "8443");
+    await user.click(dialog.getByRole("button", { name: "Update rule", hidden: true }));
+    expect(dialog.getByText(/This destination already has a rule/)).toBeInTheDocument();
+    dialog = await setDraft("10.40.0.0/24", "8443, 5353/udp");
+    await user.click(dialog.getByRole("textbox", { name: "Allowed ports", hidden: true }));
+    await user.keyboard("{Enter}");
+    await closed();
+    expect(first.getByText("10.40.0.0/24")).toBeInTheDocument();
+    expect(first.getByText("8443, 5353/UDP")).toBeInTheDocument();
+    expect(policyAPI.createPolicy).not.toHaveBeenCalled();
+    const second = within(section.getByRole("group", { name: "Internal network rule 2" }));
+    await user.click(second.getByRole("button", { name: "Delete rule" }));
+    expect(section.getAllByRole("group")).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Create", exact: true }));
+    await waitFor(() => expect(policyAPI.createPolicy).toHaveBeenCalledWith(expect.objectContaining({
+      network: expect.objectContaining({ allowedInternalCIDRs: [{
+        cidr: "10.40.0.0/24", ports: [{ port: 8443, protocol: "TCP" }, { port: 5353, protocol: "UDP" }],
+      }] }),
+    }), expect.anything()));
+  });
+
+  it("keeps invalid drafts out of the rule list and discards them on cancel", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={["/admin/policies/create"]}><Routes>
+      <Route path="/admin/policies/create" element={<PolicyEditPage />} />
+      <Route path="/admin/policies" element={<div>Policy list</div>} />
+    </Routes></MemoryRouter></QueryClientProvider>);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "standard");
+    const section = within(screen.getByRole("region", { name: "Internal network access" }));
+    await user.click(section.getByRole("button", { name: "Add network rule" }));
+    const dialog = within(await screen.findByRole("dialog", { hidden: true }));
+    const submitRule = () => fireEvent.submit(dialog.getByRole("button", { name: "Add rule", exact: true, hidden: true }).closest("form")!);
+    fireEvent.change(dialog.getByRole("textbox", { name: "Destination (CIDR)", hidden: true }), { target: { value: "invalid-cidr" } });
+    submitRule();
+    expect(dialog.getByText(/Enter a valid destination CIDR/)).toBeInTheDocument();
+    fireEvent.change(dialog.getByRole("textbox", { name: "Destination (CIDR)", hidden: true }), { target: { value: "10.20.0.0/24" } });
+    const ports = dialog.getByRole("textbox", { name: "Allowed ports", hidden: true });
+    for (const value of ["", "443,", "0", "65536", "443/HTTP", "443, 443/TCP", "80-90", "4e2"]) {
+      fireEvent.change(ports, { target: { value } });
+      submitRule();
+      expect(dialog.getByText(/ports from|appear only once/)).toBeInTheDocument();
+      expect(ports).toHaveValue(value);
+      expect(policyAPI.createPolicy).not.toHaveBeenCalled();
+    }
+    await user.click(dialog.getByRole("button", { name: "Cancel", exact: true, hidden: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument());
+    expect(section.getByText("No additional internal access configured.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create", exact: true }));
+    await waitFor(() => expect(policyAPI.createPolicy).toHaveBeenCalledWith(expect.objectContaining({
+      network: expect.objectContaining({ allowedInternalCIDRs: [] }),
+    }), expect.anything()));
   });
 });
