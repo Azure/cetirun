@@ -72,6 +72,9 @@ interruption. This requests a replacement Pod through the existing controller;
 it does not delete the Agent, namespace or HOME PVC. Persistent files and the
 existing Gateway key identity and spending history are retained. Active process
 sessions are interrupted, and Pod-local temporary files are not retained.
+Closing the confirmation dialog before submitting discards that draft; reopening
+uses the currently displayed Agent version. After a request was sent with an
+uncertain result, closing the dialog retains its ID and version for a safe retry.
 
 The owner API is `POST /api/v1/instances/{name}/restart`. Send the current
 `uid` and `resourceVersion` in the JSON body and an `Idempotency-Key` header
@@ -92,9 +95,12 @@ Suspension and deletion take precedence; restart cannot resume a suspended
 Agent. Current policy and runtime checks still apply. Earlier single-start
 Sandbox lifetimes reject this operation rather than converting their records.
 Custom Agents use their existing approved shutdown and apply path, not a new
-executor. Use matching Operator, Portal, CRDs and runtime chart versions that
-support this operation; a chart that omits the requested template marker cannot
-produce a completed restart.
+executor. The Operator renders their restart marker through the existing
+`podAnnotations` chart contract, so approved older Custom chart pins do not need
+an upgrade to restart, stop or resume. The marker remains controller-owned;
+caller-supplied values are rejected. Use Operator, Portal and CRD versions that
+support the restart API. A chart that omits the required annotation contract
+cannot produce a completed restart.
 
 This operation is a normal retained restart. It does not provide node migration,
 force deletion, physical writer fencing, or recovery from an unreachable source.

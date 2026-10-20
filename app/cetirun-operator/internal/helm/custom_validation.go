@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -107,7 +108,7 @@ func (p *PreparedRelease) validateCustomManifest(namespace, release string, mani
 	if err := p.validateCustomAgentIdentity(bindings); err != nil {
 		return err
 	}
-	if err := validateCustomPlatformValues(p.Values, p.Agent); err != nil {
+	if err := validateCustomPlatformValues(p.Values, p.Agent, bindings.RestartRequestID); err != nil {
 		return err
 	}
 	name := text(p.Values["fullnameOverride"])
@@ -394,8 +395,7 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 		annotations := sts.Spec.Template.Annotations
 		annotationCount := 4 + len(object(p.Values["podAnnotations"]))
 		if b.RestartRequestID != "" {
-			annotationCount++
-			if annotations["cetirun.microsoft.com/restart-request-id"] != b.RestartRequestID {
+			if annotations[api.AnnotationRestartRequestID] != b.RestartRequestID {
 				return fail()
 			}
 		}

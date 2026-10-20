@@ -2,13 +2,14 @@
 // Licensed under the MIT License.
 
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Instance } from "../types/instance";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Instance, RestartInstanceRequest } from "../types/instance";
 import { RestartAgentButton } from "./RestartAgentButton";
 
 const mutation = vi.hoisted(() => ({
   mutate: vi.fn(), reset: vi.fn(), isPending: false, isError: false,
   error: new Error("Connection interrupted"), data: undefined as Instance | undefined,
+  variables: undefined as RestartInstanceRequest | undefined,
 }));
 vi.mock("../hooks/useInstance", () => ({ useRestartInstanceByName: () => mutation }));
 
@@ -26,8 +27,15 @@ describe("RestartAgentButton", () => {
     mutation.isPending = false;
     mutation.isError = false;
     mutation.data = undefined;
-    mutation.reset.mockImplementation(() => { mutation.isError = false; mutation.data = undefined; });
+    mutation.variables = undefined;
+    mutation.mutate.mockImplementation((request: RestartInstanceRequest) => { mutation.variables = request; });
+    mutation.reset.mockImplementation(() => {
+      mutation.isError = false;
+      mutation.data = undefined;
+      mutation.variables = undefined;
+    });
   });
+  afterEach(() => vi.restoreAllMocks());
 
   it("confirms a retained restart using the originally displayed Agent version", () => {
     const view = render(<RestartAgentButton instance={instance} />);
@@ -77,5 +85,54 @@ describe("RestartAgentButton", () => {
   it("does not offer restart when the server reports it unavailable", () => {
     render(<RestartAgentButton instance={{ ...instance, phase: "Suspended", restartAvailable: false }} />);
     expect(screen.getByRole("button", { name: "Restart Agent" })).toBeDisabled();
+  });
+
+  it.each(["Cancel", "Escape"])("discards an unsent draft on %s and uses the newly displayed version", (dismissal) => {
+    const uuid = vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000002");
+    const view = render(<RestartAgentButton instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    if (dismissal === "Cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    else fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mutation.mutate).not.toHaveBeenCalled();
+    view.rerender(<RestartAgentButton instance={{ ...instance, resourceVersion: "8" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart", exact: true }));
+    expect(mutation.mutate).toHaveBeenCalledWith({
+      uid: instance.uid, resourceVersion: "8", requestId: "00000000-0000-4000-8000-000000000002",
+    }, expect.anything());
+    expect(uuid).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["Cancel", "Escape"])("retains a sent uncertain request across %s and reopening", (dismissal) => {
+    const uuid = vi.spyOn(crypto, "randomUUID")
+      .mockReturnValue("00000000-0000-4000-8000-000000000001");
+    const view = render(<RestartAgentButton instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart", exact: true }));
+    const sent = mutation.mutate.mock.calls[0][0];
+    mutation.isError = true;
+    view.rerender(<RestartAgentButton instance={{ ...instance, resourceVersion: "8" }} />);
+    if (dismissal === "Cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    else fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry request" }));
+    expect(mutation.mutate.mock.calls[1][0]).toEqual(sent);
+    expect(uuid).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not dismiss a request while submission is pending", () => {
+    const view = render(<RestartAgentButton instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart", exact: true }));
+    mutation.isPending = true;
+    view.rerender(<RestartAgentButton instance={instance} />);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(mutation.mutate).toHaveBeenCalledTimes(1);
   });
 });

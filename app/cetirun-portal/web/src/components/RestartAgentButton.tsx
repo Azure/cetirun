@@ -34,6 +34,12 @@ export function RestartAgentButton({ instance }: { instance: Instance }) {
     setOpen(true);
   };
 
+  const closeDialog = () => {
+    if (restart.isPending) return;
+    setOpen(false);
+    if (!restart.variables) setRequest(null);
+  };
+
   return <>
     <Button onClick={openDialog} disabled={!instance.restartAvailable || pending || restart.isPending}>
       Restart Agent
@@ -41,7 +47,11 @@ export function RestartAgentButton({ instance }: { instance: Instance }) {
     {pending && <Text role="status">
       Restart requested; waiting for the replacement Pod to become ready. Suspension or deletion takes precedence.
     </Text>}
-    <Dialog open={open} onOpenChange={(_, data) => { if (!restart.isPending) setOpen(data.open); }}>
+    <Dialog open={open} onOpenChange={(_, data) => {
+      if (restart.isPending) return;
+      if (data.open) setOpen(true);
+      else closeDialog();
+    }}>
       <DialogSurface>
         <DialogBody>
           <DialogTitle>Restart Agent</DialogTitle>
@@ -53,7 +63,7 @@ export function RestartAgentButton({ instance }: { instance: Instance }) {
             </Text>}
           </DialogContent>
           <DialogActions>
-            <Button onClick={() => setOpen(false)} disabled={restart.isPending}>Cancel</Button>
+            <Button onClick={closeDialog} disabled={restart.isPending}>Cancel</Button>
             <Button appearance="primary" disabled={restart.isPending || request === null}
               onClick={() => {
                 if (request) restart.mutate(request, { onSuccess: () => { setOpen(false); setRequest(null); } });

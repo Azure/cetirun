@@ -55,9 +55,6 @@ annotations:
   cetirun.microsoft.com/custom-plan-hash: {{ .Values.runtime.workloadHash | quote }}
   cetirun.microsoft.com/model-revision: {{ $bindings.model.revision | quote }}
   cetirun.microsoft.com/context-revision: {{ $bindings.context.revision | quote }}
-  {{- with $bindings.restartRequestID }}
-  cetirun.microsoft.com/restart-request-id: {{ . | quote }}
-  {{- end }}
   {{- else }}
   checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
   checksum/secret: {{ include (print .Template.BasePath "/secret.yaml") . | sha256sum }}
