@@ -240,7 +240,7 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 		return sandboxworkload.ErrExecutionHeld
 	}
 	if prepared.sandboxReconcile != nil {
-		if err := prepared.checkSandboxReconcile(context.Background()); err != nil {
+		if err := prepared.AuthorizeSandboxApply(context.Background()); err != nil {
 			return err
 		}
 	}

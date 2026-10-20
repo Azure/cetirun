@@ -705,6 +705,37 @@ func newSandboxRuntimeFixtureForAgent(t *testing.T, native bool, skills []string
 	setup ...func(*AgentReconciler, client.Client),
 ) *nativeSandboxFixture {
 	t.Helper()
+	f, input := newUnreconciledSandboxRuntimeFixture(t, native, skills, reconciled, kind, shared, copilot, setup...)
+	f.reconcileOK(t)
+	namespace := &corev1.Namespace{}
+	if err := f.kube.Get(context.Background(), client.ObjectKey{Name: instanceNamespace(input.Agent.Name)}, namespace); err != nil {
+		t.Fatal("cold reconciliation did not bootstrap the namespace:", err)
+	}
+	f.assertNotReady(t)
+	// The fake API has no namespace controller to create the default account.
+	serviceAccount := input.ServiceAccount.DeepCopy()
+	serviceAccount.UID, serviceAccount.ResourceVersion = "", ""
+	if err := f.kube.Create(context.Background(), serviceAccount); err != nil && !(reconciled && apierrors.IsAlreadyExists(err)) {
+		t.Fatal(err)
+	}
+	if len(skills) != 0 {
+		claim := input.Input.Skills.DeepCopy()
+		claim.UID, claim.ResourceVersion = "", ""
+		claim.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Team", Name: input.Team.Name, UID: input.Team.UID}}
+		if err := f.kube.Create(context.Background(), claim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reconciled {
+		f.reconcileOK(t)
+	}
+	return f
+}
+
+func newUnreconciledSandboxRuntimeFixture(t *testing.T, native bool, skills []string, reconciled bool, kind string, shared, copilot bool,
+	setup ...func(*AgentReconciler, client.Client),
+) (*nativeSandboxFixture, testfixture.Fixture) {
+	t.Helper()
 	input := testfixture.New(kind)
 	input.Team.Spec.Skills = skills
 	input.Policy.Spec.Skills.Allowed = slices.Clone(skills)
@@ -820,30 +851,7 @@ func newSandboxRuntimeFixtureForAgent(t *testing.T, native bool, skills []string
 		configure(r, kube)
 	}
 	f := &nativeSandboxFixture{r: r, kube: kube, gateway: gateway, installer: installer, agent: input.Agent}
-	f.reconcileOK(t)
-	namespace := &corev1.Namespace{}
-	if err := kube.Get(context.Background(), client.ObjectKey{Name: instanceNamespace(input.Agent.Name)}, namespace); err != nil {
-		t.Fatal("cold reconciliation did not bootstrap the namespace:", err)
-	}
-	f.assertNotReady(t)
-	// The fake API has no namespace controller to create the default account.
-	serviceAccount := input.ServiceAccount.DeepCopy()
-	serviceAccount.UID, serviceAccount.ResourceVersion = "", ""
-	if err := kube.Create(context.Background(), serviceAccount); err != nil && !(reconciled && apierrors.IsAlreadyExists(err)) {
-		t.Fatal(err)
-	}
-	if len(skills) != 0 {
-		claim := input.Input.Skills.DeepCopy()
-		claim.UID, claim.ResourceVersion = "", ""
-		claim.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Team", Name: input.Team.Name, UID: input.Team.UID}}
-		if err := kube.Create(context.Background(), claim); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if reconciled {
-		f.reconcileOK(t)
-	}
-	return f
+	return f, input
 }
 
 func (f *nativeSandboxFixture) reconcile() (ctrl.Result, error) {

@@ -33,6 +33,7 @@ import (
 
 type sharedSandboxInstaller struct {
 	*nativeSandboxInstaller
+	beforeApply func(*helm.PreparedRelease) error
 }
 
 func (i *sharedSandboxInstaller) Prepare(_ string, values map[string]any, version string) (*helm.PreparedRelease, error) {
@@ -47,6 +48,14 @@ func (i *sharedSandboxInstaller) Refresh(prepared *helm.PreparedRelease, values 
 }
 
 func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, _ string, prepared *helm.PreparedRelease) error {
+	if i.beforeApply != nil {
+		if err := i.beforeApply(prepared); err != nil {
+			return err
+		}
+	}
+	if err := prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+		return err
+	}
 	manifest, err := prepared.SandboxManifest()
 	if err != nil {
 		return err
@@ -579,6 +588,279 @@ func withReconciledCoordination(t *testing.T) func(*AgentReconciler, client.Clie
 			Client: kube, APIReader: kube, Namespace: authority.Namespace,
 			Identity: w.ObjectIdentity{Name: authority.Name, UID: authority.UID},
 		}
+	}
+}
+
+func TestReconciledSandboxDeletionCancelsBeforeFirstApply(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false,
+				withReconciledCoordination(t))
+			if f.installer.stages != 0 {
+				t.Fatal("fixture already submitted a workload")
+			}
+			original := f.r.Client
+			injected := errors.New("synthetic final preparation guard failure")
+			published := false
+			var stateKey client.ObjectKey
+			f.r.Client = interceptor.NewClient(f.kube.(client.WithWatch), interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+					if err := c.Create(ctx, object, opts...); err != nil {
+						return err
+					}
+					if state, ok := object.(*corev1.ConfigMap); ok && state.Data[w.PodExpectationKey] != "" {
+						published = true
+						stateKey = client.ObjectKeyFromObject(state)
+					}
+					return nil
+				},
+			})
+			f.r.APIReader = interceptor.NewClient(f.kube.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					if published && key == stateKey {
+						return injected
+					}
+					return c.Get(ctx, key, object, opts...)
+				},
+			})
+			if _, err := f.reconcile(); err == nil || !published || f.installer.stages != 0 {
+				t.Fatalf("fixture did not fail after publication and before submission: published=%t, applies=%d, error=%v",
+					published, f.installer.stages, err)
+			}
+			f.r.Client, f.r.APIReader = original, f.kube
+			agent := f.current(t)
+			if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID); err != nil || !found {
+				t.Fatal("pre-submit fixture has no source reservation:", err)
+			}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: instanceServiceName(agent.Name)}, &appsv1.StatefulSet{}); !apierrors.IsNotFound(err) {
+				t.Fatal("pre-submit fixture has a main workload:", err)
+			}
+			if err := f.kube.Delete(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			state := &corev1.ConfigMap{}
+			if err := f.kube.Get(ctx, stateKey, state); err != nil ||
+				state.Annotations[sandboxApplyStateAnnotation] != sandboxApplyCancelled {
+				t.Fatal("pre-submit cancellation was not durably recorded:", err)
+			}
+			if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID); err != nil || found {
+				t.Fatal("never-submitted deletion retained its source reservation:", err)
+			}
+			if err := f.kube.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+				t.Fatal("never-submitted deletion retained its Agent finalizer:", err)
+			}
+		})
+	}
+}
+
+func TestReconciledSandboxSubmissionOutcomeControlsCancellation(t *testing.T) {
+	for _, scenario := range []string{"submitted", "legacy", "lost-submit-ack", "failed-submit-write", "cancellation-conflict", "remaining-pod"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false,
+				withReconciledCoordination(t))
+			installer := f.r.HelmClient.(*sharedSandboxInstaller)
+			injected := errors.New("synthetic interrupted apply")
+			var prepared *helm.PreparedRelease
+			installer.beforeApply = func(value *helm.PreparedRelease) error {
+				prepared = value
+				if scenario != "cancellation-conflict" && scenario != "remaining-pod" {
+					if err := value.AuthorizeSandboxApply(ctx); err != nil {
+						return err
+					}
+				}
+				return injected
+			}
+			if scenario == "lost-submit-ack" || scenario == "failed-submit-write" {
+				f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						if state, ok := object.(*corev1.ConfigMap); ok && state.Annotations[sandboxApplyStateAnnotation] == sandboxApplySubmitted {
+							if scenario == "failed-submit-write" {
+								return injected
+							}
+							if err := c.Patch(ctx, object, patch, opts...); err != nil {
+								return err
+							}
+							return injected
+						}
+						return c.Patch(ctx, object, patch, opts...)
+					},
+				})
+			}
+			if _, err := f.reconcile(); !errors.Is(err, injected) || prepared == nil || f.installer.stages != 0 {
+				t.Fatal("fixture did not interrupt the intended submission boundary:", err)
+			}
+			f.r.Client = f.kube
+			agent := f.current(t)
+			expected := reconciledExpectationForTest(t, f)
+			state := &corev1.ConfigMap{}
+			stateKey := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: w.PodExpectationName(expected.Namespace.Name, expected.Namespace.UID)}
+			if err := f.kube.Get(ctx, stateKey, state); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "legacy" {
+				delete(state.Annotations, sandboxApplyStateAnnotation)
+				if err := f.kube.Update(ctx, state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "submitted" || scenario == "legacy" || scenario == "lost-submit-ack" {
+				previousState := state.Annotations[sandboxApplyStateAnnotation]
+				installer.beforeApply = func(value *helm.PreparedRelease) error {
+					prepared = value
+					return injected
+				}
+				if _, err := f.reconcile(); !errors.Is(err, injected) {
+					t.Fatal("retry did not reach the intended apply boundary:", err)
+				}
+				if err := f.kube.Get(ctx, stateKey, state); err != nil ||
+					state.Annotations[sandboxApplyStateAnnotation] != previousState {
+					t.Fatal("retry downgraded an uncertain submission to pending:", err)
+				}
+			}
+			if scenario == "cancellation-conflict" {
+				f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						if state, ok := object.(*corev1.ConfigMap); ok && state.Annotations[sandboxApplyStateAnnotation] == sandboxApplyCancelled {
+							concurrent := &corev1.ConfigMap{}
+							if err := c.Get(ctx, client.ObjectKeyFromObject(state), concurrent); err != nil {
+								return err
+							}
+							// Model a submission that passed its source guard before
+							// Stopping and won the expectation CAS during cancellation.
+							concurrent.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
+							if err := c.Update(ctx, concurrent); err != nil {
+								return err
+							}
+						}
+						return c.Patch(ctx, object, patch, opts...)
+					},
+				})
+			}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name: "synthetic-unexpected-pod", Namespace: expected.Namespace.Name,
+			}}
+			if scenario == "remaining-pod" {
+				if err := f.kube.Create(ctx, pod); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.kube.Delete(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.reconcile()
+			ticket, found, readErr := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
+			if scenario == "failed-submit-write" {
+				if err != nil || readErr != nil || found {
+					t.Fatal("confirmed unsubmitted apply could not cancel:", err, readErr)
+				}
+			} else if err == nil || readErr != nil || !found || ticket.Reservation.Phase != sandboxcoordination.Stopping {
+				t.Fatal("uncertain submission or incomplete quiescence released the reservation:", err, readErr)
+			}
+			if scenario == "cancellation-conflict" && !apierrors.IsConflict(err) {
+				t.Fatal("cancellation failed to enforce its resource-version CAS:", err)
+			}
+			if err := prepared.AuthorizeSandboxApply(ctx); err == nil {
+				t.Fatal("stopped or cancelled preparation still authorized an apply")
+			}
+			if scenario == "remaining-pod" {
+				if err := f.kube.Delete(ctx, pod); err != nil {
+					t.Fatal(err)
+				}
+				for range 3 {
+					f.reconcileOK(t)
+				}
+				if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID); err != nil || found {
+					t.Fatal("confirmed cancellation did not finish after ordinary Pod cleanup:", err)
+				}
+			}
+		})
+	}
+}
+
+func TestReconciledSandboxPublicationPrecedesSourceReservation(t *testing.T) {
+	for _, written := range []bool{false, true} {
+		t.Run(fmt.Sprintf("write-ack-lost-%t", written), func(t *testing.T) {
+			ctx := context.Background()
+			f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false,
+				withReconciledCoordination(t))
+			attempted := false
+			f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+					if state, ok := object.(*corev1.ConfigMap); ok && state.Data[w.PodExpectationKey] != "" {
+						attempted = true
+						if written {
+							if err := c.Create(ctx, object, opts...); err != nil {
+								return err
+							}
+						}
+						return errors.New("synthetic publication failure")
+					}
+					return c.Create(ctx, object, opts...)
+				},
+			})
+			if _, err := f.reconcile(); err == nil || !attempted || f.installer.stages != 0 {
+				t.Fatal("fixture did not fail at expectation publication:", err)
+			}
+			if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, f.agent.UID); err != nil || found {
+				t.Fatal("failed publication acquired a reservation without confirmed cleanup state:", err)
+			}
+			f.r.Client = f.kube
+			if err := f.kube.Delete(ctx, f.current(t)); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			if err := f.kube.Get(ctx, client.ObjectKeyFromObject(f.agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+				t.Fatal("failed publication blocked ordinary deletion:", err)
+			}
+		})
+	}
+}
+
+func TestReconciledSandboxCancelledPreparationCannotReplayAfterResume(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "hermes", true, false,
+		withReconciledCoordination(t))
+	installer := f.r.HelmClient.(*sharedSandboxInstaller)
+	var old *helm.PreparedRelease
+	injected := errors.New("synthetic pause before first apply")
+	installer.beforeApply = func(prepared *helm.PreparedRelease) error {
+		old = prepared
+		return injected
+	}
+	if _, err := f.reconcile(); !errors.Is(err, injected) || old == nil {
+		t.Fatal("fixture did not pause at its pre-submit checkpoint:", err)
+	}
+	expected := reconciledExpectationForTest(t, f)
+	agent := f.current(t)
+	ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
+	if err != nil || !found {
+		t.Fatal("missing initial reservation:", err)
+	}
+	agent.Finalizers = append(agent.Finalizers, sandbox.HoldFinalizer)
+	if err := f.kube.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.r.stopNativeSandboxReservation(ctx, agent); err != nil {
+		t.Fatal("confirmed pre-submit checkpoint could not be cancelled:", err)
+	}
+	installer.beforeApply = nil
+	for range 3 {
+		f.reconcileOK(t)
+	}
+	next, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
+	if err != nil || !found || next.Reservation.ID == ticket.Reservation.ID || f.installer.stages != 1 ||
+		reconciledExpectationForTest(t, f).Home != expected.Home {
+		t.Fatal("cancelled checkpoint could not resume with new authority and the same HOME:", err)
+	}
+	if err := old.AuthorizeSandboxApply(ctx); err == nil {
+		t.Fatal("an old prepared apply reused authority acquired after cancellation")
 	}
 }
 

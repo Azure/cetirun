@@ -176,6 +176,12 @@ does not discard the pending stop or establish quiescence.
 Removed or never-created auxiliary Deployments still require their ReplicaSets
 and namespace Pods to be absent. Their absence does not replace the main HOME
 workload's acknowledged shutdown.
+A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
+StatefulSet shutdown acknowledgement, but only before any apply is submitted and
+after ordinary namespace/Pod cleanup checks. Cancellation races with submission
+through a conditional state update. Submitted, uncertain or older unmarked
+checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
+not evidence that no workload was submitted.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.
