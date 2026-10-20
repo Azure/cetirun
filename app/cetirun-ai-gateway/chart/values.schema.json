@@ -148,7 +148,7 @@
                 },
                 "encryptedContentAffinity": {
                     "type": "boolean",
-                    "description": "Keep each Responses API conversation on the deployment that encrypted its reasoning, or one with the same endpoint and key (LiteLLM's encrypted_content_affinity). When that deployment is unavailable, the conversation moves and the reasoning the new deployment cannot read is left out.",
+                    "description": "Keep each Responses API conversation on the deployment that encrypted its reasoning, or one with the same endpoint and key (LiteLLM's encrypted_content_affinity). When that deployment fails, the conversation's requests fail with it until it is in cooldown or marked unhealthy by the health checks; only then does the conversation move, without its encrypted reasoning.",
                     "default": true
                 },
                 "deploymentAffinity": {
