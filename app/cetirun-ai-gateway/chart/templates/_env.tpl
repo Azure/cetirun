@@ -4,8 +4,8 @@ Licensed under the MIT License.
 */}}
 
 {{/*
-Database connection only: all that schema migration needs, so it is all the
-migrate init container gets.
+Database connection only: all that schema migration needs, so it is the only
+credential the migrate init container gets.
 */}}
 {{- define "cetirun-ai-gateway.databaseEnv" -}}
 - name: DATABASE_URL
@@ -51,6 +51,9 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
        migrate on startup as well. */}}
 - name: DISABLE_SCHEMA_UPDATE
   value: "True"
+{{- end }}
+{{- if eq (include "cetirun-ai-gateway.priceTable" .) "bundled" }}
+{{ include "cetirun-ai-gateway.priceTableEnv" . }}
 {{- end }}
 {{- if .Values.auth.adminUI.enabled }}
 - name: UI_USERNAME
@@ -128,4 +131,16 @@ only applies to that collection; nothing else reads the variable.
 {{- define "cetirun-ai-gateway.monitoringEnv" -}}
 - name: AZMON_COLLECT_ENV
   value: "False"
+{{- end }}
+
+{{/*
+priceTable: bundled. LiteLLM reads the variable when it is imported: it then
+loads the price table in the image instead of downloading the current one, and
+a reload of the price table, from the console at once or on a schedule, loads
+that copy again. The proxy gets it, and so does the migrate init container,
+whose index build imports LiteLLM as well.
+*/}}
+{{- define "cetirun-ai-gateway.priceTableEnv" -}}
+- name: LITELLM_LOCAL_MODEL_COST_MAP
+  value: "True"
 {{- end }}
