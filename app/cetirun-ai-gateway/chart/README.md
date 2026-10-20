@@ -1132,6 +1132,10 @@ the console cannot remove it. It:
   change. A request the router sends to a model the key may not use gets a
   403, "This key may not use the model <name>.", with no retry, fallback or
   cooldown, and the Gateway logs a warning with the model and the key's alias.
+  The request log line of such a call has the status `failure`, `error_code`
+  403 and the router's name as `provider_model`, so the queries under
+  [Measuring the routers](#measuring-the-routers) count it as a failed attempt
+  of its tier under the router's name.
   When the key may use the model but none of its deployments is available,
   LiteLLM's own error applies. The call a router makes to its classifier model
   (`classifier_type: llm` and the other classifiers that ask a model) is made
@@ -1170,6 +1174,15 @@ llm` called its classifier model for a key not granted it, then served the
 tiers the key holds. A key granted the router by name and the master key
 reached every tier. The request log records a refused request with status
 `failure` and error code 403: one line, or two for a streamed request.
+
+On a test installation with two replicas and Azure OpenAI models, the same
+held: through a router configured in the chart, a key granted the router and
+its simple tier's model was answered on that tier and refused with the 403 on
+its medium and reasoning tiers, on the Chat Completions and Responses APIs,
+and a key granted every tier was answered on each; through a Team's router
+with an LLM classifier, a key not granted the classifier model got the
+classifier's decision and answers from the tiers it holds, and the 403 for the
+other, also when the request claimed to be a classifier call.
 
 ## Credentials
 
