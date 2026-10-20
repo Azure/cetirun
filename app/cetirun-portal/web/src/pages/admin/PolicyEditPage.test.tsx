@@ -25,9 +25,26 @@ const cachedPolicy: policyAPI.AgentPolicyDTO = {
   harnesses: { allowed: ["openclaw"] }, skills: { allowed: ["original-skill"] },
 };
 
-function renderCachedPolicy() {
+const legacyPolicy: policyAPI.AgentPolicyDTO = {
+  ...cachedPolicy,
+  modelAccess: {
+    copilot: { allowed: true },
+    gatewayBudget: { defaultMonthlyUSD: "20", maxMonthlyUSD: "50" },
+  },
+  network: {
+    blockedCIDRs: ["192.0.2.0/24", "192.0.2.0/24"],
+    blockedPorts: [{ port: 443, protocol: "TCP" }, { port: 443, protocol: "TCP" }],
+    allowedInternalCIDRs: [
+      { cidr: "198.51.100.0/24", ports: [{ port: 443, protocol: "TCP" }, { port: 443, protocol: "TCP" }] },
+      { cidr: "198.51.100.0/24", ports: [{ port: 53, protocol: "UDP" }] },
+    ],
+    ingress: { mode: "authenticated" },
+  },
+};
+
+function renderCachedPolicy(policy = cachedPolicy) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 10_000 } } });
-  queryClient.setQueryData(["admin", "policy", "standard"], cachedPolicy);
+  queryClient.setQueryData(["admin", "policy", "standard"], policy);
   render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={["/admin/policies/standard/edit"]}><Routes>
     <Route path="/admin/policies/:name/edit" element={<PolicyEditPage />} />
     <Route path="/admin/policies" element={<div>Policy list</div>} />
@@ -255,6 +272,66 @@ describe("PolicyEditPage", () => {
     expect(JSON.stringify(request)).not.toContain("entraID");
     expect(JSON.stringify(request)).not.toContain("blockedFQDNs");
     expect(JSON.stringify(request)).not.toContain("requireMTLS");
+  });
+
+  it.each(["skills", "budget"])("saves %s edits without resubmitting legacy network duplicates", async (field) => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(legacyPolicy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(legacyPolicy);
+    renderCachedPolicy(legacyPolicy);
+    fireEvent.change(screen.getByRole("textbox", { name: field === "skills" ? "Allowed skills" : "Maximum monthly USD" }), {
+      target: { value: field === "skills" ? "updated-skill" : "60" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledOnce());
+    const request = vi.mocked(policyAPI.updatePolicy).mock.calls[0][1];
+    expect(request).toMatchObject({ uid: legacyPolicy.uid, resourceVersion: legacyPolicy.resourceVersion });
+    expect(request).not.toHaveProperty("network");
+    if (field === "skills") expect(request.skills?.allowed).toEqual(["updated-skill"]);
+    else expect(request.modelAccess?.gatewayBudget?.maxMonthlyUSD).toBe("60");
+    expect(await screen.findByText("Policy list")).toBeInTheDocument();
+  });
+
+  it("sends only the changed ingress mode while retaining legacy network lists", async () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(legacyPolicy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(legacyPolicy);
+    renderCachedPolicy(legacyPolicy);
+    fireEvent.change(screen.getByRole("combobox", { name: "Ingress mode" }), { target: { value: "disabled" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledOnce());
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].network).toEqual({ ingress: { mode: "disabled" } });
+  });
+
+  it.each(["blockedCIDRs", "blockedPorts", "allowedInternalCIDRs"])("explicitly clears %s without resubmitting other network fields", async (field) => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(legacyPolicy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(legacyPolicy);
+    renderCachedPolicy(legacyPolicy);
+    if (field === "blockedCIDRs") {
+      fireEvent.change(screen.getByRole("textbox", { name: "Blocked CIDRs" }), { target: { value: "" } });
+    } else {
+      const label = field === "blockedPorts" ? "Remove" : "Delete rule";
+      const count = screen.getAllByRole("button", { name: label, exact: true }).length;
+      for (let index = 0; index < count; index++) fireEvent.click(screen.getAllByRole("button", { name: label, exact: true })[0]);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledOnce());
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].network).toEqual({ [field]: [] });
+  });
+
+  it("still validates changed ports and submits a repaired list without touching other legacy fields", async () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(legacyPolicy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(legacyPolicy);
+    renderCachedPolicy(legacyPolicy);
+    const firstPort = screen.getByRole("spinbutton", { name: "Blocked port 1" });
+    fireEvent.change(firstPort, { target: { value: "0" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
+    expect(await screen.findByText("Ports must be 1–65535 and use TCP, UDP, or SCTP.")).toBeInTheDocument();
+    expect(policyAPI.updatePolicy).not.toHaveBeenCalled();
+    fireEvent.change(firstPort, { target: { value: "8443" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledOnce());
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].network).toEqual({
+      blockedPorts: [{ port: 8443, protocol: "TCP" }, { port: 443, protocol: "TCP" }],
+    });
   });
 
   it("preserves every port and protocol when an existing policy is saved", () => {

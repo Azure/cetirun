@@ -39,7 +39,7 @@ export function fromPolicyDTO(policy: AgentPolicyDTO): PolicyFormState {
   };
 }
 
-export function toPolicyRequest(form: PolicyFormState): AgentPolicyUpsertRequest {
+export function toPolicyRequest(form: PolicyFormState, baseline?: PolicyFormState): AgentPolicyUpsertRequest {
   const allowed = [] as ("openclaw" | "hermes")[];
   if (form.openclaw) allowed.push("openclaw");
   if (form.hermes) allowed.push("hermes");
@@ -48,11 +48,17 @@ export function toPolicyRequest(form: PolicyFormState): AgentPolicyUpsertRequest
     harnesses: { allowed }, skills: { allowed: lines(form.skills) },
     modelAccess: { copilot: { allowed: form.copilot }, sharedModels: { allowed: lines(form.sharedModels) } },
     sandboxSelection: { allowMultiple: form.allowMultiple }, security: { readOnlyRootFilesystem: form.readOnlyRootFilesystem },
-    network: {
-      blockedCIDRs: lines(form.blockedCIDRs), blockedPorts: form.blockedPorts, allowedInternalCIDRs: parseInternalNetworkRules(form.allowedInternalCIDRs),
-      ingress: { mode: form.ingressMode },
-    },
   };
+  // Omit untouched network fields before parsing. Stored legacy lists may
+  // contain duplicates that must not block unrelated edits or be rewritten.
+  const network: NonNullable<AgentPolicyUpsertRequest["network"]> = {};
+  if (!baseline || form.blockedCIDRs !== baseline.blockedCIDRs) network.blockedCIDRs = lines(form.blockedCIDRs);
+  if (!baseline || JSON.stringify(form.blockedPorts) !== JSON.stringify(baseline.blockedPorts)) network.blockedPorts = form.blockedPorts;
+  if (!baseline || JSON.stringify(form.allowedInternalCIDRs) !== JSON.stringify(baseline.allowedInternalCIDRs)) {
+    network.allowedInternalCIDRs = parseInternalNetworkRules(form.allowedInternalCIDRs);
+  }
+  if (!baseline || form.ingressMode !== baseline.ingressMode) network.ingress = { mode: form.ingressMode };
+  if (Object.keys(network).length > 0) request.network = network;
   if (form.budgetEnabled) request.modelAccess!.gatewayBudget = { defaultMonthlyUSD: form.defaultMonthlyUSD.trim(), maxMonthlyUSD: form.maxMonthlyUSD.trim() };
   return request;
 }
@@ -146,7 +152,7 @@ export function PolicyEditPage() {
     setSubmitError(null);
     let request: AgentPolicyUpsertRequest;
     try {
-      request = toPolicyRequest(form);
+      request = toPolicyRequest(form, isCreate ? undefined : baseline.current ?? undefined);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Check the internal network rules.");
       return;
