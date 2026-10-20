@@ -22,26 +22,32 @@ import (
 const (
 	testGatewayRouter = "auto-shared"
 	testWideModel     = "admin-wide"
-	testWideGroup     = "cetirun-model-test-wide"
 )
+
+// testWideGroup is the wide shared model's group in the form the Gateway
+// chart renders for its name.
+var testWideGroup = aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding(testWideModel)
 
 func tierModel(tier, name string) aigateway.RouterModel {
 	return aigateway.RouterModel{Use: aigateway.RouterTier, Tier: tier, Name: name}
 }
 
 // gatewayRouter is a router of the Gateway chart's models as the catalog
-// lists it: a static, priced deployment with its chart-derived ID and group.
+// lists it: a static, priced deployment with the ID and group the chart
+// derives from its name.
 func gatewayRouter(name string, models ...aigateway.RouterModel) aigateway.Deployment {
 	return aigateway.Deployment{
-		ID: aiGatewaySharedDeploymentIDPrefix + "test-" + name, ModelName: name, AccessGroups: []string{gatewayRouterGroup(name)},
+		ID: managedTestDeploymentID(name, 1), ModelName: name, AccessGroups: []string{gatewayRouterGroup(name)},
 		DatabaseSourceKnown: true, Priced: true, Router: &aigateway.Router{Models: models},
 	}
 }
 
-func gatewayRouterGroup(name string) string { return aiGatewayModelAccessGroupPrefix + "test-" + name }
+func gatewayRouterGroup(name string) string {
+	return aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding(name)
+}
 
 func wideSharedModel() aigateway.Deployment {
-	return aigateway.Deployment{ID: "cetirun-shared-test-wide", ModelName: testWideModel, AccessGroups: []string{testWideGroup}, DatabaseSourceKnown: true}
+	return aigateway.Deployment{ID: managedTestDeploymentID(testWideModel, 2), ModelName: testWideModel, AccessGroups: []string{testWideGroup}, DatabaseSourceKnown: true}
 }
 
 // setRouter changes the configuration of a listed router; its deployment
@@ -429,9 +435,9 @@ func TestAIGatewayCatalogComparesRoutersOutsideTheManagedFingerprint(t *testing.
 		t.Fatalf("the shared models must not change: %v -> %v", shared, now)
 	}
 	// Two router deployments behind one name, listed in either order, are
-	// one router.
+	// one router. They share the name's group, as the chart renders them.
 	second := gatewayRouter(testGatewayRouter, tierModel("COMPLEX", testSmallModel))
-	second.ID, second.AccessGroups = second.ID+"-b", []string{gatewayRouterGroup(testGatewayRouter) + "-b"}
+	second.ID = managedTestDeploymentID(testGatewayRouter, 2)
 	second.Router.Unverifiable = "it runs routing plugins"
 	var forward, backward aiGatewayCatalog
 	forward.update([]aigateway.Deployment{sol, small, router, second}, false, time.Now())

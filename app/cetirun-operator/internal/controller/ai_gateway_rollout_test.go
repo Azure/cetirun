@@ -125,6 +125,54 @@ func TestAIGatewayCatalogWaitsForARolloutBeforeApplyingAChange(t *testing.T) {
 	}
 }
 
+// A change to a router's configuration alone, such as its tiers, keeps the
+// shared models and their bindings; it is held during a rollout like any
+// other catalog change, so keys follow it once, after the rollout.
+func TestAIGatewayCatalogHoldsARouterChangeDuringARollout(t *testing.T) {
+	ctx := context.Background()
+	r, gateway, queued := rolloutTestReconciler(t, testGatewayService(),
+		testGatewayPod("gateway-old", "old", true), testGatewayPod("gateway-new", "new", true))
+	addSmallSharedModel(gateway)
+	gateway.shared = append(gateway.shared, gatewayRouter(testGatewayRouter, tierModel("SIMPLE", testSmallModel)))
+	r.publishAIGatewayCatalog(ctx, 0)
+	queued()
+	before := r.aiGatewayCatalog.routerFingerprint
+	if before == "" {
+		t.Fatal("the router was not taken into the catalog")
+	}
+	// The same listing again changes nothing, so it is not held: the
+	// rollout is not followed for it.
+	r.publishAIGatewayCatalog(ctx, 0)
+	if r.aiGatewayCatalog.rollout.waiting() || len(queued()) != 0 {
+		t.Fatal("an unchanged listing with a router was taken for a change")
+	}
+
+	setRouter(t, gateway, testGatewayRouter, aigateway.Router{Models: []aigateway.RouterModel{
+		tierModel("SIMPLE", testSmallModel), tierModel("MEDIUM", testSharedModelOne)}})
+	r.publishAIGatewayCatalog(ctx, 0)
+	if r.aiGatewayCatalog.routerFingerprint != before {
+		t.Fatal("a router change listed during a rollout replaced the catalog")
+	}
+	if got := queued(); len(got) != 0 {
+		t.Fatalf("a held router change queued %v", got)
+	}
+	if !r.aiGatewayCatalog.rollout.waiting() {
+		t.Fatal("the publisher is not asked to list again soon")
+	}
+
+	if err := r.Delete(ctx, testGatewayPod("gateway-old", "old", true)); err != nil {
+		t.Fatal(err)
+	}
+	r.aiGatewayCatalog.rollout.checkedAt = time.Time{}
+	r.publishAIGatewayCatalog(ctx, 0)
+	if r.aiGatewayCatalog.routerFingerprint == before {
+		t.Fatal("the router change was not applied after the rollout")
+	}
+	if got := queued(); !slices.Equal(got, []string{"alice"}) {
+		t.Fatalf("the applied router change queued %v, want the shared-model Agent", got)
+	}
+}
+
 func TestAIGatewayCatalogAppliesAChangeFromOnePodTemplate(t *testing.T) {
 	ctx := context.Background()
 	r, gateway, queued := rolloutTestReconciler(t, testGatewayService(),
