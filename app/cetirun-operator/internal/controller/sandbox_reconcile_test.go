@@ -17,6 +17,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -619,7 +620,13 @@ func TestReconciledSandboxDeletionCancelsBeforeFirstApply(t *testing.T) {
 			f.r.APIReader = interceptor.NewClient(f.kube.(client.WithWatch), interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
 					if published && key == stateKey {
-						return injected
+						_, reserved, err := f.r.SandboxNativeCoordination.ReadNative(ctx, f.agent.UID)
+						if err != nil {
+							return err
+						}
+						if reserved {
+							return injected
+						}
 					}
 					return c.Get(ctx, key, object, opts...)
 				},
@@ -658,7 +665,7 @@ func TestReconciledSandboxDeletionCancelsBeforeFirstApply(t *testing.T) {
 }
 
 func TestReconciledSandboxSubmissionOutcomeControlsCancellation(t *testing.T) {
-	for _, scenario := range []string{"submitted", "legacy", "lost-submit-ack", "failed-submit-write", "cancellation-conflict", "remaining-pod"} {
+	for _, scenario := range []string{"submitted", "legacy", "lost-expectation", "lost-submit-ack", "failed-submit-write", "cancellation-conflict", "remaining-pod"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false,
@@ -708,8 +715,16 @@ func TestReconciledSandboxSubmissionOutcomeControlsCancellation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if scenario == "submitted" || scenario == "legacy" || scenario == "lost-submit-ack" {
+			if scenario == "lost-expectation" {
+				if err := f.kube.Delete(ctx, state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "submitted" || scenario == "legacy" || scenario == "lost-expectation" || scenario == "lost-submit-ack" {
 				previousState := state.Annotations[sandboxApplyStateAnnotation]
+				if scenario == "lost-expectation" {
+					previousState = ""
+				}
 				installer.beforeApply = func(value *helm.PreparedRelease) error {
 					prepared = value
 					return injected
@@ -820,6 +835,126 @@ func TestReconciledSandboxPublicationPrecedesSourceReservation(t *testing.T) {
 				t.Fatal("failed publication blocked ordinary deletion:", err)
 			}
 		})
+	}
+}
+
+func TestReconciledSandboxPublicationRetryRetainsCancellation(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, checkpoint := range []string{"expectation", "journal", "initialization"} {
+			for _, written := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/write-ack-lost-%t", kind, checkpoint, written), func(t *testing.T) {
+					ctx := context.Background()
+					f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false,
+						withReconciledCoordination(t))
+					attempted := false
+					injected := errors.New("synthetic initial publication failure")
+					f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+						Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+							state, ok := object.(*corev1.ConfigMap)
+							if ok && (checkpoint == "expectation" && state.Data[w.PodExpectationKey] != "" ||
+								checkpoint == "journal" && state.Data[sandboxpolicy.GrantJournalDataKey] != "") {
+								attempted = true
+								if written {
+									if err := c.Create(ctx, object, opts...); err != nil {
+										return err
+									}
+								}
+								return injected
+							}
+							return c.Create(ctx, object, opts...)
+						},
+						Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+							if state, ok := object.(*corev1.ConfigMap); ok && checkpoint == "initialization" &&
+								state.Data[w.PodExpectationKey] != "" && state.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending {
+								attempted = true
+								if written {
+									if err := c.Patch(ctx, object, patch, opts...); err != nil {
+										return err
+									}
+								}
+								return injected
+							}
+							return c.Patch(ctx, object, patch, opts...)
+						},
+					})
+					if _, err := f.reconcile(); err == nil || !attempted || f.installer.stages != 0 {
+						t.Fatal("fixture did not fail before its initial workload submission:", err)
+					}
+					f.r.Client = f.kube
+					recorded, err := f.r.sandboxGrantJournal().Read(ctx, f.agent.Name, f.agent.UID)
+					if err != nil && !apierrors.IsNotFound(err) {
+						t.Fatal(err)
+					}
+					if len(recorded) != 0 || checkpoint == "expectation" && !apierrors.IsNotFound(err) {
+						t.Fatal("journal or grants advanced before expectation initialization completed")
+					}
+					installer := f.r.HelmClient.(*sharedSandboxInstaller)
+					installer.beforeApply = func(*helm.PreparedRelease) error {
+						return injected
+					}
+					for range 2 {
+						if _, err := f.reconcile(); !errors.Is(err, injected) || f.installer.stages != 0 {
+							t.Fatal("publication retry did not reach the pre-submit boundary:", err)
+						}
+					}
+					agent := f.current(t)
+					expected := reconciledExpectationForTest(t, f)
+					state := &corev1.ConfigMap{}
+					key := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: w.PodExpectationName(expected.Namespace.Name, expected.Namespace.UID)}
+					if err := f.kube.Get(ctx, key, state); err != nil {
+						t.Fatal(err)
+					}
+					if state.Annotations[sandboxApplyStateAnnotation] != sandboxApplyPending {
+						t.Fatal("retry lost the durable pre-submit checkpoint")
+					}
+					if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID); err != nil || !found {
+						t.Fatal("retry did not reserve its selected sources:", err)
+					}
+					if err := f.kube.Delete(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+					for range 3 {
+						f.reconcileOK(t)
+					}
+					if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID); err != nil || found {
+						t.Fatal("cancelled publication retry retained its source reservation:", err)
+					}
+					if err := f.kube.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+						t.Fatal("cancelled publication retry retained its Agent finalizer:", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestReconciledSandboxDoesNotRecreateMissingJournalAfterInitialization(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false,
+		withReconciledCoordination(t))
+	installer := f.r.HelmClient.(*sharedSandboxInstaller)
+	injected := errors.New("synthetic pause before submission")
+	installer.beforeApply = func(*helm.PreparedRelease) error { return injected }
+	if _, err := f.reconcile(); !errors.Is(err, injected) {
+		t.Fatal("fixture did not reach the initialized pre-submit checkpoint:", err)
+	}
+	key := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: sandboxpolicy.GrantJournalName(f.agent.UID)}
+	journal := &corev1.ConfigMap{}
+	if err := f.kube.Get(ctx, key, journal); err != nil {
+		t.Fatal(err)
+	}
+	journal.Finalizers = nil
+	if err := f.kube.Update(ctx, journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Delete(ctx, journal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.reconcile(); err == nil || f.installer.stages != 0 {
+		t.Fatal("missing grant history permitted progress:", err)
+	}
+	if err := f.kube.Get(ctx, key, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+		t.Fatal("initialized lifetime recreated missing grant history:", err)
 	}
 }
 

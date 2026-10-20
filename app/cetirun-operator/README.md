@@ -183,7 +183,12 @@ and namespace Pods to be absent. Their absence does not replace the main HOME
 workload's acknowledged shutdown.
 A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
 StatefulSet shutdown acknowledgement, but only before any apply is submitted and
-after ordinary namespace/Pod cleanup checks. Cancellation races with submission
+after ordinary namespace/Pod cleanup checks. Its expectation is first persisted
+as initializing, before the grant journal, and becomes pending only after the
+empty journal is confirmed. Publication retries, including lost acknowledgements,
+therefore retain the pre-submit evidence without inferring it from a missing
+workload. No grants or workload apply are issued during initialization.
+Cancellation races with submission
 through a conditional state update. Submitted, uncertain or older unmarked
 checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
