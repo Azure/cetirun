@@ -80,6 +80,12 @@ fullnameOverride: ""
 # Keep credentials out of this list: reference them as `os.environ/NAME` and
 # supply the value through providerCredentials below.
 #
+# A reasoning model under a name LiteLLM does not know may need one more
+# setting, or LiteLLM refuses a request that sets a reasoning effort with a
+# 400: model_info.base_model naming the model for an azure/ deployment,
+# model_info.supports_reasoning: true for one under openai/. See the README's
+# "Reasoning models".
+#
 # Names beginning with `cetirun-` are reserved for models the CetiRun operator
 # registers automatically, and are rejected here; so are names beginning with
 # `copilot/` while operatorIntegration is on.
@@ -141,6 +147,17 @@ models: []
 # operator reads the setting in effect and gives Agents only the shared models
 # the Gateway would serve.
 blockUnpricedModels: true
+
+# -- Where LiteLLM's price table comes from: remote or bundled. remote,
+# LiteLLM's default, downloads the current table from GitHub each time a
+# Gateway pod starts and falls back to the copy in the image when that fails,
+# so a restart can change prices. bundled uses only the copy in the image
+# (LiteLLM's LITELLM_LOCAL_MODEL_COST_MAP), for a cluster without internet
+# access or prices that change only with the image. New models and price
+# changes then arrive only with a new image, and a model missing from the
+# image's table is unpriced: refused while blockUnpricedModels is on, unless
+# its entry declares a price. See the README's "Known gaps".
+priceTable: remote
 
 # -- The HTTP status of a request refused because its key's or team's budget
 # is exhausted (LiteLLM's budget_exceeded_status_code): 402, 422 or 429.

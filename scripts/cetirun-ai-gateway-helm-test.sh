@@ -73,6 +73,11 @@ init_block() {
   awk '/^      initContainers:/{f=1} /^      containers:/{f=0} f' <<< "$1"
 }
 
+# The containers block of the Gateway Deployment, without its init containers.
+gateway_block() {
+  awk '/^      containers:/{f=1} f' <<< "$1"
+}
+
 # object_name KIND COMPONENT RENDER: the name of the rendered object of that
 # kind whose own labels carry app.kubernetes.io/component=COMPONENT. Prints
 # one line: awk runs END even after exit, so END checks whether it printed.
@@ -429,6 +434,24 @@ unpriced_allowed="$(render --set blockUnpricedModels=false)"
 assert_absent "block_requests_for_models_without_pricing" \
   "the block can be turned off deliberately" "${unpriced_allowed}"
 
+# ----- Price table -----
+
+# LiteLLM downloads its price table from GitHub whenever it is imported, which
+# the proxy does at start and the migrate step does to build its indexes, and
+# falls back to the copy in the image when that fails. priceTable: bundled keeps
+# both to that copy, for a cluster without internet access or prices pinned to
+# the image.
+echo "==> the price table is downloaded unless it is pinned to the image"
+assert_absent "LITELLM_LOCAL_MODEL_COST_MAP" "LiteLLM downloads the current price table by default" "${output}"
+assert_absent "LITELLM_LOCAL_MODEL_COST_MAP" "priceTable=remote downloads the current price table" \
+  "$(render --set-string priceTable=remote)"
+bundled_pod="$(render --set-string priceTable=bundled -s templates/deployment.yaml)"
+assert_contains 'value: "True"' "priceTable=bundled keeps the proxy to the image's price table" \
+  "$(gateway_block "${bundled_pod}" | grep -A1 'name: LITELLM_LOCAL_MODEL_COST_MAP$')"
+assert_contains 'value: "True"' "priceTable=bundled keeps the migrate step to the image's price table" \
+  "$(init_block "${bundled_pod}" | grep -A1 'name: LITELLM_LOCAL_MODEL_COST_MAP$')"
+assert_rejected "an unknown price table source" --set-string priceTable=local
+
 # ----- Migrations -----
 
 # Migrations run in an init container of every Gateway pod, and the image makes
@@ -774,16 +797,17 @@ assert_contains "containerPort: 9100$" "a metrics port set by hand is used" \
 assert_rejected "the metrics port on the Service port" --set metrics.enabled=true --set metrics.port=4000
 
 # helm upgrade --reuse-values keeps the values of the chart version a release
-# was installed with, so a release from before the request log, metrics and
-# router settings has none of them; reading them directly failed the upgrade
-# with a nil pointer. Without them, the chart renders as with their defaults.
-# Setting a map to null removes it, as --reuse-values leaves it.
+# was installed with, so a release from before the request log, metrics,
+# router and price table settings has none of them; reading them directly
+# failed the upgrade with a nil pointer. Without them, the chart renders as
+# with their defaults. Setting a map to null removes it, as --reuse-values
+# leaves it.
 echo "==> a release from before these settings upgrades with --reuse-values"
 reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null --set router=null
-  --set budgetExceededStatusCode=null --set podDisruptionBudget=null)
+  --set budgetExceededStatusCode=null --set podDisruptionBudget=null --set priceTable=null)
 for template in deployment.yaml configmap.yaml poddisruptionbudget.yaml; do
   [ "$(render "${reuse_args[@]}" -s "templates/${template}")" = "$(render -s "templates/${template}")" ] || {
-    echo "FAIL: without the request log, metrics, router, budget status and disruption budget settings, ${template} differs from its default render" >&2
+    echo "FAIL: without the request log, metrics, router, budget status, disruption budget and price table settings, ${template} differs from its default render" >&2
     exit 1
   }
 done

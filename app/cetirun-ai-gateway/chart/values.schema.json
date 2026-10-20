@@ -114,6 +114,12 @@
             "description": "Refuse requests to models whose price LiteLLM does not know. A model missing from the price table costs zero, and budget checks are skipped for zero-cost models, so a budget would silently not apply. Azure OpenAI deployment names are not in that table.",
             "default": true
         },
+        "priceTable": {
+            "type": "string",
+            "description": "Where LiteLLM's price table comes from. remote downloads the current table when a Gateway pod starts, falling back to the copy in the image; bundled uses only the copy in the image (LITELLM_LOCAL_MODEL_COST_MAP), so new models and price changes arrive only with a new image.",
+            "enum": ["remote", "bundled"],
+            "default": "remote"
+        },
         "budgetExceededStatusCode": {
             "type": "integer",
             "description": "HTTP status of a request refused because its key's or team's budget is exhausted (LiteLLM's budget_exceeded_status_code). 402 makes agents report exhausted credits; 422 a malformed request; 429 a rate limit they retry.",
