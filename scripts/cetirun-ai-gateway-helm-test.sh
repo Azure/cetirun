@@ -721,14 +721,27 @@ assert_contains 'value: "false"' "spendLogs.enabled=false has the entrypoint sto
 assert_absent "disable_spend_logs" "the spend log setting stays out of LiteLLM's configuration" "${spend_off}"
 assert_rejected "the spend log off without the request log" --set spendLogs.enabled=false --set requestLog.enabled=false
 
-# The spend log grows by a row per call; LiteLLM deletes older rows once a day,
-# and the stored health check results with them. Prompts are never stored.
-echo "==> LiteLLM's spend log is kept for seven days"
+# The spend log grows by a row per call. LiteLLM deletes older rows, and the
+# stored health check results with them, on each replica one interval after it
+# starts and every interval after that. At LiteLLM's default interval, a day,
+# pods replaced sooner, as every configuration change replaces them, never
+# deleted a row, so the chart sets an hour whenever a retention is set. With
+# the spend log off there are still health check results and older rows to
+# delete. Prompts are never stored.
+echo "==> LiteLLM's spend log is kept for seven days, and older rows are deleted every hour"
 assert_contains 'maximum_spend_logs_retention_period: "7d"' "spend log rows are kept for seven days by default" "${output}"
 assert_contains 'maximum_health_check_retention_period: "7d"' "health check results are kept as long" "${output}"
-assert_contains 'maximum_spend_logs_retention_period: "30d"' "the retention can be changed" \
-  "$(render --set-string spendLogs.retention=30d)"
-assert_absent "retention_period" "an empty retention keeps every row" "$(render --set-string spendLogs.retention=)"
+assert_contains 'maximum_spend_logs_retention_interval: "1h"$' "older rows are deleted every hour, not once a day" "${output}"
+assert_contains 'maximum_spend_logs_retention_interval: "1h"$' "a single replica deletes every hour too" "${single}"
+assert_contains 'maximum_spend_logs_retention_interval: "1h"$' \
+  "with the spend log off, health check results and older rows are still deleted every hour" "${spend_off}"
+retention_30d="$(render --set-string spendLogs.retention=30d)"
+assert_contains 'maximum_spend_logs_retention_period: "30d"' "the retention can be changed" "${retention_30d}"
+assert_contains 'maximum_spend_logs_retention_interval: "1h"$' "a longer retention is still applied every hour" \
+  "${retention_30d}"
+no_retention="$(render --set-string spendLogs.retention=)"
+assert_absent "retention_period" "an empty retention keeps every row" "${no_retention}"
+assert_absent "retention_interval" "nothing is scheduled for deletion without a retention" "${no_retention}"
 assert_rejected "a retention LiteLLM cannot read" --set-string spendLogs.retention=week
 assert_absent "store_prompts_in_spend_logs" "prompts stay out of the spend log" "${output}"
 

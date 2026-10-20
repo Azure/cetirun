@@ -429,8 +429,9 @@ spendLogs:
   # requestLog.enabled.
   enabled: true
   # -- How long LiteLLM keeps those rows, and the stored health check results:
-  # a number with h, d, w or mo, such as 7d. Once a day it deletes older ones.
-  # Empty keeps them forever.
+  # a number with h, d, w or mo, such as 7d. Each Gateway pod deletes older
+  # ones every hour, the first time an hour after it starts. Empty keeps them
+  # forever.
   retention: 7d
 
 # -- LiteLLM's Prometheus metrics: requests, failures, tokens, spend and

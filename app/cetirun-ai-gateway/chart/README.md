@@ -1062,8 +1062,9 @@ This is why the chart writes as little as possible into those blocks.
 
 ### Values the chart owns
 
-`model_list`; `general_settings.store_model_in_db`, the spend log retention,
-and the health check settings when `router.healthChecks` is on; in `litellm_settings`,
+`model_list`; `general_settings.store_model_in_db`, the spend log retention
+and its deletion interval, and the health check settings when
+`router.healthChecks` is on; in `litellm_settings`,
 `num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
 metrics callback and its settings, and, when Redis is configured, the Redis
 cache; and in `router_settings`, Redis when it is configured, the routing
@@ -1261,16 +1262,33 @@ LiteLLM writes a row per call to `LiteLLM_SpendLogs`, which the console's
 request log pages read. The row holds the call's metadata, not its prompt or
 response: the chart does not set `store_prompts_in_spend_logs`. The table
 grows by one row for every call, so `spendLogs.retention`, `7d` by default,
-renders LiteLLM's `maximum_spend_logs_retention_period`: once a day, LiteLLM
-deletes the rows older than that, in batches, from one replica at a time, and
-the stored health check results with them
-(`maximum_health_check_retention_period`). Spend, budgets and the daily usage
-totals are kept beyond it. Set it empty to keep every row. A retention period
-saved in the console's settings wins over the chart's, as for any
-`general_settings` key. Measured on LiteLLM 1.105.1 with the request log on:
-every call, probes included, added a row, none with a prompt, and the proxy
-started with the retention settings without complaint; the daily deletion
-itself was not observed.
+renders LiteLLM's `maximum_spend_logs_retention_period`, and
+`maximum_health_check_retention_period` for the stored health check results.
+Spend, budgets and the daily usage totals are kept beyond it. Set it empty to
+keep every row. A retention period saved in the console's settings wins over
+the chart's, as for any `general_settings` key.
+
+Each replica deletes the older rows on its own schedule: the first time one
+interval (`maximum_spend_logs_retention_interval`) after the pod starts, then
+every interval. LiteLLM lengthens the interval by up to a minute, drawn when
+the pod starts, and shifts each replica's runs by up to five minutes more, and
+a replica skips a run while another replica's run holds a lock in Redis. At
+LiteLLM's default interval of a day, a Gateway whose pods are replaced within
+a day, as every configuration change replaces them, never deletes a row. So
+whenever a retention is set, the chart sets the interval to an hour: rows
+outlive the retention by about an hour at most, a replaced pod only postpones
+the deletion, and a run with nothing to delete costs each replica two indexed
+queries per table. A run deletes 1,000 rows at a time, at most 500 times per
+table and for five minutes, and the next run continues from there.
+
+Measured on LiteLLM 1.105.1 with the request log on: every call, probes
+included, added a row, none with a prompt. With two replicas, and the rendered
+configuration changed to a one-minute retention and a 30-second interval,
+each replica ran the job on a period of its own, 49 and 83 seconds, the first
+time 75 and 128 seconds after it started; every run took the lock, and the
+runs deleted 88 spend log rows and 11 health check results, all past the
+retention. With the chart's hourly interval, two proxies scheduled their
+first run 63 and 66 minutes after starting.
 
 `spendLogs.enabled: false` has LiteLLM write no row per call. It is turned off
 only together with the request log, so no configuration leaves the Gateway

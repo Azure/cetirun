@@ -73,10 +73,17 @@ data:
       {{- end }}
       {{- end }}
       {{- with (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).spendLogs.retention }}
-      # spendLogs.retention: once a day, LiteLLM deletes the rows of its spend
-      # log older than this, and the stored health check results as well.
+      # spendLogs.retention: LiteLLM deletes the rows of its spend log older
+      # than this, and the stored health check results as well. Each replica
+      # deletes one interval after it starts, then every interval. At
+      # LiteLLM's default of a day, pods replaced within a day, as every
+      # configuration change replaces them, never delete anything. With an
+      # hour, a replaced pod only postpones the deletion, rows outlive the
+      # retention (an hour at least) by about an hour at most, and a run with
+      # nothing to delete costs each replica two indexed queries per table.
       maximum_spend_logs_retention_period: {{ . | quote }}
       maximum_health_check_retention_period: {{ . | quote }}
+      maximum_spend_logs_retention_interval: "1h"
       {{- end }}
 
     litellm_settings:
