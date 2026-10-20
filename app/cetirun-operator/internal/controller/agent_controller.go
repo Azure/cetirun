@@ -1093,7 +1093,8 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	ns := instanceNamespace(instance.Name)
 	releaseName := helmReleaseName(instance.Name)
 	if reconciledSandbox {
-		if err := stderrors.Join(r.deleteAIGatewayKey(ctx, instance), r.stopSandboxBuiltin(ctx, instance), r.stopReconciledAuxiliaries(ctx, instance)); err != nil {
+		if err := stderrors.Join(r.revokeSandboxPreparationGrants(ctx, instance), r.deleteAIGatewayKey(ctx, instance),
+			r.stopSandboxBuiltin(ctx, instance), r.stopReconciledAuxiliaries(ctx, instance)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -1175,6 +1176,9 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	}
 
 	if reconciledSandbox {
+		if err := r.finishSandboxPreparation(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.finishSandboxBootstrap(ctx, instance); err != nil {
 			return ctrl.Result{}, err
 		}

@@ -22,6 +22,7 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -1011,6 +1012,179 @@ func TestReconciledSandboxDeletionCancelsBeforeFirstApply(t *testing.T) {
 			}
 			if err := f.kube.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
 				t.Fatal("never-submitted deletion retained its Agent finalizer:", err)
+			}
+		})
+	}
+}
+
+func TestReconciledSandboxDeletionReleasesGrantJournal(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, foreground := range []bool{false, true} {
+			for _, sourcesEnabled := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/foreground=%t/sources=%t", kind, foreground, sourcesEnabled), func(t *testing.T) {
+					ctx := context.Background()
+					f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true)
+					agent := f.current(t)
+					journal := &corev1.ConfigMap{}
+					journalKey := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: sandboxpolicy.GrantJournalName(agent.UID)}
+					if err := f.kube.Get(ctx, journalKey, journal); err != nil {
+						t.Fatal(err)
+					}
+					bindings, err := f.r.sandboxGrantJournal().Read(ctx, agent.Name, agent.UID)
+					if err != nil || len(bindings) == 0 {
+						t.Fatal("fixture must retain a protected grant inventory:", err)
+					}
+					if !sourcesEnabled {
+						f.r.SandboxPreparation = nil
+					}
+					propagation := metav1.DeletePropagationBackground
+					if foreground {
+						propagation = metav1.DeletePropagationForeground
+					}
+					if err := f.kube.Delete(ctx, agent, client.PropagationPolicy(propagation)); err != nil {
+						t.Fatal(err)
+					}
+					if foreground {
+						// The fake API has no GC; model its dependent deletion
+						// while the journal's own finalizer still protects it.
+						if err := f.kube.Delete(ctx, journal); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for range 3 {
+						f.reconcileOK(t)
+					}
+					if err := f.kube.Get(ctx, journalKey, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+						t.Fatal("normal deletion left the protected journal in the Operator namespace:", err)
+					}
+					for _, binding := range bindings {
+						if err := f.kube.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: binding.Name}, &rbacv1.RoleBinding{}); !apierrors.IsNotFound(err) {
+							t.Fatal("normal deletion did not revoke its recorded source grant:", err)
+						}
+					}
+					if err := f.kube.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+						t.Fatal("completed journal cleanup retained the Agent:", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestReconciledSandboxGrantCleanupFailureRetainsFinalizers(t *testing.T) {
+	for _, failure := range []string{"revoke", "release-conflict", "delete", "delete-lost-ack", "foreign-owner"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "hermes", true, true)
+			agent := f.current(t)
+			if _, err := f.r.ensureVirtualService(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			journalKey := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: sandboxpolicy.GrantJournalName(agent.UID)}
+			original := &corev1.ConfigMap{}
+			if err := f.kube.Get(ctx, journalKey, original); err != nil {
+				t.Fatal(err)
+			}
+			if failure == "foreign-owner" {
+				foreign := original.DeepCopy()
+				foreign.OwnerReferences[0].UID = "another-agent"
+				if err := f.kube.Update(ctx, foreign); err != nil {
+					t.Fatal(err)
+				}
+			}
+			injected := errors.New("synthetic grant cleanup failure")
+			f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+				Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+					if state, ok := object.(*corev1.ConfigMap); ok && client.ObjectKeyFromObject(state) == journalKey &&
+						failure == "release-conflict" && !slices.Contains(state.Finalizers, sandboxpolicy.GrantJournalFinalizer) {
+						concurrent := &corev1.ConfigMap{}
+						if err := c.Get(ctx, journalKey, concurrent); err != nil {
+							return err
+						}
+						concurrent.Annotations["example.com/concurrent"] = "retained"
+						if err := c.Update(ctx, concurrent); err != nil {
+							return err
+						}
+					}
+					return c.Update(ctx, object, opts...)
+				},
+				Delete: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
+					if _, binding := object.(*rbacv1.RoleBinding); binding && failure == "revoke" {
+						return injected
+					}
+					if _, journal := object.(*corev1.ConfigMap); journal && client.ObjectKeyFromObject(object) == journalKey &&
+						(failure == "delete" || failure == "delete-lost-ack") {
+						if failure == "delete-lost-ack" {
+							if err := c.Delete(ctx, object, opts...); err != nil {
+								return err
+							}
+						}
+						return injected
+					}
+					return c.Delete(ctx, object, opts...)
+				},
+			})
+			if err := f.kube.Delete(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			var cleanupErr error
+			for range 3 {
+				if _, cleanupErr = f.reconcile(); cleanupErr != nil {
+					break
+				}
+			}
+			switch failure {
+			case "release-conflict":
+				if !apierrors.IsConflict(cleanupErr) {
+					t.Fatal("journal release did not preserve the optimistic-lock conflict:", cleanupErr)
+				}
+			case "foreign-owner":
+				if !errors.Is(cleanupErr, sandboxpolicy.ErrOwnership) {
+					t.Fatal("foreign journal ownership did not block finalization:", cleanupErr)
+				}
+			default:
+				if !errors.Is(cleanupErr, injected) {
+					t.Fatal("journal cleanup failure was not surfaced:", cleanupErr)
+				}
+			}
+			current := f.current(t)
+			if !slices.Contains(current.Finalizers, api.Finalizer) || !slices.Contains(current.Finalizers, sandbox.BootstrapFinalizer) {
+				t.Fatal("grant cleanup failure discarded Agent or bootstrap protection")
+			}
+			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+				t.Fatal("grant cleanup failure skipped independent workload shutdown")
+			}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: virtualServiceName(agent.Name)},
+				&istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {
+				t.Fatal("grant cleanup failure skipped route withdrawal:", err)
+			}
+			if failure != "delete-lost-ack" {
+				journal := &corev1.ConfigMap{}
+				if err := f.kube.Get(ctx, journalKey, journal); err != nil || journal.UID != original.UID ||
+					!slices.Contains(journal.Finalizers, sandboxpolicy.GrantJournalFinalizer) {
+					t.Fatal("failed cleanup lost journal ownership or protection:", err)
+				}
+				if failure == "revoke" || failure == "foreign-owner" {
+					if journal.Data[sandboxpolicy.GrantJournalDataKey] != original.Data[sandboxpolicy.GrantJournalDataKey] {
+						t.Fatal("failed revocation or foreign ownership discarded recorded grant history")
+					}
+				}
+				if failure == "foreign-owner" {
+					journal.OwnerReferences = original.OwnerReferences
+					if err := f.kube.Update(ctx, journal); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			f.r.Client = f.kube
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			if err := f.kube.Get(ctx, journalKey, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+				t.Fatal("recovered cleanup retained the grant journal:", err)
+			}
+			if err := f.kube.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+				t.Fatal("recovered cleanup retained the Agent:", err)
 			}
 		})
 	}

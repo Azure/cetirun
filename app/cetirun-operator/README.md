@@ -212,6 +212,11 @@ not evidence that no workload was submitted.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.
+Normal reconciled deletion revokes its recorded preparation grants and
+releases/deletes the Operator-namespace grant journal before removing the Agent
+finalizer. This cleanup remains available when new starts are disabled and
+retries terminating journals during foreground deletion without adopting foreign
+ownership or discarding grant history.
 
 ### Retained single-start profile and capability registration
 
