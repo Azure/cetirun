@@ -736,9 +736,8 @@ The request log line of a routed call carries the router's name as `model`, the
 model it picked as `provider_model`, and `routing_tier`, `routing_cause`,
 `routing_score`, `routing_escalated` when an escalation keyword or the prompt's
 length moved it up a tier, and, with a model classifier, `classifier_model` and
-`classifier_cost`. Whether a configuration saves money without lowering the
-quality of the answers is not measured here; that needs the requests
-themselves.
+`classifier_cost`. [Measuring the routers](#measuring-the-routers) has queries
+over them.
 
 #### A router across providers
 
@@ -806,6 +805,128 @@ reasoning items back with each turn; at a switch between providers, the other
 provider's reasoning is dropped or the request may be refused. The provider's
 prompt cache starts again at every switch, so a conversation that changes
 provider pays the full input price for that turn.
+
+#### Measuring the routers
+
+With the request log collected by Container Insights (see [One log line per
+call](#one-log-line-per-call)), these queries show how the routers route. Run
+one on the Logs page of the Log Analytics workspace and pick the time range
+there. When more than one Gateway writes to the workspace, add
+`| where PodNamespace == "<namespace>"` under the line with `ContainerLogV2`.
+The first four count only the calls clients sent: a call LiteLLM makes itself,
+such as a health check probe or a classifier call, carries a `call_origin`. A
+routed call has a `routing_cause`; one without a `routing_tier` went to the
+router's default model, for example because its classifier failed.
+
+Per router, tier and the model that served the call: answered calls and their
+share of the router's answered calls, failed attempts, and answered calls that
+an escalation keyword or the prompt's length moved up a tier. A request that
+failed on one deployment and went on to another writes a line for each
+attempt, so `failed` counts attempts:
+
+```kusto
+let routed = ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
+| extend router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier),
+    model = tostring(LogMessage.provider_model), ok = tostring(LogMessage.status) == "success";
+routed
+| summarize answered = countif(ok), failed = countif(not(ok)),
+    escalated = countif(ok and tostring(LogMessage.routing_escalated) == "true") by router, tier, model
+| join kind=inner (routed | summarize router_answered = countif(ok) by router) on router
+| project router, tier, model, answered, share_pct = round(100.0 * answered / router_answered, 1),
+    failed, escalated
+| order by router asc, answered desc
+```
+
+What each tier spent, in total and per answered call, and what classifying the
+requests that went to it cost (`classifier_cost`, with a model classifier):
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
+| summarize answered = countif(tostring(LogMessage.status) == "success"),
+    spend = sum(todouble(LogMessage.spend)), classifier_cost = sum(todouble(LogMessage.classifier_cost))
+    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+| extend spend_per_call = spend / answered
+| order by router asc, spend desc
+```
+
+How much of each tier's input the provider read from its prompt cache: cached
+input tokens as a share of all input tokens, which include them, over answered
+calls:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
+| where tostring(LogMessage.status) == "success"
+| summarize prompt_tokens = sum(tolong(LogMessage.prompt_tokens)),
+    cached_tokens = sum(tolong(LogMessage.cached_tokens))
+    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+| extend cached_pct = round(100.0 * cached_tokens / prompt_tokens, 1)
+| order by router asc, tier asc
+```
+
+How long each tier's answered calls took, and, for streamed calls, how long
+until the first token:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
+| where tostring(LogMessage.status) == "success"
+| summarize answered = count(), avg_ms = round(avg(todouble(LogMessage.duration_ms))),
+    p95_ms = percentile(todouble(LogMessage.duration_ms), 95),
+    first_token_p95_ms = percentile(todouble(LogMessage.time_to_first_token_ms), 95)
+    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+| order by router asc, tier asc
+```
+
+The model classifiers' own calls, by classifier model: how many there were, how
+many failed, what they cost and how long they took. A classified request waits
+for its classifier before its model is called. The routed calls'
+`classifier_cost` repeats the spend of these calls, so add one or the other to
+a router's spend, not both:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where tostring(LogMessage.call_origin) == "autorouter_classifier"
+| summarize calls = count(), failed = countif(tostring(LogMessage.status) == "failure"),
+    spend = sum(todouble(LogMessage.spend)), avg_ms = round(avg(todouble(LogMessage.duration_ms))),
+    p95_ms = percentile(todouble(LogMessage.duration_ms), 95)
+    by classifier = tostring(LogMessage.model)
+```
+
+**What the same requests would have cost on the most expensive tier is not in
+the log.** It needs the prices of that tier's model, which no line carries, and
+the tokens that model would have used, which nothing records: another model
+counts the prompt in its own tokens, answers at its own length, and keeps a
+prompt cache of its own. Spend per answered call compares tiers on different
+requests, not on the same ones.
+
+LiteLLM 1.105.1 makes that estimate itself. Its console's Cost Optimization
+page, marked experimental, shows it in the Auto-Router tab, which only proxy
+admins see and which reads `GET /auto_router/benchmarks`; no LiteLLM licence
+is needed. It prices a routed request's own tokens at the prices of the most
+expensive model in the router's highest tier, and subtracts what the request
+and its classifier cost. Apart from some requests through the Anthropic
+Messages API, it prices only requests that neither read from nor wrote to a
+prompt cache, and counts every other request as having saved nothing; an agent
+resends its conversation with every turn, which providers cache, so that can be
+most of its requests. LiteLLM fills the tab's tables only while it writes its
+spend log (`spendLogs.enabled`, on by default). From LiteLLM's source; not
+tried here.
+
+None of these figures says whether the cheaper tiers answered as well as the
+most expensive one would have; that needs the requests themselves.
 
 ### Settings saved in the console
 
