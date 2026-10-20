@@ -9,6 +9,12 @@
 {{- end }}
 {{- $portal := index .Values "cetirun-portal" }}
 {{- $operator := index .Values "cetirun-operator" }}
+{{- if and $portal.enabled ($portal.sandboxRuntimeDefaultsFromController | default false) }}
+{{- $sources := $operator.sandboxSources | default dict }}
+{{- if not (and $operator.enabled $sources.enabled $sources.nativeExecution $sources.reconciledExecution) }}
+{{- fail "cetirun-portal.sandboxRuntimeDefaultsFromController requires an enabled Operator with sandboxSources.enabled, nativeExecution and reconciledExecution" }}
+{{- end }}
+{{- end }}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) }}
 {{- if or (not $portal.enabled) (not $operator.enabled) }}
 {{- fail "global.portalChat requires both Portal and Operator" }}

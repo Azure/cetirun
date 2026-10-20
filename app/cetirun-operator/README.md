@@ -116,8 +116,8 @@ Upgrade readers before enabling the new writer:
 With the new switch off, even an installation already using native execution and
 coordination creates only the previous single-start lifetime and wire format.
 The false setting is omitted from the controller's JSON configuration so an older
-controller can still read it during the first rollout. Admission and Portal
-receive no new configuration field.
+controller can still read it during the first rollout. The controller's
+`reconciledExecution` field is not sent to admission or Portal.
 Disabling the switch later affects only new lifetimes: it does not downgrade
 existing records or permit rolling readers back while reconciled lifetimes remain.
 Finish their ordinary cleanup before restoring older readers.
@@ -143,9 +143,14 @@ Ready and suspended Agents still recheck current sources and deployed controls.
 Unchanged passes retain their phase and reconcile timestamp between periodic
 refreshes instead of generating status-watch loops.
 
-Portal runtime profiles are optional: when absent, the controller pins
-chart/image/port from its selected trusted chart, with narrowly authorized
-admission updates. Explicit requests and configured profiles are still validated.
+Portal runtime profiles are optional only when its deployment explicitly enables
+`sandboxRuntimeDefaultsFromController` after this common executor is enabled.
+The Portal keeps that opt-in off during reader-first rollout, so missing profiles
+reject creation rather than sending unpinned Agents to the retained executor.
+With it enabled, the controller pins chart/image/port from its selected trusted
+chart, with narrowly authorized admission updates. Disable the Portal opt-in
+before disabling new reconciled lifetimes. Explicit requests and configured
+profiles are still validated.
 The protected path disables the ordinary immutable-StatefulSet replacement hook;
 unsupported storage/type transitions require a deliberate handoff, not orphaning
 the old HOME writer.
