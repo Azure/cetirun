@@ -542,7 +542,8 @@ gets no second attempt, so `num_retries` stays 0.
 | With 500 or 429, `router.failover: true` | 0 |
 
 Without it, LiteLLM stops sending requests to a failing deployment only after
-several failures, and only for a few seconds, separately on each replica. The
+several failures, and only for a few seconds. Each replica counts the failures
+it sees on its own; the cooldown that follows is shared through Redis. The
 cost: a request the provider refuses as invalid, with a 400, is sent to the
 other deployment too before the error reaches the client.
 
@@ -572,17 +573,38 @@ resource, a conversation that has been on both pays an extra call, and loses
 the reasoning it had, on every later turn: 61 of 84 turns in the test.
 
 `router.encryptedContentAffinity`, on by default, keeps each conversation on
-the deployment that encrypted its reasoning, or on one with the same endpoint
-and key (LiteLLM's `encrypted_content_affinity`). It marks the items it
-returns, so it needs no state in Redis, and turning it off later is safe: the
-marks are removed from every request either way. When that deployment is
-unavailable, LiteLLM 1.105.1 sends the turn to another deployment and leaves
-out the encrypted reasoning the new one cannot read, so the conversation
-continues without that reasoning rather than failing; LiteLLM 1.101.0 failed
-every such turn until the deployment was back, which is why the check used to
-be off by default. A deployment that authenticates without an API key is never
-treated as sharing an endpoint and key with another. The check applies to
-every model: LiteLLM cannot turn it off for one.
+the deployment that encrypted the earliest reasoning in it, or on one with the
+same endpoint and key (LiteLLM's `encrypted_content_affinity`). It marks the
+items it returns, so it needs no state in Redis, and turning it off later is
+safe: the marks are removed from every request either way. A deployment that
+authenticates without an API key is never treated as sharing an endpoint and
+key with another. The check applies to every model: LiteLLM cannot turn it off
+for one.
+
+When that deployment fails, LiteLLM 1.105.1 keeps the conversation on it while
+it still counts as available, so the conversation's requests fail with the
+deployment's error; `router.failover` does not rescue them, since the check
+pins the second attempt to the same deployment, which that attempt has to
+skip. The deployment stops counting as available while it is in cooldown or
+marked unhealthy by the health checks, and only then does the conversation
+move: its turns go to another deployment without any encrypted reasoning, with
+the reasoning summaries, until the deployment counts as available again.
+Measured with two replicas and mock deployments: no deployment received
+another's encrypted reasoning, and none refused a turn with a 400. LiteLLM
+1.101.0 failed every such turn until the deployment was back, which is why the
+check used to be off by default.
+
+A cooldown starts once more than half of at least five calls to the deployment
+in a minute failed on one replica, or at once on a 429, 401 or 404, and lasts
+five seconds; the request whose failure starts it is the only one
+`router.failover` sends on. Without health checks, a conversation therefore
+leaves a failing deployment only for moments. With health checks on, as by
+default, the conversation's requests fail only until a probe marks the
+deployment unhealthy: within one `router.healthChecks.intervalSeconds`, 300
+seconds by default, on the replica that probes, and up to one interval later
+on the others, which reuse its result. The conversation then stays moved while
+the probes keep failing. Keep health checks on; a shorter interval narrows the
+window, at the cost of more probes.
 
 ### A key stays on its deployment
 
@@ -1408,8 +1430,9 @@ This is why the chart writes as little as possible into those blocks.
 
 ### Values the chart owns
 
-`model_list`; `general_settings.store_model_in_db`, the spend log retention,
-and the health check settings when `router.healthChecks` is on; in `litellm_settings`,
+`model_list`; `general_settings.store_model_in_db`, the spend log retention
+and its deletion interval, and the health check settings when
+`router.healthChecks` is on; in `litellm_settings`,
 `num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
 metrics callback and its settings, and, when Redis is configured, the Redis
 cache; and in `router_settings`, Redis when it is configured, the routing
@@ -1607,16 +1630,33 @@ LiteLLM writes a row per call to `LiteLLM_SpendLogs`, which the console's
 request log pages read. The row holds the call's metadata, not its prompt or
 response: the chart does not set `store_prompts_in_spend_logs`. The table
 grows by one row for every call, so `spendLogs.retention`, `7d` by default,
-renders LiteLLM's `maximum_spend_logs_retention_period`: once a day, LiteLLM
-deletes the rows older than that, in batches, from one replica at a time, and
-the stored health check results with them
-(`maximum_health_check_retention_period`). Spend, budgets and the daily usage
-totals are kept beyond it. Set it empty to keep every row. A retention period
-saved in the console's settings wins over the chart's, as for any
-`general_settings` key. Measured on LiteLLM 1.105.1 with the request log on:
-every call, probes included, added a row, none with a prompt, and the proxy
-started with the retention settings without complaint; the daily deletion
-itself was not observed.
+renders LiteLLM's `maximum_spend_logs_retention_period`, and
+`maximum_health_check_retention_period` for the stored health check results.
+Spend, budgets and the daily usage totals are kept beyond it. Set it empty to
+keep every row. A retention period saved in the console's settings wins over
+the chart's, as for any `general_settings` key.
+
+Each replica deletes the older rows on its own schedule: the first time one
+interval (`maximum_spend_logs_retention_interval`) after the pod starts, then
+every interval. LiteLLM lengthens the interval by up to a minute, drawn when
+the pod starts, and shifts each replica's runs by up to five minutes more, and
+a replica skips a run while another replica's run holds a lock in Redis. At
+LiteLLM's default interval of a day, a Gateway whose pods are replaced within
+a day, as every configuration change replaces them, never deletes a row. So
+whenever a retention is set, the chart sets the interval to an hour: rows
+outlive the retention by about an hour at most, a replaced pod only postpones
+the deletion, and a run with nothing to delete costs each replica two indexed
+queries per table. A run deletes 1,000 rows at a time, at most 500 times per
+table and for five minutes, and the next run continues from there.
+
+Measured on LiteLLM 1.105.1 with the request log on: every call, probes
+included, added a row, none with a prompt. With two replicas, and the rendered
+configuration changed to a one-minute retention and a 30-second interval,
+each replica ran the job on a period of its own, 49 and 83 seconds, the first
+time 75 and 128 seconds after it started; every run took the lock, and the
+runs deleted 88 spend log rows and 11 health check results, all past the
+retention. With the chart's hourly interval, two proxies scheduled their
+first run 63 and 66 minutes after starting.
 
 `spendLogs.enabled: false` has LiteLLM write no row per call. It is turned off
 only together with the request log, so no configuration leaves the Gateway

@@ -216,10 +216,13 @@ router:
   # its reasoning, or on one with the same endpoint and key (LiteLLM's
   # encrypted_content_affinity). Agents such as OpenClaw send the encrypted
   # reasoning back with every turn, and only the Azure OpenAI resource or
-  # OpenAI organization that produced it can read it. When that deployment is
-  # unavailable, the conversation moves to another, and the encrypted
-  # reasoning the new deployment cannot read is left out of the request. It
-  # applies to every model; it cannot be turned off for one.
+  # OpenAI organization that produced it can read it. When that deployment
+  # fails, the conversation's requests fail with it until it is in cooldown
+  # or marked unhealthy by healthChecks; only then does the conversation move
+  # to another deployment, without its encrypted reasoning, and it returns
+  # once the deployment is available again. A cooldown lasts five seconds, so
+  # keep healthChecks on. It applies to every model; it cannot be turned off
+  # for one.
   encryptedContentAffinity: true
   # -- Keep each virtual key on the deployment that served its last request to
   # a model, for an hour (LiteLLM's deployment_affinity), so the provider's
@@ -442,8 +445,9 @@ spendLogs:
   # requestLog.enabled.
   enabled: true
   # -- How long LiteLLM keeps those rows, and the stored health check results:
-  # a number with h, d, w or mo, such as 7d. Once a day it deletes older ones.
-  # Empty keeps them forever.
+  # a number with h, d, w or mo, such as 7d. Each Gateway pod deletes older
+  # ones every hour, the first time an hour after it starts. Empty keeps them
+  # forever.
   retention: 7d
 
 # -- LiteLLM's Prometheus metrics: requests, failures, tokens, spend and
