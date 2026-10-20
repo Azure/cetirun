@@ -6,7 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Switch, Text, Textarea, Title2 } from "@fluentui/react-components";
 import {
-  createPolicy, getPolicy, updatePolicy, type AgentPolicyDTO,
+  createPolicy, getPolicy, updatePolicy, PolicyConflictError, type AgentPolicyDTO,
   type AgentPolicyPort, type AgentPolicyProtocol, type AgentPolicyUpsertRequest,
 } from "../../api/adminPolicy";
 import { InternalNetworkRules, formatInternalNetworkRules, parseInternalNetworkRules, validCIDR, type InternalNetworkRule } from "./InternalNetworkRules";
@@ -83,20 +83,66 @@ export function PolicyEditPage() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<PolicyFormState>(emptyForm);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const initializedPolicyUID = useRef<string | null>(null);
-  const { data: existing, isLoading, error } = useQuery<AgentPolicyDTO, Error>({
-    queryKey: ["admin", "policy", name], queryFn: () => getPolicy(name!), enabled: !isCreate, refetchInterval: 30_000,
+  const baseline = useRef<PolicyFormState | null>(null);
+  const activePolicyName = useRef(name);
+  const [networkEditing, setNetworkEditing] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const { data: existing, isLoading, error, refetch } = useQuery<AgentPolicyDTO, Error>({
+    queryKey: ["admin", "policy", name], queryFn: () => getPolicy(name!), enabled: !isCreate,
+    refetchInterval: 30_000, refetchOnMount: "always",
   });
   useLayoutEffect(() => {
-    initializedPolicyUID.current = null;
+    activePolicyName.current = name;
+    baseline.current = null;
     setForm(emptyForm);
+    setSubmitError(null);
+    setConflict(false);
+    setReloading(false);
+    setNetworkEditing(false);
   }, [name]);
-  useLayoutEffect(() => { if (existing && existing.name === name && initializedPolicyUID.current !== existing.uid) { initializedPolicyUID.current = existing.uid; setForm(fromPolicyDTO(existing)); } }, [existing, name]);
+  useLayoutEffect(() => {
+    if (!existing || existing.name !== name || networkEditing) return;
+    const previous = baseline.current;
+    const pristine = !previous || JSON.stringify(form) === JSON.stringify(previous);
+    if (pristine && (previous?.uid !== existing.uid || previous.resourceVersion !== existing.resourceVersion)) {
+      const next = fromPolicyDTO(existing);
+      baseline.current = next;
+      setForm(next);
+      setConflict(false);
+      setSubmitError(null);
+    }
+  }, [existing, name, form, networkEditing]);
+  const needsReload = !isCreate && (conflict || !!(existing && form.uid && (
+    existing.uid !== form.uid || existing.resourceVersion !== form.resourceVersion
+  )));
+  const reload = async () => {
+    setReloading(true);
+    const result = await refetch();
+    if (activePolicyName.current !== name) return;
+    setReloading(false);
+    if (result.isSuccess && result.data) {
+      const next = fromPolicyDTO(result.data);
+      baseline.current = next;
+      setForm(next);
+      setConflict(false);
+      setSubmitError(null);
+    } else {
+      setSubmitError(`Failed to reload policy: ${result.error?.message || "Try again."}`);
+    }
+  };
   const success = () => { queryClient.invalidateQueries({ queryKey: ["admin", "policies"] }); if (name) queryClient.invalidateQueries({ queryKey: ["admin", "policy", name] }); navigate("/admin/policies"); };
   const createMutation = useMutation({ mutationFn: createPolicy, onSuccess: success, onError: (mutationError: Error) => setSubmitError(mutationError.message) });
-  const updateMutation = useMutation({ mutationFn: (request: AgentPolicyUpsertRequest) => updatePolicy(name!, request), onSuccess: success, onError: (mutationError: Error) => setSubmitError(mutationError.message) });
+  const updateMutation = useMutation({
+    mutationFn: (request: AgentPolicyUpsertRequest) => updatePolicy(name!, request), onSuccess: success,
+    onError: (mutationError: Error) => {
+      setSubmitError(mutationError.message);
+      if (mutationError instanceof PolicyConflictError) setConflict(true);
+    },
+  });
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (needsReload || reloading) return;
     setSubmitError(null);
     let request: AgentPolicyUpsertRequest;
     try {
@@ -110,7 +156,8 @@ export function PolicyEditPage() {
     if (isCreate) createMutation.mutate(request); else updateMutation.mutate(request);
   };
   if (!isCreate && isLoading) return <Spinner label="Loading policy..." />;
-  if (!isCreate && error) return <MessageBar intent="error">Failed to load: {error.message}</MessageBar>;
+  if (reloading) return <Spinner label="Reloading policy..." />;
+  if (!isCreate && error && !existing) return <MessageBar intent="error">Failed to load: {error.message}</MessageBar>;
   const pending = createMutation.isPending || updateMutation.isPending;
   const readonlyNetwork = existing?.network;
   return <form onSubmit={submit} style={{ maxWidth: 820, display: "flex", flexDirection: "column", gap: 16 }}>
@@ -141,6 +188,7 @@ export function PolicyEditPage() {
     {form.blockedPorts.map((port, index) => <div key={index} style={{ display: "flex", gap: 8 }}><Input aria-label={`Blocked port ${index + 1}`} type="number" value={String(port.port)} onChange={(_, data) => setForm({ ...form, blockedPorts: updateAt(form.blockedPorts, index, { ...port, port: Number(data.value) }) })} /><Select aria-label={`Blocked port protocol ${index + 1}`} value={port.protocol} onChange={(event) => setForm({ ...form, blockedPorts: updateAt(form.blockedPorts, index, { ...port, protocol: event.target.value as AgentPolicyProtocol }) })}><option>TCP</option><option>UDP</option><option>SCTP</option></Select><Button type="button" onClick={() => setForm({ ...form, blockedPorts: form.blockedPorts.filter((_, itemIndex) => itemIndex !== index) })}>Remove</Button></div>)}
     <Button type="button" onClick={() => setForm({ ...form, blockedPorts: [...form.blockedPorts, { port: 443, protocol: "TCP" }] })}>Add blocked port</Button>
     <InternalNetworkRules key={name || "__new__"} rules={form.allowedInternalCIDRs}
+      onEditingChange={setNetworkEditing}
       onChange={(allowedInternalCIDRs) => setForm({ ...form, allowedInternalCIDRs })} />
     <Field label="Ingress mode"><Select value={form.ingressMode} onChange={(event) => setForm({ ...form, ingressMode: event.target.value as PolicyFormState["ingressMode"] })}><option value="authenticated">Authenticated</option><option value="disabled">Disabled</option></Select></Field>
     <Divider />
@@ -167,6 +215,12 @@ export function PolicyEditPage() {
       <Text>Agent identity: allowed {String(!!existing?.agentIdentity?.allowed)}, required {String(!!existing?.agentIdentity?.required)}, credential services {(existing?.agentIdentity?.credentialServices || []).join(", ") || "none"}.</Text><Text>Entra ID enabled: {String(!!existing?.entraID?.enabled)}.</Text><Text>Blocked FQDNs: {(readonlyNetwork?.blockedFQDNs || []).join(", ") || "none"}.</Text><Text>Ingress mTLS required: {String(!!readonlyNetwork?.ingress?.requireMTLS)}.</Text>
     </section>
     {submitError && <MessageBar intent="error">{submitError}</MessageBar>}
-    <div style={{ display: "flex", gap: 8 }}><Button appearance="primary" type="submit" disabled={pending}>{pending ? "Saving..." : isCreate ? "Create" : "Save"}</Button><Button appearance="secondary" type="button" onClick={() => navigate("/admin/policies")}>Cancel</Button></div>
+    {needsReload && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <MessageBar intent="warning">
+        This policy changed since you opened it. Your unsaved edits have been kept. Reloading will discard them and load the latest policy.
+      </MessageBar>
+      <Button type="button" style={{ alignSelf: "flex-start" }} disabled={pending} onClick={reload}>Discard edits and reload</Button>
+    </div>}
+    <div style={{ display: "flex", gap: 8 }}><Button appearance="primary" type="submit" disabled={pending || needsReload}>{pending ? "Saving..." : isCreate ? "Create" : "Save"}</Button><Button appearance="secondary" type="button" onClick={() => navigate("/admin/policies")}>Cancel</Button></div>
   </form>;
 }

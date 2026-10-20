@@ -48,15 +48,21 @@ export function validCIDR(value: string): boolean {
   return octets.length === 4 && octets.every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255) && Number(match[2]) <= 32;
 }
 
-export function InternalNetworkRules({ rules, onChange }: {
+export function InternalNetworkRules({ rules, onChange, onEditingChange }: {
   rules: InternalNetworkRule[];
   onChange: (rules: InternalNetworkRule[]) => void;
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const [editing, setEditing] = useState<{ index: number | null; rule: InternalNetworkRule } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const openEditor = (index: number | null) => {
     setError(null);
     setEditing({ index, rule: index === null ? { cidr: "", ports: "443" } : { ...rules[index] } });
+    onEditingChange?.(true);
+  };
+  const closeEditor = () => {
+    setEditing(null);
+    onEditingChange?.(false);
   };
   const applyRule = (event: FormEvent) => {
     event.preventDefault();
@@ -73,7 +79,7 @@ export function InternalNetworkRules({ rules, onChange }: {
     try {
       const [rule] = formatInternalNetworkRules(parseInternalNetworkRules([editing.rule]));
       onChange(editing.index === null ? [...rules, rule] : rules.map((current, index) => index === editing.index ? rule : current));
-      setEditing(null);
+      closeEditor();
       setError(null);
     } catch (error) {
       setError(error instanceof Error ? error.message.replace(/^Rule 1: /, "") : "Check the network rule.");
@@ -98,7 +104,7 @@ export function InternalNetworkRules({ rules, onChange }: {
     <Button type="button" style={{ alignSelf: "flex-start" }} onClick={() => openEditor(null)}>Add network rule</Button>
     <Text size={200}>Ports use TCP unless another protocol is shown. Save the policy to apply rule changes.</Text>
     <Text size={200}>Requires a Sandbox runtime that supports internal network access. Native single-start does not support these rules.</Text>
-    <Dialog open={editing !== null} onOpenChange={(_, data) => { if (!data.open) setEditing(null); }}>
+    <Dialog open={editing !== null} onOpenChange={(_, data) => { if (!data.open) closeEditor(); }}>
       <DialogSurface>
         <form onSubmit={applyRule}>
           <DialogBody>
@@ -116,7 +122,7 @@ export function InternalNetworkRules({ rules, onChange }: {
               {error && <MessageBar intent="error">{error}</MessageBar>}
             </DialogContent>
             <DialogActions>
-              <Button type="button" onClick={() => setEditing(null)}>Cancel</Button>
+              <Button type="button" onClick={closeEditor}>Cancel</Button>
               <Button appearance="primary" type="submit">{editing?.index === null ? "Add rule" : "Update rule"}</Button>
             </DialogActions>
           </DialogBody>

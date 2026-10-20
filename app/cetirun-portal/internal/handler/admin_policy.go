@@ -484,20 +484,20 @@ func equalKubernetesAccess(request *AgentPolicyKubernetesAccessDTO, current *cet
 // validatePortalManagedPolicyFields mirrors the local shape checks for fields
 // Portal can edit. The operator keeps the authoritative admission checks; the
 // Portal validation makes malformed requests actionable before a cluster write.
-func validatePortalManagedPolicyFields(spec cetirunv1alpha1.AgentPolicySpec) string {
-	for _, cidr := range spec.Network.BlockedCIDRs {
+func validatePortalManagedPolicyFields(network cetirunv1alpha1.AgentPolicyNetwork) string {
+	for _, cidr := range network.BlockedCIDRs {
 		if !validPolicyCIDR(cidr) {
 			return "network.blockedCIDRs entries must be IPv4 or IPv6 CIDRs"
 		}
 	}
-	if hasDuplicateStrings(spec.Network.BlockedCIDRs) {
+	if hasDuplicateStrings(network.BlockedCIDRs) {
 		return "network.blockedCIDRs must not contain duplicate entries"
 	}
-	if message := validatePolicyPorts(spec.Network.BlockedPorts, "network.blockedPorts"); message != "" {
+	if message := validatePolicyPorts(network.BlockedPorts, "network.blockedPorts"); message != "" {
 		return message
 	}
-	seenCIDRs := make(map[string]bool, len(spec.Network.AllowedInternalCIDRs))
-	for _, rule := range spec.Network.AllowedInternalCIDRs {
+	seenCIDRs := make(map[string]bool, len(network.AllowedInternalCIDRs))
+	for _, rule := range network.AllowedInternalCIDRs {
 		if !validPolicyCIDR(rule.CIDR) {
 			return "network.allowedInternalCIDRs CIDRs must be IPv4 or IPv6 CIDRs"
 		}
@@ -512,15 +512,38 @@ func validatePortalManagedPolicyFields(spec cetirunv1alpha1.AgentPolicySpec) str
 			return message
 		}
 	}
-	switch spec.Network.Ingress.Mode {
+	switch network.Ingress.Mode {
 	case "", cetirunv1alpha1.AgentPolicyIngressAuthenticated, cetirunv1alpha1.AgentPolicyIngressDisabled:
 	default:
 		return "network.ingress.mode must be authenticated or disabled"
 	}
-	if spec.Network.Ingress.Mode == cetirunv1alpha1.AgentPolicyIngressDisabled && spec.Network.Ingress.RequireMTLS {
+	if network.Ingress.Mode == cetirunv1alpha1.AgentPolicyIngressDisabled && network.Ingress.RequireMTLS {
 		return "network.ingress.disabled cannot require mTLS"
 	}
 	return ""
+}
+
+// validatePortalManagedPolicyUpdateFields validates only network fields supplied
+// by an update. Existing AgentPolicies may contain repeated network rules, so an
+// unrelated Portal update must preserve them without revalidating retained data.
+func validatePortalManagedPolicyUpdateFields(req AgentPolicyUpsertRequest, desired cetirunv1alpha1.AgentPolicySpec) string {
+	if req.Network == nil {
+		return ""
+	}
+	network := desired.Network
+	if req.Network.BlockedCIDRs == nil {
+		network.BlockedCIDRs = nil
+	}
+	if req.Network.BlockedPorts == nil {
+		network.BlockedPorts = nil
+	}
+	if req.Network.AllowedInternalCIDRs == nil {
+		network.AllowedInternalCIDRs = nil
+	}
+	if req.Network.Ingress == nil || req.Network.Ingress.Mode == nil {
+		network.Ingress = cetirunv1alpha1.AgentPolicyIngress{Mode: cetirunv1alpha1.AgentPolicyIngressAuthenticated}
+	}
+	return validatePortalManagedPolicyFields(network)
 }
 
 func validPolicyCIDR(value string) bool {
@@ -607,7 +630,7 @@ func (h *AdminPolicyHandler) CreatePolicy(w http.ResponseWriter, r *http.Request
 		return
 	}
 	spec := toAgentPolicySpec(req)
-	if msg := validatePortalManagedPolicyFields(spec); msg != "" {
+	if msg := validatePortalManagedPolicyFields(spec.Network); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_policy", msg)
 		return
 	}
@@ -685,7 +708,7 @@ func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request
 	desired.Skills = requested.Skills
 	desired.ModelAccess = requested.ModelAccess
 	applyAgentPolicyRequest(&desired, req)
-	if msg := validatePortalManagedPolicyFields(desired); msg != "" {
+	if msg := validatePortalManagedPolicyUpdateFields(req, desired); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_policy", msg)
 		return
 	}

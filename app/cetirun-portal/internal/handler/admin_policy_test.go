@@ -259,30 +259,87 @@ func TestAdminPolicyExposesStatusAndUpdatesPortalManagedFields(t *testing.T) {
 }
 
 func TestAdminPolicyPreservesOmittedFieldsIncludingKubernetesAccess(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		emptyNetwork bool
+	}{
+		{name: "network omitted"},
+		{name: "empty network object", emptyNetwork: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: toAgentPolicySpec(validPolicyRequest())}
+			policy.Spec.SandboxSelection.AllowMultiple = true
+			policy.Spec.Network.BlockedCIDRs = []string{"10.0.0.0/8", "10.0.0.0/8"}
+			policy.Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}, {Port: 443, Protocol: corev1.ProtocolTCP}}
+			policy.Spec.Network.AllowedInternalCIDRs = []cetirunv1alpha1.AgentPolicyCIDRRule{
+				{CIDR: "198.51.100.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}}},
+				{CIDR: "198.51.100.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 53, Protocol: corev1.ProtocolUDP}}},
+			}
+			policy.Spec.Network.BlockedFQDNs = []string{"example.com"}
+			policy.Spec.Network.Ingress.RequireMTLS = true
+			policy.Spec.KubernetesAccess = &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{ServiceAccountName: "agent", ClusterRoleBindings: []cetirunv1alpha1.AgentPolicyClusterRoleBinding{{ClusterRoleName: "view"}}}
+			preservedNetwork := *policy.Spec.Network.DeepCopy()
+			preservedKubernetesAccess := policy.Spec.KubernetesAccess.DeepCopy()
+			h := newAdminPolicyHandler(policy)
+			current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := validPolicyRequest()
+			req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+			req.ModelAccess.GatewayBudget.MaxMonthlyUSD = "60"
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.emptyNetwork {
+				var partial map[string]any
+				if err := json.Unmarshal(body, &partial); err != nil {
+					t.Fatal(err)
+				}
+				partial["network"] = map[string]any{}
+				body, err = json.Marshal(partial)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			update := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+			update.SetPathValue("name", "standard")
+			w := httptest.NewRecorder()
+			h.UpdatePolicy(w, update)
+			if w.Code != http.StatusOK {
+				t.Fatalf("omitted-field update status %d: %s", w.Code, w.Body.String())
+			}
+			stored, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Spec.ModelAccess.GatewayBudget == nil || stored.Spec.ModelAccess.GatewayBudget.MaxMonthlyUSD != "60" ||
+				!stored.Spec.SandboxSelection.AllowMultiple || !reflect.DeepEqual(stored.Spec.Network, preservedNetwork) ||
+				!reflect.DeepEqual(stored.Spec.KubernetesAccess, preservedKubernetesAccess) {
+				t.Fatalf("model update discarded retained fields: %+v", stored.Spec)
+			}
+		})
+	}
+}
+
+func TestAdminPolicyPreservesLegacyNetworkRulesDuringPartialNetworkUpdate(t *testing.T) {
 	policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: toAgentPolicySpec(validPolicyRequest())}
-	policy.Spec.SandboxSelection.AllowMultiple = true
-	policy.Spec.Network.BlockedCIDRs = []string{"10.0.0.0/8"}
-	policy.Spec.Network.BlockedFQDNs = []string{"example.com"}
-	policy.Spec.Network.Ingress.RequireMTLS = true
-	policy.Spec.KubernetesAccess = &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{ServiceAccountName: "agent", ClusterRoleBindings: []cetirunv1alpha1.AgentPolicyClusterRoleBinding{{ClusterRoleName: "view"}}}
+	policy.Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}, {Port: 443, Protocol: corev1.ProtocolTCP}}
+	policy.Spec.Network.AllowedInternalCIDRs = []cetirunv1alpha1.AgentPolicyCIDRRule{
+		{CIDR: "198.51.100.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}}},
+		{CIDR: "198.51.100.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 53, Protocol: corev1.ProtocolUDP}}},
+	}
 	h := newAdminPolicyHandler(policy)
 	current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
+	blockedCIDRs := []string{"192.0.2.0/24"}
 	req := validPolicyRequest()
 	req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+	req.Network = &AgentPolicyNetworkRequestDTO{BlockedCIDRs: &blockedCIDRs}
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var partial map[string]any
-	if err := json.Unmarshal(body, &partial); err != nil {
-		t.Fatal(err)
-	}
-	partial["sandboxSelection"] = map[string]any{}
-	partial["network"] = map[string]any{}
-	body, err = json.Marshal(partial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,12 +348,62 @@ func TestAdminPolicyPreservesOmittedFieldsIncludingKubernetesAccess(t *testing.T
 	w := httptest.NewRecorder()
 	h.UpdatePolicy(w, update)
 	if w.Code != http.StatusOK {
-		t.Fatalf("omitted-field update status %d: %s", w.Code, w.Body.String())
+		t.Fatalf("partial network update status %d: %s", w.Code, w.Body.String())
 	}
-	stored, _ := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
-	if !stored.Spec.SandboxSelection.AllowMultiple || len(stored.Spec.Network.BlockedCIDRs) != 1 ||
-		len(stored.Spec.Network.BlockedFQDNs) != 1 || !stored.Spec.Network.Ingress.RequireMTLS || stored.Spec.KubernetesAccess == nil {
-		t.Fatalf("omitted optional fields were discarded: %+v", stored.Spec)
+	stored, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored.Spec.Network.BlockedCIDRs, blockedCIDRs) ||
+		!reflect.DeepEqual(stored.Spec.Network.BlockedPorts, policy.Spec.Network.BlockedPorts) ||
+		!reflect.DeepEqual(stored.Spec.Network.AllowedInternalCIDRs, policy.Spec.Network.AllowedInternalCIDRs) {
+		t.Fatalf("partial network update changed retained legacy rules: %+v", stored.Spec.Network)
+	}
+
+	invalidCIDRs := []string{"not-a-cidr"}
+	req = validPolicyRequest()
+	req.UID, req.ResourceVersion = string(stored.UID), stored.ResourceVersion
+	req.Network = &AgentPolicyNetworkRequestDTO{BlockedCIDRs: &invalidCIDRs}
+	body, err = json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update = httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	update.SetPathValue("name", "standard")
+	w = httptest.NewRecorder()
+	h.UpdatePolicy(w, update)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "network.blockedCIDRs") {
+		t.Fatalf("invalid supplied network field status %d: %s", w.Code, w.Body.String())
+	}
+	afterInvalid, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterInvalid.Spec, stored.Spec) {
+		t.Fatalf("invalid network update changed policy: before=%+v after=%+v", stored.Spec, afterInvalid.Spec)
+	}
+
+	duplicateCIDRs := []string{"192.0.2.0/24", "192.0.2.0/24"}
+	req = validPolicyRequest()
+	req.UID, req.ResourceVersion = string(stored.UID), stored.ResourceVersion
+	req.Network = &AgentPolicyNetworkRequestDTO{BlockedCIDRs: &duplicateCIDRs}
+	body, err = json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update = httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	update.SetPathValue("name", "standard")
+	w = httptest.NewRecorder()
+	h.UpdatePolicy(w, update)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "must not contain duplicate entries") {
+		t.Fatalf("duplicate supplied network field status %d: %s", w.Code, w.Body.String())
+	}
+	afterDuplicate, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterDuplicate.Spec, stored.Spec) {
+		t.Fatalf("duplicate network update changed policy: before=%+v after=%+v", stored.Spec, afterDuplicate.Spec)
 	}
 }
 

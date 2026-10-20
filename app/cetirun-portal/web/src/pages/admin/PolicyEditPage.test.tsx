@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +19,21 @@ vi.mock("../../api/adminPolicy", async (importOriginal) => {
     updatePolicy: vi.fn(),
   };
 });
+
+const cachedPolicy: policyAPI.AgentPolicyDTO = {
+  name: "standard", uid: "policy-uid", resourceVersion: "42",
+  harnesses: { allowed: ["openclaw"] }, skills: { allowed: ["original-skill"] },
+};
+
+function renderCachedPolicy() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 10_000 } } });
+  queryClient.setQueryData(["admin", "policy", "standard"], cachedPolicy);
+  render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={["/admin/policies/standard/edit"]}><Routes>
+    <Route path="/admin/policies/:name/edit" element={<PolicyEditPage />} />
+    <Route path="/admin/policies" element={<div>Policy list</div>} />
+  </Routes></MemoryRouter></QueryClientProvider>);
+  return queryClient;
+}
 
 describe("PolicyEditPage", () => {
   beforeEach(() => {
@@ -125,6 +140,87 @@ describe("PolicyEditPage", () => {
     })));
     expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1]).not.toHaveProperty("kubernetesAccess");
     expect(policyAPI.createPolicy).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a pristine cached form and saves the latest resource version", async () => {
+    const latest = { ...cachedPolicy, resourceVersion: "43", skills: { allowed: ["remote-skill"] } };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(latest);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(latest);
+    renderCachedPolicy();
+
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Allowed skills" })).toHaveValue("remote-skill"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledWith("standard", expect.objectContaining({
+      resourceVersion: "43", skills: { allowed: ["remote-skill"] },
+    })));
+  });
+
+  it.each(["policy-uid", "replacement-uid"])("preserves dirty fields when a refetch returns UID %s", async (uid) => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(cachedPolicy);
+    const queryClient = renderCachedPolicy();
+    const skills = screen.getByRole("textbox", { name: "Allowed skills" });
+    fireEvent.change(skills, { target: { value: "local-skill" } });
+    const latest = { ...cachedPolicy, uid, resourceVersion: "43", skills: { allowed: ["remote-skill"] } };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(latest);
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["admin", "policy", "standard"] }); });
+
+    expect(skills).toHaveValue("local-skill");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+    expect(screen.getByText(/Your unsaved edits have been kept/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Discard edits and reload" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Allowed skills" })).toHaveValue("remote-skill"));
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(latest);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledWith("standard", expect.objectContaining({
+      uid, resourceVersion: "43", skills: { allowed: ["remote-skill"] },
+    })));
+  });
+
+  it("recovers from a save conflict with an explicit reload and retains edits if reload fails", async () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(cachedPolicy);
+    vi.mocked(policyAPI.updatePolicy).mockRejectedValue(new policyAPI.PolicyConflictError("Configuration changed."));
+    renderCachedPolicy();
+    fireEvent.change(screen.getByRole("textbox", { name: "Allowed skills" }), { target: { value: "local-skill" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Configuration changed.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Allowed skills" })).toHaveValue("local-skill");
+
+    vi.mocked(policyAPI.getPolicy).mockRejectedValueOnce(new Error("Service unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: "Discard edits and reload" }));
+    expect(await screen.findByText("Failed to reload policy: Service unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Allowed skills" })).toHaveValue("local-skill");
+
+    const latest = { ...cachedPolicy, resourceVersion: "44", skills: { allowed: ["remote-skill"] } };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(latest);
+    fireEvent.click(screen.getByRole("button", { name: "Discard edits and reload" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Allowed skills" })).toHaveValue("remote-skill"));
+    expect(screen.queryByText(/Failed to reload policy/)).not.toBeInTheDocument();
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(latest);
+    fireEvent.change(screen.getByRole("textbox", { name: "Allowed skills" }), { target: { value: "reapplied-skill" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenLastCalledWith("standard", expect.objectContaining({
+      resourceVersion: "44", skills: { allowed: ["reapplied-skill"] },
+    })));
+    expect(await screen.findByText("Policy list")).toBeInTheDocument();
+  });
+
+  it("keeps a network rule draft through a refetch and refreshes after it is cancelled", async () => {
+    const user = userEvent.setup();
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(cachedPolicy);
+    const queryClient = renderCachedPolicy();
+    await user.click(screen.getByRole("button", { name: "Add network rule" }));
+    const dialog = within(await screen.findByRole("dialog", { hidden: true }));
+    fireEvent.change(dialog.getByRole("textbox", { name: "Destination (CIDR)", hidden: true }), { target: { value: "10.20.0.0/24" } });
+    const latest = { ...cachedPolicy, resourceVersion: "43", skills: { allowed: ["remote-skill"] } };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(latest);
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["admin", "policy", "standard"] }); });
+    expect(dialog.getByRole("textbox", { name: "Destination (CIDR)", hidden: true })).toHaveValue("10.20.0.0/24");
+    expect(screen.getByRole("textbox", { name: "Allowed skills", hidden: true })).toHaveValue("original-skill");
+    await user.click(dialog.getByRole("button", { name: "Cancel", hidden: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Allowed skills" })).toHaveValue("remote-skill"));
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });
 
   it("maps editable policy controls and excludes read-only capability fields", () => {

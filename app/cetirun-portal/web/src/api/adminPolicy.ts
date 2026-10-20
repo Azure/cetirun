@@ -124,12 +124,17 @@ export async function createPolicy(req: AgentPolicyUpsertRequest): Promise<Agent
   return response.json();
 }
 
+export class PolicyConflictError extends Error {}
+
 export async function updatePolicy(name: string, req: AgentPolicyUpsertRequest): Promise<AgentPolicyDTO> {
   const response = await apiFetch(`/api/v1/admin/policies/${encodeURIComponent(name)}`, {
     method: "PUT",
     body: JSON.stringify(req),
   });
-  if (!response.ok) throw new Error(await parseError(response, "Failed to update policy"));
+  if (!response.ok) {
+    const message = await parseError(response, "Failed to update policy");
+    throw response.status === 409 ? new PolicyConflictError(message) : new Error(message);
+  }
   return response.json();
 }
 
