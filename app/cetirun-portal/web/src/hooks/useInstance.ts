@@ -143,6 +143,8 @@ export function useRestartInstanceByName(name: string) {
     mutationFn: (request: RestartInstanceRequest) => restartInstanceByName(name, request),
     onSuccess: (instance) => {
       queryClient.setQueryData(["instance", name, viewer], instance);
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["instance", name] });
       queryClient.invalidateQueries({ queryKey: ["instances"] });
     },

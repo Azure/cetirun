@@ -3,6 +3,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PortalError } from "../api/aiGateway";
 import type { Instance, RestartInstanceRequest } from "../types/instance";
 import { RestartAgentButton } from "./RestartAgentButton";
 
@@ -26,6 +27,7 @@ describe("RestartAgentButton", () => {
     mutation.reset.mockClear();
     mutation.isPending = false;
     mutation.isError = false;
+    mutation.error = new Error("Connection interrupted");
     mutation.data = undefined;
     mutation.variables = undefined;
     mutation.mutate.mockImplementation((request: RestartInstanceRequest) => { mutation.variables = request; });
@@ -134,5 +136,69 @@ describe("RestartAgentButton", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(mutation.mutate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["Cancel", "Escape"])("allows a fresh confirmation after a definite stale-version rejection and %s", (dismissal) => {
+    const uuid = vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000002");
+    const view = render(<RestartAgentButton instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    view.rerender(<RestartAgentButton instance={{ ...instance, resourceVersion: "8" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart", exact: true }));
+    expect(mutation.mutate.mock.calls[0][0].resourceVersion).toBe("7");
+    mutation.isError = true;
+    mutation.error = new PortalError("Agent changed", 409, "instance_changed");
+    view.rerender(<RestartAgentButton instance={{ ...instance, resourceVersion: "8" }} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("The request was not accepted");
+    expect(screen.getByRole("button", { name: "Request rejected" })).toBeDisabled();
+    if (dismissal === "Cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    else fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart", exact: true }));
+    expect(mutation.mutate.mock.calls[1][0]).toEqual({
+      uid: instance.uid, resourceVersion: "8", requestId: "00000000-0000-4000-8000-000000000002",
+    });
+    expect(uuid).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    new Error("Connection interrupted"),
+    new SyntaxError("Invalid response"),
+    new PortalError("Request result is unavailable", 500, "internal_error"),
+    new PortalError("Agent is now suspended", 409, "restart_unavailable"),
+    new PortalError("Unknown proxy result", 409, "unrecognized_error"),
+    new PortalError("Server failed", 503, "instance_changed"),
+  ])("retains the original sent request for uncertain outcome %s", (error) => {
+    const view = render(<RestartAgentButton instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart", exact: true }));
+    const sent = mutation.mutate.mock.calls[0][0];
+    mutation.isError = true;
+    mutation.error = error;
+    view.rerender(<RestartAgentButton instance={{ ...instance, resourceVersion: "8" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry request" }));
+    expect(mutation.mutate.mock.calls[1][0]).toEqual(sent);
+  });
+
+  it.each(["poll", "response"])("keeps an accepted request observed by %s when a later retry is rejected", (source) => {
+    const view = render(<RestartAgentButton instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart", exact: true }));
+    const sent = mutation.mutate.mock.calls[0][0];
+    const accepted = { ...instance, resourceVersion: "8", generation: 3,
+      restartRequestId: sent.requestId, restartAvailable: false };
+    mutation.isError = true;
+    mutation.error = new PortalError("Agent changed", 409, "instance_changed");
+    if (source === "response") mutation.data = accepted;
+    view.rerender(<RestartAgentButton instance={source === "poll" ? accepted : instance} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("closing this dialog does not cancel an accepted restart");
+    expect(screen.queryByText("The request was not accepted", { exact: false })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry request" }));
+    expect(mutation.mutate.mock.calls[1][0]).toEqual(sent);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Restart Agent" })).toBeDisabled();
   });
 });

@@ -75,6 +75,14 @@ sessions are interrupted, and Pod-local temporary files are not retained.
 Closing the confirmation dialog before submitting discards that draft; reopening
 uses the currently displayed Agent version. After a request was sent with an
 uncertain result, closing the dialog retains its ID and version for a safe retry.
+For an explicit `instance_changed` version conflict after a status update,
+close the dialog and confirm again using the current version. Other errors,
+including suspension after an earlier attempt, a network failure or an unreadable
+response, do not establish whether the original request was accepted and retain
+it for retry. An already observed accepted request is never discarded merely
+because a later retry is rejected.
+Portal refreshes the displayed Agent after each outcome without automatically
+submitting another restart.
 
 The owner API is `POST /api/v1/instances/{name}/restart`. Send the current
 `uid` and `resourceVersion` in the JSON body and an `Idempotency-Key` header
@@ -90,6 +98,11 @@ Portal reports the desired `restartRequestId` and
 `status.observedRestartRequestID` only after observing the requested template
 on the current ready Pod. It does not count the old Pod's Ready status or a
 successful Helm apply as completion. A pending request prevents another restart.
+During an Operator rolling upgrade, an older leader may observe the new Agent
+generation without applying the restart marker. A restart-aware controller binds
+both reconciliation caches to the request ID, so takeover applies the pending
+restart even if that generation was already observed. Waiting for the replacement
+Pod or recording its readiness does not request another apply.
 
 Suspension and deletion take precedence; restart cannot resume a suspended
 Agent. Current policy and runtime checks still apply. Earlier single-start
