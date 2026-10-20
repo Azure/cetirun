@@ -14,6 +14,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
@@ -224,7 +225,7 @@ func (e ReconcileExpectation) Validate() error {
 	return nil
 }
 
-func ValidateReconciledVolumes(spec corev1.PodSpec, claims []string, projections []corev1.Volume) error {
+func ValidateReconciledVolumes(spec corev1.PodSpec, claims []string, projections []corev1.Volume, scratchLimit resource.Quantity) error {
 	for _, volume := range spec.Volumes {
 		switch {
 		case volume.PersistentVolumeClaim != nil:
@@ -242,7 +243,13 @@ func ValidateReconciledVolumes(spec corev1.PodSpec, claims []string, projections
 					return fmt.Errorf("Sandbox component cannot request an unapproved identity projection")
 				}
 			}
-		case volume.ConfigMap != nil, volume.Secret != nil, volume.EmptyDir != nil, volume.DownwardAPI != nil, volume.Image != nil:
+		case volume.EmptyDir != nil:
+			if volume.EmptyDir.Medium == corev1.StorageMediumDefault &&
+				(scratchLimit.Sign() <= 0 || volume.EmptyDir.SizeLimit == nil ||
+					volume.EmptyDir.SizeLimit.Sign() <= 0 || volume.EmptyDir.SizeLimit.Cmp(scratchLimit) > 0) {
+				return fmt.Errorf("Sandbox temporary volume %q requires a positive sizeLimit no greater than the selected scratch limit", volume.Name)
+			}
+		case volume.ConfigMap != nil, volume.Secret != nil, volume.DownwardAPI != nil, volume.Image != nil:
 		default:
 			return fmt.Errorf("Sandbox component volume source is not approved")
 		}
@@ -352,7 +359,8 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 	if !foundHome {
 		return fmt.Errorf("reconciled Sandbox must retain its owned HOME")
 	}
-	if err := ValidateReconciledVolumes(spec, []string{b.input.Home.Name, skillsIdentity(b.input.Skills).Name}, b.input.Controls.Volumes); err != nil {
+	if err := ValidateReconciledVolumes(spec, []string{b.input.Home.Name, skillsIdentity(b.input.Skills).Name}, b.input.Controls.Volumes,
+		b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit); err != nil {
 		return err
 	}
 	for _, source := range PodSourceReferences(spec, b.input.Namespace.Name) {

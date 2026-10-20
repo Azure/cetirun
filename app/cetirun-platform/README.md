@@ -88,9 +88,20 @@ the native single-start profile currently supports OpenClaw.
 
 The Portal records these inputs in the initial Agent creation request, so users
 do not enter deployment coordinates in the creation form. Explicit image/port
-requests remain subject to admission. Missing or invalid deployment profiles
-reject creation before any Agent, namespace or Secret is written. These defaults
-do not authorize a runtime or change the selected AgentPolicy/Sandbox checks.
+requests remain subject to admission. By default, missing or invalid deployment
+profiles reject creation before any Agent, namespace or Secret is written.
+
+After completing the reader-first upgrade and enabling the Operator's
+`sandboxSources.reconciledExecution`, the deployment may set
+`cetirun-portal.sandboxRuntimeDefaultsFromController: true`. This permits missing
+profiles to use trusted chart/image/port defaulting in the common executor.
+Configured profiles are still validated. The platform chart rejects this Portal
+opt-in unless the Operator and its native/reconciled sources are enabled.
+For standalone Portal releases, verify the matching Operator configuration
+before enabling it. Keep it off during reader-first rollout and turn it off
+before disabling new reconciled lifetimes; the retained executor still requires
+approved creation pins. These defaults do not authorize a runtime or change the
+selected AgentPolicy/Sandbox checks.
 
 ## AI Gateway
 

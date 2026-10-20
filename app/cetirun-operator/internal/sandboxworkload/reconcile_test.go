@@ -8,8 +8,42 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 )
+
+func TestReconciledVolumesBoundEveryDiskEmptyDir(t *testing.T) {
+	limit := resource.MustParse("1Gi")
+	for _, tc := range []struct {
+		name   string
+		volume corev1.EmptyDirVolumeSource
+		valid  bool
+	}{
+		{name: "unbounded"},
+		{name: "zero", volume: corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(resource.MustParse("0"))}},
+		{name: "negative", volume: corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(resource.MustParse("-1"))}},
+		{name: "one byte over", volume: corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(resource.MustParse("1073741825"))}},
+		{name: "one byte under", volume: corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(resource.MustParse("1073741823"))}, valid: true},
+		{name: "equal", volume: corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(limit)}, valid: true},
+		{name: "equivalent units", volume: corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(resource.MustParse("1024Mi"))}, valid: true},
+		{name: "memory keeps separate accounting", volume: corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}, valid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := corev1.PodSpec{Volumes: []corev1.Volume{
+				{Name: "bounded-first", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(limit)}}},
+				{Name: "extension", VolumeSource: corev1.VolumeSource{EmptyDir: &tc.volume}},
+			}}
+			before := spec.DeepCopy()
+			if err := ValidateReconciledVolumes(spec, nil, nil, limit); (err == nil) != tc.valid {
+				t.Fatalf("volume validation: %v, want valid=%t", err, tc.valid)
+			}
+			if !equality.Semantic.DeepEqual(spec, *before) {
+				t.Fatal("volume validation mutated the requested template")
+			}
+		})
+	}
+}
 
 func TestReconciledPodNormalizesActualQOSAdmission(t *testing.T) {
 	for _, scenario := range []struct {

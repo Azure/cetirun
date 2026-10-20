@@ -542,6 +542,51 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     values={"sandboxSources": {**sources, **change}, "aiGateway": {"enabled": True}},
                 )
 
+    def test_portal_controller_defaults_require_the_common_executor(self):
+        chart = ROOT / "app/cetirun-platform"
+        subprocess.run(
+            ["helm", "dependency", "build", "--skip-refresh", str(chart)],
+            cwd=ROOT, env=OFFLINE_ENV, text=True, capture_output=True, check=True, timeout=30,
+        )
+        namespace = "synthetic-release-namespace"
+        sources = {
+            "enabled": True, "nativeExecution": True,
+            "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
+        }
+        operator = {
+            "enabled": True, "namespace": namespace, "domainSuffix": "platform.example.com",
+            "sandboxSources": sources, "sandboxAdmission": self.enforced_values(podsEnabled=True),
+        }
+        portal = {
+            "istio": {"host": "portal.example.com"},
+            "aiGateway": {"catalogNamespace": namespace},
+        }
+        values = {"istio": {"enabled": True}, "cetirun-operator": operator, "cetirun-portal": portal}
+        for common in (False, True):
+            for controller_defaults in (False, True):
+                with self.subTest(common=common, controller_defaults=controller_defaults):
+                    result = self.helm(chart=chart, values={
+                        **values,
+                        "cetirun-operator": {**operator, "sandboxSources": {**sources, "reconciledExecution": common}},
+                        "cetirun-portal": {**portal, "sandboxRuntimeDefaultsFromController": controller_defaults},
+                    })
+                    if controller_defaults and not common:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("sandboxRuntimeDefaultsFromController requires", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(
+                            "name: SANDBOX_RUNTIME_DEFAULTS_FROM_CONTROLLER" in result.stdout,
+                            controller_defaults,
+                        )
+        disabled = self.helm(chart=chart, values={
+            **values,
+            "cetirun-operator": {"enabled": False},
+            "cetirun-portal": {**portal, "sandboxRuntimeDefaultsFromController": True},
+        })
+        self.assertNotEqual(disabled.returncode, 0)
+        self.assertIn("sandboxRuntimeDefaultsFromController requires", disabled.stderr)
+
     def test_native_empty_skills_claim_name_is_optional_without_extra_grants(self):
         admission = self.enforced_values(podsEnabled=True)
         sources = {

@@ -32,6 +32,7 @@ import (
 
 const (
 	sandboxApplyStateAnnotation = "sandbox.cetirun.microsoft.com/apply-state"
+	sandboxApplyInitializing    = "initializing"
 	sandboxApplyPending         = "pending"
 	sandboxApplySubmitted       = "submitted"
 	sandboxApplyCancelled       = "cancelled"
@@ -212,8 +213,8 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		return nil
 	}
 	applyGuard := func(ctx context.Context) error {
-		if published == nil {
-			return fmt.Errorf("Sandbox apply requires a published expectation")
+		if published == nil || published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyInitializing {
+			return fmt.Errorf("Sandbox apply requires an initialized expectation")
 		}
 		if err := guard(ctx); err != nil {
 			return err
@@ -297,41 +298,6 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err != nil && !apierrors.IsNotFound(err) {
 		return nil, err
 	}
-	desiredGrants := []sandboxpolicy.BindingReference{access}
-	if err := guard(ctx); err != nil {
-		return nil, err
-	}
-	if missingJournal {
-		state := &corev1.ConfigMap{}
-		err := r.customReader().Get(ctx, client.ObjectKey{
-			Namespace: r.OperatorNamespace, Name: w.PodExpectationName(expected.Namespace.Name, expected.Namespace.UID),
-		}, state)
-		if err == nil {
-			return nil, fmt.Errorf("Sandbox grant authority is missing for an existing execution")
-		}
-		if !apierrors.IsNotFound(err) {
-			return nil, err
-		}
-		if err := journal.Record(ctx, agent.Name, agent.UID, nil); err != nil {
-			return nil, err
-		}
-	}
-	if err := journal.Revoke(ctx, agent.Name, agent.UID, sandboxpolicy.ObsoleteBindings(previous, desiredGrants)); err != nil {
-		return nil, err
-	}
-	if err := journal.Record(ctx, agent.Name, agent.UID, desiredGrants); err != nil {
-		return nil, err
-	}
-	if err := r.applySandboxSourceAccess(ctx, agent, role, binding, access); err != nil {
-		return nil, err
-	}
-	confirmed, err := r.sandboxBindingUIDs(ctx, desiredGrants)
-	if err != nil {
-		return nil, err
-	}
-	if err := journal.Record(ctx, agent.Name, agent.UID, confirmed); err != nil {
-		return nil, err
-	}
 	for index := range expected.Workloads {
 		workload := &expected.Workloads[index]
 		current := &unstructured.Unstructured{}
@@ -362,18 +328,27 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	current := &corev1.ConfigMap{}
 	err = r.customReader().Get(ctx, client.ObjectKeyFromObject(desired), current)
 	if apierrors.IsNotFound(err) {
-		// Only the first journal/expectation publication proves that no earlier
-		// apply could have been submitted. Lost or older records stay uncertain.
+		// Persist non-submission before the journal so either publication can
+		// retry without losing the proof. Older or lost records stay uncertain.
 		if missingJournal && unobserved {
-			desired.Annotations[sandboxApplyStateAnnotation] = sandboxApplyPending
+			desired.Annotations[sandboxApplyStateAnnotation] = sandboxApplyInitializing
 		}
 		err = r.Create(ctx, desired)
+		current = desired.DeepCopy()
 	} else if err == nil {
 		recorded, readErr := w.ReadReconcileExpectation(current)
 		if readErr != nil || recorded.Agent != expected.Agent || recorded.Namespace != expected.Namespace || recorded.Home != expected.Home {
 			return nil, fmt.Errorf("Sandbox expectation cannot replace a different recorded lifetime")
 		}
+		if missingJournal && current.Annotations[sandboxApplyStateAnnotation] != sandboxApplyInitializing {
+			return nil, fmt.Errorf("Sandbox grant authority is missing for an existing execution")
+		}
 		switch state := current.Annotations[sandboxApplyStateAnnotation]; state {
+		case sandboxApplyInitializing:
+			if !unobserved || len(previous) != 0 {
+				return nil, fmt.Errorf("initializing Sandbox expectation has recorded grants or an observed workload")
+			}
+			desired.Annotations[sandboxApplyStateAnnotation] = state
 		case sandboxApplyPending, sandboxApplyCancelled:
 			if !unobserved {
 				return nil, fmt.Errorf("unsubmitted Sandbox expectation has an observed workload")
@@ -394,10 +369,42 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err != nil {
 		return nil, err
 	}
-	published = current.DeepCopy()
-	if published.UID == "" {
-		published = desired.DeepCopy()
+	initializing := current.Annotations[sandboxApplyStateAnnotation] == sandboxApplyInitializing
+	if missingJournal || initializing {
+		if err := journal.Record(ctx, agent.Name, agent.UID, nil); err != nil {
+			return nil, err
+		}
 	}
+	if initializing {
+		if err := guard(ctx); err != nil {
+			return nil, err
+		}
+		// The journal is confirmed before this CAS; no grant or workload write
+		// is allowed while the expectation is still initializing.
+		base := current.DeepCopy()
+		current.Annotations[sandboxApplyStateAnnotation] = sandboxApplyPending
+		if err := r.Patch(ctx, current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return nil, fmt.Errorf("finish Sandbox expectation initialization: %w", err)
+		}
+	}
+	desiredGrants := []sandboxpolicy.BindingReference{access}
+	if err := journal.Revoke(ctx, agent.Name, agent.UID, sandboxpolicy.ObsoleteBindings(previous, desiredGrants)); err != nil {
+		return nil, err
+	}
+	if err := journal.Record(ctx, agent.Name, agent.UID, desiredGrants); err != nil {
+		return nil, err
+	}
+	if err := r.applySandboxSourceAccess(ctx, agent, role, binding, access); err != nil {
+		return nil, err
+	}
+	confirmed, err := r.sandboxBindingUIDs(ctx, desiredGrants)
+	if err != nil {
+		return nil, err
+	}
+	if err := journal.Record(ctx, agent.Name, agent.UID, confirmed); err != nil {
+		return nil, err
+	}
+	published = current.DeepCopy()
 	if r.SandboxNativeCoordination != nil && !agent.Spec.Suspended {
 		intent, err := sandboxcoordination.ReconciledIntentFor(expected)
 		if err != nil {
@@ -659,6 +666,43 @@ func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.
 	}
 	failures = append(failures, r.updateStatus(ctx, agent))
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, errors.Join(failures...)
+}
+
+func (r *AgentReconciler) stopReconciledSandboxForSuspension(ctx context.Context, agent *api.Agent) error {
+	if err := r.checkRegistryIntent(ctx, agent); err != nil {
+		return err
+	}
+	var blockErr error
+	if r.AIGateway.configured() {
+		gateway, err := r.aiGatewayClient(ctx)
+		blockErr = err
+		if err == nil {
+			blocked, err := r.blockAIGatewayKeyIfPresent(ctx, gateway, agent, aiGatewayReasonSuspended)
+			blockErr = err
+			if err == nil && !blocked && aiGatewayKeyWasIssued(agent) {
+				blockErr = fmt.Errorf("the previously issued AI Gateway key is missing during suspension")
+			}
+			if blockErr == nil && agent.Status.AIGateway != nil {
+				agent.Status.AIGateway.Blocked = blocked
+			}
+		}
+	} else if aiGatewayKeyWasIssued(agent) {
+		blockErr = fmt.Errorf("AI Gateway configuration is required to block the existing key during suspension")
+	}
+	// Independent shutdown must precede chart/bootstrap reads and must still
+	// run when Gateway revocation or one component's stop cannot complete.
+	auxiliaryErr := r.stopReconciledAuxiliaries(ctx, agent)
+	stopErr := r.stopSandboxBuiltin(ctx, agent)
+	agent.Status.AccessURL = ""
+	if err := errors.Join(blockErr, auxiliaryErr, stopErr); err != nil {
+		agent.Status.Phase = api.PhasePending
+		for _, kind := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionIngressReady} {
+			setCondition(&agent.Status.Conditions, kind, metav1.ConditionFalse,
+				"SuspensionPending", "Suspension requested; waiting for shutdown and access revocation")
+		}
+		return errors.Join(err, r.updateStatus(ctx, agent))
+	}
+	return nil
 }
 
 func (r *AgentReconciler) releaseReconciledHold(ctx context.Context, agent *api.Agent) error {
