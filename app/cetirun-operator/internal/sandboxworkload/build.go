@@ -33,6 +33,11 @@ func Build(input Input) (*Bundle, error) {
 	if input.AgentType != "openclaw" && input.AgentType != "hermes" {
 		return nil, fmt.Errorf("policy-bound %q rendering is unsupported; legacy fallback is forbidden", input.AgentType)
 	}
+	if request := input.PlannedMigration; request != nil && (!input.Reconciled ||
+		!api.ValidRestartRequestID(request.RequestID) || request.Target.UID == "" ||
+		len(validation.IsDNS1123Subdomain(request.Target.Name)) != 0) {
+		return nil, fmt.Errorf("migration rendering requires a reconciled workload and a complete request")
+	}
 	for _, name := range []string{input.AgentName, input.Namespace.Name, input.WorkloadName, input.ReleaseName} {
 		if name == "" || len(validation.IsDNS1123Subdomain(name)) != 0 {
 			return nil, fmt.Errorf("Sandbox workload names must be explicit DNS names")

@@ -59,6 +59,7 @@ type SandboxHelmInstaller interface {
 type SandboxPreparation struct {
 	NativeExecution         bool
 	ReconciledExecution     bool
+	PlannedMigration        bool
 	Configuration           SandboxConfigurationSource
 	Prerequisites           SandboxPreparationSource
 	Installer               SandboxHelmInstaller

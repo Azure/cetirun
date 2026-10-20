@@ -57,6 +57,13 @@ func (r *AgentReconciler) observeWorkload(ctx context.Context, instance *cetirun
 		return false, ctrl.Result{}, err
 	}
 	rolloutComplete = rolloutComplete && restartReady
+	migrationReady, err := r.migrationPodReady(ctx, instance, sts)
+	if err != nil {
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
+			metav1.ConditionFalse, "MigrationObservationFailed", err.Error())
+		return false, ctrl.Result{}, err
+	}
+	rolloutComplete = rolloutComplete && migrationReady
 	if !rolloutComplete {
 		logger.Info("StatefulSet rollout not complete, requeueing",
 			"statefulset", stsName,
@@ -88,6 +95,13 @@ func setWorkloadReadiness(instance *cetirunv1alpha1.Agent, ready bool) {
 	}
 	instance.Status.Phase = cetirunv1alpha1.PhaseReady
 	instance.Status.ObservedRestartRequestID = instance.Spec.RestartRequestID
+	if state := instance.Status.PlannedMigration; state != nil && state.CanStart() &&
+		instance.Spec.PlannedMigration != nil && state.PlannedMigrationRequest == *instance.Spec.PlannedMigration &&
+		state.ReplacementPod != nil && state.ReplacementAttachment != nil {
+		state.Phase = cetirunv1alpha1.MigrationCompleted
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPlannedMigrationReady, metav1.ConditionTrue,
+			"MigrationCompleted", "Current destination Pod and CSI attachment are ready with the original HOME")
+	}
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 		metav1.ConditionTrue, "InstanceReady", "Instance is fully operational")
 }

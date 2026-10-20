@@ -96,7 +96,7 @@ func (s *requestState) validateAgentPod(ctx context.Context, stateNamespace stri
 		!sandboxworkload.SamePodTemplate(workload.Spec.Template, expected.Template) {
 		return denied("StatefulSetMismatch", "current StatefulSet ownership, selector, lifecycle intent or template differs from the expectation")
 	}
-	if !nodeMatchesSpec(node, &expected.Template.Spec) ||
+	if !NodeMatchesSpec(node, &expected.Template.Spec) ||
 		(expected.Template.Spec.NodeName != "" && expected.Template.Spec.NodeName != node.Name) {
 		return denied("AgentSchedulingMismatch", "registered Node does not satisfy the Agent template's scheduling intent")
 	}

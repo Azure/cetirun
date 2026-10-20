@@ -105,6 +105,10 @@ func TestRetainedRestartRejectsInvalidOrSupersededIntent(t *testing.T) {
 		want   error
 	}{
 		{"suspended", func(a *api.Agent, _ *InstanceVersion, _ *string) { a.Spec.Suspended = true }, ErrInstanceSuspended},
+		{"migration pending", func(a *api.Agent, _ *InstanceVersion, _ *string) {
+			a.Spec.PlannedMigration = &api.PlannedMigrationRequest{RequestID: "migration-00000001",
+				Target: api.MigrationObject{Name: "node-b", UID: "node-b-uid"}}
+		}, ErrMigrationPending},
 		{"suspended duplicate", func(a *api.Agent, _ *InstanceVersion, _ *string) {
 			a.Spec.Suspended, a.Spec.RestartRequestID = true, firstRestartID
 		}, ErrInstanceSuspended},

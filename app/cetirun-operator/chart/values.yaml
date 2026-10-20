@@ -197,6 +197,10 @@ sandboxSources:
   # Existing bootstrap receipts retain their mode, HOME and pins. Disabling this
   # switch does not downgrade records or make rolling back readers safe.
   reconciledExecution: false
+  # -- Allow new healthy-source moves of common-executor Agents with one CSI/RWOP HOME.
+  # Upgrade CRDs, Operator, admission and Portal readers before enabling.
+  # Existing checkpoints remain readable and cleanup permissions are retained when disabled.
+  plannedMigration: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
   # Requires chart/image/port pins; the common flow can record them first.
   # Published content stays external.

@@ -23,6 +23,7 @@ type SandboxSourcesConfig struct {
 	Enabled                     bool                    `json:"enabled"`
 	NativeExecution             bool                    `json:"nativeExecution"`
 	ReconciledExecution         bool                    `json:"reconciledExecution,omitempty"`
+	PlannedMigration            bool                    `json:"plannedMigration,omitempty"`
 	BootstrapOwnedPrerequisites bool                    `json:"bootstrapOwnedPrerequisites"`
 	PlatformConfigMapName       string                  `json:"platformConfigMapName"`
 	HomeClaimName               string                  `json:"homeClaimName"`
@@ -51,6 +52,9 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 }
 
 func (config SandboxSourcesConfig) validate() error {
+	if config.PlannedMigration && !config.ReconciledExecution {
+		return fmt.Errorf("planned migration requires reconciled Sandbox execution and upgraded readers")
+	}
 	if config.ReconciledExecution && !config.NativeExecution {
 		return fmt.Errorf("reconciled Sandbox execution requires native execution and a completed reader-first upgrade")
 	}
@@ -131,6 +135,7 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 	preparation := &SandboxPreparation{
 		NativeExecution:     config.NativeExecution,
 		ReconciledExecution: config.ReconciledExecution,
+		PlannedMigration:    config.PlannedMigration,
 		Configuration: &KubernetesSandboxConfigurationSource{
 			APIReader: reader, Namespace: namespace, Name: config.PlatformConfigMapName,
 		},

@@ -52,6 +52,12 @@ Otherwise: repository:tag
 {{- if and $sources.reconciledExecution (not $sources.nativeExecution) -}}
 {{- fail "sandboxSources.reconciledExecution requires nativeExecution and a completed reader-first upgrade" -}}
 {{- end -}}
+{{- if and (hasKey $sources "plannedMigration") (not (kindIs "bool" $sources.plannedMigration)) -}}
+{{- fail "sandboxSources.plannedMigration must be a boolean" -}}
+{{- end -}}
+{{- if and $sources.plannedMigration (not $sources.reconciledExecution) -}}
+{{- fail "sandboxSources.plannedMigration requires reconciledExecution and upgraded readers" -}}
+{{- end -}}
 {{- if and $sources.nativeExecution (not (and $sources.enabled $sources.bootstrapOwnedPrerequisites .Values.aiGateway.enabled)) -}}
 {{- fail "sandboxSources.nativeExecution requires enabled sources, owned bootstrap and AI Gateway" -}}
 {{- end -}}
@@ -88,7 +94,7 @@ Otherwise: repository:tag
 {{- end -}}
 {{- if $sources.enabled -}}
 {{- range $key, $_ := $sources -}}
-{{- if not (has $key (list "enabled" "nativeExecution" "reconciledExecution" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "skillsCatalogConfigMapName" "placementConfigMapName" "helpers")) -}}
+{{- if not (has $key (list "enabled" "nativeExecution" "reconciledExecution" "plannedMigration" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "skillsCatalogConfigMapName" "placementConfigMapName" "helpers")) -}}
 {{- fail (printf "unsupported sandboxSources field %s" $key) -}}
 {{- end -}}
 {{- end -}}
@@ -130,6 +136,9 @@ Otherwise: repository:tag
 {{- end -}}
 {{- if not $sources.reconciledExecution -}}
 {{- $_ := unset $config "reconciledExecution" -}}
+{{- end -}}
+{{- if not $sources.plannedMigration -}}
+{{- $_ := unset $config "plannedMigration" -}}
 {{- end -}}
 {{- if not $sources.bootstrapOwnedPrerequisites -}}
 {{- $_ := unset $config "bootstrapOwnedPrerequisites" -}}

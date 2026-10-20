@@ -98,6 +98,9 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 	if agent.Spec.Suspended || !agent.DeletionTimestamp.IsZero() || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
 		return reject(podDenied("ExecutionHeld", "Sandbox execution is suspended, held or deleting"))
 	}
+	if agent.Spec.PlannedMigration != nil && request.Operation == admissionv1.Create && pod.Spec.NodeName != "" {
+		return reject(podDenied("MigrationSchedulerRequired", "migrated workloads must use UID-checked scheduler binding"))
+	}
 	checkReservation := func() *podFailure {
 		if h.coordination == nil {
 			return nil

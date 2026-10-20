@@ -67,6 +67,7 @@ migration. Retention does not protect against a schema downgrade.
 | `helm.values` | Map-shaped top-level entries; see admission notes below |
 | `suspended` | Request zero replicas and removal of the instance VirtualService; false when omitted |
 | `restartRequestID` | Optional retained-restart ID: 16-128 letters, digits, `_` or `-`. Changing it requests a new Pod through normal reconciliation; reusing it does not. Cannot be removed once set or changed while suspended |
+| `plannedMigration` | Opt-in administrator request with `requestID` and destination `target.name`/`target.uid`; common-executor OpenClaw/Hermes and one CSI/RWOP HOME only. An accepted request is immutable until completed; the same ID cannot change its destination |
 | `tailscale.authKeySecretRef` | Required non-empty Secret name when `tailscale` is present; instance-namespace Secret must contain non-empty `TAILSCALE_AUTH_KEY` |
 | `msteams.enabled` | Opt in to Teams provisioning; default false |
 | `msteams.appId` | Optional lowercase UUID client ID; the controller uses it as a fallback after tracked/name-based resolution and app creation |
@@ -140,6 +141,7 @@ check does not prove that an override will reconcile successfully.
 | `namespace`, `helmReleaseName` | Actual managed resource locations |
 | `observedGeneration` | Generation recorded after Helm succeeds, before pod/ingress readiness is established |
 | `observedRestartRequestID` | Restart request observed on the current ready Pod; an accepted request or applied template alone does not set it |
+| `plannedMigration` | Controller-owned source/storage identity and acknowledgement checkpoint; phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, `Completed`. Not a physical-fencing receipt or permission to edit status |
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |

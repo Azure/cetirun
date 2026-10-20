@@ -155,7 +155,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	var published *corev1.ConfigMap
 	var reservation *sandboxcoordination.NativeTicket
+	var migrationTemplate *corev1.PodSpec
 	guard := func(ctx context.Context) error {
+		if err := r.checkMigrationApply(ctx, agent, migrationTemplate); err != nil {
+			return err
+		}
 		if reservation != nil {
 			if err := r.SandboxNativeCoordination.CheckNative(ctx, *reservation); err != nil {
 				return err
@@ -236,6 +240,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	expected, err := result.ReconcileExpectation()
 	if err != nil {
 		return nil, err
+	}
+	for _, workload := range expected.Workloads {
+		if workload.Kind == "StatefulSet" {
+			migrationTemplate = workload.Template.Spec.DeepCopy()
+		}
 	}
 	for _, object := range expected.Controls {
 		current := &unstructured.Unstructured{}
@@ -669,8 +678,24 @@ func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.
 }
 
 func (r *AgentReconciler) stopReconciledSandboxForSuspension(ctx context.Context, agent *api.Agent) error {
-	if err := r.checkRegistryIntent(ctx, agent); err != nil {
-		return err
+	return r.stopReconciledSandbox(ctx, agent, true)
+}
+
+func (r *AgentReconciler) stopReconciledSandboxForMigration(ctx context.Context, agent *api.Agent) error {
+	// Migration retains terminal Pods until their acknowledgement is durable.
+	// Releasing the reservation here would wait for those same Pods to vanish.
+	return r.stopReconciledSandbox(ctx, agent, false)
+}
+
+func (r *AgentReconciler) stopReconciledSandbox(ctx context.Context, agent *api.Agent, finishReservation bool) error {
+	if !finishReservation && !agent.DeletionTimestamp.IsZero() {
+		if err := r.checkMigrationIntent(ctx, agent); err != nil {
+			return err
+		}
+	} else {
+		if err := r.checkRegistryIntent(ctx, agent); err != nil {
+			return err
+		}
 	}
 	var blockErr error
 	if r.AIGateway.configured() {
@@ -692,7 +717,10 @@ func (r *AgentReconciler) stopReconciledSandboxForSuspension(ctx context.Context
 	// Independent shutdown must precede chart/bootstrap reads and must still
 	// run when Gateway revocation or one component's stop cannot complete.
 	auxiliaryErr := r.stopReconciledAuxiliaries(ctx, agent)
-	stopErr := r.stopSandboxBuiltin(ctx, agent)
+	stopErr := r.stopSandboxBuiltinWorkload(ctx, agent)
+	if stopErr == nil && finishReservation {
+		stopErr = r.stopNativeSandboxReservation(ctx, agent)
+	}
 	agent.Status.AccessURL = ""
 	if err := errors.Join(blockErr, auxiliaryErr, stopErr); err != nil {
 		agent.Status.Phase = api.PhasePending

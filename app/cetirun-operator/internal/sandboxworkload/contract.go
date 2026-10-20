@@ -71,6 +71,7 @@ type Helpers struct {
 
 type Input struct {
 	Reconciled        bool
+	PlannedMigration  *api.PlannedMigrationRequest `json:",omitempty"`
 	Resolution        *sandbox.Resolution
 	AgentName         string
 	AgentGeneration   int64
