@@ -134,6 +134,10 @@ and withdraws their route before chart or bootstrap prerequisites are checked.
 A Gateway, component-stop or status-write failure does not skip the other
 shutdown attempts. Unacknowledged shutdown still retains its source reservation;
 normal Kubernetes stop requests are not physical fencing.
+Loss of bootstrap/runtime prerequisites also holds an already-running,
+unsuspended reconciled Agent: block its existing key, stop owned components and
+withdraw ingress while preserving HOME and spend. A status error does not skip
+these independent cleanup attempts.
 
 The same protected expectation ConfigMap now has a version-2 representation for
 these lifetimes. It records the current chart-owned workloads, complete source

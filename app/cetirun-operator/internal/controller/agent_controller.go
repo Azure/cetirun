@@ -609,6 +609,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		namespaceErr = r.ensureNamespace(ctx, ns, alias, instance)
 	}
 	if namespaceErr != nil {
+		if reconciledSandbox {
+			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+			return result, stderrors.Join(namespaceErr, holdErr)
+		}
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", namespaceErr))
 	}
 

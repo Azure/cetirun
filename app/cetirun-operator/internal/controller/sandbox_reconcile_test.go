@@ -661,6 +661,177 @@ func TestReconciledSandboxSuspensionAttemptsIndependentCleanup(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxRuntimeUnavailableStopsActiveWorkloads(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, coordinated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/coordination=%t", kind, coordinated), func(t *testing.T) {
+				ctx := context.Background()
+				var setup []func(*AgentReconciler, client.Client)
+				if coordinated {
+					setup = append(setup, withReconciledCoordination(t))
+				}
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, setup...)
+				workload := f.workload(t)
+				workload.Status.ObservedGeneration = workload.Generation
+				workload.Status.Replicas, workload.Status.ReadyReplicas, workload.Status.UpdatedReplicas = 1, 1, 1
+				if err := f.kube.Status().Update(ctx, workload); err != nil {
+					t.Fatal(err)
+				}
+				f.reconcileOK(t)
+				agent := f.current(t)
+				if agent.Spec.Suspended || agent.Status.Phase != api.PhaseReady || agent.Status.AccessURL == "" {
+					t.Fatal("fixture must be an active, unsuspended reconciled Agent")
+				}
+				expected := reconciledExpectationForTest(t, f)
+				keyID, stages := agent.Status.AIGateway.KeyID, f.installer.stages
+				for _, key := range f.gateway.keys {
+					key.Spend = ptr.To(3.25)
+				}
+				source := f.r.SandboxPreparation.Configuration
+				f.r.SandboxPreparation.Configuration = SandboxConfigurationSourceFunc(func(ctx context.Context) (SandboxConfigurationSnapshot, error) {
+					snapshot, err := source.Snapshot(ctx)
+					if err != nil {
+						return snapshot, err
+					}
+					registration := snapshot.Registrations[api.SandboxKata]
+					registration.Available = false
+					snapshot.Registrations[api.SandboxKata] = registration
+					return snapshot, nil
+				})
+				resolution, err := f.r.resolvePolicy(ctx, agent)
+				if err != nil || policyReprojectionMustHold(agent, resolution) {
+					t.Fatal("runtime availability must not be hidden by a policy-revision hold:", err)
+				}
+				if _, err := f.reconcile(); err == nil {
+					t.Fatal("unavailable runtime was not reported")
+				}
+				for _, desired := range expected.Workloads {
+					current := &unstructured.Unstructured{}
+					current.SetAPIVersion("apps/v1")
+					current.SetKind(desired.Kind)
+					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: desired.Identity.Name}, current); err != nil {
+						t.Fatal(err)
+					}
+					replicas, _, err := unstructured.NestedInt64(current.Object, "spec", "replicas")
+					if err != nil || replicas != 0 {
+						t.Fatalf("runtime outage left %s running: replicas=%d, error=%v", desired.Kind, replicas, err)
+					}
+				}
+				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: virtualServiceName(agent.Name)},
+					&istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {
+					t.Fatal("runtime outage left an active route:", err)
+				}
+				current := f.current(t)
+				if !slices.Contains(current.Finalizers, sandbox.HoldFinalizer) || current.Status.AccessURL != "" ||
+					current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 || f.installer.stages != stages {
+					t.Fatal("runtime hold lost its intent, key identity or performed another apply")
+				}
+				for _, key := range f.gateway.keys {
+					if !key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+						t.Fatal("runtime hold failed to block the existing key while preserving spend")
+					}
+				}
+				home := &corev1.PersistentVolumeClaim{}
+				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: expected.Home.Name}, home); err != nil ||
+					home.UID != expected.Home.UID || !home.DeletionTimestamp.IsZero() {
+					t.Fatal("runtime hold changed the retained HOME:", err)
+				}
+				f.assertNotReady(t)
+				if coordinated {
+					ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
+					if err != nil || !found || ticket.Reservation.Phase != sandboxcoordination.Stopping {
+						t.Fatal("unacknowledged runtime shutdown released its source reservation:", err)
+					}
+				}
+				workload = f.workload(t)
+				workload.Status.ObservedGeneration, workload.Status.Replicas = workload.Generation, 0
+				if err := f.kube.Status().Update(ctx, workload); err != nil {
+					t.Fatal(err)
+				}
+				f.r.SandboxPreparation.Configuration = source
+				for range 3 {
+					f.reconcileOK(t)
+				}
+				current = f.current(t)
+				if slices.Contains(current.Finalizers, sandbox.HoldFinalizer) || current.Status.AIGateway.KeyID != keyID ||
+					len(f.gateway.generated) != 1 || reconciledExpectationForTest(t, f).Home != expected.Home ||
+					ptr.Deref(f.workload(t).Spec.Replicas, -1) != 1 {
+					t.Fatal("runtime recovery did not resume the same owned HOME and key lifetime")
+				}
+				for _, key := range f.gateway.keys {
+					if key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+						t.Fatal("runtime recovery lost spend or failed to release its own temporary block")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestReconciledSandboxRuntimeHoldAttemptsCleanupAfterErrors(t *testing.T) {
+	for _, failure := range []string{"gateway", "status"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "openclaw", true, true)
+			workload := f.workload(t)
+			workload.Status.ObservedGeneration = workload.Generation
+			workload.Status.Replicas, workload.Status.ReadyReplicas, workload.Status.UpdatedReplicas = 1, 1, 1
+			if err := f.kube.Status().Update(ctx, workload); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				f.reconcileOK(t)
+			}
+			expected := reconciledExpectationForTest(t, f)
+			source := f.r.SandboxPreparation.Configuration
+			f.r.SandboxPreparation.Configuration = SandboxConfigurationSourceFunc(func(ctx context.Context) (SandboxConfigurationSnapshot, error) {
+				snapshot, err := source.Snapshot(ctx)
+				if err != nil {
+					return snapshot, err
+				}
+				registration := snapshot.Registrations[api.SandboxKata]
+				registration.Available = false
+				snapshot.Registrations[api.SandboxKata] = registration
+				return snapshot, nil
+			})
+			injected := errors.New("synthetic runtime-hold cleanup failure")
+			if failure == "gateway" {
+				f.gateway.getErr = injected
+			} else {
+				f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+					SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, object client.Object,
+						patch client.Patch, opts ...client.SubResourcePatchOption,
+					) error {
+						if _, ok := object.(*api.Agent); ok && subresource == "status" {
+							return injected
+						}
+						return c.SubResource(subresource).Patch(ctx, object, patch, opts...)
+					},
+				})
+			}
+			if _, err := f.reconcile(); !errors.Is(err, injected) {
+				t.Fatal("runtime cleanup failure was not surfaced:", err)
+			}
+			for _, desired := range expected.Workloads {
+				object := &unstructured.Unstructured{}
+				object.SetAPIVersion("apps/v1")
+				object.SetKind(desired.Kind)
+				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: desired.Identity.Name}, object); err != nil {
+					t.Fatal(err)
+				}
+				replicas, _, err := unstructured.NestedInt64(object.Object, "spec", "replicas")
+				if err != nil || replicas != 0 {
+					t.Fatal("runtime hold skipped independent shutdown:", err)
+				}
+			}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: virtualServiceName(f.agent.Name)},
+				&istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {
+				t.Fatal("runtime hold skipped route withdrawal:", err)
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxFinishesStoppingReservationBeforeResume(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, acknowledged := range []bool{false, true} {
