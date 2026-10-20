@@ -142,6 +142,12 @@ def gateway_models(model, *, integrated):
     return config["model_list"]
 
 
+def gateway_general_settings(values):
+    objects = render(GATEWAY_CHART, {"models": [MODEL], **values})
+    config = yaml.safe_load(object_of_kind(objects, "ConfigMap")["data"]["config.yaml"])
+    return config["general_settings"]
+
+
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class NativeGatewayChartTests(unittest.TestCase):
     def test_native_initializers_have_an_init_process_without_changing_their_work(self):
@@ -440,6 +446,32 @@ class NativeGatewayChartTests(unittest.TestCase):
 
     def test_standalone_gateway_model_configuration_is_unchanged(self):
         self.assertEqual(gateway_models(MODEL, integrated=False), [MODEL])
+
+    def test_spend_log_cleanup_runs_every_hour_whenever_a_retention_is_set(self):
+        # LiteLLM schedules its cleanup only from a string interval, and its
+        # default, a day, outlasts pods that configuration changes replace.
+        for values in (
+            {},
+            {"replicaCount": 1, "redis": {"bundled": {"enabled": False}}},
+            {"spendLogs": {"enabled": False}},
+            {"spendLogs": {"retention": "1h"}},
+        ):
+            with self.subTest(values=values):
+                settings = gateway_general_settings(values)
+                self.assertIs(type(settings["maximum_spend_logs_retention_interval"]), str)
+                self.assertEqual(settings["maximum_spend_logs_retention_interval"], "1h")
+                self.assertEqual(
+                    settings["maximum_health_check_retention_period"],
+                    settings["maximum_spend_logs_retention_period"],
+                )
+        settings = gateway_general_settings({"spendLogs": {"retention": ""}})
+        for key in (
+            "maximum_spend_logs_retention_period",
+            "maximum_health_check_retention_period",
+            "maximum_spend_logs_retention_interval",
+        ):
+            with self.subTest(key=key):
+                self.assertNotIn(key, settings)
 
 
 @unittest.skipUnless(shutil.which("node"), "requires Node for the runtime health probe")
