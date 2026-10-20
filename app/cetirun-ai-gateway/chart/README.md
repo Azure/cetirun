@@ -212,6 +212,38 @@ does not replace the original. Both are served under the same name and traffic
 is split between two different backends, with nothing visible to the client to
 indicate it.
 
+### Reasoning models
+
+A request that sets a reasoning effort, `reasoning_effort` on Chat Completions
+or `reasoning.effort` on the Responses API, is refused by LiteLLM with a 400
+(`UnsupportedParamsError`), before anything reaches the provider, when LiteLLM
+does not take the deployment for a reasoning model. It decides by name and by
+its price table, so a reasoning model under a name of your own may need one
+more setting. Measured on LiteLLM 1.105.1 with made-up deployment names in
+`litellm_params.model` and a mock provider:
+
+| Deployment | Chat Completions | Responses API |
+| --- | --- | --- |
+| `azure/<deployment name>` | 400 | passed on |
+| the same with `model_info.base_model: azure/gpt-5.4-nano` | passed on | passed on |
+| the same with `model_info.supports_reasoning: true` | 400 | passed on |
+| `openai/<name>` | passed on | 400 |
+| the same with `model_info.base_model: gpt-5.4-nano` | passed on | 400 |
+| the same with `model_info.supports_reasoning: true` | passed on | passed on |
+
+For Azure OpenAI, set `base_model`, which also prices the deployment: on Chat
+Completions, LiteLLM accepts a reasoning effort for an `azure/` deployment only
+when its name or `base_model` names an o-series, GPT-5 or GPT-6 model, and
+`supports_reasoning` does not change that. `base_model` does not decide whether
+a chat request with tools goes to the Responses API; see [Azure
+OpenAI](#azure-openai). For a reasoning model under
+`openai/`, such as one behind another OpenAI-compatible endpoint, whose name is
+not in LiteLLM's price table, set `model_info.supports_reasoning: true`;
+`base_model` does not stand in for it. A deployment named after its model, such
+as `azure/gpt-5.4-nano` or `openai/gpt-5.4-nano`, needs neither. LiteLLM's
+`drop_params`, which the chart does not set, would turn each 400 into a request
+sent without the reasoning effort, with nothing to tell the client.
+
 ## Budgets and unpriced models
 
 LiteLLM computes spend from a built-in price table, multiplying it by the tokens
@@ -343,10 +375,11 @@ For newer reasoning models, Azure refuses function tools on
 > Function tools with reasoning_effort are not supported for this model in
 > /v1/chat/completions.
 
-LiteLLM knows this, and sends any chat request that carries tools to
-`/responses` instead. An agent's requests almost always carry tools, so in
-practice every agent turn goes through the Responses API, and `api_version`
-decides whether that endpoint exists. Measured directly against one deployment:
+LiteLLM knows this for a deployment named after such a model, and sends its
+chat requests that carry tools to `/responses` instead; for other names, see
+below. An agent's requests almost always carry tools, so in practice every
+agent turn goes through the Responses API, and `api_version` decides whether
+that endpoint exists. Measured directly against one deployment:
 
 | `api_version` | Chat | Chat with tools | Responses | Responses with tools |
 | --- | --- | --- | --- | --- |
@@ -368,6 +401,19 @@ and the Gateway log shows the request it made:
 Use `2025-04-01-preview` or later. The "Chat with tools" column stays at 400
 whatever the version; that refusal is the reason for the bridge, not a problem
 with it.
+
+LiteLLM goes by the deployment's own name, which in 1.105.1 has to begin with
+`gpt-5.4` or a later version, such as `gpt-5.4-nano`. Measured on LiteLLM
+1.105.1 with a mock provider: a chat request with tools to `azure/gpt-5.4-nano`
+went to `/responses`, while one to a deployment with a name of its own and
+`base_model: azure/gpt-5.4-nano` stayed on `/chat/completions`, where such a
+model refuses it. So name the deployment after the model it runs. Otherwise,
+`model_info.mode: responses` has LiteLLM send every chat request of that
+deployment to `/responses`: in the same test, plain and streamed chat requests
+got ordinary Chat Completions answers at the same price, and requests with
+tools were sent there too. Its health probes then call the Responses API as
+well, without the 16-token limit, and a moved request carries `store` only
+when the client sends it, so otherwise the provider's default applies.
 
 ### Upstream errors are not retried
 
@@ -1332,12 +1378,22 @@ one in `models` becomes an additional backend rather than an override.
 ### Upgrading with `--reuse-values`
 
 `helm upgrade --reuse-values` keeps the values of the chart version a release
-was installed with, without the defaults of settings added since. A release
-installed before `requestLog`, `spendLogs` and `metrics` existed upgrades with
-their defaults: the request log on, LiteLLM's spend log kept for seven days,
-metrics off. One
-installed before `router` gets its defaults too: `simple-shuffle`, failover,
-the affinity checks and health checks on, no fallbacks.
+was installed with, without the defaults of settings added since. The chart
+reads each such setting with its default, key by key, so a release whose
+`router` or `spendLogs` comes from an earlier version gets the defaults of the
+keys it lacks. A release installed before these settings existed upgrades
+with:
+
+- `requestLog`, `spendLogs` and `metrics`: the request log on, LiteLLM's spend
+  log kept, metrics off;
+- `spendLogs.retention`: `7d`, so LiteLLM starts deleting spend log rows older
+  than seven days;
+- `router`: `simple-shuffle`, failover and the affinity checks on, no
+  fallbacks, and health checks every 300 seconds, at most 8 probes at a time,
+  which start probing every deployment;
+- `budgetExceededStatusCode`: 402;
+- `podDisruptionBudget`: a PodDisruptionBudget above one replica;
+- `priceTable`: `remote`, so LiteLLM keeps downloading the price table.
 
 ## Availability
 
@@ -1705,10 +1761,22 @@ Recorded and deferred: none of these stops the Gateway from serving agents.
 **Not in the chart yet.** Redis TLS, which Azure Cache for Redis requires; and
 anti-affinity for the Gateway replicas (set `affinity` by hand).
 
-**Prices are not pinned to the image.** LiteLLM fetches its price table from
-GitHub at startup and falls back to the copy it ships with when that fails, so
-a restart can change what `base_model` pricing resolves to. Set
-`LITELLM_LOCAL_MODEL_COST_MAP=True` to use the shipped copy only.
+**Prices are not pinned to the image by default.** LiteLLM downloads its price
+table from GitHub each time a Gateway pod starts, and falls back to the copy it
+ships with when that fails, so a restart can change what `base_model` pricing
+resolves to. `priceTable: bundled` uses only the copy in the image, for a
+cluster without internet access or prices that change only with the image: the
+chart then sets LiteLLM's `LITELLM_LOCAL_MODEL_COST_MAP` on the proxy and on the
+migrate step, which loads LiteLLM too, and a reload of the price table from the
+console, at once or on a schedule, loads the image's copy again. In exchange,
+new models and price changes arrive only with a new image, and a model missing
+from the image's table is unpriced: refused while `blockUnpricedModels` is on,
+unless its entry declares a price. With CetiRun, the operator prices the Agents'
+GitHub Copilot models from the table the Gateway loaded, so a Copilot model
+newer than the image is not offered. Measured on LiteLLM 1.105.1 with the
+table's address pointed at a mock: with the variable, neither the proxy's
+start, the migrate step's import of LiteLLM nor a reload requested the table;
+without it, each did.
 
 **GitOps.** Generated credentials rely on Helm's `lookup`, which returns nothing
 under `helm template`, so tools that render that way, such as Argo CD, must
