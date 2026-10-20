@@ -496,6 +496,52 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     "verbs": ["get"],
                 }, rules)
 
+    def test_reconciled_execution_requires_a_separate_reader_first_opt_in(self):
+        admission = self.enforced_values(podsEnabled=True)
+        sources = {
+            "enabled": True, "nativeExecution": True,
+            "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
+        }
+        values = {"sandboxSources": sources, "aiGateway": {"enabled": True}}
+        baseline = self.render(admission, values=values)
+        for setting in (None, False):
+            with self.subTest(setting=setting):
+                self.assertEqual(self.render(admission, values={
+                    **values, "sandboxSources": {**sources, "reconciledExecution": setting},
+                }), baseline)
+
+        def source_environment(documents):
+            container = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
+            return next(item for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_SOURCES")
+
+        before = source_environment(baseline)
+        self.assertNotIn("reconciledExecution", json.loads(before["value"]))
+        configured = self.render(admission, values={
+            **values, "sandboxSources": {**sources, "reconciledExecution": True},
+        })
+        after = source_environment(configured)
+        self.assertEqual(json.loads(after["value"]), {
+            **json.loads(before["value"]), "reconciledExecution": True,
+        })
+        after["value"] = before["value"]
+        self.assertEqual(configured, baseline)
+
+    def test_reconciled_execution_rejects_invalid_configuration(self):
+        sources = {
+            "enabled": True, "nativeExecution": True, "reconciledExecution": True,
+            "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
+        }
+        for change in (
+            {"nativeExecution": False},
+            {"reconciledExecution": "true"},
+            {"reconciledExecution": 1},
+        ):
+            with self.subTest(change=change):
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True), "sandboxSources.reconciledExecution",
+                    values={"sandboxSources": {**sources, **change}, "aiGateway": {"enabled": True}},
+                )
+
     def test_native_empty_skills_claim_name_is_optional_without_extra_grants(self):
         admission = self.enforced_values(podsEnabled=True)
         sources = {

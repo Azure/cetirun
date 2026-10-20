@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -115,6 +116,59 @@ func oldNativeUpgradeFixture(t *testing.T) (*nativeSandboxFixture, oldNativeUpgr
 		t.Fatal(err)
 	}
 	return &nativeSandboxFixture{r: r, kube: kube, gateway: gateway, installer: installer, agent: agent}, state
+}
+
+func TestNativeUpgradeResumesBootstrapOnlyCheckpoint(t *testing.T) {
+	for _, finalizerRecorded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bootstrap-finalizer-%t", finalizerRecorded), func(t *testing.T) {
+			ctx := context.Background()
+			f := newNativeSandboxFixture(t, true)
+			original := f.current(t)
+			beforeObject, beforeReceipt, err := f.r.readSandboxBootstrap(ctx, original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if beforeReceipt.Reconciled || slices.Contains(original.Finalizers, sandbox.PreparationFinalizer) ||
+				sandboxGatewayProjectionReady(original) || f.installer.stages != 0 {
+				t.Fatal("fixture must be a legacy bootstrap checkpoint awaiting Gateway projection")
+			}
+			if !finalizerRecorded {
+				original.Finalizers = slices.DeleteFunc(original.Finalizers, func(value string) bool {
+					return value == sandbox.BootstrapFinalizer
+				})
+				if err := f.kube.Update(ctx, original); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.r.ChartVersion = "999.0.0"
+			f.r.SandboxPreparation.ReconciledExecution = true
+			f.r.HelmClient = &sharedSandboxInstaller{nativeSandboxInstaller: f.installer}
+			for range 3 {
+				if _, err := f.r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: original.Name}}); err != nil {
+					t.Fatal("upgraded public reconciler did not resume the bootstrap checkpoint:", err)
+				}
+			}
+			current := f.current(t)
+			afterObject, afterReceipt, err := f.r.readSandboxBootstrap(ctx, current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if beforeObject.UID != afterObject.UID || !reflect.DeepEqual(beforeReceipt, afterReceipt) ||
+				!reflect.DeepEqual(original.Spec, current.Spec) ||
+				original.Annotations[sandboxbinding.AuthorizationAnnotation] != current.Annotations[sandboxbinding.AuthorizationAnnotation] {
+				t.Fatal("upgrade changed the bootstrap ownership, HOME, pins or authorization")
+			}
+			_, preparation, err := f.r.readSandboxPreparationReceipt(ctx, current)
+			if err != nil {
+				t.Fatal("bootstrap checkpoint did not progress to preparation:", err)
+			}
+			_, expected := f.expectation(t)
+			if preparation.Prerequisites.ChartVersion != original.Spec.Helm.Version ||
+				expected.Home.UID != beforeReceipt.Objects[3].UID || f.installer.stages != 1 {
+				t.Fatal("resumed preparation did not preserve the pinned chart and existing HOME")
+			}
+		})
+	}
 }
 
 func TestNativeUpgradePreparesExistingAgentWithPinnedPreProxyChart(t *testing.T) {

@@ -185,15 +185,21 @@ sandboxAdmission:
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
-  # -- Opt in to common OpenClaw/Hermes reconciliation with Kata/RWOP constraints.
-  # Requires owned bootstrap, enforced admission and the AI Gateway. Shared and
-  # Copilot model sources reuse ordinary feature assembly and lifecycle.
-  # Earlier single-start receipts retain their recorded lifecycle and cleanup.
-  # Neither common Kubernetes updates nor observed shutdown are physical fencing.
+  # -- Opt in to native Kubernetes execution with Kata/RWOP constraints.
+  # Requires owned bootstrap, enforced admission and the AI Gateway.
+  # Uses single-start lifetimes unless reconciledExecution is also enabled.
+  # Neither Kubernetes updates nor observed shutdown are physical fencing.
   # Disabling starts retains recorded cleanup and Pod finalization RBAC.
   nativeExecution: false
+  # -- Opt in to common OpenClaw/Hermes reconciliation for new lifetimes only.
+  # Keep false until all Operator, admission, Portal and configuration-tool
+  # readers have upgraded; new receipts and coordination intents break old readers.
+  # Existing bootstrap receipts retain their mode, HOME and pins. Disabling this
+  # switch does not downgrade records or make rolling back readers safe.
+  reconciledExecution: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
-  # Runs after the common controller pins chart/image/port. Published content stays external.
+  # Requires chart/image/port pins; the common flow can record them first.
+  # Published content stays external.
   bootstrapOwnedPrerequisites: false
   # -- Existing operator-namespace ConfigMap containing versioned platform.json.
   # Shared by configuration admission and the controller only when enabled.

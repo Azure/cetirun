@@ -30,10 +30,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-func (r *AgentReconciler) usesReconciledSandbox(agent *api.Agent) bool {
-	return sandboxRequested(agent, nil) && agent.Spec.Agent.Type != api.AgentTypeCustom &&
-		r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution &&
-		!controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer)
+func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
+	if !sandboxRequested(agent, nil) || agent.Spec.Agent.Type == api.AgentTypeCustom ||
+		r.SandboxPreparation == nil || !r.SandboxPreparation.NativeExecution ||
+		controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
+		return false, nil
+	}
+	_, receipt, err := r.readSandboxBootstrap(ctx, agent)
+	if apierrors.IsNotFound(err) && !controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
+		return r.SandboxPreparation.ReconciledExecution, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read Sandbox lifetime mode: %w", err)
+	}
+	return receipt.Reconciled, nil
 }
 
 func (r *AgentReconciler) bootstrapReconciledSandbox(ctx context.Context, agent *api.Agent) error {

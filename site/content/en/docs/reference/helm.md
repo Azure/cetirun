@@ -367,6 +367,8 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
 | `azure.*` | Optional Teams provisioning configuration |
 | `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations for configuration admission and sources for held native Sandbox preparation |
+| `sandboxSources.nativeExecution` | `false`; opt in to native Kubernetes single-start execution with owned bootstrap, enforced admission and the AI Gateway |
+| `sandboxSources.reconciledExecution` | `false`; additionally select common OpenClaw/Hermes reconciliation for new lifetimes, only after every reader has upgraded |
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; existing operator-namespace ConfigMap containing versioned `platform.json`, shared by configuration admission and the controller |
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing claims stay read-only; bootstrap can create owned HOME only in new namespaces, while published skills stay external |
@@ -391,6 +393,16 @@ native-access input pinning. This is read-only access to shared routing
 infrastructure, not Gateway mutation or automatic route/runtime activation.
 The optional skills catalog adds only PersistentVolume `get` for its dependency
 metadata; it adds no Secret lists or cluster-wide ConfigMap access.
+
+Keep `sandboxSources.reconciledExecution` off while upgrading all Operator,
+Sandbox admission and Portal replicas, plus configuration-change tools sharing
+the coordination authority. Enable it only after no older reader or controller
+remains. Until then, `nativeExecution` alone preserves the previous single-start
+wire contract. Existing bootstrap receipts always retain their recorded mode,
+including checkpoints that have not yet reached preparation. Turning the new
+switch off does not downgrade those records or make older readers safe; complete
+reconciled lifetime cleanup before rolling readers back. See the
+[reader-first upgrade procedure]({{< repo "app/cetirun-operator/README.md" >}}#common-sandbox-reconciliation-explicit-opt-in).
 
 Sources are read-only by default and do not create capability registrations. With
 `bootstrapOwnedPrerequisites: true`, the operator creates an owned protected

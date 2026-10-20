@@ -223,7 +223,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// transitions from it, so that the periodic full reconcile of an Agent
 	// at steady state records no events.
 	startPhase := instance.Status.Phase
-	reconciledSandbox := r.usesReconciledSandbox(instance)
 
 	if ns := instanceNamespace(instance.Name); ns == r.registryNamespace() || ns == registryauth.DefaultNamespace {
 		return r.rejectReservedRegistryInstance(ctx, instance)
@@ -259,6 +258,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// breaking change; no migration path exists for the reserved legacy name.
 	if instance.Name == "ui" {
 		return r.rejectReservedUIInstance(ctx, instance)
+	}
+
+	reconciledSandbox, err := r.usesReconciledSandbox(ctx, instance)
+	if err != nil {
+		result, holdErr := r.holdReconciledSandbox(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
 	}
 
 	// Opted-in Agents remain policy-bound; never-governed Agents retain the
@@ -1658,7 +1663,11 @@ func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger lo
 // ensureVirtualService creates or updates the Istio VirtualService for this
 // instance and reports whether it created, updated or left it unchanged.
 func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent, access ...customAccess) (controllerutil.OperationResult, error) {
-	if r.usesReconciledSandbox(instance) {
+	reconciled, err := r.usesReconciledSandbox(ctx, instance)
+	if err != nil {
+		return controllerutil.OperationResultNone, err
+	}
+	if reconciled {
 		resolution, err := r.resolvePolicy(ctx, instance)
 		if err != nil {
 			return controllerutil.OperationResultNone, err
@@ -1676,7 +1685,6 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 	if desired == nil {
 		return controllerutil.OperationResultNone, fmt.Errorf("unsupported Agent native access")
 	}
-	reconciled := r.usesReconciledSandbox(instance)
 	if reconciled {
 		if err := controllerutil.SetControllerReference(instance, desired, r.Scheme); err != nil {
 			return controllerutil.OperationResultNone, err
@@ -1690,7 +1698,7 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 	vsNS := instanceNamespace(instance.Name)
 
 	existing := &istiov1beta1.VirtualService{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: vsNS, Name: vsName}, existing)
+	err = r.Get(ctx, types.NamespacedName{Namespace: vsNS, Name: vsName}, existing)
 	if errors.IsNotFound(err) {
 		logger.Info("Creating VirtualService", "name", vsName, "namespace", vsNS)
 		if err := r.Create(ctx, desired); err != nil {

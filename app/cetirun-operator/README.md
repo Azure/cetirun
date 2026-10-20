@@ -97,11 +97,30 @@ An observation validator checks an adapter's input; it does not generate evidenc
 
 ### Common Sandbox reconciliation (explicit opt-in)
 
-With `sandboxSources.nativeExecution: true`, new OpenClaw and Hermes Agents use
-the ordinary controller's feature assembly, Harness adapters, Helm apply,
-readiness, model integration and deletion flow. The selected Sandbox adds runtime,
-resource, HOME, network and credential constraints to that flow; there is no
-fallback deployment mode. The switch still defaults to `false`.
+With both `sandboxSources.nativeExecution: true` and
+`sandboxSources.reconciledExecution: true`, new OpenClaw and Hermes Agents use the
+ordinary controller's feature assembly, Harness adapters, Helm apply, readiness,
+model integration and deletion flow. The selected Sandbox adds runtime, resource,
+HOME, network and credential constraints to that flow; there is no fallback
+deployment mode. Both switches default to `false`.
+
+Upgrade readers before enabling the new writer:
+
+1. Keep `sandboxSources.reconciledExecution: false` while upgrading every Operator
+   replica, independent Sandbox admission replica, Portal replica and
+   `sandbox-config-change` tool that uses the same coordination authority.
+   Confirm that no older reader or controller remains.
+2. Only then enable `sandboxSources.reconciledExecution`. This is an explicit
+   deployment-owner acknowledgement, not automatic reader-version detection.
+
+With the new switch off, even an installation already using native execution and
+coordination creates only the previous single-start lifetime and wire format.
+The false setting is omitted from the controller's JSON configuration so an older
+controller can still read it during the first rollout. Admission and Portal
+receive no new configuration field.
+Disabling the switch later affects only new lifetimes: it does not downgrade
+existing records or permit rolling readers back while reconciled lifetimes remain.
+Finish their ordinary cleanup before restoring older readers.
 
 Shared-only, Copilot-only and mixed model configurations use the existing
 Gateway and per-Agent Copilot proxy. The proxy is a separate Deployment, not a
@@ -128,8 +147,11 @@ The protected path disables the ordinary immutable-StatefulSet replacement hook;
 unsupported storage/type transitions require a deliberate handoff, not orphaning
 the old HOME writer.
 
-Existing version-1 preparation/start records remain readable and retain their
-recorded lifecycle and cleanup. They are not a second feature-development path
+Existing bootstrap receipts, including checkpoints created before the preparation
+finalizer or Gateway projection, select their recorded lifetime mode. They retain
+their HOME identity, chart pins and cleanup even after the new switch is enabled.
+Version-1 preparation/start records also retain their recorded lifecycle.
+They are not a second feature-development path
 or an automatic conversion of a running lifetime. The historical
 `native-single-start` capability-profile identifier remains accepted for
 configuration compatibility; new version-2 lifetimes have the common lifecycle.
@@ -157,8 +179,9 @@ lifetimes can finish cleanup.
 
 ### Retained single-start profile and capability registration
 
-The following single-start lifecycle notes describe earlier version-1 records;
-new version-2 lifetimes use the common flow above. The explicit native option
+The following single-start lifecycle notes describe version-1 records, including
+new lifetimes while the reader-first switch is off; version-2 lifetimes use the
+common flow above. The explicit native option
 requires enabled,
 enforced configuration/Pod admission, `sandboxSources.enabled`,
 `sandboxSources.bootstrapOwnedPrerequisites`, and an enabled AI Gateway.

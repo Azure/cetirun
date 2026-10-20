@@ -14,6 +14,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
@@ -157,6 +158,77 @@ func TestReconciledSandboxUsesCommonApplyWithoutOneShotState(t *testing.T) {
 	}
 	if _, _, err := f.r.readSandboxPreparationReceipt(ctx, agent); !apierrors.IsNotFound(err) {
 		t.Fatalf("new common flow unexpectedly created a legacy single-start receipt: %v", err)
+	}
+}
+
+func TestReconciledSandboxRequiresReadableLifetimeMode(t *testing.T) {
+	for _, readErr := range []error{
+		errors.New("synthetic bootstrap read outage"),
+		apierrors.NewNotFound(corev1.Resource("configmaps"), "bootstrap"),
+	} {
+		t.Run(readErr.Error(), func(t *testing.T) {
+			f := newSandboxRuntimeFixture(t, true, nil, true)
+			agent := f.current(t)
+			stages := f.installer.stages
+			f.r.APIReader = interceptor.NewClient(f.kube.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					if key == f.r.sandboxBootstrapKey(agent) {
+						return readErr
+					}
+					return c.Get(ctx, key, object, opts...)
+				},
+			})
+			if _, err := f.reconcile(); !errors.Is(err, readErr) {
+				t.Fatal("reconciliation did not preserve the lifetime read error:", err)
+			}
+			if _, err := f.r.ensureVirtualService(context.Background(), agent); !errors.Is(err, readErr) {
+				t.Fatal("route publication did not preserve the lifetime read error:", err)
+			}
+			if f.installer.stages != stages {
+				t.Fatal("unreadable lifetime mode permitted a workload update")
+			}
+			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 ||
+				!slices.Contains(f.current(t).Finalizers, sandbox.HoldFinalizer) {
+				t.Fatal("unreadable lifetime mode skipped independent workload shutdown")
+			}
+			f.assertNotReady(t)
+		})
+	}
+}
+
+func TestReconciledSandboxReaderFirstGatePreservesLegacyWriters(t *testing.T) {
+	ctx := context.Background()
+	f := newSandboxRuntimeFixtureForAgent(t, true, nil, false, "openclaw", true, false,
+		withReconciledCoordination(t))
+	f.ready(t)
+	agent := f.current(t)
+	_, receipt, err := f.r.readSandboxBootstrap(ctx, agent)
+	if err != nil || receipt.Reconciled {
+		t.Fatal("native execution alone wrote a reconciled bootstrap receipt:", err)
+	}
+	ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
+	if err != nil || !found || ticket.Reservation.Intent.Reconciled || ticket.Reservation.Intent.Workload.UID == "" {
+		t.Fatal("native execution alone changed the coordination writer contract:", err)
+	}
+	_, expected := f.expectation(t)
+	if expected.Version != w.ExpectationVersion || !expected.SinglePod {
+		t.Fatal("native execution alone published a new expectation contract")
+	}
+}
+
+func TestReconciledSandboxDisablingNewLifetimesRetainsRecordedMode(t *testing.T) {
+	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "openclaw", true, false,
+		withReconciledCoordination(t))
+	before := reconciledExpectationForTest(t, f)
+	f.r.SandboxPreparation.ReconciledExecution = false
+	f.reconcileOK(t)
+	after := reconciledExpectationForTest(t, f)
+	ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(context.Background(), f.agent.UID)
+	if err != nil || !found || !ticket.Reservation.Intent.Reconciled || after.Home != before.Home {
+		t.Fatal("disabling new reconciled lifetimes changed an existing lifetime:", err)
+	}
+	if _, _, err := f.r.readSandboxPreparationReceipt(context.Background(), f.current(t)); !apierrors.IsNotFound(err) {
+		t.Fatal("disabling new reconciled lifetimes converted an existing receipt:", err)
 	}
 }
 

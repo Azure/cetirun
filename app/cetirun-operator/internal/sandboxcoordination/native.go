@@ -21,6 +21,7 @@ import (
 // NativeIntent pins selected configuration for a Kubernetes lifetime.
 // Reconciled lifetimes name their logical workload without claiming a Pod or
 // physical writer identity. Neither form is an enrolled execution or fence.
+// Writing reconciled intents requires every strict reader to be upgraded first.
 type NativeIntent struct {
 	Reconciled      bool                `json:"reconciled,omitempty"`
 	Agent           w.ObjectIdentity    `json:"agent"`
