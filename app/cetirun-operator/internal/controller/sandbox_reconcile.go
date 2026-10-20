@@ -668,6 +668,43 @@ func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, errors.Join(failures...)
 }
 
+func (r *AgentReconciler) stopReconciledSandboxForSuspension(ctx context.Context, agent *api.Agent) error {
+	if err := r.checkRegistryIntent(ctx, agent); err != nil {
+		return err
+	}
+	var blockErr error
+	if r.AIGateway.configured() {
+		gateway, err := r.aiGatewayClient(ctx)
+		blockErr = err
+		if err == nil {
+			blocked, err := r.blockAIGatewayKeyIfPresent(ctx, gateway, agent, aiGatewayReasonSuspended)
+			blockErr = err
+			if err == nil && !blocked && aiGatewayKeyWasIssued(agent) {
+				blockErr = fmt.Errorf("the previously issued AI Gateway key is missing during suspension")
+			}
+			if blockErr == nil && agent.Status.AIGateway != nil {
+				agent.Status.AIGateway.Blocked = blocked
+			}
+		}
+	} else if aiGatewayKeyWasIssued(agent) {
+		blockErr = fmt.Errorf("AI Gateway configuration is required to block the existing key during suspension")
+	}
+	// Independent shutdown must precede chart/bootstrap reads and must still
+	// run when Gateway revocation or one component's stop cannot complete.
+	auxiliaryErr := r.stopReconciledAuxiliaries(ctx, agent)
+	stopErr := r.stopSandboxBuiltin(ctx, agent)
+	agent.Status.AccessURL = ""
+	if err := errors.Join(blockErr, auxiliaryErr, stopErr); err != nil {
+		agent.Status.Phase = api.PhasePending
+		for _, kind := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionIngressReady} {
+			setCondition(&agent.Status.Conditions, kind, metav1.ConditionFalse,
+				"SuspensionPending", "Suspension requested; waiting for shutdown and access revocation")
+		}
+		return errors.Join(err, r.updateStatus(ctx, agent))
+	}
+	return nil
+}
+
 func (r *AgentReconciler) releaseReconciledHold(ctx context.Context, agent *api.Agent) error {
 	if agent.Spec.Suspended || !slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
 		return nil

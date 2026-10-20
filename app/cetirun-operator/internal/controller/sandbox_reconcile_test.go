@@ -480,6 +480,187 @@ func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxSuspensionStopsBeforePrerequisites(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, unavailable := range []string{"runtime", "chart"} {
+			for _, coordinated := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/coordination=%t", kind, unavailable, coordinated), func(t *testing.T) {
+					ctx := context.Background()
+					var setup []func(*AgentReconciler, client.Client)
+					if coordinated {
+						setup = append(setup, withReconciledCoordination(t))
+					}
+					f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, setup...)
+					main := f.workload(t)
+					main.Status.ObservedGeneration = main.Generation
+					main.Status.Replicas, main.Status.ReadyReplicas, main.Status.UpdatedReplicas = 1, 1, 1
+					if err := f.kube.Status().Update(ctx, main); err != nil {
+						t.Fatal(err)
+					}
+					f.reconcileOK(t)
+					agent := f.current(t)
+					if agent.Status.Phase != api.PhaseReady || agent.Status.AccessURL == "" {
+						t.Fatal("fixture must have an active owned workload and route")
+					}
+					expected := reconciledExpectationForTest(t, f)
+					keyID, stages := agent.Status.AIGateway.KeyID, f.installer.stages
+					agent.Spec.Suspended = true
+					agent.Generation++
+					if err := f.kube.Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+					// Keep the projection observation current so an unrelated
+					// policy-reprojection hold cannot mask suspension ordering.
+					for index := range agent.Status.Conditions {
+						if agent.Status.Conditions[index].Type == api.ConditionSandboxReady {
+							agent.Status.Conditions[index].ObservedGeneration = agent.Generation
+						}
+					}
+					if err := f.kube.Status().Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+					if unavailable == "runtime" {
+						source := f.r.SandboxPreparation.Configuration
+						f.r.SandboxPreparation.Configuration = SandboxConfigurationSourceFunc(func(ctx context.Context) (SandboxConfigurationSnapshot, error) {
+							snapshot, err := source.Snapshot(ctx)
+							if err != nil {
+								return snapshot, err
+							}
+							registration := snapshot.Registrations[api.SandboxKata]
+							registration.Available = false
+							snapshot.Registrations[api.SandboxKata] = registration
+							return snapshot, nil
+						})
+					} else {
+						f.installer.chart.Metadata.Version = "999.0.0"
+					}
+					resolution, err := f.r.resolvePolicy(ctx, agent)
+					if err != nil || policyReprojectionMustHold(agent, resolution) {
+						t.Fatal("fixture must reach suspension without a policy-reprojection hold:", err)
+					}
+					if _, err := f.reconcile(); err == nil {
+						t.Fatal("the unavailable prerequisite or unacknowledged stop must remain visible")
+					}
+					for _, workload := range expected.Workloads {
+						object := &unstructured.Unstructured{}
+						object.SetAPIVersion("apps/v1")
+						object.SetKind(workload.Kind)
+						if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: workload.Identity.Name}, object); err != nil {
+							t.Fatal(err)
+						}
+						replicas, _, err := unstructured.NestedInt64(object.Object, "spec", "replicas")
+						if err != nil || replicas != 0 {
+							t.Fatalf("unavailable %s left %s running: replicas=%d, error=%v", unavailable, workload.Kind, replicas, err)
+						}
+					}
+					route := &istiov1beta1.VirtualService{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: virtualServiceName(agent.Name)}, route); !apierrors.IsNotFound(err) {
+						t.Fatal("unavailable prerequisite left the route published:", err)
+					}
+					current := f.current(t)
+					if current.Status.AccessURL != "" || current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+						t.Fatal("suspension lost access state or replaced the retained Gateway identity")
+					}
+					for _, key := range f.gateway.keys {
+						if !key.Blocked {
+							t.Fatal("unavailable prerequisite prevented suspension from blocking the Gateway key")
+						}
+					}
+					home := &corev1.PersistentVolumeClaim{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: expected.Home.Name}, home); err != nil || home.UID != expected.Home.UID {
+						t.Fatal("suspension changed the retained HOME:", err)
+					}
+					if f.installer.stages != stages {
+						t.Fatal("suspension with unavailable prerequisites attempted Helm application")
+					}
+					if coordinated {
+						ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
+						if err != nil || !found || ticket.Reservation.Phase != sandboxcoordination.Stopping {
+							t.Fatal("unacknowledged shutdown released its source reservation:", err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestReconciledSandboxSuspensionAttemptsIndependentCleanup(t *testing.T) {
+	for _, failure := range []string{"gateway", "status", "main", "auxiliary"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "openclaw", true, true)
+			agent := f.current(t)
+			if _, err := f.r.ensureVirtualService(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			expected := reconciledExpectationForTest(t, f)
+			stages := f.installer.stages
+			agent.Spec.Suspended = true
+			agent.Generation++
+			if err := f.kube.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("synthetic suspension dependency failure")
+			if failure == "gateway" {
+				f.gateway.getErr = injected
+			}
+			f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					_, main := object.(*appsv1.StatefulSet)
+					_, auxiliary := object.(*appsv1.Deployment)
+					if failure == "main" && main || failure == "auxiliary" && auxiliary {
+						return injected
+					}
+					return c.Patch(ctx, object, patch, opts...)
+				},
+				SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, object client.Object,
+					patch client.Patch, opts ...client.SubResourcePatchOption,
+				) error {
+					if _, ok := object.(*api.Agent); ok && failure == "status" && subresource == "status" {
+						return injected
+					}
+					return c.SubResource(subresource).Patch(ctx, object, patch, opts...)
+				},
+			})
+			if _, err := f.reconcile(); !errors.Is(err, injected) {
+				t.Fatal("suspension did not report the independent failure:", err)
+			}
+			for _, workload := range expected.Workloads {
+				object := &unstructured.Unstructured{}
+				object.SetAPIVersion("apps/v1")
+				object.SetKind(workload.Kind)
+				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: workload.Identity.Name}, object); err != nil {
+					t.Fatal(err)
+				}
+				replicas, _, err := unstructured.NestedInt64(object.Object, "spec", "replicas")
+				want := int64(0)
+				if failure == "main" && workload.Kind == "StatefulSet" || failure == "auxiliary" && workload.Kind == "Deployment" {
+					want = 1
+				}
+				if err != nil || replicas != want {
+					t.Fatalf("%s failure skipped independent %s shutdown: got %d, want %d, error=%v",
+						failure, workload.Kind, replicas, want, err)
+				}
+			}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: virtualServiceName(agent.Name)},
+				&istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {
+				t.Fatal("another cleanup failure skipped route withdrawal:", err)
+			}
+			if f.installer.stages != stages {
+				t.Fatal("incomplete suspension continued into Helm application")
+			}
+			f.r.Client, f.gateway.getErr = f.kube, nil
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			if f.current(t).Status.Phase != api.PhaseSuspended || len(f.gateway.generated) != 1 {
+				t.Fatal("suspension did not recover with its existing Gateway key")
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxFinishesStoppingReservationBeforeResume(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, acknowledged := range []bool{false, true} {

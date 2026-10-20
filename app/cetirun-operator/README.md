@@ -129,6 +129,11 @@ Its optional controller-owned `aiGateway.copilotProxy.replicaCount` permits
 authentication preparation independently of the Agent replica count. Suspension
 and policy revocation stop both components. Pre-login creation does not grant
 Copilot model access; the Portal continues to report sign-in required.
+Suspension blocks an existing Gateway key, stops owned main/auxiliary workloads
+and withdraws their route before chart or bootstrap prerequisites are checked.
+A Gateway, component-stop or status-write failure does not skip the other
+shutdown attempts. Unacknowledged shutdown still retains its source reservation;
+normal Kubernetes stop requests are not physical fencing.
 
 The same protected expectation ConfigMap now has a version-2 representation for
 these lifetimes. It records the current chart-owned workloads, complete source

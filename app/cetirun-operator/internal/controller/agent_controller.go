@@ -265,6 +265,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		result, holdErr := r.holdReconciledSandbox(ctx, instance)
 		return result, stderrors.Join(err, holdErr)
 	}
+	if reconciledSandbox && instance.Spec.Suspended {
+		if err := r.stopReconciledSandboxForSuspension(ctx, instance); err != nil {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+		}
+	}
 
 	// Opted-in Agents remain policy-bound; never-governed Agents retain the
 	// legacy runtime path while Sandbox execution is being completed. Resolve its
