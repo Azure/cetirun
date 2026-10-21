@@ -152,9 +152,18 @@ Ready and suspended Agents still recheck current sources and deployed controls.
 Unchanged passes retain their phase and reconcile timestamp between periodic
 refreshes instead of generating status-watch loops.
 
-When Memory Context is enabled, reconciled OpenClaw uses the same native plugin
-registration, conversation hook and composed skill path as ordinary OpenClaw,
-alongside the installed assets. Retained single-start templates remain disabled.
+Private-image Agents complete owned namespace bootstrap before registry
+credentials are synchronized. Missing runtime pins are filled first; existing
+namespaces without the protected bootstrap receipt are not adopted. Credential
+rotation still synchronizes the owned pull Secret before chart preparation.
+The protected expectation pins that Secret's identity as a kubelet image-pull
+binding, not as a Secret that Agent containers or the Copilot proxy may consume.
+
+When Memory Context is enabled, reconciled OpenClaw and Hermes use their ordinary
+native plugin registration and composed skill paths alongside the installed
+assets. OpenClaw retains its conversation hook, and Hermes explicitly includes
+`cetirun-memory-context` in `plugins.enabled`, including after HOME initialization.
+Retained single-start templates remain disabled.
 
 Every disk-backed `emptyDir`, including extension and auxiliary volumes, must
 declare a positive `sizeLimit` no greater than the selected Sandbox scratch limit.

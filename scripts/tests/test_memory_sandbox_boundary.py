@@ -8,6 +8,8 @@ import json
 import shutil
 import unittest
 
+import yaml
+
 from test_native_gateway_chart import RUNTIME_CHART, native_values, object_of_kind, render
 
 
@@ -65,6 +67,26 @@ class MemorySandboxBoundaryTests(unittest.TestCase):
                     int(enabled),
                 )
                 self.assertEqual("memory-assets" in [c["name"] for c in pod["initContainers"]], enabled)
+
+    def test_reconciled_hermes_enables_the_installed_memory_plugin(self):
+        for enabled in (False, True):
+            for shared in (False, True):
+                with self.subTest(enabled=enabled, shared=shared):
+                    values = native_values()
+                    values["agentType"] = "hermes"
+                    values["skills"]["shared"] = shared
+                    values["sandboxWorkload"].update(reconciled=True, executionHeld=False)
+                    values["memoryContext"] = {"enabled": enabled, "image": "registry.example.com/memory:1.2.3"}
+                    objects = render(RUNTIME_CHART, values)
+                    pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
+                    config = yaml.safe_load(object_of_kind(objects, "ConfigMap")["data"]["hermes-config.yaml"])
+                    self.assertEqual(
+                        config.get("plugins", {}).get("enabled", []).count("cetirun-memory-context"), int(enabled),
+                    )
+                    self.assertEqual(
+                        config.get("skills", {}).get("external_dirs", []).count("/home/vibe/.agents/skills"), int(enabled),
+                    )
+                    self.assertEqual("memory-assets" in [c["name"] for c in pod["initContainers"]], enabled)
 
     def test_ordinary_packaging_keeps_memory_enabled_by_default(self):
         for agent_type in ("openclaw", "hermes"):

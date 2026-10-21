@@ -274,6 +274,13 @@ existing job time limit. Scan errors and timeouts still fail the vulnerability
 gates; severity thresholds and enabled scanners are unchanged. These image
 builds/scans run in CI, not as part of the offline commands above.
 
+Hermes source downloads allow up to 30 minutes per transfer, with at most three
+retries, a 15-second retry delay and a 30-minute retry-start window. This avoids
+discarding a progressing download on slow runners while keeping retries bounded.
+The pinned source checksum is verified before extraction, and the extracted
+project version must match the selected release. Download, checksum and version
+failures still fail the image build; the workflow's job timeout is unchanged.
+
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests require the pinned PyYAML dependency in
 `infra/istio/requirements.txt`. It does not run the Auth/Teams and native

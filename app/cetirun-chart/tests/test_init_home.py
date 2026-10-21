@@ -169,41 +169,51 @@ def test_openclaw_disabling_memory_removes_only_platform_plugin_config(agent):
     assert read_config(agent) == saved
 
 
-@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+@pytest.mark.parametrize("agent", ["openclaw", "hermes"], indirect=True)
 @pytest.mark.skipif(shutil.which("helm") is None, reason="requires Helm")
-def test_reconciled_openclaw_rendered_memory_survives_home_initialization(agent):
+def test_reconciled_rendered_memory_survives_home_initialization(agent):
     helpers = CHART.parents[1] / "scripts/tests/test_native_gateway_chart.py"
     spec = importlib.util.spec_from_file_location("native_gateway_chart_fixture", helpers)
     fixture = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixture)
     values = fixture.native_values()
+    values["agentType"] = agent["kind"]
     values["sandboxWorkload"].update(reconciled=True, executionHeld=False)
     values["memoryContext"] = {"enabled": True, "image": "registry.example.com/memory:1.2.3"}
     agent["env"].update(CETIRUN_AI_GATEWAY="true", CETIRUN_NATIVE_SANDBOX="true")
-    source = agent["config"] / "openclaw.json"
-    rendered = fixture.object_of_kind(fixture.render(CHART, values), "ConfigMap")["data"]["openclaw.json"]
+    config_name = "openclaw.json" if agent["kind"] == "openclaw" else "hermes-config.yaml"
+    source = agent["config"] / config_name
+    rendered = fixture.object_of_kind(fixture.render(CHART, values), "ConfigMap")["data"][config_name]
     source.write_text(rendered)
     for _ in range(2):
         result = run(agent)
         assert result.returncode == 0, result.stderr
         current = read_config(agent)
-        plugin = current.get("plugins", {}).get("entries", {}).get("cetirun-memory-context", {})
-        assert plugin.get("enabled") is True
-        assert plugin.get("hooks", {}).get("allowConversationAccess") is True
-        assert current["plugins"]["allow"].count("cetirun-memory-context") == 1
-        assert current["plugins"]["load"]["paths"].count("/opt/cetirun-memory/adapters/openclaw") == 1
-        assert current["skills"]["load"]["extraDirs"].count("/home/vibe/.agents/skills") == 1
+        if agent["kind"] == "openclaw":
+            plugin = current.get("plugins", {}).get("entries", {}).get("cetirun-memory-context", {})
+            assert plugin.get("enabled") is True
+            assert plugin.get("hooks", {}).get("allowConversationAccess") is True
+            assert current["plugins"]["allow"].count("cetirun-memory-context") == 1
+            assert current["plugins"]["load"]["paths"].count("/opt/cetirun-memory/adapters/openclaw") == 1
+            assert current["skills"]["load"]["extraDirs"].count("/home/vibe/.agents/skills") == 1
+        else:
+            assert current.get("plugins", {}).get("enabled", []).count("cetirun-memory-context") == 1
+            assert current.get("skills", {}).get("external_dirs", []).count("/home/vibe/.agents/skills") == 1
         current["user_preference"] = "synthetic-retained-preference"
         agent["config_file"].write_text(json.dumps(current))
 
     values["memoryContext"]["enabled"] = False
-    source.write_text(fixture.object_of_kind(fixture.render(CHART, values), "ConfigMap")["data"]["openclaw.json"])
+    source.write_text(fixture.object_of_kind(fixture.render(CHART, values), "ConfigMap")["data"][config_name])
     result = run(agent)
     assert result.returncode == 0, result.stderr
     disabled = read_config(agent)
-    assert "cetirun-memory-context" not in disabled["plugins"]["entries"]
-    assert "/opt/cetirun-memory/adapters/openclaw" not in disabled["plugins"]["load"]["paths"]
-    assert "/home/vibe/.agents/skills" not in disabled["skills"]["load"]["extraDirs"]
+    if agent["kind"] == "openclaw":
+        assert "cetirun-memory-context" not in disabled["plugins"]["entries"]
+        assert "/opt/cetirun-memory/adapters/openclaw" not in disabled["plugins"]["load"]["paths"]
+        assert "/home/vibe/.agents/skills" not in disabled["skills"]["load"]["extraDirs"]
+    else:
+        assert "cetirun-memory-context" not in disabled["plugins"]["enabled"]
+        assert "/home/vibe/.agents/skills" not in disabled["skills"]["external_dirs"]
     assert disabled["user_preference"] == "synthetic-retained-preference"
 
 

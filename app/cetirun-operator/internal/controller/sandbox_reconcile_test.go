@@ -49,7 +49,7 @@ func (i *sharedSandboxInstaller) Refresh(prepared *helm.PreparedRelease, values 
 	return prepared.Rebuild(values)
 }
 
-func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, _ string, prepared *helm.PreparedRelease) error {
+func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string, prepared *helm.PreparedRelease) error {
 	if i.beforeApply != nil {
 		if err := i.beforeApply(prepared); err != nil {
 			return err
@@ -77,6 +77,13 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, _ string, prepared 
 		if object.GetNamespace() != namespace {
 			return fmt.Errorf("unexpected rendered namespace")
 		}
+		annotations := object.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations["meta.helm.sh/release-name"] = releaseName
+		annotations["meta.helm.sh/release-namespace"] = namespace
+		object.SetAnnotations(annotations)
 		current := &unstructured.Unstructured{}
 		current.SetGroupVersionKind(object.GroupVersionKind())
 		if err := i.kube.Get(ctx, client.ObjectKeyFromObject(object), current); apierrors.IsNotFound(err) {
