@@ -223,3 +223,25 @@ func (r *AgentReconciler) copilotUnavailableModels(instance *cetirunv1alpha1.Age
 	}
 	return models
 }
+
+// copilotUnavailableDue reports whether the Agent's Copilot models need the
+// full reconcile: GitHub refused a model whose route is still registered, or a
+// removed model is due to be tried again. Without it, an Agent queued because
+// of a refusal would take the lightweight pass and keep the route until its
+// next key verification.
+func (r *AgentReconciler) copilotUnavailableDue(instance *cetirunv1alpha1.Agent, now time.Time) bool {
+	status := instance.Status.AIGateway
+	if status == nil || status.Copilot == nil || !instance.DeletionTimestamp.IsZero() {
+		return false
+	}
+	if slices.ContainsFunc(status.Copilot.Registered, func(id string) bool {
+		return !r.aiGatewayCatalog.copilotHealth(id).refusedSince.IsZero()
+	}) {
+		return true
+	}
+	return slices.ContainsFunc(status.Copilot.Unavailable, func(model cetirunv1alpha1.AIGatewayCopilotUnavailableModel) bool {
+		return !copilotUnavailable(model, now) && !slices.ContainsFunc(status.Copilot.Routes, func(route cetirunv1alpha1.AIGatewayCopilotRoute) bool {
+			return route.Model == model.Model
+		})
+	})
+}

@@ -243,3 +243,31 @@ func TestRefreshCopilotHealthKeepsTheLastResultOnFailure(t *testing.T) {
 		t.Fatal("a failed read must keep the last result")
 	}
 }
+
+// A queued Agent takes the full reconcile when GitHub refuses a registered
+// Copilot model, and when a removed one is due to be tried again.
+func TestCopilotUnavailableMakesTheFullReconcileDue(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	now := time.Now()
+	route := copilotRegistrationID(agent, "gpt-5.5", "0123abcd")
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Copilot: &cetirunv1alpha1.AIGatewayCopilotStatus{
+		Registered: []string{route}, Routes: []cetirunv1alpha1.AIGatewayCopilotRoute{{Model: "gpt-5.5", Name: "gpt-5.5"}},
+	}}
+	r := &AgentReconciler{}
+	if r.copilotUnavailableDue(agent, now) {
+		t.Fatal("nothing refused yet")
+	}
+	r.aiGatewayCatalog.setCopilotHealth(map[string]copilotRouteHealth{route: {refusedSince: now}})
+	if !r.copilotUnavailableDue(agent, now) {
+		t.Fatal("a refused registered route must make the full reconcile due")
+	}
+	r.aiGatewayCatalog.setCopilotHealth(nil)
+	agent.Status.AIGateway.Copilot.Registered, agent.Status.AIGateway.Copilot.Routes = nil, nil
+	agent.Status.AIGateway.Copilot.Unavailable = []cetirunv1alpha1.AIGatewayCopilotUnavailableModel{{Model: "gpt-5.5", Since: metav1.NewTime(now)}}
+	if r.copilotUnavailableDue(agent, now) {
+		t.Fatal("a model removed just now is not due")
+	}
+	if !r.copilotUnavailableDue(agent, now.Add(copilotUnavailableRetry+time.Minute)) {
+		t.Fatal("a removed model due to be tried again must make the full reconcile due")
+	}
+}
