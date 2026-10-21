@@ -1,6 +1,6 @@
 module github.com/Azure/CetiRun/app/agent-tools-mcp
 
-go 1.27.2
+go 1.27.3
 
 require github.com/Azure/CetiRun/app/internal v0.1.1
 
