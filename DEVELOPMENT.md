@@ -95,6 +95,7 @@ report the narrower validation scope.
 ```bash
 go -C app/internal test ./... -count=1
 go -C app/internal vet ./...
+go -C app/internal test -race ./agenttools ./tlsreload -count=1
 ```
 
 The root `make go-test` and `make go-lint` targets include this module.

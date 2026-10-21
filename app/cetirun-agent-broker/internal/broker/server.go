@@ -24,6 +24,8 @@ const maxCallbacksPerSecond = 20
 const maxCallbackLookupsPerSecond = 40
 
 type Server struct {
+	tlsMux  *http.ServeMux
+	logger  *slog.Logger
 	cfg     Config
 	store   *kubeClient
 	oauth   *oauthClient
@@ -54,10 +56,11 @@ func NewServer(cfg Config) (*Server, error) {
 }
 
 func (s *Server) Handler() http.Handler {
-	return requestSecurityHeaders(s.mux)
+	return requestSecurityHeaders(s.auditManagement(s.mux))
 }
 
 func (s *Server) routes() {
+	s.connectionRoutes()
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -503,7 +506,11 @@ func (s *Server) operatorDeleteAuthorization(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusForbidden, "forbidden", "Verified operator workload identity is required", correlationID(r))
 		return
 	}
-	agent, err := s.store.getAgentByUID(r.Context(), r.PathValue("uid"))
+	lookup := s.store.getAgentByUID
+	if s.cfg.ConnectionBindingsEnabled {
+		lookup = s.store.getServiceAgentByUID
+	}
+	agent, err := lookup(r.Context(), r.PathValue("uid"))
 	if err != nil || agent.UID != r.PathValue("uid") {
 		writeAPIError(w, http.StatusNotFound, "instance_not_found", "Instance not found", correlationID(r))
 		return
@@ -511,6 +518,16 @@ func (s *Server) operatorDeleteAuthorization(w http.ResponseWriter, r *http.Requ
 	if err := s.store.revokeRecord(r.Context(), agent); err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Authorization state could not be deleted", correlationID(r))
 		return
+	}
+
+	if s.cfg.ConnectionBindingsEnabled {
+		auditTarget(r, "", agent.UID, "")
+		auditMutation(r)
+		if err := s.store.deleteAgentRecords(r.Context(), agent); err != nil {
+			writeAPIError(w, 503, "dependency_unavailable", "Connection state could not be deleted", correlationID(r))
+			return
+		}
+		auditCommit(r)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

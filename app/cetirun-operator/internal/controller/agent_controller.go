@@ -110,6 +110,8 @@ type AgentReconciler struct {
 	AgentIdentityNamePrefix        string
 	AgentIdentityBrokerURL         string
 	AgentIdentityHTTPClient        *http.Client
+	ToolsMCPBrokerNamespace        string
+	ToolsMCPBrokerServiceAccount   string
 	// agentIdentityGraphClientFactory is test-only dependency injection. A nil
 	// factory constructs the deployment's workload-identity-backed Graph client.
 	agentIdentityGraphClientFactory func() (agentIdentityDirectoryClient, error)
@@ -454,6 +456,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
 	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
+		brokerRBACErr := r.reconcileToolsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team))
+		namespaceMissing := stderrors.Is(brokerRBACErr, errToolsMCPBrokerNamespaceMissing)
+		if brokerRBACErr != nil && !namespaceMissing {
+			logger.Error(brokerRBACErr, "Broker storage access setup failed", "instance", instance.Name)
+			r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "BrokerStorageAccessFailed", "%v", brokerRBACErr)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+
 		gwSecret := &corev1.Secret{}
 		gwSecretKey := types.NamespacedName{
 			Namespace: instanceNamespace(instance.Name),
@@ -482,7 +492,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		aiGatewayDue := r.aiGatewayReconcileDue(instance, time.Now())
 		// An Agent whose chart could not be downloaded takes the full path,
 		// which retries the download, until a download succeeds.
-		if instance.Status.ObservedGeneration == instance.Generation &&
+		// A missing namespace also requires the full path, even if the cached
+		// hash matches. Establish Broker RBAC after ensureNamespace recreates it.
+		if !namespaceMissing && instance.Status.ObservedGeneration == instance.Generation &&
 			!identityVerificationDue && !aiGatewayDue && !chartUnavailable(instance) &&
 			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team)) {
 			// Lightweight: ensure VirtualService is up to date (may change after operator upgrade).
@@ -613,6 +625,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespaced RBAC: %v", err))
 	}
 
+	if err := r.reconcileToolsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
+		return r.failWith(ctx, instance, "BrokerStorageAccessFailed", fmt.Sprintf("Broker storage access setup failed: %v", err))
+	}
 	// 7. Ensure gateway token secret.
 	logger.V(1).Info("Ensuring gateway token secret", "alias", alias)
 	if err := r.ensureGatewayToken(ctx, instance); err != nil {
@@ -1007,9 +1022,21 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 
 	// Agent Identity cleanup is blocking. Removing the finalizer before the
 	// authorization record and directory principal are gone would orphan them.
+	if err := r.ensureToolsMCPBrokerCleanupRBAC(ctx, instance); err != nil {
+		logger.Error(err, "Broker cleanup access setup failed; retaining finalizer", "instance", instance.Name)
+		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "BrokerStorageAccessFailed", "%v", err)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
 		if err := r.deleteAgentIdentity(ctx, instance); err != nil {
 			logger.Error(err, "Agent Identity cleanup failed; retaining finalizer", "instance", instance.Name)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+	} else if r.ToolsMCPBrokerNamespace != "" {
+		// Clean remaining bindings even if Agent Identity was previously disabled.
+		if err := r.deleteAgentAuthorization(ctx, string(instance.UID)); err != nil {
+			logger.Error(err, "Agent connection cleanup failed; retaining finalizer", "instance", instance.Name)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 	}

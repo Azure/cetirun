@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 var errConflict = errors.New("authorization record update conflict")
@@ -32,11 +33,14 @@ type secretDocument struct {
 }
 
 type secretMetadata struct {
-	Name            string            `json:"name"`
-	Namespace       string            `json:"namespace,omitempty"`
-	ResourceVersion string            `json:"resourceVersion,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	OwnerReferences []ownerReference  `json:"ownerReferences,omitempty"`
+	DeletionTimestamp *time.Time        `json:"deletionTimestamp,omitempty"`
+	UID               string            `json:"uid,omitempty"`
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace,omitempty"`
+	ResourceVersion   string            `json:"resourceVersion,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	Annotations       map[string]string `json:"annotations,omitempty"`
+	OwnerReferences   []ownerReference  `json:"ownerReferences,omitempty"`
 }
 
 type ownerReference struct {
@@ -47,6 +51,9 @@ type ownerReference struct {
 }
 
 type secretList struct {
+	Metadata struct {
+		Continue string `json:"continue"`
+	} `json:"metadata"`
 	Items []secretDocument `json:"items"`
 }
 
@@ -79,6 +86,10 @@ type agentList struct {
 }
 
 type kubeClient struct {
+	agentNamespaces         bool
+	recordNamespaceDeleting bool
+	recordAgent             *Agent
+
 	baseURL               string
 	namespace             string
 	tokenFile             string
@@ -107,9 +118,10 @@ func newKubeClient(cfg Config, wrapper keyWrapper) (*kubeClient, error) {
 		return nil, errors.New("Kubernetes service CA is invalid")
 	}
 	return &kubeClient{
-		baseURL:   "https://" + host + ":" + port,
-		namespace: cfg.StoreNamespace,
-		tokenFile: tokenFile,
+		agentNamespaces: cfg.ConnectionBindingsEnabled,
+		baseURL:         "https://" + host + ":" + port,
+		namespace:       cfg.StoreNamespace,
+		tokenFile:       tokenFile,
 		client: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			RootCAs:    pool,
