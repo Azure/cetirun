@@ -218,6 +218,12 @@ sandboxSources:
     logger: false
     desktop: false
 
+# -- Optional Broker access to encrypted Connection/Binding records in Agent namespaces.
+# Both fields are required together. Keep configured until all records are cleaned.
+toolsMCP:
+  brokerNamespace: ""
+  brokerServiceAccount: ""
+
 # -- Microsoft Entra Agent Identity lifecycle configuration. The feature is
 # deployment-scoped and remains disabled unless every required field is set.
 agentIdentity:

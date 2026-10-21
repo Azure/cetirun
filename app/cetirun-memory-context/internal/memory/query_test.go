@@ -98,7 +98,8 @@ func TestQueryCombinedPartial(t *testing.T) {
 					note.Keywords = []string{"shared"}
 				}
 				if i < tc.matches && tc.largeHits || i >= tc.matches && tc.largeOther {
-					note.Body = strings.Repeat("x", 20<<10)
+					// Keep the byte bound without making each fixture a giant lexical token.
+					note.Body = strings.Repeat("note ", 4<<10)
 				}
 				notes = append(notes, note)
 			}
