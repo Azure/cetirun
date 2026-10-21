@@ -373,6 +373,144 @@ grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL$' <<< "$(render --set route
 assert_absent "DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL" "no shared probe lock without Redis" "${single}"
 assert_absent "DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL" "no shared probe lock when off" "${off}"
 
+# A LiteLLM auto router is an entry in models whose model is
+# auto_router/complexity_router. Its own name is checked against the unpriced
+# model block like any model; measured, each call is charged at the price of the
+# model it picks and budgets hold. A price of zero would make LiteLLM's notion
+# of a free model the only thing between it and the budget checks, so the
+# chart wants one above zero. Its tiers have to be models served here, and
+# without a LiteLLM licence the proxy refuses to start with more than one
+# router that writes its own classifier prompt.
+echo "==> an auto router is priced, routes to models configured here, and fits the licence"
+router_dir="$(mktemp -d)"
+trap 'rm -rf "${router_dir}"' EXIT
+default_router_config='tiers: {SIMPLE: lint-model, MEDIUM: [lint-model, big-model], COMPLEX: big-model, REASONING: big-model}'
+router_values() {  # router_values FILE [ROUTER_CONFIG] [INPUT_PRICE]: a router named auto over lint-model and big-model
+  local file="$1" config="${2:-${default_router_config}}" price="${3:-0.00001}"
+  cat > "${file}" <<EOF
+models:
+  - model_name: lint-model
+    litellm_params: {model: openai/lint-model}
+  - model_name: big-model
+    litellm_params: {model: openai/big-model}
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: ${price}
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        ${config}
+      complexity_router_default_model: big-model
+EOF
+}
+router_values "${router_dir}/valid.yaml"
+routed="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set operatorIntegration=true)"
+assert_contains "model: auto_router/complexity_router" "a router configured in models reaches LiteLLM" "${routed}"
+assert_absent "background_health_check_model_groups" \
+  "every deployment is probed; LiteLLM never probes a router itself" "${routed}"
+
+# LiteLLM 1.105.1 compacts a conversation near the model's input limit with
+# extra model calls, replaces the caller's max_tokens with the tier model's
+# ceiling, and refuses a request too long for the decided tier's models. The
+# chart changes those defaults, unless a router sets them itself.
+echo "==> a router leaves the conversation and max_tokens to the agent, and moves a request that does not fit"
+assert_contains "context_compaction: false" "no compaction by the Gateway" "${routed}"
+assert_contains "max_tokens_from_tier_model: false" "the caller's max_tokens is forwarded" "${routed}"
+assert_contains "enable_context_window_escalation: true" "a request too long for its tier moves to one that fits" "${routed}"
+router_values "${router_dir}/own-defaults.yaml" "${default_router_config}
+        context_compaction: {trigger_ratio: 0.9}
+        max_tokens_from_tier_model: true
+        enable_context_window_escalation: false"
+own_defaults="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/own-defaults.yaml")"
+assert_contains "trigger_ratio: 0.9" "a router's own compaction is kept" "${own_defaults}"
+assert_contains "max_tokens_from_tier_model: true" "a router's own max_tokens setting is kept" "${own_defaults}"
+assert_contains "enable_context_window_escalation: false" "a router's own escalation setting is kept" "${own_defaults}"
+
+# OpenClaw sends its own context as the last user message, between markers. A
+# router classifies the newest message a person wrote, so without the markers
+# every OpenClaw request was classified by that block: measured, all of them
+# went to the simple tier, a request for code included.
+echo "==> a router skips OpenClaw's context when it classifies"
+assert_contains "open: <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "a router reads past OpenClaw's context" "${routed}"
+assert_contains "open: <system-reminder>" "and keeps LiteLLM's own markers" "${routed}"
+standalone="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set operatorIntegration=false)"
+assert_contains "open: <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "also without the operator integration" "${standalone}"
+router_values "${router_dir}/own-markers.yaml" "${default_router_config}
+        reminder_markers: [{open: '<ctx>', close: '</ctx>'}]"
+own="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/own-markers.yaml")"
+assert_contains "open: <ctx>" "a router's own markers are kept" "${own}"
+assert_absent "OPENCLAW_INTERNAL_CONTEXT" "and not extended" "${own}"
+router_rejected() {  # router_rejected DESCRIPTION FILE
+  if helm template "${release_name}" "${chart_dir}" -f "$2" > /dev/null 2>&1; then
+    echo "FAIL: $1 should have been rejected" >&2
+    exit 1
+  fi
+}
+# LiteLLM 1.105.1 takes only {open, close} pairs, two different strings that
+# are not blank, and refuses to start otherwise.
+for markers in "['<system-reminder>']" "[]" "[{open: '<a>'}]" "[{open: '##', close: '##'}]" "[{open: '<a>', close: ' '}]"; do
+  router_values "${router_dir}/bad-markers.yaml" "${default_router_config}
+        reminder_markers: ${markers}"
+  router_rejected "reminder_markers ${markers}" "${router_dir}/bad-markers.yaml"
+done
+router_values "${router_dir}/zero.yaml" "" 0
+router_rejected "a router priced at zero" "${router_dir}/zero.yaml"
+grep -v 'cost_per_token' "${router_dir}/valid.yaml" > "${router_dir}/unpriced.yaml"
+router_rejected "an unpriced router" "${router_dir}/unpriced.yaml"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/unpriced.yaml" --set blockUnpricedModels=false > /dev/null \
+  || { echo "FAIL: an unpriced router was rejected with blockUnpricedModels off" >&2; exit 1; }
+router_values "${router_dir}/unknown.yaml" 'tiers: {SIMPLE: lint-model, COMPLEX: elsewhere}'
+router_rejected "a router tier outside models" "${router_dir}/unknown.yaml"
+router_values "${router_dir}/itself.yaml" 'tiers: {SIMPLE: lint-model, COMPLEX: auto}'
+router_rejected "a router tier that is a router" "${router_dir}/itself.yaml"
+router_values "${router_dir}/no-tiers.yaml" 'classifier_type: heuristic'
+router_rejected "a router without tiers" "${router_dir}/no-tiers.yaml"
+router_values "${router_dir}/one-prompt.yaml" \
+  'tiers: {SIMPLE: lint-model, COMPLEX: big-model}
+        classifier_type: llm
+        classifier_llm_config: {model: lint-model, system_prompt: rubric}'
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/one-prompt.yaml" > /dev/null \
+  || { echo "FAIL: one router with its own classifier prompt was rejected" >&2; exit 1; }
+sed -n '/model_name: auto$/,$p' "${router_dir}/one-prompt.yaml" | sed 's/model_name: auto$/model_name: auto-two/' \
+  > "${router_dir}/second.yaml"
+cat "${router_dir}/one-prompt.yaml" "${router_dir}/second.yaml" > "${router_dir}/two-prompts.yaml"
+router_rejected "two routers with their own classifier prompt" "${router_dir}/two-prompts.yaml"
+# Without a licence, LiteLLM 1.105.1 lets one router claim each licensed
+# capability: heuristic_v2, capability and llm_v2 classifiers, and its own
+# tiers or classifier prompt. One of each is fine; a model classifier with
+# LiteLLM's own prompt claims none.
+two_routers() {  # two_routers FILE FIRST_SETTINGS SECOND_SETTINGS: routers auto and auto-two over lint-model
+  cat > "$1" <<EOF
+models:
+  - model_name: lint-model
+    litellm_params: {model: openai/lint-model}
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+      complexity_router_config: {tiers: {SIMPLE: lint-model}, $2}
+  - model_name: auto-two
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+      complexity_router_config: {tiers: {SIMPLE: lint-model}, $3}
+EOF
+}
+for type in heuristic_v2 capability llm_v2; do
+  two_routers "${router_dir}/two-${type}.yaml" "classifier_type: ${type}" "classifier_type: ${type}"
+  router_rejected "two routers with classifier_type ${type}" "${router_dir}/two-${type}.yaml"
+done
+two_routers "${router_dir}/mixed.yaml" "classifier_type: heuristic_v2" \
+  "classifier_type: llm, classifier_llm_config: {model: lint-model, system_prompt: rubric}"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/mixed.yaml" > /dev/null \
+  || { echo "FAIL: one heuristic_v2 router and one with its own classifier prompt were rejected" >&2; exit 1; }
+two_routers "${router_dir}/shipped-prompts.yaml" "classifier_type: llm, classifier_llm_config: {model: lint-model}" \
+  "classifier_type: llm, classifier_llm_config: {model: lint-model}"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/shipped-prompts.yaml" > /dev/null \
+  || { echo "FAIL: two model classifiers with LiteLLM's own prompt were counted" >&2; exit 1; }
+
 # ----- Budgets -----
 
 # LiteLLM 1.105 refuses a request over budget with 422 unless told otherwise.

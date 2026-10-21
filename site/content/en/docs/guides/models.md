@@ -69,6 +69,15 @@ keeps every key that does not hold an instance's Copilot group, such as the
 master key or a key allowed every model, away from that instance's Copilot
 routes. Keep teams and keys in the Gateway console limited to access groups.
 
+A shared model can also be a router that the administrator configures in the
+Gateway: for each request it picks one of several shared models, such as a
+cheaper one for simple requests. An instance that may use the router reaches
+every model the router can pick. See the Gateway chart's
+[Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
+section; its
+[Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
+part has Log Analytics queries that show how requests were routed.
+
 The create form offers both sources, on by default, and a new OpenClaw or Hermes
 instance needs a model to use: shared models while at least one is offered, or
 GitHub Copilot while the deployment offers it. GitHub Copilot stays on while

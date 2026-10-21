@@ -760,6 +760,301 @@ console show the latest result of each deployment. `/health` returns the last
 results too; with health checks off, it probes every deployment live when
 called with the master key. Agents' keys are refused there.
 
+### Smart routing
+
+An entry in `models` whose `litellm_params.model` is
+`auto_router/complexity_router` is a router (LiteLLM's auto routing): for each
+request, it picks one of four tiers, and sends the request to the model
+configured for that tier.
+
+```yaml
+models:
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      # Only for the unpriced-model check; see below.
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        tiers:
+          SIMPLE: gpt-4o-mini
+          MEDIUM: gpt-4o
+          COMPLEX: gpt-4o
+          REASONING: o3
+      complexity_router_default_model: gpt-4o
+    model_info:
+      # The smallest of its models', for agents that read the limits.
+      max_input_tokens: 128000
+      max_output_tokens: 16384
+```
+
+The chart ships the mechanism; the tiers, their models and any keyword rules are
+the administrator's. Measured with LiteLLM's default classifier, which scores
+the latest message without a model call: "What is 2+2?" went to the simple
+tier, a request for code to the medium one. A classifier that asks a model
+(`classifier_type: llm`) makes that call for every request, charged to the
+caller's key; the request log records it as a line of its own, with
+`"call_origin": "autorouter_classifier"`. Anyone can move a request one tier
+up by writing LiteLLM's escalation keyword, `LITELLM ESCALATE`, into it.
+
+**The router's name needs a price.** The unpriced-model block applies to it like
+any model, so the chart requires `input_cost_per_token` and
+`output_cost_per_token` in its `litellm_params`, above zero; a price in
+`model_info` is not enough. Measured: each call was charged at the price of the
+model it picked, not the router's, and a key's budget held: with a $0.0001
+budget, the fourth call was refused.
+
+**OpenClaw's own context is skipped.** The classifier reads the newest message
+a person wrote. OpenClaw 2026.9.6 sends its own context as a last user message
+between `<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>` and
+`<<<END_OPENCLAW_INTERNAL_CONTEXT>>>`, and classified by that block every
+OpenClaw request went to the simple tier, a request for code included. Unless a
+router sets its own `reminder_markers`, the chart adds that pair and LiteLLM's
+own, `<system-reminder>`, whose blocks the classifier leaves out; the request
+for code then went to the medium tier. OpenClaw called the router through Chat
+Completions, without reasoning settings. A router's own `reminder_markers`
+replace the chart's and have to be a list of `{open, close}` pairs, two
+different strings that are not blank, as LiteLLM 1.105.1 requires; the chart
+rejects anything else rather than let the proxy refuse to start.
+
+**The agent keeps its conversation and its limits.** Unless a router sets them,
+the chart changes three of LiteLLM 1.105.1's router defaults:
+
+- `context_compaction: false`. LiteLLM would otherwise rewrite the
+  conversation history near the chosen model's input limit, with extra model
+  calls. Agents such as OpenClaw and Hermes compact their own context.
+- `max_tokens_from_tier_model: false`. LiteLLM would otherwise replace the
+  caller's `max_tokens` with the output limit of the tier's model; the
+  caller's value is forwarded instead.
+- `enable_context_window_escalation: true`. A long conversation whose newest
+  message is simple would otherwise land on a tier whose models cannot hold
+  it, and the provider would refuse it. LiteLLM moves it to the lowest tier
+  with a model whose declared window fits; set `max_input_tokens` in each
+  model's `model_info` for that.
+
+**Using the router uses its models.** A key that may use the router reaches every
+model of its tiers, whether or not it may use them directly; a key that may use
+the models but not the router cannot use the router. With
+`operatorIntegration`, an AgentPolicy that grants the router grants its models.
+The chart rejects a tier, default model or classifier model that is not
+configured in `models`.
+
+**A conversation can change model.** Each request is classified on its own, so
+one conversation can move between tiers. On the same Azure OpenAI resource that
+kept working, encrypted reasoning included. Across resources, with LiteLLM
+1.101.0, an agent such as OpenClaw retried the turn without its encrypted
+reasoning; LiteLLM 1.105.1, with `router.encryptedContentAffinity` on, leaves
+out the reasoning the new resource cannot read before it sends the turn
+(from LiteLLM's source; not measured here). Either way that reasoning is lost,
+so keep a router's models on one resource where you can. LiteLLM can keep a
+conversation on its first tier (`session_affinity`, or `classification_mode:
+user_turn`) only for clients that send a session ID it recognizes; OpenClaw
+2026.9.6 sends none it does.
+
+**One router per licensed capability.** Without a LiteLLM licence, LiteLLM
+1.105.1 lets at most one router claim each of: `classifier_type: heuristic_v2`,
+`classifier_type: capability`, `classifier_type: llm_v2`, and its own
+`tier_definitions` or classifier prompt (`classifier_llm_config.system_prompt`,
+`classification_prompt` or `classification_examples`, with a classifier that
+calls a model). With two in one class, the proxy refused to start; the chart
+rejects the second. One router in each class is accepted.
+
+The request log line of a routed call carries the router's name as `model`, the
+model it picked as `provider_model`, and `routing_tier`, `routing_cause`,
+`routing_score`, `routing_escalated` when an escalation keyword or the prompt's
+length moved it up a tier, and, with a model classifier, `classifier_model` and
+`classifier_cost`. [Measuring the routers](#measuring-the-routers) has queries
+over them.
+
+#### A router across providers
+
+A router's tiers can mix providers: here GPT models on Azure OpenAI for the
+simple and medium tiers, and a Claude model deployed in Azure AI Foundry for
+the complex and reasoning tiers. Adjacent tiers on the same provider keep a
+conversation that moves one tier up or down on its provider.
+
+```yaml
+models:
+  - model_name: gpt-mini
+    litellm_params:
+      model: azure/my-gpt-mini-deployment
+      api_base: https://example.openai.azure.com/
+      api_key: os.environ/AZURE_OPENAI_KEY
+      api_version: "2025-04-01-preview"
+    model_info:
+      base_model: azure/gpt-4o-mini
+      max_input_tokens: 128000
+  - model_name: gpt-main
+    litellm_params:
+      model: azure/my-gpt-deployment
+      api_base: https://example.openai.azure.com/
+      api_key: os.environ/AZURE_OPENAI_KEY
+      api_version: "2025-04-01-preview"
+    model_info:
+      base_model: azure/gpt-4o
+      max_input_tokens: 128000
+  - model_name: claude
+    litellm_params:
+      model: azure_ai/my-claude-deployment
+      api_base: https://example.services.ai.azure.com/anthropic
+      api_key: os.environ/AZURE_AI_FOUNDRY_KEY
+      # The Claude model rejects some OpenAI parameters, such as temperature
+      # with top_p, or a forced tool_choice; LiteLLM drops those it rejects.
+      drop_params: true
+      # Prompt caching on the system message and the newest message.
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+    model_info:
+      max_input_tokens: 200000
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+      complexity_router_config:
+        classification_mode: user_turn
+        tiers:
+          SIMPLE: gpt-mini
+          MEDIUM: gpt-main
+          COMPLEX: claude
+          REASONING: claude
+      complexity_router_default_model: gpt-main
+```
+
+Offer such a router to clients that use the Chat Completions API. A client
+using the Responses API or Anthropic's Messages API sends the provider's own
+reasoning items back with each turn; at a switch between providers, the other
+provider's reasoning is dropped or the request may be refused. The provider's
+prompt cache starts again at every switch, so a conversation that changes
+provider pays the full input price for that turn.
+
+#### Measuring the routers
+
+With the request log collected by Container Insights (see [One log line per
+call](#one-log-line-per-call)), these queries show how the routers route. Run
+one on the Logs page of the Log Analytics workspace and pick the time range
+there. When more than one Gateway writes to the workspace, add
+`| where PodNamespace == "<namespace>"` under the line with `ContainerLogV2`.
+The first four count only the calls clients sent: a call LiteLLM makes itself,
+such as a health check probe or a classifier call, carries a `call_origin`. A
+routed call has a `routing_cause`; one without a `routing_tier` went to the
+router's default model, for example because its classifier failed.
+
+Per router, tier and the model that served the call: answered calls and their
+share of the router's answered calls, failed attempts, and answered calls that
+an escalation keyword or the prompt's length moved up a tier. A request that
+failed on one deployment and went on to another writes a line for each
+attempt, so `failed` counts attempts:
+
+```kusto
+let routed = ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
+| extend router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier),
+    model = tostring(LogMessage.provider_model), ok = tostring(LogMessage.status) == "success";
+routed
+| summarize answered = countif(ok), failed = countif(not(ok)),
+    escalated = countif(ok and tostring(LogMessage.routing_escalated) == "true") by router, tier, model
+| join kind=inner (routed | summarize router_answered = countif(ok) by router) on router
+| project router, tier, model, answered, share_pct = round(100.0 * answered / router_answered, 1),
+    failed, escalated
+| order by router asc, answered desc
+```
+
+What each tier spent, in total and per answered call, and what classifying the
+requests that went to it cost (`classifier_cost`, with a model classifier):
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
+| summarize answered = countif(tostring(LogMessage.status) == "success"),
+    spend = sum(todouble(LogMessage.spend)), classifier_cost = sum(todouble(LogMessage.classifier_cost))
+    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+| extend spend_per_call = spend / answered
+| order by router asc, spend desc
+```
+
+How much of each tier's input the provider read from its prompt cache: cached
+input tokens as a share of all input tokens, which include them, over answered
+calls:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
+| where tostring(LogMessage.status) == "success"
+| summarize prompt_tokens = sum(tolong(LogMessage.prompt_tokens)),
+    cached_tokens = sum(tolong(LogMessage.cached_tokens))
+    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+| extend cached_pct = round(100.0 * cached_tokens / prompt_tokens, 1)
+| order by router asc, tier asc
+```
+
+How long each tier's answered calls took, and, for streamed calls, how long
+until the first token:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isempty(tostring(LogMessage.call_origin)) and isnotempty(tostring(LogMessage.routing_cause))
+| where tostring(LogMessage.status) == "success"
+| summarize answered = count(), avg_ms = round(avg(todouble(LogMessage.duration_ms))),
+    p95_ms = percentile(todouble(LogMessage.duration_ms), 95),
+    first_token_p95_ms = percentile(todouble(LogMessage.time_to_first_token_ms), 95)
+    by router = tostring(LogMessage.model), tier = tostring(LogMessage.routing_tier)
+| order by router asc, tier asc
+```
+
+The model classifiers' own calls, by classifier model: how many there were, how
+many failed, what they cost and how long they took. A classified request waits
+for its classifier before its model is called. The routed calls'
+`classifier_cost` repeats the spend of these calls, so add one or the other to
+a router's spend, not both:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where tostring(LogMessage.call_origin) == "autorouter_classifier"
+| summarize calls = count(), failed = countif(tostring(LogMessage.status) == "failure"),
+    spend = sum(todouble(LogMessage.spend)), avg_ms = round(avg(todouble(LogMessage.duration_ms))),
+    p95_ms = percentile(todouble(LogMessage.duration_ms), 95)
+    by classifier = tostring(LogMessage.model)
+```
+
+**What the same requests would have cost on the most expensive tier is not in
+the log.** It needs the prices of that tier's model, which no line carries, and
+the tokens that model would have used, which nothing records: another model
+counts the prompt in its own tokens, answers at its own length, and keeps a
+prompt cache of its own. Spend per answered call compares tiers on different
+requests, not on the same ones.
+
+LiteLLM 1.105.1 makes that estimate itself. Its console's Cost Optimization
+page, marked experimental, shows it in the Auto-Router tab, which only proxy
+admins see and which reads `GET /auto_router/benchmarks`; no LiteLLM licence
+is needed. It prices a routed request's own tokens at the prices of the most
+expensive model in the router's highest tier, and subtracts what the request
+and its classifier cost. Apart from some requests through the Anthropic
+Messages API, it prices only requests that neither read from nor wrote to a
+prompt cache, and counts every other request as having saved nothing; an agent
+resends its conversation with every turn, which providers cache, so that can be
+most of its requests. LiteLLM fills the tab's tables only while it writes its
+spend log (`spendLogs.enabled`, on by default). From LiteLLM's source; not
+tried here.
+
+None of these figures says whether the cheaper tiers answered as well as the
+most expensive one would have; that needs the requests themselves.
+
 ### Settings saved in the console
 
 These settings are in LiteLLM's `router_settings` and `general_settings`.
@@ -907,6 +1202,16 @@ the console cannot remove it. It:
   LiteLLM write that mark in a form clients keep; and ends a request's
   fallbacks once a deployment refused its encrypted reasoning; see
   [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource);
+- removes sampling parameters from a request an auto router sends to a
+  reasoning model of the GPT-5 or GPT-6 series: `temperature` other than 1,
+  `top_p`, `logprobs` and `top_logprobs`, which LiteLLM refuses with a 400
+  for such a model unless the reasoning effort resolves to `none`. A client
+  that asks for a router cannot know which model answers; Hermes, for one,
+  sends side tasks such as conversation titles with `temperature: 0`, and
+  those failed whenever the router chose a reasoning model, on Azure and on
+  Copilot routes alike. LiteLLM's own rule decides, and the Gateway logs a
+  warning for each request it changes. A request for a model by name keeps
+  its parameters and gets LiteLLM's error;
 - keeps error messages free of LiteLLM's internal deployment list: error
   messages returned to callers no longer include LiteLLM's internal list of
   deployments in cooldown. The response keeps its status, 429, the "Try again

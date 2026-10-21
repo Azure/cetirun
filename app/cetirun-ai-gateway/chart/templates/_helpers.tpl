@@ -263,6 +263,126 @@ standalone Gateway may already serve a model under such a name.
 {{- end }}
 
 {{/*
+LiteLLM auto routers in models: entries whose litellm_params.model starts with
+auto_router/. A router's own name is checked against the unpriced-model block
+like any model, so it needs a price; measured, each call is still charged at the
+price of the model the router picks, and budgets hold. A price above zero is
+required, so that LiteLLM never takes the router for a free model. A complexity
+router's tiers, default model and classifier model have to be models configured
+here: LiteLLM's own defaults name models this Gateway may not serve. Without a
+LiteLLM licence, LiteLLM 1.105.1 lets at most one complexity router claim each
+licensed capability: classifier_type heuristic_v2, classifier_type capability,
+classifier_type llm_v2, and its own tier_definitions or classifier prompt; the
+proxy refuses to start with more. reminder_markers, when a router sets them,
+have to be {open, close} pairs, as LiteLLM 1.105.1 requires.
+*/}}
+{{- define "cetirun-ai-gateway.validateRouters" -}}
+{{- $plain := list -}}
+{{- range .Values.models -}}
+{{- if not (hasPrefix "auto_router/" (toString (get (.litellm_params | default dict) "model"))) -}}
+{{- $plain = append $plain .model_name -}}
+{{- end -}}
+{{- end -}}
+{{- $licensed := dict -}}
+{{- range .Values.models -}}
+{{- $params := .litellm_params | default dict -}}
+{{- $kind := toString (get $params "model") -}}
+{{- if hasPrefix "auto_router/" $kind -}}
+{{- $name := .model_name -}}
+{{- $priced := true -}}
+{{- range $field := list "input_cost_per_token" "output_cost_per_token" -}}
+{{- if hasKey $params $field -}}
+{{- if le (float64 (index $params $field)) 0.0 -}}
+{{- $priced = false -}}
+{{- end -}}
+{{- else if $.Values.blockUnpricedModels -}}
+{{- $priced = false -}}
+{{- end -}}
+{{- end -}}
+{{- if not $priced -}}
+{{- fail (printf "auto router %s needs input_cost_per_token and output_cost_per_token in litellm_params, above zero. The router's own name is checked against blockUnpricedModels like any model; each call is still charged at the price of the model the router picks. Use the highest price among its models." $name) -}}
+{{- end -}}
+{{- if eq $kind "auto_router/complexity_router" -}}
+{{- $config := get $params "complexity_router_config" | default dict -}}
+{{- $tiers := get $config "tiers" | default dict -}}
+{{- $llm := get $config "classifier_llm_config" | default dict -}}
+{{- if not $tiers -}}
+{{- fail (printf "auto router %s needs complexity_router_config.tiers. LiteLLM's default tiers name models this Gateway may not serve." $name) -}}
+{{- end -}}
+{{- $targets := list -}}
+{{- range $tier, $target := $tiers -}}
+{{- if kindIs "slice" $target -}}
+{{- $targets = concat $targets $target -}}
+{{- else -}}
+{{- $targets = append $targets $target -}}
+{{- end -}}
+{{- end -}}
+{{- with get $params "complexity_router_default_model" -}}
+{{- $targets = append $targets . -}}
+{{- end -}}
+{{- with get $llm "model" -}}
+{{- $targets = append $targets . -}}
+{{- end -}}
+{{- range $targets -}}
+{{- if not (has (toString .) $plain) -}}
+{{- fail (printf "auto router %s sends requests to %v, which is not a model configured in models. A router's tiers, default model and classifier model have to be models configured here, not routers." $name .) -}}
+{{- end -}}
+{{- end -}}
+{{- $type := toString (get $config "classifier_type" | default "heuristic") -}}
+{{- /* The licence class LiteLLM 1.105.1 counts this router in, the first that
+       applies (router_utils/auto_router_model_naming.py). */ -}}
+{{- $writesPrompt := false -}}
+{{- if has $type (list "llm" "capability" "llm_v2" "heuristic_first" "hybrid") -}}
+{{- range $field := list "classification_prompt" "classification_examples" -}}
+{{- if and (hasKey $config $field) (not (kindIs "invalid" (index $config $field))) -}}
+{{- $writesPrompt = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $llm "system_prompt") (not (kindIs "invalid" (index $llm "system_prompt"))) -}}
+{{- $writesPrompt = true -}}
+{{- end -}}
+{{- else if eq $type "jev" -}}
+{{- if kindIs "string" (get (get $config "jev_classifier_config" | default dict) "instructions") -}}
+{{- $writesPrompt = true -}}
+{{- end -}}
+{{- end -}}
+{{- $class := "" -}}
+{{- if has $type (list "heuristic_v2" "capability" "llm_v2") -}}
+{{- $class = $type -}}
+{{- else if or (kindIs "slice" (get $config "tier_definitions")) $writesPrompt -}}
+{{- $class = "tier_or_classifier_prompt" -}}
+{{- end -}}
+{{- if $class -}}
+{{- $_ := set $licensed $class (append (get $licensed $class | default list) $name) -}}
+{{- end -}}
+{{- if hasKey $config "reminder_markers" -}}
+{{- $markers := get $config "reminder_markers" -}}
+{{- if or (not (kindIs "slice" $markers)) (not $markers) -}}
+{{- fail (printf "auto router %s: complexity_router_config.reminder_markers must be a list of {open, close} pairs, such as {open: \"<system-reminder>\", close: \"</system-reminder>\"}; LiteLLM 1.105.1 refuses anything else." $name) -}}
+{{- end -}}
+{{- range $markers -}}
+{{- $pair := . -}}
+{{- if not (kindIs "map" $pair) -}}
+{{- fail (printf "auto router %s: each reminder_markers entry must be an {open, close} pair, not %v." $name $pair) -}}
+{{- end -}}
+{{- $open := lower (trim (toString (get $pair "open"))) -}}
+{{- $close := lower (trim (toString (get $pair "close"))) -}}
+{{- if or (not (kindIs "string" (get $pair "open"))) (not (kindIs "string" (get $pair "close"))) (not $open) (not $close) (eq $open $close) -}}
+{{- fail (printf "auto router %s: reminder_markers entry %v needs open and close, two different strings that are not blank." $name (toJson $pair)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $class, $names := $licensed -}}
+{{- if gt (len $names) 1 -}}
+{{- fail (printf "auto routers %s each claim LiteLLM's licensed %s capability. Without a LiteLLM licence at most one router may claim each of: classifier_type heuristic_v2, classifier_type capability, classifier_type llm_v2, and its own tier_definitions or classifier prompt; the proxy refuses to start with more." (join ", " $names) $class) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Redis is required above one replica. Without it each replica enforces its own
 copy of every budget and rate limit, so the effective limit is multiplied by the
 replica count. Recording stays accurate; enforcement does not.

@@ -19,21 +19,53 @@ metadata:
 data:
   config.yaml: |
     model_list:
-      {{- if .Values.operatorIntegration }}
       {{- $models := list }}
       {{- range .Values.models }}
       {{- $model := deepCopy . }}
+      {{- if $.Values.operatorIntegration }}
       {{- $suffix := sha256sum (toJson $model) | trunc 16 }}
       {{- $info := deepCopy ($model.model_info | default dict) }}
       {{- $_ := set $info "id" (printf "cetirun-shared-%s" $suffix) }}
       {{- $_ = set $info "access_groups" (append ($info.access_groups | default list) (printf "cetirun-model-%s" $suffix) | uniq) }}
       {{- $_ = set $model "model_info" $info }}
+      {{- end }}
+      {{- /* A complexity router classifies the newest message a person wrote,
+      leaving out blocks between reminder markers. OpenClaw sends its own
+      context as a final user message between the markers below, so without
+      them every OpenClaw request was classified by that block and went to the
+      simple tier. LiteLLM's own pair is listed too, since a list replaces its
+      default. A router that sets reminder_markers keeps its own.
+
+      Three more of LiteLLM 1.105.1's router defaults are changed unless the
+      router sets them: no compaction of the conversation history by the
+      Gateway (agents manage their own context, and compacting costs model
+      calls), the caller's max_tokens forwarded rather than replaced by the
+      tier model's ceiling, and a request too long for the decided tier's
+      models moved to a tier whose models can hold it, rather than refused.
+
+      Added after the ID above, so the binding stays the administrator's
+      configuration. */}}
+      {{- $params := $model.litellm_params | default dict }}
+      {{- if eq (toString (get $params "model")) "auto_router/complexity_router" }}
+      {{- $config := deepCopy (get $params "complexity_router_config" | default dict) }}
+      {{- if not (hasKey $config "reminder_markers") }}
+      {{- $_ := set $config "reminder_markers" (list (dict "open" "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "close" "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>") (dict "open" "<system-reminder>" "close" "</system-reminder>")) }}
+      {{- end }}
+      {{- if not (hasKey $config "context_compaction") }}
+      {{- $_ := set $config "context_compaction" false }}
+      {{- end }}
+      {{- if not (hasKey $config "max_tokens_from_tier_model") }}
+      {{- $_ := set $config "max_tokens_from_tier_model" false }}
+      {{- end }}
+      {{- if not (hasKey $config "enable_context_window_escalation") }}
+      {{- $_ := set $config "enable_context_window_escalation" true }}
+      {{- end }}
+      {{- $_ := set $params "complexity_router_config" $config }}
+      {{- $_ = set $model "litellm_params" $params }}
+      {{- end }}
       {{- $models = append $models $model }}
       {{- end }}
       {{- toYaml $models | nindent 6 }}
-      {{- else }}
-      {{- toYaml .Values.models | nindent 6 }}
-      {{- end }}
 
     general_settings:
       # Required for the management API and the admin console to persist models.

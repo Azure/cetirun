@@ -13,9 +13,12 @@ the CetiRun operator recorded on the key), the model, tokens, spend, timing and
 the outcome. Request and response content is never written. Every string in it
 is capped, and a line never exceeds MAX_LINE_BYTES (see ``shortened``).
 
-A call LiteLLM makes itself is marked with its origin in call_origin: a
-background health check probe is "health_check", so usage figures can leave
-probes out.
+A call to one of LiteLLM's auto routers also records the tier the router chose,
+why, and its score; the model it chose is the call's provider model. A call
+LiteLLM makes itself is marked with its origin in call_origin: the call an auto
+router makes to classify a request, when the router uses a model for that, is
+a line of its own with the classifier's origin, and a background health check
+probe is "health_check", so usage figures can leave probes out.
 
 A client can ask LiteLLM for per-request debug output with
 litellm_request_debug, which makes LiteLLM print that request's prompt and the
@@ -58,8 +61,8 @@ OPERATOR_KEY_METADATA = ("cetirun_agent", "cetirun_agent_uid", "cetirun_user", "
 # LiteLLM tags every request with the client's user agent, which the record
 # already carries in its own field.
 USER_AGENT_TAG_PREFIX = "User-Agent:"
-# Where LiteLLM marks a call it makes itself: in the call's own metadata, not in
-# the logging payload.
+# Where LiteLLM marks a call it makes itself, such as an auto router's
+# classifier call: in the call's own metadata, not in the logging payload.
 CALL_ORIGIN_KEY = "internal_call_origin"
 # The identity LiteLLM gives its background health check probes, as key hash,
 # alias and Team. Clients can choose request tags, not these.
@@ -229,6 +232,9 @@ class RequestLog(CustomLogger):
         hidden = as_dict(payload.get("hidden_params"))
         usage = as_dict(metadata.get("usage_object")) or as_dict(hidden.get("usage_object"))
         error = as_dict(payload.get("error_information"))
+        # Only the router's verdict: its signals and keywords quote the prompt,
+        # and the tier's parameters can carry credentials.
+        routing = as_dict(metadata.get("routing_decision"))
         if is_health_check(metadata):
             origin = HEALTH_CHECK_ORIGIN
         key_metadata = {
@@ -265,6 +271,15 @@ class RequestLog(CustomLogger):
             "provider": clip(payload.get("custom_llm_provider")),
             "deployment_id": clip(payload.get("model_id")),
             "api_base": clip(endpoint_origin(payload.get("api_base") or hidden.get("api_base"))),
+            "routing_tier": clip(routing.get("tier")),
+            "routing_cause": clip(routing.get("cause")),
+            "routing_score": first_number(routing.get("score")),
+            # A keyword or a prompt too long for the decided tier moved it up.
+            "routing_escalated": (
+                True if routing.get("escalated") is True or routing.get("context_escalated") is True else None
+            ),
+            "classifier_model": clip(routing.get("classifier_model")),
+            "classifier_cost": first_number(routing.get("classifier_cost")),
             "duration_ms": milliseconds(start, end),
             "time_to_first_token_ms": milliseconds(start, payload.get("completionStartTime")) if stream else None,
             "prompt_tokens": first_number(payload.get("prompt_tokens")),
