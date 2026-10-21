@@ -652,6 +652,19 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 	available := func(name string) bool {
 		return name != "" && (slices.Contains(shared, name) || slices.Contains(copilot, name))
 	}
+	// Without a model the Agent or the deployment names, the default is a
+	// model, not a router of the Gateway: a router picks a model per request,
+	// at a cost the Agent did not choose. A router is the default only when
+	// nothing else is offered.
+	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
+	firstModel := func(names []string) string {
+		for _, name := range names {
+			if _, isRouter := gatewayRouters[name]; !isRouter {
+				return name
+			}
+		}
+		return ""
+	}
 	switch {
 	case available(requested):
 		return entries, requested, omitted
@@ -659,10 +672,12 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		return entries, aiGatewayRouterDefault(instance), omitted
 	case available(deploymentDefault):
 		return entries, deploymentDefault, omitted
-	case len(shared) > 0:
-		return entries, shared[0], omitted
+	case firstModel(shared) != "":
+		return entries, firstModel(shared), omitted
 	case len(copilot) > 0:
 		return entries, copilot[0], omitted
+	case len(shared) > 0:
+		return entries, shared[0], omitted
 	case len(routerEntries) > 0:
 		return entries, routerEntries[0].ID, omitted
 	}

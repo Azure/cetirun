@@ -362,6 +362,33 @@ func TestLegacyAgentGetsEveryGatewayRouterButAMisconfiguredOne(t *testing.T) {
 	}
 }
 
+// Without a model the Agent or the deployment names, the default is a model:
+// a router of the Gateway listed first by name does not become the default.
+func TestADefaultModelIsNotAGatewayRouterUnlessNothingElseIsOffered(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: testLegacyRouterTeam, Generation: 1}}
+	agent := aiGatewayTestAgent(testLegacyRouterTeam)
+	agent.Spec.SandboxRef, agent.Status.Policy, agent.Spec.Model = "", nil, ""
+	agent.Spec.ModelAccess = modelAccess(true, false)
+	r, _, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	r.AIGateway.DefaultModel = ""
+	addSmallSharedModel(gateway)
+	// "a-router" sorts before every model name.
+	gateway.shared = append(gateway.shared, gatewayRouter("a-router", tierModel("SIMPLE", testSmallModel)))
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	status := agent.Status.AIGateway
+	if !slices.Contains(status.Models, "a-router") || status.DefaultModel == "a-router" || status.DefaultModel == "" {
+		t.Fatalf("models %v default %q", status.Models, status.DefaultModel)
+	}
+	// The Agent asks for the router: it is the default.
+	agent.Spec.Model = "a-router"
+	if _, def, _ := r.aiGatewayModelEntries(agent); def != "a-router" {
+		t.Fatalf("an Agent's own choice of a router is its default, got %q", def)
+	}
+}
+
 // A sign-in that grants a Team router in the same pass keeps the statuses of
 // the Gateway's routers.
 func TestTeamRouterRegrantKeepsTheGatewayRoutersStatus(t *testing.T) {
