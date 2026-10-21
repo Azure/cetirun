@@ -562,6 +562,54 @@ spec:
                       the Gateway.
                     format: date-time
                     type: string
+                  modelRouters:
+                    description: |-
+                      ModelRouters reports the Agent's smart-routing models: those of its
+                      Team, then, with an AgentPolicy, the routers configured in the Gateway
+                      that the policy lists; whether each is granted, and if not why.
+                    items:
+                      description: |-
+                        AIGatewayModelRouterStatus reports one smart-routing model for the Agent, a
+                        router of its Team or one configured in the Gateway: whether the Agent's key
+                        was granted it, and if not why. A router is granted only when the Agent may
+                        use every model it sends requests to.
+                      properties:
+                        contextWindow:
+                          description: |-
+                            ContextWindow and MaxTokens are, for a Team router, the smallest limits
+                            among its tier models that the Gateway reports, which the Agent is
+                            configured with. A router configured in the Gateway has the limits the
+                            Gateway reports for it.
+                          format: int64
+                          type: integer
+                        granted:
+                          description: Granted reports whether the Agent's key may
+                            use the router.
+                          type: boolean
+                        maxTokens:
+                          format: int64
+                          type: integer
+                        model:
+                          description: |-
+                            Model is the Gateway model name the Agent sends requests for the
+                            router to: a Team router's internal name, or the name of a router
+                            configured in the Gateway. Set only when the router is granted.
+                          type: string
+                        name:
+                          description: Name is the router's name, the model name the
+                            owner chooses.
+                          type: string
+                        reason:
+                          description: Reason explains why the router is not granted.
+                          type: string
+                      required:
+                      - granted
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   models:
                     description: |-
                       Models are the model names the Agent is configured with, as the Agent

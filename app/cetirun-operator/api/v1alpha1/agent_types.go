@@ -424,6 +424,14 @@ type AIGatewayStatus struct {
 	// +optional
 	Copilot *AIGatewayCopilotStatus `json:"copilot,omitempty"`
 
+	// ModelRouters reports the Agent's smart-routing models: those of its
+	// Team, then, with an AgentPolicy, the routers configured in the Gateway
+	// that the policy lists; whether each is granted, and if not why.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ModelRouters []AIGatewayModelRouterStatus `json:"modelRouters,omitempty"`
+
 	// Routed reports whether the Agent's model traffic is configured to use
 	// the Gateway.
 	// +optional

@@ -561,7 +561,8 @@ const aiGatewayMaxModels = 256
 
 // aiGatewayModelEntries lists the models the Agent is configured with and its
 // default: the shared models when the owner kept them, from the Gateway
-// catalog, then the Agent's registered Copilot models. A Copilot model
+// catalog, but for a router configured in the Gateway that the Agent may not
+// use, then the Agent's registered Copilot models. A Copilot model
 // registered under a shared model's name is that shared model's entry, with
 // the smaller of the two context windows and output limits when both are
 // known. The default is the Agent's own choice when available, then the
@@ -636,7 +637,8 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		}
 	}
 	requested, deploymentDefault := aiGatewayRequestedModel(instance), aiGatewayModelName(instance, r.AIGateway.DefaultModel)
-	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries),
+	routerEntries := aiGatewayRouterEntries(instance)
+	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries)-len(routerEntries),
 		append([]string{requested, deploymentDefault}, merged...)...)
 	var shared, copilot []string
 	for _, entry := range sharedEntries {
@@ -646,18 +648,23 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		copilot = append(copilot, entry.ID)
 	}
 	entries := append(sharedEntries, copilotEntries...)
+	entries = append(entries, routerEntries...)
 	available := func(name string) bool {
 		return name != "" && (slices.Contains(shared, name) || slices.Contains(copilot, name))
 	}
 	switch {
 	case available(requested):
 		return entries, requested, omitted
+	case aiGatewayRouterDefault(instance) != "":
+		return entries, aiGatewayRouterDefault(instance), omitted
 	case available(deploymentDefault):
 		return entries, deploymentDefault, omitted
 	case len(shared) > 0:
 		return entries, shared[0], omitted
 	case len(copilot) > 0:
 		return entries, copilot[0], omitted
+	case len(routerEntries) > 0:
+		return entries, routerEntries[0].ID, omitted
 	}
 	placeholder := aiGatewayNoModelsModel
 	if r.aiGatewayCopilotWanted(instance) {

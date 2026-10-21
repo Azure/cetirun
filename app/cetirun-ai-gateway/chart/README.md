@@ -276,7 +276,7 @@ sent without the reasoning effort, with nothing to tell the client.
 
 LiteLLM computes spend from a built-in price table, multiplying it by the tokens
 a request used. A model missing from that table costs zero, and **budget checks
-are skipped entirely for zero-cost models** — so a budget set on a virtual key
+are skipped entirely for zero-cost models** ╬ô├ç├╢ so a budget set on a virtual key
 silently does nothing.
 
 This is not an edge case. An Azure OpenAI deployment name such as
@@ -411,12 +411,12 @@ that endpoint exists. Measured directly against one deployment:
 
 | `api_version` | Chat | Chat with tools | Responses | Responses with tools |
 | --- | --- | --- | --- | --- |
-| `2024-10-21` | 200 | 400 | **404** | — |
+| `2024-10-21` | 200 | 400 | **404** | ╬ô├ç├╢ |
 | `2025-04-01-preview` | 200 | 400 | 200 | 200 |
 
 With `2024-10-21`, the failure is easy to miss. A plain chat request succeeds,
-so a smoke test passes. An agent then gets a reply to requests without tools —
-OpenCode's session title generation, for instance — while every real turn fails
+so a smoke test passes. An agent then gets a reply to requests without tools ╬ô├ç├╢
+OpenCode's session title generation, for instance ╬ô├ç├╢ while every real turn fails
 with:
 
 ```
@@ -642,7 +642,7 @@ The mark is written so that clients keep it. LiteLLM writes it as
 `litellm_enc:<base64>;<encrypted content>`. OpenClaw keeps encrypted reasoning
 only when it looks like an opaque token (letters, digits, `+ / _ -` and
 trailing `=`); anything else goes through its transcript's secret redaction,
-which shortens a `gAAAA…` value to its first six and last four characters. On
+which shortens a `gAAAA╬ô├ç┬¬` value to its first six and last four characters. On
 a test installation every OpenClaw turn after one with reasoning sent such a
 shortened item back, was refused with `invalid_encrypted_content`, went
 through the model's fallbacks, which failed the same way, and was retried by
@@ -650,7 +650,7 @@ OpenClaw without its reasoning: new conversations too, on Azure OpenAI and
 GitHub Copilot alike. The guard callback therefore makes LiteLLM write the mark
 as `ctrnenc<deployment ID in hex>x<encrypted content>` and read both forms, so
 items marked before an upgrade still route; encrypted content that a client
-shortened (it contains `…`) is removed like an item without the mark. Measured
+shortened (it contains `╬ô├ç┬¬`) is removed like an item without the mark. Measured
 with mock resources on LiteLLM 1.105.1: every item a response carries, streamed
 and not, is in the new form, and items in either form are routed back to their
 deployment and reach it unmarked.
@@ -859,11 +859,42 @@ the chart changes three of LiteLLM 1.105.1's router defaults:
   with a model whose declared window fits; set `max_input_tokens` in each
   model's `model_info` for that.
 
-**Using the router uses its models.** A key that may use the router reaches every
-model of its tiers, whether or not it may use them directly; a key that may use
-the models but not the router cannot use the router. With
-`operatorIntegration`, an AgentPolicy that grants the router grants its models.
-The chart rejects a tier, default model or classifier model that is not
+**A router is granted only with its models.** With `operatorIntegration`, the
+CetiRun operator puts a router on an Agent's key only when the Agent may use
+every model the router sends requests to. The models of its tiers, its default
+model and a context compaction model have to be shared models the Agent may
+use: with an AgentPolicy, models its shared-model list names, as it has to name
+the router. A classifier model, `classifier_llm_config.model`, a
+`jev_classifier_config.deployment_name` or the `embedding_model` of semantic
+keyword matching, has to be a shared model but need not be listed: the router
+calls it to classify the Agent's request, charged to the Agent's key. An Agent
+without a policy may use every shared model, so it gets every router whose
+models are all shared models. A router the operator cannot read completely is
+not given to Agents with a policy: one with a `complexity_router_config` field
+LiteLLM 1.105.1 does not have, a classifier or routing plugin, a jev classifier
+without a `deployment_name`, or another kind of LiteLLM auto router. A router
+an Agent may not use stays off its key and out of its model list; when the
+Agent's policy lists the router, the Agent's page in the Portal says why. The
+operator reads the routers from the Gateway's model list, so a changed router
+reaches the keys at its next listing, within about two minutes; a router's
+configuration is not part of an AgentPolicy's Gateway projection.
+
+**Models that answer no conversation are not offered to Agents.** A shared
+model whose `model_info.mode` is set to something other than `chat`,
+`completion` or `responses`, such as `evaluation` for a decision model like
+Microsoft-Decision-1 or `embedding`, is left out of the models Agents are
+configured with, of their default model, and of the catalog the Portal reads.
+It stays a shared model otherwise: a router may classify requests with it, and
+the key of an Agent without a policy keeps its access group. A router whose
+tier, default model or compaction model is such a model is misconfigured. Set
+`mode` on the model's `model_info`; a model without one counts as a chat model.
+
+For the keys the operator issues, the Gateway refuses with HTTP 403 a request a
+router sends to a model outside the key's access groups; the router's own
+classifier calls are exempt (see [The guard callback](#the-guard-callback)).
+Other keys reach every model of the router's tiers, whether or not they may use
+them directly. A key that may use the models but not the router cannot use the
+router. The chart rejects a tier, default model or classifier model that is not
 configured in `models`.
 
 **A conversation can change model.** Each request is classified on its own, so
@@ -1221,8 +1252,28 @@ the console cannot remove it. It:
   A key granted every model, such as the master key, a key holding `*` or the
   model name of a route, and a request whose key LiteLLM does not pass on,
   reach none of them; asking for a name only Copilot routes serve, such a key
-  gets LiteLLM's "No deployments available" 429. Every other deployment is left
-  as it is. An auto router's choice of tier is held to the same rule;
+  gets LiteLLM's "No deployments available" 429. An auto router's choice of
+  tier is held to the same rule;
+- holds a key the CetiRun operator issued to the deployments in its access
+  groups, also where LiteLLM does not: LiteLLM checks a key against the model
+  a request names, and when that is an auto router, it does not check the
+  model the router picks. The operator grants a router only to Agents that may
+  use every model it sends requests to; the guard enforces that on each
+  request, also before the operator withdraws a grant after a configuration
+  change. A request the router sends to a model the key may not use gets a
+  403, "This key may not use the model <name>.", with no retry, fallback or
+  cooldown, and the Gateway logs a warning with the model and the key's alias.
+  The request log line of such a call has the status `failure`, `error_code`
+  403 and the router's name as `provider_model`, so the queries under
+  [Measuring the routers](#measuring-the-routers) count it as a failed attempt
+  of its tier under the router's name.
+  When the key may use the model but none of its deployments is available,
+  LiteLLM's own error applies. The call a router makes to its classifier model
+  (`classifier_type: llm` and the other classifiers that ask a model) is made
+  on the key's behalf and is not held to the key's groups. The guard
+  recognizes the operator's keys by their model list: only `cetirun-` access
+  groups, or `no-default-models`. The master key, and keys granted models by
+  name, `*` or every model, are left to LiteLLM's own checks;
 - while `router.encryptedContentAffinity` is on, removes the encrypted content
   of Responses API reasoning items that carry no mark of the deployment that
   produced it, or that a client shortened, keeping their summaries; makes
@@ -1248,7 +1299,7 @@ the console cannot remove it. It:
 
 With `operatorIntegration` off, the guard's request fields and error messages
 apply all the same; a standalone Gateway has no `cetirun-copilot-` groups for
-it to separate.
+it to separate, and no keys the operator issued.
 
 Measured on LiteLLM 1.105.1 with two replicas and two Copilot routes added
 through the management API under one `copilot/` name: each of two Agent keys
@@ -1271,6 +1322,29 @@ right after; the same route without `cooldown_time: 0` answered "No deployments
 available" until its cooldown ended, a few seconds later. `copilot/<model>` aliases on the key reached the
 Agent's own route on the Chat Completions and Responses APIs; a key without the
 alias got 403.
+
+Measured on LiteLLM 1.105.1 with one replica, mock models each in an access
+group of its own, and routers over them configured as the chart renders them:
+a key granted a router and the models of its simple and medium tiers was
+served on those tiers and got the 403 for its complex tier, on the Chat
+Completions API, streamed or not, and on the Responses and Anthropic Messages
+APIs. That model received no call, and a key granted it was served by it right
+after. A router registered through the management API, as the operator
+registers a Team's routers, behaved the same, and its GitHub Copilot tier
+reached only the caller's own route, 6 of 6. A router with `classifier_type:
+llm` called its classifier model for a key not granted it, then served the
+tiers the key holds. A key granted the router by name and the master key
+reached every tier. The request log records a refused request with status
+`failure` and error code 403: one line, or two for a streamed request.
+
+On a test installation with two replicas and Azure OpenAI models, the same
+held: through a router configured in the chart, a key granted the router and
+its simple tier's model was answered on that tier and refused with the 403 on
+its medium and reasoning tiers, on the Chat Completions and Responses APIs,
+and a key granted every tier was answered on each; through a Team's router
+with an LLM classifier, a key not granted the classifier model got the
+classifier's decision and answers from the tiers it holds, and the 403 for the
+other, also when the request claimed to be a classifier call.
 
 ## Credentials
 
@@ -1463,7 +1537,7 @@ The only sign of the first column was a decryption warning in the log. The model
 rows stay in PostgreSQL, encrypted with a key that no longer exists.
 
 To remove the Gateway completely, delete the Secret yourself after uninstalling
-— and only if the database is being discarded too. Deleting it while keeping the
+╬ô├ç├╢ and only if the database is being discarded too. Deleting it while keeping the
 database leaves every console-added model permanently unreadable.
 
 ### Upgrading LiteLLM
@@ -1494,11 +1568,11 @@ step: the next pod's migration tries again.
 started, passed readiness, served both configured and console-added models, and
 kept key spend.
 
-It does not undo migrations — nothing can — so the older version runs against a
+It does not undo migrations ╬ô├ç├╢ nothing can ╬ô├ç├╢ so the older version runs against a
 newer schema. It notices, and logs this on every start:
 
 ```
-LiteLLM:ERROR: check_migration.py - 🚨🚨🚨 prisma schema out of sync with db.
+LiteLLM:ERROR: check_migration.py - Γëí╞Æ├£┬┐Γëí╞Æ├£┬┐Γëí╞Æ├£┬┐ prisma schema out of sync with db.
 Consider running these sql_commands to sync the two - ['ALTER TABLE ... DROP COLUMN ...', ...]
 ```
 
@@ -1513,8 +1587,8 @@ has not been tested.
 
 ### Editing settings in the console takes them out of chart control
 
-Changing any field of a settings block — through the admin console or through a
-management API that touches one — writes that whole block to the database, after
+Changing any field of a settings block ╬ô├ç├╢ through the admin console or through a
+management API that touches one ╬ô├ç├╢ writes that whole block to the database, after
 which the database wins on every key in it and the corresponding chart values
 stop taking effect. There is no warning.
 

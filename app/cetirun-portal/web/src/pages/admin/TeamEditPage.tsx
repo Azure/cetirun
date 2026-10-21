@@ -23,12 +23,15 @@ import {
   getTeam,
   updateTeam,
   type TeamDTO,
+  type TeamModelRouter,
   type TeamSkillStorage,
   type TeamUpsertRequest,
 } from "../../api/adminTeam";
 
 import { listPolicies } from "../../api/adminPolicy";
 import { listSandboxes } from "../../api/adminSandbox";
+import { getAIGatewayCatalog } from "../../api/aiGateway";
+import { modelRouterProblem, TeamModelRoutersSection, toModelRouterRequests } from "./TeamModelRoutersSection";
 
 interface FormState {
   uid: string;
@@ -43,6 +46,7 @@ interface FormState {
   skills: string; // newline-separated
   storage: TeamSkillStorage;
   storageEnabled: boolean;
+  modelRouters: TeamModelRouter[];
 }
 
 const emptyStorage: TeamSkillStorage = {
@@ -65,6 +69,7 @@ function fromDTO(t: TeamDTO): FormState {
     skills: (t.skills || []).join("\n"),
     storage: t.skillStorage || { ...emptyStorage },
     storageEnabled: !!t.skillStorage,
+    modelRouters: (t.modelRouters || []).map((router) => ({ ...router })),
   };
 }
 
@@ -84,6 +89,7 @@ function toRequest(s: FormState): TeamUpsertRequest {
     defaultProvider: s.defaultProvider.trim() || undefined,
     skills: splitLines(s.skills),
   };
+  if (s.modelRouters.length > 0) req.modelRouters = toModelRouterRequests(s.modelRouters);
   if (s.storageEnabled) {
     req.skillStorage = {
       resourceGroup: s.storage.resourceGroup.trim(),
@@ -114,6 +120,7 @@ export function TeamEditPage() {
     skills: "",
     storage: { ...emptyStorage },
     storageEnabled: false,
+    modelRouters: [],
   });
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -129,6 +136,9 @@ export function TeamEditPage() {
 
   const policiesQuery = useQuery({ queryKey: ["admin", "policies"], queryFn: listPolicies, retry: false });
   const sandboxesQuery = useQuery({ queryKey: ["admin", "sandboxes"], queryFn: listSandboxes, retry: false });
+  // Tier pickers suggest the shared models; the operator checks the routers.
+  const catalogQuery = useQuery({ queryKey: ["ai-gateway", "catalog"], queryFn: getAIGatewayCatalog, retry: false });
+  const sharedModelNames = (catalogQuery.data?.sharedModels || []).map((model) => model.name);
   const policies = policiesQuery.data || [];
   const sandboxes = (sandboxesQuery.data || []).filter(box => !box.deleting);
   const configurationError = policiesQuery.error || sandboxesQuery.error;
@@ -162,6 +172,11 @@ export function TeamEditPage() {
     setSubmitError(null);
     if (loadingConfiguration || configurationError || !validBindings) {
       setSubmitError("Choose an available Agent Policy, allowed Sandboxes, and a default Sandbox.");
+      return;
+    }
+    const routerProblem = modelRouterProblem(form.modelRouters);
+    if (routerProblem) {
+      setSubmitError(routerProblem);
       return;
     }
     const req = toRequest(form);
@@ -274,6 +289,14 @@ export function TeamEditPage() {
           placeholder={"@anthropic/skill-foo\n@scope/skill-bar"}
         />
       </Field>
+
+      <Divider />
+      <TeamModelRoutersSection
+        routers={form.modelRouters}
+        status={existing?.modelRouterStatus}
+        sharedModels={sharedModelNames}
+        onChange={(modelRouters) => setForm({ ...form, modelRouters })}
+      />
 
       <Divider />
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>

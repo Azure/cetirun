@@ -328,6 +328,10 @@ type Deployment struct {
 	DatabaseSourceKnown bool
 	MaxInputTokens      int64
 	MaxOutputTokens     int64
+	// Mode is the deployment's model_info.mode, the kind of call LiteLLM
+	// makes to it, such as chat, responses, embedding or evaluation; empty
+	// when the model info names none.
+	Mode string
 	// Priced reports whether the deployment carries a price by the parts of
 	// LiteLLM's unpriced-model check that /model/info shows: a price set in
 	// litellm_params, even zero, or a positive price or tiered pricing in the
@@ -343,6 +347,9 @@ type Deployment struct {
 	// Routing is how LiteLLM weighs the deployment against the others of its
 	// model name.
 	Routing Routing
+	// Router is set for a LiteLLM auto router: the models it sends requests
+	// to, as far as its configuration shows them.
+	Router *Router
 }
 
 // Routing holds the litellm_params fields that decide which of a model name's
@@ -470,9 +477,10 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 			ID: info.ID, ModelName: item.ModelName, AccessGroups: info.AccessGroups,
 			FromDatabase: info.DBModel != nil && *info.DBModel, DatabaseSourceKnown: info.DBModel != nil,
 			MaxInputTokens: tokens(info.MaxInputTokens), MaxOutputTokens: tokens(info.MaxOutputTokens),
+			Mode:   modelMode(fields),
 			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
 			Model:  stringValue(item.LiteLLMParams["model"]), BaseModel: stringValue(info.BaseModel),
-			Routing: routing(item.LiteLLMParams),
+			Routing: routing(item.LiteLLMParams), Router: parseRouter(item.LiteLLMParams),
 		})
 	}
 	return deployments, nil
@@ -527,6 +535,26 @@ func (c *Client) BlockUnpricedModels(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("the AI Gateway did not report whether it blocks unpriced models")
 	}
 	return *response.Enabled, nil
+}
+
+// modelMode is the mode a deployment's model info names, or "" for none or a
+// value that is not a string.
+func modelMode(info map[string]any) string {
+	mode, _ := info["mode"].(string)
+	return mode
+}
+
+// ChatModel reports whether Agents can hold a conversation with a deployment
+// of the given mode: LiteLLM serves chat or Responses API requests with it, or
+// its model info names no mode. A model of another mode, such as an embedding
+// model or a decision model an auto router classifies requests with, answers
+// no conversation.
+func ChatModel(mode string) bool {
+	switch mode {
+	case "", "chat", "completion", "responses":
+		return true
+	}
+	return false
 }
 
 func tokens(value *float64) int64 {

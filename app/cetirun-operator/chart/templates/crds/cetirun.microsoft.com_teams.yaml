@@ -96,6 +96,105 @@ spec:
                     description: Role is the team member's role, e.g. "Engineer".
                     type: string
                 type: object
+              modelRouters:
+                description: |-
+                  ModelRouters are the Team's smart-routing models, which administrators
+                  define. Each is registered in the AI Gateway under an internal name and
+                  granted to the Agents everything it uses is available to.
+                items:
+                  description: |-
+                    TeamModelRouter is one smart-routing model of a Team: a model name Agents
+                    request, behind which each request goes to the model of the complexity tier
+                    its classifier picks. Administrators define routers; an Agent receives a
+                    router only when everything the router uses is available to it.
+                  properties:
+                    classifier:
+                      default:
+                        type: heuristic
+                      description: Classifier decides the complexity tier of each
+                        request.
+                      properties:
+                        model:
+                          description: |-
+                            Model is the shared model that classifies requests for the llm
+                            classifier. It must be a shared model of the AI Gateway, not a GitHub
+                            Copilot model or another router. Its calls are charged to the Agent.
+                          maxLength: 256
+                          minLength: 1
+                          pattern: ^[^\s]+$
+                          type: string
+                        type:
+                          default: heuristic
+                          description: |-
+                            Type is heuristic, which scores each request locally without a model
+                            call, or llm, which asks a shared model to classify each request.
+                          enum:
+                          - heuristic
+                          - llm
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: classifier.model is required for the llm classifier
+                          and not allowed for the heuristic classifier
+                        rule: (has(self.type) && self.type == 'llm') == has(self.model)
+                    name:
+                      description: |-
+                        Name is the model name Agents request, such as auto or auto-claude.
+                        It has no whitespace or slash and must not start with the reserved
+                        prefix cetirun- (in any letter case).
+                      maxLength: 64
+                      minLength: 1
+                      pattern: ^[^\s/]+$
+                      type: string
+                      x-kubernetes-validations:
+                      - message: a model router name must not start with the reserved
+                          prefix cetirun-
+                        rule: '!self.lowerAscii().startsWith(''cetirun-'')'
+                    tiers:
+                      description: Tiers names the model each complexity tier sends
+                        requests to.
+                      properties:
+                        complex:
+                          description: Complex serves complex requests.
+                          maxLength: 256
+                          minLength: 1
+                          pattern: ^[^\s]+$
+                          type: string
+                        medium:
+                          description: |-
+                            Medium serves ordinary requests. It is also the model the router uses
+                            when a request cannot be classified.
+                          maxLength: 256
+                          minLength: 1
+                          pattern: ^[^\s]+$
+                          type: string
+                        reasoning:
+                          description: |-
+                            Reasoning serves requests that ask for step-by-step reasoning. Empty
+                            uses the complex tier's model.
+                          maxLength: 256
+                          pattern: ^[^\s]+$
+                          type: string
+                        simple:
+                          description: Simple serves the simplest requests.
+                          maxLength: 256
+                          minLength: 1
+                          pattern: ^[^\s]+$
+                          type: string
+                      required:
+                      - complex
+                      - medium
+                      - simple
+                      type: object
+                  required:
+                  - name
+                  - tiers
+                  type: object
+                maxItems: 10
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               sandboxRefs:
                 description: SandboxRefs lists the Sandboxes permitted for this Team.
                 items:
@@ -219,6 +318,38 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - type
+                x-kubernetes-list-type: map
+              modelRouters:
+                description: |-
+                  ModelRouters reports the AI Gateway registration of each router in
+                  spec.modelRouters.
+                items:
+                  description: TeamModelRouterStatus is the AI Gateway registration
+                    of one router.
+                  properties:
+                    gatewayModel:
+                      description: |-
+                        GatewayModel is the internal Gateway model name of the router, which
+                        Agents granted the router send their requests to.
+                      type: string
+                    message:
+                      description: Message explains why the router is not ready.
+                      type: string
+                    name:
+                      description: Name is the router's name in spec.modelRouters.
+                      type: string
+                    ready:
+                      description: |-
+                        Ready reports whether the router is registered in the Gateway with its
+                        current configuration.
+                      type: boolean
+                  required:
+                  - name
+                  - ready
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
                 x-kubernetes-list-type: map
               observedGeneration:
                 description: ObservedGeneration is the last CR generation that was

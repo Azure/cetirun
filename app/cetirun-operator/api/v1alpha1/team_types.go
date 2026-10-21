@@ -57,6 +57,15 @@ type TeamSpec struct {
 	// coordinates so that a PV+PVC are auto-provisioned per instance namespace.
 	// +optional
 	SkillStorage *SkillStorageSpec `json:"skillStorage,omitempty"`
+
+	// ModelRouters are the Team's smart-routing models, which administrators
+	// define. Each is registered in the AI Gateway under an internal name and
+	// granted to the Agents everything it uses is available to.
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ModelRouters []TeamModelRouter `json:"modelRouters,omitempty"`
 }
 
 // PolicyConfigured reports policy intent, including incomplete configurations.
@@ -122,6 +131,13 @@ type TeamStatus struct {
 	// ObservedGeneration is the last CR generation that was fully reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// ModelRouters reports the AI Gateway registration of each router in
+	// spec.modelRouters.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ModelRouters []TeamModelRouterStatus `json:"modelRouters,omitempty"`
 }
 
 const ConditionTeamAccepted = "Accepted"

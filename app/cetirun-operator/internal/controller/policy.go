@@ -274,7 +274,13 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		if !known || catalogFingerprint == "" {
 			return nil, policyDependency("live AI Gateway managed catalog is unavailable")
 		}
-		if _, complete := r.aiGatewayCatalog.resolvedGroups(models); !complete {
+		// Model router names are granted by their own checks
+		// (ai_gateway_routers.go), not resolved as shared models.
+		sharedModels, err := r.aiGatewayPolicySharedModels(ctx, models)
+		if err != nil {
+			return nil, policyDependency("list Team model routers: %w", err)
+		}
+		if _, complete := r.aiGatewayCatalog.resolvedGroups(sharedModels); !complete {
 			return nil, policyDependency("the live AI Gateway catalog cannot resolve every authorized shared model")
 		}
 	}
