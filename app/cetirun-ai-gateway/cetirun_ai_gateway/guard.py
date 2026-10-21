@@ -29,10 +29,23 @@ builds the response from the error after the failure hook runs, so the hook
 removes the list from the error's message in place. The status (429), the
 "Try again in N seconds" wording and the retry-after header, which LiteLLM
 derives from the error, stay as they are.
+
+Encrypted reasoning without the Gateway's mark is removed from Responses API
+requests while encrypted content affinity is on for the model. A client that
+keeps no state on the provider, such as OpenClaw, sends every earlier
+reasoning item back, encrypted by the deployment that produced it, which alone
+can read it. With affinity on, LiteLLM marks each item it returns with that
+deployment and routes or strips by the mark; an item without one, from before
+affinity was turned on or from elsewhere, is forwarded as it is, and a
+deployment of another provider account refuses the whole request (400
+invalid_encrypted_content). The item keeps its readable summary, as LiteLLM
+keeps it when it strips a marked item.
 """
 
 import re
 
+import litellm
+from litellm._logging import verbose_proxy_logger
 from litellm.integrations.custom_logger import CustomLogger
 
 # A request body field that makes LiteLLM log that request's content.
@@ -53,6 +66,70 @@ CALLER_KEY = "user_api_key_auth"
 # list it appends: cooldown_list=['<deployment id>', ...].
 NO_DEPLOYMENTS = "No deployments available"
 COOLDOWN_LIST = re.compile(r",?\s*cooldown_list=\[[^\]]*\]")
+
+# The marks LiteLLM's encrypted content affinity puts on the items it returns:
+# the producing deployment in the item's ID, and in its encrypted_content.
+MARKED_ITEM_ID = "encitem_"
+MARKED_CONTENT = "litellm_enc:"
+# LiteLLM's callback for encrypted content affinity, found by name so the
+# check needs no import of LiteLLM's internals.
+AFFINITY_CHECK = "EncryptedContentAffinityCheck"
+
+
+def unmarked_encrypted_reasoning(item):
+    """Whether an input item is encrypted reasoning that carries no mark of the deployment that produced it."""
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return False
+    content = item.get("encrypted_content")
+    if not isinstance(content, str) or not content or content.startswith(MARKED_CONTENT):
+        return False
+    item_id = item.get("id")
+    return not (isinstance(item_id, str) and item_id.startswith(MARKED_ITEM_ID))
+
+
+def readable(value):
+    """Whether a reasoning item's summary or content carries text a model can read."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(isinstance(block, dict) and bool(block.get("text")) for block in value)
+    return False
+
+
+def affinity_enabled(model):
+    """Whether LiteLLM's encrypted content affinity applies to requests for the model."""
+    for callback in getattr(litellm, "callbacks", None) or ():
+        if type(callback).__name__ != AFFINITY_CHECK:
+            continue
+        enabled = getattr(callback, "_is_enabled_for_model_group", None)
+        try:
+            return bool(enabled(model)) if callable(enabled) else True
+        except Exception:  # noqa: BLE001
+            return True
+    return False
+
+
+def strip_unmarked_reasoning(request_input):
+    """Remove the encrypted content of unmarked reasoning items, in place; the number of items changed.
+
+    Like LiteLLM's own stripping, an item keeps its readable summary without
+    encrypted_content and id, and an item with nothing readable is dropped.
+    The list is changed in place: LiteLLM forwards this list, and its fallback
+    hops share it.
+    """
+    if not isinstance(request_input, list):
+        return 0
+    kept, changed = [], 0
+    for item in request_input:
+        if not unmarked_encrypted_reasoning(item):
+            kept.append(item)
+            continue
+        changed += 1
+        if readable(item.get("summary")) or readable(item.get("content")):
+            kept.append({key: value for key, value in item.items() if key not in ("encrypted_content", "id")})
+    if changed:
+        request_input[:] = kept
+    return changed
 
 
 def copilot_groups(deployment):
@@ -130,8 +207,17 @@ class Guard(CustomLogger):
 
         Every other deployment is left as it is. An auto router's tier
         selection goes through this again with the same request, so a tier is
-        held to the same rule.
+        held to the same rule. While encrypted content affinity applies to the
+        model, unmarked encrypted reasoning is removed from a Responses API
+        request first.
         """
+        if isinstance(request_kwargs, dict) and isinstance(request_kwargs.get("input"), list) and affinity_enabled(model):
+            removed = strip_unmarked_reasoning(request_kwargs["input"])
+            if removed:
+                verbose_proxy_logger.warning(
+                    "CetiRun guard: removed the encrypted content of %d reasoning item%s without the Gateway's mark "
+                    "from a request for %s; the deployment it reaches may not be able to read it.",
+                    removed, "" if removed == 1 else "s", model)
         granted = set(caller_models(request_kwargs) or ())
         return [
             deployment
