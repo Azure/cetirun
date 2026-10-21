@@ -224,9 +224,10 @@ def gateway(args, environ=None):
     The guard callback is always registered: it drops request fields that would
     change the Gateway for one call, keeps per-Agent GitHub Copilot routes to
     the keys that hold them, keeps operator-issued keys to the deployments of
-    their access groups, also when an auto router picks the model, and keeps
-    LiteLLM's list of deployments in cooldown out of the errors callers get
-    (cetirun_ai_gateway/guard.py).
+    their access groups, also when an auto router picks the model, removes
+    encrypted reasoning without the Gateway's mark while encrypted content
+    affinity is on, and keeps LiteLLM's list of deployments in cooldown out of
+    the errors callers get (cetirun_ai_gateway/guard.py).
 
     The callbacks are registered here, in code, rather than in
     litellm_settings.callbacks. A configured callback depends on how LiteLLM

@@ -151,6 +151,32 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
+class EncryptedContentAffinityCheck:
+    """Stands in for LiteLLM's callback of that name: only the per-group switch is read."""
+
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+
+    def _is_enabled_for_model_group(self, model_group):
+        return self.enabled
+
+
+# Encrypted reasoning as a stateless Responses API client sends it back: marked
+# by LiteLLM in the encrypted content, in the ID, or not at all.
+UNMARKED = {"type": "reasoning", "id": "rs_0123", "encrypted_content": "gAAAAunmarked",
+            "summary": [{"type": "summary_text", "text": "Worked it out."}]}
+UNMARKED_UNREADABLE = {"type": "reasoning", "id": "rs_4567", "encrypted_content": "gAAAAother", "summary": []}
+MARKED_CONTENT = {"type": "reasoning", "encrypted_content": "litellm_enc:bW9kZWxfaWQ6YQ==;gAAAAmarked",
+                  "summary": [{"type": "summary_text", "text": "Marked."}]}
+MARKED_ID = {"type": "reasoning", "id": "encitem_bGl0ZWxsbTptb2RlbF9pZDphO2l0ZW1faWQ6cnNfMQ==",
+             "encrypted_content": "gAAAAmarkedbyid", "summary": []}
+CONVERSATION_TAIL = [
+    {"type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{}"},
+    {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+    {"role": "assistant", "content": "Done."},
+]
+
+
 class GuardTest(unittest.TestCase):
     def setUp(self):
         self.module = load_guard()
@@ -365,6 +391,63 @@ class GuardTest(unittest.TestCase):
         for error in (RouterRateLimitError(COOLDOWN_MESSAGE), HTTPException(403, REFUSAL), ProviderError("x")):
             with self.subTest(error=error), self.assertNoLogs(LOGGER, level="WARNING"):
                 asyncio.run(self.guard.async_post_call_failure_hook({}, error, ROUTER_KEY))
+
+    # ----- encrypted reasoning without the Gateway's mark -----
+
+    def responses_request(self, *items):
+        return {"model": "gpt-5", "input": [{"role": "user", "content": "hi"}, *[dict(item) for item in items]],
+                "litellm_metadata": {"user_api_key_auth": Key(["cetirun-shared"])}}
+
+    def with_affinity(self, *callbacks):
+        self.module.litellm.callbacks = list(callbacks)
+        self.addCleanup(setattr, self.module.litellm, "callbacks", [])
+
+    def test_unmarked_encrypted_reasoning_is_removed_while_affinity_is_on(self):
+        self.with_affinity(object(), EncryptedContentAffinityCheck())
+        request = self.responses_request(UNMARKED, MARKED_CONTENT, MARKED_ID, UNMARKED_UNREADABLE, *CONVERSATION_TAIL)
+        items = request["input"]
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            kept = self.filtered(request, [SHARED])
+        self.assertEqual(kept, [SHARED])
+        # The same list: LiteLLM forwards it, and its fallback hops share it.
+        self.assertIs(request["input"], items)
+        self.assertEqual(items, [
+            {"role": "user", "content": "hi"},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Worked it out."}]},
+            MARKED_CONTENT, MARKED_ID, *CONVERSATION_TAIL,
+        ])
+        self.assertIn("2 reasoning items without", logs.output[0])
+
+    def test_reasoning_is_removed_once(self):
+        self.with_affinity(EncryptedContentAffinityCheck())
+        request = self.responses_request(UNMARKED)
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            self.filtered(request, [SHARED])
+        self.assertIn("1 reasoning item without", logs.output[0])
+        once = [dict(item) for item in request["input"]]
+        with self.assertNoLogs(LOGGER, "WARNING"):
+            self.filtered(request, [SHARED])
+        self.assertEqual(request["input"], once)
+
+    def test_reasoning_is_left_alone_without_affinity(self):
+        # Without affinity LiteLLM marks nothing, so every item is unmarked and
+        # each deployment reads its own.
+        for callbacks in ([], [EncryptedContentAffinityCheck(enabled=False)], [object()]):
+            with self.subTest(callbacks=callbacks):
+                self.with_affinity(*callbacks)
+                request = self.responses_request(UNMARKED, UNMARKED_UNREADABLE)
+                before = [dict(item) for item in request["input"]]
+                self.filtered(request, [SHARED])
+                self.assertEqual(request["input"], before)
+
+    def test_requests_without_a_responses_input_are_left_alone(self):
+        self.with_affinity(EncryptedContentAffinityCheck())
+        for request in ({"model": "gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+                        {"model": "gpt-5", "input": "hi"}, None):
+            with self.subTest(request=request):
+                before = None if request is None else dict(request)
+                self.filtered(request, [SHARED])
+                self.assertEqual(request, before)
 
     # ----- errors -----
 
