@@ -91,9 +91,10 @@ fullnameOverride: ""
 # `copilot/` while operatorIntegration is on.
 #
 # With operatorIntegration, model_info.id and the cetirun-model- access group
-# prefix are reserved. The chart hashes the complete configured model object
-# into a matching cetirun-shared- deployment ID and cetirun-model- group.
-# Changing the model configuration intentionally changes that binding.
+# prefix are reserved. The chart derives each model's cetirun-model- group from
+# its model_name, and its cetirun-shared- deployment ID from the name and the
+# complete configured entry. Editing a model's configuration changes its ID
+# but not its group, so Agents keep the model.
 #
 # An entry whose litellm_params.model is auto_router/complexity_router is a
 # router: LiteLLM sends each request to the model configured for the tier it

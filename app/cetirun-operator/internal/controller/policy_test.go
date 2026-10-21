@@ -24,26 +24,73 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 )
 
-func TestPolicyGatewayRevisionTracksLiveManagedBackend(t *testing.T) {
+func TestPolicyGatewayRevisionFollowsModelNamesNotTheirConfiguration(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	ctx := context.Background()
 
-	first, err := r.resolvePolicy(context.Background(), agent)
+	first, err := r.resolvePolicy(ctx, agent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Retain the model name and policy, but replace the concrete Gateway
-	// deployment/access group. A cached display catalog would miss this change.
-	gateway.shared = []aigateway.Deployment{{
-		ID: "cetirun-shared-replaced", ModelName: testSharedModelOne,
-		AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-replaced"}, DatabaseSourceKnown: true,
+	// A running Agent whose projections for the first revision are verified.
+	running := &api.Agent{ObjectMeta: metav1.ObjectMeta{Generation: 3}, Status: api.AgentStatus{
+		Phase: api.PhaseReady,
+		Policy: &api.PolicyStatus{Enforcement: api.PolicyEnforcementStatus{
+			Sandbox:    api.PolicyRevisionExpectation{DesiredRevision: "sandbox"},
+			Gateway:    api.PolicyRevisionExpectation{DesiredRevision: first.gatewayRevision},
+			Credential: api.PolicyRevisionExpectation{DesiredRevision: first.credentialRevision},
+		}},
+		Sandbox:    &api.SandboxStatus{AppliedRevision: "sandbox", TeamUID: first.team.UID, AgentPolicyUID: first.policy.UID},
+		AIGateway:  &api.AIGatewayStatus{Phase: api.AIGatewayPhaseReady, Routed: true, PolicyRevision: first.gatewayRevision},
+		Conditions: []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue, ObservedGeneration: 3}},
 	}}
-	second, err := r.resolvePolicy(context.Background(), agent)
+	withSandbox := func(resolution *policyResolution) *policyResolution {
+		current := *resolution
+		current.sandboxRevision = "sandbox"
+		return &current
+	}
+	if policyReprojectionMustHold(running, withSandbox(first)) {
+		t.Fatal("test setup: the verified projection was held")
+	}
+
+	// An administrator edits the allowed model's configuration, which gives
+	// it a new deployment ID, and adds a load-balanced entry of the same name.
+	gateway.shared[0].ID = managedTestDeploymentID(testSharedModelOne, 7)
+	gateway.shared = append(gateway.shared, aigateway.Deployment{
+		ID: managedTestDeploymentID(testSharedModelOne, 8), ModelName: testSharedModelOne,
+		AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true,
+	})
+	edited, err := r.resolvePolicy(ctx, agent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.gatewayRevision == second.gatewayRevision {
-		t.Fatal("same-name managed backend replacement did not change policy Gateway revision")
+	if edited.gatewayRevision != first.gatewayRevision {
+		t.Fatal("a configuration edit that keeps the model name changed the policy Gateway revision")
+	}
+	if policyReprojectionMustHold(running, withSandbox(edited)) {
+		t.Fatal("a configuration edit that keeps the model name fenced a running policy-bound Agent")
+	}
+
+	// Adding a model name still re-projects, and so does removing it again.
+	gateway.shared = append(gateway.shared, aigateway.Deployment{
+		ID: managedTestDeploymentID("new-shared", 1), ModelName: "new-shared",
+		AccessGroups: []string{aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("new-shared")}, DatabaseSourceKnown: true,
+	})
+	added, err := r.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added.gatewayRevision == first.gatewayRevision || !policyReprojectionMustHold(running, withSandbox(added)) {
+		t.Fatal("a new model name did not change the policy Gateway revision")
+	}
+	gateway.shared = gateway.shared[:len(gateway.shared)-1]
+	removed, err := r.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.gatewayRevision != first.gatewayRevision {
+		t.Fatal("removing the added model name did not restore the policy Gateway revision")
 	}
 }
 

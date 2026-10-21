@@ -53,19 +53,46 @@ OpenAI](#azure-openai).
 ### CetiRun AgentPolicy model bindings
 
 With `operatorIntegration: true`, each chart-configured model gets a
-`cetirun-model-<hash>` access group and matching `cetirun-shared-<hash>`
-deployment ID. The suffix is the first 16 hexadecimal characters of SHA-256
-over the complete model object's canonical JSON, before those generated fields
-are added. Existing non-reserved access groups and provider parameters remain
-unchanged. The chart rejects a supplied `model_info.id` or access group using
-the reserved `cetirun-model-` prefix.
+`cetirun-model-<name hash>` access group and a
+`cetirun-shared-<name hash>-<configuration hash>` deployment ID. The name hash
+is the first 16 hexadecimal characters of SHA-256 over `model_name`. The
+configuration hash is the same over the complete model object's canonical
+JSON, before those generated fields are added. Entries with the same
+`model_name`, such as load-balanced deployments of one model, share the group
+and keep distinct IDs. Existing non-reserved access groups and provider
+parameters remain unchanged. The chart rejects a supplied `model_info.id` or
+access group using the reserved `cetirun-model-` prefix.
 
-The Operator requires an exact, unique ID/group pair before granting a shared
-model through AgentPolicy. A same-name console deployment is not automatically
-trusted or granted. Changing the configured endpoint, provider parameters,
-pricing or other model metadata changes the binding; the Operator must
-reconcile the new grant before the Agent can use it. Rotating the value of a
-referenced Secret does not change this configuration hash.
+Agent keys are granted the group, which follows the model name, the identity
+an AgentPolicy grants. Changing a configured model's endpoint, provider
+parameters, price or other metadata changes only its deployment ID: Agents
+keep their grant, and the Operator neither updates their keys nor holds
+policy-bound Agents for it. Changes that reach an Agent's own configuration
+still update it as before: a model's token limits, or a model without a price
+leaving the list while the Gateway blocks unpriced models. Rotating the value
+of a referenced Secret changes neither ID nor group. Adding or removing a
+model name adds or removes a group; when its catalog refresh sees that, the
+Operator updates the keys of Agents with shared models and re-projects
+policy-bound Agents.
+
+The Operator trusts a group only while every deployment carrying it is
+configured in this chart rather than added through the console, has a unique
+deployment ID of the form above, and serves the model name the group is
+derived from. A console deployment under the same name is not automatically
+trusted or granted. A console deployment that copies the group makes the
+Operator distrust it, and Agents lose that model until the copy is removed.
+Two identical entries render the same deployment ID; if the Gateway lists it
+twice, the Operator does not trust the group.
+
+Earlier versions of this chart derived the group from the complete model
+configuration, so editing a model changed its group, and Agents could not use
+the model until the Operator granted the new one. Upgrading changes every
+group once. Upgrade this chart together with the Operator, as the platform
+chart does: the Operator trusts only groups of the current form. It updates
+the keys of Agents with shared models when its catalog refresh sees the new
+groups, and re-projects policy-bound Agents once. Native Sandbox Agents are
+single-start, so they stay held after that re-projection until they are
+recreated.
 
 This behavior is opt-in. Standalone Gateways retain their existing model list
 and custom deployment IDs unchanged when `operatorIntegration` is false. The
@@ -1572,6 +1599,28 @@ Deployment has been scaled down to one pod. The bundled PostgreSQL and Valkey
 have none. The chart sets no anti-affinity, so both replicas can still land on
 one node and be lost together when that node fails. On a multi-node cluster,
 use `affinity` to spread them.
+
+### Pods keep their configuration until they are replaced
+
+The generated configuration is mounted as a single file (`subPath`), so
+Kubernetes does not update it inside running pods; a configuration change
+replaces the pods instead (`checksum/config`). With the ConfigMap mounted as a
+directory, Kubernetes updated the file in the old pods about a minute after an
+upgrade. LiteLLM re-reads its configuration file every 30 seconds while models
+are stored in the database and removes each configured model whose deployment
+ID is no longer in the file, without adding the new entry until it restarts.
+An upgrade that edited a model therefore made the old pods stop serving it
+until they were replaced. Now each pod serves the configuration it started
+with, and the edited model stays available throughout the rollout.
+
+During a rollout the Service sends requests to old and new pods, which can
+list different models when a model is added, removed or renamed. The CetiRun
+operator lists the models through the Service, so it waits while the ready
+pods behind the Gateway Service belong to more than one pod template, checks
+again every 15 seconds, and applies the new model list once when one template
+serves the Gateway. It keeps its previous view for at most ten minutes of a
+rollout, and does not wait when it cannot read the Gateway's Service or pods.
+Agents are not updated or restarted while the rollout runs.
 
 ### When Redis is unavailable
 

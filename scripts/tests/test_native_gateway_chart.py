@@ -136,8 +136,8 @@ def native_values():
     }
 
 
-def gateway_models(model, *, integrated):
-    objects = render(GATEWAY_CHART, {"operatorIntegration": integrated, "models": [model]})
+def gateway_models(model, *, integrated, more=()):
+    objects = render(GATEWAY_CHART, {"operatorIntegration": integrated, "models": [model, *more]})
     config = yaml.safe_load(object_of_kind(objects, "ConfigMap")["data"]["config.yaml"])
     return config["model_list"]
 
@@ -411,23 +411,44 @@ class NativeGatewayChartTests(unittest.TestCase):
         values["sidecarScope"]["enabled"] = False
         render(RUNTIME_CHART, values, error="aiGateway.enabled requires sidecarScope.enabled")
 
-    def test_integrated_gateway_fingerprints_the_complete_model_configuration(self):
-        suffix = hashlib.sha256(
+    def test_integrated_gateway_binds_each_model_name(self):
+        # The operator recomputes the group from the model name, so this must
+        # stay the plain SHA-256 of model_name.
+        binding = hashlib.sha256(MODEL["model_name"].encode()).hexdigest()[:16]
+        configuration = hashlib.sha256(
             json.dumps(MODEL, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:16]
         configured = gateway_models(MODEL, integrated=True)[0]
         self.assertEqual(configured["litellm_params"], MODEL["litellm_params"])
         self.assertEqual(configured["model_info"], {
             **MODEL["model_info"],
-            "id": f"cetirun-shared-{suffix}",
-            "access_groups": ["example-readers", f"cetirun-model-{suffix}"],
+            "id": f"cetirun-shared-{binding}-{configuration}",
+            "access_groups": ["example-readers", f"cetirun-model-{binding}"],
         })
         self.assertEqual(gateway_models(dict(reversed(list(MODEL.items()))), integrated=True), [configured])
+        # Editing the configuration changes the deployment ID only. The group
+        # that Agent keys are granted stays, so Agents keep the model.
         changed = copy.deepcopy(MODEL)
         changed["litellm_params"]["api_base"] = "https://replacement.example.com/v1"
+        changed["model_info"]["input_cost_per_token"] = 0.002
         replacement = gateway_models(changed, integrated=True)[0]
         self.assertNotEqual(replacement["model_info"]["id"], configured["model_info"]["id"])
-        self.assertNotEqual(replacement["model_info"]["access_groups"][-1], configured["model_info"]["access_groups"][-1])
+        self.assertTrue(replacement["model_info"]["id"].startswith(f"cetirun-shared-{binding}-"))
+        self.assertEqual(replacement["model_info"]["access_groups"], configured["model_info"]["access_groups"])
+        renamed = {**copy.deepcopy(MODEL), "model_name": "renamed-model"}
+        self.assertNotEqual(
+            gateway_models(renamed, integrated=True)[0]["model_info"]["access_groups"][-1],
+            configured["model_info"]["access_groups"][-1],
+        )
+
+    def test_integrated_gateway_entries_of_one_name_share_its_group(self):
+        second = copy.deepcopy(MODEL)
+        second["litellm_params"]["api_base"] = "https://second.example.com/v1"
+        first_info, second_info = (
+            entry["model_info"] for entry in gateway_models(MODEL, integrated=True, more=[second])
+        )
+        self.assertEqual(first_info["access_groups"], second_info["access_groups"])
+        self.assertNotEqual(first_info["id"], second_info["id"])
 
     def test_only_integrated_gateway_reserves_model_bindings(self):
         for model_info in [
@@ -446,6 +467,29 @@ class NativeGatewayChartTests(unittest.TestCase):
 
     def test_standalone_gateway_model_configuration_is_unchanged(self):
         self.assertEqual(gateway_models(MODEL, integrated=False), [MODEL])
+
+    def test_running_gateway_pods_keep_the_configuration_they_started_with(self):
+        # A directory mount is updated inside running pods, and LiteLLM's
+        # periodic re-read then removed an edited model from the old pods.
+        for integrated in (False, True):
+            with self.subTest(integrated=integrated):
+                objects = render(GATEWAY_CHART, {"operatorIntegration": integrated, "models": [MODEL]})
+                deployment = object_of_kind(objects, "Deployment")
+                pod = deployment["spec"]["template"]["spec"]
+                config_volume = next(volume for volume in pod["volumes"] if "configMap" in volume)
+                mounts = [
+                    mount
+                    for container in [*pod.get("initContainers", []), *pod["containers"]]
+                    for mount in container.get("volumeMounts", [])
+                    if mount["name"] == config_volume["name"]
+                ]
+                self.assertEqual(mounts, [{
+                    "name": config_volume["name"], "mountPath": "/etc/litellm/config.yaml",
+                    "subPath": "config.yaml", "readOnly": True,
+                }])
+                gateway = next(container for container in pod["containers"] if container["name"] == "gateway")
+                self.assertIn("/etc/litellm/config.yaml", gateway["args"])
+                self.assertTrue(deployment["spec"]["template"]["metadata"]["annotations"]["checksum/config"])
 
     def test_spend_log_cleanup_runs_every_hour_whenever_a_retention_is_set(self):
         # LiteLLM schedules its cleanup only from a string interval, and its

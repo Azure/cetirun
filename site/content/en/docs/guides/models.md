@@ -15,7 +15,12 @@ OpenClaw and Hermes instances take all their models from the Gateway, from two
 sources:
 
 - **Shared models** are the models an administrator configures in the Gateway
-  with the access group `cetirun-shared`. They keep the administrator's names.
+  chart's `models`, which gives each a deployment ID and an access group
+  derived from its name. They keep the administrator's names. Instances without
+  a policy are offered all of them, and policy-bound instances those their
+  AgentPolicy grants. A model added in the Gateway's console is shared only
+  with the access group `cetirun-shared`, and only with instances without a
+  policy.
   While the Gateway blocks requests for unpriced models, as it does by default
   (`blockUnpricedModels`), the operator offers only shared models with a price.
   It reads the setting from the Gateway, so a change made in the Gateway's
@@ -62,7 +67,8 @@ The Gateway's health checks probe every Copilot model too, every five minutes by
 default. Each probe is a real call, so it spends the owner's Copilot allowance.
 
 Each instance's key reaches only its own access groups: those of the shared
-models it may use and the instance's own Copilot group, so its Copilot models
+models it may use, with `cetirun-shared` for an instance without a policy, and
+the instance's own Copilot group, so its Copilot models
 reach only its own proxy, also under a shared model's name. The Gateway checks
 router fallbacks against the key as well (`operatorIntegration`), and its guard
 keeps every key that does not hold an instance's Copilot group, such as the
@@ -156,10 +162,17 @@ restarts them, and registers their Copilot models again under the names that
 now apply. A change to a shared model's base model or routing fields alone
 reaches the Copilot routes at each instance's next verification, within ten
 minutes. A restarting instance shows as provisioning for a short while, and its
-UI is unavailable until it is ready again. After an upgrade from a version that
-named Copilot models `copilot/<model>`, the operator registers each instance's
-Copilot models under their new names at its next verification, and the instance
-restarts with its new model list.
+UI is unavailable until it is ready again. Other changes to a shared model,
+such as its endpoint, provider parameters or price, keep the access groups
+instances are granted: the Gateway chart derives a model's group from its name
+alone. Instances keep using the model, and none of them restarts. After an
+upgrade from a version that named Copilot models `copilot/<model>`, the
+operator registers each instance's Copilot models under their new names at its
+next verification, and the instance restarts with its new model list.
+A Gateway upgrade does not interrupt instances either. Each Gateway pod keeps
+the configuration it started with until it is replaced, and the operator waits
+for the rollout to finish before it applies a changed model list, so instances
+are updated once rather than once for each replaced pod.
 
 OpenClaw also sends short internal tasks, such as generated session titles and
 activity recaps, to a utility model. On the Gateway, an instance's utility

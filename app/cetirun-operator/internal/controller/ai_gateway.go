@@ -38,14 +38,15 @@ const (
 	// aiGatewaySharedAccessGroup is the Gateway access group of the models
 	// administrators share with legacy Agents. Policy-bound keys never receive it.
 	aiGatewaySharedAccessGroup = "cetirun-shared"
-	// aiGatewayModelAccessGroupPrefix identifies an opaque per-configured-model
-	// access group. The Gateway chart derives its suffix from the canonical
-	// model configuration; the controller only trusts groups returned by the
-	// Gateway catalog and never attempts to recreate the suffix from a
-	// LiteLLM-generated deployment ID.
+	// aiGatewayModelAccessGroupPrefix identifies a per-model-name access
+	// group. The Gateway chart derives its suffix from the model name; the
+	// controller trusts only groups returned by the Gateway catalog whose
+	// suffix, members and deployment IDs agree with that derivation
+	// (trustedManagedModelGroups).
 	aiGatewayModelAccessGroupPrefix = "cetirun-model-"
-	// aiGatewaySharedDeploymentIDPrefix pairs a chart-derived deployment ID
-	// with the access-group suffix. The catalog trusts neither value alone.
+	// aiGatewaySharedDeploymentIDPrefix starts a chart-derived deployment ID,
+	// followed by the group suffix and a hash of the configured entry. The
+	// catalog trusts neither value alone.
 	aiGatewaySharedDeploymentIDPrefix = "cetirun-shared-"
 	// aiGatewayTeamPrefix prefixes the Gateway team of a CetiRun Team.
 	aiGatewayTeamPrefix           = "cetirun-team-"
@@ -319,7 +320,7 @@ func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, clien
 		if err := r.refreshAIGatewayCatalogForGrant(ctx, client); err != nil {
 			return aiGatewayGrant{}, err
 		}
-		// Current Gateway charts use per-deployment groups. Preserve access
+		// Current Gateway charts use per-model-name groups. Preserve access
 		// to those as well as legacy catalog entries tagged cetirun-shared.
 		groups = append(groups, r.aiGatewayCatalog.legacySharedGroups()...)
 	}
@@ -456,14 +457,14 @@ func aiGatewayVerificationDue(instance *cetirunv1alpha1.Agent, enabled bool, now
 
 // aiGatewayReconcileDue reports whether the Agent needs the full Gateway
 // reconcile now rather than the lightweight pass: its key verification is
-// due, its Copilot proxy is starting or failed, or the Gateway no longer has
-// one of its Copilot routes. Without the last, an Agent queued because its
-// routes are gone would take the lightweight pass and wait for the
-// verification after all.
+// due, its Copilot proxy is starting or failed, the Gateway no longer has
+// one of its Copilot routes, or the shared models' groups changed since its
+// key was granted. Without the last two, an Agent queued because of them
+// would take the lightweight pass and wait for the verification after all.
 func (r *AgentReconciler) aiGatewayReconcileDue(instance *cetirunv1alpha1.Agent, now time.Time) bool {
 	enabled := r.AIGateway.Enabled
 	return aiGatewayVerificationDue(instance, enabled, now) || aiGatewayCopilotPending(instance, enabled) ||
-		enabled && r.copilotRoutesLost(instance)
+		enabled && (r.copilotRoutesLost(instance) || r.aiGatewayBindingsChanged(instance))
 }
 
 // aiGatewayCopilotPending reports a Copilot proxy that is starting or failed
