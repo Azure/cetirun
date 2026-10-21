@@ -1,17 +1,89 @@
 ---
 title: "Microsoft Entra Agent Identity"
-description: "Connect an instance to Microsoft Entra and use delegated Azure discovery and ARM REST requests."
+description: "Manage Azure Agent connections with direct RBAC, or use the default delegated Azure integration."
 weight: 45
 ---
 
 CetiRun can give a Hermes, OpenClaw, or qualified Custom instance its own Microsoft Entra
-Agent Identity. Azure Resource Manager (ARM) access uses on-behalf-of (OBO)
+Agent Identity. The default Azure Resource Manager (ARM) integration uses on-behalf-of (OBO)
 delegation. The managed tools default to read-only operations; the ARM REST
 wrapper also accepts explicitly enabled writes.
 
 Agent Identity is deployment-controlled and disabled by default. Enabling it
 for an instance does not grant Azure
-permissions: every request remains limited to the connected user's Azure RBAC.
+permissions. In the default integration, requests remain limited to the
+connected user's Azure RBAC.
+
+## Opt-in Azure Connection management
+
+Deployments can enable a new **Azure connection** panel for built-in Hermes and
+OpenClaw Agents. It configures the Connection/Binding backend using the Agent's
+independent identity. Azure evaluates roles assigned directly to that identity,
+not the signed-in Portal user's roles. There is no additional CetiRun resource
+Grant or permission whitelist.
+
+This panel is a configuration surface. It does not enable the runtime MCP
+integration, verify Azure RBAC, or replace the default runtime's OBO credentials.
+Runtime integration is a separate rollout; configuring a connection alone does
+not make Azure calls available in chat. The following legacy instructions still
+apply to runtimes using the default integration.
+
+### Enable the panel
+
+The Portal chart defaults to `features.agentToolsEnabled: false`. To opt in,
+configure these values in the Portal chart:
+
+```yaml
+features:
+  agentToolsEnabled: true
+agentIdentity:
+  tenantId: "<entra-tenant-id>"
+  portalClientId: "<portal-oidc-client-id>"
+istio:
+  host: portal.example.com
+agentTools:
+  brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
+  runtimeTypes: [hermes, openclaw]
+```
+
+These map to `FEATURE_AGENT_TOOLS_ENABLED`, `ENTRA_TENANT_ID`,
+`PORTAL_OIDC_CLIENT_ID`, `PORTAL_ORIGIN`, `AGENT_TOOLS_BROKER_URL`, and
+`TOOLS_MCP_RUNTIME_TYPES`. Enabling either Portal identity feature requires
+verified Entra ID tokens from the trusted gateway. Configure the
+[Istio authentication boundary](../../operations/istio/) accordingly.
+
+The Broker must separately enable `connectionBindings.enabled`, with its
+required credential TLS configuration and trusted Portal mesh boundary. Its
+runtime allowlist must agree with the Portal. The Agent identity must already
+be enabled and ready. To offer identity creation in the Portal, also enable
+`features.agentIdentityEnabled` and the existing Operator identity prerequisites.
+This panel does not provision identities or grant roles.
+
+When enabled, this panel replaces the legacy authorization panel in the Agent
+overview. Existing legacy API routes remain available when
+`features.agentIdentityEnabled` is enabled. Disabling the new flag restores the
+previous panel behavior; no records are migrated or deleted.
+
+### Connect and disconnect
+
+1. Open the Agent overview and wait for its identity to become ready.
+2. Select **Connect**. The Portal creates or reuses this Agent's Azure Connection
+   and creates an enabled `azure_arm` Binding.
+3. Use the displayed **Principal ID** when assigning Azure RBAC. A resource owner
+   can grant **Reader** at the required scope for read access. Writes need the
+   appropriate Azure role; CetiRun does not grant it automatically.
+4. **Connected** means the Binding is configured. Actual Azure access must be
+   tested through a separately configured runtime.
+
+Only the connection owner can view or manage their connections; Portal
+administrator status does not bypass ownership checks. The panel selects the
+identity for the current Agent UID. A replacement Agent with the same name does
+not inherit the old panel state.
+
+**Disconnect** revokes only this Agent's Binding. It does not delete the Azure
+identity, remove Azure RBAC, or disconnect another Agent. Existing bindings stay
+removable after a runtime becomes unsupported. Short-lived credentials already
+issued remain valid until expiry.
 
 ## Connect an instance
 

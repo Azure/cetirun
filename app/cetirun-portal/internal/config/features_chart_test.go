@@ -79,3 +79,51 @@ func TestConfigurationCoordinationChartWiring(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentToolsChartRequiresVerifiedOwnerConfiguration(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("Helm is required for the Portal chart rendering check")
+	}
+	base := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com"}
+	cases := []struct {
+		name      string
+		values    []string
+		wantError string
+	}{
+		{"defaults", nil, ""},
+		{"missing tenant", []string{"features.agentToolsEnabled=true"}, "tenantId is required"},
+		{"missing client", []string{"features.agentToolsEnabled=true", "agentIdentity.tenantId=tenant"}, "portalClientId is required"},
+		{"missing origin", []string{"features.agentToolsEnabled=true", "agentIdentity.tenantId=tenant", "agentIdentity.portalClientId=client", "istio.host="}, "istio.host is required"},
+		{"tools only", []string{"features.agentToolsEnabled=true", "agentIdentity.tenantId=tenant", "agentIdentity.portalClientId=client", "istio.host=portal.example.com", "agentTools.runtimeTypes={hermes}"}, ""},
+		{"empty runtimes", []string{"features.agentToolsEnabled=true", "agentIdentity.tenantId=tenant", "agentIdentity.portalClientId=client", "istio.host=portal.example.com", "agentTools.runtimeTypes=null"}, "runtimeTypes must not be empty"},
+		{"empty broker", []string{"features.agentToolsEnabled=true", "agentIdentity.tenantId=tenant", "agentIdentity.portalClientId=client", "istio.host=portal.example.com", "agentTools.brokerURL="}, "brokerURL is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{}, base...)
+			for _, value := range tc.values {
+				args = append(args, "--set", value)
+			}
+			output, err := exec.Command(helm, args...).CombinedOutput()
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(string(output), tc.wantError) {
+					t.Fatalf("expected %q, got %v: %s", tc.wantError, err, output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("render: %v: %s", err, output)
+			}
+			text := string(output)
+			for _, env := range []string{"ENTRA_TENANT_ID", "PORTAL_OIDC_CLIENT_ID", "AGENT_TOOLS_BROKER_URL", "TOOLS_MCP_RUNTIME_TYPES"} {
+				if got := strings.Contains(text, "name: "+env); got != (tc.name == "tools only") {
+					t.Errorf("unexpected %s configuration: present=%v", env, got)
+				}
+			}
+			if strings.Contains(text, "name: AGENT_ID_BROKER_URL") {
+				t.Error("Agent Tools implicitly enabled legacy authorization")
+			}
+		})
+	}
+}

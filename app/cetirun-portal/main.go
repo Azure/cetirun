@@ -82,13 +82,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create auth middleware. Agent Identity requires a signed Entra ID token
+	// Create auth middleware. Both identity features require a signed Entra ID token
 	// from oauth2-proxy in addition to display-only identity headers.
 	var oidcVerifier *auth.OIDCVerifier
-	if cfg.AgentIdentityEnabled {
+	if cfg.AgentIdentityEnabled || cfg.AgentToolsEnabled {
 		oidcVerifier, err = auth.NewOIDCVerifier(cfg.EntraTenantID, cfg.PortalClientID)
 		if err != nil {
-			slog.Error("Invalid Agent Identity OIDC configuration", "error", err)
+			slog.Error("Invalid Portal identity OIDC configuration", "error", err)
 			os.Exit(1)
 		}
 	}
@@ -123,6 +123,12 @@ func main() {
 		agentAuthorizationHandler = handler.NewAgentAuthorizationHandler(kubeClient, cfg.AgentIdentityBrokerURL, cfg.PortalOrigin)
 	}
 
+	var toolConnectionsHandler *handler.ToolConnectionsHandler
+	if cfg.AgentToolsEnabled {
+		toolConnectionsHandler = handler.NewToolConnectionsHandler(kubeClient, cfg.AgentToolsBrokerURL, cfg.PortalOrigin)
+		toolConnectionsHandler.RuntimeTypes = cfg.AgentToolsRuntimeTypes
+	}
+
 	// Serve embedded SPA.
 	dist, err := fs.Sub(staticFiles, "web/dist")
 	if err != nil {
@@ -131,7 +137,7 @@ func main() {
 	}
 
 	// Build and start public server.
-	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminPolicyHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
+	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminPolicyHandler, authMiddleware, requireAdmin, agentAuthorizationHandler, toolConnectionsHandler)
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: mux,
