@@ -114,9 +114,9 @@ features:
   # requires both.
   aiGatewayEnabled: true
 
-# -- Allow missing Sandbox runtime profiles only after the Operator's common
-# executor is enabled with sandboxSources.reconciledExecution. Keep false during
-# the reader-first rollout and whenever the retained executor handles new Agents.
+# -- Allow missing Sandbox runtime profiles when the Operator's common executor
+# is enabled with sandboxSources.nativeExecution. Keep false when native
+# execution is disabled.
 # The platform chart rejects this opt-in without the matching Operator settings.
 sandboxRuntimeDefaultsFromController: false
 

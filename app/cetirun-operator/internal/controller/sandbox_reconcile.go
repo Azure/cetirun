@@ -47,7 +47,7 @@ func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.
 	}
 	_, receipt, err := r.readSandboxBootstrap(ctx, agent)
 	if apierrors.IsNotFound(err) && !controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
-		return r.SandboxPreparation.ReconciledExecution, nil
+		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read Sandbox lifetime mode: %w", err)

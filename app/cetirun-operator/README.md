@@ -97,30 +97,21 @@ An observation validator checks an adapter's input; it does not generate evidenc
 
 ### Common Sandbox reconciliation (explicit opt-in)
 
-With both `sandboxSources.nativeExecution: true` and
-`sandboxSources.reconciledExecution: true`, new OpenClaw and Hermes Agents use the
+With `sandboxSources.nativeExecution: true`, new OpenClaw and Hermes Agents use the
 ordinary controller's feature assembly, Harness adapters, Helm apply, readiness,
 model integration and deletion flow. The selected Sandbox adds runtime, resource,
 HOME, network and credential constraints to that flow; there is no fallback
-deployment mode. Both switches default to `false`.
+deployment mode. The opt-in defaults to `false`.
 
-Upgrade readers before enabling the new writer:
+Use the same release version for the Operator, Sandbox admission, Portal and
+configuration-change tools. Mixed-version rollout sequencing and pre-upgrade
+bootstrap-only recovery are outside this contract. There is no additional
+reader-first switch: remove the retired `sandboxSources.reconciledExecution`
+setting, which is rejected rather than silently ignored.
 
-1. Keep `sandboxSources.reconciledExecution: false` while upgrading every Operator
-   replica, independent Sandbox admission replica, Portal replica and
-   `sandbox-config-change` tool that uses the same coordination authority.
-   Confirm that no older reader or controller remains.
-2. Only then enable `sandboxSources.reconciledExecution`. This is an explicit
-   deployment-owner acknowledgement, not automatic reader-version detection.
-
-With the new switch off, even an installation already using native execution and
-coordination creates only the previous single-start lifetime and wire format.
-The false setting is omitted from the controller's JSON configuration so an older
-controller can still read it during the first rollout. The controller's
-`reconciledExecution` field is not sent to admission or Portal.
-Disabling the switch later affects only new lifetimes: it does not downgrade
-existing records or permit rolling readers back while reconciled lifetimes remain.
-Finish their ordinary cleanup before restoring older readers.
+Persisted lifetime mode and owned namespace/HOME identities still govern recovery
+and cleanup. Configuration changes do not migrate or adopt existing resources,
+and missing ownership evidence still holds execution.
 
 Shared-only, Copilot-only and mixed model configurations use the existing
 Gateway and per-Agent Copilot proxy. The proxy is a separate Deployment, not a
@@ -175,11 +166,10 @@ replacement for container/Pod storage accounting.
 
 Portal runtime profiles are optional only when its deployment explicitly enables
 `sandboxRuntimeDefaultsFromController` after this common executor is enabled.
-The Portal keeps that opt-in off during reader-first rollout, so missing profiles
-reject creation rather than sending unpinned Agents to the retained executor.
+Without that explicit deployment setting, missing profiles reject creation.
 With it enabled, the controller pins chart/image/port from its selected trusted
 chart, with narrowly authorized admission updates. Disable the Portal opt-in
-before disabling new reconciled lifetimes. Explicit requests and configured
+before disabling native execution. Explicit requests and configured
 profiles are still validated.
 The protected path disables the ordinary immutable-StatefulSet replacement hook;
 unsupported storage/type transitions require a deliberate handoff, not orphaning
@@ -233,9 +223,8 @@ ownership or discarding grant history.
 
 ### Retained single-start profile and capability registration
 
-The following single-start lifecycle notes describe version-1 records, including
-new lifetimes while the reader-first switch is off; version-2 lifetimes use the
-common flow above. The explicit native option
+The following single-start lifecycle notes describe retained version-1 records;
+new native lifetimes use the version-2 common flow above. The explicit native option
 requires enabled,
 enforced configuration/Pod admission, `sandboxSources.enabled`,
 `sandboxSources.bootstrapOwnedPrerequisites`, and an enabled AI Gateway.

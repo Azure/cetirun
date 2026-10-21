@@ -5,7 +5,7 @@ ARG VERSION=dev
 ARG GIT_SHA=unknown
 
 # --- Build frontend ---
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/azurelinux/base/core:3.0@sha256:7292f2bcf52c3916758f1a45aba6e4dcb93f466027d7786900ea96c2d23c48e2 AS frontend
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/azurelinux/base/core:3.0@sha256:af39b0587a0fd132e574faabf9aaf56833d69908b9ff227131d519ee219759e7 AS frontend
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 RUN tdnf install -y ca-certificates nodejs24 nodejs24-npm && tdnf clean all
 WORKDIR /app/web

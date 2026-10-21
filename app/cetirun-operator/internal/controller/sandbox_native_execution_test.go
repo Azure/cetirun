@@ -52,19 +52,18 @@ const nativeSandboxSourcesJSON = `{
 
 func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 	for _, tc := range []struct {
-		name, raw  string
-		native     bool
-		reconciled bool
-		wantError  bool
+		name, raw string
+		native    bool
+		wantError bool
 	}{
 		{name: "unset"},
 		{name: "empty", raw: "{}"},
 		{name: "sources alone", raw: nativeSandboxSourcesJSON},
 		{name: "explicit false", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":false`, 1)},
 		{name: "explicit true", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true`, 1), native: true},
-		{name: "reader-first gate off", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"reconciledExecution":false`, 1), native: true},
-		{name: "reader-first gate on", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"reconciledExecution":true`, 1), native: true, reconciled: true},
-		{name: "reconciliation requires native execution", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"reconciledExecution":true`, 1), wantError: true},
+		{name: "removed gate false", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"reconciledExecution":false`, 1), wantError: true},
+		{name: "removed gate true", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"reconciledExecution":true`, 1), wantError: true},
+		{name: "removed gate without native execution", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"reconciledExecution":true`, 1), wantError: true},
 		{name: "reconciliation rejects string", raw: `{"reconciledExecution":"true"}`, wantError: true},
 		{name: "reconciliation rejects duplicate gate", raw: `{"reconciledExecution":false,"reconciledExecution":true}`, wantError: true},
 		{name: "native without claim name", raw: strings.Replace(strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true`, 1), `"skills-example"`, `""`, 1), native: true},
@@ -86,9 +85,6 @@ func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 			if config.NativeExecution != tc.native {
 				t.Fatalf("nativeExecution = %v, want %v", config.NativeExecution, tc.native)
 			}
-			if config.ReconciledExecution != tc.reconciled {
-				t.Fatalf("reconciledExecution = %v, want %v", config.ReconciledExecution, tc.reconciled)
-			}
 			_, kube, _ := aiGatewayTestReconciler(t)
 			preparation, err := NewKubernetesSandboxPreparation(config, kube, &nativeSandboxInstaller{}, "cetirun-system", "0.1.1")
 			if err != nil {
@@ -101,7 +97,7 @@ func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 				return
 			}
 			source, ok := preparation.Prerequisites.(*KubernetesSandboxPrerequisites)
-			if !ok || preparation.NativeExecution != tc.native || preparation.ReconciledExecution != tc.reconciled ||
+			if !ok || preparation.NativeExecution != tc.native ||
 				source.NativeExecution != tc.native || (source.NativeQuiescence != nil) != tc.native ||
 				source.WriterExclusion != nil {
 				t.Fatal("factory did not preserve explicit opt-in or invented a writer-exclusion provider")
@@ -706,7 +702,11 @@ func newSandboxRuntimeFixtureForAgent(t *testing.T, native bool, skills []string
 ) *nativeSandboxFixture {
 	t.Helper()
 	f, input := newUnreconciledSandboxRuntimeFixture(t, native, skills, reconciled, kind, shared, copilot, setup...)
-	f.reconcileOK(t)
+	if native && !reconciled {
+		f.seedRetainedBootstrap(t)
+	} else {
+		f.reconcileOK(t)
+	}
 	namespace := &corev1.Namespace{}
 	if err := f.kube.Get(context.Background(), client.ObjectKey{Name: instanceNamespace(input.Agent.Name)}, namespace); err != nil {
 		t.Fatal("cold reconciliation did not bootstrap the namespace:", err)
@@ -838,7 +838,7 @@ func newUnreconciledSandboxRuntimeFixture(t *testing.T, native bool, skills []st
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.NativeExecution, config.ReconciledExecution = native, reconciled
+	config.NativeExecution = native
 	installer := &nativeSandboxInstaller{kube: kube, chart: chrt}
 	if reconciled {
 		r.HelmClient = &sharedSandboxInstaller{nativeSandboxInstaller: installer}
@@ -852,6 +852,19 @@ func newUnreconciledSandboxRuntimeFixture(t *testing.T, native bool, skills []st
 	}
 	f := &nativeSandboxFixture{r: r, kube: kube, gateway: gateway, installer: installer, agent: input.Agent}
 	return f, input
+}
+
+func (f *nativeSandboxFixture) seedRetainedBootstrap(t *testing.T) {
+	t.Helper()
+	// Retained-state tests cannot use the new common-lifetime creation path.
+	ctx := context.Background()
+	policy, err := f.r.reconcilePolicy(ctx, f.current(t))
+	if err != nil || !policy.authorized {
+		t.Fatal("retained fixture requires an authorized policy:", err)
+	}
+	if _, err := f.r.holdSandboxWithPolicyFence(ctx, f.current(t), nil); err != nil {
+		t.Fatal("seed retained Sandbox bootstrap:", err)
+	}
 }
 
 func (f *nativeSandboxFixture) reconcile() (ctrl.Result, error) {

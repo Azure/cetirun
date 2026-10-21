@@ -28,6 +28,7 @@ class GoToolchainTests(unittest.TestCase):
 
     def test_security_floor(self):
         self.assertRegex(self.version, r"^\d+\.\d+\.\d+$")
+        # GO-2026-6809 is fixed in Go 1.27 starting with 1.27.3.
         self.assertGreaterEqual(tuple(map(int, self.version.split("."))), (1, 27, 3))
 
     def test_module_minimums_match(self):
