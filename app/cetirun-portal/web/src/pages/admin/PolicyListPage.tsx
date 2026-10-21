@@ -43,7 +43,7 @@ export function PolicyListPage() {
     queryFn: listPolicies,
     refetchInterval: 30_000,
   });
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<AgentPolicyDTO | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteMutation = useMutation({
     mutationFn: (policy: AgentPolicyDTO) => deletePolicy(policy),
@@ -91,7 +91,7 @@ export function PolicyListPage() {
                 <TableCell>{modelAccessLabel(policy)}</TableCell>
                 <TableCell>
                   <Button size="small" appearance="subtle" icon={<Edit20Regular />} aria-label={`Edit ${policy.name}`} disabled={policy.deleting} onClick={() => navigate(`/admin/policies/${policy.name}/edit`)} />
-                  <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={`Delete ${policy.name}`} disabled={policy.deleting} onClick={() => { setDeleteError(null); setPendingDelete(policy.name); }} />
+                  <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={`Delete ${policy.name}`} disabled={policy.deleting} onClick={() => { setDeleteError(null); setPendingDelete(policy); }} />
                 </TableCell>
               </TableRow>
             ))}
@@ -102,12 +102,11 @@ export function PolicyListPage() {
         <DialogSurface>
           <DialogBody>
             <DialogTitle>Delete policy?</DialogTitle>
-            <DialogContent>Deleting <strong>{pendingDelete}</strong> can deny Agents assigned to Teams that use it.</DialogContent>
+            <DialogContent>Deleting <strong>{pendingDelete?.name}</strong> can deny Agents assigned to Teams that use it.</DialogContent>
             <DialogActions>
               <DialogTrigger disableButtonEnhancement><Button appearance="secondary">Cancel</Button></DialogTrigger>
-              <Button appearance="primary" disabled={deleteMutation.isPending} onClick={() => {
-                const policy = policies?.find((item) => item.name === pendingDelete);
-                if (policy) deleteMutation.mutate(policy);
+              <Button appearance="primary" disabled={deleteMutation.isPending || !pendingDelete} onClick={() => {
+                if (pendingDelete) deleteMutation.mutate(pendingDelete);
               }}>Delete</Button>
             </DialogActions>
           </DialogBody>
