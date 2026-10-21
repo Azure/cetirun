@@ -3189,13 +3189,14 @@ func TestAIGatewayCatalogKeepsItsAgentTypesWhileTheChartCannotBeRead(t *testing.
 	}
 }
 
-// A Copilot model's configured name carries GitHub's display name, which the
-// operator does not control: it must stay within the chart's limit too.
-func TestAIGatewayModelEntriesKeepCopilotNamesWithinTheChartLimit(t *testing.T) {
+// A Copilot model is named like every other model, by its Gateway name, never
+// by GitHub's display name, which the operator does not control and which
+// would tell the Agent which backend serves the model.
+func TestAIGatewayModelEntriesNameCopilotModelsLikeEveryOtherModel(t *testing.T) {
 	r, _, gateway := aiGatewayTestReconciler(t)
 	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
 	agent := routedAgent()
-	raw, err := json.Marshal([]cetirunv1alpha1.CopilotModel{{ID: "gpt-5.5", Name: strings.Repeat("n", 300)}})
+	raw, err := json.Marshal([]cetirunv1alpha1.CopilotModel{{ID: "gpt-5.5", Name: strings.Repeat("n", 300) + " (GitHub Copilot)"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3207,12 +3208,15 @@ func TestAIGatewayModelEntriesKeepCopilotNamesWithinTheChartLimit(t *testing.T) 
 		if utf8.RuneCountInString(entry.ID) > aiGatewayModelNameLimit || utf8.RuneCountInString(entry.Name) > aiGatewayModelNameLimit {
 			t.Fatalf("entry %q exceeds the chart's limit: name has %d characters", entry.ID, utf8.RuneCountInString(entry.Name))
 		}
+		if strings.Contains(entry.Name, "Copilot") || strings.Contains(entry.Name, "nnn") {
+			t.Fatalf("entry %q reveals its backend: %q", entry.ID, entry.Name)
+		}
 		if entry.ID == "copilot/gpt-5.5" {
-			found = strings.HasSuffix(entry.Name, copilotModelNameSuffix)
+			found = entry.Name == entry.ID
 		}
 	}
 	if !found {
-		t.Fatalf("the Copilot model must stay listed with its marked name: %+v", entries)
+		t.Fatalf("the Copilot model must stay listed under its own name: %+v", entries)
 	}
 }
 

@@ -168,8 +168,8 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 		if entry.ID == "team-gpt" && (entry.ContextWindow != 400000 || entry.MaxTokens != 64000 || entry.Name != "team-gpt") {
 			t.Fatalf("a merged entry takes the smaller limits: %+v", entry)
 		}
-		if entry.ID == "gpt-4o-2024-11-20" && entry.Name != "GPT-4o"+copilotModelNameSuffix {
-			t.Fatalf("a Copilot entry keeps its display name: %+v", entry)
+		if entry.ID == "gpt-4o-2024-11-20" && entry.Name != "gpt-4o-2024-11-20" {
+			t.Fatalf("a Copilot entry is named like any other model: %+v", entry)
 		}
 	}
 	key := gateway.keys[aigateway.Token(string(readSecret(t, kube, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))]
@@ -373,7 +373,7 @@ func TestAIGatewayModelEntriesWithoutCatalogKeepCopilotModelsApart(t *testing.T)
 	for _, entry := range entries {
 		got = append(got, entry.ID+"="+entry.Name)
 	}
-	want := []string{testSharedModelOne + "=" + testSharedModelOne, "team-gpt=team-gpt", "gpt-4o=gpt-4o" + copilotModelNameSuffix}
+	want := []string{testSharedModelOne + "=" + testSharedModelOne, "team-gpt=team-gpt", "gpt-4o=gpt-4o"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("entries %v, want %v", got, want)
 	}
