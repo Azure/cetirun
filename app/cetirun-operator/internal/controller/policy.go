@@ -269,11 +269,6 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		if err := r.refreshAIGatewayCatalogForGrant(ctx, gateway); err != nil {
 			return nil, policyDependency("refresh live AI Gateway catalog: %w", err)
 		}
-		var known bool
-		catalogFingerprint, known = r.aiGatewayCatalog.managedFingerprint()
-		if !known || catalogFingerprint == "" {
-			return nil, policyDependency("live AI Gateway managed catalog is unavailable")
-		}
 		// Model router names are granted by their own checks
 		// (ai_gateway_routers.go), not resolved as shared models.
 		sharedModels, err := r.aiGatewayPolicySharedModels(ctx, models)
@@ -282,6 +277,14 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		}
 		if _, complete := r.aiGatewayCatalog.resolvedGroups(sharedModels); !complete {
 			return nil, policyDependency("the live AI Gateway catalog cannot resolve every authorized shared model")
+		}
+		// Only the bindings of the models this policy allows count: a shared
+		// model added to or removed from the Gateway that the policy does not
+		// name changes nothing for its Agents, and must not re-project them.
+		var known bool
+		catalogFingerprint, known = r.aiGatewayCatalog.policyFingerprint(sharedModels)
+		if !known || catalogFingerprint == "" {
+			return nil, policyDependency("live AI Gateway managed catalog is unavailable")
 		}
 	}
 	gatewayRevision, err := policyHash(struct {

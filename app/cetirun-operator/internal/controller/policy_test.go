@@ -72,7 +72,9 @@ func TestPolicyGatewayRevisionFollowsModelNamesNotTheirConfiguration(t *testing.
 		t.Fatal("a configuration edit that keeps the model name fenced a running policy-bound Agent")
 	}
 
-	// Adding a model name still re-projects, and so does removing it again.
+	// A model name the policy does not allow, added and removed again, changes
+	// nothing for its Agents (measured on e2e: before, adding one stopped every
+	// running native policy-bound Agent for good).
 	gateway.shared = append(gateway.shared, aigateway.Deployment{
 		ID: managedTestDeploymentID("new-shared", 1), ModelName: "new-shared",
 		AccessGroups: []string{aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("new-shared")}, DatabaseSourceKnown: true,
@@ -81,8 +83,8 @@ func TestPolicyGatewayRevisionFollowsModelNamesNotTheirConfiguration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added.gatewayRevision == first.gatewayRevision || !policyReprojectionMustHold(running, withSandbox(added)) {
-		t.Fatal("a new model name did not change the policy Gateway revision")
+	if added.gatewayRevision != first.gatewayRevision || policyReprojectionMustHold(running, withSandbox(added)) {
+		t.Fatal("a model name the policy does not allow re-projected its Agent")
 	}
 	gateway.shared = gateway.shared[:len(gateway.shared)-1]
 	removed, err := r.resolvePolicy(ctx, agent)
@@ -90,7 +92,16 @@ func TestPolicyGatewayRevisionFollowsModelNamesNotTheirConfiguration(t *testing.
 		t.Fatal(err)
 	}
 	if removed.gatewayRevision != first.gatewayRevision {
-		t.Fatal("removing the added model name did not restore the policy Gateway revision")
+		t.Fatal("removing an unrelated model name changed the policy Gateway revision")
+	}
+
+	// The allowed name bound to other groups re-projects: a console copy of its
+	// group makes the chart's group untrusted, which leaves the name unresolved.
+	gateway.shared = append(gateway.shared, aigateway.Deployment{
+		ID: "console-copy", ModelName: "elsewhere", AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true, FromDatabase: true,
+	})
+	if _, err := r.resolvePolicy(ctx, agent); err == nil {
+		t.Fatal("an allowed model whose group is no longer trusted must not resolve")
 	}
 }
 

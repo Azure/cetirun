@@ -424,6 +424,28 @@ func (c *aiGatewayCatalog) managedFingerprint() (string, bool) {
 	return c.fingerprint, c.known
 }
 
+// policyFingerprint identifies the trusted model groups of the given shared
+// model names only, as aiGatewayCatalogFingerprint does for every name. A
+// policy's Gateway revision uses it, so that only a change to the bindings of
+// the models the policy allows re-projects its Agents. It is empty until a live
+// listing, and for a name the catalog cannot resolve.
+func (c *aiGatewayCatalog) policyFingerprint(models []string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.known {
+		return "", false
+	}
+	bindings := make(map[string][]string, len(models))
+	for _, model := range models {
+		groups := c.modelGroups[model]
+		if len(groups) == 0 {
+			return "", false
+		}
+		bindings[model] = groups
+	}
+	return aiGatewayCatalogFingerprint(bindings), true
+}
+
 // resolvedGroups returns the trusted model groups for the exact policy model
 // identifiers. It is false until a live catalog has been listed; a seeded
 // display-only catalog is intentionally insufficient evidence for a Policy

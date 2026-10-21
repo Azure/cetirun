@@ -72,8 +72,11 @@ still update it as before: a model's token limits, or a model without a price
 leaving the list while the Gateway blocks unpriced models. Rotating the value
 of a referenced Secret changes neither ID nor group. Adding or removing a
 model name adds or removes a group; when its catalog refresh sees that, the
-Operator updates the keys of Agents with shared models and re-projects
-policy-bound Agents.
+Operator updates the keys of Agents with shared models, and re-projects only
+the policy-bound Agents whose AgentPolicy allows that name. A name a policy
+does not allow changes nothing for its Agents; before, any new name re-projected
+every policy-bound Agent, which stops a running native Sandbox Agent for good
+(measured on a Kubernetes 1.37 cluster).
 
 The Operator trusts a group only while every deployment carrying it is
 configured in this chart rather than added through the console, has a unique
