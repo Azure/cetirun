@@ -149,6 +149,8 @@ SAMPLING_PARAMETERS = ("temperature", "top_p", "logprobs", "top_logprobs")
 # Where an auto router records its choice on a request, with its own name.
 ROUTING_DECISION = "routing_decision"
 ROUTER_NAME = "router_model_name"
+# The modes of a model Agents can hold a conversation with; a deployment without one counts.
+CHAT_MODES = (None, "", "chat", "completion", "responses")
 
 
 def mark_encrypted_content(encrypted_content, model_id):
@@ -448,6 +450,21 @@ def model_groups(model, deployments, team_id):
     return {group for deployment in deployments for group in access_groups(deployment)}
 
 
+def conversation_model(name, router):
+    """Whether a model the listing offers answers conversations: one of its deployments has a chat mode
+    or none, as the CetiRun operator decides which models to give Agents. Without the router, or for a
+    name with no deployment of its own, the name is kept."""
+    if router is None:
+        return True
+    try:
+        deployments = router.get_model_list(model_name=name) or []
+    except Exception:  # a listing never fails on this filter
+        return True
+    if not deployments:
+        return True
+    return any(((deployment.get("model_info") or {}).get("mode") if isinstance(deployment, dict) else None) in CHAT_MODES
+               for deployment in deployments)
+
 def without_cooldown_list(text):
     """The text without LiteLLM's list of deployments in cooldown, or None when it has none."""
     if not isinstance(text, str) or NO_DEPLOYMENTS not in text or "cooldown_list=" not in text:
@@ -561,6 +578,21 @@ class Guard(CustomLogger):
                     ", ".join(removed), router, model)
         return kept
 
+    async def async_filter_listed_models(self, user_api_key_dict, model_names):
+        """Keep a key the operator issued from listing what is not a model it can talk to.
+
+        LiteLLM lists an access group of the key that has no deployment, such as an Agent's GitHub
+        Copilot group before its owner signs in, as if it were a model, and lists a decision or
+        embedding model the key may reach because a router classifies with it. The CetiRun operator
+        leaves both out of the Agent's configuration; the listing does the same, and a lookup of
+        either by name answers 404. Every other caller sees LiteLLM's listing.
+        """
+        held = operator_groups(user_api_key_dict)
+        if held is None:
+            return model_names
+        router = getattr(sys.modules.get(PROXY_SERVER_MODULE), "llm_router", None)
+        return [name for name in model_names
+                if not (isinstance(name, str) and (name in held or not conversation_model(name, router)))]
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict,
                                            traceback_str=None):
         # Logged here rather than where it is raised: a router also asks the

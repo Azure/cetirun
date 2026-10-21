@@ -1286,6 +1286,14 @@ the console cannot remove it. It:
   recognizes the operator's keys by their model list: only `cetirun-` access
   groups, or `no-default-models`. The master key, and keys granted models by
   name, `*` or every model, are left to LiteLLM's own checks;
+- keeps a key the CetiRun operator issued from listing what it cannot talk to:
+  `GET /v1/models` (and `/model/info`) leaves out the key's access groups that
+  LiteLLM lists as if they were models, such as an Agent's Copilot group before
+  its owner signs in, and models whose every deployment sets a `mode` other
+  than `chat`, `completion` or `responses`, such as a decision model a router
+  classifies with; `GET /v1/models/<name>` answers 404 for them. The operator
+  leaves them out of the Agent's configuration as well. Other callers see
+  LiteLLM's listing;
 - while `router.encryptedContentAffinity` is on, removes the encrypted content
   of Responses API reasoning items that carry no mark of the deployment that
   produced it, or that a client shortened, keeping their summaries; makes

@@ -730,6 +730,47 @@ class GuardTest(unittest.TestCase):
                 asyncio.run(self.guard.async_post_call_failure_hook({}, error, None))
                 self.assertEqual((str(error), error.message), (message, message))
 
+    # ----- the model listing of keys the operator issued -----
+
+    def listed(self, key, names):
+        return asyncio.run(self.guard.async_filter_listed_models(key, list(names)))
+
+    def listing_router(self, modes, fail=False):
+        class Router:
+            def get_model_list(self, model_name=None, team_id=None):
+                if fail:
+                    raise RuntimeError("synthetic")
+                return [{"model_name": model_name, "model_info": ({"mode": mode} if mode is not None else {})}
+                        for mode in modes.get(model_name, [])]
+
+        proxy = types.ModuleType(PROXY_SERVER)
+        proxy.llm_router = Router()
+        sys.modules[PROXY_SERVER] = proxy
+
+    def test_an_operator_key_lists_no_access_group_and_no_model_it_cannot_talk_to(self):
+        self.listing_router({"gpt-6-sol": ["chat"], "auto": [None], "decision-1": ["evaluation"], "embedder": ["embedding"],
+                             "mixed": ["embedding", "responses"], "copilot-only": [None]})
+        key = Key(["cetirun-model-aaaa", "cetirun-copilot-alice", "cetirun-shared"])
+        names = ["auto", "cetirun-copilot-alice", "decision-1", "embedder", "gpt-6-sol", "mixed", "copilot-only", "cetirun-shared"]
+        self.assertEqual(self.listed(key, names), ["auto", "gpt-6-sol", "mixed", "copilot-only"])
+
+    def test_other_callers_see_litellms_listing(self):
+        self.listing_router({"decision-1": ["evaluation"]})
+        for models in ([], ["*"], ["decision-1", "gpt-6-sol"], None):
+            with self.subTest(models=models):
+                names = ["decision-1", "cetirun-copilot-alice", "gpt-6-sol"]
+                self.assertEqual(self.listed(Key(models), names), names)
+        self.assertEqual(self.listed({"models": ["cetirun-shared"]}, ["cetirun-shared"]), ["cetirun-shared"])
+
+    def test_without_a_router_only_the_key_groups_are_left_out(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                if fail:
+                    self.listing_router({}, fail=True)
+                else:
+                    sys.modules.pop(PROXY_SERVER, None)
+                key = Key(["cetirun-copilot-alice", "cetirun-model-aaaa"])
+                self.assertEqual(self.listed(key, ["decision-1", "cetirun-copilot-alice"]), ["decision-1"])
     def test_module_exposes_the_registered_instance(self):
         self.assertIsInstance(self.module.handler, self.module.Guard)
 
