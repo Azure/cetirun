@@ -53,7 +53,24 @@ deployment and routes or strips by the mark; an item without one, from before
 affinity was turned on or from elsewhere, is forwarded as it is, and a
 deployment of another provider account refuses the whole request (400
 invalid_encrypted_content). The item keeps its readable summary, as LiteLLM
-keeps it when it strips a marked item.
+keeps it when it strips a marked item. Encrypted content a client shortened,
+which no deployment can read, is removed the same way.
+
+The mark is written in a form clients keep. LiteLLM writes it as
+litellm_enc:<base64>;<content>; OpenClaw keeps encrypted reasoning only when
+it looks like an opaque token (letters, digits, + / _ - and trailing =), and
+otherwise stores it through its secret redaction, which shortens the
+provider's gAAAA... content to 11 characters. Every following turn then sent
+that back, the deployment refused it, and OpenClaw retried without its
+reasoning. The guard replaces LiteLLM's two functions that write and read the
+mark: it writes ctrnenc<hex of the deployment ID>x<content>, and reads both
+forms, so items marked before the change still route.
+
+A request whose encrypted reasoning a deployment could not read (400
+invalid_encrypted_content) does not go on to the model's fallbacks: their
+deployments cannot read it either, so each fallback fails the same way, and
+the client, which handles this error by sending the request again without the
+reasoning, gets the first error instead of the last.
 """
 
 import re
@@ -101,9 +118,69 @@ COOLDOWN_LIST = re.compile(r",?\s*cooldown_list=\[[^\]]*\]")
 # the producing deployment in the item's ID, and in its encrypted_content.
 MARKED_ITEM_ID = "encitem_"
 MARKED_CONTENT = "litellm_enc:"
+# The Gateway's form of the mark in encrypted_content: this prefix, the
+# deployment ID in lowercase hex, an x, then the provider's content. Only
+# characters an opaque token may hold.
+GATEWAY_MARK = "ctrnenc"
+GATEWAY_MARK_FORM = re.compile(r"ctrnenc((?:[0-9a-f]{2})+)x(.+)", re.DOTALL)
+# A client's shortened copy of a long value: kept start, ellipsis, kept end.
+SHORTENED = "\u2026"
 # LiteLLM's callback for encrypted content affinity, found by name so the
 # check needs no import of LiteLLM's internals.
 AFFINITY_CHECK = "EncryptedContentAffinityCheck"
+# How a provider refuses encrypted reasoning it cannot read.
+UNREADABLE_REASONING = ("invalid_encrypted_content", "could not be verified", "could not be decrypted")
+
+
+def mark_encrypted_content(encrypted_content, model_id):
+    """encrypted_content with the producing deployment's ID, in the Gateway's form."""
+    return f"{GATEWAY_MARK}{str(model_id).encode('utf-8').hex()}x{encrypted_content}"
+
+
+def read_marked_content(content, legacy=None):
+    """(deployment ID or None, provider content) of encrypted_content in either form of the mark.
+
+    legacy reads LiteLLM's own litellm_enc: form; without it that form is
+    returned unread.
+    """
+    if isinstance(content, str) and content.startswith(GATEWAY_MARK):
+        match = GATEWAY_MARK_FORM.fullmatch(content)
+        if match:
+            try:
+                return bytes.fromhex(match.group(1)).decode("utf-8"), match.group(2)
+            except ValueError:
+                pass
+        return None, content
+    if legacy is not None:
+        return legacy(content)
+    return None, content
+
+
+def install_mark_form():
+    """Make LiteLLM write the Gateway's form of the mark and read both forms."""
+    try:
+        from litellm.responses.utils import ResponsesAPIRequestUtils
+    except Exception:  # noqa: BLE001
+        return False
+    current = ResponsesAPIRequestUtils.__dict__.get("_unwrap_encrypted_content_with_model_id")
+    legacy = getattr(current, "__func__", current)
+    if getattr(legacy, "cetirun_mark_form", False):
+        return True
+
+    def unwrap(wrapped_content):
+        return read_marked_content(wrapped_content, legacy)
+
+    unwrap.cetirun_mark_form = True
+    ResponsesAPIRequestUtils._wrap_encrypted_content_with_model_id = staticmethod(mark_encrypted_content)
+    ResponsesAPIRequestUtils._unwrap_encrypted_content_with_model_id = staticmethod(unwrap)
+    return True
+
+
+def marked_content(content):
+    """Whether encrypted_content carries the producing deployment in either form of the mark."""
+    if content.startswith(MARKED_CONTENT):
+        return True
+    return read_marked_content(content)[0] is not None
 
 
 def unmarked_encrypted_reasoning(item):
@@ -111,10 +188,18 @@ def unmarked_encrypted_reasoning(item):
     if not isinstance(item, dict) or item.get("type") != "reasoning":
         return False
     content = item.get("encrypted_content")
-    if not isinstance(content, str) or not content or content.startswith(MARKED_CONTENT):
+    if not isinstance(content, str) or not content or marked_content(content):
         return False
     item_id = item.get("id")
     return not (isinstance(item_id, str) and item_id.startswith(MARKED_ITEM_ID))
+
+
+def shortened_encrypted_reasoning(item):
+    """Whether an input item is encrypted reasoning a client shortened, which no deployment can read."""
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return False
+    content = item.get("encrypted_content")
+    return isinstance(content, str) and SHORTENED in content
 
 
 def readable(value):
@@ -140,7 +225,7 @@ def affinity_enabled(model):
 
 
 def strip_unmarked_reasoning(request_input):
-    """Remove the encrypted content of unmarked reasoning items, in place; the number of items changed.
+    """Remove unmarked or shortened encrypted reasoning, in place; the number of items changed.
 
     Like LiteLLM's own stripping, an item keeps its readable summary without
     encrypted_content and id, and an item with nothing readable is dropped.
@@ -151,7 +236,7 @@ def strip_unmarked_reasoning(request_input):
         return 0
     kept, changed = [], 0
     for item in request_input:
-        if not unmarked_encrypted_reasoning(item):
+        if not (unmarked_encrypted_reasoning(item) or shortened_encrypted_reasoning(item)):
             kept.append(item)
             continue
         changed += 1
@@ -160,6 +245,36 @@ def strip_unmarked_reasoning(request_input):
     if changed:
         request_input[:] = kept
     return changed
+
+
+class UnreadableReasoningFallback(Exception):
+    """Ends a fallback that follows a deployment's refusal of encrypted reasoning."""
+
+
+def unreadable_reasoning_refusal(request_kwargs):
+    """The refusal of a request's encrypted reasoning when the request is a fallback after it, else None."""
+    if not isinstance(request_kwargs, dict):
+        return None
+    for name in METADATA_BUCKETS:
+        bucket = request_kwargs.get(name)
+        if not isinstance(bucket, dict) or not bucket.get("attempted_fallbacks"):
+            continue
+        for attempt in bucket.get("previous_models") or ():
+            text = attempt.get("exception_string") if isinstance(attempt, dict) else None
+            if isinstance(text, str) and any(marker in text for marker in UNREADABLE_REASONING):
+                return text
+    return None
+
+
+def refusal_error(model, text):
+    """The error that ends the fallback: the deployment's refusal again, as a 400 the client recognizes."""
+    error_class = getattr(litellm, "BadRequestError", None)
+    if error_class is not None:
+        try:
+            return error_class(message=text, model=model, llm_provider="")
+        except Exception:  # noqa: BLE001
+            pass
+    return UnreadableReasoningFallback(text)
 
 
 def access_groups(deployment):
@@ -309,15 +424,23 @@ class Guard(CustomLogger):
         outside its access groups, except on a router's classifier call. An
         auto router's tier selection goes through this again with the same
         request, so a tier is held to the same rules. While encrypted content
-        affinity applies to the model, unmarked encrypted reasoning is removed
-        from a Responses API request first.
+        affinity applies to the model, unmarked or shortened encrypted reasoning
+        is removed from a Responses API request first. A fallback after a
+        deployment refused the request's encrypted reasoning is ended here, so
+        the client gets that first error.
         """
+        refusal = unreadable_reasoning_refusal(request_kwargs)
+        if refusal is not None:
+            verbose_proxy_logger.warning(
+                "CetiRun guard: no fallback to %s: a deployment could not read the request's encrypted reasoning, "
+                "and no other deployment can.", model)
+            raise refusal_error(model, refusal)
         if isinstance(request_kwargs, dict) and isinstance(request_kwargs.get("input"), list) and affinity_enabled(model):
             removed = strip_unmarked_reasoning(request_kwargs["input"])
             if removed:
                 verbose_proxy_logger.warning(
-                    "CetiRun guard: removed the encrypted content of %d reasoning item%s without the Gateway's mark "
-                    "from a request for %s; the deployment it reaches may not be able to read it.",
+                    "CetiRun guard: removed the encrypted content of %d reasoning item%s without the Gateway's mark, "
+                    "or shortened by the client, from a request for %s; no deployment may be able to read it.",
                     removed, "" if removed == 1 else "s", model)
         granted = set(caller_models(request_kwargs) or ())
         kept = [
@@ -352,3 +475,6 @@ class Guard(CustomLogger):
 
 
 handler = Guard()
+# The entrypoint imports this module before the proxy loads its configuration,
+# so LiteLLM writes the Gateway's form of the mark from the first request.
+install_mark_form()
