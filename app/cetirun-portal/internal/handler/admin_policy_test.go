@@ -124,6 +124,93 @@ func TestAdminPolicyRequiresMatchingModelAccessAndPositiveBudget(t *testing.T) {
 	}
 }
 
+func TestAdminPolicySharedModelNameLength(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		model      string
+		wantStatus int
+	}{
+		{"ASCII at limit", strings.Repeat("a", 256), http.StatusCreated},
+		{"ASCII over limit", strings.Repeat("a", 257), http.StatusBadRequest},
+		{"multibyte at limit", strings.Repeat("\u6a21", 256), http.StatusCreated},
+		{"multibyte over limit", strings.Repeat("\u6a21", 257), http.StatusBadRequest},
+		{"supplementary at limit", strings.Repeat("\U0001f916", 256), http.StatusCreated},
+		{"supplementary over limit", strings.Repeat("\U0001f916", 257), http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newAdminPolicyHandler()
+			req := validPolicyRequest()
+			req.ModelAccess.SharedModels.Allowed = []string{test.model}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			h.CreatePolicy(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/policies", bytes.NewReader(body)))
+			if w.Code != test.wantStatus {
+				t.Fatalf("status %d, want %d: %s", w.Code, test.wantStatus, w.Body.String())
+			}
+			stored, err := h.Kube.GetAgentPolicy(context.Background(), req.Name)
+			if test.wantStatus == http.StatusBadRequest {
+				if !kube.IsNotFound(err) {
+					t.Fatalf("rejected model created a policy: policy=%+v, err=%v", stored, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(stored.Spec.ModelAccess.SharedModels.Allowed, req.ModelAccess.SharedModels.Allowed) {
+				t.Fatalf("model name changed: %+v", stored.Spec.ModelAccess.SharedModels)
+			}
+		})
+	}
+}
+
+func TestAdminPolicyPreservesUnicodeModelDuringUnrelatedUpdate(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		edit func(*AgentPolicyUpsertRequest)
+	}{
+		{"budget", func(req *AgentPolicyUpsertRequest) { req.ModelAccess.GatewayBudget.MaxMonthlyUSD = "60" }},
+		{"skills", func(req *AgentPolicyUpsertRequest) { req.Skills.Allowed = []string{"npm:@scope/another-skill"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := validPolicyRequest()
+			req.ModelAccess.SharedModels.Allowed = []string{strings.Repeat("\u6a21\U0001f916", 128)}
+			policy := &cetirunv1alpha1.AgentPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: req.Name, UID: "policy-uid"},
+				Spec:       toAgentPolicySpec(req),
+			}
+			h := newAdminPolicyHandler(policy)
+			current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+			test.edit(&req)
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			update := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/"+policy.Name, bytes.NewReader(body))
+			update.SetPathValue("name", policy.Name)
+			w := httptest.NewRecorder()
+			h.UpdatePolicy(w, update)
+			if w.Code != http.StatusOK {
+				t.Fatalf("unrelated update status %d: %s", w.Code, w.Body.String())
+			}
+			stored, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(stored.Spec, toAgentPolicySpec(req)) {
+				t.Fatalf("update did not preserve the model and apply the requested edit: %+v", stored.Spec)
+			}
+		})
+	}
+}
+
 func TestAdminPolicyUpdateAndDelete(t *testing.T) {
 	const policyName = "standard.policy"
 	policy := &cetirunv1alpha1.AgentPolicy{

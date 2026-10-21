@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -390,7 +391,7 @@ func validateAgentPolicyRequest(req AgentPolicyUpsertRequest) string {
 		}
 	}
 	for _, model := range req.ModelAccess.SharedModels.Allowed {
-		if strings.TrimSpace(model) == "" || strings.ContainsAny(model, "\t\r\n ") || len(model) > 256 {
+		if strings.TrimSpace(model) == "" || strings.ContainsAny(model, "\t\r\n ") || utf8.RuneCountInString(model) > 256 {
 			return "sharedModels.allowed entries must be non-empty identifiers without whitespace and at most 256 characters"
 		}
 	}
