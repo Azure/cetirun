@@ -260,6 +260,123 @@ class GuardTest(unittest.TestCase):
                 self.filtered(request, [SHARED])
                 self.assertEqual(request, before)
 
+    # ----- the Gateway's form of the mark -----
+
+    def test_the_mark_is_written_as_an_opaque_token_and_read_back(self):
+        content = "gAAAAB" + "x-_Az09" * 40 + "=="
+        marked = self.module.mark_encrypted_content(content, "cetirun-shared-7388db16-9e9d2e8f")
+        # OpenClaw keeps encrypted reasoning only in this form; anything else
+        # goes through its secret redaction, which shortens gAAAA... values.
+        self.assertRegex(marked, r"^[A-Za-z0-9+/_-]+={0,2}$")
+        self.assertTrue(marked.startswith("ctrnenc"))
+        self.assertEqual(self.module.read_marked_content(marked), ("cetirun-shared-7388db16-9e9d2e8f", content))
+
+    def test_reading_the_mark_falls_back_to_litellms_form(self):
+        def legacy(content):
+            if content.startswith("litellm_enc:"):
+                return "from-legacy", content.split(";", 1)[1]
+            return None, content
+
+        self.assertEqual(self.module.read_marked_content("litellm_enc:abc;gAAAA", legacy), ("from-legacy", "gAAAA"))
+        self.assertEqual(self.module.read_marked_content("gAAAAplain", legacy), (None, "gAAAAplain"))
+        for broken in ("ctrnenc", "ctrnencx", "ctrnenc6x", "ctrnencffxgAAAA", "ctrnenc6162gAAAA", "ctrnenc6162x"):
+            with self.subTest(broken=broken):
+                self.assertEqual(self.module.read_marked_content(broken), (None, broken))
+
+    def test_litellm_writes_the_gateways_form_once_installed(self):
+        class ResponsesAPIRequestUtils:
+            @staticmethod
+            def _wrap_encrypted_content_with_model_id(encrypted_content, model_id):
+                return f"litellm_enc:{model_id};{encrypted_content}"
+
+            @staticmethod
+            def _unwrap_encrypted_content_with_model_id(wrapped_content):
+                if not wrapped_content.startswith("litellm_enc:"):
+                    return None, wrapped_content
+                model_id, content = wrapped_content[len("litellm_enc:"):].split(";", 1)
+                return model_id, content
+
+        utils = types.ModuleType("litellm.responses.utils")
+        utils.ResponsesAPIRequestUtils = ResponsesAPIRequestUtils
+        responses = types.ModuleType("litellm.responses")
+        stubs = {"litellm.responses": responses, "litellm.responses.utils": utils}
+        saved = {name: sys.modules.get(name) for name in stubs}
+        sys.modules.update(stubs)
+        try:
+            self.assertTrue(self.module.install_mark_form())
+            self.assertTrue(self.module.install_mark_form())  # a second install changes nothing
+        finally:
+            for name, previous in saved.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+        wrapped = ResponsesAPIRequestUtils._wrap_encrypted_content_with_model_id("gAAAAraw", "dep-1")
+        self.assertTrue(wrapped.startswith("ctrnenc"))
+        unwrap = ResponsesAPIRequestUtils._unwrap_encrypted_content_with_model_id
+        self.assertEqual(unwrap(wrapped), ("dep-1", "gAAAAraw"))
+        # Items marked before the change still route and are unwrapped.
+        self.assertEqual(unwrap("litellm_enc:dep-2;gAAAAold"), ("dep-2", "gAAAAold"))
+        self.assertEqual(unwrap("gAAAAplain"), (None, "gAAAAplain"))
+
+    def test_items_in_the_gateways_form_are_marked(self):
+        self.with_affinity(EncryptedContentAffinityCheck())
+        item = {"type": "reasoning", "summary": [], "encrypted_content": self.module.mark_encrypted_content("gAAAAraw", "dep-1")}
+        request = self.responses_request(item)
+        with self.assertNoLogs(LOGGER, "WARNING"):
+            self.filtered(request, [SHARED])
+        self.assertEqual(request["input"][1], item)
+
+    def test_shortened_encrypted_reasoning_is_removed(self):
+        # A client's redacted copy: marked, but no deployment can read it.
+        self.with_affinity(EncryptedContentAffinityCheck())
+        shortened = self.module.mark_encrypted_content("gAAAAB\u2026ab12", "dep-1")
+        request = self.responses_request(
+            {"type": "reasoning", "summary": [], "content": [], "encrypted_content": shortened},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Kept."}], "encrypted_content": "litellm_enc:bWE=;gAAAAB\u2026ab12"},
+        )
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            self.filtered(request, [SHARED])
+        self.assertIn("2 reasoning items without", logs.output[0])
+        self.assertEqual(request["input"][1:], [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "Kept."}]}])
+
+    # ----- no fallback after unreadable encrypted reasoning -----
+
+    def fallback_request(self, error, depth=1, bucket="litellm_metadata"):
+        return {"model": "gpt-5", "input": [{"role": "user", "content": "hi"}],
+                bucket: {"user_api_key_auth": Key(["cetirun-shared"]), "attempted_fallbacks": depth,
+                         "previous_models": [{"model_group": "gpt-6", "exception_type": "BadRequestError",
+                                              "exception_string": error}]}}
+
+    def test_a_fallback_after_unreadable_reasoning_ends_with_the_first_error(self):
+        refusal = ("litellm.BadRequestError: AzureException - The encrypted content gAAA...evLI could not be verified. "
+                   "Reason: Encrypted content could not be decrypted or parsed. code: invalid_encrypted_content")
+        for bucket in ("litellm_metadata", "metadata"):
+            with self.subTest(bucket=bucket):
+                with self.assertLogs(LOGGER, "WARNING") as logs, self.assertRaises(Exception) as raised:
+                    self.filtered(self.fallback_request(refusal, bucket=bucket), [SHARED])
+                self.assertIn(refusal, str(raised.exception))
+                self.assertIn("no fallback to copilot/gpt-5", logs.output[0])
+
+    def test_the_refusal_is_a_bad_request_when_litellm_has_one(self):
+        class BadRequestError(Exception):
+            def __init__(self, message, model, llm_provider):
+                super().__init__(message)
+                self.status_code = 400
+
+        self.module.litellm.BadRequestError = BadRequestError
+        self.addCleanup(delattr, self.module.litellm, "BadRequestError")
+        with self.assertLogs(LOGGER, "WARNING"), self.assertRaises(BadRequestError) as raised:
+            self.filtered(self.fallback_request("invalid_encrypted_content"), [SHARED])
+        self.assertEqual(raised.exception.status_code, 400)
+
+    def test_other_fallbacks_go_on(self):
+        for request in (self.fallback_request("litellm.InternalServerError: 500"),
+                        self.fallback_request("invalid_encrypted_content", depth=0),
+                        {"model": "gpt-5", "litellm_metadata": {"previous_models": "invalid_encrypted_content"}}):
+            with self.subTest(request=request):
+                self.assertEqual(self.filtered(request, [SHARED]), [SHARED])
+
     # ----- errors -----
 
     def test_the_cooldown_list_is_removed_from_the_error(self):
