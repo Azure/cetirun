@@ -125,6 +125,8 @@ func (s *Server) handle(writer http.ResponseWriter, request *http.Request) {
 		s.writeResponseResult(writer, message, map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "agent-tools-mcp", "version": Version}})
 	case "notifications/initialized":
 		writeNotification(writer)
+	case "ping":
+		s.writeResponseResult(writer, message, map[string]any{})
 	case "tools/list":
 		specs, err := s.service.List(ctx, caller)
 		if err != nil {
@@ -269,7 +271,7 @@ func validRequestID(id json.RawMessage) bool {
 	}
 }
 func requiresRequestID(method string) bool {
-	return method == "initialize" || method == "tools/list" || method == "tools/call"
+	return method == "initialize" || method == "ping" || method == "tools/list" || method == "tools/call"
 }
 func writeNotification(writer http.ResponseWriter) { writer.WriteHeader(http.StatusAccepted) }
 func jsonContentType(value string) bool {

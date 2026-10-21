@@ -119,12 +119,18 @@ func TestToolsCallPreservesProviderDiagnosticsForNativeClients(t *testing.T) {
 }
 
 func TestMCPRequiresBearerProof(t *testing.T) {
-	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	New(&fakeService{}).ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "unauthenticated") {
-		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
+	for _, method := range []string{"initialize", "ping"} {
+		t.Run(method, func(t *testing.T) {
+			fake := &fakeService{}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q}`, method)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("MCP-Protocol-Version", protocolVersion)
+			response := httptest.NewRecorder()
+			New(fake).ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "unauthenticated") || fake.authCalls != 0 || fake.listCalls != 0 || fake.calls != 0 {
+				t.Fatalf("unexpected response or service calls: %d %s %#v", response.Code, response.Body.String(), fake)
+			}
+		})
 	}
 }
 
@@ -142,7 +148,7 @@ func TestMCPAuthenticationFailureClassification(t *testing.T) {
 		{"deadline", context.DeadlineExceeded, http.StatusServiceUnavailable, -32000},
 		{"unexpected error", errors.New("synthetic private diagnostic"), http.StatusServiceUnavailable, -32000},
 	} {
-		for _, method := range []string{"initialize", "tools/list", "tools/call", "notifications/initialized"} {
+		for _, method := range []string{"initialize", "ping", "tools/list", "tools/call", "notifications/initialized"} {
 			t.Run(test.name+"/"+method, func(t *testing.T) {
 				fake := &fakeService{authErr: test.err}
 				message := map[string]any{"jsonrpc": "2.0", "method": method}
@@ -198,6 +204,33 @@ func TestInitializeNegotiatesSupportedVersionAfterAuthentication(t *testing.T) {
 	}
 }
 
+func TestPingReturnsEmptyResultAfterAuthentication(t *testing.T) {
+	for _, id := range []string{`"heartbeat-1"`, `1`, `0`, `9007199254740993`} {
+		t.Run(id, func(t *testing.T) {
+			fake := &fakeService{}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":"ping"}`, id)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer synthetic-workload-proof")
+			request.Header.Set("MCP-Protocol-Version", protocolVersion)
+			response := httptest.NewRecorder()
+			New(fake).ServeHTTP(response, request)
+			if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("unexpected ping response: %d %s", response.Code, response.Body.String())
+			}
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload) != 3 || string(payload["jsonrpc"]) != `"2.0"` || string(payload["id"]) != id || string(payload["result"]) != `{}` {
+				t.Fatalf("unexpected ping response: %s", response.Body.String())
+			}
+			if fake.authCalls != 1 || fake.listCalls != 0 || fake.calls != 0 {
+				t.Fatalf("auth/list/call = %d/%d/%d, want 1/0/0", fake.authCalls, fake.listCalls, fake.calls)
+			}
+		})
+	}
+}
+
 func TestToolsCallPreservesPaginationAndMarksExternalData(t *testing.T) {
 	fake := &fakeService{result: map[string]any{"value": "completed", "nextPageToken": "opaque-page"}}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"service_request","arguments":{"connection_id":"conn-demo","service":"azure_arm","method":"GET","path":"/subscriptions"}}}`))
@@ -247,6 +280,7 @@ func TestMCPHTTPGuards(t *testing.T) {
 	}{
 		{name: "strict trailing payload", body: `{"jsonrpc":"2.0","id":1,"method":"initialize"}{}`, headers: map[string]string{"Authorization": "Bearer synthetic-workload-proof"}, status: http.StatusBadRequest},
 		{name: "protocol header after initialize", body: `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, headers: map[string]string{"Authorization": "Bearer synthetic-workload-proof"}, status: http.StatusBadRequest},
+		{name: "ping protocol header", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, headers: map[string]string{"Authorization": "Bearer synthetic-workload-proof"}, status: http.StatusBadRequest},
 		{name: "cross origin", body: `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, headers: map[string]string{"Authorization": "Bearer synthetic-workload-proof", "Origin": "https://untrusted.example.com"}, status: http.StatusForbidden},
 		{name: "unsupported accept", body: `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, headers: map[string]string{"Authorization": "Bearer synthetic-workload-proof", "Accept": "text/plain"}, status: http.StatusNotAcceptable},
 	}
@@ -289,6 +323,7 @@ func TestMCPExecutableMethodsRequireID(t *testing.T) {
 		{name: "object id", body: `{"jsonrpc":"2.0","id":{},"method":"initialize"}`},
 		{name: "boolean id", body: `{"jsonrpc":"2.0","id":true,"method":"initialize"}`},
 		{name: "initialize", body: `{"jsonrpc":"2.0","method":"initialize"}`},
+		{name: "ping", body: `{"jsonrpc":"2.0","method":"ping"}`, headers: map[string]string{"MCP-Protocol-Version": protocolVersion}},
 		{name: "tools list", body: `{"jsonrpc":"2.0","method":"tools/list"}`, headers: map[string]string{"MCP-Protocol-Version": protocolVersion}},
 		{name: "tools call", body: `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"service_request","arguments":{"connection_id":"conn-demo","service":"azure_arm","method":"GET","path":"/subscriptions"}}}`, headers: map[string]string{"MCP-Protocol-Version": protocolVersion}},
 	}

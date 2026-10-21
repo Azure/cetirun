@@ -72,6 +72,10 @@ unavailable server credentials return HTTP 503 with
 provider execution; they do not require reconnecting the Agent account.
 Failed notifications use the same HTTP status without a JSON-RPC body.
 
+Authenticated `ping` requests return `result: {}` with the same request ID.
+They use the same workload proof and protocol-version validation, without
+contacting the Broker or Azure.
+
 The chart requires an MCP server TLS Secret (`tls.crt`, `tls.key`) and a
 dedicated Broker client TLS Secret (`tls.crt`, `tls.key`, `ca.crt`). The server
 certificate must cover the MCP service hostname used by clients. The Broker
