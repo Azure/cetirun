@@ -14,6 +14,27 @@ bash scripts/cetirun-helm-test.sh
 Documentation validation is `make -C site check`. It does not run deployment,
 publication, or end-to-end scripts.
 
+## Agent Tools MCP artifacts
+
+`agent-tools-mcp-docker-build.sh` builds the standalone MCP image from the
+repository root. Set `REGISTRY`; `VERSION` defaults to the central release
+metadata. `PUSH=false` loads a local image and `PUSH=true` publishes it.
+
+`agent-tools-mcp-helm-release.sh` lints and packages the independent chart,
+pushes it under `oci://$REGISTRY/${CHART_NAMESPACE:-helm}`, and verifies the
+pull unless `VERIFY_PULL=false`. Neither helper logs in or deploys resources.
+Image builds can download pinned dependencies and base images; publication
+requires explicit authorization and registry authentication.
+
+The root build/publish targets include these artifacts. They are not added
+to the platform umbrella or Agent runtime by these helpers. For offline
+validation without Docker or registry access, use:
+
+```bash
+make -C app/agent-tools-mcp test vet chart-lint
+python3 -B -m unittest scripts.tests.test_agent_tools_mcp_chart -v
+```
+
 ## Explicit-target application E2E lifecycle
 
 `e2e-test.sh` is a connected application smoke test, not an offline check.

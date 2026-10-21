@@ -13,6 +13,7 @@ network access.
 | `app/cetirun-portal/` | Go portal backend and its Helm chart |
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
 | `app/cetirun-agent-broker/` | Agent Identity authorization sessions and workload-bound short-lived credential issuance |
+| `app/agent-tools-mcp/` | Workload-authenticated MCP service for Azure JSON REST execution |
 | `app/internal/` | Shared Go implementation packages for Registry credentials and terminal policy |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
@@ -252,6 +253,29 @@ Its API proxy expects a backend on localhost and injects development identity
 headers. Keep it local; it is not a production authentication configuration.
 Starting the Go backend or operator uses Kubernetes configuration and is
 outside the offline validation loop.
+
+### Agent Tools MCP core
+
+The standalone MCP service consumes the Broker's opt-in Connection/Binding
+APIs and executes JSON REST requests against Azure Resource Manager with an
+independent Agent identity. Provider tokens stay in the service. Azure RBAC
+controls resource operations; CetiRun checks the Agent's connection binding.
+
+```bash
+go -C app/agent-tools-mcp test ./... -count=1
+go -C app/agent-tools-mcp test -race ./... -count=1
+go -C app/agent-tools-mcp vet ./...
+make -C app/agent-tools-mcp build chart-lint
+python3 -B -m unittest scripts.tests.test_agent_tools_mcp_chart -v
+```
+
+The root Go and Helm gates include this module and its independent chart.
+These checks use synthetic workload/provider fixtures and local rendering;
+they do not call Azure or Kubernetes. Native runtime bootstrap, connected-service
+skills, Portal connection management, and platform umbrella wiring are separate
+follow-ups. Existing runtime and authorization paths remain available.
+See [Agent Tools MCP](app/agent-tools-mcp/README.md) for its request contract,
+TLS prerequisites, and execution limits.
 
 ### Runtime chart and Python helpers
 
