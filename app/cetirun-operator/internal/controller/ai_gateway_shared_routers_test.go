@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -447,5 +449,146 @@ func TestAIGatewayCatalogComparesRoutersOutsideTheManagedFingerprint(t *testing.
 	plain.update([]aigateway.Deployment{sol, small}, false, time.Now())
 	if plain.routerFingerprint != "" {
 		t.Fatal("no routers, no fingerprint")
+	}
+}
+
+const testDecisionModel = "decision-1"
+
+// decisionModel is a decision model of the Gateway chart's models, such as
+// Microsoft-Decision-1, which an auto router classifies requests with.
+func decisionModel() aigateway.Deployment {
+	return aigateway.Deployment{ID: aiGatewaySharedDeploymentIDPrefix + "test-decision", ModelName: testDecisionModel,
+		AccessGroups: []string{aiGatewayModelAccessGroupPrefix + "test-decision"}, DatabaseSourceKnown: true, Priced: true, Mode: "evaluation"}
+}
+
+// A shared model that answers no conversation stays a shared model for the
+// routers' rule and the keys, but no Agent is configured with it and the
+// published catalog leaves it out.
+func TestAIGatewayCatalogLeavesModelsThatAnswerNoConversationOutOfAgentsModels(t *testing.T) {
+	var catalog aiGatewayCatalog
+	small := aigateway.Deployment{ID: testSmallDeployment, ModelName: testSmallModel, AccessGroups: []string{testSmallGroup},
+		DatabaseSourceKnown: true, Mode: "chat"}
+	embedding := aigateway.Deployment{ID: "embed", ModelName: "embedder", AccessGroups: []string{aiGatewaySharedAccessGroup}, Mode: "embedding"}
+	// Two deployments behind one name, one of them a chat model: the name
+	// serves conversations.
+	mixedChat := aigateway.Deployment{ID: "mixed-a", ModelName: "mixed", AccessGroups: []string{aiGatewaySharedAccessGroup}, Mode: "responses"}
+	mixedOther := aigateway.Deployment{ID: "mixed-b", ModelName: "mixed", AccessGroups: []string{aiGatewaySharedAccessGroup}, Mode: "embedding"}
+	// No mode, as for a router or a model the price table does not know.
+	unknown := aigateway.Deployment{ID: "unknown", ModelName: "no-mode", AccessGroups: []string{aiGatewaySharedAccessGroup}}
+	listing := []aigateway.Deployment{small, decisionModel(), embedding, mixedChat, mixedOther, unknown}
+	if changed, _, _ := catalog.update(listing, false, time.Now()); !changed {
+		t.Fatal("the first listing is a change")
+	}
+	shared, known := catalog.shared()
+	names := make([]string, 0, len(shared))
+	for _, model := range shared {
+		names = append(names, model.Name)
+	}
+	if !known || !slices.Equal(names, []string{testSmallModel, "mixed", "no-mode"}) {
+		t.Fatalf("shared = %v", names)
+	}
+	groups := []string{testSmallGroup, aiGatewayModelAccessGroupPrefix + "test-decision"}
+	if forGroups, _ := catalog.sharedForGroups(groups); len(forGroups) != 1 || forGroups[0].Name != testSmallModel {
+		t.Fatalf("a policy that resolves the decision model's group must not configure it: %+v", forGroups)
+	}
+	// The decision model keeps its group and stays shared for the routers.
+	if resolved, ok := catalog.resolvedGroups([]string{testDecisionModel}); !ok || len(resolved) != 1 {
+		t.Fatalf("resolved = %v %v", resolved, ok)
+	}
+	if view := catalog.sharedRouters(); !view.shared[testDecisionModel] || !view.nonChat[testDecisionModel] || view.nonChat["mixed"] {
+		t.Fatalf("view shared %v nonChat %v", view.shared, view.nonChat)
+	}
+	if !slices.Contains(catalog.legacySharedGroups(), aiGatewayModelAccessGroupPrefix+"test-decision") {
+		t.Fatal("the key of an Agent without a policy keeps every shared model's group")
+	}
+	if changed, _, _ := catalog.update(listing, false, time.Now()); changed {
+		t.Fatal("the same listing is no change")
+	}
+	// The administrator corrects the decision model's mode: a change, which
+	// configures Agents with it.
+	listing[1].Mode = "chat"
+	if changed, _, _ := catalog.update(listing, false, time.Now()); !changed {
+		t.Fatal("a model that now answers conversations is a catalog change")
+	}
+	if shared, _ := catalog.shared(); !slices.ContainsFunc(shared, func(model aiGatewayCatalogModel) bool { return model.Name == testDecisionModel }) {
+		t.Fatalf("shared = %+v", shared)
+	}
+}
+
+// A router may classify with a decision model, but not send it requests to
+// answer.
+func TestGatewayRouterMayClassifyWithAModelThatAnswersNoConversation(t *testing.T) {
+	view := aiGatewaySharedRouterView{known: true,
+		shared:  map[string]bool{testSmallModel: true, testDecisionModel: true, testGatewayRouter: true},
+		nonChat: map[string]bool{testDecisionModel: true},
+		routers: map[string]aigateway.Router{},
+	}
+	classifier := aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: testDecisionModel}
+	allowed := map[string]bool{testGatewayRouter: true, testSmallModel: true}
+	for name, tc := range map[string]struct {
+		router  aigateway.Router
+		allowed map[string]bool
+		want    string
+	}{
+		"policy, decision classifier":    {aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", testSmallModel), classifier}}, allowed, ""},
+		"no policy, decision classifier": {aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", testSmallModel), classifier}}, nil, ""},
+		"a decision model as a tier": {aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", testDecisionModel)}}, nil,
+			"the router is misconfigured: tier simple names decision-1, which is not a chat model"},
+		"a decision model as the default": {aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", testSmallModel),
+			{Use: aigateway.RouterDefault, Name: testDecisionModel}}}, map[string]bool{testGatewayRouter: true, testSmallModel: true, testDecisionModel: true},
+			"the router is misconfigured: the default model is decision-1, which is not a chat model"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			view.routers[testGatewayRouter] = tc.router
+			if got := view.refusal(testGatewayRouter, tc.allowed); got != tc.want {
+				t.Fatalf("refusal = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// An Agent without a policy gets a router that classifies with a decision
+// model, and its key the decision model's group, but neither its models, its
+// default model nor the published catalog list the decision model, even when
+// the Agent asks for it.
+func TestLegacyAgentIsNotConfiguredWithADecisionModel(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: testLegacyRouterTeam, Generation: 1}}
+	agent := aiGatewayTestAgent(testLegacyRouterTeam)
+	agent.Spec.SandboxRef = ""
+	agent.Spec.Model = testDecisionModel
+	agent.Status.Policy = nil
+	agent.Spec.ModelAccess = modelAccess(true, false)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	addSmallSharedModel(gateway)
+	gateway.shared = append(gateway.shared, decisionModel(),
+		gatewayRouter(testGatewayRouter, tierModel("SIMPLE", testSmallModel),
+			aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: testDecisionModel}))
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	status := agent.Status.AIGateway
+	if slices.Contains(status.Models, testDecisionModel) || status.DefaultModel == testDecisionModel || status.DefaultModel == "" {
+		t.Fatalf("models %v default %q", status.Models, status.DefaultModel)
+	}
+	if !slices.Contains(status.Models, testGatewayRouter) || !slices.Contains(lastKeyModels(gateway), gatewayRouterGroup(testGatewayRouter)) {
+		t.Fatalf("the router must be granted: models %v key %v", status.Models, lastKeyModels(gateway))
+	}
+	if !slices.Contains(lastKeyModels(gateway), aiGatewayModelAccessGroupPrefix+"test-decision") {
+		t.Fatalf("the key keeps every shared model's group: %v", lastKeyModels(gateway))
+	}
+	entries, _, _ := r.aiGatewayModelEntries(agent)
+	for _, entry := range entries {
+		if entry.ID == testDecisionModel {
+			t.Fatalf("entries %+v", entries)
+		}
+	}
+	r.publishAIGatewayCatalog(ctx, 0)
+	configMap := &corev1.ConfigMap{}
+	if err := kube.Get(ctx, types.NamespacedName{Namespace: "cetirun-system", Name: api.AIGatewayCatalogConfigMap}, configMap); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(configMap.Data[api.AIGatewayCatalogKey], testDecisionModel) {
+		t.Fatalf("the published catalog lists the decision model: %s", configMap.Data[api.AIGatewayCatalogKey])
 	}
 }

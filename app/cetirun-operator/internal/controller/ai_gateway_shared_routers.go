@@ -68,6 +68,9 @@ type aiGatewaySharedRouterView struct {
 	known   bool
 	routers map[string]aigateway.Router
 	shared  map[string]bool
+	// nonChat are the shared models that answer no conversation: a router
+	// may classify requests with one, but not send it requests to answer.
+	nonChat map[string]bool
 	groups  map[string][]string
 }
 
@@ -77,8 +80,10 @@ type aiGatewaySharedRouterView struct {
 func (c *aiGatewayCatalog) sharedRouters() aiGatewaySharedRouterView {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	// update replaces c.routers rather than changing it, so it can be shared.
-	view := aiGatewaySharedRouterView{known: c.known, routers: c.routers, shared: map[string]bool{}, groups: map[string][]string{}}
+	// update replaces c.routers and c.nonChat rather than changing them, so
+	// they can be shared.
+	view := aiGatewaySharedRouterView{known: c.known, routers: c.routers, shared: map[string]bool{}, nonChat: c.nonChat,
+		groups: map[string][]string{}}
 	for _, model := range c.sharedSet {
 		view.shared[model.Name] = true
 	}
@@ -105,9 +110,11 @@ func (v aiGatewaySharedRouterView) names() []string {
 //
 // Each model the router sends a request to answer, in a tier, as its default
 // model or to compact a conversation, must be a shared model the Agent may
-// use: with a policy, one the policy lists, as it must list the router. A
+// use: with a policy, one the policy lists, as it must list the router, and
+// one that answers conversations. A
 // classifier, which the router calls to classify the Agent's request, must be
-// a shared model but need not be listed, as for a Team's routers; the Gateway
+// a shared model but need not be listed, as for a Team's routers, and may be
+// one that answers none, such as a decision model; the Gateway
 // does not hold a router's classifier calls to the calling key. A router whose
 // configuration the operator cannot read completely is refused to Agents with
 // a policy. An Agent without one may use it: it may use every shared model,
@@ -125,6 +132,8 @@ func (v aiGatewaySharedRouterView) refusal(name string, allowed map[string]bool)
 			problems = append(problems, routerModelIsARouter(model))
 		} else if !v.shared[model.Name] {
 			problems = append(problems, routerModelNotShared(model))
+		} else if model.Use != aigateway.RouterClassifier && v.nonChat[model.Name] {
+			problems = append(problems, routerModelNotChat(model))
 		}
 	}
 	switch {

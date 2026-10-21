@@ -811,6 +811,16 @@ operator reads the routers from the Gateway's model list, so a changed router
 reaches the keys at its next listing, within about two minutes; a router's
 configuration is not part of an AgentPolicy's Gateway projection.
 
+**Models that answer no conversation are not offered to Agents.** A shared
+model whose `model_info.mode` is set to something other than `chat`,
+`completion` or `responses`, such as `evaluation` for a decision model like
+Microsoft-Decision-1 or `embedding`, is left out of the models Agents are
+configured with, of their default model, and of the catalog the Portal reads.
+It stays a shared model otherwise: a router may classify requests with it, and
+the key of an Agent without a policy keeps its access group. A router whose
+tier, default model or compaction model is such a model is misconfigured. Set
+`mode` on the model's `model_info`; a model without one counts as a chat model.
+
 For the keys the operator issues, the Gateway refuses with HTTP 403 a request a
 router sends to a model outside the key's access groups; the router's own
 classifier calls are exempt (see [The guard callback](#the-guard-callback)).

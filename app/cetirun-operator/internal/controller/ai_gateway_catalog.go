@@ -74,6 +74,12 @@ type aiGatewayCatalog struct {
 	// of every AgentPolicy's Gateway revision (ai_gateway_shared_routers.go).
 	routers           map[string]aigateway.Router
 	routerFingerprint string
+	// nonChat are the shared models no Agent can hold a conversation with,
+	// such as a decision model an auto router classifies requests with: they
+	// stay shared models, for the routers' rule and the keys' groups, but are
+	// left out of the models Agents are configured with and of the published
+	// catalog.
+	nonChat map[string]bool
 	// allowsUnpriced is the Gateway's setting from the last listing. The
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
@@ -120,6 +126,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	}
 	byName := map[string]aiGatewayCatalogModel{}
 	modelGroups := map[string][]string{}
+	chat := map[string]bool{}
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
 		for _, group := range deployment.AccessGroups {
@@ -151,13 +158,22 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		model.ContextWindow = smallerPositive(model.ContextWindow, deployment.MaxInputTokens)
 		model.MaxOutputTokens = smallerPositive(model.MaxOutputTokens, deployment.MaxOutputTokens)
 		byName[deployment.ModelName] = model
+		// Like the limits, a name serves conversations when any deployment
+		// behind it does.
+		if aigateway.ChatModel(deployment.Mode) {
+			chat[deployment.ModelName] = true
+		}
 		if policyBoundShared {
 			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
 		}
 	}
 	shared := make([]aiGatewayCatalogModel, 0, len(byName))
-	for _, model := range byName {
+	nonChat := map[string]bool{}
+	for name, model := range byName {
 		shared = append(shared, model)
+		if !chat[name] {
+			nonChat[name] = true
+		}
 	}
 	sort.Slice(shared, func(i, j int) bool { return shared[i].Name < shared[j].Name })
 	slices.Sort(unpriced)
@@ -176,9 +192,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared) || c.fingerprint != fingerprint ||
-		c.routerFingerprint != routerFingerprint
+		c.routerFingerprint != routerFingerprint || !maps.Equal(c.nonChat, nonChat)
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
-	c.routers, c.routerFingerprint = routers, routerFingerprint
+	c.routers, c.routerFingerprint, c.nonChat = routers, routerFingerprint, nonChat
 	c.allowsUnpriced = !blockUnpriced
 	return changed, skipped, unpriced
 }
@@ -309,10 +325,19 @@ func smallerPositive(current, next int64) int64 {
 	return current
 }
 
+// shared returns the shared models Agents can hold a conversation with: those
+// they are configured with, the published catalog lists, and a Team's router
+// may send requests to.
 func (c *aiGatewayCatalog) shared() ([]aiGatewayCatalogModel, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return slices.Clone(c.sharedSet), c.known || c.seeded
+	return c.chatModels(c.sharedSet), c.known || c.seeded
+}
+
+// chatModels leaves the shared models no Agent can hold a conversation with
+// out of models. Call with c.mu held.
+func (c *aiGatewayCatalog) chatModels(models []aiGatewayCatalogModel) []aiGatewayCatalogModel {
+	return slices.DeleteFunc(slices.Clone(models), func(model aiGatewayCatalogModel) bool { return c.nonChat[model.Name] })
 }
 
 // legacySharedGroups includes every trusted configured shared model; a legacy
@@ -375,7 +400,7 @@ func (c *aiGatewayCatalog) sharedForGroups(groups []string) ([]aiGatewayCatalogM
 		allowed[group] = true
 	}
 	shared := make([]aiGatewayCatalogModel, 0, len(c.sharedSet))
-	for _, model := range c.sharedSet {
+	for _, model := range c.chatModels(c.sharedSet) {
 		if slices.ContainsFunc(c.modelGroups[model.Name], func(group string) bool { return allowed[group] }) {
 			shared = append(shared, model)
 		}

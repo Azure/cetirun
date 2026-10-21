@@ -116,6 +116,12 @@ func routerModelNotShared(model aigateway.RouterModel) string {
 	return routerModelNames(model) + ", which is not a shared model of the AI Gateway"
 }
 
+// routerModelNotChat is the problem of a model a router sends requests to
+// answer that answers no conversation, such as a decision model.
+func routerModelNotChat(model aigateway.RouterModel) string {
+	return routerModelNames(model) + ", which is not a chat model"
+}
+
 // routerModelIsARouter is the problem of a router model that is a router
 // itself.
 func routerModelIsARouter(model aigateway.RouterModel) string {

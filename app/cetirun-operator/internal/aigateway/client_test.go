@@ -267,6 +267,34 @@ func TestListModelsCountsPricesTheWayTheGatewayBlocksUnpricedModels(t *testing.T
 	}
 }
 
+func TestListModelsReadsTheMode(t *testing.T) {
+	client, _ := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{"data":[
+			{"model_name":"chat","litellm_params":{"model":"azure/gpt-5"},"model_info":{"id":"a","mode":"chat"}},
+			{"model_name":"decision","litellm_params":{"model":"azure_ai/decision-1"},"model_info":{"id":"b","mode":"evaluation"}},
+			{"model_name":"router","litellm_params":{"model":"auto_router/complexity_router"},"model_info":{"id":"c","mode":null}},
+			{"model_name":"odd","litellm_params":{"model":"azure/x"},"model_info":{"id":"d","mode":7}},
+			{"model_name":"no-info","litellm_params":{"model":"azure/y"}}
+		]}`
+	})
+	deployments, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"chat": "chat", "decision": "evaluation", "router": "", "odd": "", "no-info": ""}
+	for _, deployment := range deployments {
+		if deployment.Mode != want[deployment.ModelName] {
+			t.Errorf("%s: Mode = %q, want %q", deployment.ModelName, deployment.Mode, want[deployment.ModelName])
+		}
+	}
+	for mode, chat := range map[string]bool{"": true, "chat": true, "completion": true, "responses": true,
+		"evaluation": false, "embedding": false, "image_generation": false, "rerank": false, "Chat": false} {
+		if ChatModel(mode) != chat {
+			t.Errorf("ChatModel(%q) = %v, want %v", mode, !chat, chat)
+		}
+	}
+}
+
 func TestBlockUnpricedModelsReadsTheGatewaysSetting(t *testing.T) {
 	for enabled, body := range map[bool]string{true: `{"enabled":true}`, false: `{"enabled":false}`} {
 		client, requests := testServer(t, func(recordedRequest) (int, string) { return 200, body })
