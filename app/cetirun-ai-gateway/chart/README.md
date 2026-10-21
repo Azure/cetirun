@@ -662,6 +662,16 @@ go to the others. Measured on LiteLLM 1.105.1 with two replicas and two
 deployments: four keys sent 10 requests each, alternating between the
 replicas, and each key's 10 reached one deployment.
 
+A request that fails on the deployment its key is kept on fails over to
+another deployment (`router.failover`), like any other. LiteLLM 1.105.1 applies
+the key's choice before it leaves out the deployments a failover already
+tried, so the failover found no deployment and was not attempted: measured on
+the e2e cluster, a key kept on a deployment that answered 500 got three 500s
+("No fallback was attempted") before that deployment went into cooldown. The
+Gateway's guard gives LiteLLM's affinity check only the deployments the
+failover may still use; after the change the same key's requests were answered
+by another deployment from the first failure.
+
 It is off for a model whose deployments set `litellm_params.order`: LiteLLM
 applies the choice before it keeps only the lowest order, and keeps the first
 choice for the hour, so a key that reached the standby while the primary was
@@ -1162,6 +1172,8 @@ the console cannot remove it. It:
   Copilot routes alike. LiteLLM's own rule decides, and the Gateway logs a
   warning for each request it changes. A request for a model by name keeps
   its parameters and gets LiteLLM's error;
+- lets a request fail over from the deployment its key is kept on; see
+  [A key stays on its deployment](#a-key-stays-on-its-deployment);
 - keeps error messages free of LiteLLM's internal deployment list: error
   messages returned to callers no longer include LiteLLM's internal list of
   deployments in cooldown. The response keeps its status, 429, the "Try again
