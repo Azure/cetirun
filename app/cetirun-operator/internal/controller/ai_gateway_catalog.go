@@ -74,6 +74,9 @@ type aiGatewayCatalog struct {
 	// of every AgentPolicy's Gateway revision (ai_gateway_shared_routers.go).
 	routers           map[string]aigateway.Router
 	routerFingerprint string
+	// copilotRoutes is what the Gateway's stored health check probes say about
+	// each Copilot route (ai_gateway_copilot_unavailable.go).
+	copilotRoutes map[string]copilotRouteHealth
 	// nonChat are the shared models no Agent can hold a conversation with,
 	// such as a decision model an auto router classifies requests with: they
 	// stay shared models, for the routers' rule and the keys' groups, but are
@@ -665,6 +668,7 @@ func (r *AgentReconciler) publishAIGatewayCatalog(ctx context.Context, maxAge ti
 		r.notifyAIGatewayCatalogChanged(ctx)
 	}
 	r.notifyAIGatewayRoutesLost(ctx)
+	r.refreshCopilotHealth(ctx, client)
 	shared, known := r.aiGatewayCatalog.shared()
 	if !known {
 		return

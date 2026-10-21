@@ -291,12 +291,13 @@ func TestInstanceResponseDescribesAIGateway(t *testing.T) {
 	merged.Status.AIGateway.Models = []string{"gpt-6", "o-mini"}
 	merged.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{
 		Phase: cetirunv1alpha1.AIGatewayCopilotPhaseReady, Models: []string{"gpt-6", "o-mini"}, Skipped: []string{"gpt-5"},
+		Unavailable: []cetirunv1alpha1.AIGatewayCopilotUnavailableModel{{Model: "gpt-5.4"}},
 		Routes: []cetirunv1alpha1.AIGatewayCopilotRoute{
 			{Model: "gpt-6", Name: "gpt-6", Shared: true}, {Model: "gpt-6-preview", Name: "gpt-6", Shared: true}, {Model: "o-mini", Name: "o-mini"},
 		},
 	}
 	if gw := aiGatewayResponse(merged); strings.Join(gw.Models, ",") != "gpt-6,o-mini" || !slices.Equal(gw.Copilot.Shared, []string{"gpt-6"}) ||
-		!slices.Equal(gw.Copilot.Skipped, []string{"gpt-5"}) {
+		!slices.Equal(gw.Copilot.Skipped, []string{"gpt-5"}) || !slices.Equal(gw.Copilot.Unavailable, []string{"gpt-5.4"}) {
 		t.Fatalf("merged response = %+v copilot %+v", gw, gw.Copilot)
 	}
 

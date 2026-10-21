@@ -178,6 +178,7 @@ type aiGatewayKeyClient interface {
 	GenerateKey(context.Context, aigateway.GenerateRequest) error
 	UpdateKeyModels(context.Context, string, []string) error
 	UpdateKeyRoutes(context.Context, string, []string) error
+	HealthHistory(context.Context, int) ([]aigateway.HealthCheck, error)
 	UpdateKeyBudget(context.Context, string, float64, string) error
 	SetKeyBlocked(context.Context, string, bool) error
 	UpdateKeyOwner(context.Context, string, string, string) error

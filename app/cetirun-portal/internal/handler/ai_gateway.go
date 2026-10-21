@@ -60,6 +60,9 @@ type AIGatewayCopilotResponse struct {
 	// Skipped are the account's models left out because a shared model
 	// already has their name.
 	Skipped []string `json:"skipped,omitempty"`
+	// Unavailable are the account's models left out because GitHub no longer
+	// serves them to the account: their probes were refused.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 // AIGatewayCatalogResponse is the JSON response for GET /api/v1/ai-gateway/catalog.
@@ -117,6 +120,9 @@ func aiGatewayResponse(instance *cetirunv1alpha1.Agent) *AIGatewayResponse {
 			Models:   append([]string{}, copilot.Models...),
 			Unpriced: append([]string(nil), copilot.Unpriced...),
 			Skipped:  append([]string(nil), copilot.Skipped...),
+		}
+		for _, model := range copilot.Unavailable {
+			resp.Copilot.Unavailable = append(resp.Copilot.Unavailable, model.Model)
 		}
 		for _, route := range copilot.Routes {
 			if route.Shared && !slices.Contains(resp.Copilot.Shared, route.Name) {

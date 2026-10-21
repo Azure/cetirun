@@ -66,6 +66,17 @@ whose default model is `copilot/<model>` uses the model's current name.
 The Gateway's health checks probe every Copilot model too, every five minutes by
 default. Each probe is a real call, so it spends the owner's Copilot allowance.
 
+The model list is recorded when the owner signs in, and GitHub can later stop
+serving a model of it to the integration Copilot proxies use. When three
+consecutive probes of a Copilot model are refused that way ("not available for
+integrator" or "not supported"), the operator removes the model: the instance no
+longer offers it, its route is deleted so it is no longer probed, and the
+instance page lists it as no longer served. Other failures, such as rate limits,
+server errors or timeouts, never remove a model. Signing in again records a
+fresh list and brings the model back; otherwise it is registered and probed
+again a day later, and stays if GitHub serves it again. The instance's
+configuration changes when a model is removed or comes back, which restarts it.
+
 Each instance's key reaches only its own access groups: those of the shared
 models it may use, with `cetirun-shared` for an instance without a policy, and
 the instance's own Copilot group, so its Copilot models
