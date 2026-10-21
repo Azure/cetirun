@@ -463,9 +463,11 @@ const testDecisionModel = "decision-1"
 // decisionModel is a decision model of the Gateway chart's models, such as
 // Microsoft-Decision-1, which an auto router classifies requests with.
 func decisionModel() aigateway.Deployment {
-	return aigateway.Deployment{ID: aiGatewaySharedDeploymentIDPrefix + "test-decision", ModelName: testDecisionModel,
-		AccessGroups: []string{aiGatewayModelAccessGroupPrefix + "test-decision"}, DatabaseSourceKnown: true, Priced: true, Mode: "evaluation"}
+	return aigateway.Deployment{ID: managedTestDeploymentID(testDecisionModel, 1), ModelName: testDecisionModel,
+		AccessGroups: []string{testDecisionGroup}, DatabaseSourceKnown: true, Priced: true, Mode: "evaluation"}
 }
+
+var testDecisionGroup = aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding(testDecisionModel)
 
 // A shared model that answers no conversation stays a shared model for the
 // routers' rule and the keys, but no Agent is configured with it and the
@@ -493,7 +495,7 @@ func TestAIGatewayCatalogLeavesModelsThatAnswerNoConversationOutOfAgentsModels(t
 	if !known || !slices.Equal(names, []string{testSmallModel, "mixed", "no-mode"}) {
 		t.Fatalf("shared = %v", names)
 	}
-	groups := []string{testSmallGroup, aiGatewayModelAccessGroupPrefix + "test-decision"}
+	groups := []string{testSmallGroup, testDecisionGroup}
 	if forGroups, _ := catalog.sharedForGroups(groups); len(forGroups) != 1 || forGroups[0].Name != testSmallModel {
 		t.Fatalf("a policy that resolves the decision model's group must not configure it: %+v", forGroups)
 	}
@@ -504,7 +506,7 @@ func TestAIGatewayCatalogLeavesModelsThatAnswerNoConversationOutOfAgentsModels(t
 	if view := catalog.sharedRouters(); !view.shared[testDecisionModel] || !view.nonChat[testDecisionModel] || view.nonChat["mixed"] {
 		t.Fatalf("view shared %v nonChat %v", view.shared, view.nonChat)
 	}
-	if !slices.Contains(catalog.legacySharedGroups(), aiGatewayModelAccessGroupPrefix+"test-decision") {
+	if !slices.Contains(catalog.legacySharedGroups(), testDecisionGroup) {
 		t.Fatal("the key of an Agent without a policy keeps every shared model's group")
 	}
 	if changed, _, _ := catalog.update(listing, false, time.Now()); changed {
@@ -580,7 +582,7 @@ func TestLegacyAgentIsNotConfiguredWithADecisionModel(t *testing.T) {
 	if !slices.Contains(status.Models, testGatewayRouter) || !slices.Contains(lastKeyModels(gateway), gatewayRouterGroup(testGatewayRouter)) {
 		t.Fatalf("the router must be granted: models %v key %v", status.Models, lastKeyModels(gateway))
 	}
-	if !slices.Contains(lastKeyModels(gateway), aiGatewayModelAccessGroupPrefix+"test-decision") {
+	if !slices.Contains(lastKeyModels(gateway), testDecisionGroup) {
 		t.Fatalf("the key keeps every shared model's group: %v", lastKeyModels(gateway))
 	}
 	entries, _, _ := r.aiGatewayModelEntries(agent)

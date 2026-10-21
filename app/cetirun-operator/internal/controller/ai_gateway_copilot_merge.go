@@ -160,13 +160,18 @@ type copilotPlacement struct {
 // aiGatewayEntitledShared returns the shared models the Agent may use, and
 // whether they are known: none when the owner turned shared models off, those
 // the Agent's grant reaches when it is policy-bound, and every shared model
-// otherwise.
+// otherwise, but for a router configured in the Gateway that the Agent may not
+// use (ai_gateway_shared_routers.go).
 func (r *AgentReconciler) aiGatewayEntitledShared(instance *cetirunv1alpha1.Agent) ([]aiGatewayCatalogModel, bool) {
 	if !instance.Spec.SharedModelsEnabled() {
 		return nil, true
 	}
 	if !sandboxRequested(instance, nil) {
-		return r.aiGatewayCatalog.shared()
+		models, known := r.aiGatewayCatalog.shared()
+		// The key of an Agent without a policy reaches every shared model but
+		// a router it may not use, which is left out here too.
+		refused := r.aiGatewaySharedRouterGrant(instance, nil).refused
+		return slices.DeleteFunc(models, func(model aiGatewayCatalogModel) bool { return refused[model.Name] }), known
 	}
 	var groups []string
 	if status := instance.Status.AIGateway; status != nil {

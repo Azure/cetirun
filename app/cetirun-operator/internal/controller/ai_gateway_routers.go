@@ -49,6 +49,14 @@ const (
 	copilotTierPrefix = api.AIGatewayCopilotModelPrefix
 )
 
+// routerTierGatewayName is the Gateway name a tier is registered with. A
+// copilot/<id> tier names the owner's Copilot model, which the Gateway serves
+// under the model's own ID unless it is merged into a shared model, which a
+// tier names directly.
+func routerTierGatewayName(model string) string {
+	return strings.TrimPrefix(model, copilotTierPrefix)
+}
+
 // aiGatewayRouterReminderMarkers are the blocks a router leaves out when it
 // classifies a request: OpenClaw's own context, and the system reminders
 // LiteLLM recognizes by default. The Gateway chart gives its own routers the
@@ -189,8 +197,8 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRou
 		config := map[string]any{
 			"classifier_type": classifier,
 			"tiers": map[string]any{
-				"SIMPLE": router.Tiers.Simple, "MEDIUM": router.Tiers.Medium,
-				"COMPLEX": router.Tiers.Complex, "REASONING": router.Tiers.ReasoningModel(),
+				"SIMPLE": routerTierGatewayName(router.Tiers.Simple), "MEDIUM": routerTierGatewayName(router.Tiers.Medium),
+				"COMPLEX": routerTierGatewayName(router.Tiers.Complex), "REASONING": routerTierGatewayName(router.Tiers.ReasoningModel()),
 			},
 			"reminder_markers":                 aiGatewayRouterReminderMarkers,
 			"context_compaction":               false,
@@ -202,7 +210,7 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRou
 		}
 		plan.request = aigateway.RouterRequest{
 			ModelName: plan.gatewayName, AccessGroups: []string{plan.gatewayName}, Config: config,
-			DefaultModel:      router.Tiers.Medium,
+			DefaultModel:      routerTierGatewayName(router.Tiers.Medium),
 			InputCostPerToken: aiGatewayRouterInputCost, OutputCostPerToken: aiGatewayRouterOutputCost,
 		}
 		// The ID changes with the configuration, so a changed router replaces
@@ -504,6 +512,11 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil && copilot {
 		for _, name := range status.Copilot.Models {
 			registeredCopilot[name] = true
+		}
+		// Copilot models are registered under the Gateway name each Agent
+		// sees; a copilot/<id> tier names the model itself.
+		for _, route := range status.Copilot.Routes {
+			registeredCopilot[copilotTierPrefix+route.Model] = true
 		}
 	}
 	var groups []string
