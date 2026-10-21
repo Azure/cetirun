@@ -345,3 +345,26 @@ func TestBlockUnpricedModelsReadsTheGatewaysSetting(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthHistoryReadsStoredProbes(t *testing.T) {
+	client, requests := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{"health_checks":[
+			{"model_id":"route-a","status":"unhealthy","error_message":"refused","checked_at":"2026-10-21T09:58:34.228000+00:00"},
+			{"model_id":"route-b","status":"healthy","error_message":null,"checked_at":"2026-10-21T09:53:34+00:00"},
+			{"model_id":null,"status":"healthy","checked_at":"2026-10-21T09:53:34+00:00"},
+			{"model_id":"route-c","status":"healthy","checked_at":null},
+			{"model_id":"route-d","status":"healthy","checked_at":"yesterday"}
+		],"total_records":5}`
+	})
+	checks, err := client.HealthHistory(context.Background(), 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := (*requests)[0]; r.method != http.MethodGet || r.path != "/health/history" || r.query != "limit=1000" {
+		t.Fatalf("request %+v", r)
+	}
+	if len(checks) != 2 || checks[0].DeploymentID != "route-a" || checks[0].Healthy || checks[0].Error != "refused" ||
+		checks[0].CheckedAt.UTC().Format(time.RFC3339Nano) != "2026-10-21T09:58:34.228Z" || !checks[1].Healthy || checks[1].Error != "" {
+		t.Fatalf("checks %+v", checks)
+	}
+}
