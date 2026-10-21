@@ -33,7 +33,8 @@ jobs:
       - name: Vet and test the file protocol
         run: |
           go vet ./...
-          go test -race ./... -count=1
+          # The full race suite exceeds Go's default 10m package timeout.
+          go test -race ./... -count=1 -timeout=20m
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

@@ -1,3 +1,4 @@
+{{- if ne (empty .Values.toolsMCP.brokerNamespace) (empty .Values.toolsMCP.brokerServiceAccount) }}{{ fail "toolsMCP.brokerNamespace and toolsMCP.brokerServiceAccount must be set together" }}{{ end }}
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $chat := deepCopy .Values.chatAccess -}}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) -}}
@@ -110,6 +111,10 @@ spec:
             - name: FIC_ISSUER_IDS
               value: {{ .Values.azure.ficIssuerIds | quote }}
             {{- end }}
+            - name: TOOLS_MCP_BROKER_NAMESPACE
+              value: {{ .Values.toolsMCP.brokerNamespace | quote }}
+            - name: TOOLS_MCP_BROKER_SERVICE_ACCOUNT
+              value: {{ .Values.toolsMCP.brokerServiceAccount | quote }}
             - name: AGENT_ID_ENABLED
               value: {{ .Values.agentIdentity.enabled | quote }}
             - name: AGENT_ID_CLEANUP_ENABLED
@@ -121,6 +126,8 @@ spec:
               value: {{ required "agentIdentity.blueprintClientId is required for Agent Identity lifecycle operations" .Values.agentIdentity.blueprintClientId | quote }}
             - name: AGENT_ID_NAME_PREFIX
               value: {{ .Values.agentIdentity.namePrefix | quote }}
+            {{- end }}
+            {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled .Values.toolsMCP.brokerNamespace }}
             - name: AGENT_ID_BROKER_URL
               value: {{ required "agentIdentity.brokerURL is required for Agent Identity lifecycle operations" .Values.agentIdentity.brokerURL | quote }}
             {{- end }}

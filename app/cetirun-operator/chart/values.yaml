@@ -185,18 +185,12 @@ sandboxAdmission:
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
-  # -- Opt in to native Kubernetes execution with Kata/RWOP constraints.
+  # -- Opt in to common OpenClaw/Hermes reconciliation with Kata/RWOP constraints.
   # Requires owned bootstrap, enforced admission and the AI Gateway.
-  # Uses single-start lifetimes unless reconciledExecution is also enabled.
+  # Existing receipts retain their recorded mode and owned resources.
   # Neither Kubernetes updates nor observed shutdown are physical fencing.
   # Disabling starts retains recorded cleanup and Pod finalization RBAC.
   nativeExecution: false
-  # -- Opt in to common OpenClaw/Hermes reconciliation for new lifetimes only.
-  # Keep false until all Operator, admission, Portal and configuration-tool
-  # readers have upgraded; new receipts and coordination intents break old readers.
-  # Existing bootstrap receipts retain their mode, HOME and pins. Disabling this
-  # switch does not downgrade records or make rolling back readers safe.
-  reconciledExecution: false
   # -- Allow new healthy-source moves of common-executor Agents with one CSI/RWOP HOME.
   # Upgrade CRDs, Operator, admission and Portal readers before enabling.
   # Existing checkpoints remain readable and cleanup permissions are retained when disabled.
@@ -228,6 +222,12 @@ sandboxSources:
     doctor: false
     logger: false
     desktop: false
+
+# -- Optional Broker access to encrypted Connection/Binding records in Agent namespaces.
+# Both fields are required together. Keep configured until all records are cleaned.
+toolsMCP:
+  brokerNamespace: ""
+  brokerServiceAccount: ""
 
 # -- Microsoft Entra Agent Identity lifecycle configuration. The feature is
 # deployment-scoped and remains disabled unless every required field is set.

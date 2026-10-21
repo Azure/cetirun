@@ -22,7 +22,6 @@ import (
 type SandboxSourcesConfig struct {
 	Enabled                     bool                    `json:"enabled"`
 	NativeExecution             bool                    `json:"nativeExecution"`
-	ReconciledExecution         bool                    `json:"reconciledExecution,omitempty"`
 	PlannedMigration            bool                    `json:"plannedMigration,omitempty"`
 	BootstrapOwnedPrerequisites bool                    `json:"bootstrapOwnedPrerequisites"`
 	PlatformConfigMapName       string                  `json:"platformConfigMapName"`
@@ -52,11 +51,8 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 }
 
 func (config SandboxSourcesConfig) validate() error {
-	if config.PlannedMigration && !config.ReconciledExecution {
-		return fmt.Errorf("planned migration requires reconciled Sandbox execution and upgraded readers")
-	}
-	if config.ReconciledExecution && !config.NativeExecution {
-		return fmt.Errorf("reconciled Sandbox execution requires native execution and a completed reader-first upgrade")
+	if config.PlannedMigration && !config.NativeExecution {
+		return fmt.Errorf("planned migration requires native Sandbox execution and upgraded readers")
 	}
 	if config.CoordinationConfigMapName != "" || config.CoordinationConfigMapUID != "" {
 		if !config.Enabled || config.CoordinationConfigMapName == config.PlatformConfigMapName ||
@@ -116,8 +112,7 @@ func (config SandboxSourcesConfig) validate() error {
 }
 
 // NewKubernetesSandboxPreparation defaults to held preparation. NativeExecution
-// separately opts into Kubernetes single-start semantics, not physical fencing.
-// ReconciledExecution selects new common lifetimes after all readers are upgraded.
+// selects common Kubernetes reconciliation for new lifetimes, not physical fencing.
 // The default path still requires a qualified writer-exclusion adapter.
 func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.Reader,
 	installer SandboxHelmInstaller, namespace, chartVersion string,
@@ -133,9 +128,8 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		return nil, fmt.Errorf("Sandbox sources require an authoritative reader, installer, operator namespace and approved chart version")
 	}
 	preparation := &SandboxPreparation{
-		NativeExecution:     config.NativeExecution,
-		ReconciledExecution: config.ReconciledExecution,
-		PlannedMigration:    config.PlannedMigration,
+		NativeExecution:  config.NativeExecution,
+		PlannedMigration: config.PlannedMigration,
 		Configuration: &KubernetesSandboxConfigurationSource{
 			APIReader: reader, Namespace: namespace, Name: config.PlatformConfigMapName,
 		},

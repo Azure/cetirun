@@ -46,7 +46,7 @@ available for alternate mirrors. Image tags, chart versions, and the
 Install tools only for the component you are changing:
 
 - Git, Bash, and Make for repository commands.
-- Go 1.27.2, matching `.go-version`, all module minimums, and the pinned
+- Go 1.27.3, matching `.go-version`, all module minimums, and the pinned
   Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
 - Helm for local chart linting and rendering.
@@ -95,6 +95,7 @@ report the narrower validation scope.
 ```bash
 go -C app/internal test ./... -count=1
 go -C app/internal vet ./...
+go -C app/internal test -race ./agenttools ./tlsreload -count=1
 ```
 
 The root `make go-test` and `make go-lint` targets include this module.
@@ -300,6 +301,13 @@ uses an explicit ten-minute Trivy timeout per runtime image scan, within its
 existing job time limit. Scan errors and timeouts still fail the vulnerability
 gates; severity thresholds and enabled scanners are unchanged. These image
 builds/scans run in CI, not as part of the offline commands above.
+
+Hermes source downloads allow up to 30 minutes per transfer, with at most three
+retries, a 15-second retry delay and a 30-minute retry-start window. This avoids
+discarding a progressing download on slow runners while keeping retries bounded.
+The pinned source checksum is verified before extraction, and the extracted
+project version must match the selected release. Download, checksum and version
+failures still fail the image build; the workflow's job timeout is unchanged.
 
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests require the pinned PyYAML dependency in

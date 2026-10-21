@@ -10,7 +10,7 @@ release versions.
 | Azure Linux | 3.0, refreshed core image digest | [Releases](https://github.com/microsoft/azurelinux/releases) |
 | Node.js | 24.21.0 LTS | [Release index](https://nodejs.org/dist/index.json) |
 | npm | 12.2.0 | [Release notes](https://github.com/npm/cli/releases/tag/v12.2.0) |
-| Microsoft Go builder | 1.27.2-1 | [Microsoft Go](https://github.com/microsoft/go) |
+| Microsoft Go builder | 1.27.3-1 | [Microsoft Go](https://github.com/microsoft/go) |
 | Codex | 0.160.1 | [npm package](https://www.npmjs.com/package/@openai/codex/v/0.160.1) |
 | Claude Code | 2.1.292 | [npm package](https://www.npmjs.com/package/@anthropic-ai/claude-code/v/2.1.292) |
 | OpenCode | 1.18.35 | [npm package](https://www.npmjs.com/package/opencode-ai/v/1.18.35) |
@@ -24,6 +24,11 @@ release versions.
 | pip-vendored msgpack | 1.2.3 | [PyPI](https://pypi.org/project/msgpack/1.2.3/) |
 | pip-vendored setuptools | 81.0.0, compatibility ceiling | [Removal of pkg_resources in 82.0.0](https://setuptools.pypa.io/en/latest/history.html#v82-0-0) |
 | Oh My Zsh | `60c9a7a839b790cd905d0fd4419435124fd1bdc0` | [Upstream commit](https://github.com/ohmyzsh/ohmyzsh/commit/60c9a7a839b790cd905d0fd4419435124fd1bdc0) |
+
+The Microsoft Go builder was subsequently updated on 2026-10-21 to address
+[GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809) in `crypto/x509`. All Go
+builders use the same digest-pinned 1.27.3 release, including the runtime image's
+Go-built tools. Other selected dependency versions are unchanged.
 
 ## Compatibility choices
 

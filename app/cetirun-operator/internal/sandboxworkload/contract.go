@@ -87,6 +87,7 @@ type Input struct {
 	Controls          Controls
 	AuthorizedSecrets []string
 	GatewayKey        *ObjectIdentity
+	ImagePullSecret   *ObjectIdentity `json:",omitempty"`
 }
 
 // Accounting uses Kubernetes effective init/sidecar accounting. Pod contains

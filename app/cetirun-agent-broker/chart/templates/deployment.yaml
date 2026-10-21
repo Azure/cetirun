@@ -34,7 +34,31 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            {{- if .Values.connectionBindings.enabled }}
+            - name: https
+              containerPort: 8443
+            {{- end }}
           env:
+            - name: CONNECTION_BINDINGS_ENABLED
+              value: {{ .Values.connectionBindings.enabled | quote }}
+            {{- if .Values.connectionBindings.enabled }}
+            - name: PORTAL_NAMESPACE
+              value: {{ .Values.portal.namespace | quote }}
+            - name: PORTAL_SERVICE_ACCOUNT
+              value: {{ .Values.portal.serviceAccount | quote }}
+            - name: TOOL_SERVICE_NAMESPACE
+              value: {{ .Values.toolService.namespace | quote }}
+            - name: TOOL_SERVICE_ACCOUNT
+              value: {{ .Values.toolService.serviceAccount | quote }}
+            - name: WORKLOAD_TOKEN_AUDIENCE
+              value: {{ .Values.toolService.workloadTokenAudience | quote }}
+            - name: TLS_CERT_FILE
+              value: /var/run/cetirun/tls/{{ .Values.tls.certKey }}
+            - name: TLS_KEY_FILE
+              value: /var/run/cetirun/tls/{{ .Values.tls.keyKey }}
+            - name: TLS_CLIENT_CA_FILE
+              value: /var/run/cetirun/tls/{{ .Values.tls.clientCAKey }}
+            {{- end }}
             - name: ENTRA_TENANT_ID
               value: {{ .Values.agentIdentity.tenantId | quote }}
             - name: AGENT_ID_BLUEPRINT_CLIENT_ID
@@ -66,6 +90,11 @@ spec:
             - name: OPERATOR_SERVICE_ACCOUNT
               value: {{ .Values.operator.serviceAccount | quote }}
           volumeMounts:
+            {{- if .Values.connectionBindings.enabled }}
+            - name: broker-tls
+              mountPath: /var/run/cetirun/tls
+              readOnly: true
+            {{- end }}
             - name: kubernetes-api-credential
               mountPath: /var/run/cetirun/kubernetes
               readOnly: true
@@ -120,6 +149,12 @@ spec:
           resources:
             {{- toYaml .Values.resources.authSDK | nindent 12 }}
       volumes:
+        {{- if .Values.connectionBindings.enabled }}
+        - name: broker-tls
+          secret:
+            secretName: {{ .Values.tls.secretName | quote }}
+            defaultMode: 0440
+        {{- end }}
         - name: auth-sdk-keys
           emptyDir:
             medium: Memory

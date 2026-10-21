@@ -366,6 +366,76 @@ func TestOpenClawMemoryRegistrationMatchesExecutionMode(t *testing.T) {
 	}
 }
 
+func TestHermesMemoryRegistrationMatchesExecutionMode(t *testing.T) {
+	for _, mode := range []string{"ordinary", "reconciled", "single-start"} {
+		for _, enabled := range []bool{false, true} {
+			for _, shared := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/enabled=%t/shared=%t", mode, enabled, shared), func(t *testing.T) {
+					chrt := testChart(t)
+					input := sampleInput("hermes", "openai", false)
+					input["skills"] = map[string]any{
+						"shared": shared, "resourceGroup": "test", "storageAccount": "test", "containerName": "skills",
+					}
+					input["memoryOptions"] = MemoryOptions{Enabled: enabled, Image: "registry.example.com/memory:1.2.3"}
+					input["hermes"] = map[string]any{"config": map[string]any{
+						"plugins": map[string]any{"enabled": []any{"example-plugin"}},
+						"skills":  map[string]any{"external_dirs": []any{"/home/vibe/example-skills"}},
+					}}
+					var prepared *PreparedRelease
+					var err error
+					if mode == "ordinary" {
+						prepared, err = PrepareChart(chrt, input)
+					} else {
+						fixture := testfixture.New("hermes")
+						fixture.Input.Reconciled = mode == "reconciled"
+						bundle, buildErr := w.Build(fixture.Input)
+						if buildErr != nil {
+							t.Fatal(buildErr)
+						}
+						input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+						prepared, err = PrepareSandboxChart(chrt, input, nil, bundle)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					native := object(renderSnapshot(t, chrt, prepared.Values).Native["hermes-config.yaml"])
+					registered := enabled && mode != "single-start"
+					for _, list := range []struct {
+						values  []any
+						item    string
+						present bool
+					}{
+						{array(object(native["plugins"])["enabled"]), "cetirun-memory-context", registered},
+						{array(object(native["plugins"])["enabled"]), "example-plugin", true},
+						{array(object(native["skills"])["external_dirs"]), "/home/vibe/.agents/skills", registered},
+						{array(object(native["skills"])["external_dirs"]), "/home/vibe/example-skills", true},
+					} {
+						count := 0
+						for _, value := range list.values {
+							if text(value) == list.item {
+								count++
+							}
+						}
+						want := 0
+						if list.present {
+							want = 1
+						}
+						if count != want {
+							t.Fatalf("native configuration has %d copies of %q, want %d", count, list.item, want)
+						}
+					}
+					pod := registryRenderedTemplate(t, prepared).Spec
+					if assets := slices.ContainsFunc(pod.InitContainers, func(container corev1.Container) bool {
+						return container.Name == "memory-assets"
+					}); assets != registered {
+						t.Fatal("Memory asset installation and Hermes plugin enablement disagree")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestReconciledOpenClawMemoryRejectsDisabledPluginHooks(t *testing.T) {
 	for name, plugins := range map[string]map[string]any{
 		"plugins": {"enabled": false},

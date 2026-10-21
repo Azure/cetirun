@@ -49,7 +49,7 @@ func (i *sharedSandboxInstaller) Refresh(prepared *helm.PreparedRelease, values 
 	return prepared.Rebuild(values)
 }
 
-func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, _ string, prepared *helm.PreparedRelease) error {
+func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string, prepared *helm.PreparedRelease) error {
 	if i.beforeApply != nil {
 		if err := i.beforeApply(prepared); err != nil {
 			return err
@@ -77,6 +77,13 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, _ string, prepared 
 		if object.GetNamespace() != namespace {
 			return fmt.Errorf("unexpected rendered namespace")
 		}
+		annotations := object.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations["meta.helm.sh/release-name"] = releaseName
+		annotations["meta.helm.sh/release-namespace"] = namespace
+		object.SetAnnotations(annotations)
 		current := &unstructured.Unstructured{}
 		current.SetGroupVersionKind(object.GroupVersionKind())
 		if err := i.kube.Get(ctx, client.ObjectKeyFromObject(object), current); apierrors.IsNotFound(err) {
@@ -208,39 +215,34 @@ func TestReconciledSandboxRequiresReadableLifetimeMode(t *testing.T) {
 	}
 }
 
-func TestReconciledSandboxReaderFirstGatePreservesLegacyWriters(t *testing.T) {
-	ctx := context.Background()
-	f := newSandboxRuntimeFixtureForAgent(t, true, nil, false, "openclaw", true, false,
-		withReconciledCoordination(t))
-	f.ready(t)
-	agent := f.current(t)
-	_, receipt, err := f.r.readSandboxBootstrap(ctx, agent)
-	if err != nil || receipt.Reconciled {
-		t.Fatal("native execution alone wrote a reconciled bootstrap receipt:", err)
-	}
-	ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
-	if err != nil || !found || ticket.Reservation.Intent.Reconciled || ticket.Reservation.Intent.Workload.UID == "" {
-		t.Fatal("native execution alone changed the coordination writer contract:", err)
-	}
-	_, expected := f.expectation(t)
-	if expected.Version != w.ExpectationVersion || !expected.SinglePod {
-		t.Fatal("native execution alone published a new expectation contract")
-	}
-}
-
-func TestReconciledSandboxDisablingNewLifetimesRetainsRecordedMode(t *testing.T) {
-	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "openclaw", true, false,
-		withReconciledCoordination(t))
-	before := reconciledExpectationForTest(t, f)
-	f.r.SandboxPreparation.ReconciledExecution = false
-	f.reconcileOK(t)
-	after := reconciledExpectationForTest(t, f)
-	ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(context.Background(), f.agent.UID)
-	if err != nil || !found || !ticket.Reservation.Intent.Reconciled || after.Home != before.Home {
-		t.Fatal("disabling new reconciled lifetimes changed an existing lifetime:", err)
-	}
-	if _, _, err := f.r.readSandboxPreparationReceipt(context.Background(), f.current(t)); !apierrors.IsNotFound(err) {
-		t.Fatal("disabling new reconciled lifetimes converted an existing receipt:", err)
+func TestNativeExecutionUsesCommonReconciliationWithoutUpgradeGate(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false)
+			config, err := ParseSandboxSourcesConfig(nativeSandboxSourcesJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config.NativeExecution = true
+			f.r.SandboxPreparation, err = NewKubernetesSandboxPreparation(config, f.kube, f.installer,
+				f.r.OperatorNamespace, f.r.ChartVersion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			agent := f.current(t)
+			_, receipt, err := f.r.readSandboxBootstrap(context.Background(), agent)
+			if err != nil || !receipt.Reconciled {
+				t.Fatal("native execution did not select the common lifetime:", err)
+			}
+			expected := reconciledExpectationForTest(t, f)
+			if len(expected.Workloads) != 1 || expected.Workloads[0].Replicas != 1 ||
+				slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer) || f.installer.stages != 1 {
+				t.Fatal("new native Agent retained the single-start preparation path")
+			}
+		})
 	}
 }
 

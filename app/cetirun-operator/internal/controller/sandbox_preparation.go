@@ -58,7 +58,6 @@ type SandboxHelmInstaller interface {
 // deployment opt-in, not tenant input or an independent enforcement receipt.
 type SandboxPreparation struct {
 	NativeExecution         bool
-	ReconciledExecution     bool
 	PlannedMigration        bool
 	Configuration           SandboxConfigurationSource
 	Prerequisites           SandboxPreparationSource

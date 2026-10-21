@@ -19,6 +19,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,7 +47,7 @@ func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.
 	}
 	_, receipt, err := r.readSandboxBootstrap(ctx, agent)
 	if apierrors.IsNotFound(err) && !controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
-		return r.SandboxPreparation.ReconciledExecution, nil
+		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read Sandbox lifetime mode: %w", err)
@@ -97,6 +98,27 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	if err := r.sandboxPreparationInput(ctx, attempt); err != nil {
 		return nil, err
+	}
+	if agent.Spec.Agent.RegistrySecretRef != nil {
+		name, err := registryauth.PullSecretName(agent.UID)
+		if err != nil {
+			return nil, err
+		}
+		secret := &corev1.Secret{}
+		if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: attempt.input.Namespace.Name, Name: name}, secret); err != nil {
+			return nil, fmt.Errorf("read Sandbox registry pull Secret: %w", err)
+		}
+		receipt := agent.Status.RegistryCredentials
+		if receipt == nil || receipt.SourceUID == "" || receipt.SourceResourceVersion == "" ||
+			!isConditionTrue(agent.Status.Conditions, api.ConditionRegistryCredentialsReady) ||
+			secret.UID == "" || secret.ResourceVersion == "" || string(secret.UID) != receipt.PullSecretUID ||
+			secret.Annotations[registryauth.SourceUID] != receipt.SourceUID ||
+			secret.Annotations[registryauth.SourceVersion] != receipt.SourceResourceVersion ||
+			registryauth.Validate(secret, agent) != nil {
+			return nil, fmt.Errorf("Sandbox registry pull Secret does not match its synchronized approval")
+		}
+		attempt.input.ImagePullSecret = &w.ObjectIdentity{Name: secret.Name, UID: secret.UID}
+		attempt.sources = append(attempt.sources, sandboxSource(secret, "v1", "Secret"))
 	}
 	_, user, err := r.sandboxHelmValues(agent, attempt.team)
 	if err != nil {

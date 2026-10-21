@@ -92,7 +92,8 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			return err
 		}
 		for _, source := range w.PodSourceReferences(spec, input.Namespace.Name) {
-			if source.Kind == "Secret" && slices.Contains(input.AuthorizedSecrets, source.Name) {
+			if source.Kind == "Secret" && (slices.Contains(input.AuthorizedSecrets, source.Name) ||
+				(input.ImagePullSecret != nil && source.Name == input.ImagePullSecret.Name)) {
 				return fmt.Errorf("Sandbox auxiliary workload cannot receive Agent credentials")
 			}
 		}

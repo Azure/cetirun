@@ -65,3 +65,19 @@ resources:
     limits:
       cpu: 500m
       memory: 256Mi
+
+# Additive backend for per-Agent Azure connections; existing OBO remains active.
+connectionBindings:
+  enabled: false
+
+tls:
+  enabled: false
+  secretName: ""
+  certKey: tls.crt
+  keyKey: tls.key
+  clientCAKey: ca.crt
+
+toolService:
+  namespace: cetirun-tools
+  serviceAccount: agent-tools-mcp
+  workloadTokenAudience: agent-tools-mcp

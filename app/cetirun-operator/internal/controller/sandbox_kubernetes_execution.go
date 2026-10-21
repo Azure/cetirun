@@ -36,8 +36,8 @@ const (
 	nativeStartAnnotation   = w.NativeStartAnnotation
 )
 
-// Existing single-start receipts retain their original contract through upgrade.
-// New lifetimes also use it until the separate reader-first opt-in is enabled.
+// Recorded single-start lifetimes retain their owned execution contract.
+// New native lifetimes use common reconciliation.
 func (r *AgentReconciler) reconcileRecordedNativeSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
 	var namespaceErr, projectionErr error
 	if r.AIGateway.Enabled {

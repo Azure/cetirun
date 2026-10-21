@@ -497,51 +497,31 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     "verbs": ["get"],
                 }, rules)
 
-    def test_reconciled_execution_requires_a_separate_reader_first_opt_in(self):
+    def test_native_execution_needs_no_secondary_reconciliation_option(self):
         admission = self.enforced_values(podsEnabled=True)
         sources = {
             "enabled": True, "nativeExecution": True,
             "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
         }
         values = {"sandboxSources": sources, "aiGateway": {"enabled": True}}
-        baseline = self.render(admission, values=values)
-        for setting in (None, False):
-            with self.subTest(setting=setting):
-                self.assertEqual(self.render(admission, values={
-                    **values, "sandboxSources": {**sources, "reconciledExecution": setting},
-                }), baseline)
+        documents = self.render(admission, values=values)
+        container = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
+        configured = json.loads(next(item["value"] for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_SOURCES"))
+        self.assertTrue(configured["nativeExecution"])
+        self.assertNotIn("reconciledExecution", configured)
 
-        def source_environment(documents):
-            container = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
-            return next(item for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_SOURCES")
-
-        before = source_environment(baseline)
-        self.assertNotIn("reconciledExecution", json.loads(before["value"]))
-        configured = self.render(admission, values={
-            **values, "sandboxSources": {**sources, "reconciledExecution": True},
-        })
-        after = source_environment(configured)
-        self.assertEqual(json.loads(after["value"]), {
-            **json.loads(before["value"]), "reconciledExecution": True,
-        })
-        after["value"] = before["value"]
-        self.assertEqual(configured, baseline)
-
-    def test_reconciled_execution_rejects_invalid_configuration(self):
-        sources = {
-            "enabled": True, "nativeExecution": True, "reconciledExecution": True,
-            "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
-        }
-        for change in (
-            {"nativeExecution": False},
-            {"reconciledExecution": "true"},
-            {"reconciledExecution": 1},
-        ):
-            with self.subTest(change=change):
-                self.assert_rejected(
-                    self.enforced_values(podsEnabled=True), "sandboxSources.reconciledExecution",
-                    values={"sandboxSources": {**sources, **change}, "aiGateway": {"enabled": True}},
-                )
+    def test_removed_reconciled_execution_option_is_rejected(self):
+        for enabled in (False, True):
+            for setting in (False, True, "true", 1):
+                with self.subTest(enabled=enabled, setting=setting):
+                    sources = {
+                        "enabled": enabled, "nativeExecution": enabled, "reconciledExecution": setting,
+                        "bootstrapOwnedPrerequisites": enabled, "platformConfigMapName": "sandbox-platform",
+                    }
+                    self.assert_rejected(
+                        self.enforced_values(podsEnabled=True), "sandboxSources.reconciledExecution is no longer supported",
+                        values={"sandboxSources": sources, "aiGateway": {"enabled": True}},
+                    )
 
     def test_portal_controller_defaults_require_the_common_executor(self):
         chart = ROOT / "app/cetirun-platform"
@@ -563,15 +543,15 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             "aiGateway": {"catalogNamespace": namespace},
         }
         values = {"istio": {"enabled": True}, "cetirun-operator": operator, "cetirun-portal": portal}
-        for common in (False, True):
+        for native in (False, True):
             for controller_defaults in (False, True):
-                with self.subTest(common=common, controller_defaults=controller_defaults):
+                with self.subTest(native=native, controller_defaults=controller_defaults):
                     result = self.helm(chart=chart, values={
                         **values,
-                        "cetirun-operator": {**operator, "sandboxSources": {**sources, "reconciledExecution": common}},
+                        "cetirun-operator": {**operator, "sandboxSources": {**sources, "nativeExecution": native}},
                         "cetirun-portal": {**portal, "sandboxRuntimeDefaultsFromController": controller_defaults},
                     })
-                    if controller_defaults and not common:
+                    if controller_defaults and not native:
                         self.assertNotEqual(result.returncode, 0)
                         self.assertIn("sandboxRuntimeDefaultsFromController requires", result.stderr)
                     else:
@@ -1111,7 +1091,6 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         sources = {
             "enabled": True, "platformConfigMapName": "sandbox-platform",
             "bootstrapOwnedPrerequisites": True, "nativeExecution": True,
-            "reconciledExecution": True,
         }
         values = {"sandboxSources": sources, "aiGateway": {"enabled": True}}
         baseline = self.render(admission, values=values)
@@ -1137,7 +1116,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             self.assertIn(rule, baseline[role]["rules"])
             self.assertIn(rule, disabled[role]["rules"])
         for change in ({"plannedMigration": "true"}, {"plannedMigration": 1},
-                       {"plannedMigration": True, "reconciledExecution": False}):
+                       {"plannedMigration": True, "nativeExecution": False}):
             with self.subTest(change=change):
                 self.assert_rejected(admission, "sandboxSources.plannedMigration", values={
                     **values, "sandboxSources": {**sources, **change},

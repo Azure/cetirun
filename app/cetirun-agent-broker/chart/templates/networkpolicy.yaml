@@ -22,3 +22,12 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    {{- if .Values.connectionBindings.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.toolService.namespace }}
+      ports:
+        - protocol: TCP
+          port: 8443
+    {{- end }}

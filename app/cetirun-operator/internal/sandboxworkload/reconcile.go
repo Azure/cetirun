@@ -363,7 +363,17 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 		b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit); err != nil {
 		return err
 	}
-	for _, source := range PodSourceReferences(spec, b.input.Namespace.Name) {
+	var pullSecrets []corev1.LocalObjectReference
+	if b.input.ImagePullSecret != nil {
+		pullSecrets = []corev1.LocalObjectReference{{Name: b.input.ImagePullSecret.Name}}
+	}
+	if !slices.Equal(spec.ImagePullSecrets, pullSecrets) {
+		return fmt.Errorf("reconciled Sandbox image pulls differ from the approved Secret binding")
+	}
+	// Kubelet pull credentials must not authorize container environment or mounts.
+	runtimeSources := spec
+	runtimeSources.ImagePullSecrets = nil
+	for _, source := range PodSourceReferences(runtimeSources, b.input.Namespace.Name) {
 		if source.Kind == "Secret" && !slices.Contains(b.input.AuthorizedSecrets, source.Name) {
 			return fmt.Errorf("reconciled Agent cannot consume an unauthorized Secret")
 		}

@@ -44,7 +44,7 @@ func TestParseSandboxSourcesConfig(t *testing.T) {
 		{name: "native wrong type", raw: `{"nativeExecution":"true"}`, wantError: true},
 		{name: "migration requires common execution", raw: `{"plannedMigration":true}`, wantError: true},
 		{name: "migration wrong type", raw: `{"plannedMigration":"true"}`, wantError: true},
-		{name: "migration enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true, "reconciledExecution": true, "plannedMigration": true`, 1), enabled: true},
+		{name: "migration enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true, "plannedMigration": true`, 1), enabled: true},
 		{name: "native placement unsupported", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true, "placementConfigMapName": "sandbox-placement"`, 1), wantError: true},
 		{name: "native enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true`, 1), enabled: true},
 		{name: "native rejects desktop", raw: strings.Replace(strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true`, 1), `"desktop": false`, `"desktop": true`, 1), wantError: true},

@@ -79,7 +79,8 @@ func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt
 			case "ConfigMap":
 				names["configmaps"] = append(names["configmaps"], source.Name)
 			case "Secret":
-				if !slices.Contains(attempt.input.AuthorizedSecrets, source.Name) {
+				if !slices.Contains(attempt.input.AuthorizedSecrets, source.Name) &&
+					(attempt.input.ImagePullSecret == nil || source.Name != attempt.input.ImagePullSecret.Name) {
 					return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox source-read grant contains an unapproved Secret")
 				}
 				names["secrets"] = append(names["secrets"], source.Name)
