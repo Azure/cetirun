@@ -9,8 +9,11 @@ import {
   Button,
   Spinner,
   MessageBar,
+  MessageBarActions,
+  MessageBarBody,
   Field,
   Input,
+  Label,
   Textarea,
   Text,
   Divider,
@@ -217,11 +220,14 @@ export function TeamEditPage() {
       <Text weight="semibold">Agent policy and Sandbox</Text>
       {loadingConfiguration && <Spinner label="Loading policies and Sandboxes..." />}
       {configurationError && <MessageBar intent="error">
-        {configurationError.message}
-        <Button type="button" onClick={() => { void policiesQuery.refetch(); void sandboxesQuery.refetch(); }}>Retry configuration</Button>
+        <MessageBarBody>{configurationError.message}</MessageBarBody>
+        <MessageBarActions>
+          <Button type="button" onClick={() => { void policiesQuery.refetch(); void sandboxesQuery.refetch(); }}>Retry configuration</Button>
+        </MessageBarActions>
       </MessageBar>}
-      {!loadingConfiguration && !configurationError && policies.length === 0 && <MessageBar intent="info">Create an <Link to="/admin/policies/new">Agent Policy</Link> before creating this Team.</MessageBar>}
-      {!loadingConfiguration && !configurationError && sandboxes.length === 0 && <MessageBar intent="info">Create a <Link to="/admin/sandboxes/new">Sandbox</Link> before creating this Team.</MessageBar>}
+      {/* MessageBar lays its children out as a row; MessageBarBody keeps the sentence and its link together. */}
+      {!loadingConfiguration && !configurationError && policies.length === 0 && <MessageBar intent="info"><MessageBarBody>Create an <Link to="/admin/policies/new">Agent Policy</Link> before creating this Team.</MessageBarBody></MessageBar>}
+      {!loadingConfiguration && !configurationError && sandboxes.length === 0 && <MessageBar intent="info"><MessageBarBody>Create a <Link to="/admin/sandboxes/new">Sandbox</Link> before creating this Team.</MessageBarBody></MessageBar>}
       <Field label="Agent Policy" required hint="Controls the harnesses, Skills and model access available to this Team.">
         <Select value={form.agentPolicyRef} disabled={loadingConfiguration} onChange={event => setForm({ ...form, agentPolicyRef: event.target.value })}>
           <option value="">Choose a policy</option>
@@ -229,9 +235,10 @@ export function TeamEditPage() {
           {policies.map(policy => <option key={policy.name} value={policy.name}>{policy.name}</option>)}
         </Select>
       </Field>
-      <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
-        <legend>Allowed Sandboxes (required)</legend>
-        <Text size={300}>Reusable runtime, resource and storage settings. Manage them in Sandboxes.</Text>
+      <fieldset style={{ border: 0, padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: tokens.spacingVerticalXXS }}>
+        {/* A label like the other fields', rather than the browser's indented legend. */}
+        <legend style={{ padding: 0, marginBottom: tokens.spacingVerticalXXS }}><Label required>Allowed Sandboxes</Label></legend>
+        <Text size={200}>Reusable runtime, resource and storage settings. Manage them in Sandboxes.</Text>
         <div style={{ display: "flex", flexDirection: "column" }}>
           {[...new Set([...sandboxes.map(box => box.name), ...form.sandboxRefs])].map(ref => <Checkbox key={ref}
             label={sandboxes.some(box => box.name === ref) ? ref : `${ref} (unavailable)`}

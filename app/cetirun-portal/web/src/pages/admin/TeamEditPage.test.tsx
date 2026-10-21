@@ -50,6 +50,14 @@ it("offers creation links and blocks submission when prerequisites are absent", 
   renderEditor();
   expect(await screen.findByRole("link", { name: "Agent Policy" })).toHaveAttribute("href", "/admin/policies/new");
   expect(screen.getByRole("link", { name: "Sandbox" })).toHaveAttribute("href", "/admin/sandboxes/new");
+  // Each notice reads as one sentence: its words and link sit in one
+  // MessageBarBody, not in separate items of the MessageBar's row.
+  for (const name of ["Agent Policy", "Sandbox"]) {
+    const body = screen.getByRole("link", { name }).closest(".fui-MessageBarBody");
+    expect(body).not.toBeNull();
+    expect(body).toHaveTextContent(new RegExp(`^Create an? ${name} before creating this Team\\.$`));
+  }
+  expect(screen.getByRole("group", { name: /Allowed Sandboxes/ })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   fireEvent.submit(screen.getByRole("button", { name: "Create" }).closest("form")!);
   expect(teams.createTeam).not.toHaveBeenCalled();
