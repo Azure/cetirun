@@ -177,6 +177,7 @@ type aiGatewayKeyClient interface {
 	GetKey(context.Context, string) (*aigateway.Key, error)
 	GenerateKey(context.Context, aigateway.GenerateRequest) error
 	UpdateKeyModels(context.Context, string, []string) error
+	UpdateKeyRoutes(context.Context, string, []string) error
 	UpdateKeyBudget(context.Context, string, float64, string) error
 	SetKeyBlocked(context.Context, string, bool) error
 	UpdateKeyOwner(context.Context, string, string, string) error
@@ -749,6 +750,12 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			}
 			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyUpdated",
 				"Updated AI Gateway virtual key %s access to %s", status.KeyAlias, strings.Join(models, ","))
+		}
+		// Keys issued before the model lookup was allowed get it too.
+		if !aigateway.KeyRoutesCurrent(key.AllowedRoutes) {
+			if err := client.UpdateKeyRoutes(ctx, token, aigateway.KeyRoutes); err != nil {
+				return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
+			}
 		}
 		if key.TeamID != teamID || key.UserID != userID {
 			if err := client.UpdateKeyOwner(ctx, token, teamID, userID); err != nil {

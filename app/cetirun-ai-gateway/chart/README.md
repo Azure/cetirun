@@ -1177,6 +1177,18 @@ and are refused on `/health`. Create keys through the API the same way:
 {"models": ["gpt-4o"], "max_budget": 20, "allowed_routes": ["llm_api_routes"]}
 ```
 
+LiteLLM files the lookup of one model, `GET /v1/models/<model>`, under its
+internal-user routes rather than the model routes, so such a key gets a 403
+there while `GET /v1/models` works. Clients that look a model up before using
+it, Hermes among them, need it: add the two prefixes, which match only that
+lookup and Google's `generateContent` routes (model routes already). The keys
+the CetiRun operator issues carry them, and the operator adds them to keys it
+issued before:
+
+```json
+{"allowed_routes": ["llm_api_routes", "/v1/models", "/models"]}
+```
+
 ### Serving CetiRun Agents
 
 The CetiRun operator gives each Agent a key restricted to access groups, and

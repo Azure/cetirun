@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -37,6 +38,14 @@ const NoModels = "no-default-models"
 // LLMAPIRoutes restricts a key to inference routes, so it cannot call the
 // management API even for its own key.
 const LLMAPIRoutes = "llm_api_routes"
+
+// KeyRoutes are the routes an Agent's key may call: the inference routes, and
+// the model lookup by name, GET /v1/models/<model> and /models/<model>, which
+// LiteLLM files under its internal-user routes rather than the inference ones.
+// Clients such as Hermes look a model up before using it. The prefixes match
+// only the lookup and Google's generateContent routes, which are inference
+// routes already.
+var KeyRoutes = []string{LLMAPIRoutes, "/v1/models", "/models"}
 
 // DefaultTimeout bounds each Gateway call.
 const DefaultTimeout = 15 * time.Second
@@ -72,6 +81,8 @@ type Key struct {
 	// Aliases maps a model name the key's callers send to the model name the
 	// Gateway serves the request with (LiteLLM's key aliases).
 	Aliases map[string]string
+	// AllowedRoutes are the routes the key may call; see KeyRoutes.
+	AllowedRoutes []string
 }
 
 // GenerateRequest creates a key with a caller-chosen value, which lets the
@@ -156,6 +167,7 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 			TeamID         *string  `json:"team_id"`
 			UserID         *string  `json:"user_id"`
 			Aliases        any      `json:"aliases"`
+			AllowedRoutes  []string `json:"allowed_routes"`
 		} `json:"info"`
 	}
 	status, err := c.do(ctx, http.MethodGet, "/key/info?"+query.Encode(), nil, &response)
@@ -170,6 +182,7 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 		Alias: info.KeyAlias, Models: info.Models, MaxBudget: info.MaxBudget,
 		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked, Spend: info.Spend,
 		TeamID: deref(info.TeamID), UserID: deref(info.UserID), Aliases: keyAliases(info.Aliases),
+		AllowedRoutes: info.AllowedRoutes,
 	}
 	if info.BudgetResetAt != nil && strings.TrimSpace(*info.BudgetResetAt) != "" {
 		resetAt, err := time.Parse(time.RFC3339, *info.BudgetResetAt)
@@ -200,7 +213,7 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 		"key":            req.Key,
 		"key_alias":      req.Alias,
 		"models":         req.Models,
-		"allowed_routes": []string{LLMAPIRoutes},
+		"allowed_routes": KeyRoutes,
 		"metadata":       req.Metadata,
 	}
 	if req.MaxBudget > 0 {
@@ -237,6 +250,20 @@ func (c *Client) UpdateKeyModels(ctx context.Context, token string, models []str
 	}
 	_, err := c.do(ctx, http.MethodPost, "/key/update", map[string]any{"key": token, "models": models}, nil)
 	return err
+}
+
+// UpdateKeyRoutes replaces the routes the key identified by token may call.
+func (c *Client) UpdateKeyRoutes(ctx context.Context, token string, routes []string) error {
+	if len(routes) == 0 {
+		return fmt.Errorf("virtual key routes must not be empty; an empty list allows every route")
+	}
+	_, err := c.do(ctx, http.MethodPost, "/key/update", map[string]any{"key": token, "allowed_routes": routes}, nil)
+	return err
+}
+
+// KeyRoutesCurrent reports whether a key may call exactly KeyRoutes.
+func KeyRoutesCurrent(routes []string) bool {
+	return len(routes) == len(KeyRoutes) && !slices.ContainsFunc(KeyRoutes, func(route string) bool { return !slices.Contains(routes, route) })
 }
 
 // UpdateKeyBudget replaces the native LiteLLM USD budget without replacing

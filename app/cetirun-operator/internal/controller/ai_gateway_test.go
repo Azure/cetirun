@@ -93,6 +93,7 @@ type fakeAIGateway struct {
 	blockErr      error
 	aliasUpdates  []map[string]string
 	aliasErr      error
+	routeUpdates  [][]string
 }
 
 func newFakeAIGateway() *fakeAIGateway {
@@ -118,6 +119,7 @@ func (f *fakeAIGateway) GetKey(_ context.Context, token string) (*aigateway.Key,
 	copied := *key
 	copied.Models = slices.Clone(key.Models)
 	copied.Aliases = maps.Clone(key.Aliases)
+	copied.AllowedRoutes = slices.Clone(key.AllowedRoutes)
 	return &copied, nil
 }
 
@@ -135,7 +137,18 @@ func (f *fakeAIGateway) GenerateKey(_ context.Context, req aigateway.GenerateReq
 	f.keys[aigateway.Token(req.Key)] = &aigateway.Key{
 		Alias: req.Alias, Models: slices.Clone(req.Models), MaxBudget: &budget, BudgetDuration: req.BudgetDuration,
 		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID, Aliases: maps.Clone(req.Aliases),
+		AllowedRoutes: slices.Clone(aigateway.KeyRoutes),
 	}
+	return nil
+}
+
+func (f *fakeAIGateway) UpdateKeyRoutes(_ context.Context, token string, routes []string) error {
+	key, ok := f.keys[token]
+	if !ok {
+		return &aigateway.APIError{StatusCode: 404, Message: "not found"}
+	}
+	key.AllowedRoutes = slices.Clone(routes)
+	f.routeUpdates = append(f.routeUpdates, slices.Clone(routes))
 	return nil
 }
 
@@ -710,6 +723,32 @@ func TestReconcileAIGatewayMovesKeyWhenTeamChanges(t *testing.T) {
 	}
 	if agent.Status.AIGateway.Team != aiGatewayTeamPrefix+"team-b" {
 		t.Fatalf("status team %q", agent.Status.AIGateway.Team)
+	}
+}
+
+func TestReconcileAIGatewayLetsKeysIssuedBeforeTheModelLookupLookUpModels(t *testing.T) {
+	agent := aiGatewayTestAgent("team-a")
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.routeUpdates) != 0 {
+		t.Fatalf("a new key already has the routes: %v", gateway.routeUpdates)
+	}
+	// A key issued by an earlier operator may call the inference routes only.
+	for _, key := range gateway.keys {
+		key.AllowedRoutes = []string{aigateway.LLMAPIRoutes}
+	}
+	for range 2 {
+		if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(gateway.routeUpdates) != 1 || !slices.Equal(gateway.routeUpdates[0], aigateway.KeyRoutes) {
+		t.Fatalf("the key must get the model lookup once: %v", gateway.routeUpdates)
+	}
+	if len(gateway.generated) != 1 {
+		t.Fatalf("the key must be updated in place, not replaced: %d keys generated", len(gateway.generated))
 	}
 }
 

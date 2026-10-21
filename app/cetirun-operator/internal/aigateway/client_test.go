@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,8 +122,38 @@ func TestGenerateKeySendsRestrictedKey(t *testing.T) {
 	if body["key"] != "sk-value" || body["key_alias"] != "cetirun-a" || body["max_budget"] != float64(10) || body["budget_duration"] != "1mo" {
 		t.Fatalf("unexpected body %v", body)
 	}
-	if routes, _ := body["allowed_routes"].([]any); len(routes) != 1 || routes[0] != LLMAPIRoutes {
+	// Inference routes, and the model lookup by name; no management route.
+	if routes, _ := body["allowed_routes"].([]any); len(routes) != 3 || routes[0] != LLMAPIRoutes || routes[1] != "/v1/models" || routes[2] != "/models" {
 		t.Fatalf("allowed_routes = %v", body["allowed_routes"])
+	}
+}
+
+func TestKeyRoutesAreReadAndUpdated(t *testing.T) {
+	client, requests := testServer(t, func(r recordedRequest) (int, string) {
+		if r.method == http.MethodGet {
+			return 200, `{"info":{"key_alias":"a","models":["m"],"allowed_routes":["llm_api_routes"]}}`
+		}
+		return 200, `{}`
+	})
+	key, err := client.GetKey(context.Background(), "abc")
+	if err != nil || !slices.Equal(key.AllowedRoutes, []string{LLMAPIRoutes}) || KeyRoutesCurrent(key.AllowedRoutes) {
+		t.Fatalf("GetKey = %+v, %v", key, err)
+	}
+	if err := client.UpdateKeyRoutes(context.Background(), "abc", KeyRoutes); err != nil {
+		t.Fatal(err)
+	}
+	body := (*requests)[1].body
+	if r := (*requests)[1]; r.path != "/key/update" || body["key"] != "abc" || len(body) != 2 {
+		t.Fatalf("update request %+v", r)
+	}
+	if err := client.UpdateKeyRoutes(context.Background(), "abc", nil); err == nil {
+		t.Fatal("an empty route list allows every route and must be refused")
+	}
+	for routes, current := range map[string]bool{"llm_api_routes,/v1/models,/models": true, "/models,/v1/models,llm_api_routes": true,
+		"llm_api_routes": false, "": false, "llm_api_routes,/v1/models,/models,/key/info": false} {
+		if got := KeyRoutesCurrent(strings.Split(routes, ",")); got != current {
+			t.Errorf("KeyRoutesCurrent(%q) = %v", routes, got)
+		}
 	}
 }
 
