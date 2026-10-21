@@ -129,9 +129,9 @@ class GuardTest(unittest.TestCase):
         self.module = load_guard()
         self.guard = self.module.Guard()
 
-    def filtered(self, request_kwargs, deployments=ALL):
+    def filtered(self, request_kwargs, deployments=ALL, model="copilot/gpt-5"):
         return asyncio.run(self.guard.async_filter_deployments(
-            model="copilot/gpt-5", healthy_deployments=list(deployments), messages=None,
+            model=model, healthy_deployments=list(deployments), messages=None,
             request_kwargs=request_kwargs))
 
     def ids(self, deployments):
@@ -202,6 +202,126 @@ class GuardTest(unittest.TestCase):
         # calling key is the same one.
         request = {"metadata": {"user_api_key_auth": Key(["auto-coding"])}}
         self.assertEqual(self.ids(self.filtered(request, [ALICE, SHARED])), ["cetirun-shared-1234"])
+
+    # ----- sampling parameters a router's chosen model refuses -----
+
+    def with_gpt5_rule(self, none_effort=()):
+        """LiteLLM's GPT-5 rule, as 1.105.1 states it, for model names; none_effort supports and defaults to none."""
+
+        class OpenAIGPT5Config:
+            @classmethod
+            def is_model_gpt_5_model(cls, model):
+                return ("gpt-5" in model or "gpt-6" in model) and "gpt-5-chat" not in model
+
+            @classmethod
+            def _supports_reasoning_effort_level(cls, model, level):
+                return level == "none" and model in none_effort
+
+            @classmethod
+            def effort_resolves_to_none(cls, model, effort):
+                return effort == "none" if effort is not None else model in none_effort
+
+        names = ("litellm.llms", "litellm.llms.openai", "litellm.llms.openai.chat",
+                 "litellm.llms.openai.chat.gpt_5_transformation")
+        stubs = {name: types.ModuleType(name) for name in names}
+        stubs[names[-1]].OpenAIGPT5Config = OpenAIGPT5Config
+        saved = {name: sys.modules.get(name) for name in stubs}
+        sys.modules.update(stubs)
+
+        def restore():
+            for name, previous in saved.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+
+        self.addCleanup(restore)
+
+    @staticmethod
+    def model_deployment(name, model, base_model=None):
+        info = {"id": f"d-{name}", "access_groups": ["cetirun-shared"]}
+        if base_model:
+            info["base_model"] = base_model
+        return {"model_name": name, "litellm_params": {"model": model}, "model_info": info}
+
+    @staticmethod
+    def routed(router="auto", bucket="metadata", **params):
+        return {bucket: {"user_api_key_auth": Key(["cetirun-shared"]),
+                         "routing_decision": {"router_model_name": router, "tier": "MEDIUM"}}, **params}
+
+    def test_a_router_tier_that_reasons_gets_no_sampling_parameters(self):
+        self.with_gpt5_rule()
+        azure = self.model_deployment("gpt-5.6-terra", "azure/gpt-5.6-terra")
+        # A Copilot route behind the Gateway: the proxy applies the same rule.
+        copilot = self.model_deployment("gpt-6-sol", "litellm_proxy/gpt-6-sol")
+        for bucket in ("metadata", "litellm_metadata"):
+            for tier, deployments in (("gpt-5.6-terra", [azure]), ("gpt-6-sol", [copilot])):
+                with self.subTest(bucket=bucket, tier=tier):
+                    request = self.routed(bucket=bucket, temperature=0, top_p=0.5, logprobs=True, top_logprobs=2,
+                                          max_tokens=16)
+                    with self.assertLogs(LOGGER, level="WARNING") as logs:
+                        kept = self.filtered(request, deployments, tier)
+                    self.assertEqual(kept, deployments)
+                    for name in ("temperature", "top_p", "logprobs", "top_logprobs"):
+                        self.assertNotIn(name, request)
+                    self.assertEqual(request["max_tokens"], 16)
+                    self.assertIn("auto", logs.output[0])
+
+    def test_temperature_one_and_models_that_take_sampling_stay(self):
+        self.with_gpt5_rule(none_effort=("gpt-5.4-nano",))
+        plain = self.model_deployment("nano-plain", "openai/gpt-4.1-nano")
+        # A deployment named after no model, priced through base_model.
+        named = self.model_deployment("small", "azure/my-small", base_model="azure/gpt-4.1-mini")
+        # Defaults to effort none: LiteLLM accepts any temperature.
+        none_default = self.model_deployment("gpt-5.4-nano", "azure/gpt-5.4-nano")
+        terra = self.model_deployment("gpt-5.6-terra", "azure/gpt-5.6-terra")
+        for deployments, params in (([plain], {"temperature": 0, "top_p": 0.5}), ([named], {"temperature": 0}),
+                                    ([none_default], {"temperature": 0}), ([terra], {"temperature": 1}),
+                                    ([terra], {"temperature": None})):
+            with self.subTest(deployments=deployments[0]["model_name"], params=params):
+                request = self.routed(**params)
+                self.filtered(request, deployments, deployments[0]["model_name"])
+                for name, value in params.items():
+                    self.assertEqual(request[name], value)
+
+    def test_an_effort_of_none_keeps_sampling(self):
+        self.with_gpt5_rule(none_effort=("gpt-5.6-terra",))
+        terra = self.model_deployment("gpt-5.6-terra", "azure/gpt-5.6-terra")
+        for effort in ({"reasoning_effort": "none"}, {"reasoning_effort": {"effort": "none"}}, {"reasoning": {"effort": "none"}}):
+            with self.subTest(effort=effort):
+                request = self.routed(temperature=0, **effort)
+                self.filtered(request, [terra], "gpt-5.6-terra")
+                self.assertEqual(request["temperature"], 0)
+        request = self.routed(temperature=0, reasoning={"effort": "high"})
+        self.filtered(request, [terra], "gpt-5.6-terra")
+        self.assertNotIn("temperature", request)
+
+    def test_one_deployment_that_refuses_is_enough(self):
+        # Which deployment serves the request is chosen after this.
+        self.with_gpt5_rule()
+        deployments = [self.model_deployment("mixed", "openai/gpt-4.1"), self.model_deployment("mixed", "azure/gpt-6-sol")]
+        request = self.routed(temperature=0.2)
+        self.filtered(request, deployments, "mixed")
+        self.assertNotIn("temperature", request)
+
+    def test_a_model_asked_for_by_name_keeps_its_sampling_parameters(self):
+        # The caller chose the model: LiteLLM's refusal tells it why.
+        self.with_gpt5_rule()
+        terra = self.model_deployment("gpt-5.6-terra", "azure/gpt-5.6-terra")
+        for request in ({"metadata": {"user_api_key_auth": Key(["cetirun-shared"])}, "temperature": 0},
+                        # The router's own selection, before it picks a tier.
+                        self.routed(router="gpt-5.6-terra", temperature=0),
+                        {"metadata": {"routing_decision": None}, "temperature": 0},
+                        {"metadata": {"routing_decision": {"router_model_name": ""}}, "temperature": 0}):
+            with self.subTest(request=request):
+                self.filtered(request, [terra], "gpt-5.6-terra")
+                self.assertEqual(request["temperature"], 0)
+
+    def test_without_litellms_rule_nothing_is_removed(self):
+        terra = self.model_deployment("gpt-5.6-terra", "azure/gpt-5.6-terra")
+        request = self.routed(temperature=0)
+        self.filtered(request, [terra], "gpt-5.6-terra")
+        self.assertEqual(request["temperature"], 0)
 
     # ----- encrypted reasoning without the Gateway's mark -----
 

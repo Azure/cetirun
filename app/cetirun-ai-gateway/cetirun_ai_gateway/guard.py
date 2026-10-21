@@ -57,6 +57,17 @@ invalid_encrypted_content) does not go on to the model's fallbacks: their
 deployments cannot read it either, so each fallback fails the same way, and
 the client, which handles this error by sending the request again without the
 reasoning, gets the first error instead of the last.
+
+A request an auto router sends to a model of the GPT-5 or GPT-6 series that
+reasons loses its sampling parameters: temperature other than 1, top_p,
+logprobs and top_logprobs. LiteLLM, the Gateway's for an Azure deployment and
+the Copilot proxy's for a Copilot route, refuses such a request with 400
+unless the reasoning effort resolves to none. A client that asks for auto
+cannot know which model answers: Hermes sends its side tasks, such as a
+conversation title, with temperature 0, which failed whenever the router chose
+a reasoning model. LiteLLM's own rule decides, read from LiteLLM. A request
+for a model by name keeps its parameters: its caller chose the model, and
+LiteLLM's error says why it fails.
 """
 
 import re
@@ -100,6 +111,14 @@ SHORTENED = "\u2026"
 AFFINITY_CHECK = "EncryptedContentAffinityCheck"
 # How a provider refuses encrypted reasoning it cannot read.
 UNREADABLE_REASONING = ("invalid_encrypted_content", "could not be verified", "could not be decrypted")
+
+# Sampling parameters a model of the GPT-5 and GPT-6 series accepts only while
+# its reasoning effort is none; LiteLLM refuses the request (400) otherwise,
+# temperature only when it is not 1.
+SAMPLING_PARAMETERS = ("temperature", "top_p", "logprobs", "top_logprobs")
+# Where an auto router records its choice on a request, with its own name.
+ROUTING_DECISION = "routing_decision"
+ROUTER_NAME = "router_model_name"
 
 
 def mark_encrypted_content(encrypted_content, model_id):
@@ -247,6 +266,78 @@ def refusal_error(model, text):
     return UnreadableReasoningFallback(text)
 
 
+def routing_router(model, request_kwargs):
+    """The auto router that chose model for the request, or None when no router did."""
+    if not isinstance(request_kwargs, dict):
+        return None
+    for name in METADATA_BUCKETS:
+        bucket = request_kwargs.get(name)
+        decision = bucket.get(ROUTING_DECISION) if isinstance(bucket, dict) else None
+        router = decision.get(ROUTER_NAME) if isinstance(decision, dict) else None
+        if isinstance(router, str) and router and router != model:
+            return router
+    return None
+
+
+def deployment_model_names(deployment):
+    """The model names a deployment is known by, without provider prefixes: its base_model and its model."""
+    names = []
+    for holder, key in (("model_info", "base_model"), ("litellm_params", "model")):
+        section = deployment.get(holder) if isinstance(deployment, dict) else None
+        value = section.get(key) if isinstance(section, dict) else None
+        if isinstance(value, str) and value:
+            names.append(value.split("/")[-1])
+    return names
+
+
+def requested_effort(request_kwargs):
+    """The reasoning effort a request asks for, in the Chat Completions or the Responses API form, or None."""
+    effort = request_kwargs.get("reasoning_effort")
+    if effort is None and isinstance(request_kwargs.get("reasoning"), dict):
+        effort = request_kwargs["reasoning"].get("effort")
+    if isinstance(effort, dict):
+        effort = effort.get("effort")
+    return effort if isinstance(effort, str) else None
+
+
+def refuses_sampling(name, effort):
+    """Whether LiteLLM refuses sampling parameters for the model name at the reasoning effort.
+
+    LiteLLM's own rule for the GPT-5 and GPT-6 series: only temperature 1 and
+    no top_p or logprobs, unless the effort, asked for or the model's default,
+    resolves to none.
+    """
+    try:
+        from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        if not OpenAIGPT5Config.is_model_gpt_5_model(name):
+            return False
+        return not (OpenAIGPT5Config._supports_reasoning_effort_level(name, "none")
+                    and OpenAIGPT5Config.effort_resolves_to_none(name, effort))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def strip_sampling(request_kwargs, deployments):
+    """Remove the sampling parameters a router's chosen model refuses, in place; the names removed.
+
+    Removed when any of the deployments refuses them: which one serves the
+    request is chosen later, and the others accept the request without them.
+    """
+    present = [name for name in SAMPLING_PARAMETERS
+               if request_kwargs.get(name) is not None and not (name == "temperature" and request_kwargs[name] == 1)]
+    if not present:
+        return []
+    effort = requested_effort(request_kwargs)
+    if not any(refuses_sampling(name, effort) for deployment in deployments for name in deployment_model_names(deployment)):
+        return []
+    for name in present:
+        request_kwargs.pop(name, None)
+    return present
+
+
 def copilot_groups(deployment):
     """The per-Agent GitHub Copilot access groups a deployment belongs to."""
     info = deployment.get("model_info") if isinstance(deployment, dict) else None
@@ -326,7 +417,8 @@ class Guard(CustomLogger):
         model, unmarked or shortened encrypted reasoning is removed from a
         Responses API request first. A fallback after a deployment refused the
         request's encrypted reasoning is ended here, so the client gets that
-        first error.
+        first error. A request an auto router sends to a model that reasons
+        loses the sampling parameters the model refuses.
         """
         refusal = unreadable_reasoning_refusal(request_kwargs)
         if refusal is not None:
@@ -342,11 +434,20 @@ class Guard(CustomLogger):
                     "or shortened by the client, from a request for %s; no deployment may be able to read it.",
                     removed, "" if removed == 1 else "s", model)
         granted = set(caller_models(request_kwargs) or ())
-        return [
+        kept = [
             deployment
             for deployment in healthy_deployments
             if not (groups := copilot_groups(deployment)) or granted.intersection(groups)
         ]
+        router = routing_router(model, request_kwargs)
+        if router is not None and kept:
+            removed = strip_sampling(request_kwargs, kept)
+            if removed:
+                verbose_proxy_logger.warning(
+                    "CetiRun guard: removed %s from a request the router %s sent to %s, which takes no sampling "
+                    "parameters while it reasons.",
+                    ", ".join(removed), router, model)
+        return kept
 
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict,
                                            traceback_str=None):
