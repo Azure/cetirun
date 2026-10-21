@@ -243,33 +243,3 @@ func TestTeamEffectiveSelectionExcludesUnrelatedSlots(t *testing.T) {
 		t.Fatal("selected policy rebind did not invalidate execution:", err)
 	}
 }
-
-// AI Gateway rate limits apply to the Agent's Gateway key only: changing,
-// adding or removing them leaves a policy's execution digest as it is, while
-// the policy's other controls still change it.
-func TestPolicyExecutionDigestIgnoresGatewayRateLimits(t *testing.T) {
-	one, two := int64(1), int64(60)
-	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "policy", UID: "policy-uid", ResourceVersion: "1", Generation: 1},
-		Spec: api.AgentPolicySpec{ModelAccess: api.AgentPolicyModelAccess{SharedModels: api.AgentPolicySharedModelsAccess{Allowed: []string{"example-model"}}}}}
-	base, err := ExecutionObjectDigest(policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, limits := range map[string]*api.AgentPolicyRateLimits{
-		"totals":    {MaxParallelRequests: &one, RPM: &two},
-		"per model": {PerModel: map[string]api.AgentPolicyModelRateLimit{"example-model": {RPM: &two}}},
-		"empty":     {},
-	} {
-		changed := policy.DeepCopy()
-		changed.Spec.ModelAccess.RateLimits = limits
-		changed.ResourceVersion, changed.Generation = "2", 2
-		if got, err := ExecutionObjectDigest(changed); err != nil || got != base {
-			t.Errorf("%s: a rate-limit change changed the execution digest (%v)", name, err)
-		}
-	}
-	changed := policy.DeepCopy()
-	changed.Spec.ModelAccess.SharedModels.Allowed = []string{"other-model"}
-	if got, err := ExecutionObjectDigest(changed); err != nil || got == base {
-		t.Fatal("a model access change must still change the execution digest")
-	}
-}

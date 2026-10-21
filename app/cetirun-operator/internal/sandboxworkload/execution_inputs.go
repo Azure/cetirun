@@ -176,11 +176,6 @@ func canonicalPolicyExecutionBody(body map[string]any) error {
 			}
 		}
 	}
-	// The AI Gateway rate limits are enforced on the Agent's Gateway key alone,
-	// which the operator updates in place; they are no execution input. Without
-	// this, a limit edit counted as source drift and stopped every running native
-	// Agent of the policy for good (single-start), measured on a test cluster.
-	unstructured.RemoveNestedField(body, "spec", "modelAccess", "rateLimits")
 	// Optional grant lists have no schema default; their empty form is omitted.
 	for _, field := range []string{"roleBindings", "clusterRoleBindings"} {
 		values, found, err := unstructured.NestedSlice(body, "spec", "kubernetesAccess", field)
