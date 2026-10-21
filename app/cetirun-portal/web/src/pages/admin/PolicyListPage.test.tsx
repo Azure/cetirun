@@ -45,7 +45,7 @@ describe("PolicyListPage", () => {
     await user.click(await screen.findByRole("button", { name: "Delete standard" }));
     await act(async () => { await client.refetchQueries({ queryKey: ["admin", "policies"] }); });
     expect(await screen.findByText("hermes")).toBeInTheDocument();
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete", exact: true }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete", exact: true }));
     expect(await screen.findByText("Policy changed; reload and try again.")).toBeInTheDocument();
     expect(policyAPI.deletePolicy).toHaveBeenLastCalledWith(selected);
 
@@ -56,12 +56,14 @@ describe("PolicyListPage", () => {
 
     // A new selection and confirmation can delete the version now shown in the list.
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
-    await user.click(screen.getByRole("button", { name: "Delete standard" }));
+    // Wait for the exiting modal to unmount and release its focus trap before reopening.
+    await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument());
+    await user.click(await screen.findByRole("button", { name: "Delete standard" }));
     expect(screen.queryByText("Policy changed; reload and try again.")).not.toBeInTheDocument();
     vi.mocked(policyAPI.deletePolicy).mockResolvedValue(undefined);
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete", exact: true }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete", exact: true }));
     await waitFor(() => expect(policyAPI.deletePolicy).toHaveBeenCalledTimes(3));
     expect(policyAPI.deletePolicy).toHaveBeenLastCalledWith(refreshed);
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument());
   });
 });
