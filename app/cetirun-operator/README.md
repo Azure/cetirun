@@ -501,6 +501,12 @@ Output identifies the operation
 and phase, not the configuration contents. Run `sandbox-config-change --help`
 for the exact argument list.
 
+Whitespace and object-key order inside `managedFields.fieldsV1` do not change
+field ownership and are normalized before comparing configuration images.
+Malformed or duplicate-key field sets are rejected. Other server metadata,
+including managers, timestamps, UID and resourceVersion, must still be preserved;
+normalization does not permit refreshing an original operation's inputs.
+
 The UID-pinned authority must already have been installed and protected before
 execution, using the existing coordination state format. The command does not
 create missing state, grant privileges, bypass admission, qualify fencing or
