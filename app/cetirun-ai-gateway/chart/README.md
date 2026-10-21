@@ -599,6 +599,32 @@ the cost of the failed call and of its fallback. Measured with mock resources:
 with the guard, every such replay was answered, streamed or not, and an item
 with the mark was routed as before; with the check off, nothing is removed.
 
+The mark is written so that clients keep it. LiteLLM writes it as
+`litellm_enc:<base64>;<encrypted content>`. OpenClaw keeps encrypted reasoning
+only when it looks like an opaque token (letters, digits, `+ / _ -` and
+trailing `=`); anything else goes through its transcript's secret redaction,
+which shortens a `gAAAA…` value to its first six and last four characters. On
+a test installation every OpenClaw turn after one with reasoning sent such a
+shortened item back, was refused with `invalid_encrypted_content`, went
+through the model's fallbacks, which failed the same way, and was retried by
+OpenClaw without its reasoning: new conversations too, on Azure OpenAI and
+GitHub Copilot alike. The guard callback therefore makes LiteLLM write the mark
+as `ctrnenc<deployment ID in hex>x<encrypted content>` and read both forms, so
+items marked before an upgrade still route; encrypted content that a client
+shortened (it contains `…`) is removed like an item without the mark. Measured
+with mock resources on LiteLLM 1.105.1: every item a response carries, streamed
+and not, is in the new form, and items in either form are routed back to their
+deployment and reach it unmarked.
+
+A request that a deployment refuses for its encrypted reasoning (400,
+`invalid_encrypted_content`) does not go on to the model's `router.fallbacks`:
+a fallback's deployments cannot read that reasoning either, so each one fails
+the same way. The guard ends the fallback, and the client gets the
+deployment's 400, which OpenClaw answers by sending the turn again without the
+encrypted reasoning. Other errors fall back as before. Measured with mock
+resources: the refused request reached no fallback deployment and no
+deployment went into cooldown; a 500 still fell back.
+
 When that deployment fails, LiteLLM 1.105.1 keeps the conversation on it while
 it still counts as available, so the conversation's requests fail with the
 deployment's error; `router.failover` does not rescue them, since the check
@@ -827,7 +853,9 @@ the console cannot remove it. It:
   auto router's choice of tier is held to the same rule;
 - while `router.encryptedContentAffinity` is on, removes the encrypted content
   of Responses API reasoning items that carry no mark of the deployment that
-  produced it, keeping their summaries; see
+  produced it, or that a client shortened, keeping their summaries; makes
+  LiteLLM write that mark in a form clients keep; and ends a request's
+  fallbacks once a deployment refused its encrypted reasoning; see
   [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource);
 - keeps error messages free of LiteLLM's internal deployment list: error
   messages returned to callers no longer include LiteLLM's internal list of
