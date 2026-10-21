@@ -627,12 +627,13 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 	if sandboxRef != "" && agent.Type != cetirunv1alpha1.AgentTypeCustom {
 		runtime, available := h.Config.SandboxRuntimeFor(agent.Type)
 		_, configured := h.Config.SandboxRuntimes[string(agent.Type)]
-		if configured && !available {
+		if !available && (configured || !h.Config.SandboxControllerDefaults) {
 			writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "The selected agent runtime is not configured for Sandbox creation; ask an administrator to configure its approved runtime profile")
 			return
 		}
 		// Preserve explicit requests so admission can validate their qualification.
-		// Defaults come from deployment configuration, never browser authority.
+		// Missing defaults may be delegated only to an explicitly enabled
+		// common executor; the retained executor requires pins at creation.
 		if available && agent.Image == nil {
 			agent.Image = &runtime.Image
 		}

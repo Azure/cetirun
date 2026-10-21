@@ -116,8 +116,8 @@ Upgrade readers before enabling the new writer:
 With the new switch off, even an installation already using native execution and
 coordination creates only the previous single-start lifetime and wire format.
 The false setting is omitted from the controller's JSON configuration so an older
-controller can still read it during the first rollout. Admission and Portal
-receive no new configuration field.
+controller can still read it during the first rollout. The controller's
+`reconciledExecution` field is not sent to admission or Portal.
 Disabling the switch later affects only new lifetimes: it does not downgrade
 existing records or permit rolling readers back while reconciled lifetimes remain.
 Finish their ordinary cleanup before restoring older readers.
@@ -129,6 +129,15 @@ Its optional controller-owned `aiGateway.copilotProxy.replicaCount` permits
 authentication preparation independently of the Agent replica count. Suspension
 and policy revocation stop both components. Pre-login creation does not grant
 Copilot model access; the Portal continues to report sign-in required.
+Suspension blocks an existing Gateway key, stops owned main/auxiliary workloads
+and withdraws their route before chart or bootstrap prerequisites are checked.
+A Gateway, component-stop or status-write failure does not skip the other
+shutdown attempts. Unacknowledged shutdown still retains its source reservation;
+normal Kubernetes stop requests are not physical fencing.
+Loss of bootstrap/runtime prerequisites also holds an already-running,
+unsuspended reconciled Agent: block its existing key, stop owned components and
+withdraw ingress while preserving HOME and spend. A status error does not skip
+these independent cleanup attempts.
 
 The same protected expectation ConfigMap now has a version-2 representation for
 these lifetimes. It records the current chart-owned workloads, complete source
@@ -143,9 +152,35 @@ Ready and suspended Agents still recheck current sources and deployed controls.
 Unchanged passes retain their phase and reconcile timestamp between periodic
 refreshes instead of generating status-watch loops.
 
-Portal runtime profiles are optional: when absent, the controller pins
-chart/image/port from its selected trusted chart, with narrowly authorized
-admission updates. Explicit requests and configured profiles are still validated.
+Private-image Agents complete owned namespace bootstrap before registry
+credentials are synchronized. Missing runtime pins are filled first; existing
+namespaces without the protected bootstrap receipt are not adopted. Credential
+rotation still synchronizes the owned pull Secret before chart preparation.
+The protected expectation pins that Secret's identity as a kubelet image-pull
+binding, not as a Secret that Agent containers or the Copilot proxy may consume.
+
+When Memory Context is enabled, reconciled OpenClaw and Hermes use their ordinary
+native plugin registration and composed skill paths alongside the installed
+assets. OpenClaw retains its conversation hook, and Hermes explicitly includes
+`cetirun-memory-context` in `plugins.enabled`, including after HOME initialization.
+Retained single-start templates remain disabled.
+
+Every disk-backed `emptyDir`, including extension and auxiliary volumes, must
+declare a positive `sizeLimit` no greater than the selected Sandbox scratch limit.
+The common chart bounds its context, empty-skills and Tailscale temporary storage
+too. Helpers with fixed temporary-volume sizes require a sufficiently large
+selected limit; validation does not silently enlarge it. Memory-backed volumes
+retain their separate memory accounting. These are per-volume checks, not a
+replacement for container/Pod storage accounting.
+
+Portal runtime profiles are optional only when its deployment explicitly enables
+`sandboxRuntimeDefaultsFromController` after this common executor is enabled.
+The Portal keeps that opt-in off during reader-first rollout, so missing profiles
+reject creation rather than sending unpinned Agents to the retained executor.
+With it enabled, the controller pins chart/image/port from its selected trusted
+chart, with narrowly authorized admission updates. Disable the Portal opt-in
+before disabling new reconciled lifetimes. Explicit requests and configured
+profiles are still validated.
 The protected path disables the ordinary immutable-StatefulSet replacement hook;
 unsupported storage/type transitions require a deliberate handoff, not orphaning
 the old HOME writer.
@@ -178,13 +213,23 @@ and namespace Pods to be absent. Their absence does not replace the main HOME
 workload's acknowledged shutdown.
 A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
 StatefulSet shutdown acknowledgement, but only before any apply is submitted and
-after ordinary namespace/Pod cleanup checks. Cancellation races with submission
+after ordinary namespace/Pod cleanup checks. Its expectation is first persisted
+as initializing, before the grant journal, and becomes pending only after the
+empty journal is confirmed. Publication retries, including lost acknowledgements,
+therefore retain the pre-submit evidence without inferring it from a missing
+workload. No grants or workload apply are issued during initialization.
+Cancellation races with submission
 through a conditional state update. Submitted, uncertain or older unmarked
 checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.
+Normal reconciled deletion revokes its recorded preparation grants and
+releases/deletes the Operator-namespace grant journal before removing the Agent
+finalizer. This cleanup remains available when new starts are disabled and
+retries terminating journals during foreground deletion without adopting foreign
+ownership or discarding grant history.
 
 ### Retained single-start profile and capability registration
 

@@ -581,6 +581,8 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `features.tailscaleEnabled` | `false` |
 | `features.maxInstancesPerUser` | `1`; `0` means unlimited |
 | `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`; also accepts opt-in `custom`. Checked by both the form and backend |
+| `sandboxRuntimeProfiles` | Approved chart/image/port pins for built-in Sandbox creation; missing profiles reject creation unless controller defaults are explicitly enabled |
+| `sandboxRuntimeDefaultsFromController` | `false`; permit missing profiles only after the Operator's common Sandbox executor is enabled |
 | `noticeBanner` | Set your deployment notice explicitly or clear it |
 | `image`, `imagePullSecrets` | Portal image pin and pull access |
 
@@ -591,6 +593,13 @@ Per-user and Team-specific type and image policy is deferred to AgentPolicy.
 See [Portal self-service](../agent-harness/#portal-self-service) for the request
 contract and configuration. Operator runtime qualifications and Sandbox
 admission remain separate checks.
+
+Keep `sandboxRuntimeDefaultsFromController` off during reader-first rollout.
+Enable it only after the Operator uses `sandboxSources.reconciledExecution`;
+the platform chart rejects a mismatch. The retained executor needs approved
+creation pins, so disable this Portal setting before disabling new reconciled
+lifetimes. Configured profiles and explicit image/port requests remain subject
+to their existing validation and admission checks.
 
 `istio.sidecarInjection: true` is only a chart validation assertion; it does
 not label the namespace or inject a running pod. The deploy helper labels the

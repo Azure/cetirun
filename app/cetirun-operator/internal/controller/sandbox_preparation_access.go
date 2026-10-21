@@ -29,7 +29,9 @@ func (r *AgentReconciler) sandboxGrantJournal() *sandboxpolicy.GrantJournalStore
 func (r *AgentReconciler) sandboxPreparationStateNeeded(agent *api.Agent) bool {
 	// A namespace alone does not enable preparation. During deletion the hold
 	// also protects retries after the preparation marker has been released.
-	cleanupPending := !agent.DeletionTimestamp.IsZero() && controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer)
+	// Reconciled lifetimes retain their grant journal through bootstrap ownership.
+	cleanupPending := !agent.DeletionTimestamp.IsZero() &&
+		(controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) || controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer))
 	return controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) ||
 		(r.OperatorNamespace != "" && (r.SandboxPreparation != nil || cleanupPending))
 }
@@ -77,7 +79,8 @@ func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt
 			case "ConfigMap":
 				names["configmaps"] = append(names["configmaps"], source.Name)
 			case "Secret":
-				if !slices.Contains(attempt.input.AuthorizedSecrets, source.Name) {
+				if !slices.Contains(attempt.input.AuthorizedSecrets, source.Name) &&
+					(attempt.input.ImagePullSecret == nil || source.Name != attempt.input.ImagePullSecret.Name) {
 					return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox source-read grant contains an unapproved Secret")
 				}
 				names["secrets"] = append(names["secrets"], source.Name)

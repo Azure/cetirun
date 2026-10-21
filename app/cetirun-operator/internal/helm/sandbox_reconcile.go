@@ -80,11 +80,12 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			len(spec.Containers) == 0 || deployment.Spec.Selector == nil {
 			return fmt.Errorf("Sandbox auxiliary workload has unapproved host or identity access")
 		}
-		if err := w.ValidateReconciledVolumes(spec, nil, nil); err != nil {
+		if err := w.ValidateReconciledVolumes(spec, nil, nil, input.Resolution.Sandbox.Storage.Scratch.SizeLimit); err != nil {
 			return err
 		}
 		for _, source := range w.PodSourceReferences(spec, input.Namespace.Name) {
-			if source.Kind == "Secret" && slices.Contains(input.AuthorizedSecrets, source.Name) {
+			if source.Kind == "Secret" && (slices.Contains(input.AuthorizedSecrets, source.Name) ||
+				(input.ImagePullSecret != nil && source.Name == input.ImagePullSecret.Name)) {
 				return fmt.Errorf("Sandbox auxiliary workload cannot receive Agent credentials")
 			}
 		}

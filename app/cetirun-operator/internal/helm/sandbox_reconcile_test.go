@@ -64,6 +64,143 @@ func TestSandboxReusesCopilotResourceAssembly(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxPullSecretIsKubeletOnly(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			fixture := testfixture.New(kind)
+			fixture.Input.Reconciled = true
+			fixture.Input.ImagePullSecret = &w.ObjectIdentity{Name: "registry-pull-exampleuid", UID: "pull-secret-uid"}
+			bundle, err := w.Build(fixture.Input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := sampleInput(kind, "openai", false)
+			input["agentRequest"].(map[string]any)["pullSecretName"] = fixture.Input.ImagePullSecret.Name
+			input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+			prepared, err := PrepareSandboxChart(testChart(t), input, nil, bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			template, err := prepared.SandboxTemplate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(template.Spec.ImagePullSecrets, []corev1.LocalObjectReference{{Name: fixture.Input.ImagePullSecret.Name}}) {
+				t.Fatal("rendered workload lost the approved pull binding")
+			}
+			if slices.Contains(bundle.Identity().AuthorizedSecrets, fixture.Input.ImagePullSecret.Name) {
+				t.Fatal("pull binding expanded container credential authority")
+			}
+			selector := &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: fixture.Input.ImagePullSecret.Name},
+				Key:                  corev1.DockerConfigJsonKey,
+			}
+			for name, mutate := range map[string]func(*corev1.PodTemplateSpec){
+				"missing pull": func(p *corev1.PodTemplateSpec) { p.Spec.ImagePullSecrets = nil },
+				"foreign pull": func(p *corev1.PodTemplateSpec) {
+					p.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "foreign-secret"}}
+				},
+				"duplicate pull": func(p *corev1.PodTemplateSpec) {
+					p.Spec.ImagePullSecrets = append(p.Spec.ImagePullSecrets, p.Spec.ImagePullSecrets[0])
+				},
+				"environment": func(p *corev1.PodTemplateSpec) {
+					p.Spec.Containers[0].Env = append(p.Spec.Containers[0].Env, corev1.EnvVar{
+						Name: "EXAMPLE_REGISTRY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: selector},
+					})
+				},
+				"initializer environment": func(p *corev1.PodTemplateSpec) {
+					p.Spec.InitContainers[0].Env = append(p.Spec.InitContainers[0].Env, corev1.EnvVar{
+						Name: "EXAMPLE_REGISTRY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: selector},
+					})
+				},
+				"environment source": func(p *corev1.PodTemplateSpec) {
+					p.Spec.Containers[0].EnvFrom = append(p.Spec.Containers[0].EnvFrom, corev1.EnvFromSource{
+						SecretRef: &corev1.SecretEnvSource{LocalObjectReference: selector.LocalObjectReference},
+					})
+				},
+				"volume": func(p *corev1.PodTemplateSpec) {
+					p.Spec.Volumes = append(p.Spec.Volumes, corev1.Volume{Name: "private-pull",
+						VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: selector.Name}},
+					})
+				},
+			} {
+				t.Run(name, func(t *testing.T) {
+					changed := template.DeepCopy()
+					mutate(changed)
+					before := changed.DeepCopy()
+					if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image); err == nil {
+						t.Fatal("pull credential escaped its approved kubelet-only use")
+					}
+					if !equality.Semantic.DeepEqual(changed, before) {
+						t.Fatal("validation mutated the Pod template")
+					}
+				})
+			}
+			for name, mutate := range map[string]func(*w.Input){
+				"missing UID":       func(i *w.Input) { i.ImagePullSecret.UID = "" },
+				"invalid name":      func(i *w.Input) { i.ImagePullSecret.Name = "invalid/name" },
+				"retained lifetime": func(i *w.Input) { i.Reconciled = false },
+				"runtime alias":     func(i *w.Input) { i.ImagePullSecret.Name = "runtime-secret" },
+			} {
+				t.Run(name, func(t *testing.T) {
+					input := bundle.Identity()
+					mutate(&input)
+					if _, err := w.Build(input); err == nil {
+						t.Fatal("unapproved pull identity accepted")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestReconciledSandboxProxyCannotConsumeAgentPullCredentials(t *testing.T) {
+	bundle, values := reconciledSandboxInputs(t)
+	input := bundle.Identity()
+	input.ImagePullSecret = &w.ObjectIdentity{Name: "registry-pull-exampleuid", UID: "pull-secret-uid"}
+	bundle, err := w.Build(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values["agentRequest"].(map[string]any)["pullSecretName"] = input.ImagePullSecret.Name
+	prepared, err := PrepareSandboxChart(testChart(t), values, nil, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := prepared.ReconcileExpectation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, workload := range expected.Workloads {
+		if workload.Kind != "Deployment" {
+			continue
+		}
+		proxy := &appsv1.Deployment{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+			ObjectMeta: metav1.ObjectMeta{Name: workload.Identity.Name},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: ptr.To(workload.Replicas), Template: workload.Template,
+				Selector: &metav1.LabelSelector{MatchLabels: workload.Template.Labels},
+			},
+		}
+		proxy.Spec.Template.Spec.Containers[0].Env = append(proxy.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{
+			Name: "EXAMPLE_REGISTRY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: input.ImagePullSecret.Name}, Key: corev1.DockerConfigJsonKey,
+			}},
+		})
+		object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(proxy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := prepared.validateReconciledObject(unstructured.Unstructured{Object: object}); err == nil ||
+			!strings.Contains(err.Error(), "cannot receive Agent credentials") {
+			t.Fatal("Copilot proxy consumed the Agent's pull credentials:", err)
+		}
+		return
+	}
+	t.Fatal("missing Copilot proxy workload")
+}
+
 func TestReconciledSandboxReusesAnApprovedChartComponent(t *testing.T) {
 	for _, governed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "ordinary", true: "sandbox"}[governed], func(t *testing.T) {
@@ -153,10 +290,48 @@ func TestReconciledSandboxProxyPreparationIsIndependent(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxExtraScratchLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name, size string
+		rejected   bool
+	}{
+		{name: "missing", rejected: true},
+		{name: "zero", size: "0", rejected: true},
+		{name: "negative", size: "-1", rejected: true},
+		{name: "one byte over", size: "1073741825", rejected: true},
+		{name: "below limit", size: "1073741823"},
+		{name: "exact limit", size: "1Gi"},
+		{name: "equivalent units", size: "1024Mi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle, values := reconciledSandboxInputs(t)
+			temporary := map[string]any{}
+			if tc.size != "" {
+				temporary["sizeLimit"] = tc.size
+			}
+			values["extraVolumes"] = []any{map[string]any{"name": "extension-scratch", "emptyDir": temporary}}
+			_, err := PrepareSandboxChart(testChart(t), values, nil, bundle)
+			if (err != nil) != tc.rejected {
+				t.Fatalf("temporary volume size %q: error=%v, want rejection=%t", tc.size, err, tc.rejected)
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxAuxiliaryRoleConstraints(t *testing.T) {
 	bundle, _ := reconciledSandboxInputs(t)
 	for name, change := range map[string]func(*corev1.PodSpec){
 		"baseline": nil,
+		"unbounded scratch": func(p *corev1.PodSpec) {
+			p.Volumes = []corev1.Volume{{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+		},
+		"oversized scratch": func(p *corev1.PodSpec) {
+			size := bundle.Identity().Resolution.Sandbox.Storage.Scratch.SizeLimit.DeepCopy()
+			size.Add(size)
+			p.Volumes = []corev1.Volume{{Name: "scratch", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &size},
+			}}}
+		},
 		"key environment": func(p *corev1.PodSpec) {
 			p.Containers[0].Env = []corev1.EnvVar{{Name: "KEY", ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "model-key"}, Key: "api-key"},

@@ -88,6 +88,10 @@ func Build(input Input) (*Bundle, error) {
 		len(validation.IsDNS1123Subdomain(key.Name)) != 0 || !slices.Contains(input.AuthorizedSecrets, key.Name)) {
 		return nil, fmt.Errorf("native Gateway rendering requires an authorized OpenClaw key identity")
 	}
+	if secret := input.ImagePullSecret; secret != nil && (!input.Reconciled || secret.UID == "" ||
+		len(validation.IsDNS1123Subdomain(secret.Name)) != 0 || slices.Contains(input.AuthorizedSecrets, secret.Name)) {
+		return nil, fmt.Errorf("reconciled image pulls require a distinct approved Secret identity")
+	}
 	copy, err := clone(input)
 	if err != nil {
 		return nil, err

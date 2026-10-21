@@ -265,6 +265,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		result, holdErr := r.holdReconciledSandbox(ctx, instance)
 		return result, stderrors.Join(err, holdErr)
 	}
+	if reconciledSandbox && instance.Spec.Suspended {
+		if err := r.stopReconciledSandboxForSuspension(ctx, instance); err != nil {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+		}
+	}
 
 	// Opted-in Agents remain policy-bound; never-governed Agents retain the
 	// legacy runtime path while Sandbox execution is being completed. Resolve its
@@ -409,7 +414,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	if instance.Spec.Agent.RegistrySecretRef != nil && instance.Spec.Agent.Image != nil && !instance.Spec.Suspended {
+	if instance.Spec.Agent.RegistrySecretRef != nil && instance.Spec.Agent.Image != nil && !instance.Spec.Suspended &&
+		(!reconciledSandbox || instance.Spec.Agent.Port != nil) {
+		// Owned bootstrap needs the runtime pins defaulted below. Registry sync
+		// must not create a namespace that protected bootstrap cannot adopt.
+		if reconciledSandbox {
+			if err := r.bootstrapReconciledSandbox(ctx, instance); err != nil {
+				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+				return result, stderrors.Join(err, holdErr)
+			}
+		}
 		// Credential rotation must not pull the runtime chart or enter Helm.
 		values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
 		if err != nil {
@@ -604,6 +618,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		namespaceErr = r.ensureNamespace(ctx, ns, alias, instance)
 	}
 	if namespaceErr != nil {
+		if reconciledSandbox {
+			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+			return result, stderrors.Join(namespaceErr, holdErr)
+		}
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", namespaceErr))
 	}
 
@@ -1089,7 +1107,8 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	ns := instanceNamespace(instance.Name)
 	releaseName := helmReleaseName(instance.Name)
 	if reconciledSandbox {
-		if err := stderrors.Join(r.deleteAIGatewayKey(ctx, instance), r.stopSandboxBuiltin(ctx, instance), r.stopReconciledAuxiliaries(ctx, instance)); err != nil {
+		if err := stderrors.Join(r.revokeSandboxPreparationGrants(ctx, instance), r.deleteAIGatewayKey(ctx, instance),
+			r.stopSandboxBuiltin(ctx, instance), r.stopReconciledAuxiliaries(ctx, instance)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -1171,6 +1190,9 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	}
 
 	if reconciledSandbox {
+		if err := r.finishSandboxPreparation(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.finishSandboxBootstrap(ctx, instance); err != nil {
 			return ctrl.Result{}, err
 		}
