@@ -1,3 +1,3 @@
 module github.com/Azure/CetiRun/app/cetirun-agent-broker
 
-go 1.27.2
+go 1.27.3

@@ -46,7 +46,7 @@ available for alternate mirrors. Image tags, chart versions, and the
 Install tools only for the component you are changing:
 
 - Git, Bash, and Make for repository commands.
-- Go 1.27.2, matching `.go-version`, all module minimums, and the pinned
+- Go 1.27.3, matching `.go-version`, all module minimums, and the pinned
   Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
 - Helm for local chart linting and rendering.
@@ -198,6 +198,19 @@ go -C app/cetirun-portal vet ./internal/...
 
 Report that reduced scope; it does not validate the frontend or the complete
 portal binary. Do not treat a placeholder embed directory as a frontend build.
+
+The retained-restart API also has an isolated API-server test. With the pinned
+Kubernetes 1.37 binaries described below already installed, run:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-portal test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1
+```
+
+It verifies persisted request identity, conditional updates, and CRD validation.
+It starts its own API server and etcd, never an existing cluster; it does not
+run Pods, contact a model provider, or qualify storage/failure recovery.
+Operator CI also runs this test using its existing pinned admission-test tools.
 
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend

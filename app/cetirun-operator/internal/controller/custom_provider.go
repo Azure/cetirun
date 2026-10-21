@@ -137,7 +137,7 @@ func (p *KubernetesCustomBindings) Resolve(ctx context.Context, instance *api.Ag
 	if err := p.authorize(instance); err != nil {
 		return b, err
 	}
-	if err := r.checkCustomGeneration(ctx, instance); err != nil {
+	if err := r.checkAgentGeneration(ctx, instance); err != nil {
 		return b, err
 	}
 	ownership, err := r.readCustomOwnership(ctx, instance)
@@ -286,7 +286,7 @@ func (p *KubernetesCustomBindings) ApproveApply(ctx context.Context, instance *a
 	if err := p.authorize(instance); err != nil {
 		return nil, err
 	}
-	if err := r.checkCustomGeneration(ctx, instance); err != nil {
+	if err := r.checkAgentGeneration(ctx, instance); err != nil {
 		return nil, err
 	}
 	if operation.ID == "" || operation.PlanKey == "" || operation.Generation != instance.Generation {
@@ -356,7 +356,7 @@ func (l *kubernetesCustomLease) Check(ctx context.Context) error {
 	if err := l.provider.authorize(l.agent); err != nil {
 		return err
 	}
-	if err := l.provider.reconciler.checkCustomGeneration(ctx, l.agent); err != nil {
+	if err := l.provider.reconciler.checkAgentGeneration(ctx, l.agent); err != nil {
 		return err
 	}
 	_, state, err := l.provider.readOperation(ctx, l.agent)

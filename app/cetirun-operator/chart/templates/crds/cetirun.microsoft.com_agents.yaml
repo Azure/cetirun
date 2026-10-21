@@ -249,6 +249,15 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              restartRequestID:
+                description: |-
+                  RestartRequestID requests a retained restart through normal reconciliation.
+                  Reusing the current ID does not request another restart. The Agent and HOME
+                  identities are retained; suspension and deletion take precedence.
+                maxLength: 128
+                minLength: 16
+                pattern: ^[A-Za-z0-9_-]+$
+                type: string
               sandboxRef:
                 description: |-
                   SandboxRef opts into Sandbox execution and selects a Sandbox permitted
@@ -353,6 +362,13 @@ spec:
                 for custom agents
               rule: 'self.agent.type == ''custom'' ? !has(self.gatewayTokenSecretRef)
                 : has(self.gatewayTokenSecretRef)'
+            - fieldPath: .restartRequestID
+              message: restartRequestID cannot be removed once set
+              rule: '!has(oldSelf.restartRequestID) || has(self.restartRequestID)'
+            - fieldPath: .restartRequestID
+              message: a suspended Agent cannot request a new restart
+              rule: '!(has(self.suspended) && self.suspended) || !has(self.restartRequestID)
+                || (has(oldSelf.restartRequestID) && self.restartRequestID == oldSelf.restartRequestID)'
           status:
             description: AgentStatus defines the observed state of Agent.
             properties:
@@ -700,6 +716,14 @@ spec:
                   ObservedOperatorHash is a hash of the operator-level configuration (e.g. ChartVersion, DomainSuffix)
                   that was in effect during the last successful reconciliation. A change in this hash
                   triggers a Helm upgrade even when the CR generation has not changed.
+                type: string
+              observedRestartRequestID:
+                description: |-
+                  ObservedRestartRequestID is the request observed on the current ready Pod,
+                  not merely an accepted API request or applied workload template.
+                maxLength: 128
+                minLength: 16
+                pattern: ^[A-Za-z0-9_-]+$
                 type: string
               phase:
                 description: Phase represents the current lifecycle phase.

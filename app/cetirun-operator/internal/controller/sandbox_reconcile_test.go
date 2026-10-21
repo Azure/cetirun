@@ -488,6 +488,68 @@ func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxRetainedRestartUsesCommonApply(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false)
+			ctx := context.Background()
+			initial := reconciledExpectationForTest(t, f)
+			keyID := f.current(t).Status.AIGateway.KeyID
+			var previousPod *corev1.Pod
+			for _, requestID := range []string{"request-00000001", "request-00000002"} {
+				agent := f.current(t)
+				agent.Spec.RestartRequestID = requestID
+				agent.Generation++
+				if err := f.kube.Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				for range 3 {
+					f.reconcileOK(t)
+				}
+				workload := f.workload(t)
+				if workload.Spec.Template.Annotations[api.AnnotationRestartRequestID] != requestID {
+					t.Fatal("common reconciliation did not apply the durable restart request")
+				}
+				if f.current(t).Status.ObservedRestartRequestID == requestID {
+					t.Fatal("template application or the previous Pod completed a restart")
+				}
+				expected := reconciledExpectationForTest(t, f)
+				if expected.Home != initial.Home || expected.Namespace != initial.Namespace ||
+					f.current(t).UID != initial.Agent.UID || f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+					t.Fatal("restart replaced HOME, namespace, Agent or Gateway spending identity")
+				}
+				// The fixture supplies Kubernetes observations, not a live kubelet.
+				if previousPod != nil {
+					if err := f.kube.Delete(ctx, previousPod); err != nil {
+						t.Fatal(err)
+					}
+				}
+				pod := &corev1.Pod{ObjectMeta: *workload.Spec.Template.ObjectMeta.DeepCopy(), Spec: *workload.Spec.Template.Spec.DeepCopy()}
+				pod.Name, pod.Namespace, pod.UID = workload.Name+"-0", workload.Namespace, types.UID(requestID)
+				pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))}
+				pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+				if err := f.kube.Create(ctx, pod); err != nil {
+					t.Fatal(err)
+				}
+				workload.Status = appsv1.StatefulSetStatus{ObservedGeneration: workload.Generation, ReadyReplicas: 1, UpdatedReplicas: 1}
+				if err := f.kube.Status().Update(ctx, workload); err != nil {
+					t.Fatal(err)
+				}
+				f.reconcileOK(t)
+				if f.current(t).Status.ObservedRestartRequestID != requestID {
+					t.Fatal("current ready Pod did not complete the retained restart")
+				}
+				stages := f.installer.stages
+				f.reconcileOK(t)
+				if f.installer.stages != stages {
+					t.Fatal("an unchanged restart request repeated workload application")
+				}
+				previousPod = pod
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxSuspensionStopsBeforePrerequisites(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, unavailable := range []string{"runtime", "chart"} {

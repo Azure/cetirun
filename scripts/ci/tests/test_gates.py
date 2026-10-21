@@ -355,6 +355,27 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("continue-on-error:", text)
         self.assertNotRegex(text, r"git (?:apply|commit|push)")
 
+    def test_portal_restart_api_uses_the_existing_isolated_admission_job(self):
+        text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
+        steps = {
+            step.splitlines()[0]: step
+            for step in text.split("\n      - name: ")[1:]
+        }
+        download = steps["Download Portal API test modules"]
+        check = steps["Test Portal restart API admission"]
+        self.assertIn("app/cetirun-portal/go.sum", text)
+        self.assertIn("working-directory: app/cetirun-portal", download)
+        self.assertIn("run: go mod download", download)
+        self.assertIn("working-directory: app/cetirun-portal", check)
+        self.assertIn('GOPROXY: "off"', check)
+        self.assertIn('GOFLAGS: "-mod=readonly"', check)
+        self.assertIn("KUBECONFIG: /dev/null", check)
+        self.assertIn('USE_EXISTING_CLUSTER: "false"', check)
+        self.assertIn("run: go test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1", check)
+        self.assertLess(text.index('echo "KUBEBUILDER_ASSETS=$tools_dir"'), text.index(download))
+        self.assertLess(text.index(download), text.index(check))
+        self.assertNotIn("continue-on-error:", check)
+
     def test_runtime_image_smoke_selects_only_the_auth_unittest_suite(self):
         text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()
         commands = re.findall(r"[a-z-]+:validation -m unittest discover[^\n]+", text)

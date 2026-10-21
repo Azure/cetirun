@@ -66,6 +66,7 @@ migration. Retention does not protect against a schema downgrade.
 | `helm.version` | Agent chart pin; backfilled from the operator default on first reconciliation |
 | `helm.values` | Map-shaped top-level entries; see admission notes below |
 | `suspended` | Request zero replicas and removal of the instance VirtualService; false when omitted |
+| `restartRequestID` | Optional retained-restart ID: 16-128 letters, digits, `_` or `-`. Changing it requests a new Pod through normal reconciliation; reusing it does not. Cannot be removed once set or changed while suspended |
 | `tailscale.authKeySecretRef` | Required non-empty Secret name when `tailscale` is present; instance-namespace Secret must contain non-empty `TAILSCALE_AUTH_KEY` |
 | `msteams.enabled` | Opt in to Teams provisioning; default false |
 | `msteams.appId` | Optional lowercase UUID client ID; the controller uses it as a fallback after tracked/name-based resolution and app creation |
@@ -138,6 +139,7 @@ check does not prove that an override will reconcile successfully.
 | `accessUrl` | Configured native UI URL, `https://<domain>/ui/<instance>/`; not a live reachability test |
 | `namespace`, `helmReleaseName` | Actual managed resource locations |
 | `observedGeneration` | Generation recorded after Helm succeeds, before pod/ingress readiness is established |
+| `observedRestartRequestID` | Restart request observed on the current ready Pod; an accepted request or applied template alone does not set it |
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |

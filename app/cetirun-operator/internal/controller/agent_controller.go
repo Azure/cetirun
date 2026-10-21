@@ -877,6 +877,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if err := r.checkRegistryIntent(ctx, instance); err != nil {
 			return ctrl.Result{Requeue: true}, nil
 		}
+		if instance.Spec.RestartRequestID != "" && !instance.Spec.Suspended {
+			if err := r.checkAgentGeneration(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if reconciledSandbox {
 			instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
 		}
