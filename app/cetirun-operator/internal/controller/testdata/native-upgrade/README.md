@@ -23,7 +23,7 @@ before loading it. No live credentials or deployment data are used.
 
 ## Regeneration
 
-Use Go 1.27.2 and the separately prepared dependencies described in
+Use Go 1.27.3 and the separately prepared dependencies described in
 [DEVELOPMENT.md](../../../../../../DEVELOPMENT.md). From the current checkout,
 choose a new temporary directory:
 
@@ -36,7 +36,7 @@ git -C "$old_root/repo" checkout --detach 6414494154151b2daf74d39d1e989ebeb7ea50
 cp "$fixture_dir/export_test.go" \
   "$old_root/repo/app/cetirun-operator/internal/controller/export_native_upgrade_test.go"
 CETIRUN_UPGRADE_FIXTURE_OUT="$fixture_dir/pre-proxy.json" \
-  GOTOOLCHAIN=go1.27.2 GOPROXY=off GOFLAGS=-mod=readonly \
+  GOTOOLCHAIN=go1.27.3 GOPROXY=off GOFLAGS=-mod=readonly \
   go -C "$old_root/repo/app/cetirun-operator" test ./internal/controller \
     -run '^TestExportNativeUpgradeFixture$' -count=1
 ```

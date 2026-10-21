@@ -5,7 +5,7 @@ ARG VERSION=dev
 ARG GIT_SHA=unknown
 
 # Build stage
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.27.2-1@sha256:c5e8b4403616d5d4e85a87bf7d2be4f117798e1fac2bbf9734ea0db1a226412b AS builder
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:1715f34950d45c512aeaf0e571c02764f1f3f399e090ec89755ba24e1f3c2d7c AS builder
 ARG VERSION
 ARG GIT_SHA
 ARG TARGETOS
