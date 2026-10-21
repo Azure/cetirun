@@ -857,6 +857,16 @@ the console cannot remove it. It:
   LiteLLM write that mark in a form clients keep; and ends a request's
   fallbacks once a deployment refused its encrypted reasoning; see
   [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource);
+- removes sampling parameters from a request an auto router sends to a
+  reasoning model of the GPT-5 or GPT-6 series: `temperature` other than 1,
+  `top_p`, `logprobs` and `top_logprobs`, which LiteLLM refuses with a 400
+  for such a model unless the reasoning effort resolves to `none`. A client
+  that asks for a router cannot know which model answers; Hermes, for one,
+  sends side tasks such as conversation titles with `temperature: 0`, and
+  those failed whenever the router chose a reasoning model, on Azure and on
+  Copilot routes alike. LiteLLM's own rule decides, and the Gateway logs a
+  warning for each request it changes. A request for a model by name keeps
+  its parameters and gets LiteLLM's error;
 - keeps error messages free of LiteLLM's internal deployment list: error
   messages returned to callers no longer include LiteLLM's internal list of
   deployments in cooldown. The response keeps its status, 429, the "Try again
