@@ -260,12 +260,13 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		})
 	}
 	bindings := agents.Bindings{
-		MemoryEnabled: values[sandboxworkload.ValuesKey] == nil && object(values["memoryContext"])["enabled"] == true,
-		ProfileID:     profile.ID,
-		ChartVersion:  chrt.Metadata.Version,
-		NativeConfig:  config,
-		NativeOptions: map[string]any{"acpx": native["acpx"], "plugins": native["plugins"]},
-		NativeSandbox: values[sandboxworkload.ValuesKey] != nil,
+		MemoryEnabled:  values[sandboxworkload.ValuesKey] == nil && object(values["memoryContext"])["enabled"] == true,
+		DesktopEnabled: object(values["desktop"])["enabled"] == true,
+		ProfileID:      profile.ID,
+		ChartVersion:   chrt.Metadata.Version,
+		NativeConfig:   config,
+		NativeOptions:  map[string]any{"acpx": native["acpx"], "plugins": native["plugins"]},
+		NativeSandbox:  values[sandboxworkload.ValuesKey] != nil,
 		Model: agents.ModelBinding{
 			Provider:      provider,
 			Name:          text(secrets["model"]),

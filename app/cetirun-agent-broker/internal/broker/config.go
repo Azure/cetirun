@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,18 @@ import (
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type Config struct {
+	ConnectionBindingsEnabled bool
+	PortalNamespace           string
+	PortalServiceAccount      string
+	ToolServiceNamespace      string
+	ToolServiceAccount        string
+	ToolRuntimeTypes          []string
+	WorkloadTokenAudience     string
+	TLSListenAddress          string
+	TLSCertFile               string
+	TLSKeyFile                string
+	TLSClientCAFile           string
+
 	ListenAddress          string
 	TenantID               string
 	BlueprintClientID      string
@@ -37,6 +50,16 @@ type Config struct {
 
 func LoadConfig() (Config, error) {
 	cfg := Config{
+		PortalNamespace:        os.Getenv("PORTAL_NAMESPACE"),
+		PortalServiceAccount:   os.Getenv("PORTAL_SERVICE_ACCOUNT"),
+		ToolServiceNamespace:   os.Getenv("TOOL_SERVICE_NAMESPACE"),
+		ToolServiceAccount:     os.Getenv("TOOL_SERVICE_ACCOUNT"),
+		ToolRuntimeTypes:       []string{"hermes", "openclaw"},
+		WorkloadTokenAudience:  env("WORKLOAD_TOKEN_AUDIENCE", "agent-tools-mcp"),
+		TLSListenAddress:       env("TLS_LISTEN_ADDR", ":8443"),
+		TLSCertFile:            os.Getenv("TLS_CERT_FILE"),
+		TLSKeyFile:             os.Getenv("TLS_KEY_FILE"),
+		TLSClientCAFile:        os.Getenv("TLS_CLIENT_CA_FILE"),
 		ListenAddress:          env("LISTEN_ADDR", ":8080"),
 		TenantID:               os.Getenv("ENTRA_TENANT_ID"),
 		BlueprintClientID:      os.Getenv("AGENT_ID_BLUEPRINT_CLIENT_ID"),
@@ -55,6 +78,23 @@ func LoadConfig() (Config, error) {
 		OperatorServiceAccount: os.Getenv("OPERATOR_SERVICE_ACCOUNT"),
 		TransactionTTL:         10 * time.Minute,
 		RequestTimeout:         15 * time.Second,
+	}
+
+	enabled, err := strconv.ParseBool(env("CONNECTION_BINDINGS_ENABLED", "false"))
+	if err != nil {
+		return Config{}, errors.New("CONNECTION_BINDINGS_ENABLED must be a boolean")
+	}
+	cfg.ConnectionBindingsEnabled = enabled
+	if enabled {
+		if !dnsLabel(cfg.PortalNamespace) || !dnsLabel(cfg.PortalServiceAccount) || !dnsLabel(cfg.ToolServiceNamespace) || !dnsLabel(cfg.ToolServiceAccount) || strings.TrimSpace(cfg.WorkloadTokenAudience) == "" {
+			return Config{}, errors.New("connection bindings require trusted Portal, tool service, and token audience configuration")
+		}
+		if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" || cfg.TLSClientCAFile == "" {
+			return Config{}, errors.New("connection bindings require mutual TLS certificate, key and client CA")
+		}
+	}
+	if !enabled && (cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" || cfg.TLSClientCAFile != "") {
+		return Config{}, errors.New("TLS service credentials require connection bindings to be enabled")
 	}
 	for _, value := range []string{cfg.TenantID, cfg.BlueprintClientID, cfg.AuthorizationClientID, cfg.EncryptionClientID} {
 		if !uuidPattern.MatchString(value) {
@@ -85,4 +125,8 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func (c Config) connectionModeEnabled(connection Connection) bool {
+	return c.ConnectionBindingsEnabled && connection.Provider == "azure" && connection.Mode == modeAgent
 }

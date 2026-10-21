@@ -267,7 +267,7 @@ for agent_type in openclaw hermes; do
   fi
   helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
     --set secrets.existingSecret=lint-secret "${port_args[@]}" \
-    --set desktop.enabled=false --set openclaw.config.browser.attachOnly=false >/dev/null
+    --set desktop.enabled=false >/dev/null
   if helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
     --set secrets.existingSecret=lint-secret --set ttyd.enabled=true --set ttyd.port=5900 >/dev/null 2>&1; then
     echo "FAIL: ttyd port 5900 should conflict with desktop VNC" >&2; exit 1
@@ -277,8 +277,11 @@ done
 # Test variant: desktop enabled (default)
 echo "==> helm template ${release_name} ${chart_dir} (desktop.enabled=true)"
 output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set agentType=openclaw \
   --set secrets.openclawGatewayToken=lint-token \
   --set desktop.enabled=true)
+grep -q '"attachOnly": true' <<< "$output" || { echo "FAIL: desktop browser must default to attach-only" >&2; exit 1; }
+grep -q '"headless": false' <<< "$output" || { echo "FAIL: desktop browser must default to headed mode" >&2; exit 1; }
 grep -q 'name: desktop' <<< "$output" || { echo "FAIL: desktop container not found when enabled" >&2; exit 1; }
 grep -q 'containerPort: 6080' <<< "$output" || { echo "FAIL: noVNC port not found on desktop container" >&2; exit 1; }
 grep -q 'containerPort: 18800' <<< "$output" || { echo "FAIL: Chrome CDP port not found on desktop container" >&2; exit 1; }
@@ -287,9 +290,11 @@ grep -q 'tmp-desktop' <<< "$output" || { echo "FAIL: tmp-desktop volume not foun
 # Test variant: desktop disabled
 echo "==> helm template ${release_name} ${chart_dir} (desktop.enabled=false)"
 output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set agentType=openclaw \
   --set secrets.openclawGatewayToken=lint-token \
-  --set desktop.enabled=false \
-  --set openclaw.config.browser.attachOnly=false)
+  --set desktop.enabled=false)
+grep -q '"attachOnly": false' <<< "$output" || { echo "FAIL: browser must launch without a desktop" >&2; exit 1; }
+grep -q '"headless": true' <<< "$output" || { echo "FAIL: browser must default to headless without a desktop" >&2; exit 1; }
 if grep -q 'name: desktop' <<< "$output"; then
   echo "FAIL: desktop container should not appear when disabled" >&2; exit 1
 fi

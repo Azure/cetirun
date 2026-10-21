@@ -259,7 +259,19 @@ func main() {
 		setupLog.Error(err, "invalid Custom runtime configuration")
 		os.Exit(1)
 	}
+
+	brokerStorageEnabled, err := controller.ParseToolsMCPBrokerStorageConfig(os.Getenv("TOOLS_MCP_BROKER_NAMESPACE"), os.Getenv("TOOLS_MCP_BROKER_SERVICE_ACCOUNT"))
+	if err != nil {
+		setupLog.Error(err, "invalid Broker storage configuration")
+		os.Exit(1)
+	}
+	if brokerStorageEnabled && agentIdentityBrokerURL == "" {
+		setupLog.Info("Broker storage requires Agent Identity Broker URL for cleanup")
+		os.Exit(1)
+	}
 	agentReconciler := &controller.AgentReconciler{
+		ToolsMCPBrokerNamespace:        os.Getenv("TOOLS_MCP_BROKER_NAMESPACE"),
+		ToolsMCPBrokerServiceAccount:   os.Getenv("TOOLS_MCP_BROKER_SERVICE_ACCOUNT"),
 		Client:                         mgr.GetClient(),
 		APIReader:                      mgr.GetAPIReader(),
 		Scheme:                         mgr.GetScheme(),

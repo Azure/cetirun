@@ -67,6 +67,7 @@ type Bindings struct {
 	ContextRevision   string
 	AgentManagedModel bool
 	MemoryEnabled     bool
+	DesktopEnabled    bool
 	WebBasePath       string
 	WebInstance       string
 	// NoSignInHelper reports that the selected chart runs no in-agent model

@@ -15,7 +15,7 @@ Override `HUGO=/absolute/path/to/hugo` to use an installed Hugo **0.164.0
 extended**, and `PORT=1314` to select another loopback port. `make -C site help`
 lists the entrypoints.
 
-Prerequisites: Make, Go 1.27.2 (matching the repository's `.go-version`),
+Prerequisites: Make, Go 1.27.3 (matching the repository's `.go-version`),
 C/C++ build tools for Hugo extended, Node.js 24
 with npm, and Python 3.11+. The first build downloads dependencies. `make -C
 site test` runs the Python validator regression suite without network access.

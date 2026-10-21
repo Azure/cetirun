@@ -340,13 +340,12 @@ openclaw:
     agents:
       defaults:
         verboseDefault: "on"
-    # -- Browser configuration for headed Chrome (GUI visible via noVNC).
-    # Chrome runs in the desktop sidecar; gateway connects via CDP (attachOnly).
+    # -- Browser configuration. With desktop enabled, attach to its headed Chrome.
+    # Without desktop, use headless browser mode. Omitted or null
+    # attachOnly/headless values follow desktop.enabled; explicit booleans override.
     browser:
       enabled: true
-      headless: false
       noSandbox: true
-      attachOnly: true
       defaultProfile: "openclaw"
       profiles:
         openclaw:

@@ -35,6 +35,11 @@ type TokenCache struct {
 }
 
 type Agent struct {
+	Deleting              bool
+	RuntimeType           string
+	AgentIdentityObjectID string
+	WorkloadReady         bool
+	UnsupportedRuntime    bool
 	Name                  string
 	UID                   string
 	Namespace             string
