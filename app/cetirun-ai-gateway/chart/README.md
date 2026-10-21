@@ -593,6 +593,24 @@ authenticates without an API key is never treated as sharing an endpoint and
 key with another. The check applies to every model: LiteLLM cannot turn it off
 for one.
 
+LiteLLM forwards an item without the mark as it is: an item from before the
+check was turned on, such as in a conversation an agent began before an
+upgrade, or from elsewhere. When it reaches a deployment of another resource
+or account, that deployment refuses the whole request with a 400,
+`invalid_encrypted_content`, and a router fallback configured for the model
+fails the same way. So while the check is on, the guard callback removes the
+encrypted content and ID of such an item before the request is routed, and
+keeps its readable summary, as LiteLLM does when it moves a marked item; an
+item with nothing readable is left out. Such a conversation loses the encrypted
+reasoning of its earlier turns, once; what the agent sends from then on is
+marked. Measured on a test installation: an Azure OpenAI item without its mark
+sent to a GitHub Copilot route of the same model was refused, and a Copilot
+item sent to Azure OpenAI was refused for its ID; with their marks, both were
+answered. OpenClaw had retried such turns without the encrypted reasoning, at
+the cost of the failed call and of its fallback. Measured with mock resources:
+with the guard, every such replay was answered, streamed or not, and an item
+with the mark was routed as before; with the check off, nothing is removed.
+
 When that deployment fails, LiteLLM 1.105.1 keeps the conversation on it while
 it still counts as available, so the conversation's requests fail with the
 deployment's error; `router.failover` does not rescue them, since the check
@@ -857,6 +875,10 @@ the console cannot remove it. It:
   reach none of them; asking for a name only Copilot routes serve, such a key
   gets LiteLLM's "No deployments available" 429. Every other deployment is left
   as it is. An auto router's choice of tier is held to the same rule;
+- while `router.encryptedContentAffinity` is on, removes the encrypted content
+  of Responses API reasoning items that carry no mark of the deployment that
+  produced it, keeping their summaries; see
+  [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource);
 - keeps error messages free of LiteLLM's internal deployment list: error
   messages returned to callers no longer include LiteLLM's internal list of
   deployments in cooldown. The response keeps its status, 429, the "Try again
