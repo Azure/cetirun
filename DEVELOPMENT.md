@@ -46,7 +46,7 @@ available for alternate mirrors. Image tags, chart versions, and the
 Install tools only for the component you are changing:
 
 - Git, Bash, and Make for repository commands.
-- Go 1.27.2, matching `.go-version`, all module minimums, and the pinned
+- Go 1.27.3, matching `.go-version`, all module minimums, and the pinned
   Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
 - Helm for local chart linting and rendering.
