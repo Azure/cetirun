@@ -205,6 +205,46 @@ class GuardTest(unittest.TestCase):
     def ids(self, deployments):
         return [(d.get("model_info") or {}).get("id") for d in deployments]
 
+    # ----- failover past key affinity -----
+
+    def install_affinity(self):
+        name = "litellm.router_utils.pre_call_checks.deployment_affinity_check"
+
+        class DeploymentAffinityCheck:
+            """Narrows to the deployment a key is kept on, like LiteLLM's callback."""
+
+            pinned = "dep-a"
+
+            async def async_filter_deployments(self, model, healthy_deployments, messages, request_kwargs=None,
+                                               parent_otel_span=None):
+                kept = [d for d in healthy_deployments if d["model_info"]["id"] == self.pinned]
+                return kept or healthy_deployments
+
+        module = types.ModuleType(name)
+        module.DeploymentAffinityCheck = DeploymentAffinityCheck
+        previous = sys.modules.get(name)
+        sys.modules[name] = module
+        self.addCleanup(lambda: sys.modules.__setitem__(name, previous) if previous else sys.modules.pop(name, None))
+        self.assertTrue(self.module.install_failover_past_affinity())
+        self.assertTrue(self.module.install_failover_past_affinity())  # once only
+        return DeploymentAffinityCheck()
+
+    def affinity_filtered(self, check, request_kwargs):
+        deployments = [{"model_info": {"id": i}} for i in ("dep-a", "dep-b", "dep-c")]
+        kept = asyncio.run(check.async_filter_deployments("m", deployments, None, request_kwargs=request_kwargs))
+        return [d["model_info"]["id"] for d in kept]
+
+    def test_a_failover_leaves_the_deployment_a_key_is_kept_on(self):
+        check = self.install_affinity()
+        self.assertEqual(self.affinity_filtered(check, {}), ["dep-a"])
+        self.assertEqual(self.affinity_filtered(check, None), ["dep-a"])
+        # The kept deployment failed this request: affinity chooses among the others.
+        self.assertEqual(self.affinity_filtered(check, {"_excluded_deployment_ids": ["dep-a"]}), ["dep-b", "dep-c"])
+        # Another deployment failed: the key stays where it is kept.
+        self.assertEqual(self.affinity_filtered(check, {"_excluded_deployment_ids": ["dep-c"]}), ["dep-a"])
+
+    def test_without_litellms_affinity_check_nothing_is_installed(self):
+        self.assertFalse(self.module.install_failover_past_affinity())
     # ----- request fields -----
 
     def test_client_debug_output_is_always_dropped(self):

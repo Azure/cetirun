@@ -197,6 +197,48 @@ def install_mark_form():
     return True
 
 
+FAILOVER_EXCLUDED = "_excluded_deployment_ids"
+
+
+def deployment_id(deployment):
+    """The model_info.id of a deployment dict, or None."""
+    info = deployment.get("model_info") if isinstance(deployment, dict) else None
+    return info.get("id") if isinstance(info, dict) else None
+
+
+def install_failover_past_affinity():
+    """Let a request's failover leave the deployment that key affinity kept it on.
+
+    LiteLLM 1.105.1 runs its deployment-affinity filter before it removes the
+    deployments a weighted failover already tried. A key kept on a deployment
+    that fails is narrowed to that deployment, which the exclusion then
+    removes: no deployment is left, so the failover is not attempted and the
+    key's requests fail until the deployment is in cooldown. Here the filter is
+    given the deployments the failover may still use, so a kept deployment that
+    already failed this request is not chosen again and affinity applies among
+    the others.
+    """
+    try:
+        from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck
+    except Exception:  # noqa: BLE001
+        return False
+    current = DeploymentAffinityCheck.__dict__.get("async_filter_deployments")
+    if current is None or getattr(current, "cetirun_failover", False):
+        return current is not None
+
+    async def async_filter_deployments(self, model, healthy_deployments, messages, request_kwargs=None,
+                                       parent_otel_span=None):
+        excluded = (request_kwargs or {}).get(FAILOVER_EXCLUDED)
+        if excluded and isinstance(healthy_deployments, list):
+            excluded = set(excluded)
+            healthy_deployments = [d for d in healthy_deployments if deployment_id(d) not in excluded]
+        return await current(self, model, healthy_deployments, messages, request_kwargs=request_kwargs,
+                             parent_otel_span=parent_otel_span)
+
+    async_filter_deployments.cetirun_failover = True
+    DeploymentAffinityCheck.async_filter_deployments = async_filter_deployments
+    return True
+
 def marked_content(content):
     """Whether encrypted_content carries the producing deployment in either form of the mark."""
     if content.startswith(MARKED_CONTENT):
@@ -610,3 +652,4 @@ handler = Guard()
 # The entrypoint imports this module before the proxy loads its configuration,
 # so LiteLLM writes the Gateway's form of the mark from the first request.
 install_mark_form()
+install_failover_past_affinity()
