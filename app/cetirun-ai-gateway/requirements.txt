@@ -42,7 +42,7 @@ backoff==2.2.1
 boto3==1.43.1
 botocore==1.43.6
 bytecode==0.17.0
-certifi==2026.4.22
+certifi==2026.10.19
 cffi==2.0.0
 charset-normalizer==3.4.7
 click==8.3.3
