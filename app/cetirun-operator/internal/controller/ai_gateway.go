@@ -1373,7 +1373,10 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 			for _, route := range copilotRoutes(status.Copilot) {
 				routes = append(routes, route.Model+"="+route.Name)
 			}
-			parts = append(parts, "copilot-routes", strings.Join(routes, ","))
+			// copilot-names: Copilot models are named by their Gateway
+			// name, not GitHub's display name; Agents configured with the
+			// display names are re-rendered once.
+			parts = append(parts, "copilot-routes", strings.Join(routes, ","), "copilot-names:gateway")
 		}
 	}
 	if annotation := instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]; annotation != "" {
