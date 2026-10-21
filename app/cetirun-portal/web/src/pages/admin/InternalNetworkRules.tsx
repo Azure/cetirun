@@ -10,6 +10,10 @@ export interface InternalNetworkRule {
   ports: string;
 }
 
+function matchesEntireValue(value: string, expression: RegExp): boolean {
+  return expression.exec(value)?.[0] === value;
+}
+
 export function formatInternalNetworkRules(rules: AgentPolicyCIDRRule[]): InternalNetworkRule[] {
   return rules.map((rule) => ({
     cidr: rule.cidr,
@@ -35,17 +39,52 @@ export function parseInternalNetworkRules(rules: InternalNetworkRule[]): AgentPo
   });
 }
 
+function parseIPv4Address(value: string): number[] | undefined {
+  const octets = value.split(".");
+  if (octets.length !== 4 || !octets.every((octet) => matchesEntireValue(octet, /^(0|[1-9][0-9]{0,2})$/) && Number(octet) <= 255)) return undefined;
+  return octets.map(Number);
+}
+
+function validIPv6Address(value: string): boolean {
+  const halves = value.split("::");
+  if (halves.length > 2) return false;
+  if (halves.length === 2 && halves[0].includes(".")) return false;
+  const parseGroups = (half: string) => {
+    if (!half) return [] as number[] | undefined;
+    const groups = half.split(":");
+    const values: number[] = [];
+    for (let index = 0; index < groups.length; index++) {
+      const group = groups[index];
+      if (group.includes(".")) {
+        const ipv4 = index === groups.length - 1 ? parseIPv4Address(group) : undefined;
+        if (!ipv4) return undefined;
+        values.push(ipv4[0] * 256 + ipv4[1], ipv4[2] * 256 + ipv4[3]);
+      } else if (matchesEntireValue(group, /^[0-9a-fA-F]{1,4}$/)) {
+        values.push(Number.parseInt(group, 16));
+      } else {
+        return undefined;
+      }
+    }
+    return values;
+  };
+  const left = parseGroups(halves[0]);
+  const right = parseGroups(halves[1] || "");
+  if (!left || !right) return false;
+  const groupCount = left.length + right.length;
+  if (halves.length === 2 ? groupCount >= 8 : groupCount !== 8) return false;
+  // An embedded IPv4 tail consumes two 16-bit groups; reject mapped aliases like ::ffff:192.0.2.1.
+  const groups = halves.length === 2 ? [...left, ...Array(8 - groupCount).fill(0), ...right] : left;
+  return !(groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff);
+}
+
 export function validCIDR(value: string): boolean {
-  const match = value.match(/^(.+)\/(\d{1,3})$/);
-  if (!match) return false;
-  if (match[1].includes(":")) {
-    const groups = match[1].split("::");
-    if (groups.length > 2 || !groups.every((group) => group === "" || group.split(":").every((part) => /^[0-9a-fA-F]{1,4}$/.test(part)))) return false;
-    const groupCount = groups.reduce((count, group) => count + (group ? group.split(":").length : 0), 0);
-    return groupCount <= 8 && (groups.length === 2 ? groupCount < 8 : groupCount === 8) && Number(match[2]) <= 128;
-  }
-  const octets = match[1].split(".");
-  return octets.length === 4 && octets.every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255) && Number(match[2]) <= 32;
+  const slash = value.lastIndexOf("/");
+  if (slash <= 0) return false;
+  const address = value.slice(0, slash);
+  const bits = value.slice(slash + 1);
+  if (!matchesEntireValue(bits, /^(0|[1-9][0-9]*)$/)) return false;
+  if (address.includes(":")) return validIPv6Address(address) && Number(bits) <= 128;
+  return !!parseIPv4Address(address) && Number(bits) <= 32;
 }
 
 export function InternalNetworkRules({ rules, onChange, onEditingChange }: {

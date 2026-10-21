@@ -390,11 +390,11 @@ describe("PolicyEditPage", () => {
     dialog = await setDraft("10.30.0.0/24", "8443");
     await user.click(dialog.getByRole("button", { name: "Update rule", hidden: true }));
     expect(dialog.getByText(/This destination already has a rule/)).toBeInTheDocument();
-    dialog = await setDraft("10.40.0.0/24", "8443, 5353/udp");
+    dialog = await setDraft("2001:db8::192.0.2.1/128", "8443, 5353/udp");
     await user.click(dialog.getByRole("textbox", { name: "Allowed ports", hidden: true }));
     await user.keyboard("{Enter}");
     await closed();
-    expect(first.getByText("10.40.0.0/24")).toBeInTheDocument();
+    expect(first.getByText("2001:db8::192.0.2.1/128")).toBeInTheDocument();
     expect(first.getByText("8443, 5353/UDP")).toBeInTheDocument();
     expect(policyAPI.createPolicy).not.toHaveBeenCalled();
     const second = within(section.getByRole("group", { name: "Internal network rule 2" }));
@@ -403,7 +403,7 @@ describe("PolicyEditPage", () => {
     await user.click(screen.getByRole("button", { name: "Create", exact: true }));
     await waitFor(() => expect(policyAPI.createPolicy).toHaveBeenCalledWith(expect.objectContaining({
       network: expect.objectContaining({ allowedInternalCIDRs: [{
-        cidr: "10.40.0.0/24", ports: [{ port: 8443, protocol: "TCP" }, { port: 5353, protocol: "UDP" }],
+        cidr: "2001:db8::192.0.2.1/128", ports: [{ port: 8443, protocol: "TCP" }, { port: 5353, protocol: "UDP" }],
       }] }),
     }), expect.anything()));
   });
