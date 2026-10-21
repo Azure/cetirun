@@ -69,3 +69,26 @@ if helm template broker-test "${chart_dir}" "${values[@]}" --set istio.sidecarIn
   echo "FAIL: chart allowed unconfirmed sidecar injection" >&2
   exit 1
 fi
+
+# Connection/Binding and app-only issuance are opt-in; TLS and TokenReview
+# permissions must not silently appear on the legacy deployment.
+if grep -Fq 'containerPort: 8443' <<<"${output}" || grep -Fq 'resources: ["tokenreviews"]' <<<"${output}"; then
+  echo "FAIL: legacy chart enabled the new credential surface" >&2
+  exit 1
+fi
+if helm template broker-test "${chart_dir}" "${values[@]}" --set connectionBindings.enabled=true >/dev/null 2>&1; then
+  echo "FAIL: connections enabled without client TLS" >&2
+  exit 1
+fi
+if helm template broker-test "${chart_dir}" "${values[@]}" --set connectionBindings.enabled=true --set tls.enabled=true >/dev/null 2>&1; then
+  echo "FAIL: connections enabled without a TLS Secret" >&2
+  exit 1
+fi
+connection_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set connectionBindings.enabled=true --set tls.enabled=true --set-string tls.secretName=broker-client-trust)"
+grep -Fq 'containerPort: 8443' <<<"${connection_output}"
+grep -Fq 'resources: ["tokenreviews"]' <<<"${connection_output}"
+grep -Fq 'ports: ["8443"]' <<<"${connection_output}"
+grep -Fq 'name: CONNECTION_BINDINGS_ENABLED' <<<"${connection_output}"
+[[ "$(grep -Fc 'mountPath: /var/run/cetirun/tls' <<<"${connection_output}")" == 1 ]]
+grep -Fq 'paths: ["/v1/*"]' <<<"${connection_output}"
+grep -Fq '/v1/connections*' <<<"${connection_output}"
