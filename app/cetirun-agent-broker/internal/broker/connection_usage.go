@@ -85,12 +85,18 @@ func (k *kubeClient) releaseBindingReservation(ctx context.Context, owner Owner,
 	return errConflict
 }
 
-// Include deleting/held/unsupported Agents: these can still own bindings. A
-// failed ownership or namespace check is an error, never evidence of no usage.
-func (k *kubeClient) connectionBindingRecords(ctx context.Context, owner Owner, id string) ([]*bindingRecord, error) {
+// Every binding write first registers on its Connection. Keep checking registered
+// Agents even after they become ineligible, but do not require Secret access in
+// unrelated Sandbox/Custom namespaces. Read failures are never proof of no usage.
+func (k *kubeClient) connectionBindingRecords(ctx context.Context, record *connectionRecord) ([]*bindingRecord, error) {
+	owner, id := record.Connection.Owner, record.Connection.ID
 	stores := []*kubeClient{k}
 	if k.agentNamespaces {
 		stores = nil
+		referenced := make(map[string]bool, len(record.References))
+		for _, ref := range record.References {
+			referenced[ref.InstanceUID] = true
+		}
 		list, err := k.listAgents(ctx)
 		if err != nil {
 			return nil, err
@@ -98,6 +104,9 @@ func (k *kubeClient) connectionBindingRecords(ctx context.Context, owner Owner, 
 		for _, document := range list.Items {
 			agent := agentFromDocument(document)
 			if agent.Namespace == "" || !sameOwner(owner, Owner{agent.OwnerTenantID, agent.OwnerObjectID}) {
+				continue
+			}
+			if agent.UnsupportedRuntime && !referenced[agent.UID] {
 				continue
 			}
 			target, err := k.recordStoreForAgent(ctx, agent)
@@ -128,7 +137,7 @@ func (k *kubeClient) connectionBindingRecords(ctx context.Context, owner Owner, 
 
 func (k *kubeClient) usage(ctx context.Context, record *connectionRecord) (connectionUsageResult, error) {
 	result := connectionUsageResult{ConnectionID: record.Connection.ID, Agents: []connectionAgentUsage{}}
-	found, err := k.connectionBindingRecords(ctx, record.Connection.Owner, record.Connection.ID)
+	found, err := k.connectionBindingRecords(ctx, record)
 	if err != nil {
 		return result, err
 	}

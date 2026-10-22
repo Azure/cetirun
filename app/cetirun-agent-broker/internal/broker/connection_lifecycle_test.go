@@ -190,7 +190,7 @@ func TestInterruptedReservationIsFencedBeforeRemoval(t *testing.T) {
 }
 
 func TestUsageIncludesBindingsOfDeletingAndUnsupportedAgents(t *testing.T) {
-	for _, state := range []string{"deleting", "unsupported"} {
+	for _, state := range []string{"deleting", "suspended", "sandbox", "unsupported"} {
 		t.Run(state, func(t *testing.T) {
 			f := newNamespaceFixture(t)
 			ctx := context.Background()
@@ -200,13 +200,27 @@ func TestUsageIncludesBindingsOfDeletingAndUnsupportedAgents(t *testing.T) {
 				t.Fatal(err)
 			}
 			b := &bindingRecord{Binding: ConnectionBinding{ID: "binding", InstanceUID: namespaceAgentUID, ConnectionID: "personal", Owner: owner, Enabled: true, Revision: 1}}
+			token, err := f.store.reserveBinding(ctx, connection.Connection, agentFromDocument(f.agent), b.Binding, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.ReservationToken = token
 			if err := f.store.putBinding(ctx, b, ""); err != nil {
 				t.Fatal(err)
 			}
-			if state == "deleting" {
+			connection, _, err = f.store.getConnection(ctx, connection.Connection.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch state {
+			case "deleting":
 				now := time.Now()
 				f.agent.Metadata.DeletionTimestamp = &now
-			} else {
+			case "suspended":
+				f.agent.Spec.Suspended = true
+			case "sandbox":
+				f.agent.Spec.SandboxRef = "shared"
+			case "unsupported":
 				f.agent.Spec.Agent.Type = "custom"
 			}
 			usage, err := f.store.usage(ctx, connection)

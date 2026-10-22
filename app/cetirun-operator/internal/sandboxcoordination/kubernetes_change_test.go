@@ -4,7 +4,9 @@
 package sandboxcoordination
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -21,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
@@ -1260,6 +1263,117 @@ func TestConfigurationEmptyMetadataAndMetadataOnlyGeneration(t *testing.T) {
 	}
 	if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
 		t.Fatal("empty metadata could not round trip:", err)
+	}
+}
+
+func TestConfigurationManagedFieldsFormattingPreservesUpdates(t *testing.T) {
+	const compact = `{"f:metadata":{"f:labels":{"f:example.com/label":{}}},"f:spec":{}}`
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, []byte(compact), "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	const reordered = `{"f:spec":{},"f:metadata":{"f:labels":{"f:example.com/label":{}}}}`
+	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
+		for _, format := range []struct{ name, before, after string }{
+			{"pretty", pretty.String(), pretty.String()},
+			{"reordered", reordered, reordered},
+			{"different formatting", pretty.String(), compact},
+		} {
+			t.Run(kind+"/"+format.name, func(t *testing.T) {
+				ctx := context.Background()
+				store, storage, before, _ := configurationFixture(t, kind)
+				before.SetManagedFields([]metav1.ManagedFieldsEntry{{
+					Manager: "example-controller", Operation: metav1.ManagedFieldsOperationUpdate,
+					APIVersion: api.GroupVersion.String(), FieldsType: "FieldsV1",
+					FieldsV1: &metav1.FieldsV1{Raw: []byte(compact)},
+				}})
+				authority := &corev1.ConfigMap{}
+				if err := storage.Get(ctx, client.ObjectKey{Namespace: store.Namespace, Name: store.Identity.Name}, authority); err != nil {
+					t.Fatal(err)
+				}
+				storage = fake.NewClientBuilder().WithScheme(storage.Scheme()).
+					WithObjects(authority, before).WithReturnManagedFields().Build()
+				store.Client, store.APIReader = storage, storage
+				before.GetManagedFields()[0].FieldsV1.Raw = []byte(format.before)
+				after := desiredConfiguration(before)
+				after.GetManagedFields()[0].FieldsV1.Raw = []byte(format.after)
+				originalBefore, originalAfter := before.DeepCopyObject(), after.DeepCopyObject()
+				ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+				if err != nil {
+					t.Fatal("equivalent managed fields rejected:", err)
+				}
+				adapter := configurationAdapter(t, storage, storage, before, after)
+				if string(adapter.change.before.object.GetManagedFields()[0].FieldsV1.Raw) != format.before ||
+					string(adapter.change.after.object.GetManagedFields()[0].FieldsV1.Raw) != format.after {
+					t.Fatal("comparison normalization rewrote the retained submission images")
+				}
+				if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
+					t.Fatal("equivalent managed fields prevented the guarded update:", err)
+				}
+				_, state, err := store.read(ctx)
+				if err != nil || len(state.Changes) != 0 {
+					t.Fatal("completed update retained its reservation:", err)
+				}
+				if !reflect.DeepEqual(before, originalBefore) || !reflect.DeepEqual(after, originalAfter) {
+					t.Fatal("canonicalization changed caller-owned inputs")
+				}
+			})
+		}
+	}
+}
+
+func TestConfigurationManagedFieldsContentRemainsProtected(t *testing.T) {
+	for _, change := range []string{"field set", "manager", "operation", "apiVersion", "fieldsType", "time", "subresource", "removed"} {
+		t.Run(change, func(t *testing.T) {
+			store, storage, before, _ := configurationFixture(t, "Sandbox")
+			before.SetManagedFields([]metav1.ManagedFieldsEntry{{
+				Manager: "example-controller", Operation: metav1.ManagedFieldsOperationUpdate,
+				APIVersion: api.GroupVersion.String(), FieldsType: "FieldsV1",
+				Time:     ptr.To(metav1.NewTime(time.Unix(1700000000, 0))),
+				FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:spec":{}}`)},
+			}})
+			after := desiredConfiguration(before)
+			field := &after.GetManagedFields()[0]
+			switch change {
+			case "field set":
+				field.FieldsV1.Raw = []byte(`{"f:status":{}}`)
+			case "manager":
+				field.Manager = "different-controller"
+			case "operation":
+				field.Operation = metav1.ManagedFieldsOperationApply
+			case "apiVersion":
+				field.APIVersion = "example.com/v1"
+			case "fieldsType":
+				field.FieldsType = "different"
+			case "time":
+				field.Time = ptr.To(metav1.NewTime(time.Unix(1800000000, 0)))
+			case "subresource":
+				field.Subresource = "status"
+			case "removed":
+				after.SetManagedFields(nil)
+			}
+			if _, err := NewKubernetesChangeAdapter(storage, storage, before, after); !errors.Is(err, ErrConflict) {
+				t.Fatal("server metadata change was not rejected:", err)
+			}
+			if _, err := store.AcquireConfigurationChange(context.Background(), before, after); !errors.Is(err, ErrConflict) {
+				t.Fatal("server metadata change acquired a reservation:", err)
+			}
+		})
+	}
+}
+
+func TestConfigurationManagedFieldsRejectAmbiguousJSON(t *testing.T) {
+	for _, raw := range []string{"null", "[]", `"value"`, "{", `{"f:spec":{},"f:spec":{}}`, `{"f:spec":{"f:value":{},"f:value":{}}}`} {
+		t.Run(raw, func(t *testing.T) {
+			_, _, before, _ := configurationFixture(t, "Sandbox")
+			before.SetManagedFields([]metav1.ManagedFieldsEntry{{
+				Manager: "example-controller", FieldsType: "FieldsV1",
+				FieldsV1: &metav1.FieldsV1{Raw: []byte(raw)},
+			}})
+			if _, err := newConfigurationImage(before); !errors.Is(err, ErrUnavailable) {
+				t.Fatal("ambiguous or non-object field set was accepted:", err)
+			}
+		})
 	}
 }
 
