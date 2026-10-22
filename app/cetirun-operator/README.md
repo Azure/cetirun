@@ -1456,6 +1456,13 @@ blocking and mTLS remain unsupported and reject rather than becoming no-ops.
 The effective compiled revision includes topology, identity and role-content
 changes; use it rather than only the base resolver revision.
 
+Both Cilium adapter registrations require `capabilities.blockedFQDNs=false`,
+even when the current policy requests no hostname rules. Declaring support
+rejects platform validation, standalone policy validation and compilation.
+`blockedFQDNs` accepts exact lowercase ASCII hostnames, not suffixes, wildcards,
+URLs or IP literals. DNS-derived IP sets and the shared Istio SNI blacklist are
+not equivalent implementations of that hostname control.
+
 The trusted topology must explicitly supply `DNSResolverIPs`, the one to three
 distinct Pod resolver addresses, separately from `DNS` peer membership.
 Resolvers must belong to approved DNS peers and use qualified IP families.
