@@ -238,3 +238,31 @@ func TestCreationOptionsOfferARouterOnlyWithEveryModelItUses(t *testing.T) {
 		}
 	}
 }
+
+// A Copilot tier that the operator registered as a shared model needs that
+// shared model in the policy, as the operator grants it (review).
+func TestCreationOptionsFollowTheRegisteredModelsOfACopilotTier(t *testing.T) {
+	router := cetirunv1alpha1.TeamModelRouter{Name: "auto-copilot",
+		Tiers: cetirunv1alpha1.TeamModelRouterTiers{Simple: "copilot/gpt-5.5", Medium: "small-model", Complex: "small-model"}}
+	team := &cetirunv1alpha1.Team{Spec: cetirunv1alpha1.TeamSpec{ModelRouters: []cetirunv1alpha1.TeamModelRouter{router}}}
+	team.Status.ModelRouters = []cetirunv1alpha1.TeamModelRouterStatus{{
+		Name: "auto-copilot", Ready: true, SharedModels: []string{"small-model", "team-gpt"},
+	}}
+	policy := &cetirunv1alpha1.AgentPolicy{Spec: cetirunv1alpha1.AgentPolicySpec{ModelAccess: cetirunv1alpha1.AgentPolicyModelAccess{
+		Copilot:      cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: true},
+		SharedModels: cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: []string{"small-model", "auto-copilot"}}}}}
+	if got := teamModelRouterNames(team, policy); len(got) != 0 {
+		t.Fatalf("Copilot allowed but not the shared model the tier is registered as: %v", got)
+	}
+	policy.Spec.ModelAccess.SharedModels.Allowed = append(policy.Spec.ModelAccess.SharedModels.Allowed, "team-gpt")
+	policy.Spec.ModelAccess.Copilot.Allowed = false
+	if got := teamModelRouterNames(team, policy); !slices.Equal(got, []string{"auto-copilot"}) {
+		t.Fatalf("every registered model allowed, no Copilot tier under its ID: %v", got)
+	}
+	// A tier registered under the Copilot model's ID still needs Copilot.
+	team.Status.ModelRouters[0].SharedModels = []string{"small-model"}
+	team.Status.ModelRouters[0].CopilotModels = []string{"copilot/gpt-5.5"}
+	if got := teamModelRouterNames(team, policy); len(got) != 0 {
+		t.Fatalf("Copilot tier under its ID without Copilot: %v", got)
+	}
+}

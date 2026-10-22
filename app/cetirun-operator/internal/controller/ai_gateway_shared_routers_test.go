@@ -667,3 +667,19 @@ func TestPublishedCatalogNamesTheModelsOfEachSharedRouter(t *testing.T) {
 		t.Fatalf("seeded = %+v", now)
 	}
 }
+
+// The rollout hold compares a listing with the catalog the operator applies,
+// whether each shared model answers conversations included (review).
+func TestAIGatewayCatalogChangedBySeesADecisionModelBecomeAChatModel(t *testing.T) {
+	var catalog aiGatewayCatalog
+	decision := decisionModel()
+	sol := aigateway.Deployment{ID: testManagedDeploymentID, ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true}
+	catalog.update([]aigateway.Deployment{sol, decision}, false, time.Now())
+	if catalog.changedBy([]aigateway.Deployment{sol, decision}, false) {
+		t.Fatal("the same listing is no change")
+	}
+	decision.Mode = "chat"
+	if !catalog.changedBy([]aigateway.Deployment{sol, decision}, false) {
+		t.Fatal("a model that now answers conversations is a change")
+	}
+}

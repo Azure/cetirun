@@ -67,6 +67,8 @@ const (
 // are stored by the SHA-256 of their value and aliases are unique; teams,
 // users and memberships are created once; model IDs are unique.
 type fakeAIGateway struct {
+	// deleteModelErr fails DeleteModel.
+	deleteModelErr    error
 	keys              map[string]*aigateway.Key
 	getErr            error
 	deleteErr         error
@@ -279,6 +281,9 @@ func (f *fakeAIGateway) AddModel(_ context.Context, req aigateway.ModelRequest) 
 }
 
 func (f *fakeAIGateway) DeleteModel(_ context.Context, id string) error {
+	if f.deleteModelErr != nil {
+		return f.deleteModelErr
+	}
 	f.deletedModels = append(f.deletedModels, id)
 	delete(f.models, id)
 	return nil

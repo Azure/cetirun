@@ -122,6 +122,18 @@ type TeamModelRouterStatus struct {
 	// Message explains why the router is not ready.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// SharedModels are the shared models the router's tiers send requests
+	// to as registered, a GitHub Copilot tier that joins a shared model
+	// included: an Agent with an AgentPolicy is granted the router only when
+	// the policy allows each. The classifier is not listed.
+	// +optional
+	SharedModels []string `json:"sharedModels,omitempty"`
+
+	// CopilotModels are the copilot/<ID> tiers registered under the Copilot
+	// model's ID: an Agent needs GitHub Copilot and that model.
+	// +optional
+	CopilotModels []string `json:"copilotModels,omitempty"`
 }
 
 // AIGatewayModelRouterStatus reports one smart-routing model for the Agent, a

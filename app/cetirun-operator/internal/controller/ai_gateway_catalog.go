@@ -98,7 +98,8 @@ type aiGatewayCatalog struct {
 // reports false: there is nothing to keep.
 func (c *aiGatewayCatalog) changedBy(deployments []aigateway.Deployment, blockUnpriced bool) bool {
 	c.mu.RLock()
-	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, fingerprint: c.fingerprint, routerFingerprint: c.routerFingerprint}
+	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, fingerprint: c.fingerprint, routerFingerprint: c.routerFingerprint,
+		nonChat: c.nonChat}
 	c.mu.RUnlock()
 	if !scratch.known {
 		return false

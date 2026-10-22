@@ -73,7 +73,9 @@ func TestListModelsReadsRealModelAndRoutingFields(t *testing.T) {
 	if first.Model != "azure/gpt-4.1" || first.BaseModel != "azure/gpt-4.1" || first.Routing.String() != "order=1,weight=2.5,rpm=60" {
 		t.Fatalf("first deployment %+v routing %s", first, first.Routing)
 	}
-	if second.Model != "openai/gpt-4.1" || second.BaseModel != "" || !second.Routing.IsZero() {
+	// order 0 is LiteLLM's lowest order and kept; a negative weight and a
+	// fractional rpm are ignored (review).
+	if second.Model != "openai/gpt-4.1" || second.BaseModel != "" || second.Routing.String() != "order=0" {
 		t.Fatalf("fields LiteLLM's routing ignores count as unset: %+v routing %s", second, second.Routing)
 	}
 }

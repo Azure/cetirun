@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -253,6 +254,33 @@ func TestTeamModelRoutersRegisterReplaceAndRemove(t *testing.T) {
 	}
 }
 
+// A failed removal is retried even when no Team wants a router any more, so
+// a transient Gateway error cannot leave a stale registration (review).
+func TestAFailedRouterRemovalIsRetried(t *testing.T) {
+	team := routerTeam()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, _, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	gateway.models["cetirun-router-0000000000000000-deadbeef"] = aigateway.ModelRequest{
+		ID: "cetirun-router-0000000000000000-deadbeef", ModelName: "cetirun-router-0000000000000000",
+		AccessGroups: []string{"cetirun-router-0000000000000000"},
+	}
+	gateway.deleteModelErr = errors.New("synthetic Gateway outage")
+	routers := &TeamModelRouterReconciler{Client: r.Client, Agents: r}
+	result, err := routers.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: testAIGatewayTeam}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("a failed removal must be retried, got %+v", result)
+	}
+	gateway.deleteModelErr = nil
+	if _, err := routers.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: testAIGatewayTeam}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gateway.models["cetirun-router-0000000000000000-deadbeef"]; ok {
+		t.Fatal("the retry removes the stale registration")
+	}
+}
 func TestPolicyBoundAgentGetsAllowedRouter(t *testing.T) {
 	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne),
 		testRouter("auto-unlisted", testSmallModel, testSharedModelOne, testSharedModelOne),
@@ -450,7 +478,11 @@ func TestCopilotTierOfAMergedModelIsRegisteredAsTheSharedModel(t *testing.T) {
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		t.Fatal(err)
 	}
-	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	current := reconcileRouters(t, r, kube, testAIGatewayTeam)
+	// The Team reports the models as registered, for the Portal's offer.
+	if status := current.Status.ModelRouters[0]; !slices.Equal(status.SharedModels, []string{testSharedModelOne, "team-gpt"}) || len(status.CopilotModels) != 0 {
+		t.Fatalf("router status = %+v", status)
+	}
 	requests := routerRequests(gateway)
 	if len(requests) != 1 {
 		t.Fatalf("router requests = %+v", requests)
@@ -475,9 +507,9 @@ func TestCopilotTierOfAMergedModelIsRegisteredAsTheSharedModel(t *testing.T) {
 	if !router.Granted || !slices.Contains(lastKeyModels(gateway), gatewayName) {
 		t.Fatalf("granted router: %+v key %v", router, lastKeyModels(gateway))
 	}
-	// Limits of the shared model the tier is registered as (1,000,000), not
-	// of the Copilot model (400,000).
-	if router.ContextWindow != 1000000 {
+	// The smaller limits of the shared model (1,000,000) and the owner's
+	// Copilot model (400,000), which both answer the tier (review).
+	if router.ContextWindow != 400000 {
 		t.Fatalf("limits = %d %d", router.ContextWindow, router.MaxTokens)
 	}
 

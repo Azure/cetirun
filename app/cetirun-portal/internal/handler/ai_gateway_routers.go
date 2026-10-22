@@ -28,7 +28,7 @@ func teamModelRouterNames(team *api.Team, policy *api.AgentPolicy) []string {
 		return names
 	}
 	for _, router := range team.Spec.ModelRouters {
-		if policy != nil && !teamRouterAllowed(router, policy) {
+		if policy != nil && !teamRouterAllowed(router, policy, teamRouterStatus(team, router.Name)) {
 			continue
 		}
 		names = append(names, router.Name)
@@ -81,10 +81,21 @@ func sharedModelAllowed(model api.AIGatewayCatalogModel, policy *api.AgentPolicy
 // tiers, and allows GitHub Copilot when a tier uses a GitHub Copilot model,
 // as the operator grants it. Whether the owner's GitHub account offers such a
 // model is known only after sign-in.
-func teamRouterAllowed(router api.TeamModelRouter, policy *api.AgentPolicy) bool {
+func teamRouterAllowed(router api.TeamModelRouter, policy *api.AgentPolicy, status *api.TeamModelRouterStatus) bool {
 	access := policy.Spec.ModelAccess
 	if !slices.Contains(access.SharedModels.Allowed, router.Name) {
 		return false
+	}
+	// The operator registers a GitHub Copilot tier whose model joins a shared
+	// model as that shared model and reports the registered models on the
+	// Team; the router is offered by the rule the operator grants it by.
+	if status != nil && (len(status.SharedModels) > 0 || len(status.CopilotModels) > 0) {
+		for _, model := range status.SharedModels {
+			if !slices.Contains(access.SharedModels.Allowed, model) {
+				return false
+			}
+		}
+		return len(status.CopilotModels) == 0 || access.Copilot.Allowed
 	}
 	for _, model := range router.Tiers.Models() {
 		if model == "" {
@@ -99,4 +110,15 @@ func teamRouterAllowed(router api.TeamModelRouter, policy *api.AgentPolicy) bool
 		}
 	}
 	return true
+}
+
+// teamRouterStatus is the Team's status of the router, or nil before the
+// operator registered it.
+func teamRouterStatus(team *api.Team, name string) *api.TeamModelRouterStatus {
+	for i := range team.Status.ModelRouters {
+		if status := &team.Status.ModelRouters[i]; status.Name == name && status.Ready {
+			return status
+		}
+	}
+	return nil
 }

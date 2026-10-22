@@ -431,11 +431,13 @@ func (r Routing) params(params map[string]any) {
 }
 
 // routing reads the routing fields of a deployment's litellm_params. A field
-// that is not a positive number counts as not set, as LiteLLM's routing
-// ignores it.
+// that is not a positive number (for order, not a number of at least zero)
+// counts as not set, as LiteLLM's routing ignores it.
 func routing(params map[string]json.RawMessage) Routing {
 	var out Routing
-	if value, ok := positiveNumber(params["order"]); ok && value == math.Trunc(value) {
+	// LiteLLM takes order 0 as the lowest, so it is kept, unlike a zero weight,
+	// rpm or tpm.
+	if value, ok := nonNegativeNumber(params["order"]); ok && value == math.Trunc(value) {
 		order := int64(value)
 		out.Order = &order
 	}
@@ -451,6 +453,14 @@ func routing(params map[string]json.RawMessage) Routing {
 		out.TPM = &tpm
 	}
 	return out
+}
+
+func nonNegativeNumber(raw json.RawMessage) (float64, bool) {
+	var value float64
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value < 0 || math.IsInf(value, 0) || value > 1<<53 {
+		return 0, false
+	}
+	return value, true
 }
 
 func positiveNumber(raw json.RawMessage) (float64, bool) {

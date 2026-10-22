@@ -327,6 +327,13 @@ spec:
                   description: TeamModelRouterStatus is the AI Gateway registration
                     of one router.
                   properties:
+                    copilotModels:
+                      description: |-
+                        CopilotModels are the copilot/<ID> tiers registered under the Copilot
+                        model's ID: an Agent needs GitHub Copilot and that model.
+                      items:
+                        type: string
+                      type: array
                     gatewayModel:
                       description: |-
                         GatewayModel is the internal Gateway model name of the router, which
@@ -343,6 +350,15 @@ spec:
                         Ready reports whether the router is registered in the Gateway with its
                         current configuration.
                       type: boolean
+                    sharedModels:
+                      description: |-
+                        SharedModels are the shared models the router's tiers send requests
+                        to as registered, a GitHub Copilot tier that joins a shared model
+                        included: an Agent with an AgentPolicy is granted the router only when
+                        the policy allows each. The classifier is not listed.
+                      items:
+                        type: string
+                      type: array
                   required:
                   - name
                   - ready

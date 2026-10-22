@@ -99,6 +99,28 @@ type modelRouterPlan struct {
 	tierNames map[string]string
 }
 
+// tierModels are the shared models the router's tiers are registered as and
+// its copilot/<ID> tiers registered under the ID, each sorted, for the Team's
+// status: the Portal offers the router by the same rule the operator grants
+// it.
+func (plan modelRouterPlan) tierModels() ([]string, []string) {
+	var shared, copilot []string
+	for _, model := range plan.router.Tiers.Models() {
+		id, isCopilot := strings.CutPrefix(model, copilotTierPrefix)
+		switch {
+		case !isCopilot:
+			shared = append(shared, model)
+		case plan.tierNames[model] != id:
+			shared = append(shared, plan.tierNames[model])
+		default:
+			copilot = append(copilot, model)
+		}
+	}
+	slices.Sort(shared)
+	slices.Sort(copilot)
+	return slices.Compact(shared), slices.Compact(copilot)
+}
+
 // modelRouterTierNames are the CRD's tier names, in tier order.
 var modelRouterTierNames = []string{"simple", "medium", "complex", "reasoning"}
 
@@ -400,6 +422,9 @@ func (r *TeamModelRouterReconciler) sync(ctx context.Context, gateway aiGatewayK
 		if err := gateway.DeleteModel(ctx, id); err != nil {
 			logger.Error(err, "removing a model router registration failed", "id", id)
 			blocked[routerGatewayNameOf(id)] = true
+			// Retried like a failed registration, also when no Team wants a
+			// router any more and nothing else would bring the pass back.
+			failures[id] = err.Error()
 			continue
 		}
 		catalog.noteDeleted(id)
@@ -480,6 +505,8 @@ func (r *TeamModelRouterReconciler) report(ctx context.Context, team *api.Team, 
 		}
 		if !status.Ready {
 			problems = append(problems, status.Message)
+		} else {
+			status.SharedModels, status.CopilotModels = plan.tierModels()
 		}
 		statuses = append(statuses, status)
 	}
@@ -611,6 +638,10 @@ func (r *AgentReconciler) modelRouterLimits(instance *api.Agent, plan modelRoute
 	var contextWindow, maxTokens int64
 	for _, model := range plan.router.Tiers.Models() {
 		if name, ok := plan.tierNames[model]; ok && name != strings.TrimPrefix(model, copilotTierPrefix) {
+			// A tier that joins a shared model is answered by its deployments
+			// and by the owner's Copilot route: the smaller limits of both.
+			contextWindow = smallerPositive(contextWindow, limits[model][0])
+			maxTokens = smallerPositive(maxTokens, limits[model][1])
 			model = name
 		}
 		contextWindow = smallerPositive(contextWindow, limits[model][0])
