@@ -50,6 +50,7 @@ func New(
 	api.HandleFunc("PATCH /api/v1/instance", instanceHandler.UpdateInstance)
 	api.HandleFunc("DELETE /api/v1/instance", instanceHandler.DeleteInstance)
 	api.HandleFunc("POST /api/v1/instance/upgrade", instanceHandler.UpgradeInstance)
+	api.HandleFunc("POST /api/v1/instance/restart", instanceHandler.RestartInstance)
 	api.HandleFunc("GET /api/v1/instance/status", instanceHandler.GetInstanceStatus)
 	api.HandleFunc("GET /api/v1/instance/teams-app", instanceHandler.DownloadTeamsApp)
 
@@ -62,6 +63,7 @@ func New(
 	api.HandleFunc("PUT /api/v1/instances/{name}/registry-auth", instanceHandler.PutRegistryAuth)
 	api.HandleFunc("DELETE /api/v1/instances/{name}/registry-auth", instanceHandler.DeleteRegistryAuth)
 	api.HandleFunc("POST /api/v1/instances/{name}/upgrade", instanceHandler.UpgradeInstanceByName)
+	api.HandleFunc("POST /api/v1/instances/{name}/restart", instanceHandler.RestartInstanceByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/status", instanceHandler.GetInstanceStatusByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/teams-app", instanceHandler.DownloadTeamsAppByName)
 	api.HandleFunc("GET /api/v1/teams", instanceHandler.ListTeams)

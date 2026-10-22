@@ -449,7 +449,7 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	if err != nil {
 		return nil, err
 	}
-	if agentIdentityConfig.ToolsMCPURL != "" && toolsMCPEnabled {
+	if agentIdentityConfig.ToolsMCPURL != "" && toolsMCPEnabled && !sandboxRequested(instance, team) {
 		namespace, err := toolsMCPNamespace(agentIdentityConfig.ToolsMCPURL)
 		if err != nil {
 			return nil, err
@@ -463,6 +463,14 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		}
 		values["toolsMCP"] = map[string]interface{}{"enabled": true, "url": agentIdentityConfig.ToolsMCPURL, "audience": audience, "namespace": namespace, "caSecretName": agentIdentityConfig.ToolsMCPCASecretName}
 		values["serviceAccount"] = deepMerge(values["serviceAccount"], map[string]interface{}{"create": true, "name": instanceServiceName(instance.Name), "role": "", "automountToken": false})
+	}
+	if spec.RestartRequestID != "" {
+		if !cetirunv1alpha1.ValidRestartRequestID(spec.RestartRequestID) {
+			return nil, fmt.Errorf("invalid Agent restart request ID")
+		}
+		values["podAnnotations"] = deepMerge(values["podAnnotations"], map[string]any{
+			cetirunv1alpha1.AnnotationRestartRequestID: spec.RestartRequestID,
+		})
 	}
 	return values, nil
 }

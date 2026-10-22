@@ -18,9 +18,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// NativeIntent pins a Kubernetes single-start lifetime and its selected
-// configuration. It is not an enrolled execution, writer or fencing receipt.
+// NativeIntent pins selected configuration for a Kubernetes lifetime.
+// Reconciled lifetimes name their logical workload without claiming a Pod or
+// physical writer identity. Neither form is an enrolled execution or fence.
 type NativeIntent struct {
+	Reconciled      bool                `json:"reconciled,omitempty"`
 	Agent           w.ObjectIdentity    `json:"agent"`
 	AgentGeneration int64               `json:"agentGeneration"`
 	Namespace       w.ObjectIdentity    `json:"namespace"`
@@ -52,8 +54,32 @@ func (ticket NativeTicket) DeepCopy() NativeTicket {
 // NativeIntentFor selects only the bound Team, Sandbox and effective policy,
 // even if held preparation also inspected unused Team slots.
 func NativeIntentFor(expected w.Expectation) (NativeIntent, error) {
+	return nativeIntentFor(expected, false)
+}
+
+// ReconciledIntentFor reserves shared configuration for an owned HOME lifetime,
+// not for one Pod or writer. Normal template updates retain that reservation.
+func ReconciledIntentFor(expected w.ReconcileExpectation) (NativeIntent, error) {
+	if err := expected.Validate(); err != nil {
+		return NativeIntent{}, err
+	}
+	var workload w.ObjectIdentity
+	for _, component := range expected.Workloads {
+		if component.Kind == "StatefulSet" {
+			workload.Name = component.Identity.Name
+		}
+	}
+	return nativeIntentFor(w.Expectation{
+		Version: w.ExpectationVersion, Agent: expected.Agent, AgentGeneration: expected.AgentGeneration,
+		Namespace: expected.Namespace, Home: expected.Home, Workload: workload, WorkloadKind: w.AgentWorkload,
+		Binding: expected.Binding, Revision: expected.Revision, Sources: expected.Sources, SourceDigests: expected.SourceDigests,
+	}, true)
+}
+
+func nativeIntentFor(expected w.Expectation, reconciled bool) (NativeIntent, error) {
 	intent := NativeIntent{
-		Agent: expected.Agent, AgentGeneration: expected.AgentGeneration,
+		Reconciled: reconciled,
+		Agent:      expected.Agent, AgentGeneration: expected.AgentGeneration,
 		Namespace: expected.Namespace, Home: expected.Home, Workload: expected.Workload,
 		Binding: expected.Binding, Revision: expected.Revision, SourceDigests: map[string]string{},
 	}
@@ -86,9 +112,13 @@ func NativeIntentFor(expected w.Expectation) (NativeIntent, error) {
 }
 
 func (intent NativeIntent) Validate() error {
+	workloadIdentity := identity(intent.Workload)
+	if intent.Reconciled {
+		workloadIdentity = intent.Workload.UID == "" && len(validation.IsDNS1123Subdomain(intent.Workload.Name)) == 0
+	}
 	if !identity(intent.Agent) || intent.AgentGeneration < 1 || !identity(intent.Namespace) ||
 		len(validation.IsDNS1123Label(intent.Namespace.Name)) != 0 ||
-		!identity(intent.Home) || !identity(intent.Workload) || !literal(intent.Revision, 256) ||
+		!identity(intent.Home) || !workloadIdentity || !literal(intent.Revision, 256) ||
 		intent.Binding.AgentUID != intent.Agent.UID ||
 		len(intent.Sources) != 3 || len(intent.SourceDigests) != 3 {
 		return fmt.Errorf("%w: exact native lifetime and three selected configurations are required", ErrUnavailable)
@@ -128,10 +158,18 @@ func (s Store) AcquireNative(ctx context.Context, intent NativeIntent) (NativeTi
 	if err != nil {
 		return NativeTicket{}, err
 	}
-	for _, native := range state.NativeReservations {
+	for index, native := range state.NativeReservations {
 		if native.Intent.Agent.UID == intent.Agent.UID {
 			if native.Phase == Reserved && equality.Semantic.DeepEqual(native.Intent, intent) {
 				return (NativeTicket{object.UID, native}).DeepCopy(), nil
+			}
+			if native.Phase == Reserved && sameReconciledSources(native.Intent, intent) {
+				state.NativeReservations[index].Intent = intent
+				if err := s.write(ctx, object, state); err != nil {
+					return NativeTicket{}, err
+				}
+				ticket := (NativeTicket{object.UID, state.NativeReservations[index]}).DeepCopy()
+				return ticket, s.CheckNative(ctx, ticket)
 			}
 			return NativeTicket{}, ErrConflict
 		}
@@ -156,6 +194,22 @@ func (s Store) AcquireNative(ctx context.Context, intent NativeIntent) (NativeTi
 	}
 	ticket := (NativeTicket{object.UID, native}).DeepCopy()
 	return ticket, s.CheckNative(ctx, ticket)
+}
+
+func sameReconciledSources(previous, desired NativeIntent) bool {
+	if !previous.Reconciled || !desired.Reconciled || desired.AgentGeneration < previous.AgentGeneration ||
+		previous.Agent != desired.Agent || previous.Namespace != desired.Namespace || previous.Home != desired.Home ||
+		previous.Workload != desired.Workload || previous.Binding != desired.Binding ||
+		!maps.Equal(previous.SourceDigests, desired.SourceDigests) || len(previous.Sources) != len(desired.Sources) {
+		return false
+	}
+	for index, source := range previous.Sources {
+		current := desired.Sources[index]
+		if w.SourceKey(source) != w.SourceKey(current) || source.UID != current.UID {
+			return false
+		}
+	}
+	return true
 }
 
 func (s Store) ReadNative(ctx context.Context, agentUID types.UID) (NativeTicket, bool, error) {
@@ -259,7 +313,7 @@ func nativeChangeAffects(intent NativeIntent, change Change) bool {
 func compatibleNativeIntents(a, b NativeIntent) error {
 	if a.Agent.Name == b.Agent.Name || a.Agent.UID == b.Agent.UID ||
 		a.Namespace.Name == b.Namespace.Name || a.Namespace.UID == b.Namespace.UID ||
-		a.Home.UID == b.Home.UID || a.Workload.UID == b.Workload.UID {
+		a.Home.UID == b.Home.UID || (a.Workload.UID != "" && a.Workload.UID == b.Workload.UID) {
 		return ErrConflict
 	}
 	return compatibleNativeSources(a, b.Sources, b.SourceDigests, b.SelectedSandbox())
@@ -268,7 +322,7 @@ func compatibleNativeIntents(a, b NativeIntent) error {
 func compatibleNativeExecution(native NativeIntent, execution Intent) error {
 	if native.Agent.Name == execution.Agent.Name || native.Agent.UID == execution.Agent.UID ||
 		native.Namespace.Name == execution.Namespace.Name || native.Namespace.UID == execution.Namespace.UID ||
-		native.Home.UID == execution.Home.UID || native.Workload.UID == execution.Workload.UID {
+		native.Home.UID == execution.Home.UID || (native.Workload.UID != "" && native.Workload.UID == execution.Workload.UID) {
 		return ErrConflict
 	}
 	return compatibleNativeSources(native, execution.Sources, execution.SourceDigests, execution.SelectedSandbox())

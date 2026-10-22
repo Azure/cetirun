@@ -131,6 +131,8 @@ aiGateway:
   # reaches Copilot models through the Gateway with its own key.
   copilotProxy:
     enabled: false
+    # -- Operator-owned component replicas; null retains standalone Helm behavior.
+    replicaCount: null
     # -- Proxy image: the AI Gateway image
     image: ""
     # -- Secret holding the proxy's master key (key master-key), which the

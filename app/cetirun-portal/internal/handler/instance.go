@@ -95,34 +95,37 @@ type CreateInstanceRequest struct {
 
 // InstanceResponse is the JSON response for GET /api/v1/instance.
 type InstanceResponse struct {
-	Alias                  string                      `json:"alias"`
-	InstanceName           string                      `json:"instanceName"`
-	Agent                  cetirunv1alpha1.HarnessSpec `json:"agent"`
-	UID                    string                      `json:"uid"`
-	ResourceVersion        string                      `json:"resourceVersion"`
-	RegistryAuthConfigured bool                        `json:"registryAuthConfigured"`
-	Generation             int64                       `json:"generation"`
-	ObservedGeneration     int64                       `json:"observedGeneration"`
-	DisplayName            string                      `json:"displayName"`
-	Team                   string                      `json:"team"`
-	Model                  string                      `json:"model,omitempty"`
-	Phase                  string                      `json:"phase"`
-	AccessURL              string                      `json:"accessUrl,omitempty"` // Access URL (token is returned separately via GatewayToken)
-	WebUIURL               string                      `json:"webUIUrl,omitempty"`
-	GatewayToken           string                      `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
-	APIServerKey           string                      `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
-	CetiRunAuthKey         string                      `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
-	TailscaleAuthKey       string                      `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
-	Conditions             []ConditionStatus           `json:"conditions,omitempty"`
-	CreatedAt              string                      `json:"createdAt"`
-	LastReconciled         string                      `json:"lastReconciled,omitempty"`
-	UpgradeAvailable       bool                        `json:"upgradeAvailable"`
-	TeamsEnabled           bool                        `json:"teamsEnabled"`
-	TeamsState             string                      `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
-	TeamsAppID             string                      `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
-	TeamsMessage           string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
-	AgentIdentity          *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
-	AIGateway              *AIGatewayResponse          `json:"aiGateway,omitempty"`
+	Alias                    string                      `json:"alias"`
+	InstanceName             string                      `json:"instanceName"`
+	Agent                    cetirunv1alpha1.HarnessSpec `json:"agent"`
+	UID                      string                      `json:"uid"`
+	ResourceVersion          string                      `json:"resourceVersion"`
+	RegistryAuthConfigured   bool                        `json:"registryAuthConfigured"`
+	Generation               int64                       `json:"generation"`
+	ObservedGeneration       int64                       `json:"observedGeneration"`
+	RestartAvailable         bool                        `json:"restartAvailable"`
+	RestartRequestID         string                      `json:"restartRequestId,omitempty"`
+	ObservedRestartRequestID string                      `json:"observedRestartRequestId,omitempty"`
+	DisplayName              string                      `json:"displayName"`
+	Team                     string                      `json:"team"`
+	Model                    string                      `json:"model,omitempty"`
+	Phase                    string                      `json:"phase"`
+	AccessURL                string                      `json:"accessUrl,omitempty"` // Access URL (token is returned separately via GatewayToken)
+	WebUIURL                 string                      `json:"webUIUrl,omitempty"`
+	GatewayToken             string                      `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
+	APIServerKey             string                      `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
+	CetiRunAuthKey           string                      `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
+	TailscaleAuthKey         string                      `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
+	Conditions               []ConditionStatus           `json:"conditions,omitempty"`
+	CreatedAt                string                      `json:"createdAt"`
+	LastReconciled           string                      `json:"lastReconciled,omitempty"`
+	UpgradeAvailable         bool                        `json:"upgradeAvailable"`
+	TeamsEnabled             bool                        `json:"teamsEnabled"`
+	TeamsState               string                      `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
+	TeamsAppID               string                      `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
+	TeamsMessage             string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
+	AgentIdentity            *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
+	AIGateway                *AIGatewayResponse          `json:"aiGateway,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -623,19 +626,23 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 	}
 	if sandboxRef != "" && agent.Type != cetirunv1alpha1.AgentTypeCustom {
 		runtime, available := h.Config.SandboxRuntimeFor(agent.Type)
-		if !available {
+		_, configured := h.Config.SandboxRuntimes[string(agent.Type)]
+		if !available && (configured || !h.Config.SandboxControllerDefaults) {
 			writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "The selected agent runtime is not configured for Sandbox creation; ask an administrator to configure its approved runtime profile")
 			return
 		}
 		// Preserve explicit requests so admission can validate their qualification.
-		// Defaults come from deployment configuration, never browser authority.
-		if agent.Image == nil {
+		// Missing defaults may be delegated only to an explicitly enabled
+		// common executor; the retained executor requires pins at creation.
+		if available && agent.Image == nil {
 			agent.Image = &runtime.Image
 		}
-		if agent.Port == nil {
+		if available && agent.Port == nil {
 			agent.Port = &runtime.Port
 		}
-		options.ChartVersion = runtime.ChartVersion
+		if available {
+			options.ChartVersion = runtime.ChartVersion
+		}
 	}
 	if req.RegistryAuth != nil {
 		id, err := kube.RegistryID()
@@ -714,19 +721,22 @@ func (h *InstanceHandler) UpgradeInstance(w http.ResponseWriter, r *http.Request
 func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *cetirunv1alpha1.Agent) (InstanceResponse, error) {
 	configured, synchronized := h.Kube.RegistryAuthState(ctx, instance)
 	resp := InstanceResponse{
-		Alias:                  instance.Spec.User.Alias,
-		InstanceName:           instance.Name,
-		Agent:                  agentconfig.Defaults(instance.Spec.Agent),
-		UID:                    string(instance.UID),
-		ResourceVersion:        instance.ResourceVersion,
-		RegistryAuthConfigured: configured,
-		Generation:             instance.Generation,
-		ObservedGeneration:     instance.Status.ObservedGeneration,
-		DisplayName:            instance.Spec.User.DisplayName,
-		Team:                   instanceTeam(instance),
-		Model:                  instance.Spec.Model,
-		Phase:                  instance.Status.Phase,
-		CreatedAt:              instance.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		Alias:                    instance.Spec.User.Alias,
+		InstanceName:             instance.Name,
+		Agent:                    agentconfig.Defaults(instance.Spec.Agent),
+		UID:                      string(instance.UID),
+		ResourceVersion:          instance.ResourceVersion,
+		RegistryAuthConfigured:   configured,
+		Generation:               instance.Generation,
+		ObservedGeneration:       instance.Status.ObservedGeneration,
+		RestartAvailable:         kube.CanRestartInstance(instance),
+		RestartRequestID:         instance.Spec.RestartRequestID,
+		ObservedRestartRequestID: instance.Status.ObservedRestartRequestID,
+		DisplayName:              instance.Spec.User.DisplayName,
+		Team:                     instanceTeam(instance),
+		Model:                    instance.Spec.Model,
+		Phase:                    instance.Status.Phase,
+		CreatedAt:                instance.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	if resp.Phase == "" {
 		resp.Phase = "Pending"

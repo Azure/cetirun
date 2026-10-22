@@ -321,7 +321,12 @@ spec:
         {{- end }}
         {{- if $emptySkills }}
         - name: empty-skills
+          {{- if and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled }}
+          emptyDir:
+            sizeLimit: {{ .Values.sandboxWorkload.scratchSizeLimit | quote }}
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         {{- else if .Values.skills.shared }}
         - name: shared-skills
           persistentVolumeClaim:
@@ -332,7 +337,12 @@ spec:
         {{- end }}
         {{- if (include "cetirun.tailscaleEnabled" .) }}
         - name: tailscale-state
+          {{- if and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled }}
+          emptyDir:
+            sizeLimit: {{ .Values.sandboxWorkload.scratchSizeLimit | quote }}
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

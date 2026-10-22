@@ -126,7 +126,7 @@ func TestNativeResolveRequiresExplicitModeAndOpenClaw(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*ResolveInput){
 		"default mode": func(i *ResolveInput) { i.NativeExecution = false },
-		"Hermes":       func(i *ResolveInput) { i.Agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes },
+		"Custom":       func(i *ResolveInput) { i.Agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeCustom },
 		"Kubernetes access": func(i *ResolveInput) {
 			i.Resources.AgentPolicies["normal"].Spec.KubernetesAccess = &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{
 				ServiceAccountName: "operations",

@@ -29,7 +29,9 @@ func (r *AgentReconciler) sandboxGrantJournal() *sandboxpolicy.GrantJournalStore
 func (r *AgentReconciler) sandboxPreparationStateNeeded(agent *api.Agent) bool {
 	// A namespace alone does not enable preparation. During deletion the hold
 	// also protects retries after the preparation marker has been released.
-	cleanupPending := !agent.DeletionTimestamp.IsZero() && controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer)
+	// Reconciled lifetimes retain their grant journal through bootstrap ownership.
+	cleanupPending := !agent.DeletionTimestamp.IsZero() &&
+		(controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) || controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer))
 	return controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) ||
 		(r.OperatorNamespace != "" && (r.SandboxPreparation != nil || cleanupPending))
 }
@@ -64,22 +66,25 @@ func (r *AgentReconciler) revokeSandboxPreparationGrants(ctx context.Context, ag
 	return journal.Revoke(ctx, agent.Name, agent.UID, bindings)
 }
 
-func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt, pod corev1.PodSpec) (*rbacv1.Role, *rbacv1.RoleBinding, sandboxpolicy.BindingReference, error) {
+func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt, pods ...corev1.PodSpec) (*rbacv1.Role, *rbacv1.RoleBinding, sandboxpolicy.BindingReference, error) {
 	account := r.SandboxPreparation.AdmissionServiceAccount
 	if len(validation.IsDNS1123Subdomain(account)) != 0 || len(validation.IsDNS1123Label(r.OperatorNamespace)) != 0 ||
 		attempt.input.Namespace.Name == r.OperatorNamespace {
 		return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox admission source access requires an explicit separate platform ServiceAccount")
 	}
 	names := map[string][]string{}
-	for _, source := range sandboxworkload.PodSourceReferences(pod, attempt.input.Namespace.Name) {
-		switch source.Kind {
-		case "ConfigMap":
-			names["configmaps"] = append(names["configmaps"], source.Name)
-		case "Secret":
-			if !slices.Contains(attempt.input.AuthorizedSecrets, source.Name) {
-				return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox source-read grant contains an unapproved Secret")
+	for _, pod := range pods {
+		for _, source := range sandboxworkload.PodSourceReferences(pod, attempt.input.Namespace.Name) {
+			switch source.Kind {
+			case "ConfigMap":
+				names["configmaps"] = append(names["configmaps"], source.Name)
+			case "Secret":
+				if !slices.Contains(attempt.input.AuthorizedSecrets, source.Name) &&
+					(attempt.input.ImagePullSecret == nil || source.Name != attempt.input.ImagePullSecret.Name) {
+					return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox source-read grant contains an unapproved Secret")
+				}
+				names["secrets"] = append(names["secrets"], source.Name)
 			}
-			names["secrets"] = append(names["secrets"], source.Name)
 		}
 	}
 	var rules []rbacv1.PolicyRule
@@ -93,6 +98,12 @@ func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt
 	}
 	if len(rules) == 0 {
 		return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox native source inventory is empty")
+	}
+	if attempt.reconciled {
+		rules = append(rules,
+			rbacv1.PolicyRule{APIGroups: []string{"apps"}, Resources: []string{"deployments", "replicasets"}, Verbs: []string{"get"}},
+			rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"services"}, Verbs: []string{"get"}},
+		)
 	}
 	revision, err := sandboxPreparationDigest(struct {
 		Namespace sandboxworkload.ObjectIdentity

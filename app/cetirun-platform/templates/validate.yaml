@@ -24,7 +24,12 @@
 {{- if not ($portal.features | default dict).agentToolsEnabled }}
 {{- fail "cetirun-portal.features.agentToolsEnabled must be true when Agent Tools MCP is enabled" }}
 {{- end }}
-
+{{- end }}
+{{- if and $portal.enabled ($portal.sandboxRuntimeDefaultsFromController | default false) }}
+{{- $sources := $operator.sandboxSources | default dict }}
+{{- if not (and $operator.enabled $sources.enabled $sources.nativeExecution) }}
+{{- fail "cetirun-portal.sandboxRuntimeDefaultsFromController requires an enabled Operator with sandboxSources.enabled and nativeExecution" }}
+{{- end }}
 {{- end }}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) }}
 {{- if or (not $portal.enabled) (not $operator.enabled) }}

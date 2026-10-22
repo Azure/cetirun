@@ -7,6 +7,9 @@
 {{- $sharedChat := .Values.global.portalChat | default dict -}}
 {{- $chatEnabled := or .Values.chat.enabled (default false $sharedChat.enabled) -}}
 {{- $chatRealm := default .Values.chat.identityRealm $sharedChat.identityRealm -}}
+{{- if and (hasKey .Values "sandboxRuntimeDefaultsFromController") (not (kindIs "bool" .Values.sandboxRuntimeDefaultsFromController)) -}}
+{{- fail "sandboxRuntimeDefaultsFromController must be a boolean" -}}
+{{- end -}}
 {{- if $chatEnabled }}
 {{- $_ := required "chat.identityRealm is required for Custom Chat" $chatRealm -}}
 {{- $_ := required "istio.host is required for Custom Chat" .Values.istio.host -}}
@@ -77,6 +80,10 @@ spec:
               value: {{ join "," (default (list "hermes" "openclaw") ((.Values.features).allowedAgentTypes)) | quote }}
             - name: SANDBOX_RUNTIME_PROFILES
               value: {{ .Values.sandboxRuntimeProfiles | toJson | quote }}
+            {{- if .Values.sandboxRuntimeDefaultsFromController }}
+            - name: SANDBOX_RUNTIME_DEFAULTS_FROM_CONTROLLER
+              value: "true"
+            {{- end }}
             - name: FEATURE_AGENT_IDENTITY_ENABLED
               value: {{ default false ((.Values.features).agentIdentityEnabled) | quote }}
             {{- if default false ((.Values.features).agentToolsEnabled) }}

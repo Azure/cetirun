@@ -552,17 +552,23 @@ port: {{ .Values.runtime.http.portName }}
 {{- end }}
 
 {{/*
-Protected OpenClaw probes run inside the container, without host ingress grants.
+Protected built-in probes run inside the container, without host ingress grants.
 */}}
 {{- define "cetirun.agent.healthProbe" -}}
 {{- $root := .root -}}
-{{- if and $root.Values.sandboxWorkload (eq (include "cetirun.agent.type" $root) "openclaw") -}}
+{{- $kind := include "cetirun.agent.type" $root -}}
+{{- if and $root.Values.sandboxWorkload (or (eq $kind "openclaw") (and (eq $kind "hermes") ($root.Values.sandboxWorkload.reconciled | default false))) -}}
 {{- $endpoint := include .pathPort $root | fromYaml -}}
+{{- $port := 0 -}}
+{{- range (include "cetirun.agent.ports" $root | fromYamlArray) -}}
+{{- if eq .name $endpoint.port -}}{{- $port = int .containerPort -}}{{- end -}}
+{{- end -}}
+{{- if eq $port 0 -}}{{- fail "Sandbox health probe requires its resolved runtime port" -}}{{- end -}}
 exec:
   command:
     - node
     - /etc/cetirun/health-probe.cjs
-    - {{ $root.Values.service.targetPort | quote }}
+    - {{ $port | quote }}
     - {{ $endpoint.path | quote }}
     - {{ mul (int .timeoutSeconds) 1000 | quote }}
 {{- else -}}

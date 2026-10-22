@@ -575,6 +575,11 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 	if r.MemoryEnabled || r.MemoryImage != "" {
 		config = append(config, "memory-context/v2", r.MemoryImage, r.MemoryRegistry)
 	}
+	// Older controllers can acknowledge a generation without applying its restart.
+	// Bind both the steady-state and Helm-apply caches to the requested intent.
+	if instance.Spec.RestartRequestID != "" {
+		config = append(config, "restart-request/v1", instance.Spec.RestartRequestID)
+	}
 	return operatorConfigHash(
 		r.DomainSuffix, gwSecretHash, r.SkillsStorageAccount,
 		hashCetiRunHelmValues(r.CetiRunHelmValues), r.ChartRegistry,

@@ -74,7 +74,9 @@ func toolsMCPRuntimeAllowed(runtimeType api.AgentType, runtimeTypes []string) (b
 }
 
 func (r *AgentReconciler) toolsMCPEnabledFor(instance *api.Agent) (bool, error) {
-	if r.ToolsMCPURL == "" {
+	// Sandbox now shares the ordinary reconcile path, but its identity
+	// projections remain exclusively owned by the Sandbox compiler.
+	if r.ToolsMCPURL == "" || sandboxRequested(instance, nil) {
 		return false, nil
 	}
 	return toolsMCPRuntimeAllowed(instance.Spec.Agent.Type, r.ToolsMCPRuntimeTypes)

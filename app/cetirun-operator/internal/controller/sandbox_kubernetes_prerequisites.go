@@ -62,7 +62,15 @@ func (p *KubernetesSandboxPrerequisites) ResolveRunning(ctx context.Context, req
 	return p.resolve(ctx, requested, requestedTeam, false)
 }
 
+func (p *KubernetesSandboxPrerequisites) ResolveCurrent(ctx context.Context, requested *api.Agent, requestedTeam *api.Team) (SandboxPrerequisites, error) {
+	return p.resolveCurrent(ctx, requested, requestedTeam, false, true)
+}
+
 func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested *api.Agent, requestedTeam *api.Team, held bool) (SandboxPrerequisites, error) {
+	return p.resolveCurrent(ctx, requested, requestedTeam, held, false)
+}
+
+func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, requested *api.Agent, requestedTeam *api.Team, held, reconciled bool) (SandboxPrerequisites, error) {
 	var empty SandboxPrerequisites
 	if err := ctx.Err(); err != nil {
 		return empty, err
@@ -104,11 +112,20 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 	if err != nil {
 		return empty, err
 	}
-	if agentSource != expectedAgent || agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) != held {
+	if agentSource != expectedAgent || (!reconciled && (agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) != held)) {
 		return empty, fmt.Errorf("%w: Sandbox prerequisites require the exact current Agent intent and lifecycle state", errSandboxSourceChanged)
 	}
-	if !sandboxPreparationSupported(agent) || (agent.Spec.Agent.Type != api.AgentTypeOpenClaw && source.Helpers.Doctor) {
+	if !reconciled && (!sandboxPreparationSupported(agent) || (agent.Spec.Agent.Type != api.AgentTypeOpenClaw && source.Helpers.Doctor)) {
 		return empty, fmt.Errorf("%w: Sandbox prerequisites support only the existing native held path and its helpers", sandboxpolicy.ErrUnsupportedControl)
+	}
+	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw {
+		source.Helpers.Doctor = false
+	}
+	if reconciled {
+		if _, err := semver.StrictNewVersion(agent.Spec.Helm.Version); err != nil {
+			return empty, fmt.Errorf("Sandbox reconciliation requires a pinned native chart version")
+		}
+		source.ChartVersion = agent.Spec.Helm.Version
 	}
 	if agent.Spec.Helm.Version != "" && agent.Spec.Helm.Version != source.ChartVersion {
 		return empty, fmt.Errorf("Sandbox Agent chart version differs from the configured approved version")
