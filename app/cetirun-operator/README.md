@@ -253,9 +253,13 @@ while a migration is pending.
 The controller persists `status.plannedMigration` before side effects:
 
 1. `Protecting` captures exact source/storage/Node identities and protects the
-   source Pod and VolumeAttachment with separate finalizers. Fresh authorization
-   must still match the running projection; a new desired generation is not
-   reported as applied just to pass that check.
+   source Pod and VolumeAttachment with separate finalizers. The stop transition
+   is recorded before rechecking source authorization, because an authorization
+   failure stops compute and clears its readiness. A transient dependency failure
+   then retains the source observations and continues shutdown from `Stopping`,
+   rather than requiring readiness that its own hold cleared. Destination start
+   still requires current authorization through common reconciliation; no
+   desired generation is reported as applied merely to pass a migration check.
 2. `Stopping` blocks the existing key, withdraws routing and stops main/auxiliary
    workloads. `SourceTerminated` requires terminal Pod status and a completed
    status for every named container, while the original source Node/boot and CSI

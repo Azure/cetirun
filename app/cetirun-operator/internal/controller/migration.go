@@ -167,11 +167,6 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 	}
 	switch state.Phase {
 	case api.MigrationProtecting:
-		if !agent.Spec.Suspended {
-			if err := r.authorizeMigrationSource(ctx, agent); err != nil {
-				return block(err)
-			}
-		}
 		digest, err := sandboxPreparationDigest(workload.Spec.Template)
 		if err != nil || digest != state.WorkloadTemplateHash || workload.Spec.Replicas == nil ||
 			*workload.Spec.Replicas < 0 || *workload.Spec.Replicas > 1 {
@@ -201,11 +196,19 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 		if err := r.migrationFinalizer(ctx, agent, attachment, api.MigrationAttachmentFinalizer, true); err != nil {
 			return block(err)
 		}
+		// Authorization failure can stop the source and clear its readiness.
+		// Persist protection and the stop transition before that failure path.
 		checkpointErr := r.migrationCheckpoint(ctx, agent, api.MigrationStopping)
 		if agent.Spec.Suspended {
 			return false, wait, errors.Join(checkpointErr, r.stopReconciledSandboxForMigration(ctx, agent))
 		}
-		return false, wait, checkpointErr
+		if checkpointErr != nil {
+			return false, wait, checkpointErr
+		}
+		if err := r.authorizeMigrationSource(ctx, agent); err != nil {
+			return block(err)
+		}
+		return false, wait, nil
 	case api.MigrationStopping:
 		if _, err := r.checkMigrationNode(ctx, state.Source, state.Driver, true); err != nil {
 			return block(err)
