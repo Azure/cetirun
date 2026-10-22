@@ -100,7 +100,7 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 		Name: "auto-llm", Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: testSmallModel},
 		Tiers: api.TeamModelRouterTiers{Simple: "copilot/fast-1", Medium: testSmallModel, Complex: testSharedModelOne, Reasoning: "copilot/deep-1"},
 	})
-	plans := planModelRouters(team, shared)
+	plans := planModelRouters(team, shared, nil)
 	if len(plans) != 2 || plans[0].problem != "" || plans[1].problem != "" {
 		t.Fatalf("plans = %+v", plans)
 	}
@@ -150,11 +150,11 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 
 	// The ID follows the configuration; the model name does not.
 	team.Spec.ModelRouters[0].Tiers.Complex = testSmallModel
-	changed := planModelRouters(team, shared)[0]
+	changed := planModelRouters(team, shared, nil)[0]
 	if changed.gatewayName != plan.gatewayName || changed.request.ID == plan.request.ID {
 		t.Fatalf("a changed router keeps its name %q and gets a new ID, got %q %q", changed.gatewayName, changed.request.ID, plan.request.ID)
 	}
-	if again := planModelRouters(team, shared)[0]; again.request.ID != changed.request.ID {
+	if again := planModelRouters(team, shared, nil)[0]; again.request.ID != changed.request.ID {
 		t.Fatal("the registration ID must be deterministic")
 	}
 }
@@ -172,7 +172,7 @@ func TestPlanModelRoutersReportsMisconfiguration(t *testing.T) {
 			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSmallModel, Complex: testSmallModel}}, "the classifier copilot/fast-1 is not a shared model"},
 		{testRouter(testRouterName, testSmallModel, "other-router", testSmallModel), "tier medium names other-router"},
 	} {
-		plans := planModelRouters(routerTeam(tc.router), shared)
+		plans := planModelRouters(routerTeam(tc.router), shared, nil)
 		if len(plans) != 1 || !strings.Contains(plans[0].problem, tc.want) || !strings.HasPrefix(plans[0].problem, "router "+tc.router.Name+": ") {
 			t.Errorf("router %+v: problem %q, want %q", tc.router, plans[0].problem, tc.want)
 		}
@@ -434,6 +434,90 @@ func TestCopilotTierRouterFollowsTheOwnersSignIn(t *testing.T) {
 	}
 }
 
+// A copilot/<ID> tier of a Copilot model that joins a shared model is
+// registered as that shared model, which the Agent's own Copilot route joins:
+// the router reaches it. An Agent whose policy does not allow that shared
+// model is refused the router (review of #263).
+func TestCopilotTierOfAMergedModelIsRegisteredAsTheSharedModel(t *testing.T) {
+	team := routerTeam(testRouter(testRouterName, "copilot/gpt-5.5", testSharedModelOne, "copilot/gpt-5.5"))
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace(), readyProxy(1))
+	gateway.shared = append(gateway.shared, sharedDeployment("team-gpt-a", "team-gpt", func(d *aigateway.Deployment) {
+		d.BaseModel, d.MaxInputTokens, d.MaxOutputTokens = "openai/gpt-5.5", 1000000, 64000
+	}))
+	allowTestPolicyModels(t, kube, testRouterName, "team-gpt")
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	requests := routerRequests(gateway)
+	if len(requests) != 1 {
+		t.Fatalf("router requests = %+v", requests)
+	}
+	tiers := aigateway.RouterBody(requests[0])["litellm_params"].(map[string]any)["complexity_router_config"].(map[string]any)["tiers"].(map[string]any)
+	if tiers["SIMPLE"] != "team-gpt" || tiers["COMPLEX"] != "team-gpt" || tiers["MEDIUM"] != testSharedModelOne {
+		t.Fatalf("tiers = %v", tiers)
+	}
+	signIn(t, kube, agent, `[{"id":"gpt-5.5","name":"GPT-5.5","contextWindow":400000,"maxOutputTokens":128000}]`)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	joined := false
+	for _, route := range gateway.models {
+		joined = joined || route.Model == "litellm_proxy/gpt-5.5" && route.ModelName == "team-gpt"
+	}
+	if !joined {
+		t.Fatalf("the Agent's Copilot route joins the shared model: %+v", gateway.models)
+	}
+	gatewayName := modelRouterGatewayName(testAIGatewayTeam, testRouterName)
+	router := agent.Status.AIGateway.ModelRouters[0]
+	if !router.Granted || !slices.Contains(lastKeyModels(gateway), gatewayName) {
+		t.Fatalf("granted router: %+v key %v", router, lastKeyModels(gateway))
+	}
+	// Limits of the shared model the tier is registered as (1,000,000), not
+	// of the Copilot model (400,000).
+	if router.ContextWindow != 1000000 {
+		t.Fatalf("limits = %d %d", router.ContextWindow, router.MaxTokens)
+	}
+
+	// The policy no longer allows the shared model: the router goes.
+	policy := &api.AgentPolicy{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.ModelAccess.SharedModels.Allowed = slices.DeleteFunc(policy.Spec.ModelAccess.SharedModels.Allowed,
+		func(model string) bool { return model == "team-gpt" })
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	router = agent.Status.AIGateway.ModelRouters[0]
+	if router.Granted || router.Reason != "tier simple uses the GitHub Copilot model gpt-5.5, which the AI Gateway serves as the shared model team-gpt, and the AgentPolicy does not allow team-gpt" {
+		t.Fatalf("refused router: %+v", router)
+	}
+}
+
+// A copilot/<ID> tier registered under the ID is refused to an Agent whose
+// key reaches that Copilot model only under another name.
+func TestCopilotTierUnderItsIDNeedsTheAgentsRouteUnderTheID(t *testing.T) {
+	plan := modelRouterPlan{
+		router:    testRouter(testRouterName, "copilot/gpt-5.5", testSharedModelOne, testSharedModelOne),
+		tierNames: map[string]string{"copilot/gpt-5.5": "gpt-5.5"},
+	}
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, _, _ := aiGatewayTestReconciler(t, agent)
+	reason := r.modelRouterRefusal(agent, plan, nil, true, map[string]string{"copilot/gpt-5.5": "team-gpt"})
+	if reason != "tier simple uses the GitHub Copilot model gpt-5.5, which this Agent reaches only as team-gpt" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
 func TestRouterNamesDoNotBreakPolicyResolution(t *testing.T) {
 	team := routerTeam(testRouter(testRouterName, testSharedModelOne, testSharedModelOne, testSharedModelOne))
 	agent := aiGatewayTestAgent(testAIGatewayTeam)

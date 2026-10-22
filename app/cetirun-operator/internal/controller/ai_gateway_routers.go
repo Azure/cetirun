@@ -51,10 +51,17 @@ const (
 
 // routerTierGatewayName is the Gateway name a tier is registered with. A
 // copilot/<id> tier names the owner's Copilot model, which the Gateway serves
-// under the model's own ID unless it is merged into a shared model, which a
-// tier names directly.
-func routerTierGatewayName(model string) string {
-	return strings.TrimPrefix(model, copilotTierPrefix)
+// under the model's own ID unless it joins a shared model: then the tier is
+// registered as that shared model (mergedName), which also reaches the
+// owner's Copilot route under that name.
+func routerTierGatewayName(model string, mergedName func(string) string) string {
+	id, copilot := strings.CutPrefix(model, copilotTierPrefix)
+	if copilot && mergedName != nil {
+		if name := mergedName(id); name != "" {
+			return name
+		}
+	}
+	return id
 }
 
 // aiGatewayRouterReminderMarkers are the blocks a router leaves out when it
@@ -86,6 +93,10 @@ type modelRouterPlan struct {
 	// sends requests to, by kind.
 	shared  []string
 	copilot []string
+	// tierNames are the Gateway names the tier models are registered
+	// with: a copilot/<ID> tier of a Copilot model that joins a shared model
+	// is registered as that shared model, which is then one of shared.
+	tierNames map[string]string
 }
 
 // modelRouterTierNames are the CRD's tier names, in tier order.
@@ -151,14 +162,14 @@ func routerModelNotAllowed(model aigateway.RouterModel) string {
 
 // planModelRouters checks a Team's routers against the shared models of a
 // live catalog and builds their registrations.
-func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRouterPlan {
+func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, mergedName func(string) string) []modelRouterPlan {
 	sharedNames := map[string]bool{}
 	for _, model := range shared {
 		sharedNames[model.Name] = true
 	}
 	plans := make([]modelRouterPlan, 0, len(team.Spec.ModelRouters))
 	for _, router := range team.Spec.ModelRouters {
-		plan := modelRouterPlan{router: router, gatewayName: modelRouterGatewayName(team.Name, router.Name)}
+		plan := modelRouterPlan{router: router, gatewayName: modelRouterGatewayName(team.Name, router.Name), tierNames: map[string]string{}}
 		var problems []string
 		if sharedNames[router.Name] {
 			problems = append(problems, fmt.Sprintf("the name %s is also a shared model", router.Name))
@@ -169,6 +180,15 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRou
 			case strings.HasPrefix(model, copilotTierPrefix):
 				if !copilotModelID.MatchString(strings.TrimPrefix(model, copilotTierPrefix)) {
 					problems = append(problems, fmt.Sprintf("tier %s names %s, which is not a GitHub Copilot model ID", tier, model))
+					continue
+				}
+				name := routerTierGatewayName(model, mergedName)
+				plan.tierNames[model] = name
+				if name != strings.TrimPrefix(model, copilotTierPrefix) {
+					// Joins a shared model: registered and granted as that model.
+					if !slices.Contains(plan.shared, name) {
+						plan.shared = append(plan.shared, name)
+					}
 				} else if !slices.Contains(plan.copilot, model) {
 					plan.copilot = append(plan.copilot, model)
 				}
@@ -197,8 +217,8 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRou
 		config := map[string]any{
 			"classifier_type": classifier,
 			"tiers": map[string]any{
-				"SIMPLE": routerTierGatewayName(router.Tiers.Simple), "MEDIUM": routerTierGatewayName(router.Tiers.Medium),
-				"COMPLEX": routerTierGatewayName(router.Tiers.Complex), "REASONING": routerTierGatewayName(router.Tiers.ReasoningModel()),
+				"SIMPLE": routerTierGatewayName(router.Tiers.Simple, mergedName), "MEDIUM": routerTierGatewayName(router.Tiers.Medium, mergedName),
+				"COMPLEX": routerTierGatewayName(router.Tiers.Complex, mergedName), "REASONING": routerTierGatewayName(router.Tiers.ReasoningModel(), mergedName),
 			},
 			"reminder_markers":                 aiGatewayRouterReminderMarkers,
 			"context_compaction":               false,
@@ -210,7 +230,7 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel) []modelRou
 		}
 		plan.request = aigateway.RouterRequest{
 			ModelName: plan.gatewayName, AccessGroups: []string{plan.gatewayName}, Config: config,
-			DefaultModel:      routerTierGatewayName(router.Tiers.Medium),
+			DefaultModel:      routerTierGatewayName(router.Tiers.Medium, mergedName),
 			InputCostPerToken: aiGatewayRouterInputCost, OutputCostPerToken: aiGatewayRouterOutputCost,
 		}
 		// The ID changes with the configuration, so a changed router replaces
@@ -317,7 +337,7 @@ func (r *TeamModelRouterReconciler) Reconcile(ctx context.Context, request ctrl.
 		if !item.DeletionTimestamp.IsZero() {
 			continue
 		}
-		plans := planModelRouters(item, shared)
+		plans := planModelRouters(item, shared, r.Agents.copilotTierSharedNames())
 		if team != nil && item.Name == team.Name {
 			requested = plans
 		}
@@ -508,20 +528,16 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 		// names shared models only): grant no router until there is one.
 		return nil, nil
 	}
-	registeredCopilot := map[string]bool{}
+	// The Gateway name of each of the owner's Copilot models, by copilot/<ID>.
+	registeredCopilot := map[string]string{}
 	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil && copilot {
-		for _, name := range status.Copilot.Models {
-			registeredCopilot[name] = true
-		}
-		// Copilot models are registered under the Gateway name each Agent
-		// sees; a copilot/<id> tier names the model itself.
 		for _, route := range status.Copilot.Routes {
-			registeredCopilot[copilotTierPrefix+route.Model] = true
+			registeredCopilot[copilotTierPrefix+route.Model] = route.Name
 		}
 	}
 	var groups []string
 	var statuses []api.AIGatewayModelRouterStatus
-	for _, plan := range planModelRouters(team, shared) {
+	for _, plan := range planModelRouters(team, shared, r.copilotTierSharedNames()) {
 		status := api.AIGatewayModelRouterStatus{Name: plan.router.Name}
 		status.Reason = r.modelRouterRefusal(instance, plan, policy, copilot, registeredCopilot)
 		if status.Reason == "" {
@@ -535,7 +551,7 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 }
 
 // modelRouterRefusal is why the Agent may not use the router, or "".
-func (r *AgentReconciler) modelRouterRefusal(instance *api.Agent, plan modelRouterPlan, policy *api.AgentPolicy, copilot bool, registeredCopilot map[string]bool) string {
+func (r *AgentReconciler) modelRouterRefusal(instance *api.Agent, plan modelRouterPlan, policy *api.AgentPolicy, copilot bool, registeredCopilot map[string]string) string {
 	if plan.problem != "" {
 		return modelRouterMisconfigured(strings.TrimPrefix(plan.problem, "router "+plan.router.Name+": "))
 	}
@@ -547,13 +563,25 @@ func (r *AgentReconciler) modelRouterRefusal(instance *api.Agent, plan modelRout
 	}
 	for i, model := range plan.router.Tiers.Models() {
 		tier := modelRouterTierNames[i]
-		if strings.HasPrefix(model, copilotTierPrefix) {
-			id := strings.TrimPrefix(model, copilotTierPrefix)
+		if id, isCopilot := strings.CutPrefix(model, copilotTierPrefix); isCopilot {
+			if name := plan.tierNames[model]; name != id {
+				// The tier joins the shared model name: the Agent needs that
+				// shared model, which its own Copilot route then joins too.
+				if policy != nil && !slices.Contains(policy.Spec.ModelAccess.SharedModels.Allowed, name) {
+					return fmt.Sprintf("tier %s uses the GitHub Copilot model %s, which the AI Gateway serves as the shared model %s, and the AgentPolicy does not allow %s", tier, id, name, name)
+				}
+				continue
+			}
+			name, registered := registeredCopilot[model]
 			switch {
 			case !copilot:
 				return fmt.Sprintf("tier %s uses the GitHub Copilot model %s, and GitHub Copilot is not available to this Agent", tier, id)
-			case !registeredCopilot[model]:
+			case !registered:
 				return fmt.Sprintf("tier %s uses the GitHub Copilot model %s: sign in to GitHub Copilot with an account that offers it", tier, id)
+			case name != id:
+				// The router reaches the model under its ID; this Agent's key
+				// reaches it only under another name.
+				return fmt.Sprintf("tier %s uses the GitHub Copilot model %s, which this Agent reaches only as %s", tier, id, name)
 			}
 			continue
 		}
@@ -582,6 +610,9 @@ func (r *AgentReconciler) modelRouterLimits(instance *api.Agent, plan modelRoute
 	}
 	var contextWindow, maxTokens int64
 	for _, model := range plan.router.Tiers.Models() {
+		if name, ok := plan.tierNames[model]; ok && name != strings.TrimPrefix(model, copilotTierPrefix) {
+			model = name
+		}
 		contextWindow = smallerPositive(contextWindow, limits[model][0])
 		maxTokens = smallerPositive(maxTokens, limits[model][1])
 	}

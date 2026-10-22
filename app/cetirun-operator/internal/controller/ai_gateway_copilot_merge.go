@@ -200,12 +200,7 @@ func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, mo
 	for _, model := range entitledModels {
 		entitled[model.Name] = true
 	}
-	byReal := map[string][]string{}
-	for _, name := range slices.Sorted(maps.Keys(view.shared)) {
-		if real := sharedRealModel(view.shared[name], priced); real != "" {
-			byReal[real] = append(byReal[real], name)
-		}
-	}
+	byReal := copilotSharedNamesByReal(view, priced)
 	placements := map[string]copilotPlacement{}
 	var skipped []string
 	for _, model := range models {
@@ -225,6 +220,47 @@ func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, mo
 	}
 	slices.Sort(skipped)
 	return placements, skipped, true
+}
+
+// copilotSharedNamesByReal lists, for each real model, the shared model names
+// serving it, in sort order: the names a Copilot model of that real model can
+// join.
+func copilotSharedNamesByReal(view copilotMergeView, priced map[string]bool) map[string][]string {
+	byReal := map[string][]string{}
+	for _, name := range slices.Sorted(maps.Keys(view.shared)) {
+		if real := sharedRealModel(view.shared[name], priced); real != "" {
+			byReal[real] = append(byReal[real], name)
+		}
+	}
+	return byReal
+}
+
+// copilotTierSharedNames resolves a Team router's copilot/<ID> tier: the
+// shared model a Copilot model of that ID joins for an Agent granted that
+// shared model, or "" when it joins none and keeps its own ID. A Team's router
+// is registered once for all its Agents, so the tier names the first such
+// shared model, as placeCopilotModels does for an Agent granted it; an Agent
+// that may not use that name is refused the router. The prices come from the
+// cache the Copilot registration fills; until it is filled only base_model
+// counts, and an Agent whose route then took another name is refused too.
+func (r *AgentReconciler) copilotTierSharedNames() func(id string) string {
+	view, known := r.aiGatewayCatalog.copilotMergeSnapshot()
+	if !known {
+		return func(string) string { return "" }
+	}
+	r.aiGatewayPrices.mu.Lock()
+	priced := r.aiGatewayPrices.priced
+	r.aiGatewayPrices.mu.Unlock()
+	byReal := copilotSharedNamesByReal(view, priced)
+	return func(id string) string {
+		if datedModelID(id) {
+			return ""
+		}
+		if names := byReal[realModelKey(id)]; len(names) > 0 {
+			return names[0]
+		}
+		return ""
+	}
 }
 
 // copilotPlacementRevision covers what a placement puts on the route, so a

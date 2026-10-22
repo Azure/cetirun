@@ -124,6 +124,14 @@ Each router has:
   may be left empty to use the `complex` model. Requests the router cannot
   classify go to the `medium` model.
 
+A `copilot/<model>` tier whose model is the same model as a shared model is
+registered as that shared model, which GitHub Copilot routes of that model
+join (see [Models](../models/#models-through-the-ai-gateway)): an instance needs that shared model, allowed by
+its AgentPolicy, to be granted the router, and the tier's requests may then be
+answered by the shared deployments too. A tier registered under the Copilot
+model's ID is granted only to instances whose owner's Copilot model has that
+name.
+
 ```yaml
 spec:
   modelRouters:
