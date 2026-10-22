@@ -265,7 +265,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		ProfileID:      profile.ID,
 		ChartVersion:   chrt.Metadata.Version,
 		NativeConfig:   config,
-		NativeOptions:  map[string]any{"acpx": native["acpx"], "plugins": native["plugins"]},
+		NativeOptions:  map[string]any{"acpx": native["acpx"], "plugins": native["plugins"], "portalSignIn": native["portalSignIn"]},
 		NativeSandbox:  values[sandboxworkload.ValuesKey] != nil,
 		Model: agents.ModelBinding{
 			Provider:      provider,

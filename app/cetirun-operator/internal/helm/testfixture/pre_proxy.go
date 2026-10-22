@@ -11,6 +11,43 @@ import (
 	"helm.sh/helm/v3/pkg/chart"
 )
 
+// laterAdditions are chart changes made after the proxy hook, removed before
+// the original bytes are checked.
+var laterAdditions = map[string][]string{
+	"agents/openclaw/config/native.tpl": {`{{- /* Portal sign-in: the ingress lets only the Agent's owner through, after
+   their Portal sign-in, and passes their email from that sign-in; the Istio
+   sidecar is the Agent's only proxy. OpenClaw then takes the owner from that
+   header and approves their browsers without "openclaw devices approve". The
+   gateway token becomes a password for clients on loopback, such as the CLI
+   in the Terminal, as OpenClaw refuses a token in this mode. */}}
+{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (not .Values.sandboxWorkload) (not .TailscaleEnabled) }}
+{{- $gateway := dig "gateway" (dict) $config }}
+{{- if not (has "127.0.0.6" (dig "trustedProxies" (list) $gateway)) }}
+{{- $_ := required "openclaw.portalSignIn needs 127.0.0.6, the Istio sidecar, in openclaw.config.gateway.trustedProxies" "" }}
+{{- end }}
+{{- $_ := set $gateway "auth" (dict
+    "mode" "trusted-proxy"
+    "trustedProxy" (dict
+      "userHeader" "x-auth-request-email"
+      "allowLoopback" true
+      "deviceAutoApprove" (dict "enabled" true))) }}
+{{- $_ := set $config "gateway" $gateway }}
+{{- end }}
+`},
+	"values.schema.json": {`                "portalSignIn": {
+                    "type": "object",
+                    "description": "Sign the owner in to the Control UI with their Portal sign-in (OpenClaw trusted-proxy mode)",
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": false
+                        }
+                    }
+                },
+`},
+}
+
 // RestorePreProxyContract reconstructs the three chart assets changed by the
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
@@ -78,6 +115,12 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			return fmt.Errorf("pre-proxy fixture requires the exact added hook in %s", name)
 		}
 		original := bytes.Replace(*data, []byte(change.addition), nil, 1)
+		for _, later := range laterAdditions[name] {
+			if bytes.Count(original, []byte(later)) != 1 {
+				return fmt.Errorf("pre-proxy fixture requires the later addition in %s", name)
+			}
+			original = bytes.Replace(original, []byte(later), nil, 1)
+		}
 		if fmt.Sprintf("%x", sha256.Sum256(original)) != change.checksum {
 			return fmt.Errorf("pre-proxy fixture %s differs from the original chart asset", name)
 		}

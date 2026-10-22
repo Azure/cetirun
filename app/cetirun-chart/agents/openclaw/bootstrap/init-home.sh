@@ -71,6 +71,9 @@ agent_apply_config() (
   # profile is dropped. Any other configuration, other providers and an openai
   # provider with its own endpoint included, keeps its saved settings on the
   # legacy path. Native Sandbox model and ingress bindings are platform-owned.
+  # The Portal sign-in mode (gateway.auth trusted-proxy) is the chart's too: it
+  # replaces a saved gateway.auth, a saved token included, which OpenClaw would
+  # refuse in that mode, and is removed again when the chart no longer sets it.
   if [ "${CETIRUN_AI_GATEWAY:-false}" = true ]; then
     gateway=true
   else
@@ -99,6 +102,9 @@ agent_apply_config() (
             elif all($lists[]; type == "array" and all(.[]; type == "string")) then
               setpath($path; reduce ($lists | add)[] as $entry ([]; if index($entry) == null then . + [$entry] else . end))
             else error("invalid plugin or skills list") end)
+    | if ($source.gateway.auth.mode // "") == "trusted-proxy" then .gateway.auth = $source.gateway.auth
+      elif (.gateway.auth.mode // "") == "trusted-proxy" then .gateway |= del(.auth)
+      else . end
     | if $source.plugins.entries["cetirun-memory-context"].enabled != true then
         if (.plugins.entries | type) == "object" then .plugins.entries |= del(.["cetirun-memory-context"]) else . end
         | if (.plugins.allow | type) == "array" then .plugins.allow |= map(select(. != "cetirun-memory-context")) else . end

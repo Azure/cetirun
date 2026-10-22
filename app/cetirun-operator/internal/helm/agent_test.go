@@ -501,6 +501,55 @@ func TestOpenClawTailscaleTrustsServeLoopback(t *testing.T) {
 	}
 }
 
+// The operator renders an Agent's configuration from the chart's native asset
+// itself; Portal sign-in must come out the same as from the chart alone, and
+// stay off with Tailscale.
+func TestOpenClawPortalSignInRendersTrustedProxyAuth(t *testing.T) {
+	want := map[string]any{
+		"mode": "trusted-proxy",
+		"trustedProxy": map[string]any{
+			"userHeader": "x-auth-request-email", "allowLoopback": true,
+			"deviceAutoApprove": map[string]any{"enabled": true},
+		},
+	}
+	for _, test := range []struct {
+		name      string
+		enabled   bool
+		tailscale bool
+		want      any
+	}{
+		{name: "off"},
+		{name: "on", enabled: true, want: want},
+		{name: "on with Tailscale", enabled: true, tailscale: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := sampleInput("openclaw", "openai", false)
+			if test.enabled {
+				input["openclaw"] = map[string]any{"portalSignIn": map[string]any{"enabled": true}}
+			}
+			if test.tailscale {
+				input["secrets"].(map[string]any)["tailscaleAuthKey"] = "test-value"
+			}
+			chrt := testChart(t)
+			prepared, err := PrepareChart(chrt, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := object(object(prepared.Values["runtime"])["configFiles"])
+			var preparedConfig map[string]any
+			if err := yaml.Unmarshal([]byte(text(files["openclaw.json"])), &preparedConfig); err != nil {
+				t.Fatal(err)
+			}
+			standaloneConfig := object(renderSnapshot(t, chrt, input).Native["openclaw.json"])
+			for mode, config := range map[string]map[string]any{"prepared": preparedConfig, "standalone": standaloneConfig} {
+				got := object(config["gateway"])["auth"]
+				if test.want == nil && got != nil || test.want != nil && !reflect.DeepEqual(got, test.want) {
+					t.Errorf("%s gateway auth: got %#v, want %#v", mode, got, test.want)
+				}
+			}
+		})
+	}
+}
 func TestOpenClawAcpxAgentOverridesUsePluginConfig(t *testing.T) {
 	input := sampleInput("openclaw", "openai", false)
 	input["openclaw"] = map[string]any{

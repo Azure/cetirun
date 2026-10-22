@@ -688,6 +688,17 @@
                         }
                     }
                 },
+                "portalSignIn": {
+                    "type": "object",
+                    "description": "Sign the owner in to the Control UI with their Portal sign-in (OpenClaw trusted-proxy mode)",
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": false
+                        }
+                    }
+                },
                 "doctor": {
                     "type": "object",
                     "description": "OpenClaw doctor init container configuration",

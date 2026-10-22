@@ -29,6 +29,25 @@ Licensed under the MIT License.
 {{- end }}
 {{- $_ := set $config "gateway" $gateway }}
 {{- end }}
+{{- /* Portal sign-in: the ingress lets only the Agent's owner through, after
+   their Portal sign-in, and passes their email from that sign-in; the Istio
+   sidecar is the Agent's only proxy. OpenClaw then takes the owner from that
+   header and approves their browsers without "openclaw devices approve". The
+   gateway token becomes a password for clients on loopback, such as the CLI
+   in the Terminal, as OpenClaw refuses a token in this mode. */}}
+{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (not .Values.sandboxWorkload) (not .TailscaleEnabled) }}
+{{- $gateway := dig "gateway" (dict) $config }}
+{{- if not (has "127.0.0.6" (dig "trustedProxies" (list) $gateway)) }}
+{{- $_ := required "openclaw.portalSignIn needs 127.0.0.6, the Istio sidecar, in openclaw.config.gateway.trustedProxies" "" }}
+{{- end }}
+{{- $_ := set $gateway "auth" (dict
+    "mode" "trusted-proxy"
+    "trustedProxy" (dict
+      "userHeader" "x-auth-request-email"
+      "allowLoopback" true
+      "deviceAutoApprove" (dict "enabled" true))) }}
+{{- $_ := set $config "gateway" $gateway }}
+{{- end }}
 {{- /* Model provider auth profile and default model.
    Supports: github_copilot (token-based), openai (api-key), anthropic (api-key). */}}
 {{- $provider := .Values.secrets.provider | default "github_copilot" }}
