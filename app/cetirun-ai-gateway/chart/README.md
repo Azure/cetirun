@@ -1313,16 +1313,15 @@ the console cannot remove it. It:
   LiteLLM write that mark in a form clients keep; and ends a request's
   fallbacks once a deployment refused its encrypted reasoning; see
   [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource);
-- removes sampling parameters from a request an auto router sends to a
-  reasoning model of the GPT-5 or GPT-6 series: `temperature` other than 1,
-  `top_p`, `logprobs` and `top_logprobs`, which LiteLLM refuses with a 400
-  for such a model unless the reasoning effort resolves to `none`. A client
-  that asks for a router cannot know which model answers; Hermes, for one,
-  sends side tasks such as conversation titles with `temperature: 0`, and
-  those failed whenever the router chose a reasoning model, on Azure and on
-  Copilot routes alike. LiteLLM's own rule decides, and the Gateway logs a
-  warning for each request it changes. A request for a model by name keeps
-  its parameters and gets LiteLLM's error;
+- removes sampling parameters from a request to a reasoning model of the
+  GPT-5 or GPT-6 series, asked for by name or chosen by an auto router:
+  `temperature` other than 1, `top_p`, `logprobs` and `top_logprobs`, which
+  LiteLLM refuses with a 400 for such a model unless the reasoning effort
+  resolves to `none`. Hermes, for one, sends side tasks such as conversation
+  titles with `temperature: 0` to the model the user chose or to the router,
+  and those failed whenever that was a reasoning model, on Azure and on
+  Copilot routes alike, without the user seeing it. LiteLLM's own rule
+  decides, and the Gateway logs a warning for each request it changes;
 - lets a request fail over from the deployment its key is kept on; see
   [A key stays on its deployment](#a-key-stays-on-its-deployment);
 - keeps error messages free of LiteLLM's internal deployment list: error

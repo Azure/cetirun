@@ -72,16 +72,14 @@ deployments cannot read it either, so each fallback fails the same way, and
 the client, which handles this error by sending the request again without the
 reasoning, gets the first error instead of the last.
 
-A request an auto router sends to a model of the GPT-5 or GPT-6 series that
-reasons loses its sampling parameters: temperature other than 1, top_p,
-logprobs and top_logprobs. LiteLLM, the Gateway's for an Azure deployment and
-the Copilot proxy's for a Copilot route, refuses such a request with 400
-unless the reasoning effort resolves to none. A client that asks for auto
-cannot know which model answers: Hermes sends its side tasks, such as a
-conversation title, with temperature 0, which failed whenever the router chose
-a reasoning model. LiteLLM's own rule decides, read from LiteLLM. A request
-for a model by name keeps its parameters: its caller chose the model, and
-LiteLLM's error says why it fails.
+A request to a model of the GPT-5 or GPT-6 series that reasons, asked for by
+name or chosen by an auto router, loses its sampling parameters: temperature
+other than 1, top_p, logprobs and top_logprobs. LiteLLM, the Gateway's for an
+Azure deployment and the Copilot proxy's for a Copilot route, refuses such a
+request with 400 unless the reasoning effort resolves to none. Hermes sends its
+side tasks, such as a conversation title, with temperature 0 to the model the
+user chose or to auto; with a reasoning model each failed, out of the user's
+sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
 import re
@@ -395,7 +393,7 @@ def refuses_sampling(name, effort):
 
 
 def strip_sampling(request_kwargs, deployments):
-    """Remove the sampling parameters a router's chosen model refuses, in place; the names removed.
+    """Remove the sampling parameters the requested or routed model refuses, in place; the names removed.
 
     Removed when any of the deployments refuses them: which one serves the
     request is chosen later, and the others accept the request without them.
@@ -577,8 +575,8 @@ class Guard(CustomLogger):
         affinity applies to the model, unmarked or shortened encrypted reasoning
         is removed from a Responses API request first. A fallback after a
         deployment refused the request's encrypted reasoning is ended here, so
-        the client gets that first error. A request an auto router sends to a
-        model that reasons loses the sampling parameters the model refuses.
+        the client gets that first error. A request to a model that reasons loses
+        the sampling parameters the model refuses.
         """
         refusal = unreadable_reasoning_refusal(request_kwargs)
         if refusal is not None:
@@ -610,14 +608,14 @@ class Guard(CustomLogger):
                     return allowed
                 raise ModelRefused(model)
             kept = allowed
-        router = routing_router(model, request_kwargs)
-        if router is not None and kept:
+        if isinstance(request_kwargs, dict) and kept:
             removed = strip_sampling(request_kwargs, kept)
             if removed:
+                router = routing_router(model, request_kwargs)
                 verbose_proxy_logger.warning(
-                    "CetiRun guard: removed %s from a request the router %s sent to %s, which takes no sampling "
-                    "parameters while it reasons.",
-                    ", ".join(removed), router, model)
+                    "CetiRun guard: removed %s from a request %s %s, which takes no sampling parameters while it "
+                    "reasons.",
+                    ", ".join(removed), f"the router {router} sent to" if router else "for", model)
         return kept
 
     async def async_filter_listed_models(self, user_api_key_dict, model_names):
