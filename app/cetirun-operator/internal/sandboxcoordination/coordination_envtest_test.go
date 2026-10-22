@@ -7,6 +7,7 @@ package sandboxcoordination
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -78,6 +79,42 @@ func TestCoordinationAPIServer(t *testing.T) {
 		}
 		return Store{Client: storage, APIReader: storage, Namespace: object.Namespace,
 			Identity: w.ObjectIdentity{Name: object.Name, UID: object.UID}}
+	}
+
+	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
+		t.Run("formatted-managed-fields-"+kind, func(t *testing.T) {
+			store := newStore(t, "fields-"+strings.ToLower(kind))
+			before := configurationObject(kind)
+			before.SetName("fields-" + strings.ToLower(kind))
+			if err := storage.Create(ctx, before, client.FieldOwner("configuration-test")); err != nil {
+				t.Fatal(err)
+			}
+			if len(before.GetManagedFields()) == 0 || before.GetManagedFields()[0].FieldsV1 == nil {
+				t.Fatal("API fixture did not contain a server-issued field set")
+			}
+			after := desiredConfiguration(before)
+			for _, object := range []client.Object{before, after} {
+				raw, err := json.MarshalIndent(object, "", "  ")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(raw, object); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+			if err != nil {
+				t.Fatal("formatted API image could not reserve its exact update:", err)
+			}
+			adapter := configurationAdapter(t, storage, storage, before, after)
+			if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
+				t.Fatal("formatted API image could not complete its guarded update:", err)
+			}
+			_, state, err := store.read(ctx)
+			if err != nil || len(state.Changes) != 0 {
+				t.Fatal("completed API update retained its reservation:", err)
+			}
+		})
 	}
 
 	t.Run("native-start-versus-change-real-CAS", func(t *testing.T) {
