@@ -152,4 +152,20 @@ describe("Agent connection lifecycle", () => {
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
  });
 
+ it("recovers an identity write whose response failed without creating it twice", async () => {
+  const azure: Connection = { ...github, id: "azure", mode: "agent", provider: "azure", accountDisplay: "Agent A", services: ["azure_arm"], scopes: [], identity: { instanceUid: instance.uid, tenantId: "tenant", principalId: "principal", clientId: "client" } };
+  const user = userEvent.setup(); renderUI(); await screen.findByText("No connections for this agent.");
+  await user.click(screen.getByRole("button", { name: "Connect" }));
+  api.listConnections.mockResolvedValue([github, azure]);
+  api.createToolIdentity.mockRejectedValueOnce(new Error("Response unavailable"));
+  await user.click(screen.getByRole("button", { name: "Azure Agent identity" }));
+  await screen.findByText("Response unavailable");
+  await waitFor(() => expect(api.listConnections).toHaveBeenCalledTimes(2));
+  await user.click(screen.getByRole("button", { name: "Azure Agent identity" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(api.createToolIdentity).toHaveBeenCalledTimes(1);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
+  await waitFor(() => expect(api.createConnectionBinding).toHaveBeenCalledWith("agent-a", { connectionId: "azure", services: ["azure_arm"], enabled: true }));
+ });
+
 });

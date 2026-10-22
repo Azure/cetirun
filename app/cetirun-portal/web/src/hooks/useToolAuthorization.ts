@@ -48,6 +48,7 @@ export function useToolIdentity(name: string, uid: string) {
   return useMutation({
     mutationKey: ["tool-identity", name, uid],
     mutationFn: (input: ToolIdentityInput) => createToolIdentity(name, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tool-connections"] }),
+    // A failed response can follow a committed identity write. Refresh before retry.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["tool-connections"] }),
   });
 }
