@@ -103,7 +103,7 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 			return !slices.Contains(policy.Spec.Harnesses.Allowed, kind)
 		})
 		options.Gateway.SharedModels = slices.DeleteFunc(options.Gateway.SharedModels, func(model api.AIGatewayCatalogModel) bool {
-			return !slices.Contains(policy.Spec.ModelAccess.SharedModels.Allowed, model.Name)
+			return !sharedModelAllowed(model, policy)
 		})
 		options.Gateway.GitHubCopilot = options.Gateway.GitHubCopilot && policy.Spec.ModelAccess.Copilot.Allowed
 		if h.Config.AIGatewayEnabled {

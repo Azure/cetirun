@@ -196,3 +196,45 @@ func TestCreationOptionsOfferThePolicysModelRouters(t *testing.T) {
 		t.Fatalf("an allowed router must pass the model check: %s", w.Body.String())
 	}
 }
+
+// A router is offered only with every model it sends requests to: a Team's
+// router by its tiers, a router configured in the Gateway by the models the
+// operator publishes for it, as the operator grants them.
+func TestCreationOptionsOfferARouterOnlyWithEveryModelItUses(t *testing.T) {
+	tiers := func(simple, medium string) cetirunv1alpha1.TeamModelRouterTiers {
+		return cetirunv1alpha1.TeamModelRouterTiers{Simple: simple, Medium: medium, Complex: simple}
+	}
+	policy := &cetirunv1alpha1.AgentPolicy{Spec: cetirunv1alpha1.AgentPolicySpec{ModelAccess: cetirunv1alpha1.AgentPolicyModelAccess{
+		SharedModels: cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: []string{"small-model", "auto", "auto-wide", "auto-copilot"}}}}}
+	team := &cetirunv1alpha1.Team{Spec: cetirunv1alpha1.TeamSpec{ModelRouters: []cetirunv1alpha1.TeamModelRouter{
+		{Name: "auto", Tiers: tiers("small-model", "small-model")},
+		{Name: "auto-wide", Tiers: tiers("small-model", "wide-model")},
+		{Name: "auto-copilot", Tiers: tiers("small-model", "copilot/fast-model")},
+	}}}
+	if got := teamModelRouterNames(team, policy); !slices.Equal(got, []string{"auto"}) {
+		t.Fatalf("without GitHub Copilot: %v", got)
+	}
+	policy.Spec.ModelAccess.Copilot.Allowed = true
+	if got := teamModelRouterNames(team, policy); !slices.Equal(got, []string{"auto", "auto-copilot"}) {
+		t.Fatalf("with GitHub Copilot: %v", got)
+	}
+
+	allowed := []string{"small-model", "gateway-auto", "gateway-wide", "gateway-unverifiable"}
+	policy.Spec.ModelAccess.SharedModels.Allowed = allowed
+	for model, want := range map[string]bool{
+		"small-model": true, "gateway-auto": true, "gateway-wide": false, "gateway-unverifiable": false, "unlisted": false,
+	} {
+		catalogModel := cetirunv1alpha1.AIGatewayCatalogModel{Name: model}
+		switch model {
+		case "gateway-auto":
+			catalogModel.RouterModels = []string{"small-model"}
+		case "gateway-wide":
+			catalogModel.RouterModels = []string{"small-model", "wide-model"}
+		case "gateway-unverifiable":
+			catalogModel.RouterModels, catalogModel.RouterUnverifiable = []string{"small-model"}, true
+		}
+		if got := sharedModelAllowed(catalogModel, policy); got != want {
+			t.Errorf("%s: allowed = %v, want %v", model, got, want)
+		}
+	}
+}

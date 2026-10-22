@@ -458,7 +458,7 @@ func TestAIGatewayCatalogComparesRoutersOutsideTheManagedFingerprint(t *testing.
 	if fingerprint, _ := catalog.managedFingerprint(); fingerprint != managed {
 		t.Fatal("a router's configuration must stay out of the managed fingerprint, which policies' Gateway revisions use")
 	}
-	if now, _ := catalog.shared(); !slices.Equal(now, shared) {
+	if now, _ := catalog.shared(); !slices.EqualFunc(now, shared, sameCatalogModel) {
 		t.Fatalf("the shared models must not change: %v -> %v", shared, now)
 	}
 	// Two router deployments behind one name, listed in either order, are
@@ -625,5 +625,45 @@ func TestLegacyAgentIsNotConfiguredWithADecisionModel(t *testing.T) {
 	}
 	if strings.Contains(configMap.Data[api.AIGatewayCatalogKey], testDecisionModel) {
 		t.Fatalf("the published catalog lists the decision model: %s", configMap.Data[api.AIGatewayCatalogKey])
+	}
+}
+
+// The published catalog names the models each shared router uses, so the
+// Portal offers a router only to Teams whose policy lists every one of them.
+func TestPublishedCatalogNamesTheModelsOfEachSharedRouter(t *testing.T) {
+	var catalog aiGatewayCatalog
+	sol := aigateway.Deployment{ID: testManagedDeploymentID, ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true}
+	small := aigateway.Deployment{ID: testSmallDeployment, ModelName: testSmallModel, AccessGroups: []string{testSmallGroup}, DatabaseSourceKnown: true}
+	classifier := tierModel("", testSmallModel)
+	classifier.Use, classifier.Tier = aigateway.RouterClassifier, ""
+	router := gatewayRouter(testGatewayRouter, tierModel("SIMPLE", testSmallModel), tierModel("MEDIUM", testSharedModelOne),
+		tierModel("COMPLEX", testSharedModelOne), classifier)
+	catalog.update([]aigateway.Deployment{sol, small, router}, false, time.Now())
+	shared, _ := catalog.shared()
+	described := catalog.sharedRouters().describe(shared)
+	byName := map[string]api.AIGatewayCatalogModel{}
+	for _, model := range described {
+		byName[model.Name] = model
+	}
+	if got := byName[testGatewayRouter].RouterModels; !slices.Equal(got, slices.Sorted(slices.Values([]string{testSharedModelOne, testSmallModel}))) {
+		t.Fatalf("router models = %v", got)
+	}
+	if byName[testGatewayRouter].RouterUnverifiable || byName[testSharedModelOne].RouterModels != nil {
+		t.Fatalf("described = %+v", described)
+	}
+	unverifiable := router
+	unverifiable.Router = &aigateway.Router{Models: router.Router.Models, Unverifiable: "it runs routing plugins"}
+	catalog.update([]aigateway.Deployment{sol, small, unverifiable}, false, time.Now())
+	shared, _ = catalog.shared()
+	for _, model := range catalog.sharedRouters().describe(shared) {
+		if model.Name == testGatewayRouter && !model.RouterUnverifiable {
+			t.Fatal("an unverifiable router must say so")
+		}
+	}
+	// The operator's own view never takes them from the published catalog.
+	var seeded aiGatewayCatalog
+	seeded.seed(described)
+	if now, _ := seeded.shared(); len(now) == 0 || slices.ContainsFunc(now, func(m api.AIGatewayCatalogModel) bool { return m.RouterModels != nil }) {
+		t.Fatalf("seeded = %+v", now)
 	}
 }

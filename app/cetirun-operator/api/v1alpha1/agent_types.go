@@ -696,6 +696,14 @@ type AIGatewayCatalogModel struct {
 	ContextWindow int64 `json:"contextWindow,omitempty"`
 	// MaxOutputTokens is the model's output limit in tokens.
 	MaxOutputTokens int64 `json:"maxOutputTokens,omitempty"`
+	// RouterModels are, for a shared model that is an auto router, the models
+	// it sends requests to answer: its tiers, its default model and its
+	// compaction model. An Agent with an AgentPolicy may use the router only
+	// when the policy lists each of them. Empty for other models.
+	RouterModels []string `json:"routerModels,omitempty"`
+	// RouterUnverifiable reports a router whose models the operator cannot
+	// read completely; it is refused to Agents with an AgentPolicy.
+	RouterUnverifiable bool `json:"routerUnverifiable,omitempty"`
 }
 
 // SandboxStatus records the binding and revision last verified for an Agent.

@@ -215,7 +215,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	routerFingerprint := aiGatewayRouterFingerprint(routers)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared) || c.fingerprint != fingerprint ||
+	changed := !(c.known || c.seeded) || !slices.EqualFunc(c.sharedSet, shared, sameCatalogModel) || c.fingerprint != fingerprint ||
 		c.routerFingerprint != routerFingerprint || !maps.Equal(c.nonChat, nonChat)
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
 	c.routers, c.routerFingerprint, c.nonChat = routers, routerFingerprint, nonChat
@@ -352,7 +352,11 @@ func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel) {
 	if c.known || c.seeded {
 		return
 	}
-	c.sharedSet, c.seeded = slices.Clone(shared), true
+	c.sharedSet, c.seeded = make([]aiGatewayCatalogModel, len(shared)), true
+	for i, model := range shared {
+		// Router models are published for the Portal; the listing supplies them here.
+		c.sharedSet[i] = aiGatewayCatalogModel{Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens}
+	}
 }
 
 // aiGatewayModelNameLimit is the agent chart's limit, in characters, on a
@@ -705,7 +709,8 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	if shared == nil {
 		shared = []aiGatewayCatalogModel{}
 	}
-	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: shared, GitHubCopilot: r.aiGatewayCopilotOffered()}
+	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: r.aiGatewayCatalog.sharedRouters().describe(shared),
+		GitHubCopilot: r.aiGatewayCopilotOffered()}
 	key := types.NamespacedName{Namespace: namespace, Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
 	configMap := &corev1.ConfigMap{}
 	err := r.Get(ctx, key, configMap)
@@ -875,4 +880,10 @@ func (r *AgentReconciler) notifyAIGatewayAgents(ctx context.Context, after strin
 			// reconciles the Agent anyway.
 		}
 	}
+}
+
+// sameCatalogModel compares two shared models of the operator's own view.
+func sameCatalogModel(a, b aiGatewayCatalogModel) bool {
+	return a.Name == b.Name && a.ContextWindow == b.ContextWindow && a.MaxOutputTokens == b.MaxOutputTokens &&
+		slices.Equal(a.RouterModels, b.RouterModels) && a.RouterUnverifiable == b.RouterUnverifiable
 }

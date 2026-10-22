@@ -93,6 +93,30 @@ func (c *aiGatewayCatalog) sharedRouters() aiGatewaySharedRouterView {
 	return view
 }
 
+// describe returns the shared models with the models each router among them
+// sends requests to answer, so that the Portal offers a router only to Teams
+// whose AgentPolicy lists all of them, as this rule grants it.
+func (v aiGatewaySharedRouterView) describe(shared []aiGatewayCatalogModel) []aiGatewayCatalogModel {
+	described := make([]aiGatewayCatalogModel, len(shared))
+	for i, model := range shared {
+		described[i] = model
+		described[i].RouterModels, described[i].RouterUnverifiable = nil, false
+		router, ok := v.routers[model.Name]
+		if !ok {
+			continue
+		}
+		names := []string{}
+		for _, used := range router.Models {
+			if used.Use != aigateway.RouterClassifier && !slices.Contains(names, used.Name) {
+				names = append(names, used.Name)
+			}
+		}
+		slices.Sort(names)
+		described[i].RouterModels, described[i].RouterUnverifiable = names, router.Unverifiable != ""
+	}
+	return described
+}
+
 // names are the shared routers' names, in order.
 func (v aiGatewaySharedRouterView) names() []string {
 	names := make([]string, 0, len(v.routers))

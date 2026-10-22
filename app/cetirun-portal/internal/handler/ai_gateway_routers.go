@@ -5,6 +5,7 @@ package handler
 
 import (
 	"slices"
+	"strings"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
@@ -27,7 +28,7 @@ func teamModelRouterNames(team *api.Team, policy *api.AgentPolicy) []string {
 		return names
 	}
 	for _, router := range team.Spec.ModelRouters {
-		if policy != nil && !slices.Contains(policy.Spec.ModelAccess.SharedModels.Allowed, router.Name) {
+		if policy != nil && !teamRouterAllowed(router, policy) {
 			continue
 		}
 		names = append(names, router.Name)
@@ -56,4 +57,46 @@ func applyModelRouterNames(resp *AIGatewayResponse, status *api.AIGatewayStatus)
 	if name, ok := names[resp.DefaultModel]; ok {
 		resp.DefaultModel = name
 	}
+}
+
+// sharedModelAllowed reports whether the policy lets its Agents use the
+// shared model. A router configured in the Gateway also needs every model it
+// sends requests to answer, as the operator grants it; one whose models the
+// operator cannot read completely is refused, as there.
+func sharedModelAllowed(model api.AIGatewayCatalogModel, policy *api.AgentPolicy) bool {
+	allowed := policy.Spec.ModelAccess.SharedModels.Allowed
+	if !slices.Contains(allowed, model.Name) || model.RouterUnverifiable {
+		return false
+	}
+	for _, used := range model.RouterModels {
+		if !slices.Contains(allowed, used) {
+			return false
+		}
+	}
+	return true
+}
+
+// teamRouterAllowed reports whether the policy lets its Agents use the
+// Team's router: the policy lists the router and each shared model of its
+// tiers, and allows GitHub Copilot when a tier uses a GitHub Copilot model,
+// as the operator grants it. Whether the owner's GitHub account offers such a
+// model is known only after sign-in.
+func teamRouterAllowed(router api.TeamModelRouter, policy *api.AgentPolicy) bool {
+	access := policy.Spec.ModelAccess
+	if !slices.Contains(access.SharedModels.Allowed, router.Name) {
+		return false
+	}
+	for _, model := range router.Tiers.Models() {
+		if model == "" {
+			continue
+		}
+		if strings.HasPrefix(model, api.AIGatewayCopilotModelPrefix) {
+			if !access.Copilot.Allowed {
+				return false
+			}
+		} else if !slices.Contains(access.SharedModels.Allowed, model) {
+			return false
+		}
+	}
+	return true
 }
