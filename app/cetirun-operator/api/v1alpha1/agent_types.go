@@ -32,6 +32,8 @@ type SkillOverrideSpec struct {
 
 // AgentSpec defines the desired state of Agent.
 // +kubebuilder:validation:XValidation:rule="self.agent.type == 'custom' ? !has(self.gatewayTokenSecretRef) : has(self.gatewayTokenSecretRef)",message="gatewayTokenSecretRef is required for built-in agents and forbidden for custom agents",fieldPath=".gatewayTokenSecretRef"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.restartRequestID) || has(self.restartRequestID)",message="restartRequestID cannot be removed once set",fieldPath=".restartRequestID"
+// +kubebuilder:validation:XValidation:rule="!(has(self.suspended) && self.suspended) || !has(self.restartRequestID) || (has(oldSelf.restartRequestID) && self.restartRequestID == oldSelf.restartRequestID)",message="a suspended Agent cannot request a new restart",fieldPath=".restartRequestID"
 type AgentSpec struct {
 	// Agent is the required per-instance Agent configuration.
 	// +required
@@ -112,6 +114,15 @@ type AgentSpec struct {
 	// Default: false.
 	// +optional
 	Suspended bool `json:"suspended,omitempty"`
+
+	// RestartRequestID requests a retained restart through normal reconciliation.
+	// Reusing the current ID does not request another restart. The Agent and HOME
+	// identities are retained; suspension and deletion take precedence.
+	// +kubebuilder:validation:MinLength=16
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
+	// +optional
+	RestartRequestID string `json:"restartRequestID,omitempty"`
 }
 
 // TailscaleSpec configures the Tailscale mesh VPN sidecar.
@@ -239,6 +250,14 @@ type AgentStatus struct {
 	// ObservedGeneration is the last CR generation that was fully reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// ObservedRestartRequestID is the request observed on the current ready Pod,
+	// not merely an accepted API request or applied workload template.
+	// +kubebuilder:validation:MinLength=16
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
+	// +optional
+	ObservedRestartRequestID string `json:"observedRestartRequestID,omitempty"`
 
 	// ObservedOperatorHash is a hash of the operator-level configuration (e.g. ChartVersion, DomainSuffix)
 	// that was in effect during the last successful reconciliation. A change in this hash

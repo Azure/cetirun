@@ -58,6 +58,7 @@ type Bindings struct {
 	NativeConfig      map[string]any
 	NativeOptions     map[string]any
 	NativeSandbox     bool
+	ReconciledSandbox bool
 	TrustedProxyIPs   []string `json:",omitempty"`
 	Model             ModelBinding
 	Skills            SkillsBinding

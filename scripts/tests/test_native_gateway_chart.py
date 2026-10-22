@@ -257,7 +257,7 @@ class NativeGatewayChartTests(unittest.TestCase):
             (("skills", "clawHub"), ["example-skill"], "clawHub"),
             (("skills", "mountPath"), "/other-skills", "mountPath"),
             (("aiGateway", "enabled"), False, "enabled"),
-            (("agentType",), "hermes", "agentType"),
+            (("agentType",), "hermes", "Sandbox empty skills require"),
         ):
             with self.subTest(path=path, value=value):
                 values = native_values()
@@ -374,7 +374,7 @@ class NativeGatewayChartTests(unittest.TestCase):
             ("secrets", "apiBase", "", "Sandbox Gateway routing requires secrets.apiBase"),
             ("secrets", "model", "ungranted", "Sandbox default model must be in aiGateway.models"),
             ("aiGateway", "models", [], "Sandbox default model must be in aiGateway.models"),
-            ("sandboxWorkload", "executionHeld", False, "executionHeld"),
+            ("sandboxWorkload", "executionHeld", False, "Sandbox render plans must retain the execution hold"),
         ]
         for section, key, value, message in cases:
             with self.subTest(section=section, key=key, value=value):
@@ -520,7 +520,7 @@ class NativeHealthProbeTests(unittest.TestCase):
         )
 
     def test_each_health_endpoint_uses_loopback_without_credentials(self):
-        for path in ("/healthz", "/readyz", "/startupz"):
+        for path in ("/health", "/healthz", "/readyz", "/startupz"):
             with self.subTest(path=path):
                 result = self.probe(path)
                 self.assertEqual(result.returncode, 0, result.stderr)

@@ -1,8 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { apiFetch } from "./fetch";
+import { apiFetch, PortalError } from "./fetch";
 import type { AgentType } from "../types/instance";
+
+export { PortalError } from "./fetch";
 
 export interface SharedModel {
   name: string;
@@ -34,17 +36,6 @@ export interface CopilotLogin {
   /** Seconds between polls while pending. */
   interval?: number;
   message?: string;
-}
-
-/** An error response from the Portal, with its HTTP status. */
-export class PortalError extends Error {
-  readonly status: number;
-
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "PortalError";
-    this.status = status;
-  }
 }
 
 async function errorMessage(response: Response, fallback: string): Promise<string> {

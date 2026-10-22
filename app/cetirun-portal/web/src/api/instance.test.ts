@@ -2,7 +2,92 @@
 // Licensed under the MIT License.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getInstance, createInstance, deleteInstanceByName, downloadTeamsApp, updateInstance, upgradeInstance } from "./instance";
+import { getInstance, createInstance, deleteInstanceByName, downloadTeamsApp, updateInstance, upgradeInstance, restartInstanceByName, isRestartRequestRejected } from "./instance";
+import { PortalError } from "./fetch";
+
+describe("restartInstanceByName", () => {
+  it("sends the same idempotency key and version on retries", async () => {
+    const request = { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" };
+    const response = { restartRequestId: request.requestId, restartAvailable: false };
+    global.fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(response), {
+      status: 202, headers: { "Content-Type": "application/json" },
+    })));
+    await expect(restartInstanceByName("alice", request)).resolves.toEqual(response);
+    await restartInstanceByName("alice", request);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const call of vi.mocked(fetch).mock.calls) {
+      expect(call).toEqual(["/api/v1/instances/alice/restart", expect.objectContaining({
+        method: "POST", headers: expect.objectContaining({ "Idempotency-Key": request.requestId }),
+        body: JSON.stringify({ uid: request.uid, resourceVersion: request.resourceVersion }),
+      })]);
+    }
+  });
+
+  it("surfaces a rejected stale or suspended restart", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: "restart_unavailable", message: "a suspended Agent cannot be restarted" },
+    }), { status: 409, headers: { "Content-Type": "application/json" } }));
+    await expect(restartInstanceByName("alice", { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" }))
+      .rejects.toThrow("a suspended Agent cannot be restarted");
+  });
+
+  it("preserves the response status and error code for a definite rejection", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: "instance_changed", message: "Agent changed; reload before saving" },
+    }), { status: 409, headers: { "Content-Type": "application/json" } }));
+    await expect(restartInstanceByName("alice", { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" }))
+      .rejects.toMatchObject({ status: 409, code: "instance_changed", message: "Agent changed; reload before saving" });
+  });
+
+  it("preserves a server error as uncertain instead of classifying it by message", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: "internal_error", message: "Failed after the request may have been accepted" },
+    }), { status: 500, headers: { "Content-Type": "application/json" } }));
+    await expect(restartInstanceByName("alice", { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" }))
+      .rejects.toMatchObject({ status: 500, code: "internal_error" });
+  });
+
+  it("does not turn a malformed error response into a definite rejection", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response("{", {
+      status: 409, headers: { "Content-Type": "application/json" },
+    }));
+    await expect(restartInstanceByName("alice", { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" }))
+      .rejects.toBeInstanceOf(SyntaxError);
+  });
+
+  it("surfaces a network failure without inventing a server rejection code", async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError("Connection lost"));
+    await expect(restartInstanceByName("alice", { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" }))
+      .rejects.toThrow("Session expired");
+  });
+
+  it.each([
+    [409, "instance_changed", true],
+    [409, "restart_unavailable", false],
+    [400, "invalid_restart_request", false],
+    [403, "admission_rejected", false],
+    [500, "internal_error", false],
+    [503, "instance_changed", false],
+    [409, "unknown_error", false],
+    [409, undefined, false],
+  ])("classifies HTTP %s and code %s without guessing from text", (status, code, rejected) => {
+    expect(isRestartRequestRejected(new PortalError("Any message", status, code))).toBe(rejected);
+  });
+
+  it("treats an invalid error payload as uncertain", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 409, message: ["instance_changed"] },
+    }), { status: 409, headers: { "Content-Type": "application/json" } }));
+    try {
+      await restartInstanceByName("alice", { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" });
+      expect.fail("Invalid response must still report an error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(PortalError);
+      expect(error).toMatchObject({ status: 409, message: "Failed to request Agent restart" });
+      expect(isRestartRequestRejected(error)).toBe(false);
+    }
+  });
+});
 
 /** Build a minimal mock Response with headers and redirected. */
 function mockResponse(init: {

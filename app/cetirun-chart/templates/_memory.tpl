@@ -3,7 +3,7 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 */}}
 {{- define "cetirun.memory.enabled" -}}
-{{- if and .Values.memoryContext.enabled (not .Values.sandboxWorkload) -}}true{{- end -}}
+{{- if and .Values.memoryContext.enabled (or (not .Values.sandboxWorkload) ((.Values.sandboxWorkload | default dict).reconciled | default false)) -}}true{{- end -}}
 {{- end -}}
 
 {{- define "cetirun.memory.image" -}}
