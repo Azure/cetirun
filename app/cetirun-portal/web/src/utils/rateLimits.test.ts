@@ -49,4 +49,19 @@ describe("rate limit form", () => {
       "example-model: 10 requests per minute, 50,000 tokens per minute",
     ]);
   });
+
+  it("keeps a model named like an Object property through a save and a reload", () => {
+    const form = {
+      ...emptyRateLimitForm,
+      perModel: [{ model: "__proto__", rpm: "5", tpm: "" }, { model: "constructor", rpm: "", tpm: "8192" }],
+    };
+    const result = rateLimitsFromForm(form);
+    // What the request body carries, and what the Portal reads back.
+    const saved = JSON.parse(JSON.stringify(result.limits));
+    expect(Object.keys(saved.perModel).sort()).toEqual(["__proto__", "constructor"]);
+    expect(saved.perModel["__proto__"]).toEqual({ rpm: 5 });
+    expect(rateLimitFormFrom(saved).perModel).toEqual(form.perModel.slice().sort((a, b) => a.model.localeCompare(b.model)));
+    expect(rateLimitsFromForm({ ...form, perModel: [...form.perModel, { model: "__proto__", rpm: "6", tpm: "" }] }).error)
+      .toMatch(/listed more than once/);
+  });
 });

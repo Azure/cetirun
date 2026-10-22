@@ -70,20 +70,25 @@ export function rateLimitsFromForm(form: RateLimitForm): { limits?: AgentPolicyR
     if (parsed.error) return { error: parsed.error };
     if (parsed.value !== undefined) limits[key] = parsed.value;
   }
-  const perModel: Record<string, AgentPolicyModelRateLimit> = {};
+  // Built from entries, not by assignment: assigning a model named __proto__
+  // to a plain object would set its prototype and drop the entry.
+  const entries: [string, AgentPolicyModelRateLimit][] = [];
+  const seen = new Set<string>();
   for (const row of form.perModel) {
     const model = row.model.trim();
     if (model === "" && row.rpm.trim() === "" && row.tpm.trim() === "") continue;
     if (model === "" || /\s/.test(model) || [...model].length > 256) {
       return { error: "Per-model limits need an exact Gateway model name of up to 256 characters without spaces." };
     }
-    if (Object.prototype.hasOwnProperty.call(perModel, model)) return { error: `The model ${model} is listed more than once.` };
+    if (seen.has(model)) return { error: `The model ${model} is listed more than once.` };
+    seen.add(model);
     const rpm = parseLimit(row.rpm, MIN_REQUEST_LIMIT, `Requests per minute for ${model}`);
     const tpm = parseLimit(row.tpm, MIN_TOKEN_LIMIT, `Tokens per minute for ${model}`);
     if (rpm.error || tpm.error) return { error: rpm.error || tpm.error };
     if (rpm.value === undefined && tpm.value === undefined) return { error: `Set requests or tokens per minute for ${model}, or remove the row.` };
-    perModel[model] = { ...(rpm.value !== undefined && { rpm: rpm.value }), ...(tpm.value !== undefined && { tpm: tpm.value }) };
+    entries.push([model, { ...(rpm.value !== undefined && { rpm: rpm.value }), ...(tpm.value !== undefined && { tpm: tpm.value }) }]);
   }
+  const perModel: Record<string, AgentPolicyModelRateLimit> = Object.fromEntries(entries);
   if (Object.keys(perModel).length > MAX_MODEL_LIMITS) return { error: `At most ${MAX_MODEL_LIMITS} models can have their own limits.` };
   if (Object.keys(perModel).length > 0) limits.perModel = perModel;
   return Object.keys(limits).length === 0 ? {} : { limits };
