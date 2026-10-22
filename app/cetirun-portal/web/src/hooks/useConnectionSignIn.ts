@@ -43,28 +43,37 @@ export function useConnectionSignIn(scope: string) {
       if (!active()) return;
       const expires = Date.parse(authorization.expiresAt);
       if (!authorization.authorizationId || !Number.isFinite(expires) || expires <= Date.now()) { finish("Sign-in expired. Try again."); return; }
-      listener = (event) => {
-        if (!active() || verifying || event.origin !== window.location.origin || event.source !== popup || event.data?.type !== "cetirun-connection" || event.data.authorizationId !== authorization.authorizationId) return;
+      const verify = async (closed = false) => {
+        if (!active() || verifying) return;
         verifying = true;
-        void (async () => {
-          try {
-            const result = await getConnectionAuthorization(authorization.authorizationId, controller.signal);
-            if (!active()) return;
-            if (result.authorizationId !== authorization.authorizationId || result.status !== "complete" || !result.connectionId) { finish("Sign-in could not be completed. Try again."); return; }
-            const connections = await listConnections(controller.signal);
-            if (!active()) return;
-            const connection = connections.find((c) => c.id === result.connectionId && c.mode === "delegated" && c.status === "connected");
-            if (!connection) { finish("The signed-in account is unavailable. Try again."); return; }
-            client.setQueryData(["tool-connections"], connections);
-            void client.invalidateQueries({ queryKey: ["connection-usage"] });
-            finish(""); complete(connection);
-          } catch { finish("Could not verify sign-in. Try again."); }
-        })();
+        try {
+          const result = await getConnectionAuthorization(authorization.authorizationId, controller.signal);
+          if (!active()) return;
+          if (result.authorizationId !== authorization.authorizationId || result.status !== "complete" || !result.connectionId) {
+            finish(closed && result.authorizationId === authorization.authorizationId && result.status === "pending"
+              ? "Sign-in cancelled. No agent was connected."
+              : "Sign-in could not be completed. Try again.");
+            return;
+          }
+          const connections = await listConnections(controller.signal);
+          if (!active()) return;
+          const connection = connections.find((c) => c.id === result.connectionId && c.mode === "delegated" && c.status === "connected");
+          if (!connection) { finish("The signed-in account is unavailable. Try again."); return; }
+          client.setQueryData(["tool-connections"], connections);
+          void client.invalidateQueries({ queryKey: ["connection-usage"] });
+          finish(""); complete(connection);
+        } catch { finish("Could not verify sign-in. Try again."); }
+      };
+      listener = (event) => {
+        if (event.origin !== window.location.origin || event.source !== popup || event.data?.type !== "cetirun-connection" || event.data.authorizationId !== authorization.authorizationId) return;
+        void verify();
       };
       window.addEventListener("message", listener);
       interval = setInterval(() => {
         if (Date.now() >= expires) finish("Sign-in expired. Try again.");
-        else if (popup.closed && !verifying) finish("Sign-in cancelled. No agent was connected.");
+        // The callback closes immediately after posting its message. Verify the
+        // transaction even if this timer wins the race with message delivery.
+        else if (popup.closed) void verify(true);
       }, 300);
       popup.location.replace(authorization.authorizationUrl);
     }).catch(() => finish("Sign-in could not be started. Try again."));

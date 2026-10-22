@@ -70,7 +70,7 @@ spec:
             - name: TOOL_SERVICE_ACCOUNT
               value: {{ .Values.toolService.serviceAccount | quote }}
             - name: WORKLOAD_TOKEN_AUDIENCE
-              value: agent-tools-mcp
+              value: {{ .Values.workloadTokenAudience | quote }}
             {{- if .Values.providers.github.credentialsSecretName }}
             - name: GITHUB_OAUTH_CLIENT_ID
               valueFrom:

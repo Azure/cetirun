@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Connection, type ConnectionBinding } from "../../api/toolAuthorization";
 import type { Instance } from "../../types/instance";
 import { ToolAuthorizationBlock } from "../ToolAuthorizationBlock";
@@ -15,10 +15,14 @@ vi.mock("../../api/toolAuthorization", async (importOriginal) => ({ ...(await im
 const instance: Instance = { instanceName: "agent-a", uid: "agent-uid", resourceVersion: "1", agent: { type: "hermes" }, alias: "owner", displayName: "Agent A", team: "platform", phase: "Ready", createdAt: "2026-10-10T00:00:00Z", upgradeAvailable: false };
 const github: Connection = { id: "connection-github", provider: "github", accountDisplay: "octocat", services: ["github"], scopes: ["repo"], mode: "delegated", revision: 3, status: "connected", createdAt: "2026-10-10T00:00:00Z" };
 const binding: ConnectionBinding = { id: "binding-1", instanceUid: instance.uid, connectionId: github.id, services: ["github"], enabled: true, revision: 7 };
-function renderUI(content = <ToolAuthorizationBlock instance={instance} />) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return render(<QueryClientProvider client={client}>{content}</QueryClientProvider>); }
+function renderUI(content = <ToolAuthorizationBlock instance={instance} />) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}>{content}</QueryClientProvider>), client }; }
 
 describe("Agent connection lifecycle", () => {
+ afterEach(() => vi.restoreAllMocks());
  beforeEach(() => {
+  // Give Tabster a visible layout so dialog focus and reopening behave as in a browser.
+  vi.spyOn(document.body, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1024, 768));
+  vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(function (this: HTMLElement) { return this.parentElement; });
   Object.values(api).forEach((mock) => mock.mockReset());
   api.listConnections.mockResolvedValue([github]); api.listConnectionBindings.mockResolvedValue({ bindings: [], readOnly: false });
   api.createConnectionBinding.mockResolvedValue({}); api.updateConnectionBinding.mockResolvedValue({}); api.deleteConnectionBinding.mockResolvedValue(undefined);
@@ -135,21 +139,37 @@ describe("Agent connection lifecycle", () => {
   await waitFor(() => expect(api.deleteConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", 8));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
  });
- it("uses a fresh Binding revision when retrying an Edit services conflict", async () => {
+ it("keeps a service draft paired with its original revision across refetches and retries", async () => {
   const google: Connection = { ...github, provider: "google", services: ["google_gmail", "google_calendar"] };
   const current = { ...binding, services: google.services };
+  const refreshed = { ...current, services: ["google_gmail"], revision: 9 };
   api.listConnections.mockResolvedValue([google]);
   api.listConnectionBindings.mockResolvedValue({ bindings: [current], readOnly: false });
-  const user = userEvent.setup(); renderUI();
+  api.updateConnectionBinding.mockRejectedValue(new Error("Services changed; cancel and reopen to reload."));
+  const user = userEvent.setup(); const view = renderUI();
   await user.click(await screen.findByRole("button", { name: "Edit services" }));
-  api.listConnectionBindings.mockResolvedValue({ bindings: [{ ...current, revision: 9 }], readOnly: false });
-  api.updateConnectionBinding.mockRejectedValueOnce(new Error("Services changed"));
   await user.click(screen.getByRole("checkbox", { name: "Gmail" }));
+  api.listConnectionBindings.mockResolvedValue({ bindings: [refreshed], readOnly: false });
+  await act(async () => { await view.client.refetchQueries({ queryKey: ["connection-bindings", instance.instanceName, instance.uid] }); });
+  expect(screen.getByRole("checkbox", { name: "Google Calendar" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Gmail" })).not.toBeChecked();
+  const originalDraft = { connectionId: github.id, services: ["google_calendar"], enabled: true, revision: 7 };
   await user.click(screen.getByRole("button", { name: "Save services" }));
-  await screen.findByText("Services changed");
+  await screen.findByText("Services changed; cancel and reopen to reload.");
+  expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", originalDraft);
   await user.click(screen.getByRole("button", { name: "Save services" }));
-  await waitFor(() => expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", { connectionId: github.id, services: ["google_calendar"], enabled: true, revision: 9 }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(api.updateConnectionBinding).toHaveBeenCalledTimes(2));
+  expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", originalDraft);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Edit services" }));
+  expect(screen.getByRole("checkbox", { name: "Gmail" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Google Calendar" })).not.toBeChecked();
+  api.updateConnectionBinding.mockResolvedValue({});
+  await user.click(screen.getByRole("button", { name: "Save services" }));
+  await waitFor(() => expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", { connectionId: github.id, services: ["google_gmail"], enabled: true, revision: 9 }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
  });
 
  it("recovers an identity write whose response failed without creating it twice", async () => {

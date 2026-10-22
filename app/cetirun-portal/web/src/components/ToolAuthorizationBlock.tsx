@@ -76,6 +76,7 @@ function AgentConnections({ instance }: { instance: Instance }) {
   const bindingsApi = useConnectionBindings(instance.instanceName, instance.uid, true);
   const signin = useConnectionSignIn(instance.uid);
   const [connecting, setConnecting] = useState(false);
+  // Keep the confirmed revision with its draft until the editor is closed.
   const [editing, setEditing] = useState<{ connection: Connection; binding: ConnectionBinding }>();
   const connections = (connectionsApi.connections.data ?? []).filter((c) => c.mode === "delegated" || c.identity?.instanceUid === instance.uid);
   const bindings = (bindingsApi.bindings.data?.bindings ?? []).filter((b) => b.enabled && b.instanceUid === instance.uid);
@@ -105,6 +106,6 @@ function AgentConnections({ instance }: { instance: Instance }) {
     })}
     {!bindings.length && !loading && !error && <Text size={200} block>No connections for this agent.</Text>}
     {connecting && <ConnectWizard instance={instance} connections={connections} onClose={() => setConnecting(false)} />}
-    {editing && bindings.some((b) => b.id === editing.binding.id) && <EditServices instance={instance} connection={editing.connection} binding={bindings.find((b) => b.id === editing.binding.id)!} onClose={() => setEditing(undefined)} />}
+    {editing && bindings.some((b) => b.id === editing.binding.id) && <EditServices instance={instance} connection={editing.connection} binding={editing.binding} onClose={() => setEditing(undefined)} />}
   </section>;
 }

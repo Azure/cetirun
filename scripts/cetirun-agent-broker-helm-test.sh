@@ -135,3 +135,23 @@ grep -Fq 'ports: ["8443"]' <<<"${connection_output}"
 [[ "$(grep -Fc 'mountPath: /var/run/cetirun/tls' <<<"${connection_output}")" == 1 ]]
 grep -Fq '/v1/connections*' <<<"${connection_output}"
 grep -Fq '/operator/v1/instances/*' <<<"${connection_output}"
+
+# The independent Broker TokenReview must accept the same configured audience
+# used by the Operator's projected token and the MCP verifier.
+for audience in agent-tools-mcp tools.example.com; do
+  audience_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string "workloadTokenAudience=${audience}")"
+  "${PYTHON:-python3}" -c '
+import sys
+import yaml
+
+deployment = next(doc for doc in yaml.safe_load_all(sys.stdin)
+                  if doc and doc.get("kind") == "Deployment")
+values = [entry["value"] for container in deployment["spec"]["template"]["spec"]["containers"]
+          for entry in container.get("env", []) if entry["name"] == "WORKLOAD_TOKEN_AUDIENCE"]
+assert values == [sys.argv[1]], f"Unexpected Broker workload audience: {values}"
+' "${audience}" <<<"${audience_output}"
+done
+if helm template broker-test "${chart_dir}" "${values[@]}" --set-string workloadTokenAudience= >/dev/null 2>&1; then
+  echo 'FAIL: Broker chart allowed an empty workload token audience' >&2
+  exit 1
+fi

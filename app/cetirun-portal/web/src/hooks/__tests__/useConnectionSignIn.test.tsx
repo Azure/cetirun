@@ -18,7 +18,7 @@ describe("OAuth popup transaction", () => {
   vi.mocked(getConnectionAuthorization).mockReset().mockResolvedValue({ authorizationId: "tx-1", status: "complete", connectionId: "canonical" });
   vi.mocked(listConnections).mockReset().mockResolvedValue([connection as never]);
  });
- afterEach(() => vi.restoreAllMocks());
+ afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
  function setup() { const client = new QueryClient(); return renderHook(({ scope }) => useConnectionSignIn(scope), { initialProps: { scope: "agent-a" }, wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> }); }
  function message(changes = {}) { window.dispatchEvent(new MessageEvent("message", { origin: window.location.origin, source: popup, data: { type: "cetirun-connection", authorizationId: "tx-1", status: "complete" }, ...changes })); }
  it("checks origin, source and transaction before querying the owner-scoped result", async () => {
@@ -44,10 +44,37 @@ describe("OAuth popup transaction", () => {
   await act(async () => resolve({ authorizationId: "tx-1", status: "complete", connectionId: "canonical" }));
   expect(complete).not.toHaveBeenCalled(); expect(listConnections).not.toHaveBeenCalled();
  });
- it("closing the popup cancels without querying or selecting an account", async () => {
+ it("verifies a closed popup before reporting an unfinished transaction as cancelled", async () => {
+  vi.mocked(getConnectionAuthorization).mockResolvedValue({ authorizationId: "tx-1", status: "pending" });
   const hook = setup(); const complete = vi.fn(); await act(async () => hook.result.current.begin(async () => authorization, complete));
   Object.defineProperty(popup, "closed", { value: true });
   await waitFor(() => expect(hook.result.current.pending).toBe(false));
-  expect(complete).not.toHaveBeenCalled(); expect(getConnectionAuthorization).not.toHaveBeenCalled();
+  expect(complete).not.toHaveBeenCalled(); expect(listConnections).not.toHaveBeenCalled();
+  expect(getConnectionAuthorization).toHaveBeenCalledWith("tx-1", expect.any(AbortSignal));
+  expect(hook.result.current.message).toContain("cancelled");
+ });
+ it("completes a committed transaction when the popup closes before its queued message arrives", async () => {
+  vi.useFakeTimers();
+  let resolve!: (value: Awaited<ReturnType<typeof getConnectionAuthorization>>) => void;
+  vi.mocked(getConnectionAuthorization).mockReturnValue(new Promise((r) => { resolve = r; }));
+  const hook = setup(); const complete = vi.fn();
+  await act(async () => hook.result.current.begin(async () => authorization, complete));
+  Object.defineProperty(popup, "closed", { value: true });
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+  expect(hook.result.current.pending).toBe(true);
+  expect(getConnectionAuthorization).toHaveBeenCalledTimes(1);
+  act(() => message());
+  expect(getConnectionAuthorization).toHaveBeenCalledTimes(1);
+  await act(async () => resolve({ authorizationId: "tx-1", status: "complete", connectionId: "canonical" }));
+  expect(complete).toHaveBeenCalledExactlyOnceWith(connection);
+  expect(hook.result.current.message).toBe("");
+  expect(hook.result.current.pending).toBe(false);
+ });
+ it("recovers a completed sign-in even if its popup message never arrives", async () => {
+  const hook = setup(); const complete = vi.fn();
+  await act(async () => hook.result.current.begin(async () => authorization, complete));
+  Object.defineProperty(popup, "closed", { value: true });
+  await waitFor(() => expect(complete).toHaveBeenCalledExactlyOnceWith(connection));
+  expect(hook.result.current.message).toBe("");
  });
 });

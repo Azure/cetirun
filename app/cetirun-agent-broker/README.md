@@ -63,6 +63,11 @@ HTTP `:8080` serves Portal/Operator mesh APIs; HTTPS `:8443` serves MCP internal
 APIs. The latter validates a client certificate with exactly the configured
 MCP ServiceAccount SPIFFE URI SAN, never an XFCC header. Configure `tls.enabled`,
 server certificate and client CA, plus MCP's client certificate and Broker CA.
+Set the Broker chart's `workloadTokenAudience` to the same value as the MCP
+chart's `workloadTokenAudience` and the Operator chart's `toolsMCP.audience`.
+All three default to `agent-tools-mcp`; a custom audience must match across
+all three releases because both MCP and the Broker independently verify the
+Agent's projected workload token.
 
 ## Availability and identity modes
 

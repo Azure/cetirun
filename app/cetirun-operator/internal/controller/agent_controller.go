@@ -470,8 +470,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
+	// A suspended workload renders zero replicas and does not consume MCP trust.
+	// Keep CA reads and distribution out of its stop path; resume verifies trust
+	// again before Helm can start any workload.
+	toolsMCPTrustRequired := toolsMCPEnabled && !instance.Spec.Suspended
 	toolsCAHash := ""
-	if toolsMCPEnabled {
+	if toolsMCPTrustRequired {
 		toolsCAHash, err = r.toolsMCPCAHash(ctx)
 		if err != nil {
 			return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust is unavailable")
@@ -488,7 +492,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
-		if toolsMCPEnabled && !namespaceMissing {
+		if toolsMCPTrustRequired && !namespaceMissing {
 			if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
@@ -664,7 +668,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if err := r.ensureNamespacedRBAC(ctx, ns); err != nil {
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespaced RBAC: %v", err))
 	}
-	if toolsMCPEnabled {
+	if toolsMCPTrustRequired {
 		if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
 			return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust distribution failed")
 		}
