@@ -1329,7 +1329,12 @@ the console cannot remove it. It:
   When the key may use the model but none of its deployments is available,
   LiteLLM's own error applies. The call a router makes to its classifier model
   (`classifier_type: llm` and the other classifiers that ask a model) is made
-  on the key's behalf and is not held to the key's groups. The guard
+  on the key's behalf and is not held to the key's groups. A decision model
+  (`mode: evaluation`) answers only those classifier calls: such a key's own
+  request for it gets the same 403. Measured on the e2e cluster before this:
+  the provider refused the direct request, and LiteLLM cooled the deployment
+  down, so every router classifying with it fell back to its default
+  classifier. The guard
   recognizes the operator's keys by their model list: only `cetirun-` access
   groups, or `no-default-models`. The master key, and keys granted models by
   name, `*` or every model, are left to LiteLLM's own checks;

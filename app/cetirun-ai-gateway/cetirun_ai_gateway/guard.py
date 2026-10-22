@@ -506,6 +506,12 @@ def conversation_model(name, router):
                for deployment in deployments)
 
 
+def evaluation_only(deployment):
+    """Whether the deployment is a decision model, which LiteLLM lists with the evaluation mode."""
+    info = deployment.get("model_info") if isinstance(deployment, dict) else None
+    return isinstance(info, dict) and info.get("mode") == "evaluation"
+
+
 def has_deployment(name, router):
     """Whether the name is a model with a deployment of its own. A Team's router is registered under the
     same name as its access group, so being one of the key's groups does not make a name a placeholder.
@@ -612,6 +618,11 @@ class Guard(CustomLogger):
         ]
         caller = caller_key(request_kwargs)
         held = operator_groups(caller)
+        if held is not None and kept and not classifier_call(request_kwargs) and all(map(evaluation_only, kept)):
+            # A decision model answers only a router's classifier calls. Called directly, the provider
+            # refused the request and LiteLLM cooled the deployment down, so every router classifying
+            # with it fell back to its default classifier for everyone.
+            raise ModelRefused(model)
         if held is not None and kept and not classifier_call(request_kwargs):
             allowed = [deployment for deployment in kept if held.intersection(access_groups(deployment))]
             if not allowed:

@@ -381,6 +381,18 @@ class GuardTest(unittest.TestCase):
                 request.setdefault(origin_bucket, {})["internal_call_origin"] = "autorouter_classifier"
                 self.assertEqual(self.filtered(request, [LARGE], "large"), [LARGE])
 
+    def test_a_decision_model_answers_only_classifier_calls(self):
+        # Called directly, the provider refused the request and LiteLLM cooled
+        # the deployment down, so every router classifying with it fell back.
+        decision = chart_model("decision", "dddd")
+        decision["model_info"]["mode"] = "evaluation"
+        key = Key(["cetirun-model-dddd"])
+        error = self.refused({"metadata": {"user_api_key_auth": key}}, [decision], "decision")
+        self.assertIn("decision", str(error.detail))
+        classifier = {"metadata": {"user_api_key_auth": key, "internal_call_origin": "autorouter_classifier"}}
+        self.assertEqual(self.filtered(classifier, [decision], "decision"), [decision])
+        # Other callers, such as the master key, are left to LiteLLM.
+        self.assertEqual(self.filtered({"metadata": {"user_api_key_auth": Key([])}}, [decision], "decision"), [decision])
     def test_no_other_call_origin_is_exempt(self):
         for origin in ("autorouter_classifier ", "AUTOROUTER_CLASSIFIER", "health_check", None,
                        ["autorouter_classifier"]):
