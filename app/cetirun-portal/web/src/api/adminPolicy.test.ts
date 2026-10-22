@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { deletePolicy, updatePolicy, type AgentPolicyUpsertRequest } from "./adminPolicy";
+import { deletePolicy, PolicyConflictError, updatePolicy, type AgentPolicyUpsertRequest } from "./adminPolicy";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -37,7 +37,7 @@ describe("admin policy API", () => {
 
   it("returns the conflict message for a stale policy", async () => {
     fetchMock.mockResolvedValue(jsonResponse(409, { error: { code: "policy_changed", message: "Reload and try again." } }));
-    await expect(updatePolicy("standard", request)).rejects.toThrow("Reload and try again.");
+    await expect(updatePolicy("standard", request)).rejects.toEqual(new PolicyConflictError("Reload and try again."));
   });
 
   it("rejects an unavailable policy deletion", async () => {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -123,6 +124,93 @@ func TestAdminPolicyRequiresMatchingModelAccessAndPositiveBudget(t *testing.T) {
 	}
 }
 
+func TestAdminPolicySharedModelNameLength(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		model      string
+		wantStatus int
+	}{
+		{"ASCII at limit", strings.Repeat("a", 256), http.StatusCreated},
+		{"ASCII over limit", strings.Repeat("a", 257), http.StatusBadRequest},
+		{"multibyte at limit", strings.Repeat("\u6a21", 256), http.StatusCreated},
+		{"multibyte over limit", strings.Repeat("\u6a21", 257), http.StatusBadRequest},
+		{"supplementary at limit", strings.Repeat("\U0001f916", 256), http.StatusCreated},
+		{"supplementary over limit", strings.Repeat("\U0001f916", 257), http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newAdminPolicyHandler()
+			req := validPolicyRequest()
+			req.ModelAccess.SharedModels.Allowed = []string{test.model}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			h.CreatePolicy(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/policies", bytes.NewReader(body)))
+			if w.Code != test.wantStatus {
+				t.Fatalf("status %d, want %d: %s", w.Code, test.wantStatus, w.Body.String())
+			}
+			stored, err := h.Kube.GetAgentPolicy(context.Background(), req.Name)
+			if test.wantStatus == http.StatusBadRequest {
+				if !kube.IsNotFound(err) {
+					t.Fatalf("rejected model created a policy: policy=%+v, err=%v", stored, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(stored.Spec.ModelAccess.SharedModels.Allowed, req.ModelAccess.SharedModels.Allowed) {
+				t.Fatalf("model name changed: %+v", stored.Spec.ModelAccess.SharedModels)
+			}
+		})
+	}
+}
+
+func TestAdminPolicyPreservesUnicodeModelDuringUnrelatedUpdate(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		edit func(*AgentPolicyUpsertRequest)
+	}{
+		{"budget", func(req *AgentPolicyUpsertRequest) { req.ModelAccess.GatewayBudget.MaxMonthlyUSD = "60" }},
+		{"skills", func(req *AgentPolicyUpsertRequest) { req.Skills.Allowed = []string{"npm:@scope/another-skill"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := validPolicyRequest()
+			req.ModelAccess.SharedModels.Allowed = []string{strings.Repeat("\u6a21\U0001f916", 128)}
+			policy := &cetirunv1alpha1.AgentPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: req.Name, UID: "policy-uid"},
+				Spec:       toAgentPolicySpec(req),
+			}
+			h := newAdminPolicyHandler(policy)
+			current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+			test.edit(&req)
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			update := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/"+policy.Name, bytes.NewReader(body))
+			update.SetPathValue("name", policy.Name)
+			w := httptest.NewRecorder()
+			h.UpdatePolicy(w, update)
+			if w.Code != http.StatusOK {
+				t.Fatalf("unrelated update status %d: %s", w.Code, w.Body.String())
+			}
+			stored, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(stored.Spec, toAgentPolicySpec(req)) {
+				t.Fatalf("update did not preserve the model and apply the requested edit: %+v", stored.Spec)
+			}
+		})
+	}
+}
+
 func TestAdminPolicyUpdateAndDelete(t *testing.T) {
 	const policyName = "standard.policy"
 	policy := &cetirunv1alpha1.AgentPolicy{
@@ -182,6 +270,411 @@ func TestAdminPolicyUpdateAndDelete(t *testing.T) {
 	h.DeletePolicy(w, deleteRequest)
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("delete status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminPolicyExposesStatusAndUpdatesPortalManagedFields(t *testing.T) {
+	readOnly := true
+	policy := &cetirunv1alpha1.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid", Generation: 7},
+		Spec:       toAgentPolicySpec(validPolicyRequest()),
+		Status: cetirunv1alpha1.AgentPolicyStatus{
+			ObservedGeneration: 6,
+			Conditions:         []metav1.Condition{{Type: cetirunv1alpha1.ConditionAgentPolicyAccepted, Status: metav1.ConditionFalse, Reason: "Pending", LastTransitionTime: metav1.Now()}},
+		},
+	}
+	policy.Spec.AgentIdentity = cetirunv1alpha1.AgentPolicyAgentIdentity{Allowed: true, CredentialServices: []string{"azure-resource-manager"}}
+	policy.Spec.EntraID.Enabled = true
+	policy.Spec.Security.ReadOnlyRootFilesystem = &readOnly
+	policy.Spec.Network.BlockedFQDNs = []string{"example.com"}
+	h := newAdminPolicyHandler(policy)
+	current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	falseValue := false
+	trueValue := true
+	mode := cetirunv1alpha1.AgentPolicyIngressDisabled
+	blockedCIDRs := []string{"192.0.2.0/24"}
+	blockedPorts := []AgentPolicyPortDTO{{Port: 53, Protocol: corev1.ProtocolUDP}}
+	internal := []AgentPolicyCIDRRuleDTO{{CIDR: "198.51.100.0/24", Ports: []AgentPolicyPortDTO{{Port: 443, Protocol: corev1.ProtocolTCP}}}}
+	req := validPolicyRequest()
+	req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+	req.SandboxSelection = &AgentPolicySandboxSelectionRequestDTO{AllowMultiple: &trueValue}
+	req.Security = &AgentPolicySecurityDTO{ReadOnlyRootFilesystem: &falseValue}
+	req.Network = &AgentPolicyNetworkRequestDTO{
+		BlockedCIDRs:         &blockedCIDRs,
+		BlockedFQDNs:         &[]string{"example.com"},
+		BlockedPorts:         &blockedPorts,
+		AllowedInternalCIDRs: &internal,
+		Ingress:              &AgentPolicyIngressRequestDTO{Mode: &mode, RequireMTLS: &falseValue},
+	}
+	req.AgentIdentity = &AgentPolicyAgentIdentityDTO{Allowed: true, CredentialServices: []string{"azure-resource-manager"}}
+	req.EntraID = &AgentPolicyEntraIDDTO{Enabled: true}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	request.SetPathValue("name", "standard")
+	w := httptest.NewRecorder()
+	h.UpdatePolicy(w, request)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var response AgentPolicyDTO
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Generation < 7 || response.ObservedGeneration != 6 || len(response.Conditions) != 1 || !response.AgentIdentity.Allowed || !response.EntraID.Enabled {
+		t.Fatalf("status or read-only fields missing from DTO: %+v", response)
+	}
+	stored, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Spec.SandboxSelection.AllowMultiple || stored.Spec.Security.ReadOnlyRootFilesystem == nil || *stored.Spec.Security.ReadOnlyRootFilesystem ||
+		len(stored.Spec.Network.BlockedCIDRs) != 1 || stored.Spec.Network.BlockedCIDRs[0] != "192.0.2.0/24" ||
+		len(stored.Spec.Network.BlockedPorts) != 1 || stored.Spec.Network.Ingress.Mode != cetirunv1alpha1.AgentPolicyIngressDisabled ||
+		stored.Spec.KubernetesAccess != nil {
+		t.Fatalf("editable fields were not persisted: %+v", stored.Spec)
+	}
+	if !reflect.DeepEqual(stored.Spec.AgentIdentity, policy.Spec.AgentIdentity) || stored.Spec.EntraID != policy.Spec.EntraID ||
+		!reflect.DeepEqual(stored.Spec.Network.BlockedFQDNs, policy.Spec.Network.BlockedFQDNs) || stored.Spec.Network.Ingress.RequireMTLS != policy.Spec.Network.Ingress.RequireMTLS {
+		t.Fatalf("read-only fields changed: %+v", stored.Spec)
+	}
+}
+
+func TestAdminPolicyPreservesOmittedFieldsIncludingKubernetesAccess(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		emptyNetwork bool
+	}{
+		{name: "network omitted"},
+		{name: "empty network object", emptyNetwork: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: toAgentPolicySpec(validPolicyRequest())}
+			policy.Spec.SandboxSelection.AllowMultiple = true
+			policy.Spec.Network.BlockedCIDRs = []string{"10.0.0.0/8", "10.0.0.0/8"}
+			policy.Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}, {Port: 443, Protocol: corev1.ProtocolTCP}}
+			policy.Spec.Network.AllowedInternalCIDRs = []cetirunv1alpha1.AgentPolicyCIDRRule{
+				{CIDR: "198.51.100.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}}},
+				{CIDR: "198.51.100.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 53, Protocol: corev1.ProtocolUDP}}},
+			}
+			policy.Spec.Network.BlockedFQDNs = []string{"example.com"}
+			policy.Spec.Network.Ingress.RequireMTLS = true
+			policy.Spec.KubernetesAccess = &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{ServiceAccountName: "agent", ClusterRoleBindings: []cetirunv1alpha1.AgentPolicyClusterRoleBinding{{ClusterRoleName: "view"}}}
+			preservedNetwork := *policy.Spec.Network.DeepCopy()
+			preservedKubernetesAccess := policy.Spec.KubernetesAccess.DeepCopy()
+			h := newAdminPolicyHandler(policy)
+			current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := validPolicyRequest()
+			req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+			req.ModelAccess.GatewayBudget.MaxMonthlyUSD = "60"
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.emptyNetwork {
+				var partial map[string]any
+				if err := json.Unmarshal(body, &partial); err != nil {
+					t.Fatal(err)
+				}
+				partial["network"] = map[string]any{}
+				body, err = json.Marshal(partial)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			update := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+			update.SetPathValue("name", "standard")
+			w := httptest.NewRecorder()
+			h.UpdatePolicy(w, update)
+			if w.Code != http.StatusOK {
+				t.Fatalf("omitted-field update status %d: %s", w.Code, w.Body.String())
+			}
+			stored, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Spec.ModelAccess.GatewayBudget == nil || stored.Spec.ModelAccess.GatewayBudget.MaxMonthlyUSD != "60" ||
+				!stored.Spec.SandboxSelection.AllowMultiple || !reflect.DeepEqual(stored.Spec.Network, preservedNetwork) ||
+				!reflect.DeepEqual(stored.Spec.KubernetesAccess, preservedKubernetesAccess) {
+				t.Fatalf("model update discarded retained fields: %+v", stored.Spec)
+			}
+		})
+	}
+}
+
+func TestAdminPolicyPreservesLegacyNetworkRulesDuringPartialNetworkUpdate(t *testing.T) {
+	policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: toAgentPolicySpec(validPolicyRequest())}
+	policy.Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}, {Port: 443, Protocol: corev1.ProtocolTCP}}
+	policy.Spec.Network.AllowedInternalCIDRs = []cetirunv1alpha1.AgentPolicyCIDRRule{
+		{CIDR: "198.51.100.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}}},
+		{CIDR: "198.51.100.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 53, Protocol: corev1.ProtocolUDP}}},
+	}
+	h := newAdminPolicyHandler(policy)
+	current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedCIDRs := []string{"192.0.2.0/24"}
+	req := validPolicyRequest()
+	req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+	req.Network = &AgentPolicyNetworkRequestDTO{BlockedCIDRs: &blockedCIDRs}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	update.SetPathValue("name", "standard")
+	w := httptest.NewRecorder()
+	h.UpdatePolicy(w, update)
+	if w.Code != http.StatusOK {
+		t.Fatalf("partial network update status %d: %s", w.Code, w.Body.String())
+	}
+	stored, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored.Spec.Network.BlockedCIDRs, blockedCIDRs) ||
+		!reflect.DeepEqual(stored.Spec.Network.BlockedPorts, policy.Spec.Network.BlockedPorts) ||
+		!reflect.DeepEqual(stored.Spec.Network.AllowedInternalCIDRs, policy.Spec.Network.AllowedInternalCIDRs) {
+		t.Fatalf("partial network update changed retained legacy rules: %+v", stored.Spec.Network)
+	}
+
+	invalidCIDRs := []string{"not-a-cidr"}
+	req = validPolicyRequest()
+	req.UID, req.ResourceVersion = string(stored.UID), stored.ResourceVersion
+	req.Network = &AgentPolicyNetworkRequestDTO{BlockedCIDRs: &invalidCIDRs}
+	body, err = json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update = httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	update.SetPathValue("name", "standard")
+	w = httptest.NewRecorder()
+	h.UpdatePolicy(w, update)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "network.blockedCIDRs") {
+		t.Fatalf("invalid supplied network field status %d: %s", w.Code, w.Body.String())
+	}
+	afterInvalid, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterInvalid.Spec, stored.Spec) {
+		t.Fatalf("invalid network update changed policy: before=%+v after=%+v", stored.Spec, afterInvalid.Spec)
+	}
+
+	duplicateCIDRs := []string{"192.0.2.0/24", "192.0.2.0/24"}
+	req = validPolicyRequest()
+	req.UID, req.ResourceVersion = string(stored.UID), stored.ResourceVersion
+	req.Network = &AgentPolicyNetworkRequestDTO{BlockedCIDRs: &duplicateCIDRs}
+	body, err = json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update = httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	update.SetPathValue("name", "standard")
+	w = httptest.NewRecorder()
+	h.UpdatePolicy(w, update)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "must not contain duplicate entries") {
+		t.Fatalf("duplicate supplied network field status %d: %s", w.Code, w.Body.String())
+	}
+	afterDuplicate, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterDuplicate.Spec, stored.Spec) {
+		t.Fatalf("duplicate network update changed policy: before=%+v after=%+v", stored.Spec, afterDuplicate.Spec)
+	}
+}
+
+func TestAdminPolicyRejectsKubernetesAccessOnCreate(t *testing.T) {
+	h := newAdminPolicyHandler()
+	req := validPolicyRequest()
+	req.KubernetesAccess = &AgentPolicyKubernetesAccessDTO{
+		ServiceAccountName:  "agent-access",
+		ClusterRoleBindings: []AgentPolicyClusterRoleBindingDTO{{ClusterRoleName: "view"}},
+	}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	h.CreatePolicy(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/policies", bytes.NewReader(body)))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "kubernetesAccess is read-only") {
+		t.Fatalf("create status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminPolicyRejectsKubernetesAccessChanges(t *testing.T) {
+	access := &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{
+		ServiceAccountName:  "agent-access",
+		ClusterRoleBindings: []cetirunv1alpha1.AgentPolicyClusterRoleBinding{{ClusterRoleName: "view"}},
+	}
+	for _, test := range []struct {
+		name   string
+		policy *cetirunv1alpha1.AgentPolicy
+		body   func(t *testing.T, current *cetirunv1alpha1.AgentPolicy) []byte
+	}{
+		{
+			name: "change existing access",
+			policy: &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: func() cetirunv1alpha1.AgentPolicySpec {
+				spec := toAgentPolicySpec(validPolicyRequest())
+				spec.KubernetesAccess = access.DeepCopy()
+				return spec
+			}()},
+			body: func(t *testing.T, current *cetirunv1alpha1.AgentPolicy) []byte {
+				t.Helper()
+				req := validPolicyRequest()
+				req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+				req.KubernetesAccess = &AgentPolicyKubernetesAccessDTO{ServiceAccountName: "agent-access", ClusterRoleBindings: []AgentPolicyClusterRoleBindingDTO{{ClusterRoleName: "edit"}}}
+				body, err := json.Marshal(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return body
+			},
+		},
+		{
+			name: "clear existing access",
+			policy: &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: func() cetirunv1alpha1.AgentPolicySpec {
+				spec := toAgentPolicySpec(validPolicyRequest())
+				spec.KubernetesAccess = access.DeepCopy()
+				return spec
+			}()},
+			body: func(t *testing.T, current *cetirunv1alpha1.AgentPolicy) []byte {
+				t.Helper()
+				req := validPolicyRequest()
+				req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+				body, err := json.Marshal(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var raw map[string]any
+				if err := json.Unmarshal(body, &raw); err != nil {
+					t.Fatal(err)
+				}
+				raw["kubernetesAccess"] = nil
+				body, err = json.Marshal(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return body
+			},
+		},
+		{
+			name:   "set access when none exists",
+			policy: &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: toAgentPolicySpec(validPolicyRequest())},
+			body: func(t *testing.T, current *cetirunv1alpha1.AgentPolicy) []byte {
+				t.Helper()
+				req := validPolicyRequest()
+				req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+				req.KubernetesAccess = &AgentPolicyKubernetesAccessDTO{ServiceAccountName: "agent-access", ClusterRoleBindings: []AgentPolicyClusterRoleBindingDTO{{ClusterRoleName: "view"}}}
+				body, err := json.Marshal(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return body
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newAdminPolicyHandler(test.policy)
+			current, err := h.Kube.GetAgentPolicy(context.Background(), test.policy.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(test.body(t, current)))
+			request.SetPathValue("name", "standard")
+			w := httptest.NewRecorder()
+			h.UpdatePolicy(w, request)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "kubernetesAccess is read-only") {
+				t.Fatalf("update status %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestAdminPolicyAllowsIdenticalKubernetesAccessWhileUpdatingOtherFields(t *testing.T) {
+	policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: toAgentPolicySpec(validPolicyRequest())}
+	policy.Spec.KubernetesAccess = &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{
+		ServiceAccountName:  "agent-access",
+		RoleBindings:        []cetirunv1alpha1.AgentPolicyRoleBinding{{Namespace: "services", ClusterRoleName: "view"}},
+		ClusterRoleBindings: []cetirunv1alpha1.AgentPolicyClusterRoleBinding{{ClusterRoleName: "cluster-reader"}},
+	}
+	h := newAdminPolicyHandler(policy)
+	current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := validPolicyRequest()
+	req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+	req.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
+	req.KubernetesAccess = toAgentPolicyKubernetesAccessDTO(current.Spec.KubernetesAccess)
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	request.SetPathValue("name", "standard")
+	w := httptest.NewRecorder()
+	h.UpdatePolicy(w, request)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update status %d: %s", w.Code, w.Body.String())
+	}
+	stored, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Harnesses.Allowed) != 1 || stored.Spec.Harnesses.Allowed[0] != cetirunv1alpha1.AgentTypeHermes || !reflect.DeepEqual(stored.Spec.KubernetesAccess, policy.Spec.KubernetesAccess) {
+		t.Fatalf("update did not preserve Kubernetes access: %+v", stored.Spec)
+	}
+}
+
+func TestAdminPolicyRejectsReadOnlyChanges(t *testing.T) {
+	policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: toAgentPolicySpec(validPolicyRequest())}
+	h := newAdminPolicyHandler(policy)
+	current, _ := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	req := validPolicyRequest()
+	req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+	req.EntraID = &AgentPolicyEntraIDDTO{Enabled: true}
+	body, _ := json.Marshal(req)
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	request.SetPathValue("name", "standard")
+	w := httptest.NewRecorder()
+	h.UpdatePolicy(w, request)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "entraID is read-only") {
+		t.Fatalf("read-only change status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminPolicyMapsKubernetesInvalidToUnprocessableEntity(t *testing.T) {
+	policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"}, Spec: toAgentPolicySpec(validPolicyRequest())}
+	base := newFakeClient(policy)
+	invalid := apierrors.NewInvalid(schema.GroupKind{Group: cetirunv1alpha1.GroupVersion.Group, Kind: "AgentPolicy"}, policy.Name, nil)
+	storage := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+		Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+			return invalid
+		},
+	})
+	h := &AdminPolicyHandler{Kube: kube.NewClient(storage)}
+	current, err := h.Kube.GetAgentPolicy(context.Background(), policy.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := validPolicyRequest()
+	req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
+	req.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
+	body, _ := json.Marshal(req)
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+	request.SetPathValue("name", "standard")
+	w := httptest.NewRecorder()
+	h.UpdatePolicy(w, request)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "configuration was rejected") {
+		t.Fatalf("invalid API response status %d: %s", w.Code, w.Body.String())
 	}
 }
 

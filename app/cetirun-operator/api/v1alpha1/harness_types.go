@@ -4,7 +4,6 @@
 package v1alpha1
 
 // AgentType identifies a built-in integration or a user-supplied image.
-// +kubebuilder:validation:Enum=openclaw;hermes;custom
 type AgentType string
 
 const (
@@ -26,6 +25,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="!self.webUI || has(self.port)",message="webUI requires port",fieldPath=".port"
 type HarnessSpec struct {
 	// Type selects the integration. Defaults to Hermes and cannot change.
+	// +kubebuilder:validation:Enum=openclaw;hermes;custom
 	// +kubebuilder:default=hermes
 	// +optional
 	Type AgentType `json:"type,omitempty"`
