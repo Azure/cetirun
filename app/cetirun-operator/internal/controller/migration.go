@@ -35,10 +35,10 @@ func (r *AgentReconciler) migrationWaiting(ctx context.Context, agent *api.Agent
 		reason, message = "MigrationBlocked", cause.Error()
 	}
 	setCondition(&agent.Status.Conditions, api.ConditionPlannedMigrationReady, metav1.ConditionFalse, reason, message)
-	if state := agent.Status.PlannedMigration; state != nil && state.Phase != api.MigrationCompleted {
+	if state := agent.Status.PlannedMigration; agent.Spec.Suspended || (state != nil && state.Phase != api.MigrationCompleted) {
 		agent.Status.Phase, agent.Status.AccessURL = api.PhaseProvisioning, ""
 		if agent.Spec.Suspended {
-			agent.Status.Phase = api.PhaseSuspended
+			agent.Status.Phase = api.PhasePending
 		}
 		setCondition(&agent.Status.Conditions, api.ConditionReady, metav1.ConditionFalse, reason, message)
 	}
@@ -114,8 +114,8 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 		return done, wait, err
 	}
 	block := func(err error) (bool, ctrl.Result, error) {
-		if state != nil && state.Phase != api.MigrationCompleted &&
-			(state.Phase != api.MigrationProtecting || agent.Spec.Suspended) {
+		if agent.Spec.Suspended || (state != nil && state.Phase != api.MigrationCompleted &&
+			state.Phase != api.MigrationProtecting) {
 			err = errors.Join(err, r.stopReconciledSandboxForMigration(ctx, agent))
 		}
 		return false, wait, r.migrationWaiting(ctx, agent, err)

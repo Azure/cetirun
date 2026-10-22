@@ -233,8 +233,10 @@ func migrationAttacherFinalizer(driver string) string {
 
 func (r *AgentReconciler) captureMigration(ctx context.Context, agent *api.Agent) (*api.PlannedMigrationStatus, error) {
 	request := agent.Spec.PlannedMigration
+	// Suspension can overtake the request before capture. Protect a still-ready
+	// source before stopping it, without treating suspension intent as shutdown.
 	if request == nil || !api.ValidRestartRequestID(request.RequestID) || request.Target.UID == "" ||
-		agent.Spec.Suspended || agent.Status.Phase != api.PhaseReady ||
+		agent.Status.Phase != api.PhaseReady ||
 		!isConditionTrue(agent.Status.Conditions, api.ConditionReady) ||
 		agent.Spec.RestartRequestID != agent.Status.ObservedRestartRequestID {
 		return nil, fmt.Errorf("migration requires a ready Agent with no pending restart")
