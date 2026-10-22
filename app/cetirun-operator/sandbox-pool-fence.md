@@ -80,6 +80,37 @@ credential. They never invoke Azure CLI or access Azure. These tests do not
 qualify the live provider. Live commands below require separately authorized
 resources and authenticated access; they are not development checks.
 
+### Test-only managed-disk observation probe
+
+The [disk probe](internal/sandboxfence/disk_probe_test.go) exists only in Go test
+code. It reuses the bounded ARM transport and synthetic TLS fixtures; neither
+the command nor the Operator gains a disk reader or writer-exclusion provider.
+It makes no cloud requests and does not change the empty-pool experiment scope.
+
+The probe exercises the public
+[Disk GET 2025-01-02 contract](https://learn.microsoft.com/en-us/rest/api/compute/disks/get?view=rest-compute-2025-01-02):
+the resource ID and `properties.uniqueId` must match the separately pinned disk
+incarnation, provisioning must be `Succeeded`, and disk state must be
+`Unattached`. Top-level `managedBy` and `managedByExtended`, plus
+`properties.shareInfo`, must contain no owners. This deliberately narrow
+prototype requires explicit `maxShares: 1`; omitted, null or shared capacity
+remains inconclusive rather than defaulting to a supported storage tuple.
+
+Regressions reject a recreated disk at the same path, `Reserved` disks belonging
+to deallocated VMs, attachment contradictions, duplicate fields, read errors
+and disk absence. A completed pool receipt does not substitute for a disk read.
+Conversely, an unattached disk and absent old resources do not repair a lost
+DELETE reply: reopening the existing journal remains observe-only, with no
+destructive replay or fabricated completion.
+
+These are offline protocol checks, not positive physical-fencing evidence.
+Even a matching `Unattached` response is only a point-in-time control-plane
+observation; it neither prevents reattachment nor proves all historical writers
+are excluded. Pre-writer enrollment, a durable start barrier, independent
+current exclusion/storage evidence and real no-overlap/data-continuity checks
+remain outside this probe. No execution permission or production integration
+is introduced.
+
 ## Explicit workflow
 
 The following placeholders must come from the authorized provisioning run:
