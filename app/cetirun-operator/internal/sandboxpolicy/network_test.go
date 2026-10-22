@@ -17,6 +17,48 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func TestRejectUnsupportedFQDNCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture func() CompileInput
+	}{
+		{"qualified candidate", compilerFixture},
+		{"native", nativeCompilerFixture},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := tc.fixture()
+			before := mustCompile(t, input)
+			policy := &api.AgentPolicy{
+				ObjectMeta: metav1.ObjectMeta{UID: input.Resolution.Binding.AgentPolicyUID},
+				Spec:       input.Resolution.AgentPolicy,
+			}
+			if err := ValidatePlatform(input.Platform, input.Resolution.Capabilities); err != nil {
+				t.Fatalf("baseline platform rejected: %v", err)
+			}
+			if err := ValidatePolicyConfiguration(policy, input.Resolution.Capabilities, input.Platform); err != nil {
+				t.Fatalf("baseline policy rejected: %v", err)
+			}
+
+			input.Resolution.Capabilities.BlockedFQDNs = true
+			if err := ValidatePlatform(input.Platform, input.Resolution.Capabilities); !errors.Is(err, ErrUnsupportedControl) {
+				t.Errorf("platform accepted unsupported FQDN capability: %v", err)
+			}
+			if err := ValidatePolicyConfiguration(policy, input.Resolution.Capabilities, input.Platform); !errors.Is(err, ErrUnsupportedControl) {
+				t.Errorf("policy accepted unsupported FQDN capability: %v", err)
+			}
+			if plan, err := Compile(input); plan != nil || !errors.Is(err, ErrUnsupportedControl) {
+				t.Errorf("compiler accepted unsupported FQDN capability: plan=%t, error=%v", plan != nil, err)
+			}
+
+			input.Resolution.Capabilities.BlockedFQDNs = false
+			after := mustCompile(t, input)
+			if before.Revision != after.Revision || !reflect.DeepEqual(before.Resources, after.Resources) {
+				t.Fatal("rejecting an unsupported capability changed the supported controls")
+			}
+		})
+	}
+}
+
 func TestCompileDNSResolversDoNotExpandWithBackends(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
