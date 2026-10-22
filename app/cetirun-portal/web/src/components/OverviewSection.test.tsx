@@ -25,6 +25,7 @@ const baseInstance: Instance = {
 };
 
 const mockUpdate = vi.hoisted(() => vi.fn());
+const mockFeatures = vi.hoisted(() => ({ data: { tailscaleEnabled: false, agentIdentityEnabled: false, agentToolsEnabled: false } }));
 
 vi.mock("../hooks/useInstance", () => ({
   useDeleteInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
@@ -34,7 +35,15 @@ vi.mock("../hooks/useInstance", () => ({
 }));
 
 vi.mock("../hooks/useFeatures", () => ({
-  useFeatures: () => ({ data: { tailscaleEnabled: false } }),
+  useFeatures: () => ({ data: mockFeatures.data }),
+}));
+
+vi.mock("./ToolAuthorizationBlock", () => ({
+  ToolAuthorizationBlock: () => <div>Azure connection management</div>,
+}));
+
+vi.mock("./AgentAuthorizationBlock", () => ({
+  AgentAuthorizationBlock: () => <div>Legacy Entra authorization</div>,
 }));
 
 vi.mock("../api/instance", () => ({
@@ -42,7 +51,10 @@ vi.mock("../api/instance", () => ({
 }));
 
 describe("OverviewSection", () => {
-  beforeEach(() => mockUpdate.mockClear());
+  beforeEach(() => {
+    mockUpdate.mockClear();
+    mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: false, agentToolsEnabled: false };
+  });
   const renderInRouter = (ui: React.ReactElement) => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -51,6 +63,18 @@ describe("OverviewSection", () => {
       <QueryClientProvider client={queryClient}><MemoryRouter>{children}</MemoryRouter></QueryClientProvider>
     ) });
   };
+
+  it("uses Azure connection management when Agent Tools is enabled and preserves the legacy panel otherwise", () => {
+    mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: true, agentToolsEnabled: true };
+    const view = renderInRouter(<OverviewSection instance={baseInstance} />);
+    expect(screen.getByText("Azure connection management")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy Entra authorization")).not.toBeInTheDocument();
+
+    mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: true, agentToolsEnabled: false };
+    view.rerender(<OverviewSection instance={baseInstance} />);
+    expect(screen.getByText("Legacy Entra authorization")).toBeInTheDocument();
+    expect(screen.queryByText("Azure connection management")).not.toBeInTheDocument();
+  });
 
   it.each(["", "   "])("uses the Agent name when Display Name is %j", (displayName) => {
     renderInRouter(<OverviewSection instance={{ ...baseInstance, displayName }} />);
