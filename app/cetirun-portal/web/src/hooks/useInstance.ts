@@ -161,6 +161,9 @@ export function useSetInstanceSuspendedByName(name: string) {
     onSuccess: (instance, request) => {
       queryClient.setQueryData<Instance>(["instance", name, viewer], (current) => {
         if (current && (current.uid !== request.uid || (current.generation ?? 0) > (instance.generation ?? 0))) return current;
+        // Status-only writes do not advance generation, and resourceVersions
+        // are opaque. Keep a refreshed observation until invalidation refetches.
+        if (current && current.generation === instance.generation && current.resourceVersion !== request.resourceVersion) return current;
         return instance;
       });
     },

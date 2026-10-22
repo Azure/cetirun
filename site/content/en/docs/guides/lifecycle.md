@@ -66,7 +66,9 @@ A repeated intent can be observed after status updates without changing the
 Agent again. A stale version cannot reverse a newer intent or target a same-name
 replacement. After a lost or unreadable reply, retry with the **original action,
 UID and version**, or observe the current Agent. Portal refreshes after every
-outcome and does not automatically resubmit. Closing an unsent dialog discards
+outcome and does not automatically resubmit. A delayed acknowledgement does not
+replace an already refreshed observation at the same generation, including
+controller-only status changes. Closing an unsent dialog discards
 its draft; closing after an uncertain submission retains it for retry and does
 not cancel accepted work. A definite rejection requires a new confirmation
 against the current Agent; it does not prove an earlier uncertain attempt never

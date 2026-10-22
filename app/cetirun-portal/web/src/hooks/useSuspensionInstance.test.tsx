@@ -29,6 +29,37 @@ const instance: Instance = {
 describe("useSetInstanceSuspendedByName", () => {
   beforeEach(() => vi.resetAllMocks());
 
+  it.each([true, false])("preserves newer status when a suspended=%s reply arrives late", async (suspended) => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: PropsWithChildren) =>
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    const key = ["instance", instance.instanceName, "alice:alice@example.com"];
+    const request = { uid: instance.uid, resourceVersion: "requested-version", suspended };
+    const accepted: Instance = { ...instance, resourceVersion: "intent-version", generation: 3, suspended,
+      phase: suspended ? "Ready" : "Suspended", restartAvailable: false,
+      suspendAvailable: !suspended, resumeAvailable: suspended, restartRequestId: "restart-00000001" };
+    const observed: Instance = { ...accepted, resourceVersion: "status-version", observedGeneration: 3,
+      phase: suspended ? "Suspended" : "Failed",
+      conditions: [{ type: "Ready", status: "False", reason: suspended ? "Suspended" : "RecoveryFailed", message: "Synthetic status" }] };
+    queryClient.setQueryData(key, { ...instance, resourceVersion: request.resourceVersion, suspended: !suspended });
+    let resolveRequest!: (value: Instance) => void;
+    vi.mocked(setInstanceSuspendedByName).mockReturnValue(new Promise((resolve) => { resolveRequest = resolve; }));
+    const hook = renderHook(() => useSetInstanceSuspendedByName(instance.instanceName), { wrapper });
+    try {
+      act(() => hook.result.current.mutate(request));
+      await waitFor(() => expect(setInstanceSuspendedByName).toHaveBeenCalledExactlyOnceWith(instance.instanceName, request));
+      act(() => queryClient.setQueryData(key, observed));
+      await act(async () => resolveRequest(accepted));
+      await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
+      expect(queryClient.getQueryData(key)).toEqual(observed);
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+      expect(setInstanceSuspendedByName).toHaveBeenCalledTimes(1);
+    } finally {
+      hook.unmount();
+      queryClient.clear();
+    }
+  });
+
   it.each(["accepted", "uncertain", "rejected", "replacement", "newer intent"])(
     "refreshes after %s without replaying or overwriting newer identity/intent", async (outcome) => {
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: 3 } } });
