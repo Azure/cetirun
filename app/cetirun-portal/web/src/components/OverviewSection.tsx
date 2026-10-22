@@ -48,6 +48,7 @@ import { ToolAuthorizationBlock } from "./ToolAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
 import { AIGatewayBlock } from "./AIGatewayBlock";
 import { RestartAgentButton } from "./RestartAgentButton";
+import { SuspendAgentButton } from "./SuspendAgentButton";
 
 const dialogListStyle: React.CSSProperties = {
   margin: "4px 0 0 0",
@@ -324,7 +325,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       {instance.phase === "Suspended" && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 12, borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorPaletteYellowBackground2, marginBottom: 8 }}>
           <Warning20Regular style={{ color: tokens.colorPaletteYellowForeground2, flexShrink: 0 }} />
-          <Text size={200}>This agent has been paused. Contact your administrator to restore access.</Text>
+          <Text size={200}>The controller reports Suspended. This is not proof of Pod termination or removal of every access path.</Text>
         </div>
       )}
 
@@ -352,11 +353,11 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         </div>
       )}
 
-      {nativeIntegrations && nativeAgentUIUrl && instance.phase !== "Suspended" && (
+      {nativeIntegrations && nativeAgentUIUrl && !instance.suspended && instance.phase !== "Suspended" && (
         <CopilotAuthBlock instance={instance} />
       )}
 
-      {gatewayRouted && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
+      {gatewayRouted && !instance.suspended && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
 
       {features?.agentToolsEnabled ? <ToolAuthorizationBlock instance={instance} /> : features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
 
@@ -582,6 +583,10 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         </DialogSurface>
       </Dialog>
       </>)}
+      <div style={{ display: selectedTab === "overview" && instance.phase !== "Deleting" ? "flex" : "none",
+        flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+        {instance.suspended !== undefined && <SuspendAgentButton instance={instance} />}
+      </div>
     </div>
   );
 }

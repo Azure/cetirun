@@ -103,6 +103,9 @@ type InstanceResponse struct {
 	RegistryAuthConfigured   bool                        `json:"registryAuthConfigured"`
 	Generation               int64                       `json:"generation"`
 	ObservedGeneration       int64                       `json:"observedGeneration"`
+	Suspended                bool                        `json:"suspended"`
+	SuspendAvailable         bool                        `json:"suspendAvailable"`
+	ResumeAvailable          bool                        `json:"resumeAvailable"`
 	RestartAvailable         bool                        `json:"restartAvailable"`
 	RestartRequestID         string                      `json:"restartRequestId,omitempty"`
 	ObservedRestartRequestID string                      `json:"observedRestartRequestId,omitempty"`
@@ -729,6 +732,9 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		RegistryAuthConfigured:   configured,
 		Generation:               instance.Generation,
 		ObservedGeneration:       instance.Status.ObservedGeneration,
+		Suspended:                instance.Spec.Suspended,
+		SuspendAvailable:         kube.CanSuspendInstance(instance),
+		ResumeAvailable:          kube.CanResumeInstance(instance),
 		RestartAvailable:         kube.CanRestartInstance(instance),
 		RestartRequestID:         instance.Spec.RestartRequestID,
 		ObservedRestartRequestID: instance.Status.ObservedRestartRequestID,
