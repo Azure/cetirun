@@ -5,14 +5,23 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PolicyListPage } from "./PolicyListPage";
 import * as policyAPI from "../../api/adminPolicy";
 
 vi.mock("../../api/adminPolicy");
 
 describe("PolicyListPage", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // jsdom has no layout. Tabster otherwise treats every dialog control as hidden,
+    // which prevents focus activation and can mark a reopened dialog aria-hidden.
+    vi.spyOn(document.body, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1024, 768));
+    vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(function (this: HTMLElement) {
+      return this.parentElement;
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
 
   it("disables actions while a policy is deleting", async () => {
     vi.mocked(policyAPI.listPolicies).mockResolvedValue([{
@@ -43,6 +52,7 @@ describe("PolicyListPage", () => {
     render(<QueryClientProvider client={client}><MemoryRouter><PolicyListPage /></MemoryRouter></QueryClientProvider>);
 
     await user.click(await screen.findByRole("button", { name: "Delete standard" }));
+    expect(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" })).toHaveFocus();
     await act(async () => { await client.refetchQueries({ queryKey: ["admin", "policies"] }); });
     expect(await screen.findByText("hermes")).toBeInTheDocument();
     await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete", exact: true }));
@@ -60,6 +70,7 @@ describe("PolicyListPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument());
     await user.click(await screen.findByRole("button", { name: "Delete standard" }));
     expect(screen.queryByText("Policy changed; reload and try again.")).not.toBeInTheDocument();
+    expect(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" })).toHaveFocus();
     vi.mocked(policyAPI.deletePolicy).mockResolvedValue(undefined);
     await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete", exact: true }));
     await waitFor(() => expect(policyAPI.deletePolicy).toHaveBeenCalledTimes(3));
