@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -72,13 +73,14 @@ type APIServerEndpoint struct {
 // Custom is returned only after policy and capability owners approve these
 // exact objects for the requested Agent UID, generation, type and image.
 type Custom struct {
-	AgentName      string          `json:"agentName"`
-	AgentUID       string          `json:"agentUID"`
-	Generation     int64           `json:"generation"`
-	Namespace      ObjectReference `json:"namespace"`
-	ApprovedType   string          `json:"approvedType"`
-	ApprovedImage  string          `json:"approvedImage"`
-	PolicyRevision string          `json:"policyRevision"`
+	AgentName        string          `json:"agentName"`
+	AgentUID         string          `json:"agentUID"`
+	Generation       int64           `json:"generation"`
+	RestartRequestID string          `json:"restartRequestID,omitempty"`
+	Namespace        ObjectReference `json:"namespace"`
+	ApprovedType     string          `json:"approvedType"`
+	ApprovedImage    string          `json:"approvedImage"`
+	PolicyRevision   string          `json:"policyRevision"`
 	// Only a trusted platform provider can approve image-owned authentication.
 	AgentManagedModel bool          `json:"agentManagedModel,omitempty"`
 	Model             ModelAccess   `json:"model"`
@@ -118,6 +120,9 @@ func validPeer(peer Peer) bool {
 }
 
 func (b Custom) Validate(agent agents.ResolvedAgent) error {
+	if b.RestartRequestID != "" && !api.ValidRestartRequestID(b.RestartRequestID) {
+		return fmt.Errorf("invalid Agent restart request ID")
+	}
 	if b.AgentIdentity != nil {
 		if _, err := AgentIdentityBrokerNamespace(b.AgentIdentity.BrokerURL); err != nil {
 			return err

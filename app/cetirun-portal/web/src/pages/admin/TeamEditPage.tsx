@@ -146,9 +146,12 @@ export function TeamEditPage() {
   const sandboxes = (sandboxesQuery.data || []).filter(box => !box.deleting);
   const configurationError = policiesQuery.error || sandboxesQuery.error;
   const loadingConfiguration = policiesQuery.isFetching || sandboxesQuery.isFetching;
+  const selectedPolicy = policies.find(policy => policy.name === form.agentPolicyRef);
+  const allowsMultipleSandboxes = !!selectedPolicy?.sandboxSelection?.allowMultiple;
+  const hasTooManySandboxes = !allowsMultipleSandboxes && form.sandboxRefs.length > 1;
   const validBindings = policies.some(policy => policy.name === form.agentPolicyRef) &&
     form.sandboxRefs.length > 0 && form.sandboxRefs.every(ref => sandboxes.some(box => box.name === ref)) &&
-    form.sandboxRefs.includes(form.defaultSandboxRef);
+    form.sandboxRefs.includes(form.defaultSandboxRef) && !hasTooManySandboxes;
 
   const onSuccess = () => {
     qc.invalidateQueries({ queryKey: ["teams"] });
@@ -174,7 +177,9 @@ export function TeamEditPage() {
     if (createMut.isPending || updateMut.isPending) return;
     setSubmitError(null);
     if (loadingConfiguration || configurationError || !validBindings) {
-      setSubmitError("Choose an available Agent Policy, allowed Sandboxes, and a default Sandbox.");
+      setSubmitError(hasTooManySandboxes
+        ? "The selected Agent Policy allows one Sandbox per Team. Remove extra Sandboxes before saving."
+        : "Choose an available Agent Policy, allowed Sandboxes, and a default Sandbox.");
       return;
     }
     const routerProblem = modelRouterProblem(form.modelRouters);
@@ -235,6 +240,8 @@ export function TeamEditPage() {
           {policies.map(policy => <option key={policy.name} value={policy.name}>{policy.name}</option>)}
         </Select>
       </Field>
+      {selectedPolicy && !allowsMultipleSandboxes && <Text size={300}>This policy allows one Sandbox per Team.</Text>}
+      {hasTooManySandboxes && <MessageBar intent="warning">This Team keeps its existing Sandbox selections, but the selected policy allows only one. Remove extra Sandboxes before saving.</MessageBar>}
       <fieldset style={{ border: 0, padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: tokens.spacingVerticalXXS }}>
         {/* A label like the other fields', rather than the browser's indented legend. */}
         <legend style={{ padding: 0, marginBottom: tokens.spacingVerticalXXS }}><Label required>Allowed Sandboxes</Label></legend>
@@ -242,7 +249,7 @@ export function TeamEditPage() {
         <div style={{ display: "flex", flexDirection: "column" }}>
           {[...new Set([...sandboxes.map(box => box.name), ...form.sandboxRefs])].map(ref => <Checkbox key={ref}
             label={sandboxes.some(box => box.name === ref) ? ref : `${ref} (unavailable)`}
-            checked={form.sandboxRefs.includes(ref)} disabled={loadingConfiguration}
+            checked={form.sandboxRefs.includes(ref)} disabled={loadingConfiguration || (!allowsMultipleSandboxes && form.sandboxRefs.length > 0 && !form.sandboxRefs.includes(ref))}
             onChange={(_, data) => {
               const refs = data.checked ? [...form.sandboxRefs, ref] : form.sandboxRefs.filter(value => value !== ref);
               setForm({ ...form, sandboxRefs: refs, defaultSandboxRef: refs.includes(form.defaultSandboxRef) ? form.defaultSandboxRef : refs[0] || "" });

@@ -23,7 +23,8 @@ func New(
 	adminPolicyHandler *handler.AdminPolicyHandler,
 	authMiddleware func(http.Handler) http.Handler,
 	requireAdmin func(http.Handler) http.Handler,
-	agentAuthorizationHandlers ...*handler.AgentAuthorizationHandler,
+	agentAuthorizationHandler *handler.AgentAuthorizationHandler,
+	toolConnectionsHandler *handler.ToolConnectionsHandler,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -50,6 +51,7 @@ func New(
 	api.HandleFunc("PATCH /api/v1/instance", instanceHandler.UpdateInstance)
 	api.HandleFunc("DELETE /api/v1/instance", instanceHandler.DeleteInstance)
 	api.HandleFunc("POST /api/v1/instance/upgrade", instanceHandler.UpgradeInstance)
+	api.HandleFunc("POST /api/v1/instance/restart", instanceHandler.RestartInstance)
 	api.HandleFunc("GET /api/v1/instance/status", instanceHandler.GetInstanceStatus)
 	api.HandleFunc("GET /api/v1/instance/teams-app", instanceHandler.DownloadTeamsApp)
 
@@ -62,6 +64,7 @@ func New(
 	api.HandleFunc("PUT /api/v1/instances/{name}/registry-auth", instanceHandler.PutRegistryAuth)
 	api.HandleFunc("DELETE /api/v1/instances/{name}/registry-auth", instanceHandler.DeleteRegistryAuth)
 	api.HandleFunc("POST /api/v1/instances/{name}/upgrade", instanceHandler.UpgradeInstanceByName)
+	api.HandleFunc("POST /api/v1/instances/{name}/restart", instanceHandler.RestartInstanceByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/status", instanceHandler.GetInstanceStatusByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/teams-app", instanceHandler.DownloadTeamsAppByName)
 	api.HandleFunc("GET /api/v1/teams", instanceHandler.ListTeams)
@@ -69,12 +72,19 @@ func New(
 	api.HandleFunc("POST /api/v1/instances/{name}/copilot/login", instanceHandler.StartCopilotLogin)
 	api.HandleFunc("GET /api/v1/instances/{name}/copilot/login", instanceHandler.PollCopilotLogin)
 	api.HandleFunc("DELETE /api/v1/instances/{name}/copilot/login", instanceHandler.CancelCopilotLogin)
-	if len(agentAuthorizationHandlers) > 0 && agentAuthorizationHandlers[0] != nil {
-		agentAuthorizationHandler := agentAuthorizationHandlers[0]
+	if agentAuthorizationHandler != nil {
 		api.HandleFunc("GET /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.Status)
 		api.HandleFunc("POST /api/v1/instances/{name}/agent-authorization/start", agentAuthorizationHandler.Start)
 		api.HandleFunc("DELETE /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.End)
 		mux.HandleFunc("POST /api/v1/agent-authorization/callback", agentAuthorizationHandler.Callback)
+	}
+
+	if toolConnectionsHandler != nil {
+		api.HandleFunc("GET /api/v1/connections", toolConnectionsHandler.ListConnections)
+		api.HandleFunc("POST /api/v1/instances/{name}/tool-identities", toolConnectionsHandler.CreateToolIdentity)
+		api.HandleFunc("GET /api/v1/instances/{name}/connection-bindings", toolConnectionsHandler.ListConnectionBindings)
+		api.HandleFunc("POST /api/v1/instances/{name}/connection-bindings", toolConnectionsHandler.CreateConnectionBinding)
+		api.HandleFunc("DELETE /api/v1/instances/{name}/connection-bindings/{id}", toolConnectionsHandler.DeleteConnectionBinding)
 	}
 
 	// Admin API: gated by RequireAdmin (in addition to the auth middleware

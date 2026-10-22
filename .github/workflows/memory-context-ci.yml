@@ -51,10 +51,14 @@ jobs:
           native_dir="$RUNNER_TEMP/cetirun-memory-native"
           mkdir "$native_dir"
           mkdir "$native_dir/hermes" "$native_dir/openclaw"
-          curl -fsSL --max-time 300 https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/v2026.9.24 -o "$native_dir/hermes.tgz"
+          curl -fsSL --retry 3 --retry-delay 15 --retry-max-time 120 \
+            --connect-timeout 15 --max-time 300 \
+            https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/v2026.9.24 -o "$native_dir/hermes.tgz"
           echo "15b15ce4e6ec8ea424a081823709d1e17f0943e7b42b59597d24ebb94cbd1742  $native_dir/hermes.tgz" | sha256sum --check
           tar xzf "$native_dir/hermes.tgz" --strip-components=1 -C "$native_dir/hermes"
-          curl -fsSL --max-time 300 https://registry.npmjs.org/openclaw/-/openclaw-2026.9.6.tgz -o "$native_dir/openclaw.tgz"
+          curl -fsSL --retry 3 --retry-delay 15 --retry-max-time 120 \
+            --connect-timeout 15 --max-time 300 \
+            https://registry.npmjs.org/openclaw/-/openclaw-2026.9.6.tgz -o "$native_dir/openclaw.tgz"
           node -e 'const fs=require("node:fs"),c=require("node:crypto");if(c.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64")!=="Ie0kyQSCVfFqixsgVg39vevUDq01Ch5u3+7Yu5Y3qARczmdAe+lzp8bVnO9925rHiW/+CFp70zfORCyPmCH31g==")throw Error("OpenClaw integrity mismatch")' "$native_dir/openclaw.tgz"
           npm --prefix "$native_dir/openclaw" install --registry=https://registry.npmjs.org --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund "$native_dir/openclaw.tgz"
           npm --prefix examples/pi-agent ci --ignore-scripts --registry=https://registry.npmjs.org

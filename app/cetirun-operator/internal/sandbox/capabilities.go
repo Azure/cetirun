@@ -67,8 +67,9 @@ func CheckAgentProfile(capabilities Capabilities, agentType cetirunv1alpha1.Agen
 	if errs := CheckCapabilityProfile(capabilities); len(errs) != 0 {
 		return errs.ToAggregate()
 	}
-	if capabilities.Profile == ProfileNativeSingleStart && agentType != cetirunv1alpha1.AgentTypeOpenClaw {
-		return fmt.Errorf("native single-start requires an OpenClaw Agent")
+	if capabilities.Profile == ProfileNativeSingleStart && agentType != cetirunv1alpha1.AgentTypeOpenClaw &&
+		agentType != cetirunv1alpha1.AgentTypeHermes {
+		return fmt.Errorf("native execution requires a built-in Agent")
 	}
 	return nil
 }
@@ -138,8 +139,10 @@ func CheckNetworkCapabilities(capabilities Capabilities) field.ErrorList {
 func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 	root := field.NewPath("spec")
 	var errs field.ErrorList
-	if !slices.Equal(policy.Harnesses.Allowed, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}) {
-		errs = append(errs, field.Forbidden(root.Child("harnesses", "allowed"), "native single-start supports only OpenClaw"))
+	for _, kind := range policy.Harnesses.Allowed {
+		if kind != cetirunv1alpha1.AgentTypeOpenClaw && kind != cetirunv1alpha1.AgentTypeHermes {
+			errs = append(errs, field.Forbidden(root.Child("harnesses", "allowed"), "native execution requires built-in harnesses"))
+		}
 	}
 	errs = append(errs, CheckNativeNetworkPolicy(policy.Network)...)
 	for _, control := range []struct {

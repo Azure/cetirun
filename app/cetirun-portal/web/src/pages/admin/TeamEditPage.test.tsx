@@ -21,7 +21,7 @@ beforeEach(() => {
   vi.mocked(teams.getTeam).mockResolvedValue(team);
   vi.mocked(teams.createTeam).mockResolvedValue(team);
   vi.mocked(teams.updateTeam).mockResolvedValue(team);
-  vi.mocked(policies.listPolicies).mockResolvedValue([{ name: "standard", uid: "policy-uid", resourceVersion: "1", harnesses: { allowed: ["hermes"] } }]);
+  vi.mocked(policies.listPolicies).mockResolvedValue([{ name: "standard", uid: "policy-uid", resourceVersion: "1", harnesses: { allowed: ["hermes"] }, sandboxSelection: { allowMultiple: true } }]);
   vi.mocked(sandboxes.listSandboxes).mockResolvedValue(["small", "large"].map(name => ({ name, deleting: false }) as sandboxes.SandboxDTO));
 });
 
@@ -86,6 +86,22 @@ it("round-trips bindings and the reviewed version without retrying a stale save"
   expect(await screen.findByText(/Configuration changed/)).toBeInTheDocument();
   expect(teams.updateTeam).toHaveBeenCalledExactlyOnceWith("new", expect.objectContaining({ uid: "team-uid", resourceVersion: "7", agentPolicyRef: "standard", sandboxRefs: ["small"], defaultSandboxRef: "small" }));
   expect(teams.createTeam).not.toHaveBeenCalled();
+});
+
+it("preserves existing Sandbox choices but blocks a restrictive policy until they are fixed", async () => {
+  vi.mocked(policies.listPolicies).mockResolvedValue([
+    { name: "standard", uid: "policy-uid", resourceVersion: "1", harnesses: { allowed: ["hermes"] }, sandboxSelection: { allowMultiple: true } },
+    { name: "single", uid: "single-uid", resourceVersion: "1", harnesses: { allowed: ["hermes"] }, sandboxSelection: { allowMultiple: false } },
+  ]);
+  const user = userEvent.setup();
+  renderEditor("/admin/teams/example/edit");
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Agent Policy" }), "single");
+  expect(screen.getByRole("checkbox", { name: "small" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "large" })).toBeChecked();
+  expect(screen.getByText(/keeps its existing Sandbox selections/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  await user.click(screen.getByRole("checkbox", { name: "large" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
 });
 
 it.each(["create", "update"])("shows validation details after %s and preserves the form for retry", async operation => {

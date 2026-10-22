@@ -1,6 +1,6 @@
 ---
 title: "Manage instance lifecycle"
-description: "Check instance health, update a chart, and suspend, resume, or delete an instance."
+description: "Check instance health, request a retained restart, update, suspend, resume, or delete an instance."
 weight: 40
 ---
 
@@ -64,6 +64,61 @@ idle-suspend/resume policy in this controller.
 Resume by setting `suspended` to `false`. Reconciliation must restore both the
 workload and routing before handing access back to the user.
 Suspension does not delete Teams cloud resources or revoke a tailnet device.
+
+## Restart while retaining HOME
+
+For a current, ready Agent, choose **Restart Agent** in Portal and confirm the
+interruption. This requests a replacement Pod through the existing controller;
+it does not delete the Agent, namespace or HOME PVC. Persistent files and the
+existing Gateway key identity and spending history are retained. Active process
+sessions are interrupted, and Pod-local temporary files are not retained.
+Closing the confirmation dialog before submitting discards that draft; reopening
+uses the currently displayed Agent version. After a request was sent with an
+uncertain result, closing the dialog retains its ID and version for a safe retry.
+For an explicit `instance_changed` version conflict after a status update,
+close the dialog and confirm again using the current version. Other errors,
+including suspension after an earlier attempt, a network failure or an unreadable
+response, do not establish whether the original request was accepted and retain
+it for retry. An already observed accepted request is never discarded merely
+because a later retry is rejected.
+Portal refreshes the displayed Agent after each outcome without automatically
+submitting another restart.
+
+The owner API is `POST /api/v1/instances/{name}/restart`. Send the current
+`uid` and `resourceVersion` in the JSON body and an `Idempotency-Key` header
+containing a fresh 16-128 character ID made of letters, digits, `_` or `-`.
+Reuse the same ID and body when retrying an uncertain response. The accepted
+ID is persisted as `spec.restartRequestID`; a repeated current ID does not
+request another restart, including after a Portal restart. A stale request
+cannot replace a newer request or a same-name replacement Agent.
+
+HTTP `202` means the request was accepted, not that the replacement is ready.
+Portal reports the desired `restartRequestId` and
+`observedRestartRequestId` separately. The Operator records
+`status.observedRestartRequestID` only after observing the requested template
+on the current ready Pod. It does not count the old Pod's Ready status or a
+successful Helm apply as completion. A pending request prevents another restart.
+During an Operator rolling upgrade, an older leader may observe the new Agent
+generation without applying the restart marker. A restart-aware controller binds
+both reconciliation caches to the request ID, so takeover applies the pending
+restart even if that generation was already observed. Waiting for the replacement
+Pod or recording its readiness does not request another apply.
+
+Suspension and deletion take precedence; restart cannot resume a suspended
+Agent. Current policy and runtime checks still apply. Earlier single-start
+Sandbox lifetimes reject this operation rather than converting their records.
+Custom Agents use their existing approved shutdown and apply path, not a new
+executor. The Operator renders their restart marker through the existing
+`podAnnotations` chart contract, so approved older Custom chart pins do not need
+an upgrade to restart, stop or resume. The marker remains controller-owned;
+caller-supplied values are rejected. Use Operator, Portal and CRD versions that
+support the restart API. A chart that omits the required annotation contract
+cannot produce a completed restart.
+
+This operation is a normal retained restart. It does not provide node migration,
+force deletion, physical writer fencing, or recovery from an unreachable source.
+Completion is a Kubernetes workload observation, not a new model-inference or
+storage-failover qualification.
 
 ## Pin and update a chart
 

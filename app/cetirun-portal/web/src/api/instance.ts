@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, StatusResponse } from "../types/instance";
-import { apiFetch } from "./fetch";
+import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest, StatusResponse } from "../types/instance";
+import { apiFetch, PortalError } from "./fetch";
 
 export type InstanceResponse = Instance;
 
@@ -116,6 +116,34 @@ export async function upgradeInstanceByName(name: string, version: InstanceVersi
     throw new Error(err.error?.message || "Failed to upgrade instance");
   }
   return response.json();
+}
+
+export async function restartInstanceByName(name: string, request: RestartInstanceRequest): Promise<Instance> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/restart`, {
+    method: "POST",
+    headers: { "Idempotency-Key": request.requestId },
+    body: JSON.stringify({ uid: request.uid, resourceVersion: request.resourceVersion }),
+  });
+  if (!response.ok) {
+    const body: unknown = await response.json();
+    let message = "Failed to request Agent restart";
+    let code: string | undefined;
+    if (body !== null && typeof body === "object" && "error" in body &&
+      body.error !== null && typeof body.error === "object") {
+      if ("message" in body.error && typeof body.error.message === "string" && body.error.message) {
+        message = body.error.message;
+      }
+      if ("code" in body.error && typeof body.error.code === "string") code = body.error.code;
+    }
+    throw new PortalError(message, response.status, code);
+  }
+  return response.json();
+}
+
+export function isRestartRequestRejected(error: unknown): boolean {
+  // Exact retries return the stored request before checking resourceVersion.
+  // Other errors, such as suspension, can follow an earlier accepted attempt.
+  return error instanceof PortalError && error.status === 409 && error.code === "instance_changed";
 }
 
 export async function getInstanceStatusByName(name: string): Promise<StatusResponse> {

@@ -4,15 +4,22 @@
 
 from contextlib import redirect_stderr
 import hashlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
+import os
 from pathlib import Path
 import re
+import shlex
+import shutil
 import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -355,6 +362,27 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("continue-on-error:", text)
         self.assertNotRegex(text, r"git (?:apply|commit|push)")
 
+    def test_portal_restart_api_uses_the_existing_isolated_admission_job(self):
+        text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
+        steps = {
+            step.splitlines()[0]: step
+            for step in text.split("\n      - name: ")[1:]
+        }
+        download = steps["Download Portal API test modules"]
+        check = steps["Test Portal restart API admission"]
+        self.assertIn("app/cetirun-portal/go.sum", text)
+        self.assertIn("working-directory: app/cetirun-portal", download)
+        self.assertIn("run: go mod download", download)
+        self.assertIn("working-directory: app/cetirun-portal", check)
+        self.assertIn('GOPROXY: "off"', check)
+        self.assertIn('GOFLAGS: "-mod=readonly"', check)
+        self.assertIn("KUBECONFIG: /dev/null", check)
+        self.assertIn('USE_EXISTING_CLUSTER: "false"', check)
+        self.assertIn("run: go test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1", check)
+        self.assertLess(text.index('echo "KUBEBUILDER_ASSETS=$tools_dir"'), text.index(download))
+        self.assertLess(text.index(download), text.index(check))
+        self.assertNotIn("continue-on-error:", check)
+
     def test_runtime_image_smoke_selects_only_the_auth_unittest_suite(self):
         text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()
         commands = re.findall(r"[a-z-]+:validation -m unittest discover[^\n]+", text)
@@ -499,6 +527,122 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotEqual(match[2], vulnerable_digest)
             images.add(match[1])
         self.assertEqual(len(images), 1)
+
+
+class NativeHostDownloadTests(unittest.TestCase):
+    def setUp(self):
+        workflow = (validate.ROOT / ".github/workflows/memory-context-ci.yml").read_text()
+        job = workflow.split("  go-build-test:\n", 1)[1].split("\n  docker-build:", 1)[0]
+        step = job.split("      - name: Install pinned native host test dependencies\n", 1)[1].split("\n      - name:", 1)[0]
+        self.script = textwrap.dedent(step.split("        run: |\n", 1)[1]).replace("\\\n", "")
+        self.downloads = [shlex.split(line) for line in self.script.splitlines() if line.startswith("curl ")]
+        self.assertEqual(len(self.downloads), 2)
+        self.assertRegex(job, r"(?m)^    timeout-minutes: 30$")
+        self.assertNotIn("continue-on-error:", job)
+        self.assertIn("run: node --test app/cetirun-memory-context/tests/native.test.mjs", job)
+        directory = tempfile.TemporaryDirectory(prefix="cetirun-native-download-")
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.native = self.root / "cetirun-memory-native"
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as output:
+            data = b"synthetic pinned-host fixture\n"
+            member = tarfile.TarInfo("hermes-host/fixture.txt")
+            member.size = len(data)
+            output.addfile(member, io.BytesIO(data))
+        self.archive = archive.getvalue()
+
+    def test_both_archives_use_bounded_transient_retries(self):
+        for command in self.downloads:
+            with self.subTest(url=next(arg for arg in command if arg.startswith("https://"))):
+                self.assertIn("-fsSL", command)
+                self.assertNotIn("--retry-all-errors", command)
+                for flag, expected in {
+                    "--retry": "3",
+                    "--retry-delay": "15",
+                    "--retry-max-time": "120",
+                    "--connect-timeout": "15",
+                    "--max-time": "300",
+                }.items():
+                    self.assertEqual(command.count(flag), 1)
+                    self.assertEqual(command[command.index(flag) + 1], expected)
+        self.assertIn("https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/v2026.9.24", self.script)
+        self.assertIn("15b15ce4e6ec8ea424a081823709d1e17f0943e7b42b59597d24ebb94cbd1742  $native_dir/hermes.tgz", self.script)
+        self.assertIn("https://registry.npmjs.org/openclaw/-/openclaw-2026.9.6.tgz", self.script)
+        self.assertIn("Ie0kyQSCVfFqixsgVg39vevUDq01Ch5u3+7Yu5Y3qARczmdAe+lzp8bVnO9925rHiW/+CFp70zfORCyPmCH31g==", self.script)
+        self.assertLess(self.script.index("sha256sum --check"), self.script.index("tar xzf"))
+
+    def run_download(self, statuses, *, check_integrity=False):
+        self.assertIsNotNone(shutil.which("curl"), "curl is required for the loopback download regression")
+        attempts = []
+        payload = self.archive
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                status = statuses[min(len(attempts), len(statuses) - 1)]
+                attempts.append(time.monotonic())
+                body = payload if status == 200 else b"synthetic download failure\n"
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = f"http://127.0.0.1:{server.server_port}/archive.tgz"
+                source = next(arg for arg in self.downloads[0] if arg.startswith("https://"))
+                if check_integrity:
+                    script = self.script.split(next(line for line in self.script.splitlines() if line.startswith("curl ") and "openclaw.tgz" in line), 1)[0]
+                    script = script.replace(source, url)
+                else:
+                    self.native.mkdir()
+                    script = shlex.join(self.downloads[0]).replace(source, url).replace("$native_dir", str(self.native))
+                result = subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+                    env={
+                        **os.environ,
+                        "HOME": str(self.root), "CURL_HOME": str(self.root),
+                        "RUNNER_TEMP": str(self.root), "native_dir": str(self.native),
+                        "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
+                    },
+                    capture_output=True, text=True, check=False, timeout=75,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive(), "loopback server did not stop")
+        return result, attempts
+
+    def test_rate_limit_recovers_before_native_qualification(self):
+        result, attempts = self.run_download([429, 200])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(attempts), 2)
+        self.assertGreaterEqual(attempts[1] - attempts[0], 14.5)
+        self.assertEqual((self.native / "hermes.tgz").read_bytes(), self.archive)
+
+    def test_repeated_rate_limits_fail_after_the_retry_limit(self):
+        result, attempts = self.run_download([429])
+        self.assertEqual(result.returncode, 22, result.stderr)
+        self.assertEqual(len(attempts), 4)
+        self.assertFalse((self.native / "hermes/fixture.txt").exists())
+
+    def test_permanent_http_error_is_not_retried(self):
+        result, attempts = self.run_download([404], check_integrity=True)
+        self.assertEqual(result.returncode, 22, result.stderr)
+        self.assertEqual(len(attempts), 1)
+        self.assertFalse((self.native / "hermes/fixture.txt").exists())
+
+    def test_integrity_failure_still_blocks_extraction(self):
+        result, attempts = self.run_download([200], check_integrity=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(attempts), 1)
+        self.assertIn("FAILED", result.stdout)
+        self.assertFalse((self.native / "hermes/fixture.txt").exists())
 
 
 if __name__ == "__main__":

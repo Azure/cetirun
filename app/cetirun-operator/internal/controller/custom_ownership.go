@@ -73,7 +73,7 @@ func (r *AgentReconciler) readCustomOwnership(ctx context.Context, instance *api
 }
 
 func (r *AgentReconciler) ensureCustomOwnership(ctx context.Context, instance *api.Agent, bindings runtimebindings.Custom, current *appsv1.StatefulSet) error {
-	if err := r.checkCustomGeneration(ctx, instance); err != nil {
+	if err := r.checkAgentGeneration(ctx, instance); err != nil {
 		return err
 	}
 	want := customOwnership{AgentName: instance.Name, AgentUID: instance.UID,

@@ -1,10 +1,14 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import hashlib
+import io
 import json
 import os
 import re
+import shlex
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +22,78 @@ def version_tuple(value):
 
 
 class ImageDependencyTests(unittest.TestCase):
+    def _hermes_source_command(self):
+        content = (CHART / "agents/hermes/Dockerfile").read_text()
+        stage = content.split("FROM ${BASE_IMAGE} AS hermes-source\n", 1)[1].split("\nFROM ", 1)[0]
+        return stage.split("\nRUN ", 1)[1].strip().replace("\\\n", "")
+
+    def test_hermes_source_download_allows_slow_transfers_and_paces_retries(self):
+        arguments = shlex.split(self._hermes_source_command().split("&&", 1)[0])
+        self.assertEqual(arguments[0], "curl")
+        for flag, expected in {
+            "--connect-timeout": "15",
+            "--max-time": "1800",
+            "--retry": "3",
+            "--retry-delay": "15",
+            "--retry-max-time": "1800",
+        }.items():
+            with self.subTest(flag=flag):
+                self.assertIn(flag, arguments)
+                self.assertEqual(arguments[arguments.index(flag) + 1], expected)
+        self.assertIn("--retry-all-errors", arguments)
+
+    def test_hermes_source_download_preserves_integrity_gates(self):
+        for failure in ("none", "http", "checksum", "version"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                archive = root / "source.tar.gz"
+                project = b'[project]\nversion = "0.21.5"\n'
+                with tarfile.open(archive, "w:gz") as stream:
+                    entry = tarfile.TarInfo("hermes-source/pyproject.toml")
+                    entry.size = len(project)
+                    stream.addfile(entry, io.BytesIO(project))
+                binaries = root / "bin"
+                binaries.mkdir()
+                curl = binaries / "curl"
+                curl.write_text(
+                    "#!/bin/sh\n"
+                    'if [ "$DOWNLOAD_RESULT" != "0" ]; then exit "$DOWNLOAD_RESULT"; fi\n'
+                    'while [ "$#" -gt 0 ]; do\n'
+                    '  if [ "$1" = "-o" ]; then cp "$SOURCE_ARCHIVE" "$2"; exit $?; fi\n'
+                    "  shift\n"
+                    "done\n"
+                    "exit 1\n"
+                )
+                curl.chmod(0o755)
+                checkout = root / "checkout"
+                checkout.mkdir()
+                download = root / "download.tar.gz"
+                command = self._hermes_source_command().replace(
+                    "/tmp/hermes-agent.tar.gz", str(download)
+                ).replace("/usr/local/lib/hermes-agent", str(checkout))
+                result = subprocess.run(
+                    ["sh", "-c", command], cwd=checkout, text=True, capture_output=True, timeout=10,
+                    env={
+                        **os.environ,
+                        "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}",
+                        "SOURCE_ARCHIVE": str(archive),
+                        "DOWNLOAD_RESULT": "22" if failure == "http" else "0",
+                        "HERMES_RELEASE": "2026.9.24",
+                        "HERMES_VERSION": "0.0.0" if failure == "version" else "0.21.5",
+                        "HERMES_SOURCE_SHA256": "0" * 64 if failure == "checksum" else hashlib.sha256(archive.read_bytes()).hexdigest(),
+                    },
+                )
+                if failure == "none":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((checkout / "pyproject.toml").read_bytes(), project)
+                    self.assertFalse(download.exists())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    if failure == "http":
+                        self.assertEqual(result.returncode, 22)
+                    if failure != "version":
+                        self.assertFalse((checkout / "pyproject.toml").exists())
+
     def _docker_build_arguments(self, **overrides):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)

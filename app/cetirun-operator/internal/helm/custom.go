@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/custom"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
@@ -133,8 +134,12 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	// Custom publishes the approved view at its contract path, independent of
 	// the native agents' discovery paths retained in shared platform settings.
 	ensureObject(coalesced, "skills")["mountPath"] = agent.HomeDir + "/.agents/skills"
-	if err := validateCustomPlatformValues(coalesced, agent); err != nil {
+	if err := validateCustomPlatformValues(coalesced, agent, ""); err != nil {
 		return nil, err
+	}
+	// Use the existing chart contract so an older pin can restart and resume.
+	if bindings.RestartRequestID != "" {
+		ensureObject(coalesced, "podAnnotations")[api.AnnotationRestartRequestID] = bindings.RestartRequestID
 	}
 	raw, err := json.Marshal(contribution)
 	if err != nil {
@@ -228,6 +233,9 @@ func customWorkloadDigest(chrt *chart.Chart, agent agents.ResolvedAgent, binding
 	}
 	if bindings.Memory != nil {
 		input["memory"] = bindings.Memory
+	}
+	if bindings.RestartRequestID != "" {
+		input["restartRequestID"] = bindings.RestartRequestID
 	}
 	if bindings.AgentIdentity != nil {
 		input["agentIdentity"] = bindings.AgentIdentity

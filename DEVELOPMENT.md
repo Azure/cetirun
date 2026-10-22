@@ -46,7 +46,7 @@ available for alternate mirrors. Image tags, chart versions, and the
 
 Install tools only for the component you are changing:
 
-- Git, Bash, and Make for repository commands.
+- Git, Bash, Make, and curl for repository commands and loopback download tests.
 - Go 1.27.3, matching `.go-version`, all module minimums, and the pinned
   Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
@@ -201,6 +201,19 @@ go -C app/cetirun-portal vet ./internal/...
 Report that reduced scope; it does not validate the frontend or the complete
 portal binary. Do not treat a placeholder embed directory as a frontend build.
 
+The retained-restart API also has an isolated API-server test. With the pinned
+Kubernetes 1.37 binaries described below already installed, run:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-portal test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1
+```
+
+It verifies persisted request identity, conditional updates, and CRD validation.
+It starts its own API server and etcd, never an existing cluster; it does not
+run Pods, contact a model provider, or qualify storage/failure recovery.
+Operator CI also runs this test using its existing pinned admission-test tools.
+
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.
@@ -298,6 +311,22 @@ uses an explicit ten-minute Trivy timeout per runtime image scan, within its
 existing job time limit. Scan errors and timeouts still fail the vulnerability
 gates; severity thresholds and enabled scanners are unchanged. These image
 builds/scans run in CI, not as part of the offline commands above.
+
+The Hermes image build allows up to 30 minutes per source transfer, with at most three
+retries, a 15-second retry delay and a 30-minute retry-start window. This avoids
+discarding a progressing download on slow runners while keeping retries bounded.
+The pinned source checksum is verified before extraction, and the extracted
+project version must match the selected release. Download, checksum and version
+failures still fail the image build; the workflow's job timeout is unchanged.
+
+The [Memory Context workflow](.github/workflows/memory-context-ci.yml) downloads
+its pinned Hermes and OpenClaw qualification hosts separately. These downloads
+retry transient failures such as HTTP 429 at most three times, with a 15-second
+retry delay and a two-minute retry-start window. Their existing five-minute
+transfer limit and the job's 30-minute limit remain unchanged; connections also
+have a 15-second timeout. Permanent HTTP errors and integrity mismatches still
+fail before host installation or qualification. Offline helper tests use real
+curl requests against loopback fixtures to cover recovery and retry exhaustion.
 
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests require the pinned PyYAML dependency in

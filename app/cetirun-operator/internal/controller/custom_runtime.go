@@ -157,6 +157,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	if err != nil {
 		return r.customWaiting(ctx, instance, "CustomBindingsPending", "Platform binding resolution is not ready")
 	}
+	bindings.RestartRequestID = instance.Spec.RestartRequestID
 	request := agents.Request{Type: "custom", Image: *instance.Spec.Agent.Image, Port: instance.Spec.Agent.Port, WebUI: instance.Spec.Agent.WebUI}
 	if instance.Spec.Agent.Username != nil {
 		request.Username = *instance.Spec.Agent.Username
@@ -311,7 +312,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 			return r.registryWaiting(ctx, instance, "RegistryInputChanged")
 		}
 		if !workloadChanged {
-			if err := r.checkCustomGeneration(ctx, instance); err != nil {
+			if err := r.checkAgentGeneration(ctx, instance); err != nil {
 				return ctrl.Result{Requeue: true}, nil
 			}
 			if err := r.HelmClient.InstallOrUpgrade(bindings.Namespace.Name, helmReleaseName(instance.Name), prepared); err != nil {
@@ -353,7 +354,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 			if _, err := r.validateCustomObjects(ctx, instance, bindings); err != nil {
 				return r.customWaiting(ctx, instance, "CustomBindingRejected", err.Error())
 			}
-			if err := r.checkCustomGeneration(ctx, instance); err != nil {
+			if err := r.checkAgentGeneration(ctx, instance); err != nil {
 				return ctrl.Result{Requeue: true}, nil
 			}
 			// If the controller exits during Helm, recovery must not report that
@@ -367,7 +368,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 			if checkErr != nil {
 				return r.customWaiting(ctx, instance, "CustomMaintenancePending", "Custom apply approval expired or was revoked")
 			}
-			if err := r.checkCustomGeneration(ctx, instance); err != nil {
+			if err := r.checkAgentGeneration(ctx, instance); err != nil {
 				return ctrl.Result{Requeue: true}, nil
 			}
 			outcome = CustomApplyUnknown
@@ -416,10 +417,17 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		terminalPort: uint32(prepared.CustomTerminalPort()),
 	})
 	ready := homeBound && r.customPodReady(ctx, current)
+	if ready {
+		ready, err = r.restartPodReady(ctx, instance, current)
+		if err != nil {
+			return r.customWaiting(ctx, instance, "RestartObservationFailed", err.Error())
+		}
+	}
 	instance.Status.Phase = api.PhaseProvisioning
 	status, reason, message := metav1.ConditionFalse, "CustomPodPending", "Waiting for the applied Custom Pod"
 	if ready {
 		instance.Status.Phase = api.PhaseReady
+		instance.Status.ObservedRestartRequestID = instance.Spec.RestartRequestID
 		status, reason = metav1.ConditionTrue, "CustomPodReady"
 		message = "Custom Pod is ready; model calls, context use and session recovery are separate qualifications"
 		if resolved.Port == nil {
@@ -456,18 +464,6 @@ func (r *AgentReconciler) customReader() client.Reader {
 		return r.APIReader
 	}
 	return r.Client
-}
-
-func (r *AgentReconciler) checkCustomGeneration(ctx context.Context, expected *api.Agent) error {
-	current := &api.Agent{}
-	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(expected), current); err != nil {
-		return err
-	}
-	if current.UID != expected.UID || current.Generation != expected.Generation ||
-		current.Spec.Suspended || !current.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("Custom Agent changed before application")
-	}
-	return nil
 }
 
 func (r *AgentReconciler) validateCustomObjects(ctx context.Context, instance *api.Agent, b runtimebindings.Custom) (bool, error) {

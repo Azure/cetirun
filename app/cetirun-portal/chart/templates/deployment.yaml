@@ -1,6 +1,9 @@
 {{- $sharedChat := .Values.global.portalChat | default dict -}}
 {{- $chatEnabled := or .Values.chat.enabled (default false $sharedChat.enabled) -}}
 {{- $chatRealm := default .Values.chat.identityRealm $sharedChat.identityRealm -}}
+{{- if and (hasKey .Values "sandboxRuntimeDefaultsFromController") (not (kindIs "bool" .Values.sandboxRuntimeDefaultsFromController)) -}}
+{{- fail "sandboxRuntimeDefaultsFromController must be a boolean" -}}
+{{- end -}}
 {{- if $chatEnabled }}
 {{- $_ := required "chat.identityRealm is required for Custom Chat" $chatRealm -}}
 {{- $_ := required "istio.host is required for Custom Chat" .Values.istio.host -}}
@@ -71,8 +74,14 @@ spec:
               value: {{ join "," (default (list "hermes" "openclaw") ((.Values.features).allowedAgentTypes)) | quote }}
             - name: SANDBOX_RUNTIME_PROFILES
               value: {{ .Values.sandboxRuntimeProfiles | toJson | quote }}
+            {{- if .Values.sandboxRuntimeDefaultsFromController }}
+            - name: SANDBOX_RUNTIME_DEFAULTS_FROM_CONTROLLER
+              value: "true"
+            {{- end }}
             - name: FEATURE_AGENT_IDENTITY_ENABLED
               value: {{ default false ((.Values.features).agentIdentityEnabled) | quote }}
+            - name: FEATURE_AGENT_TOOLS_ENABLED
+              value: {{ default false ((.Values.features).agentToolsEnabled) | quote }}
             - name: FEATURE_AI_GATEWAY_ENABLED
               value: {{ default false ((.Values.features).aiGatewayEnabled) | quote }}
             {{- if default false ((.Values.features).aiGatewayEnabled) }}
@@ -87,14 +96,22 @@ spec:
             - name: CONFIGURATION_COORDINATION_UID
               value: {{ .Values.configurationCoordination.uid | quote }}
             {{- end }}
-            {{- if default false ((.Values.features).agentIdentityEnabled) }}
+            {{- if or (default false ((.Values.features).agentIdentityEnabled)) (default false ((.Values.features).agentToolsEnabled)) }}
             - name: ENTRA_TENANT_ID
-              value: {{ required "agentIdentity.tenantId is required when Agent Identity is enabled" .Values.agentIdentity.tenantId | quote }}
+              value: {{ required "agentIdentity.tenantId is required when either identity feature is enabled" .Values.agentIdentity.tenantId | quote }}
             - name: PORTAL_OIDC_CLIENT_ID
-              value: {{ required "agentIdentity.portalClientId is required when Agent Identity is enabled" .Values.agentIdentity.portalClientId | quote }}
+              value: {{ required "agentIdentity.portalClientId is required when either identity feature is enabled" .Values.agentIdentity.portalClientId | quote }}
+            {{- $_ := required "istio.host is required when either identity feature is enabled" .Values.istio.host }}
+            {{- end }}
+            {{- if default false ((.Values.features).agentIdentityEnabled) }}
             - name: AGENT_ID_BROKER_URL
               value: {{ required "agentIdentity.brokerURL is required when Agent Identity is enabled" .Values.agentIdentity.brokerURL | quote }}
-            {{- $_ := required "istio.host is required when Agent Identity is enabled" .Values.istio.host }}
+            {{- end }}
+            {{- if default false ((.Values.features).agentToolsEnabled) }}
+            - name: AGENT_TOOLS_BROKER_URL
+              value: {{ required "agentTools.brokerURL is required when Agent Tools is enabled" .Values.agentTools.brokerURL | quote }}
+            - name: TOOLS_MCP_RUNTIME_TYPES
+              value: {{ join "," (required "agentTools.runtimeTypes must not be empty when Agent Tools is enabled" .Values.agentTools.runtimeTypes) | quote }}
             {{- end }}
             - name: ADMIN_ALIASES_FILE
               value: /etc/cetirun-portal/admins/aliases
