@@ -38,7 +38,11 @@ describe("PolicyListPage", () => {
       ...selected, uid, resourceVersion: "2", harnesses: { allowed: ["hermes"] },
     };
     vi.mocked(policyAPI.listPolicies).mockResolvedValueOnce([selected]).mockResolvedValue([refreshed]);
-    vi.mocked(policyAPI.deletePolicy).mockRejectedValue(new Error("Policy changed; reload and try again."));
+    const rejection = new Error("Policy changed; reload and try again.");
+    vi.mocked(policyAPI.deletePolicy)
+      .mockRejectedValueOnce(rejection)
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValue(undefined);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={client}><MemoryRouter><PolicyListPage /></MemoryRouter></QueryClientProvider>);
 
@@ -51,7 +55,11 @@ describe("PolicyListPage", () => {
 
     // Retrying the same confirmation must not silently adopt the newer version.
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete", exact: true }));
-    await waitFor(() => expect(policyAPI.deletePolicy).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(policyAPI.deletePolicy).toHaveBeenCalledTimes(2);
+      expect(client.isMutating()).toBe(0);
+      expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+    });
     expect(policyAPI.deletePolicy).toHaveBeenLastCalledWith(selected);
 
     // A new selection and confirmation can delete the version now shown in the list.
@@ -60,10 +68,11 @@ describe("PolicyListPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument());
     await user.click(await screen.findByRole("button", { name: "Delete standard" }));
     expect(screen.queryByText("Policy changed; reload and try again.")).not.toBeInTheDocument();
-    vi.mocked(policyAPI.deletePolicy).mockResolvedValue(undefined);
     await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete", exact: true }));
     await waitFor(() => expect(policyAPI.deletePolicy).toHaveBeenCalledTimes(3));
     expect(policyAPI.deletePolicy).toHaveBeenLastCalledWith(refreshed);
     await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).not.toBeInTheDocument());
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    client.clear();
   });
 });
