@@ -13,6 +13,7 @@ network access.
 | `app/cetirun-portal/` | Go portal backend and its Helm chart |
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
 | `app/cetirun-agent-broker/` | Agent Identity authorization sessions and workload-bound short-lived credential issuance |
+| `app/agent-tools-mcp/` | Workload-authenticated MCP service for Azure JSON REST execution |
 | `app/internal/` | Shared Go implementation packages for Registry credentials and terminal policy |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
@@ -45,7 +46,7 @@ available for alternate mirrors. Image tags, chart versions, and the
 
 Install tools only for the component you are changing:
 
-- Git, Bash, and Make for repository commands.
+- Git, Bash, Make, and curl for repository commands and loopback download tests.
 - Go 1.27.3, matching `.go-version`, all module minimums, and the pinned
   Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
@@ -280,6 +281,29 @@ headers. Keep it local; it is not a production authentication configuration.
 Starting the Go backend or operator uses Kubernetes configuration and is
 outside the offline validation loop.
 
+### Agent Tools MCP core
+
+The standalone MCP service consumes the Broker's opt-in Connection/Binding
+APIs and executes JSON REST requests against Azure Resource Manager with an
+independent Agent identity. Provider tokens stay in the service. Azure RBAC
+controls resource operations; CetiRun checks the Agent's connection binding.
+
+```bash
+go -C app/agent-tools-mcp test ./... -count=1
+go -C app/agent-tools-mcp test -race ./... -count=1
+go -C app/agent-tools-mcp vet ./...
+make -C app/agent-tools-mcp build chart-lint
+python3 -B -m unittest scripts.tests.test_agent_tools_mcp_chart -v
+```
+
+The root Go and Helm gates include this module and its independent chart.
+These checks use synthetic workload/provider fixtures and local rendering;
+they do not call Azure or Kubernetes. Native runtime bootstrap, connected-service
+skills, Portal connection management, and platform umbrella wiring are separate
+follow-ups. Existing runtime and authorization paths remain available.
+See [Agent Tools MCP](app/agent-tools-mcp/README.md) for its request contract,
+TLS prerequisites, and execution limits.
+
 ### Runtime chart and Python helpers
 
 The [shared base image version notes](app/cetirun-chart/base-image.md) record
@@ -302,12 +326,21 @@ existing job time limit. Scan errors and timeouts still fail the vulnerability
 gates; severity thresholds and enabled scanners are unchanged. These image
 builds/scans run in CI, not as part of the offline commands above.
 
-Hermes source downloads allow up to 30 minutes per transfer, with at most three
+The Hermes image build allows up to 30 minutes per source transfer, with at most three
 retries, a 15-second retry delay and a 30-minute retry-start window. This avoids
 discarding a progressing download on slow runners while keeping retries bounded.
 The pinned source checksum is verified before extraction, and the extracted
 project version must match the selected release. Download, checksum and version
 failures still fail the image build; the workflow's job timeout is unchanged.
+
+The [Memory Context workflow](.github/workflows/memory-context-ci.yml) downloads
+its pinned Hermes and OpenClaw qualification hosts separately. These downloads
+retry transient failures such as HTTP 429 at most three times, with a 15-second
+retry delay and a two-minute retry-start window. Their existing five-minute
+transfer limit and the job's 30-minute limit remain unchanged; connections also
+have a 15-second timeout. Permanent HTTP errors and integrity mismatches still
+fail before host installation or qualification. Offline helper tests use real
+curl requests against loopback fixtures to cover recovery and retry exhaustion.
 
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests require the pinned PyYAML dependency in

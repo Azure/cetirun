@@ -342,6 +342,9 @@ func (h *AdminTeamHandler) validateTeamBindings(w http.ResponseWriter, r *http.R
 	if !policy.DeletionTimestamp.IsZero() {
 		return invalid("The selected Agent Policy is being deleted")
 	}
+	if len(req.SandboxRefs) > 1 && !policy.Spec.SandboxSelection.AllowMultiple {
+		return invalid("The selected Agent Policy allows only one Sandbox")
+	}
 	for _, skill := range req.Skills {
 		if !slices.Contains(policy.Spec.Skills.Allowed, skill) {
 			return invalid("Team Skills must be allowed by the selected Agent Policy")

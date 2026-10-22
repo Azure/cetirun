@@ -44,6 +44,7 @@ import { StatusTab } from "./StatusTab";
 import { CopilotAuthBlock } from "./CopilotAuthBlock";
 import { CopilotModelPicker } from "./CopilotModelPicker";
 import { AgentAuthorizationBlock } from "./AgentAuthorizationBlock";
+import { ToolAuthorizationBlock } from "./ToolAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
 import { AIGatewayBlock } from "./AIGatewayBlock";
 import { RestartAgentButton } from "./RestartAgentButton";
@@ -357,7 +358,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
       {gatewayRouted && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
 
-      {features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
+      {features?.agentToolsEnabled ? <ToolAuthorizationBlock instance={instance} /> : features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
 
       {instance.agent.registrySecretRef && <RegistryAuthBlock key={instance.uid || instance.instanceName} instance={instance} />}
 

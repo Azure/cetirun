@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"testing/fstest"
+
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler"
 )
 
 func TestSPAHandler_ExistingFile(t *testing.T) {
@@ -86,5 +89,54 @@ func TestSPAHandler_RootPath(t *testing.T) {
 	body := w.Body.String()
 	if body != "<html>root</html>" {
 		t.Errorf("body = %q, want index.html content", body)
+	}
+}
+
+func TestConnectionRoutesAreOptInAndAuthenticated(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		var tools *handler.ToolConnectionsHandler
+		if enabled {
+			tools = handler.NewToolConnectionsHandler(nil, "http://broker.example.com", "https://portal.example.com")
+		}
+		legacy := handler.NewAgentAuthorizationHandler(nil, "http://broker.example.com", "https://portal.example.com")
+		mux := New(fstest.MapFS{}, &handler.InstanceHandler{}, &handler.HealthHandler{},
+			&handler.FeaturesHandler{}, &handler.ConfigHandler{}, &handler.MeHandler{},
+			&handler.AdminTeamHandler{}, &handler.AdminInstanceHandler{}, &handler.AdminPolicyHandler{},
+			auth.Middleware(nil), auth.RequireAdmin(), legacy, tools)
+		for _, route := range []struct{ method, path string }{
+			{http.MethodGet, "/api/v1/connections"},
+			{http.MethodPost, "/api/v1/instances/demo/tool-identities"},
+			{http.MethodGet, "/api/v1/instances/demo/connection-bindings"},
+			{http.MethodPost, "/api/v1/instances/demo/connection-bindings"},
+			{http.MethodDelete, "/api/v1/instances/demo/connection-bindings/binding-id"},
+		} {
+			for _, signedIn := range []bool{false, true} {
+				req := httptest.NewRequest(route.method, route.path, nil)
+				req.Header.Set("Origin", "https://portal.example.com")
+				if signedIn {
+					req.Header.Set("X-Auth-Request-Email", "alice@example.com")
+				}
+				response := httptest.NewRecorder()
+				mux.ServeHTTP(response, req)
+				want := http.StatusUnauthorized
+				if signedIn {
+					want = http.StatusNotFound
+					if enabled {
+						want = http.StatusForbidden
+					}
+				}
+				if response.Code != want {
+					t.Errorf("%s %s enabled=%v signedIn=%v: got %d want %d", route.method, route.path, enabled, signedIn, response.Code, want)
+				}
+			}
+		}
+		// Opting into the panel must not remove existing authorization routes.
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/demo/agent-authorization", nil)
+		req.Header.Set("X-Auth-Request-Email", "alice@example.com")
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, req)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("legacy route enabled=%v: got %d want 403", enabled, response.Code)
+		}
 	}
 }

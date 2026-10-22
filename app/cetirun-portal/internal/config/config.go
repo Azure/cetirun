@@ -44,6 +44,10 @@ type Config struct {
 	// AgentIdentityEnabled requires cryptographically verified Entra owner
 	// claims and exposes the per-instance authorization experience.
 	AgentIdentityEnabled bool
+	// AgentToolsEnabled exposes owner-scoped Azure connections and bindings.
+	AgentToolsEnabled      bool
+	AgentToolsRuntimeTypes []string
+	AgentToolsBrokerURL    string
 	// EntraTenantID and PortalClientID identify the issuer and audience of the
 	// ID token passed by oauth2-proxy to the Portal backend.
 	EntraTenantID  string
@@ -90,6 +94,9 @@ func Load() Config {
 		SandboxRuntimes:                    runtimes,
 		SandboxControllerDefaults:          controllerDefaults,
 		AgentIdentityEnabled:               os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
+		AgentToolsEnabled:                  os.Getenv("FEATURE_AGENT_TOOLS_ENABLED") == "true",
+		AgentToolsRuntimeTypes:             strings.Split(envOrDefault("TOOLS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
+		AgentToolsBrokerURL:                envOrDefault("AGENT_TOOLS_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
 		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
 		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),
 		AgentIdentityBrokerURL:             envOrDefault("AGENT_ID_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),

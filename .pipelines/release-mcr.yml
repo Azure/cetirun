@@ -125,6 +125,7 @@ jobs:
           validate_chart app/cetirun-platform/Chart.yaml
           validate_chart app/cetirun-ai-gateway/chart/Chart.yaml
           validate_chart app/cetirun-agent-broker/chart/Chart.yaml
+          validate_chart app/agent-tools-mcp/chart/Chart.yaml
           python3 -B scripts/cetirun-version.py check "${RELEASE_VERSION}"
         displayName: Validate all chart versions
         env:
@@ -200,6 +201,18 @@ jobs:
             --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
           test -f "${package_dir}/cetirun-agent-broker-${RELEASE_VERSION}.tgz"
 
+          agent_tools_mcp_chart="app/agent-tools-mcp/chart"
+          echo "==> helm lint ${agent_tools_mcp_chart}"
+          helm lint --strict "${agent_tools_mcp_chart}" \
+            --values "${agent_tools_mcp_chart}/ci/render-values.yaml"
+          echo "==> helm template agent-tools-mcp ${agent_tools_mcp_chart}"
+          helm template agent-tools-mcp "${agent_tools_mcp_chart}" \
+            --values "${agent_tools_mcp_chart}/ci/render-values.yaml" > /dev/null
+          echo "==> helm package ${agent_tools_mcp_chart}"
+          helm package "${agent_tools_mcp_chart}" --destination "${package_dir}" \
+            --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
+          test -f "${package_dir}/agent-tools-mcp-${RELEASE_VERSION}.tgz"
+
           platform_chart="app/cetirun-platform"
           platform_name="cetirun-platform"
           echo "==> helm dependency build ${platform_chart}"
@@ -235,8 +248,8 @@ jobs:
           inlineScript: |
             set -euo pipefail
             registry="${ACR_NAME}.azurecr.io"
-            image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker cetirun-terminal cetirun-portal cetirun-vscode cetirun-pi-agent cetirun-memory-context)
-            chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal cetirun-platform cetirun-ai-gateway cetirun-agent-broker)
+            image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker agent-tools-mcp cetirun-terminal cetirun-portal cetirun-vscode cetirun-pi-agent cetirun-memory-context)
+            chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal cetirun-platform cetirun-ai-gateway cetirun-agent-broker agent-tools-mcp)
             repository_tag_exists() {
               local repository="$1" output
               if output="$(az acr repository show-tags --name "${ACR_NAME}" --repository "${repository}" --output tsv 2>&1)"; then
@@ -300,6 +313,8 @@ jobs:
           verify_and_prune "${image_registry}/cetirun-ai-gateway:${RELEASE_VERSION}"
           REGISTRY="${image_registry}" IMAGE_TAG="${RELEASE_VERSION}" PUSH=true bash scripts/agent-broker-docker-build.sh
           verify_and_prune "${image_registry}/cetirun-agent-broker:${RELEASE_VERSION}"
+          REGISTRY="${image_registry}" VERSION="${RELEASE_VERSION}" PUSH=true bash scripts/agent-tools-mcp-docker-build.sh
+          verify_and_prune "${image_registry}/agent-tools-mcp:${RELEASE_VERSION}"
           REGISTRY="${image_registry}" IMAGE_TAG="${RELEASE_VERSION}" PUSH=true bash scripts/terminal-docker-build.sh
           verify_and_prune "${image_registry}/cetirun-terminal:${RELEASE_VERSION}"
           REGISTRY="${image_registry}" VERSION="${RELEASE_VERSION}" PLATFORMS=linux/amd64 PUSH=true bash scripts/memory-context-docker-build.sh
@@ -332,8 +347,8 @@ jobs:
           inlineScript: |
             set -euo pipefail
             registry="${ACR_NAME}.azurecr.io"
-            image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker cetirun-terminal cetirun-portal cetirun-vscode cetirun-pi-agent cetirun-memory-context)
-            chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal cetirun-platform cetirun-ai-gateway cetirun-agent-broker)
+            image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker agent-tools-mcp cetirun-terminal cetirun-portal cetirun-vscode cetirun-pi-agent cetirun-memory-context)
+            chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal cetirun-platform cetirun-ai-gateway cetirun-agent-broker agent-tools-mcp)
             export PATH="${HELM_BIN}:${PATH}"
             package_dir="${AGENT_TEMPDIRECTORY}/cetirun-chart-packages"
             verify_dir="${AGENT_TEMPDIRECTORY}/cetirun-chart-verify"
@@ -400,7 +415,7 @@ jobs:
           scriptLocation: inlineScript
           inlineScript: |
             set -euo pipefail
-            image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker cetirun-terminal cetirun-portal cetirun-vscode cetirun-pi-agent cetirun-memory-context)
+            image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker agent-tools-mcp cetirun-terminal cetirun-portal cetirun-vscode cetirun-pi-agent cetirun-memory-context)
             for artifact in "${image_artifacts[@]}"; do
               repository="${REPOSITORY_PREFIX}/staging/${BUILD_ID}/${artifact}"
               if ! output="$(az acr repository delete --name "${ACR_NAME}" --repository "${repository}" --yes --output none 2>&1)"; then

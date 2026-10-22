@@ -653,6 +653,7 @@ type AIGatewayRouting struct {
 	Chart string `json:"chart"`
 	// AgentTypes are the agent types the chart routes through the Gateway.
 	// They are null while the operator has not read the chart.
+	// +kubebuilder:validation:items:Enum=openclaw;hermes;custom
 	AgentTypes []AgentType `json:"agentTypes"`
 }
 

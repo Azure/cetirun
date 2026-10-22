@@ -23,7 +23,8 @@ func New(
 	adminPolicyHandler *handler.AdminPolicyHandler,
 	authMiddleware func(http.Handler) http.Handler,
 	requireAdmin func(http.Handler) http.Handler,
-	agentAuthorizationHandlers ...*handler.AgentAuthorizationHandler,
+	agentAuthorizationHandler *handler.AgentAuthorizationHandler,
+	toolConnectionsHandler *handler.ToolConnectionsHandler,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -71,12 +72,19 @@ func New(
 	api.HandleFunc("POST /api/v1/instances/{name}/copilot/login", instanceHandler.StartCopilotLogin)
 	api.HandleFunc("GET /api/v1/instances/{name}/copilot/login", instanceHandler.PollCopilotLogin)
 	api.HandleFunc("DELETE /api/v1/instances/{name}/copilot/login", instanceHandler.CancelCopilotLogin)
-	if len(agentAuthorizationHandlers) > 0 && agentAuthorizationHandlers[0] != nil {
-		agentAuthorizationHandler := agentAuthorizationHandlers[0]
+	if agentAuthorizationHandler != nil {
 		api.HandleFunc("GET /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.Status)
 		api.HandleFunc("POST /api/v1/instances/{name}/agent-authorization/start", agentAuthorizationHandler.Start)
 		api.HandleFunc("DELETE /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.End)
 		mux.HandleFunc("POST /api/v1/agent-authorization/callback", agentAuthorizationHandler.Callback)
+	}
+
+	if toolConnectionsHandler != nil {
+		api.HandleFunc("GET /api/v1/connections", toolConnectionsHandler.ListConnections)
+		api.HandleFunc("POST /api/v1/instances/{name}/tool-identities", toolConnectionsHandler.CreateToolIdentity)
+		api.HandleFunc("GET /api/v1/instances/{name}/connection-bindings", toolConnectionsHandler.ListConnectionBindings)
+		api.HandleFunc("POST /api/v1/instances/{name}/connection-bindings", toolConnectionsHandler.CreateConnectionBinding)
+		api.HandleFunc("DELETE /api/v1/instances/{name}/connection-bindings/{id}", toolConnectionsHandler.DeleteConnectionBinding)
 	}
 
 	// Admin API: gated by RequireAdmin (in addition to the auth middleware

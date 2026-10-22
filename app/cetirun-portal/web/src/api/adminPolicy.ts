@@ -10,6 +10,34 @@ export interface AgentPolicyGatewayBudget {
   maxMonthlyUSD: string;
 }
 
+export type AgentPolicyProtocol = "TCP" | "UDP" | "SCTP";
+export type AgentPolicyIngressMode = "authenticated" | "disabled";
+
+export interface AgentPolicyPort {
+  port: number;
+  protocol: AgentPolicyProtocol;
+}
+
+export interface AgentPolicyCIDRRule {
+  cidr: string;
+  ports: AgentPolicyPort[];
+}
+
+export interface AgentPolicyKubernetesAccess {
+  serviceAccountName: string;
+  roleBindings?: { namespace: string; clusterRoleName: string }[];
+  clusterRoleBindings?: { clusterRoleName: string }[];
+}
+
+export interface AgentPolicyCondition {
+  type: string;
+  status: "True" | "False" | "Unknown" | string;
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+  observedGeneration?: number;
+}
+
 export interface AgentPolicyDTO {
   name: string;
   uid: string;
@@ -21,6 +49,26 @@ export interface AgentPolicyDTO {
     sharedModels?: { allowed?: string[] };
     gatewayBudget?: AgentPolicyGatewayBudget;
   };
+  agentIdentity?: {
+    allowed?: boolean;
+    required?: boolean;
+    credentialServices?: string[];
+  };
+  entraID?: { enabled?: boolean };
+  sandboxSelection?: { allowMultiple?: boolean };
+  security?: { readOnlyRootFilesystem?: boolean };
+  network?: {
+    blockedCIDRs?: string[];
+    blockedFQDNs?: string[];
+    blockedPorts?: AgentPolicyPort[];
+    allowedInternalCIDRs?: AgentPolicyCIDRRule[];
+    ingress?: { mode?: AgentPolicyIngressMode; requireMTLS?: boolean };
+  };
+  kubernetesAccess?: AgentPolicyKubernetesAccess | null;
+  generation?: number;
+  observedGeneration?: number;
+  conditions?: AgentPolicyCondition[];
+  deleting?: boolean;
   createdAt?: string;
 }
 
@@ -34,6 +82,14 @@ export interface AgentPolicyUpsertRequest {
     copilot?: { allowed?: boolean };
     sharedModels?: { allowed?: string[] };
     gatewayBudget?: AgentPolicyGatewayBudget;
+  };
+  sandboxSelection?: { allowMultiple?: boolean };
+  security?: { readOnlyRootFilesystem?: boolean };
+  network?: {
+    blockedCIDRs?: string[];
+    blockedPorts?: AgentPolicyPort[];
+    allowedInternalCIDRs?: AgentPolicyCIDRRule[];
+    ingress?: { mode?: AgentPolicyIngressMode };
   };
 }
 
@@ -68,12 +124,17 @@ export async function createPolicy(req: AgentPolicyUpsertRequest): Promise<Agent
   return response.json();
 }
 
+export class PolicyConflictError extends Error {}
+
 export async function updatePolicy(name: string, req: AgentPolicyUpsertRequest): Promise<AgentPolicyDTO> {
   const response = await apiFetch(`/api/v1/admin/policies/${encodeURIComponent(name)}`, {
     method: "PUT",
     body: JSON.stringify(req),
   });
-  if (!response.ok) throw new Error(await parseError(response, "Failed to update policy"));
+  if (!response.ok) {
+    const message = await parseError(response, "Failed to update policy");
+    throw response.status === 409 ? new PolicyConflictError(message) : new Error(message);
+  }
   return response.json();
 }
 
