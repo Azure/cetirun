@@ -13,6 +13,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import textwrap
 import time
 import unittest
 from unittest.mock import patch
@@ -40,6 +41,20 @@ IMAGE = "registry.example.com/operator@sha256:" + "a" * 64
 SERVER_IMAGE = "registry.example.com/operator@sha256:" + "b" * 64
 CA = base64.b64encode(b"-----BEGIN CERTIFICATE-----\nZml4dHVyZQ==\n-----END CERTIFICATE-----\n").decode()
 SENTINEL = "sensitive-synthetic-value.example.com"
+POD_WEBHOOK = ADMISSION + "validatingwebhookconfigurations/cetirun-sandbox-pods"
+BINDING_RULE = {"apiGroups": [""], "apiVersions": ["v1"], "operations": ["CREATE"],
+                "resources": ["pods/binding", "bindings"], "scope": "Namespaced"}
+
+
+def cleanup_condition(pod=False):
+    template = (SCRIPT.parents[1] / "app/cetirun-operator/chart/templates/_sandbox-admission.tpl").read_text()
+    helper = "sandboxPodCleanupMatch" if pod else "sandboxCleanupMatch"
+    block = template.split('{{- define "cetirun-operator.' + helper + '" -}}', 1)[1].split("{{- end -}}", 1)[0]
+    header, expression = block.split("  expression: >-\n", 1)
+    expression = textwrap.dedent(expression).strip().replace(
+        "{{ . | toJson }}", json.dumps(f"system:serviceaccount:{NAMESPACE}:selected-controller-sa"))
+    assert "{{" not in expression
+    return {"name": header.strip().removeprefix("- name: "), "expression": expression}
 
 
 def arguments():
@@ -55,7 +70,7 @@ def arguments():
     ]
 
 
-def fixture(*, native=False):
+def fixture(*, native=False, planned_migration=False):
     objects = {}
 
     def put(path, kind, name, *, uid=None, namespace=None, **fields):
@@ -91,6 +106,8 @@ def fixture(*, native=False):
         config["nativeExecution"] = True
         sources.pop("placementConfigMapName")
         config.pop("placementConfigMapName")
+    if planned_migration:
+        sources["plannedMigration"] = True
     operator = {
         "name": "manager", "image": IMAGE, "args": ["--leader-elect=true", "--domain-suffix=example.com"],
         "env": [
@@ -196,11 +213,13 @@ def fixture(*, native=False):
                 "name": "cetirun-sandbox-admission", "namespace": NAMESPACE, "port": 443, "path": "/" + route,
             }},
             "rules": [dict(zip(("apiGroups", "apiVersions", "operations", "resources", "scope"), rule)) for rule in rules],
-            "matchConditions": [{"name": "synthetic-unverified-condition", "expression": "true"}],
+            "matchConditions": [cleanup_condition(hook in ("sandbox-pods", "sandbox-placement"))],
         }
         if resource == "mutatingwebhookconfigurations":
             webhook["reinvocationPolicy"] = "Never"
         if name == "cetirun-sandbox-pods":
+            if planned_migration:
+                webhook["rules"].insert(1, copy.deepcopy(BINDING_RULE))
             webhook["namespaceSelector"] = {
                 "matchExpressions": [{"key": "cetirun.microsoft.com/sandbox-protected", "operator": "Exists"}],
             }
@@ -209,8 +228,8 @@ def fixture(*, native=False):
 
 
 class KubectlDouble:
-    def __init__(self, *, native=False):
-        self.responses = fixture(native=native)
+    def __init__(self, *, native=False, planned_migration=False):
+        self.responses = fixture(native=native, planned_migration=planned_migration)
         self.calls = []
         self.counts = {}
         self.processes = []
@@ -373,6 +392,100 @@ class DeploymentPreflightTests(unittest.TestCase):
         output = json.dumps(result)
         for value in (NAMESPACE, IMAGE, SERVER_IMAGE, "192.0.2.", "admin@example.com", "selected-context", "cluster-uid", CA):
             self.assertNotIn(value, output)
+
+    def test_planned_migration_requires_both_binding_apis(self):
+        for resources in (["pods/binding", "bindings"], ["pods/binding"], ["bindings"], []):
+            with self.subTest(resources=resources):
+                double = KubectlDouble(native=True, planned_migration=True)
+                rules = double.responses[POD_WEBHOOK]["webhooks"][0]["rules"]
+                if resources:
+                    rules[1]["resources"] = resources
+                else:
+                    rules.pop(1)
+                code, result, _ = self.run_preflight(double)
+                self.assertEqual(code, 0 if len(resources) == 2 else 1)
+                self.assertEqual(result["executionReadiness"], "unknown")
+
+    def test_non_migration_supports_only_exact_legacy_and_guarded_pod_rules(self):
+        for native in (False, True):
+            for bindings in (False, True):
+                with self.subTest(native=native, bindings=bindings):
+                    double = KubectlDouble(native=native)
+                    if bindings:
+                        double.responses[POD_WEBHOOK]["webhooks"][0]["rules"].insert(1, copy.deepcopy(BINDING_RULE))
+                    self.assertEqual(self.run_preflight(double)[0], 0)
+        for mutate in (
+            lambda rules: rules[1]["resources"].append("secrets"),
+            lambda rules: rules[1]["operations"].append("UPDATE"),
+            lambda rules: rules.append(copy.deepcopy(rules[1])),
+        ):
+            double = KubectlDouble(native=True, planned_migration=True)
+            mutate(double.responses[POD_WEBHOOK]["webhooks"][0]["rules"])
+            self.assert_blocked(double, "webhook-resource-wiring-mismatch")
+
+    def test_planned_migration_flag_must_be_boolean_and_native(self):
+        for native, value in ((True, "true"), (True, 1), (True, None), (False, True)):
+            with self.subTest(native=native, value=value):
+                double = KubectlDouble(native=native)
+                self.update_configuration(double, OPERATOR, lambda c: c.update(plannedMigration=value))
+                self.assert_blocked(double, "planned-migration-mode-mismatch")
+
+    def test_cleanup_conditions_are_exact_public_predicates(self):
+        paths = (
+            ADMISSION + "validatingwebhookconfigurations/cetirun-sandbox-admission",
+            ADMISSION + "mutatingwebhookconfigurations/cetirun-sandbox-admission",
+            POD_WEBHOOK, ADMISSION + "validatingwebhookconfigurations/cetirun-sandbox-placement",
+        )
+        for path in paths:
+            for mutation in (
+                lambda conditions: conditions[0].update(expression="false"),
+                lambda conditions: conditions[0].update(name="unreviewed-condition"),
+                lambda conditions: conditions.append(copy.deepcopy(conditions[0])),
+            ):
+                with self.subTest(path=path, mutation=mutation):
+                    double = KubectlDouble()
+                    mutation(double.responses[path]["webhooks"][0]["matchConditions"])
+                    self.assert_blocked(double, "webhook-match-conditions-mismatch")
+        for replacement in ("system:serviceaccount:other:controller", "CONTROLLER"):
+            double = KubectlDouble()
+            condition = double.responses[paths[0]]["webhooks"][0]["matchConditions"][0]
+            condition["expression"] = condition["expression"].replace(
+                f"system:serviceaccount:{NAMESPACE}:selected-controller-sa", replacement)
+            self.assert_blocked(double, "webhook-match-conditions-mismatch")
+
+    def test_legacy_condition_absence_does_not_authorize_guarded_migration(self):
+        double = KubectlDouble(native=True)
+        for value in double.responses.values():
+            for hook in value.get("webhooks", []):
+                hook.pop("matchConditions")
+        self.assertEqual(self.run_preflight(double)[0], 0)
+        for path in (ADMISSION + "validatingwebhookconfigurations/cetirun-sandbox-admission",
+                     ADMISSION + "mutatingwebhookconfigurations/cetirun-sandbox-admission", POD_WEBHOOK):
+            with self.subTest(path=path):
+                double = KubectlDouble(native=True, planned_migration=True)
+                double.responses[path]["webhooks"][0].pop("matchConditions")
+                self.assert_blocked(double, "webhook-match-conditions-mismatch")
+        double = KubectlDouble(native=True)
+        hook = double.responses[POD_WEBHOOK]["webhooks"][0]
+        hook["rules"].insert(1, copy.deepcopy(BINDING_RULE))
+        hook["matchConditions"] = []
+        self.assert_blocked(double, "webhook-match-conditions-mismatch")
+
+    def test_migration_keeps_aks_selector_opt_in_narrow(self):
+        for enabled, complete in ((False, True), (True, True), (True, False)):
+            with self.subTest(enabled=enabled, complete=complete):
+                double = KubectlDouble(native=True, planned_migration=True)
+                for value in double.responses.values():
+                    for hook in value.get("webhooks", []):
+                        hook.setdefault("namespaceSelector", {}).setdefault("matchExpressions", []).extend([
+                            {"key": "control-plane", "operator": "NotIn", "values": ["true"]},
+                            {"key": "kubernetes.azure.com/managedby", "operator": "NotIn", "values": ["aks"]},
+                        ])
+                if not complete:
+                    double.responses[POD_WEBHOOK]["webhooks"][0]["rules"][1]["resources"].pop()
+                code, _, _ = self.run_preflight(
+                    double, arguments() + (["--allow-aks-system-exclusions"] if enabled else []))
+                self.assertEqual(code, 0 if enabled and complete else 1)
 
     def test_native_optional_bindings_and_configured_skills_are_not_selection_evidence(self):
         for skills, catalog in (("", ""), ("skills", ""), ("skills", "selected-skills-catalog")):
@@ -693,7 +806,7 @@ class DeploymentPreflightTests(unittest.TestCase):
             self.assert_blocked(double)
         double = KubectlDouble()
         double.responses[path]["webhooks"][0]["matchConditions"][0]["expression"] = "false"
-        _, result, _ = self.run_preflight(double)
+        result = self.assert_blocked(double, "webhook-match-conditions-mismatch")
         self.assertIn({"check": "webhook-match-conditions-and-namespace-policy", "status": "unknown"}, result["unverified"])
         self.assertEqual(result["executionReadiness"], "unknown")
 

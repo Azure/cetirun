@@ -349,6 +349,18 @@ The supported footprint is deliberately narrow:
   process's explicit `ms` or `s` request budget must be shorter than each
   webhook timeout.
 
+The exact legacy two-rule Pod webhook remains supported when
+`sandboxSources.plannedMigration` is absent or `false`. The current three-rule
+form adds `CREATE` for both `pods/binding` and `bindings` and requires the
+public chart's garbage-collector cleanup predicate. `plannedMigration: true`
+requires native execution, that complete Binding rule, and the chart's
+controller and Pod cleanup guards. The flag must be a JSON boolean.
+Nonempty match-condition lists must contain exactly the applicable public
+`_sandbox-admission.tpl` predicate, with the pinned controller identity where
+needed; unknown, duplicate or altered conditions fail. Only legacy,
+non-migration wiring may omit guards. Matching predicate text does not verify
+CEL execution, namespace policy or migration readiness.
+
 Unsupported layouts, indirect environment configuration, missing/forbidden
 resources, identity/version drift, malformed responses and timeouts stop the
 inspection with a blocked or unknown check. There is no fallback to Secret
@@ -389,7 +401,7 @@ images, addresses, administrator identities, kubeconfig data or raw diagnostics:
   `check`, `status` (`observed`, `blocked`, or `unknown`) and a fixed `reason`
   code. After the first failure, remaining entries stay `unknown/not-checked`.
 - `unverified` always contains five `unknown` entries: TLS and actual admission
-  invocation; CEL match conditions and namespace policy; source semantics and
+  invocation; effective CEL evaluation and namespace policy; source semantics and
   namespace write protection; running Operator Pods; and runtime/network/storage
   enforcement and provider evidence.
 - `qualifiesExecution` is always `false`, `executionReadiness` always `unknown`,

@@ -237,6 +237,11 @@ DEPLOYMENT_RESOURCES = {
 }
 ADMISSION_NAME = "cetirun-sandbox-admission"
 PINNED_IMAGE = r"[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[0-9a-f]{64}"
+# Public _sandbox-admission.tpl expressions, with the controller identity replaced by "CONTROLLER".
+WEBHOOK_CLEANUP_DIGESTS = {
+    "controller-cleanup-only": "14e2e1fad301b5cef75005b61612777176a7d0b62e6dce79f417fcd1b6f007c5",
+    "garbage-collector-cleanup-only": "6d6bb441b8b56045e100a4eab716b7e4d5993a22ad3d78bfbac87742e8b4ae73",
+}
 
 
 class DeploymentKubernetes(Kubernetes):
@@ -456,6 +461,9 @@ def source_bindings(kube, args, operator, admission):
     require_preflight(type(native_execution) is bool and
                       config.get("nativeExecution", False) is native_execution,
                       "native-execution-mode-mismatch")
+    planned_migration = sources.get("plannedMigration", False)
+    require_preflight(type(planned_migration) is bool and (not planned_migration or native_execution),
+                      "planned-migration-mode-mismatch")
     require_preflight(sources.get("admissionServiceAccount") == args.admission_service_account and
                       config.get("controllerUsername") == f"system:serviceaccount:{args.namespace}:{args.operator_service_account}" and
                       config.get("validationMode") == "strict" and config.get("platformNamespace") == args.namespace,
@@ -500,7 +508,7 @@ def source_bindings(kube, args, operator, admission):
         else:
             for field in ("nodes", "platformDaemonSets"):
                 array_value(document.get(field))
-    return native_execution
+    return native_execution, planned_migration
 
 
 def admission_service(kube, args, admission):
@@ -615,7 +623,27 @@ def webhook_namespace_selector_matches(actual, expected, allow_aks_system_exclus
     return len(expressions) == len(required) and all(expressions.count(item) == 1 for item in required)
 
 
-def webhook_wiring(kube, args, admission, *, native_execution=False):
+def webhook_cleanup_matches(conditions, controller_username, *, pod=False, required=False):
+    if conditions == []:
+        return not required
+    if (not isinstance(conditions, list) or len(conditions) != 1 or not isinstance(conditions[0], dict) or
+            set(conditions[0]) != {"name", "expression"}):
+        return False
+    name = "garbage-collector-cleanup-only" if pod else "controller-cleanup-only"
+    condition = conditions[0]
+    expression = condition["expression"]
+    if (condition["name"] != name or not isinstance(expression, str) or
+            not 0 < len(expression) <= 8192 or not expression.isascii()):
+        return False
+    if not pod:
+        controller = json.dumps(controller_username)
+        if expression.count(controller) != 1:
+            return False
+        expression = expression.replace(controller, '"CONTROLLER"')
+    return hashlib.sha256(expression.strip(" \t\r\n").encode("ascii")).hexdigest() == WEBHOOK_CLEANUP_DIGESTS[name]
+
+
+def webhook_wiring(kube, args, admission, *, native_execution=False, planned_migration=False):
     timeout = admission[3].get("admission-pod-timeout")
     match = re.fullmatch(r"([0-9]{1,5})(ms|s)", timeout) if isinstance(timeout, str) else None
     require_preflight(match, "explicit-admission-request-budget-required", "unknown")
@@ -666,13 +694,25 @@ def webhook_wiring(kube, args, admission, *, native_execution=False):
             "webhook-ca-encoding-invalid")
         ca = bundle
         expected = [dict(zip(("apiGroups", "apiVersions", "operations", "resources", "scope"), rule)) for rule in rules]
+        guarded_pod = False
+        rules_match = hook.get("rules") == expected
+        if name == "cetirun-sandbox-pods":
+            binding = {"apiGroups": [""], "apiVersions": ["v1"], "operations": ["CREATE"],
+                       "resources": ["pods/binding", "bindings"], "scope": "Namespaced"}
+            guarded_pod = hook.get("rules") == expected[:1] + [binding] + expected[1:]
+            rules_match = guarded_pod or (not planned_migration and rules_match)
         namespace_selector = ({"matchExpressions": [{"key": "cetirun.microsoft.com/sandbox-protected", "operator": "Exists"}]}
                               if name == "cetirun-sandbox-pods" else {})
-        require_preflight(hook.get("rules") == expected and not hook.get("objectSelector") and
+        require_preflight(rules_match and not hook.get("objectSelector") and
                           webhook_namespace_selector_matches(
                               hook.get("namespaceSelector", {}), namespace_selector,
                               getattr(args, "allow_aks_system_exclusions", False)),
                           "webhook-resource-wiring-mismatch")
+        require_preflight(webhook_cleanup_matches(
+            hook.get("matchConditions", []),
+            f"system:serviceaccount:{args.namespace}:{args.operator_service_account}",
+            pod=name in ("cetirun-sandbox-pods", "cetirun-sandbox-placement"),
+            required=planned_migration or guarded_pod), "webhook-match-conditions-mismatch")
         require_preflight(kind != "mutating" or hook.get("reinvocationPolicy") == "Never",
                           "webhook-reinvocation-mismatch")
 
@@ -730,7 +770,7 @@ def deployment_preflight(args):
         with step("admission-deployment"):
             admission = deployed_workload(kube, args, "admission")
         with step("source-bindings"):
-            native_execution = source_bindings(kube, args, operator, admission)
+            native_execution, planned_migration = source_bindings(kube, args, operator, admission)
             if native_execution:
                 result["stockExecutionHold"] = "native-single-start-unverified"
                 result["unverified"].append({
@@ -741,7 +781,7 @@ def deployment_preflight(args):
         with step("admission-endpoints"):
             admission_endpoints(kube, args, admission, selector)
         with step("webhook-wiring"):
-            webhook_wiring(kube, args, admission, native_execution=native_execution)
+            webhook_wiring(kube, args, admission, native_execution=native_execution, planned_migration=planned_migration)
         with step("stable-observation"):
             kube.stable(config, version)
         result["status"] = "completed"
