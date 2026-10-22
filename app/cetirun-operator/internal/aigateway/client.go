@@ -548,49 +548,6 @@ func hasPrice(info map[string]any) bool {
 	return false
 }
 
-// HealthCheck is one stored health check result of a deployment.
-type HealthCheck struct {
-	DeploymentID string
-	Healthy      bool
-	Error        string
-	CheckedAt    time.Time
-}
-
-// HealthHistoryLimit is the most results LiteLLM returns from one read of its
-// health check history.
-const HealthHistoryLimit = 1000
-
-// HealthHistory returns the latest stored health check results, newest first,
-// at most limit (1 to HealthHistoryLimit). Results without a deployment ID or
-// a time are left out.
-func (c *Client) HealthHistory(ctx context.Context, limit int) ([]HealthCheck, error) {
-	limit = max(1, min(limit, HealthHistoryLimit))
-	var response struct {
-		HealthChecks []struct {
-			ModelID      *string `json:"model_id"`
-			Status       string  `json:"status"`
-			ErrorMessage *string `json:"error_message"`
-			CheckedAt    *string `json:"checked_at"`
-		} `json:"health_checks"`
-	}
-	query := url.Values{"limit": []string{fmt.Sprint(limit)}}
-	if _, err := c.do(ctx, http.MethodGet, "/health/history?"+query.Encode(), nil, &response); err != nil {
-		return nil, err
-	}
-	checks := make([]HealthCheck, 0, len(response.HealthChecks))
-	for _, item := range response.HealthChecks {
-		if item.ModelID == nil || *item.ModelID == "" || item.CheckedAt == nil {
-			continue
-		}
-		at, err := time.Parse(time.RFC3339Nano, *item.CheckedAt)
-		if err != nil {
-			continue
-		}
-		checks = append(checks, HealthCheck{DeploymentID: *item.ModelID, Healthy: item.Status == "healthy",
-			Error: deref(item.ErrorMessage), CheckedAt: at})
-	}
-	return checks, nil
-}
 // BlockUnpricedModels reports whether the Gateway refuses requests for models
 // without a price. An administrator can change the setting in the Gateway's
 // console, which keeps the change in its database over the chart's value.

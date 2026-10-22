@@ -227,11 +227,6 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
               Not offered because a shared model already has their name: {copilot.skipped.join(", ")}
             </Text>
           )}
-          {copilot.unavailable && copilot.unavailable.length > 0 && (
-            <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
-              Not offered because GitHub no longer serves them to your account (tried again daily, or sign in again): {copilot.unavailable.join(", ")}
-            </Text>
-          )}
           <div>
             <Button
               appearance={copilotPhase === "SignInRequired" ? "primary" : "secondary"}

@@ -92,8 +92,6 @@ export interface AIGatewayInfo {
     shared?: string[];
     /** Account models left out because a shared model already has their name. */
     skipped?: string[];
-    /** Account models left out because GitHub no longer serves them to the account. */
-    unavailable?: string[];
   };
   /** The Team's smart-routing models for this Agent: usable or why not. */
   modelRouters?: { name: string; granted: boolean; reason?: string }[];

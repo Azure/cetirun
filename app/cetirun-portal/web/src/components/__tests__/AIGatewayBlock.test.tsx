@@ -190,13 +190,12 @@ describe("AIGatewayBlock", () => {
   it("lists a Copilot model that is a shared model once and explains the ones left out", () => {
     renderBlock(instance({
       models: ["gpt-6", "o-mini"],
-      copilot: { phase: "Ready", models: ["gpt-6", "o-mini"], shared: ["gpt-6"], skipped: ["gpt-5"], unavailable: ["gpt-5.4"] },
+      copilot: { phase: "Ready", models: ["gpt-6", "o-mini"], shared: ["gpt-6"], skipped: ["gpt-5"] },
     }));
     const models = within(screen.getByLabelText("Agent models"));
     expect(models.getAllByText(/^gpt-6/)).toHaveLength(1);
     expect(screen.getByText("Also served by your Copilot subscription: gpt-6")).toBeInTheDocument();
     expect(screen.getByText("Not offered because a shared model already has their name: gpt-5")).toBeInTheDocument();
-    expect(screen.getByText(/GitHub no longer serves them to your account.*: gpt-5\.4$/)).toBeInTheDocument();
   });
 
   it("resumes a sign-in still pending after a reload", async () => {

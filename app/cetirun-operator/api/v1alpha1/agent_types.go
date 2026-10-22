@@ -547,17 +547,6 @@ type AIGatewayCopilotStatus struct {
 	// +optional
 	Skipped []string `json:"skipped,omitempty"`
 
-	// Unavailable lists the account's models GitHub refused in several
-	// consecutive health checks of their route as not served to this
-	// integration or not supported: such a model was listed at sign-in but
-	// no longer works. Their routes are removed, so the Agent no longer offers
-	// them and the Gateway no longer probes them on the owner's allowance.
-	// A model comes back after a new sign-in, or is tried again a day after
-	// it was removed.
-	// +listType=atomic
-	// +optional
-	Unavailable []AIGatewayCopilotUnavailableModel `json:"unavailable,omitempty"`
-
 	// ProxyKeyID identifies the proxy's master key without revealing it: the
 	// first characters of the key's SHA-256 hash. The proxy reads the key
 	// when it starts, so a new key restarts it.
@@ -567,16 +556,6 @@ type AIGatewayCopilotStatus struct {
 	// Reason is a stable, non-sensitive machine-readable status reason.
 	// +optional
 	Reason string `json:"reason,omitempty"`
-}
-
-// AIGatewayCopilotUnavailableModel is a Copilot model left out because GitHub
-// no longer serves it to the Agent's account.
-type AIGatewayCopilotUnavailableModel struct {
-	// Model is the Copilot model's ID.
-	Model string `json:"model"`
-
-	// Since is when the model's route was removed.
-	Since metav1.Time `json:"since"`
 }
 
 // AIGatewayCopilotRoute is one of the Agent's registered Copilot models.

@@ -94,8 +94,6 @@ type fakeAIGateway struct {
 	aliasUpdates  []map[string]string
 	aliasErr      error
 	routeUpdates  [][]string
-	health        []aigateway.HealthCheck
-	healthErr     error
 }
 
 func newFakeAIGateway() *fakeAIGateway {
@@ -142,13 +140,6 @@ func (f *fakeAIGateway) GenerateKey(_ context.Context, req aigateway.GenerateReq
 		AllowedRoutes: slices.Clone(aigateway.KeyRoutes),
 	}
 	return nil
-}
-
-func (f *fakeAIGateway) HealthHistory(_ context.Context, limit int) ([]aigateway.HealthCheck, error) {
-	if f.healthErr != nil {
-		return nil, f.healthErr
-	}
-	return slices.Clone(f.health[:min(limit, len(f.health))]), nil
 }
 
 func (f *fakeAIGateway) UpdateKeyRoutes(_ context.Context, token string, routes []string) error {

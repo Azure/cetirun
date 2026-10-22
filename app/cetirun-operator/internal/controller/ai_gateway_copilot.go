@@ -266,7 +266,6 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 
 	desired := map[string]copilotRegistration{}
 	var unpriced, skipped []string
-	var unavailable []cetirunv1alpha1.AIGatewayCopilotUnavailableModel
 	if len(wanted) > 0 {
 		priced, err := r.pricedModels(ctx, client)
 		if err != nil {
@@ -284,13 +283,10 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 			return
 		}
 		skipped = skippedModels
-		unavailable = r.copilotUnavailableModels(instance, copilot, wanted, time.Now())
 		proxyURL := copilotProxyURL(instance)
 		for _, model := range wanted {
 			placement, placed := placements[model.ID]
-			if !placed || slices.ContainsFunc(unavailable, func(entry cetirunv1alpha1.AIGatewayCopilotUnavailableModel) bool {
-				return entry.Model == model.ID && copilotUnavailable(entry, time.Now())
-			}) {
+			if !placed {
 				continue
 			}
 			base, ok := copilotBaseModel(model.ID, priced)
@@ -395,7 +391,6 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	copilot.Routes = routes
 	copilot.Unpriced = unpriced
 	copilot.Skipped = skipped
-	copilot.Unavailable = unavailable
 	switch {
 	case failed != nil:
 		degraded("RouteRegistrationFailed", failed)

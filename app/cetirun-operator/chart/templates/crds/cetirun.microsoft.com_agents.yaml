@@ -545,33 +545,6 @@ spec:
                           type: string
                         type: array
                         x-kubernetes-list-type: atomic
-                      unavailable:
-                        description: |-
-                          Unavailable lists the account's models GitHub refused in several
-                          consecutive health checks of their route as not served to this
-                          integration or not supported: such a model was listed at sign-in but
-                          no longer works. Their routes are removed, so the Agent no longer offers
-                          them and the Gateway no longer probes them on the owner's allowance.
-                          A model comes back after a new sign-in, or is tried again a day after
-                          it was removed.
-                        items:
-                          description: |-
-                            AIGatewayCopilotUnavailableModel is a Copilot model left out because GitHub
-                            no longer serves it to the Agent's account.
-                          properties:
-                            model:
-                              description: Model is the Copilot model's ID.
-                              type: string
-                            since:
-                              description: Since is when the model's route was removed.
-                              format: date-time
-                              type: string
-                          required:
-                          - model
-                          - since
-                          type: object
-                        type: array
-                        x-kubernetes-list-type: atomic
                       unpriced:
                         description: |-
                           Unpriced lists the account's models left out because the Gateway has no
