@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { OverviewSection } from "./OverviewSection";
-import type { Instance } from "../types/instance";
+import type { Instance, SetInstanceSuspendedRequest } from "../types/instance";
 
 const baseInstance: Instance = {
   uid: "test-agent-uid",
@@ -26,12 +26,17 @@ const baseInstance: Instance = {
 
 const mockUpdate = vi.hoisted(() => vi.fn());
 const mockFeatures = vi.hoisted(() => ({ data: { tailscaleEnabled: false, agentIdentityEnabled: false, agentToolsEnabled: false } }));
+const mockSuspension = vi.hoisted(() => ({
+  mutate: vi.fn(), reset: vi.fn(), isPending: false, isError: false, error: new Error("Connection interrupted"),
+  variables: undefined as SetInstanceSuspendedRequest | undefined,
+}));
 
 vi.mock("../hooks/useInstance", () => ({
   useDeleteInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useUpdateInstanceByName: () => ({ mutate: mockUpdate, isPending: false, isError: false, reset: vi.fn() }),
   useUpgradeInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useInstanceStatusByNameQuery: () => ({ data: undefined, isLoading: false }),
+  useSetInstanceSuspendedByName: () => mockSuspension,
 }));
 
 vi.mock("../hooks/useFeatures", () => ({
@@ -46,7 +51,8 @@ vi.mock("./AgentAuthorizationBlock", () => ({
   AgentAuthorizationBlock: () => <div>Legacy Entra authorization</div>,
 }));
 
-vi.mock("../api/instance", () => ({
+vi.mock("../api/instance", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../api/instance")>(),
   downloadTeamsApp: vi.fn(),
 }));
 
@@ -54,6 +60,14 @@ describe("OverviewSection", () => {
   beforeEach(() => {
     mockUpdate.mockClear();
     mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: false, agentToolsEnabled: false };
+    mockSuspension.mutate.mockClear();
+    mockSuspension.isError = false;
+    mockSuspension.variables = undefined;
+    mockSuspension.mutate.mockImplementation((request: SetInstanceSuspendedRequest) => { mockSuspension.variables = request; });
+    mockSuspension.reset.mockImplementation(() => {
+      mockSuspension.isError = false;
+      mockSuspension.variables = undefined;
+    });
   });
   const renderInRouter = (ui: React.ReactElement) => {
     const queryClient = new QueryClient({
@@ -74,6 +88,32 @@ describe("OverviewSection", () => {
     view.rerender(<OverviewSection instance={baseInstance} />);
     expect(screen.getByText("Legacy Entra authorization")).toBeInTheDocument();
     expect(screen.queryByText("Azure connection management")).not.toBeInTheDocument();
+  });
+
+  it("adds owner lifecycle controls without replacing connection controls or claiming shutdown", () => {
+    mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: true, agentToolsEnabled: true };
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, suspended: true, resumeAvailable: true, phase: "Suspended" }} />);
+    expect(screen.getByRole("button", { name: "Resume Agent" })).toBeEnabled();
+    expect(screen.getByText("Azure connection management")).toBeInTheDocument();
+    expect(screen.getByText(/does not confirm Pod termination/)).toBeInTheDocument();
+    expect(screen.queryByText(/Contact your administrator to restore access/)).not.toBeInTheDocument();
+  });
+
+  it("retains an uncertain lifecycle request while the owner checks the Status tab", () => {
+    const current = { ...baseInstance, suspended: false, suspendAvailable: true, restartAvailable: false };
+    const view = renderInRouter(<OverviewSection instance={current} />);
+    fireEvent.click(screen.getByRole("button", { name: "Suspend Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Suspend", exact: true }));
+    const sent = mockSuspension.mutate.mock.calls[0][0];
+    mockSuspension.isError = true;
+    view.rerender(<OverviewSection instance={{ ...current, resourceVersion: "8" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Status" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review suspend request" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry request" }));
+    expect(mockSuspension.mutate.mock.calls[1][0]).toEqual(sent);
+    expect(sent.resourceVersion).toBe("7");
   });
 
   it.each(["", "   "])("uses the Agent name when Display Name is %j", (displayName) => {
@@ -223,7 +263,7 @@ describe("OverviewSection", () => {
 
   it("shows Suspended warning when phase is Suspended", () => {
     renderInRouter(<OverviewSection instance={{ ...baseInstance, phase: "Suspended" }} />);
-    expect(screen.getByText(/Contact your administrator/i)).toBeInTheDocument();
+    expect(screen.getByText(/The controller reports Suspended/i)).toBeInTheDocument();
   });
 
   it("ignores the removed Teams version gate", () => {

@@ -92,6 +92,29 @@ func TestSPAHandler_RootPath(t *testing.T) {
 	}
 }
 
+func TestOwnerSuspensionRoutesRequireAuthenticationAndVersion(t *testing.T) {
+	mux := New(fstest.MapFS{}, &handler.InstanceHandler{}, &handler.HealthHandler{},
+		&handler.FeaturesHandler{}, &handler.ConfigHandler{}, &handler.MeHandler{},
+		&handler.AdminTeamHandler{}, &handler.AdminInstanceHandler{}, &handler.AdminPolicyHandler{},
+		auth.Middleware(nil), auth.RequireAdmin(), nil, nil)
+	for _, path := range []string{"/api/v1/instance/suspend", "/api/v1/instance/resume",
+		"/api/v1/instances/alice/suspend", "/api/v1/instances/alice/resume"} {
+		for _, signedIn := range []bool{false, true} {
+			r := httptest.NewRequest(http.MethodPost, path, nil)
+			want := http.StatusUnauthorized
+			if signedIn {
+				r.Header.Set("X-Auth-Request-Email", "alice@example.com")
+				want = http.StatusPreconditionRequired
+			}
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			if w.Code != want {
+				t.Fatalf("%s signedIn=%t: %d, want %d", path, signedIn, w.Code, want)
+			}
+		}
+	}
+}
+
 func TestConnectionRoutesAreOptInAndAuthenticated(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		var tools *handler.ToolConnectionsHandler

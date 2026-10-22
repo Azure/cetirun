@@ -86,6 +86,34 @@ func TestRetainedRestartThroughServedAPI(t *testing.T) {
 			t.Fatalf("served validation accepted restart ID %q during suspension: %v", id, err)
 		}
 	}
+	t.Run("owner suspension uses conditional existing intent", func(t *testing.T) {
+		for _, suspended := range []bool{false, true} {
+			version := InstanceVersion{UID: current.UID, ResourceVersion: current.ResourceVersion}
+			before := current.DeepCopy()
+			updated, err := NewClient(kc).SetInstanceSuspendedByName(ctx, current.Name, version, suspended, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current = updated
+			if current.Spec.Suspended != suspended || current.Generation != before.Generation+1 ||
+				current.Spec.RestartRequestID != firstRestartID || current.Status.Phase != before.Status.Phase ||
+				current.Status.ObservedGeneration != before.Status.ObservedGeneration {
+				t.Fatal("conditional suspension changed the restart or claimed controller completion")
+			}
+			retry, err := NewClient(kc).SetInstanceSuspendedByName(ctx, current.Name, version, suspended, nil)
+			if err != nil || retry.ResourceVersion != current.ResourceVersion || retry.Generation != current.Generation {
+				t.Fatalf("retry created another write: %v", err)
+			}
+			if _, err := NewClient(kc).SetInstanceSuspendedByName(ctx, current.Name, version, !suspended, nil); !errors.Is(err, ErrInstanceChanged) {
+				t.Fatalf("stale version reversed intent: %v", err)
+			}
+			replaced := version
+			replaced.UID = "replaced-agent"
+			if _, err := NewClient(kc).SetInstanceSuspendedByName(ctx, current.Name, replaced, suspended, nil); !errors.Is(err, ErrInstanceChanged) {
+				t.Fatalf("same-name replacement accepted: %v", err)
+			}
+		}
+	})
 	if err := kc.Delete(ctx, current, client.Preconditions{UID: &current.UID, ResourceVersion: &current.ResourceVersion}); err != nil {
 		t.Fatal(err)
 	}
