@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 CHART = Path(__file__).resolve().parents[1]
 TARGET = "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp"
@@ -101,6 +103,54 @@ class ToolsMCPChartTests(unittest.TestCase):
                     "mountPath: /var/run/cetirun/tools-ca", TARGET,
                 ):
                     self.assertIn(expected, rendered.stdout)
+
+    def test_tools_mcp_preserves_other_native_servers(self):
+        custom_server = {"url": "https://mcp.example.com/mcp", "timeout": 45}
+        for agent_type in ("hermes", "openclaw"):
+            for enabled in (True, False):
+                with self.subTest(agent_type=agent_type, enabled=enabled):
+                    servers = {
+                        "example": custom_server,
+                        "agent-tools": {
+                            "url": "https://old.example.com/mcp",
+                            "headers": {"X-Example": "old"},
+                        },
+                    }
+                    native = ({"mcp_servers": servers} if agent_type == "hermes"
+                              else {"mcp": {"servers": servers, "enabled": True}})
+                    with tempfile.TemporaryDirectory() as directory:
+                        values = Path(directory) / "values.yaml"
+                        values.write_text(yaml.safe_dump({
+                            agent_type: {"config": native},
+                            "toolsMCP": {"enabled": enabled},
+                        }), encoding="utf-8")
+                        rendered = self.render(
+                            agent_type, "-f", str(values),
+                            "--set", f"toolsMCP.enabled={str(enabled).lower()}",
+                        )
+                    self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                    filename = ("hermes-config.yaml" if agent_type == "hermes"
+                                else "openclaw.json")
+                    configmap = next(
+                        doc for doc in yaml.safe_load_all(rendered.stdout)
+                        if doc and doc.get("kind") == "ConfigMap"
+                        and filename in doc.get("data", {})
+                    )
+                    config = yaml.safe_load(configmap["data"][filename])
+                    actual = (config["mcp_servers"] if agent_type == "hermes"
+                              else config["mcp"]["servers"])
+                    self.assertEqual(actual["example"], custom_server)
+                    if agent_type == "openclaw":
+                        self.assertTrue(config["mcp"]["enabled"])
+                    if enabled:
+                        expected = {"url": TARGET, "transport": "streamable-http"}
+                        if agent_type == "hermes":
+                            expected.update(strict_redirect_headers=True, ssl_verify=True)
+                        else:
+                            expected["sslVerify"] = True
+                        self.assertEqual(actual["agent-tools"], expected)
+                    else:
+                        self.assertNotIn("agent-tools", actual)
 
     def test_custom_rejects_identity_and_tools_mcp(self):
         for extra, expected in (

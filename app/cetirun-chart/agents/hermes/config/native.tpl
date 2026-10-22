@@ -83,7 +83,9 @@ Licensed under the MIT License.
 {{- $_ := set $config "plugins" $plugins }}
 {{- end }}
 {{- if .Values.toolsMCP.enabled }}
-{{- $_ := set $config "mcp_servers" (dict "agent-tools" (dict "url" .Values.toolsMCP.url "transport" "streamable-http" "strict_redirect_headers" true "ssl_verify" true)) }}
+{{- $servers := dig "mcp_servers" (dict) $config }}
+{{- $_ := set $servers "agent-tools" (dict "url" .Values.toolsMCP.url "transport" "streamable-http" "strict_redirect_headers" true "ssl_verify" true) }}
+{{- $_ := set $config "mcp_servers" $servers }}
 {{- else }}
 {{- $servers := dig "mcp_servers" (dict) $config }}
 {{- $_ := unset $servers "agent-tools" }}

@@ -23,9 +23,32 @@ values=(
   --set-string agentIdentity.portalBaseUrl=https://portal.example.invalid
   --set-string istio.revision=asm-example
   --set istio.sidecarInjection=true
+  --set-string portal.namespace=portal-example
+  --set-string portal.serviceAccount=portal-example
 )
 
 output="$(helm template broker-test "${chart_dir}" "${values[@]}")"
+# Exercise the Portal's OAuth flow against the rendered mesh allowlist, not
+# just the HTTP handlers. Istio trailing wildcards match literal prefixes.
+"${PYTHON:-python3}" -c '
+import sys
+import yaml
+
+policy = next(doc for doc in yaml.safe_load_all(sys.stdin)
+              if doc and doc.get("kind") == "AuthorizationPolicy")
+principal = "cluster.local/ns/portal-example/sa/portal-example"
+paths = [path
+         for rule in policy["spec"]["rules"]
+         if any(principal in source["source"].get("principals", [])
+                for source in rule.get("from", []))
+         for target in rule.get("to", [])
+         if "8080" in target["operation"].get("ports", [])
+         for path in target["operation"].get("paths", [])]
+for route in ("/v1/connections/start", "/api/v1/connections/callback",
+              "/v1/connection-authorizations/oauth-example"):
+    assert any(route.startswith(path[:-1]) if path.endswith("*") else route == path
+               for path in paths), f"Portal OAuth route blocked by Istio: {route}"
+' <<<"${output}"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"
 grep -Fq "image: \"ghcr.io/azure/cetirun-agent-broker:${app_version}\"" <<<"${output}"

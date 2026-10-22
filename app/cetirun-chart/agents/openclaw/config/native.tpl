@@ -354,7 +354,11 @@ Licensed under the MIT License.
 {{- $_ := set $meta "lastTouchedVersion" (.Chart.Version | default "unknown") }}
 {{- $_ := set $config "meta" $meta }}
 {{- if .Values.toolsMCP.enabled }}
-{{- $_ := set $config "mcp" (dict "servers" (dict "agent-tools" (dict "url" .Values.toolsMCP.url "transport" "streamable-http" "sslVerify" true))) }}
+{{- $mcp := dig "mcp" (dict) $config }}
+{{- $servers := dig "servers" (dict) $mcp }}
+{{- $_ := set $servers "agent-tools" (dict "url" .Values.toolsMCP.url "transport" "streamable-http" "sslVerify" true) }}
+{{- $_ := set $mcp "servers" $servers }}
+{{- $_ := set $config "mcp" $mcp }}
 {{- else }}
 {{- $servers := dig "mcp" "servers" (dict) $config }}
 {{- $_ := unset $servers "agent-tools" }}
