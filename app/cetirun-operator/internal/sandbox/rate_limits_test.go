@@ -39,6 +39,7 @@ func TestNormalizeAgentPolicyRateLimits(t *testing.T) {
 	}
 	for name, limits := range map[string]*v1alpha1.AgentPolicyRateLimits{
 		"zero parallel":      {MaxParallelRequests: limit(0)},
+		"parallel too large": {MaxParallelRequests: limit(2147483648)},
 		"zero rpm":           {RPM: limit(0)},
 		"small tpm":          {TPM: limit(4095)},
 		"model zero rpm":     {PerModel: map[string]v1alpha1.AgentPolicyModelRateLimit{"m": {RPM: limit(0)}}},

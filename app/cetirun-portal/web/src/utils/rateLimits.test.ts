@@ -24,6 +24,7 @@ describe("rate limit form", () => {
 
   it.each([
     [{ ...emptyRateLimitForm, maxParallelRequests: "0" }, "at least 1"],
+    [{ ...emptyRateLimitForm, maxParallelRequests: "2147483648" }, "at most 2,147,483,647"],
     [{ ...emptyRateLimitForm, rpm: "-5" }, "whole number"],
     [{ ...emptyRateLimitForm, rpm: "1.5" }, "whole number"],
     [{ ...emptyRateLimitForm, tpm: "4095" }, "at least 4,096"],

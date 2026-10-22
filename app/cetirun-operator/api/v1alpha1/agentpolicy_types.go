@@ -84,8 +84,10 @@ type AgentPolicyModelAccess struct {
 // every request of a key with a zero limit, so a limit is either a positive
 // value or omitted; there is no zero or "unlimited" value.
 type AgentPolicyRateLimits struct {
-	// MaxParallelRequests limits the key's requests in flight at once.
+	// MaxParallelRequests limits the key's requests in flight at once. The
+	// Gateway stores it as a 32-bit integer, unlike its RPM and TPM.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +optional
 	MaxParallelRequests *int64 `json:"maxParallelRequests,omitempty"`
 	// RPM limits the key's requests per minute across all of its models.

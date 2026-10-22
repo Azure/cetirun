@@ -7,6 +7,8 @@ import type { AgentPolicyModelRateLimit, AgentPolicyRateLimits } from "../types/
 export const MIN_REQUEST_LIMIT = 1;
 export const MIN_TOKEN_LIMIT = 4096;
 export const MAX_MODEL_LIMITS = 64;
+/** The Gateway stores max parallel requests as a 32-bit integer. */
+export const MAX_PARALLEL_REQUESTS = 2147483647;
 
 export const TPM_HINT =
   "The Gateway reserves a request's input tokens plus its maximum output tokens before calling the model. " +
@@ -45,13 +47,14 @@ export function rateLimitFormFrom(limits?: AgentPolicyRateLimits): RateLimitForm
 
 const format = (value: number) => value.toLocaleString("en-US");
 
-function parseLimit(input: string, minimum: number, label: string): { value?: number; error?: string } {
+function parseLimit(input: string, minimum: number, label: string, maximum = Number.MAX_SAFE_INTEGER): { value?: number; error?: string } {
   const trimmed = input.trim();
   if (trimmed === "") return {};
   if (!/^[0-9]+$/.test(trimmed)) return { error: `${label} must be a whole number; leave it empty for no limit.` };
   const value = Number(trimmed);
   if (!Number.isSafeInteger(value)) return { error: `${label} is too large.` };
   if (value < minimum) return { error: `${label} must be at least ${format(minimum)}; leave it empty for no limit.` };
+  if (value > maximum) return { error: `${label} must be at most ${format(maximum)}.` };
   return { value };
 }
 
@@ -61,12 +64,12 @@ function parseLimit(input: string, minimum: number, label: string): { value?: nu
  */
 export function rateLimitsFromForm(form: RateLimitForm): { limits?: AgentPolicyRateLimits; error?: string } {
   const limits: AgentPolicyRateLimits = {};
-  for (const [key, label, minimum] of [
-    ["maxParallelRequests", "Max parallel requests", MIN_REQUEST_LIMIT],
-    ["rpm", "Requests per minute", MIN_REQUEST_LIMIT],
-    ["tpm", "Tokens per minute", MIN_TOKEN_LIMIT],
+  for (const [key, label, minimum, maximum] of [
+    ["maxParallelRequests", "Max parallel requests", MIN_REQUEST_LIMIT, MAX_PARALLEL_REQUESTS],
+    ["rpm", "Requests per minute", MIN_REQUEST_LIMIT, Number.MAX_SAFE_INTEGER],
+    ["tpm", "Tokens per minute", MIN_TOKEN_LIMIT, Number.MAX_SAFE_INTEGER],
   ] as const) {
-    const parsed = parseLimit(form[key], minimum, label);
+    const parsed = parseLimit(form[key], minimum, label, maximum);
     if (parsed.error) return { error: parsed.error };
     if (parsed.value !== undefined) limits[key] = parsed.value;
   }

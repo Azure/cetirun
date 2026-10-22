@@ -355,8 +355,9 @@ the minimums.
 
 `perModel` limits at most 64 models. Its keys are the exact Gateway model names
 the Agent requests (1 to 256 characters without whitespace), and each entry sets
-`rpm`, `tpm`, or both. There are no upper bounds, and the values are not checked
-against a model's context window.
+`rpm`, `tpm`, or both. `maxParallelRequests` is at most 2,147,483,647, the largest
+value the Gateway stores; the other limits have no upper bound. The values are
+not checked against a model's context window.
 
 The operator sets the limits when it creates a key, compares the key's stored
 limits with the policy on every reconcile, and updates the same key in place

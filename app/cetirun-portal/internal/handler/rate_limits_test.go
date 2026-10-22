@@ -90,6 +90,7 @@ func TestAdminPolicyRejectsRateLimitsTheGatewayWouldMisread(t *testing.T) {
 	}
 	for name, limits := range map[string]*AgentPolicyRateLimitsDTO{
 		"zero parallel":      {MaxParallelRequests: ptr.To[int64](0)},
+		"parallel too large": {MaxParallelRequests: ptr.To[int64](2147483648)},
 		"zero rpm":           {RPM: ptr.To[int64](0)},
 		"negative rpm":       {RPM: ptr.To[int64](-1)},
 		"small tpm":          {TPM: ptr.To[int64](4095)},

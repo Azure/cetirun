@@ -26,6 +26,10 @@ const (
 	maxPolicyModelNameRunes       = 256
 )
 
+// maxPolicyParallelRequests is the largest max_parallel_requests the Gateway
+// stores: LiteLLM 1.105.1 keeps it in a 32-bit integer column.
+const maxPolicyParallelRequests = 2147483647
+
 // ValidatePolicyRateLimits checks the per-key Gateway rate limits. They are
 // enforced by the Gateway on each Agent's key, not by the Sandbox.
 func ValidatePolicyRateLimits(limits *v1alpha1.AgentPolicyRateLimits, path *field.Path) field.ErrorList {
@@ -39,6 +43,9 @@ func ValidatePolicyRateLimits(limits *v1alpha1.AgentPolicyRateLimits, path *fiel
 		}
 	}
 	minimum(limits.MaxParallelRequests, path.Child("maxParallelRequests"), minPolicyRequestLimit)
+	if value := limits.MaxParallelRequests; value != nil && *value > maxPolicyParallelRequests {
+		errs = append(errs, field.Invalid(path.Child("maxParallelRequests"), *value, "must be at most "+strconv.FormatInt(maxPolicyParallelRequests, 10)+", which the Gateway can store"))
+	}
 	minimum(limits.RPM, path.Child("rpm"), minPolicyRequestLimit)
 	minimum(limits.TPM, path.Child("tpm"), minPolicyTokenLimit)
 	modelPath := path.Child("perModel")

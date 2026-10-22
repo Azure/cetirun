@@ -82,6 +82,10 @@ func toAgentPolicyRateLimits(dto *AgentPolicyRateLimitsDTO) *cetirunv1alpha1.Age
 	return limits
 }
 
+// maxRateLimitParallel is the CRD's maximum for maxParallelRequests, the
+// largest value the Gateway stores (a 32-bit integer).
+const maxRateLimitParallel = 2147483647
+
 // validateAgentPolicyRateLimits applies the CRD's rules, so the administrator
 // gets a message before the API server rejects the write.
 func validateAgentPolicyRateLimits(limits *AgentPolicyRateLimitsDTO) string {
@@ -93,6 +97,9 @@ func validateAgentPolicyRateLimits(limits *AgentPolicyRateLimitsDTO) string {
 			return fmt.Sprintf("rateLimits.%s must be at least %d; leave it empty for no limit", name, minimum)
 		}
 		return ""
+	}
+	if value := limits.MaxParallelRequests; value != nil && *value > maxRateLimitParallel {
+		return fmt.Sprintf("rateLimits.maxParallelRequests must be at most %d", maxRateLimitParallel)
 	}
 	for _, message := range []string{
 		check("maxParallelRequests", limits.MaxParallelRequests, minRateLimitRequests),

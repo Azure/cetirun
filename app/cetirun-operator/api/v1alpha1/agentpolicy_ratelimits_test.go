@@ -32,15 +32,18 @@ func TestAgentPolicyRateLimitSchema(t *testing.T) {
 		t.Fatal("perModel must be a map of per-model limits")
 	}
 	value := *perModel.AdditionalProperties.Schema
+	// The Gateway stores max_parallel_requests as a 32-bit integer.
+	if parallel := limits.Properties["maxParallelRequests"]; parallel.Maximum == nil || *parallel.Maximum != 2147483647 {
+		t.Errorf("maxParallelRequests maximum = %v; want 2147483647", parallel.Maximum)
+	}
 	for name, tc := range map[string]struct {
 		schema  apiextensionsv1.JSONSchemaProps
 		minimum float64
 	}{
-		"maxParallelRequests": {limits.Properties["maxParallelRequests"], 1},
-		"rpm":                 {limits.Properties["rpm"], 1},
-		"tpm":                 {limits.Properties["tpm"], 4096},
-		"perModel rpm":        {value.Properties["rpm"], 1},
-		"perModel tpm":        {value.Properties["tpm"], 4096},
+		"rpm":          {limits.Properties["rpm"], 1},
+		"tpm":          {limits.Properties["tpm"], 4096},
+		"perModel rpm": {value.Properties["rpm"], 1},
+		"perModel tpm": {value.Properties["tpm"], 4096},
 	} {
 		if tc.schema.Type != "integer" || tc.schema.Minimum == nil || *tc.schema.Minimum != tc.minimum || tc.schema.Maximum != nil {
 			t.Errorf("%s schema = %+v; want an integer with minimum %v and no maximum", name, tc.schema, tc.minimum)

@@ -182,9 +182,11 @@ spec:
                       so Agents do not share a limit. An omitted field is unlimited.
                     properties:
                       maxParallelRequests:
-                        description: MaxParallelRequests limits the key's requests
-                          in flight at once.
+                        description: |-
+                          MaxParallelRequests limits the key's requests in flight at once. The
+                          Gateway stores it as a 32-bit integer, unlike its RPM and TPM.
                         format: int64
+                        maximum: 2147483647
                         minimum: 1
                         type: integer
                       perModel:
