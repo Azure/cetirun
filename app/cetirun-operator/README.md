@@ -281,7 +281,13 @@ selecting another destination. These API observations are **not physical writer
 fencing** and do not qualify failed-node recovery.
 
 Suspension keeps the checkpoint and prevents destination start; resume continues
-the same request. Deletion never creates a replacement and releases only the
+the same request. If suspension arrives before the first checkpoint, a still-ready
+source is captured and protected before stopping. A rejected migration preflight
+does not block independently requested suspension; an unaccepted request remains
+available for administrator correction or withdrawal rather than being silently
+cleared. Pending migration/shutdown work reports `Pending`, not completed
+suspension: setting zero replicas alone does not acknowledge source termination.
+Deletion never creates a replacement and releases only the
 captured protections after their acknowledgements. Do not remove finalizers or
 edit status to bypass a wait. Source protection writes, acknowledgements and
 replacement apply remain retryable after conflicts or lost responses.

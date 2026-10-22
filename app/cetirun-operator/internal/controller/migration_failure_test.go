@@ -119,47 +119,122 @@ func TestPlannedMigrationProtectionRetriesFailedAndLostWrites(t *testing.T) {
 }
 
 func TestPlannedMigrationSuspensionAndDisabledGateRetainProgress(t *testing.T) {
-	f := newMigrationFixture(t, "hermes", true)
-	requestMigration(t, f, "migration-00000001", "node-b")
-	f.reconcileOK(t)
-	agent := f.current(t)
-	agent.Spec.Suspended = true
-	agent.Generation++
-	if err := f.kube.Update(context.Background(), agent); err != nil {
-		t.Fatal(err)
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, captured := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/captured=%t", kind, captured), func(t *testing.T) {
+				f := newMigrationFixture(t, kind, true)
+				initial := reconciledExpectationForTest(t, f)
+				requestMigration(t, f, "migration-00000001", "node-b")
+				if captured {
+					f.reconcileOK(t)
+				}
+				agent := f.current(t)
+				request := *agent.Spec.PlannedMigration
+				keyID := agent.Status.AIGateway.KeyID
+				agent.Spec.Suspended = true
+				agent.Generation++
+				if err := f.kube.Update(context.Background(), agent); err != nil {
+					t.Fatal(err)
+				}
+				if !captured {
+					f.reconcileOK(t)
+					migrationPhase(t, f, api.MigrationProtecting)
+				}
+				f.r.SandboxPreparation.PlannedMigration = false
+				f.reconcileOK(t)
+				migrationPhase(t, f, api.MigrationStopping)
+				if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+					t.Fatal("suspension waited for migration completion")
+				}
+				if f.current(t).Status.Phase == api.PhaseSuspended {
+					t.Fatal("a stop request acknowledged suspension before source termination")
+				}
+				acknowledgeMigrationSource(t, f)
+				f.reconcileOK(t)
+				f.reconcileOK(t)
+				acknowledgeMigrationDetach(t, f)
+				f.reconcileOK(t)
+				f.reconcileOK(t)
+				f.reconcileOK(t)
+				migrationPhase(t, f, api.MigrationStarting)
+				stages := f.installer.stages
+				for range 2 {
+					f.reconcileOK(t)
+				}
+				if f.installer.stages != stages || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+					t.Fatal("a suspended Agent started the migration destination")
+				}
+				agent = f.current(t)
+				agent.Spec.Suspended = false
+				agent.Generation++
+				if err := f.kube.Update(context.Background(), agent); err != nil {
+					t.Fatal(err)
+				}
+				for range 3 {
+					f.reconcileOK(t)
+				}
+				if f.installer.stages != stages+1 {
+					t.Fatal("disabling new requests stranded an accepted migration")
+				}
+				migrationReadyPod(t, f, "replacement-pod", "node-b")
+				migrationAttachment(t, f, "replacement-attachment", "node-b")
+				migrationWorkloadStatus(t, f, 1)
+				f.reconcileOK(t)
+				migrationPhase(t, f, api.MigrationCompleted)
+				current := f.current(t)
+				expected := reconciledExpectationForTest(t, f)
+				if current.Status.Phase != api.PhaseReady || *current.Spec.PlannedMigration != request ||
+					current.UID != initial.Agent.UID || expected.Home != initial.Home || expected.Namespace != initial.Namespace ||
+					current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+					t.Fatal("resume did not complete the original migration with retained identities")
+				}
+			})
+		}
 	}
-	f.r.SandboxPreparation.PlannedMigration = false
-	f.reconcileOK(t)
-	migrationPhase(t, f, api.MigrationStopping)
-	if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
-		t.Fatal("suspension waited for migration completion")
-	}
-	acknowledgeMigrationSource(t, f)
-	f.reconcileOK(t)
-	f.reconcileOK(t)
-	acknowledgeMigrationDetach(t, f)
-	f.reconcileOK(t)
-	f.reconcileOK(t)
-	f.reconcileOK(t)
-	migrationPhase(t, f, api.MigrationStarting)
-	stages := f.installer.stages
-	for range 2 {
-		f.reconcileOK(t)
-	}
-	if f.installer.stages != stages || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
-		t.Fatal("a suspended Agent started the migration destination")
-	}
-	agent = f.current(t)
-	agent.Spec.Suspended = false
-	agent.Generation++
-	if err := f.kube.Update(context.Background(), agent); err != nil {
-		t.Fatal(err)
-	}
-	for range 3 {
-		f.reconcileOK(t)
-	}
-	if f.installer.stages != stages+1 {
-		t.Fatal("disabling new requests stranded an accepted migration")
+}
+
+func TestPlannedMigrationRejectedPreflightStillSuspends(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, fault := range []string{"disabled", "wrong UID"} {
+			t.Run(kind+"/"+fault, func(t *testing.T) {
+				f := newMigrationFixture(t, kind, true)
+				requestMigration(t, f, "migration-00000001", "node-b")
+				agent := f.current(t)
+				agent.Spec.Suspended = true
+				agent.Generation++
+				if fault == "disabled" {
+					f.r.SandboxPreparation.PlannedMigration = false
+				} else {
+					agent.Spec.PlannedMigration.Target.UID = "different-node"
+				}
+				if err := f.kube.Update(context.Background(), agent); err != nil {
+					t.Fatal(err)
+				}
+				request := *agent.Spec.PlannedMigration
+				keyID := agent.Status.AIGateway.KeyID
+				stages := f.installer.stages
+				for range 2 {
+					if _, err := f.reconcile(); err == nil {
+						t.Fatal("migration preflight rejection was hidden")
+					}
+					current := f.current(t)
+					if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 ||
+						current.Status.Phase != api.PhasePending || current.Status.AccessURL != "" ||
+						isConditionTrue(current.Status.Conditions, api.ConditionReady) {
+						t.Fatal("migration preflight prevented suspension or reported shutdown complete")
+					}
+					if current.Status.PlannedMigration != nil || *current.Spec.PlannedMigration != request ||
+						f.installer.stages != stages || current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+						t.Fatal("rejected migration changed the retained request or execution identity")
+					}
+					for _, key := range f.gateway.keys {
+						if !key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+							t.Fatal("suspension did not block and retain the existing Gateway key")
+						}
+					}
+				}
+			})
+		}
 	}
 }
 
