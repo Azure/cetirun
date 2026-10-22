@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""Explicit-target preflight and bounded Kata/Cilium network smoke tests.
+"""Explicit-target preflight, bounded network smoke and offline receipt checks.
 
 This does not register capabilities, authorize execution, or prove writer fencing.
 Deployment preflight reports native single-start configuration as unverified,
 not the stock writer-exclusion hold. Bootstrap, Gateway operation and effective
 skill selection still require separate evidence; completion is not E2E readiness.
+Use acceptance-check --receipt FILE for offline lifecycle evidence assertions.
 """
 
 import argparse
 import base64
 import binascii
 from contextlib import contextmanager
+from decimal import Decimal
+import hashlib
 import ipaddress
 import json
 import os
@@ -167,6 +170,11 @@ class PreflightBlocked(QualificationError):
         super().__init__(reason)
         self.reason = reason
         self.status = status
+
+
+class SanitizedParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise PreflightBlocked("invalid-command-line")
 
 
 def require_preflight(condition, reason, status="blocked"):
@@ -967,10 +975,389 @@ def network_smoke(kube, image, runtime_class, result, protocol="TCP"):
         result["cleanupComplete"] = True
 
 
+LIFECYCLE_SNAPSHOT_FIELDS = (
+    "artifactSet", "owner", "resources", "home", "accounting", "workload", "models", "peer", "extensions",
+)
+LIFECYCLE_OPERATION_FIELDS = (
+    "operation", "path", "requestAccepted", "stopRequested", "stopObserved", "sourceHealthy",
+    "sourceTerminated", "sourceNode", "csiReleased", "csiAttached", "currentWorkloadReady",
+    "elapsedSeconds", "limitSeconds", "snapshot",
+)
+LIFECYCLE_REQUEST_FIELDS = (
+    "case", "artifactSet", "response", "outcome", "reportedState", "observedState",
+    "authoritativeObservation", "intentBefore", "intentAfter", "appliesBefore", "appliesAfter",
+    "elapsedSeconds", "limitSeconds",
+)
+LIFECYCLE_CLEANUP_FIELDS = (
+    "artifactSet", "path", "authentication", "subject", "ordinary", "forced", "remaining",
+    "peer", "elapsedSeconds", "limitSeconds",
+)
+LIFECYCLE_REQUESTS = {
+    "duplicate": ("accepted", ("pending", "completed"), 0),
+    "stale-uid": ("rejected", ("rejected",), 0),
+    "stale-version": ("rejected", ("rejected",), 0),
+    "lost-response": ("unknown", ("pending", "completed"), 1),
+    "controller-takeover": ("accepted", ("pending", "completed"), 1),
+    "suspend-precedence": ("accepted", ("pending", "suspended"), 0),
+    "delete-precedence": ("accepted", ("pending", "deleted"), 0),
+    "inflight-replacement": ("rejected", ("rejected",), 0),
+    "destination-failure": ("accepted", ("pending", "failed"), 1),
+}
+
+
+def require_lifecycle(condition, reason):
+    require_preflight(condition, reason, "failed")
+
+
+def lifecycle_fields(value, names):
+    require_preflight(value is not None, "missing-evidence")
+    require_lifecycle(isinstance(value, dict), "invalid-evidence-shape")
+    require_lifecycle(set(value).issubset(names), "unexpected-evidence-fields")
+    require_preflight(set(names).issubset(value), "missing-evidence-fields")
+    return value
+
+
+def lifecycle_array(value, limit=64):
+    require_preflight(value is not None, "missing-evidence")
+    require_lifecycle(isinstance(value, list) and len(value) <= limit, "invalid-evidence-array")
+    return value
+
+
+def lifecycle_digest(value):
+    return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def lifecycle_money(value):
+    require_lifecycle(isinstance(value, str) and
+                      re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,9})?", value) is not None,
+                      "invalid-accounting-amount")
+    return Decimal(value)
+
+
+def lifecycle_bounds(value):
+    limit, elapsed = value["limitSeconds"], value["elapsedSeconds"]
+    require_lifecycle(type(limit) is int and 0 < limit <= 9999 and
+                      type(elapsed) in (int, float) and 0 <= elapsed <= limit, "observation-outside-bound")
+
+
+def lifecycle_case(value):
+    lifecycle_fields(value, ("runtime", "execution", "modelSource", "identity", "helpers"))
+    for key, choices in (
+        ("runtime", ("openclaw", "hermes")), ("execution", ("ordinary", "sandbox-native")),
+        ("modelSource", ("shared", "copilot-only", "mixed")),
+        ("identity", ("none", "entra-obo", "azure-app-only")),
+    ):
+        require_preflight(isinstance(value[key], str) and value[key] in choices, "unsupported-case")
+    helpers = lifecycle_array(value["helpers"], 5)
+    require_preflight(all(isinstance(item, str) and item in
+                          ("skills", "memory", "doctor", "logger", "desktop") for item in helpers),
+                      "unsupported-helper")
+    require_lifecycle(len(set(helpers)) == len(helpers), "duplicate-helper")
+    return value
+
+
+def lifecycle_extension_checks(case):
+    checks = {
+        "skills": ("skillsReadOnly", "skillsUnchanged"),
+        "memory": ("memoryReadWrite", "memoryPrivate"),
+        "doctor": ("doctorReady",),
+        "logger": ("loggerReady",),
+        "desktop": ("desktopOwnerAccess", "desktopPeerDenied"),
+    }
+    required = [check for helper in case["helpers"] for check in checks[helper]]
+    if case["identity"] != "none":
+        required += ["identityAuthorized", "identityPeerDenied", "identityRevocationObserved"]
+    if case["identity"] == "azure-app-only":
+        required += ["mcpAuthorized", "mcpPeerDenied"]
+    return required
+
+
+def lifecycle_request_cases(execution):
+    return tuple(name for name in LIFECYCLE_REQUESTS
+                 if execution == "sandbox-native" or name not in ("inflight-replacement", "destination-failure"))
+
+
+def lifecycle_artifact_fingerprint(artifacts, case):
+    lifecycle_case(case)
+    lifecycle_fields(artifacts, ("sourceCommit", "sourceTree", "images", "charts", "configuration"))
+    for key in ("sourceCommit", "sourceTree"):
+        require_lifecycle(isinstance(artifacts[key], str) and
+                          re.fullmatch(r"[0-9a-f]{40}", artifacts[key]) is not None, "source-pin-required")
+    require_lifecycle(lifecycle_digest(artifacts["configuration"]), "configuration-pin-required")
+    images = {"operator", "admission", "portal", "runtime", "gateway"}
+    charts = {"operator", "portal", "runtime", "gateway"}
+    images.update(set(case["helpers"]) - {"skills"})
+    if case["modelSource"] != "shared":
+        images.add("copilot")
+    if case["identity"] != "none":
+        images.add("broker")
+        charts.add("broker")
+    if case["identity"] == "azure-app-only":
+        images.add("mcp")
+        charts.add("mcp")
+    for key, required, allowed in (
+        ("images", images, images | {"copilot", "doctor", "logger", "desktop", "memory", "broker", "mcp"}),
+        ("charts", charts, charts | {"broker", "mcp"}),
+    ):
+        pins = artifacts[key]
+        require_lifecycle(isinstance(pins, dict) and required.issubset(pins) and
+                          set(pins).issubset(allowed) and all(lifecycle_digest(pin) for pin in pins.values()),
+                          "digest-pinned-artifacts-required")
+    return "sha256:" + hashlib.sha256(
+        json.dumps(artifacts, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def lifecycle_snapshots(receipt):
+    snapshots = [lifecycle_fields(receipt["before"], LIFECYCLE_SNAPSHOT_FIELDS)]
+    for operation in lifecycle_array(receipt["operations"]):
+        lifecycle_fields(operation, LIFECYCLE_OPERATION_FIELDS)
+        snapshots.append(lifecycle_fields(operation["snapshot"], LIFECYCLE_SNAPSHOT_FIELDS))
+    return snapshots
+
+
+def lifecycle_artifacts(receipt):
+    fingerprint = lifecycle_artifact_fingerprint(receipt["artifacts"], receipt["case"])
+    records = lifecycle_snapshots(receipt)
+    records += [lifecycle_fields(item, LIFECYCLE_REQUEST_FIELDS)
+                for item in lifecycle_array(receipt["requests"])]
+    records.append(lifecycle_fields(receipt["cleanup"], LIFECYCLE_CLEANUP_FIELDS))
+    require_lifecycle(all(item["artifactSet"] == fingerprint for item in records), "artifact-set-mismatch")
+    return fingerprint
+
+
+def lifecycle_authorization(receipt):
+    authorization = lifecycle_fields(receipt["authorization"],
+                                     ("target", "owner", "peer", "provider", "spend", "faults", "ownerControls"))
+    require_preflight(all(value is True for value in authorization.values()), "authorization-or-controls-unavailable")
+
+
+def lifecycle_owners(receipt):
+    subjects = None
+    for snapshot in lifecycle_snapshots(receipt):
+        owner = lifecycle_fields(snapshot["owner"], (
+            "path", "authentication", "subject", "peerSubject", "peerReadStatus", "peerMutationStatus",
+            "nativeHttpStatus", "nativeWebSocketStatus",
+        ))
+        pair = (owner["subject"], owner["peerSubject"])
+        require_lifecycle(all(lifecycle_digest(item) for item in pair) and pair[0] != pair[1] and
+                          (subjects is None or subjects == pair), "distinct-stable-owners-required")
+        subjects = pair
+        require_lifecycle(owner["path"] in ("owner-rest", "owner-portal") and
+                          owner["authentication"] == "oidc", "real-owner-path-required")
+        require_lifecycle(owner["peerReadStatus"] in (403, 404) and owner["peerMutationStatus"] in (403, 404),
+                          "peer-owner-access-not-denied")
+        require_lifecycle(owner["nativeHttpStatus"] == 200 and owner["nativeWebSocketStatus"] == 101,
+                          "authenticated-native-access-required")
+
+
+def lifecycle_home(receipt):
+    expected = receipt["expectedHome"]
+    require_lifecycle(isinstance(expected, dict) and 0 < len(expected) <= 16 and
+                      all(isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) and
+                          lifecycle_digest(value) for name, value in expected.items()), "home-fixture-checksums-required")
+    baseline = None
+    for snapshot in lifecycle_snapshots(receipt):
+        resources = lifecycle_fields(snapshot["resources"], ("agent", "namespace", "statefulSet", "homePvc", "homePv"))
+        require_lifecycle(all(lifecycle_digest(value) for value in resources.values()) and
+                          (baseline is None or resources == baseline), "retained-resource-identity-mismatch")
+        baseline = resources
+        home = lifecycle_fields(snapshot["home"], ("path", "checksums", "readWrite"))
+        require_lifecycle(home["path"] == "owner-application", "allowed-home-path-required")
+        require_lifecycle(home["checksums"] == expected and home["readWrite"] is True,
+                          "home-content-or-read-write-mismatch")
+
+
+def lifecycle_accounting(receipt):
+    baseline, previous_spend = None, Decimal(0)
+    for snapshot in lifecycle_snapshots(receipt):
+        accounting = lifecycle_fields(snapshot["accounting"], ("key", "budget", "spend", "spendAfterCall"))
+        budget, spend, after_call = (lifecycle_money(accounting[key]) for key in ("budget", "spend", "spendAfterCall"))
+        identity = (accounting["key"], budget)
+        require_lifecycle(lifecycle_digest(identity[0]) and (baseline is None or identity == baseline),
+                          "accounting-key-or-budget-changed")
+        require_lifecycle(0 < spend < after_call <= budget and spend >= previous_spend,
+                          "nonzero-cumulative-spend-required")
+        baseline, previous_spend = identity, after_call
+
+
+def lifecycle_recovery(receipt):
+    snapshots = lifecycle_snapshots(receipt)
+    operations = receipt["operations"]
+    names = [operation["operation"] for operation in operations]
+    require_lifecycle(all(isinstance(name, str) and name in ("restart", "suspend-resume", "migrate")
+                          for name in names), "unsupported-operation")
+    require_preflight("restart" in names and "suspend-resume" in names, "lifecycle-coverage-missing")
+    if receipt["case"]["execution"] == "sandbox-native":
+        require_preflight(names.count("migrate") >= 2, "repeated-migration-evidence-missing")
+    else:
+        require_lifecycle("migrate" not in names, "migration-requires-native-execution")
+    sources = {"shared": ("shared",), "copilot-only": ("copilot",), "mixed": ("shared", "copilot")}
+    previous = None
+    pods = set()
+    for snapshot in snapshots:
+        workload = lifecycle_fields(snapshot["workload"], ("pod", "node", "generation", "ready"))
+        require_lifecycle(lifecycle_digest(workload["pod"]) and lifecycle_digest(workload["node"]) and
+                          type(workload["generation"]) is int and workload["generation"] > 0 and
+                          workload["ready"] is True, "current-ready-workload-required")
+        require_lifecycle(workload["pod"] not in pods, "fresh-execution-required")
+        pods.add(workload["pod"])
+        if previous is not None:
+            require_lifecycle(workload["generation"] > previous["generation"], "fresh-execution-required")
+        previous = workload
+        models = lifecycle_fields(snapshot["models"], sources[receipt["case"]["modelSource"]])
+        for model in models.values():
+            lifecycle_fields(model, ("reply", "expectedToolChecksum", "observedToolChecksum"))
+            require_lifecycle(model["reply"] is True and lifecycle_digest(model["expectedToolChecksum"]) and
+                              model["expectedToolChecksum"] == model["observedToolChecksum"],
+                              "model-reply-and-independent-tool-witness-required")
+    for index, operation in enumerate(operations):
+        lifecycle_bounds(operation)
+        require_lifecycle(all(operation[key] is True for key in
+                              ("requestAccepted", "stopRequested", "stopObserved", "sourceTerminated",
+                               "currentWorkloadReady")), "acceptance-stop-and-ready-observations-required")
+        if operation["operation"] == "migrate":
+            require_lifecycle(operation["path"] == "admin-kubernetes" and
+                              all(operation[key] is True for key in ("sourceHealthy", "csiReleased", "csiAttached")) and
+                              operation["sourceNode"] == snapshots[index]["workload"]["node"] and
+                              operation["sourceNode"] != snapshots[index + 1]["workload"]["node"],
+                              "healthy-source-and-csi-move-required")
+        else:
+            require_lifecycle(operation["path"] in ("owner-rest", "owner-portal"), "owner-lifecycle-path-required")
+
+
+def lifecycle_peers(receipt):
+    snapshots = lifecycle_snapshots(receipt)
+    cleanup = lifecycle_fields(receipt["cleanup"], LIFECYCLE_CLEANUP_FIELDS)
+    peers = [snapshot["peer"] for snapshot in snapshots] + [cleanup["peer"]]
+    before = snapshots[0]
+    owner = lifecycle_fields(before["owner"], (
+        "path", "authentication", "subject", "peerSubject", "peerReadStatus", "peerMutationStatus",
+        "nativeHttpStatus", "nativeWebSocketStatus",
+    ))
+    resources = lifecycle_fields(before["resources"], ("agent", "namespace", "statefulSet", "homePvc", "homePv"))
+    workload = lifecycle_fields(before["workload"], ("pod", "node", "generation", "ready"))
+    accounting = lifecycle_fields(before["accounting"], ("key", "budget", "spend", "spendAfterCall"))
+    baseline, previous_spend = None, Decimal(0)
+    for peer in peers:
+        lifecycle_fields(peer, ("subject", "agent", "pod", "home", "key", "budget", "spend", "ready"))
+        identity = tuple(peer[key] for key in ("subject", "agent", "pod", "home", "key"))
+        require_lifecycle(all(lifecycle_digest(value) for value in identity) and
+                          peer["subject"] == owner["peerSubject"] != owner["subject"] and
+                          peer["agent"] != resources["agent"] and peer["pod"] != workload["pod"] and
+                          peer["key"] != accounting["key"], "independent-peer-required")
+        retained = (*identity, lifecycle_money(peer["budget"]))
+        spend = lifecycle_money(peer["spend"])
+        require_lifecycle((baseline is None or retained == baseline) and peer["ready"] is True and
+                          previous_spend <= spend <= retained[-1], "peer-continuity-mismatch")
+        baseline, previous_spend = retained, spend
+
+
+def lifecycle_requests(receipt):
+    requests = [lifecycle_fields(item, LIFECYCLE_REQUEST_FIELDS) for item in lifecycle_array(receipt["requests"])]
+    expected = lifecycle_request_cases(receipt["case"]["execution"])
+    names = [item["case"] for item in requests]
+    require_lifecycle(all(isinstance(name, str) and name in expected for name in names), "unexpected-request-case")
+    require_lifecycle(len(set(names)) == len(names), "duplicate-request-evidence")
+    require_preflight(set(names) == set(expected), "request-coverage-missing")
+    for item in requests:
+        response, outcomes, maximum = LIFECYCLE_REQUESTS[item["case"]]
+        lifecycle_bounds(item)
+        require_lifecycle(item["response"] == response and item["outcome"] in outcomes and
+                          item["reportedState"] == item["observedState"] == item["outcome"],
+                          "request-outcome-mismatch")
+        require_preflight(item["authoritativeObservation"] is True, "request-state-unobserved")
+        require_lifecycle(lifecycle_digest(item["intentBefore"]) and item["intentBefore"] == item["intentAfter"],
+                          "original-intent-not-retained")
+        before, after = item["appliesBefore"], item["appliesAfter"]
+        require_lifecycle(type(before) is int and type(after) is int and
+                          0 <= before <= after <= before + maximum, "unexpected-workload-apply")
+
+
+def lifecycle_cleanup(receipt):
+    cleanup = lifecycle_fields(receipt["cleanup"], LIFECYCLE_CLEANUP_FIELDS)
+    before = lifecycle_snapshots(receipt)[0]
+    owner = object_value(before["owner"])
+    lifecycle_bounds(cleanup)
+    require_lifecycle(cleanup["path"] in ("owner-rest", "owner-portal") and cleanup["authentication"] == "oidc" and
+                      lifecycle_digest(cleanup["subject"]) and cleanup["subject"] == owner.get("subject"),
+                      "owner-deletion-path-required")
+    require_lifecycle(cleanup["ordinary"] is True and cleanup["forced"] is False, "ordinary-finalization-required")
+    remaining = lifecycle_fields(cleanup["remaining"],
+                                 ("agent", "namespace", "homePvc", "homePv", "attachments",
+                                  "controlRecords", "reservations", "gatewayKey"))
+    require_lifecycle(all(type(count) is int and count == 0 for count in remaining.values()), "cleanup-incomplete")
+
+
+def lifecycle_extensions(receipt):
+    expected = lifecycle_extension_checks(receipt["case"])
+    for snapshot in lifecycle_snapshots(receipt):
+        observations = lifecycle_fields(snapshot["extensions"], expected)
+        require_lifecycle(all(value is True for value in observations.values()), "extension-witness-mismatch")
+
+
+def assess_lifecycle_receipt(receipt):
+    checks = {
+        "artifacts": lifecycle_artifacts, "authorization": lifecycle_authorization,
+        "owner-access": lifecycle_owners, "home": lifecycle_home, "accounting": lifecycle_accounting,
+        "recovery": lifecycle_recovery, "peers": lifecycle_peers, "requests": lifecycle_requests,
+        "cleanup": lifecycle_cleanup, "extensions": lifecycle_extensions,
+    }
+    result = {
+        "version": "v1", "mode": "acceptance-check", "status": "blocked", "evidenceKind": "unknown",
+        "qualifiesExecution": False, "liveAcceptance": "not-established",
+        "checks": [{"check": name, "status": "blocked", "reason": "not-checked"} for name in checks],
+    }
+    try:
+        lifecycle_fields(receipt, ("version", "evidenceKind", "case", "artifacts", "authorization",
+                                   "expectedHome", "before", "operations", "requests", "cleanup"))
+        require_lifecycle(receipt["version"] == "v1" and receipt["evidenceKind"] in ("synthetic", "live"),
+                          "invalid-evidence-version-or-kind")
+        lifecycle_case(receipt["case"])
+    except PreflightBlocked as error:
+        result.update(status="failed" if error.status == "failed" else "blocked", error=error.reason)
+        return result
+    result.update(evidenceKind=receipt["evidenceKind"],
+                  case={**receipt["case"], "helpers": sorted(receipt["case"]["helpers"])})
+    for check in result["checks"]:
+        try:
+            observed = checks[check["check"]](receipt)
+            if check["check"] == "artifacts":
+                result["artifactSet"] = observed
+            check.update(status="matched", reason="scoped-assertions-matched")
+        except PreflightBlocked as error:
+            check.update(status="failed" if error.status == "failed" else "blocked", reason=error.reason)
+    statuses = {check["status"] for check in result["checks"]}
+    result["status"] = "failed" if "failed" in statuses else "blocked" if "blocked" in statuses else "matched"
+    return result
+
+
+def lifecycle_acceptance(argv):
+    parser = SanitizedParser(description="Offline assertions over one sanitized, artifact-pinned lifecycle receipt.")
+    parser.add_argument("--receipt", required=True, help="local JSON evidence; never an authorization or execution input")
+    result = {"version": "v1", "mode": "acceptance-check", "status": "blocked",
+              "qualifiesExecution": False, "liveAcceptance": "not-established"}
+    try:
+        args = parser.parse_args(argv)
+    except PreflightBlocked:
+        result["error"] = "invalid-command-line; use acceptance-check --help"
+        print(json.dumps(result, sort_keys=True))
+        return 2
+    try:
+        with open(args.receipt, "rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        result = assess_lifecycle_receipt(preflight_json(raw.decode("utf-8")))
+    except (OSError, UnicodeError):
+        result["error"] = "receipt-unreadable"
+    except PreflightBlocked as error:
+        result["error"] = error.reason
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result["status"] == "matched" else 1
+
+
 def main(argv=None):
-    class SanitizedParser(argparse.ArgumentParser):
-        def error(self, message):
-            raise PreflightBlocked("invalid-command-line")
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "acceptance-check":
+        return lifecycle_acceptance(argv[1:])
 
     parser = SanitizedParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "network-smoke", "deployment-preflight"))

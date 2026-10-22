@@ -91,6 +91,110 @@ Offline lifecycle regressions replace kubectl and Helm with synthetic processes:
 python3 -B -m unittest discover -s scripts/tests -p test_e2e_lifecycle.py -v
 ```
 
+### Offline lifecycle evidence assertions
+
+`sandbox-platform-qualify.py acceptance-check --receipt FILE` checks a local,
+sanitized JSON receipt. It reuses the qualification helper's bounded, strict
+JSON parser and fixed reason codes. It does **not** collect evidence, run another
+lifecycle runner, read Kubernetes configuration, sign in, call a model, or change
+resources. The receipt fields are validation inputs, not new Agent status fields,
+annotations or API requirements.
+
+Run the offline regression entry point from the repository root:
+
+```bash
+PYTHONPATH=scripts/tests python3 -B -m unittest \
+  test_lifecycle_acceptance test_e2e_lifecycle \
+  test_sandbox_platform_qualify test_sandbox_deployment_preflight -v
+make python-check license-check
+```
+
+The existing `make ci-test` entry point discovers these tests as well. The
+[synthetic fixture](tests/fixtures/lifecycle_acceptance.json) intentionally has
+no authorization or observations:
+
+```bash
+python3 -B scripts/sandbox-platform-qualify.py acceptance-check \
+  --receipt scripts/tests/fixtures/lifecycle_acceptance.json
+```
+
+**Expected result: exit 1, `status: blocked`.** The executable
+[test receipt builder](tests/test_lifecycle_acceptance.py) adds synthetic
+measurements for positive and negative assertions; those measurements are never
+live evidence. No test sends fabricated identity headers to a service.
+
+#### Coverage and support boundary
+
+This is an **assertion coverage matrix**, not a new runtime support declaration.
+Product availability must be checked on the exact selected source, images,
+charts, feature configuration and platform tuple before collecting a receipt.
+In particular, retained native operations and native Copilot/helper combinations
+need an integrated common-execution candidate; this main-based helper does not
+deliver that candidate or enable its features.
+
+| Dimension | Fixture coverage | Connected acceptance |
+| --- | --- | --- |
+| OpenClaw / Hermes; ordinary / retained `sandbox-native`; shared / Copilot-only / mixed | All 12 core tuples | Blocked until the exact supported artifact, target, owners and providers are authorized |
+| Each core tuple with no optional identity / Entra OBO / Azure app-only, and each of skills / Memory / doctor / logger / desktop | 180 single-helper assertion tuples, plus a combined-helper case | Conditional on actual runtime integration and helper/identity availability; no native parity inferred from ordinary support |
+| Owner create, restart, suspend/resume, delete; native HTTP and WebSocket | Required owner-path and distinct-owner negative assertions | Blocked without real OIDC owner and peer sessions and available owner controls |
+| Healthy-source native migration | At least two administrator-only moves, each with source termination and CSI release/attach observations | Separate bounded authorization required; no owner migration action |
+| Custom images, gVisor, failed/unreachable-source recovery, physical fencing | Not covered; unknown runtime/execution values are blocked | Outside this checker; no implied support |
+
+Each tuple needs its own receipt. Helper combinations beyond the tested
+single-helper rows and combined case, other platforms, and optional identity
+integrations are not qualified by neighboring rows. The existing
+[Harness contract](../site/content/en/docs/reference/agent-harness.md),
+[identity availability](../site/content/en/docs/guides/agent-identity.md) and
+[protected renderer](../app/cetirun-chart/README.md#protected-sandbox-rendering)
+remain the product support sources.
+
+#### Required observations
+
+The fixture supplies the v1 envelope. The test builder shows the complete
+snapshot, operation, request and cleanup shapes. The reusable
+`assess_lifecycle_receipt` function returns ten independent check results:
+
+| Check | Required evidence; rejected substitutes |
+| --- | --- |
+| `artifacts` | Full source commit **and tree**, digest-pinned component images and charts, and a digest of the reviewed non-secret configuration/tuple manifest. Every snapshot, request case and cleanup must carry the same recomputed artifact fingerprint. Tags, a shared run label or receipts from different builds are insufficient. |
+| `authorization` | Explicit target, owner, peer, provider, bounded spend and fault authorization, and owner-control availability. Missing prerequisites stay blocked; `true` in a file does not grant permission. |
+| `owner-access` | Real OIDC owner REST/Portal access, stable distinct owners, denied peer reads/mutations, native HTTP 200 and WebSocket 101. Administrator patches, unauthenticated redirects and synthetic identity headers cannot replace these observations. |
+| `home` | Retained Agent/namespace/StatefulSet/PVC/PV identities, a nonempty known synthetic file checksum manifest, matching contents and continued read/write through an allowed owner/application path after every operation. PVC identity alone or protected Pod exec is insufficient. |
+| `accounting` | The same key and budget, strictly positive spend before the journey, nondecreasing cumulative spend across operations, and additional spend from each subsequent model call within the budget. Decimal strings avoid floating-point comparisons. `0 -> 0`, key replacement or budget reset fails. Copilot-only must not silently use a shared priced model; lack of an authorized priced path is a blocker. |
+| `recovery` | Separate apply/request acceptance, stop request, observed shutdown/source termination and actual current-workload Ready witnesses; fresh Pod/execution, recovered model replies and independently matching tool-effect checksums for **each** selected model source. Native moves additionally require a healthy source, distinct destination and CSI witnesses. Generation or a status label alone cannot establish completion. |
+| `peers` | Another owner's independent Agent, Pod, HOME, key and budget remain unchanged and Ready through cleanup; peer spend cannot decrease. An unused peer may have zero spend. |
+| `requests` | Duplicate, stale UID/version, unknown reply, same-version takeover, suspend/delete precedence, and native in-flight replacement/destination-failure cases. Preserve a fingerprint of the original request ID/body/preconditions, bound time and workload apply counts, and compare reported state with authoritative observations. |
+| `cleanup` | Ordinary owner deletion, independently observed absence of Agent/namespace/HOME volumes/attachments/control records/reservations/key, and retained peer health. A retained suspended Agent, an unobserved timeout or forced finalizer/detach operation is not cleanup. |
+| `extensions` | For selected helpers: read-only unchanged skills; private usable Memory; ready doctor/logger; owner-only desktop. Optional identity adds authorized use, peer denial and revocation observations; Azure app-only also requires the MCP path. Merely configuring a connection does not establish these facts. |
+
+Use local consistent pseudonym digests for object/owner/key comparisons, never
+raw identities, credential hashes, tokens, cookies, endpoints, conversations or
+diagnostic bundles. HOME/tool entries are bounded synthetic witness labels and
+checksums, not user files. Artifact fingerprints are SHA256 over the `artifacts`
+object serialized as sorted-key compact JSON; use
+`lifecycle_artifact_fingerprint` rather than inventing a label. Reconfirm deployed
+pins at every observation; the checker cannot authenticate a collector's claims.
+
+Unknown submission must retain its original intent until an authoritative
+observation shows pending or completed work; absence is not rejection or
+cancellation. Confirmed stale requests remain rejected, not silently rebased.
+A pending failure can match its bounded negative-case assertions without being
+a successful migration. Retained stop is neither destruction nor physical
+writer exclusion. Reuse existing controller/unit/envtest cases for fault
+injection rather than adding a second implementation here.
+
+Output contains only validated case enums, the artifact fingerprint, fixed check
+names/reasons and the supplied evidence kind. It never echoes input paths,
+observed resource identifiers or exception text. `status: matched` and exit 0
+mean only that the **reported scoped measurements** meet these assertions.
+`qualifiesExecution` is always `false` and `liveAcceptance` always
+`not-established`, including receipts labeled `live`: independent evidence
+review and the complete supported matrix are still required. Missing evidence
+returns `blocked`; contradictory evidence returns `failed`; both exit 1.
+Malformed command lines exit 2. Input is capped at 1 MiB; duplicate JSON fields
+and nonfinite numbers are rejected. Keep live receipts and private validation
+reports outside public PRs; never merge historical versions into a new pass.
+
 ### Native ingress sign-in challenge
 
 The application runner uses `e2e-ingress-check.py` to request the canonical
