@@ -839,6 +839,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if err := r.checkRegistryIntent(ctx, instance); err != nil {
 			return ctrl.Result{Requeue: true}, nil
 		}
+		if current, err := r.agentIsCurrent(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		} else if !current {
+			logger.Info("Agent changed since it was read; not installing from the older copy", "release", releaseName)
+			// Nothing is recorded from this copy either: its status patch
+			// would be refused, and the next pass reads the latest Agent.
+			prerequisitesComplete = true
+			return ctrl.Result{Requeue: true}, nil
+		}
 		logger.Info("Installing/upgrading Helm chart", "release", releaseName, "namespace", ns)
 		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, prepared); err != nil {
 			logger.Error(err, "Helm install/upgrade failed", "release", releaseName)
@@ -1730,6 +1739,27 @@ func (r *AgentReconciler) ensureTailscaleAuthKey(ctx context.Context, instance *
 func (r *AgentReconciler) setPhase(ctx context.Context, instance *cetirunv1alpha1.Agent, phase string) error {
 	instance.Status.Phase = phase
 	return r.updateStatus(ctx, instance)
+}
+
+// agentIsCurrent reports whether instance is the Agent's latest revision.
+//
+// A pass can start from the informer's copy before the status of the pass
+// just before it arrives. Measured on the e2e cluster after a Copilot sign-in:
+// such a pass rendered from the older status (8 instead of 23 models), its
+// Helm upgrade went through, and its status patch was then refused. The
+// recorded configuration hash still described the newer render, so every
+// later pass skipped the install and the Agent kept the older configuration.
+// Installing only from the latest revision keeps the release and the
+// recorded hash in step.
+func (r *AgentReconciler) agentIsCurrent(ctx context.Context, instance *cetirunv1alpha1.Agent) (bool, error) {
+	if r.APIReader == nil || instance.ResourceVersion == "" {
+		return true, nil
+	}
+	latest := &cetirunv1alpha1.Agent{}
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(instance), latest); err != nil {
+		return false, fmt.Errorf("read Agent before Helm install: %w", err)
+	}
+	return latest.UID == instance.UID && latest.ResourceVersion == instance.ResourceVersion, nil
 }
 
 // updateStatus patches the CR status sub-resource.

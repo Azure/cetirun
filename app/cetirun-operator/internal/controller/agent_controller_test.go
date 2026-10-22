@@ -25,6 +25,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
@@ -1273,5 +1274,84 @@ func TestReconcile_SuspendedSkipCache(t *testing.T) {
 	// Helm should NOT have been called (skip-cache hit).
 	if helmFake.installCalled {
 		t.Error("Helm InstallOrUpgrade should not be called when skip-cache matches for Suspended instance")
+	}
+}
+
+// staleAgentClient serves an Agent as the informer can during a pass that
+// starts before the previous pass's status arrived: an older revision.
+type staleAgentClient struct {
+	client.Client
+	stale *cetirunv1alpha1.Agent
+}
+
+func (c staleAgentClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if agent, ok := obj.(*cetirunv1alpha1.Agent); ok && key.Name == c.stale.Name {
+		c.stale.DeepCopyInto(agent)
+		return nil
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func TestReconcile_StaleAgentCopyDoesNotInstall(t *testing.T) {
+	requireLegacyDirectRuntime(t)
+	ctx := context.Background()
+	alias := "stale"
+	cr := newCR(alias, cetirunv1alpha1.PhaseReady, nil, 1, 1, "outdated-hash")
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), statefulSet(alias, 1)).
+		WithStatusSubresource(cr).
+		Build()
+	key := types.NamespacedName{Name: alias}
+	newReconciler := func(cl client.Client) (*controller.AgentReconciler, *fakeHelmClient) {
+		helmFake := &fakeHelmClient{}
+		return &controller.AgentReconciler{
+			Client: cl, APIReader: fakeClient, Scheme: s, EventRecorder: record.NewFakeRecorder(10),
+			HelmClient: helmFake, OperatorNamespace: "cetirun-system",
+			OperatorSAName: "cetirun-operator-controller-manager", ChartVersion: "0.1.28", DomainSuffix: "example.com",
+		}, helmFake
+	}
+	reconcile := func(cl client.Client) (ctrl.Result, *fakeHelmClient) {
+		t.Helper()
+		r, helmFake := newReconciler(cl)
+		result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+		if err != nil {
+			t.Fatalf("Reconcile returned unexpected error: %v", err)
+		}
+		return result, helmFake
+	}
+	for i := 0; i < 3; i++ {
+		reconcile(fakeClient)
+	}
+	if _, helmFake := reconcile(fakeClient); helmFake.installCalled {
+		t.Fatal("the fixture must reach a steady state")
+	}
+	// The copy the informer still serves comes from before the previous pass
+	// recorded its render ...
+	stale := &cetirunv1alpha1.Agent{}
+	if err := fakeClient.Get(ctx, key, stale); err != nil {
+		t.Fatal(err)
+	}
+	stale.Status.ObservedOperatorHash = "before-the-previous-pass"
+	// ... which the API server already holds, with a newer revision.
+	latest := &cetirunv1alpha1.Agent{}
+	if err := fakeClient.Get(ctx, key, latest); err != nil {
+		t.Fatal(err)
+	}
+	latest.Annotations = map[string]string{"example.com/touched": "true"}
+	if err := fakeClient.Update(ctx, latest); err != nil {
+		t.Fatal(err)
+	}
+	result, helmFake := reconcile(staleAgentClient{Client: fakeClient, stale: stale})
+	if helmFake.installCalled {
+		t.Fatal("installed from an older copy of the Agent")
+	}
+	if !result.Requeue {
+		t.Fatalf("expected a requeue to read the latest Agent, got %+v", result)
+	}
+	// The latest copy says the release is already rendered.
+	if _, helmFake = reconcile(fakeClient); helmFake.installCalled {
+		t.Fatal("the latest Agent was already installed")
 	}
 }
