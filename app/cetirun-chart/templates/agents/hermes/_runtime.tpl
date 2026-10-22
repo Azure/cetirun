@@ -280,6 +280,10 @@ Hermes networkpolicy ingress ports (agent-specific only)
 Hermes configmap data
 */}}
 {{- define "cetirun.agent.hermes.configmapData" }}
+  {{- if (.Values.sandboxWorkload | default dict).reconciled }}
+  health-probe.cjs: |
+{{ .Files.Get "agents/openclaw/bootstrap/health-probe.cjs" | indent 4 }}
+  {{- end }}
   hermes-config.yaml: |
     {{- if .Values.runtime }}
 {{ index .Values.runtime.configFiles "hermes-config.yaml" | indent 4 }}

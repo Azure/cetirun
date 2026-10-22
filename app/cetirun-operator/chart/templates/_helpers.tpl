@@ -46,6 +46,9 @@ Otherwise: repository:tag
 {{- if and (hasKey $sources "nativeExecution") (not (kindIs "bool" $sources.nativeExecution)) -}}
 {{- fail "sandboxSources.nativeExecution must be a boolean" -}}
 {{- end -}}
+{{- if hasKey $sources "reconciledExecution" -}}
+{{- fail "sandboxSources.reconciledExecution is no longer supported; nativeExecution selects common reconciliation" -}}
+{{- end -}}
 {{- if and $sources.nativeExecution (not (and $sources.enabled $sources.bootstrapOwnedPrerequisites .Values.aiGateway.enabled)) -}}
 {{- fail "sandboxSources.nativeExecution requires enabled sources, owned bootstrap and AI Gateway" -}}
 {{- end -}}

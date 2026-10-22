@@ -50,6 +50,13 @@ func (r *AgentReconciler) observeWorkload(ctx context.Context, instance *cetirun
 	rolloutComplete := (sts.Status.UpdatedReplicas >= desiredReplicas || registryOnlyRollout(sts)) &&
 		sts.Status.ReadyReplicas >= desiredReplicas &&
 		(sts.Status.ObservedGeneration >= sts.Generation || registryOnlyRollout(sts))
+	restartReady, err := r.restartPodReady(ctx, instance, sts)
+	if err != nil {
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
+			metav1.ConditionFalse, "RestartObservationFailed", err.Error())
+		return false, ctrl.Result{}, err
+	}
+	rolloutComplete = rolloutComplete && restartReady
 	if !rolloutComplete {
 		logger.Info("StatefulSet rollout not complete, requeueing",
 			"statefulset", stsName,
@@ -80,6 +87,7 @@ func setWorkloadReadiness(instance *cetirunv1alpha1.Agent, ready bool) {
 		return
 	}
 	instance.Status.Phase = cetirunv1alpha1.PhaseReady
+	instance.Status.ObservedRestartRequestID = instance.Spec.RestartRequestID
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 		metav1.ConditionTrue, "InstanceReady", "Instance is fully operational")
 }

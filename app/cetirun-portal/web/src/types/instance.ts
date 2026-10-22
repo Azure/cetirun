@@ -23,6 +23,10 @@ export interface InstanceVersion {
   resourceVersion: string;
 }
 
+export interface RestartInstanceRequest extends InstanceVersion {
+  requestId: string;
+}
+
 export interface RegistryAuth {
   username: string;
   password: string;
@@ -34,6 +38,9 @@ export interface Instance extends InstanceVersion {
   registryAuthConfigured?: boolean;
   generation?: number;
   observedGeneration?: number;
+  restartAvailable?: boolean;
+  restartRequestId?: string;
+  observedRestartRequestId?: string;
   alias: string;
   displayName: string;
   team: string;

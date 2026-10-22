@@ -367,6 +367,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
 | `azure.*` | Optional Teams provisioning configuration |
 | `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations for configuration admission and sources for held native Sandbox preparation |
+| `sandboxSources.nativeExecution` | `false`; select common OpenClaw/Hermes reconciliation for new lifetimes with owned bootstrap, enforced admission and the AI Gateway |
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; existing operator-namespace ConfigMap containing versioned `platform.json`, shared by configuration admission and the controller |
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing claims stay read-only; bootstrap can create owned HOME only in new namespaces, while published skills stay external |
@@ -391,6 +392,14 @@ native-access input pinning. This is read-only access to shared routing
 infrastructure, not Gateway mutation or automatic route/runtime activation.
 The optional skills catalog adds only PersistentVolume `get` for its dependency
 metadata; it adds no Secret lists or cluster-wide ConfigMap access.
+
+Use one release version across the Operator, Sandbox admission, Portal and
+configuration-change tools. Native execution selects the common flow without a
+second rollout gate. The retired `sandboxSources.reconciledExecution` value is
+rejected and must be removed. Persisted mode and ownership still govern existing
+lifetimes; configuration changes do not migrate namespace or HOME state.
+Mixed-version rollouts and pre-upgrade bootstrap-only recovery are not promised.
+See [common Sandbox reconciliation]({{< repo "app/cetirun-operator/README.md" >}}#common-sandbox-reconciliation-explicit-opt-in).
 
 Sources are read-only by default and do not create capability registrations. With
 `bootstrapOwnedPrerequisites: true`, the operator creates an owned protected
@@ -569,6 +578,8 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `features.tailscaleEnabled` | `false` |
 | `features.maxInstancesPerUser` | `1`; `0` means unlimited |
 | `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`; also accepts opt-in `custom`. Checked by both the form and backend |
+| `sandboxRuntimeProfiles` | Approved chart/image/port pins for built-in Sandbox creation; missing profiles reject creation unless controller defaults are explicitly enabled |
+| `sandboxRuntimeDefaultsFromController` | `false`; permit missing profiles only after the Operator's common Sandbox executor is enabled |
 | `noticeBanner` | Set your deployment notice explicitly or clear it |
 | `image`, `imagePullSecrets` | Portal image pin and pull access |
 
@@ -579,6 +590,12 @@ Per-user and Team-specific type and image policy is deferred to AgentPolicy.
 See [Portal self-service](../agent-harness/#portal-self-service) for the request
 contract and configuration. Operator runtime qualifications and Sandbox
 admission remain separate checks.
+
+Enable `sandboxRuntimeDefaultsFromController` only when the Operator uses
+`sandboxSources.nativeExecution`; the platform chart rejects a mismatch.
+Disable this Portal setting before disabling native execution.
+Configured profiles and explicit image/port requests remain subject
+to their existing validation and admission checks.
 
 `istio.sidecarInjection: true` is only a chart validation assertion; it does
 not label the namespace or inject a running pod. The deploy helper labels the

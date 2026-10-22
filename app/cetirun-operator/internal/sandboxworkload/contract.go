@@ -70,6 +70,7 @@ type Helpers struct {
 }
 
 type Input struct {
+	Reconciled        bool
 	Resolution        *sandbox.Resolution
 	AgentName         string
 	AgentGeneration   int64
@@ -85,6 +86,7 @@ type Input struct {
 	Controls          Controls
 	AuthorizedSecrets []string
 	GatewayKey        *ObjectIdentity
+	ImagePullSecret   *ObjectIdentity `json:",omitempty"`
 }
 
 // Accounting uses Kubernetes effective init/sidecar accounting. Pod contains
