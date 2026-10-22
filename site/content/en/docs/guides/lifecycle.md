@@ -120,6 +120,48 @@ force deletion, physical writer fencing, or recovery from an unreachable source.
 Completion is a Kubernetes workload observation, not a new model-inference or
 storage-failover qualification.
 
+## Planned node migration
+
+Platform administrators can opt in to planned cold migration for common-executor
+OpenClaw/Hermes Agents with one filesystem CSI/RWOP HOME. This is a Kubernetes
+API, not a Portal migration button. The deployment must enable
+`sandboxSources.plannedMigration` after all readers have upgraded. Qualify the
+actual AKS, runtime and CSI artifacts in an authorized test environment first.
+Custom, retained single-start, additional PVCs, unavailable sources and
+cross-cluster moves are outside this initial scope.
+
+Read the current Agent UID/resourceVersion and target Node UID from the
+authorized context. The following values are illustrative and must be replaced:
+
+```bash
+kubectl --context=test-context patch agents.cetirun.microsoft.com alice --type=json \
+  -p '[{"op":"test","path":"/metadata/uid","value":"current-agent-uid"},
+       {"op":"test","path":"/metadata/resourceVersion","value":"current-version"},
+       {"op":"add","path":"/spec/plannedMigration","value":{
+         "requestID":"migration-example-0001",
+         "target":{"name":"worker-b","uid":"current-target-node-uid"}}}]'
+```
+
+Observe `status.plannedMigration.phase` and `PlannedMigrationReady`. An accepted
+request, absent Pod or changed placement alone is not completion. The controller
+retains the source Pod's termination and CSI detach observations before allowing
+the destination to start. Completion requires the current Ready replacement and
+reattached original HOME; Agent/namespace/PVC/PV and Gateway spending identities
+remain unchanged. Process sessions and Pod-local scratch do not survive.
+
+An uncertain response must be recovered by reading the current request, not
+issuing another ID. In-progress requests cannot be overwritten; same-ID retries
+do not repeat a move. After completion, a new ID can request the next move.
+Suspension retains the request without starting its destination; resume
+continues it. Deletion destroys the Agent through normal cleanup, never migration
+failover. Portal disables retained restart while migration is pending.
+
+Do not clear recorded destination fields, edit checkpoints, force-delete Pods,
+strip finalizers or force-detach storage to make progress. Unknown source
+state and incompatible or replaced Nodes remain blocked. Kubernetes and CSI
+acknowledgements are not physical fencing or unavailable-node recovery.
+See the [operator contract]({{< repo "app/cetirun-operator/README.md" >}}#planned-healthy-source-migration-separate-opt-in).
+
 ## Pin and update a chart
 
 On first reconciliation the operator fills an empty `spec.helm.version` from

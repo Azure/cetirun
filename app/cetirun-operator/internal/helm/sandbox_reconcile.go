@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"slices"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -45,6 +47,12 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 		}
 		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image); err != nil {
 			return err
+		}
+		if request := input.PlannedMigration; request != nil {
+			if err := runtimebindings.PinMigrationNode(&stateful.Spec.Template.Spec, request.Target.Name); err != nil {
+				return err
+			}
+			stateful.Spec.Template.Annotations[api.AnnotationMigrationRequest] = request.RequestID
 		}
 		helpers := input.Resolution.Sandbox.Resources.Helpers
 		helperResources := corev1.ResourceRequirements{Requests: helpers.Requests, Limits: helpers.Limits}

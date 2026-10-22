@@ -165,10 +165,10 @@ rules:
   - apiGroups: ["apps"]
     resources: ["statefulsets", "controllerrevisions"]
     verbs: ["get"]
-  {{- if $placementName }}
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get"]
+  {{- if $placementName }}
   - apiGroups: ["apps"]
     resources: ["daemonsets"]
     verbs: ["get"]

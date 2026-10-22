@@ -214,6 +214,20 @@ It starts its own API server and etcd, never an existing cluster; it does not
 run Pods, contact a model provider, or qualify storage/failure recovery.
 Operator CI also runs this test using its existing pinned admission-test tools.
 
+Planned migration has a focused Operator API-server regression using the same
+local assets:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/admission -run '^TestPlannedMigrationServedAPIAndBinding$' -count=1
+```
+
+It checks the generated migration schema, durable finalizer authorization and
+both real Pod binding APIs, including same-name replacement Nodes. Normal
+Operator tests cover source/CSI acknowledgement ordering, repeated moves,
+partial/lost writes, suspension and deletion using synthetic observations.
+These checks do not run kubelets or CSI controllers and are not AKS validation.
+
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.

@@ -49,6 +49,12 @@ Otherwise: repository:tag
 {{- if hasKey $sources "reconciledExecution" -}}
 {{- fail "sandboxSources.reconciledExecution is no longer supported; nativeExecution selects common reconciliation" -}}
 {{- end -}}
+{{- if and (hasKey $sources "plannedMigration") (not (kindIs "bool" $sources.plannedMigration)) -}}
+{{- fail "sandboxSources.plannedMigration must be a boolean" -}}
+{{- end -}}
+{{- if and $sources.plannedMigration (not $sources.nativeExecution) -}}
+{{- fail "sandboxSources.plannedMigration requires nativeExecution and upgraded readers" -}}
+{{- end -}}
 {{- if and $sources.nativeExecution (not (and $sources.enabled $sources.bootstrapOwnedPrerequisites .Values.aiGateway.enabled)) -}}
 {{- fail "sandboxSources.nativeExecution requires enabled sources, owned bootstrap and AI Gateway" -}}
 {{- end -}}
@@ -85,7 +91,7 @@ Otherwise: repository:tag
 {{- end -}}
 {{- if $sources.enabled -}}
 {{- range $key, $_ := $sources -}}
-{{- if not (has $key (list "enabled" "nativeExecution" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "skillsCatalogConfigMapName" "placementConfigMapName" "helpers")) -}}
+{{- if not (has $key (list "enabled" "nativeExecution" "plannedMigration" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "skillsCatalogConfigMapName" "placementConfigMapName" "helpers")) -}}
 {{- fail (printf "unsupported sandboxSources field %s" $key) -}}
 {{- end -}}
 {{- end -}}
@@ -124,6 +130,9 @@ Otherwise: repository:tag
 {{- $config := deepCopy $sources -}}
 {{- if not $sources.nativeExecution -}}
 {{- $_ := unset $config "nativeExecution" -}}
+{{- end -}}
+{{- if not $sources.plannedMigration -}}
+{{- $_ := unset $config "plannedMigration" -}}
 {{- end -}}
 {{- if not $sources.bootstrapOwnedPrerequisites -}}
 {{- $_ := unset $config "bootstrapOwnedPrerequisites" -}}
