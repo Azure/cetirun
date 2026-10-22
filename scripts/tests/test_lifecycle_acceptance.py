@@ -9,6 +9,7 @@ import importlib.util
 import io
 import itertools
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -51,12 +52,12 @@ def receipt(runtime="openclaw", execution="sandbox-native", model="shared",
                  "readWrite": True},
         "accounting": {"key": digest("key"), "budget": "2.00",
                        "spend": "0.10", "spendAfterCall": "0.11"},
-        "workload": {"pod": digest("pod-0"), "node": digest("node-a"),
-                     "generation": 1, "ready": True},
-        "models": {source: {"reply": True, "expectedToolChecksum": digest(source),
-                            "observedToolChecksum": digest(source)} for source in sources},
+        "workload": {"agent": digest("agent"), "pod": digest("pod-0"), "observedPod": digest("pod-0"),
+                     "node": digest("node-a"), "generation": 1, "observedGeneration": 1, "ready": True},
+        "models": {source: {"reply": True, "expectedToolChecksum": digest(f"{source}:0"),
+                            "observedToolChecksum": digest(f"{source}:0")} for source in sources},
         "peer": {"subject": digest("peer"), "agent": digest("peer-agent"),
-                 "pod": digest("peer-pod"), "home": digest("peer-home"),
+                 "pod": digest("peer-pod"), "home": digest("peer-home"), "homePv": digest("peer-home-pv"),
                  "key": digest("peer-key"), "budget": "3.00", "spend": "0.05",
                  "ready": True},
         "extensions": dict.fromkeys(qualify.lifecycle_extension_checks(value["case"]), True),
@@ -67,18 +68,23 @@ def receipt(runtime="openclaw", execution="sandbox-native", model="shared",
         operations += ["migrate", "migrate"]
     for index, operation in enumerate(operations, 1):
         previous_node = snapshot["workload"]["node"]
+        previous_pod = snapshot["workload"]["pod"]
         snapshot = copy.deepcopy(snapshot)
-        snapshot["workload"].update(pod=digest(f"pod-{index}"), generation=index + 1)
+        snapshot["workload"].update(pod=digest(f"pod-{index}"), observedPod=digest(f"pod-{index}"),
+                                     generation=index + 1, observedGeneration=index + 1)
         if operation == "migrate":
             snapshot["workload"]["node"] = digest("node-b" if index == 3 else "node-a")
         snapshot["accounting"].update(spend=f"0.{index + 1}0",
                                        spendAfterCall=f"0.{index + 1}1")
+        for source in sources:
+            snapshot["models"][source].update(expectedToolChecksum=digest(f"{source}:{index}"),
+                                                observedToolChecksum=digest(f"{source}:{index}"))
         value["operations"].append({
             "operation": operation,
             "path": "admin-kubernetes" if operation == "migrate" else "owner-rest",
             "requestAccepted": True, "stopRequested": True, "stopObserved": True,
             "sourceHealthy": True, "sourceTerminated": True,
-            "sourceNode": previous_node, "csiReleased": True, "csiAttached": True,
+            "sourceNode": previous_node, "sourcePod": previous_pod, "csiReleased": True, "csiAttached": True,
             "currentWorkloadReady": True, "elapsedSeconds": 2, "limitSeconds": 60,
             "snapshot": snapshot,
         })
@@ -95,17 +101,25 @@ def receipt(runtime="openclaw", execution="sandbox-native", model="shared",
     }
     for name in qualify.lifecycle_request_cases(execution):
         response, outcome = outcomes[name]
+        binding = {"id": digest(f"operation-{name}"), "agent": digest("agent"),
+                   "generation": 2, "sourcePod": digest("pod-0")}
+        ready = outcome in ("completed", "rejected")
+        observed_pod = digest("pod-1") if ready else None
         value["requests"].append({
             "case": name, "artifactSet": artifact, "response": response,
             "outcome": outcome, "reportedState": outcome, "observedState": outcome,
             "authoritativeObservation": True,
             "intentBefore": digest(name), "intentAfter": digest(name),
             "appliesBefore": 1, "appliesAfter": 1,
+            "operationBefore": binding, "operationAfter": copy.deepcopy(binding),
+            "workload": {"agent": digest("agent"), "pod": observed_pod, "observedPod": observed_pod,
+                         "generation": 2, "observedGeneration": 2 if ready else 1, "ready": ready},
+            "retryable": outcome == "pending", "failureObserved": name == "destination-failure",
             "elapsedSeconds": 2, "limitSeconds": 60,
         })
     value["cleanup"] = {
         "artifactSet": artifact, "path": "owner-rest", "authentication": "oidc",
-        "subject": digest("owner"), "ordinary": True, "forced": False,
+        "subject": digest("owner"), "agent": digest("agent"), "ordinary": True, "forced": False,
         "remaining": dict.fromkeys(
             ("agent", "namespace", "homePvc", "homePv", "attachments", "controlRecords",
              "reservations", "gatewayKey"), 0),
@@ -190,6 +204,15 @@ class LifecycleAcceptanceTests(unittest.TestCase):
                     value[section]["artifactSet"] = digest("other")
                 self.assert_check(value, "artifacts", "failed")
 
+    def test_artifact_fingerprint_binds_the_declared_case(self):
+        value = receipt()
+        value["case"]["runtime"] = "hermes"
+        self.assert_check(value, "artifacts", "failed", "artifact-set-mismatch")
+        value = receipt(helpers=("skills", "memory"))
+        expected = qualify.lifecycle_artifact_fingerprint(value["artifacts"], value["case"])
+        value["case"]["helpers"].reverse()
+        self.assertEqual(qualify.lifecycle_artifact_fingerprint(value["artifacts"], value["case"]), expected)
+
     def test_tags_missing_pins_and_unknown_tuple_fail(self):
         for field, replacement in (
                 ("images", {"operator": "example:latest"}),
@@ -212,6 +235,13 @@ class LifecycleAcceptanceTests(unittest.TestCase):
             value = receipt()
             value["operations"][0]["snapshot"]["owner"][field] = replacement
             self.assert_check(value, "owner-access", "failed")
+
+    def test_http_observations_require_integer_status_codes(self):
+        for field in ("peerReadStatus", "peerMutationStatus", "nativeHttpStatus", "nativeWebSocketStatus"):
+            with self.subTest(field=field):
+                value = receipt()
+                value["before"]["owner"][field] = float(value["before"]["owner"][field])
+                self.assert_check(value, "owner-access", "failed")
 
     def test_every_authorization_prerequisite_is_explicit(self):
         for key in receipt()["authorization"]:
@@ -257,6 +287,28 @@ class LifecycleAcceptanceTests(unittest.TestCase):
             value["operations"][0]["snapshot"]["workload"][field] = replacement
             self.assert_check(value, "recovery", "failed")
 
+    def test_ready_observations_require_agent_generation_and_pod_bindings(self):
+        for field in ("agent", "observedGeneration", "observedPod"):
+            with self.subTest(field=field):
+                value = receipt()
+                value["operations"][0]["snapshot"]["workload"].pop(field, None)
+                self.assert_check(value, "recovery", "blocked", "missing-evidence-fields")
+        value = receipt()
+        value["operations"][0].pop("sourcePod", None)
+        self.assert_check(value, "recovery", "blocked", "missing-evidence-fields")
+
+    def test_stale_or_foreign_ready_observations_cannot_complete_recovery(self):
+        for field, replacement in (
+                ("agent", digest("other-agent")), ("observedGeneration", 1),
+                ("observedGeneration", True), ("observedPod", digest("pod-0"))):
+            with self.subTest(field=field, value=replacement):
+                value = receipt()
+                value["operations"][0]["snapshot"]["workload"][field] = replacement
+                self.assert_check(value, "recovery", "failed", "current-workload-binding-mismatch")
+        value = receipt()
+        value["operations"][0]["sourcePod"] = digest("unrelated-pod")
+        self.assert_check(value, "recovery", "failed", "source-workload-mismatch")
+
     def test_model_source_and_independent_tool_effect_are_required(self):
         for model in ("shared", "copilot-only", "mixed"):
             value = receipt(model=model)
@@ -267,9 +319,19 @@ class LifecycleAcceptanceTests(unittest.TestCase):
         value["operations"][0]["snapshot"]["models"] = receipt()["before"]["models"]
         self.assert_check(value, "recovery", "failed")
 
+    def test_model_recovery_cannot_reuse_an_earlier_tool_witness(self):
+        for model in ("shared", "copilot-only", "mixed"):
+            for source in receipt(model=model)["before"]["models"]:
+                with self.subTest(model=model, source=source):
+                    value = receipt(model=model)
+                    value["operations"][0]["snapshot"]["models"][source] = copy.deepcopy(
+                        value["before"]["models"][source])
+                    self.assert_check(value, "recovery", "failed", "fresh-tool-witness-required")
+
     def test_repeated_operations_cannot_reuse_an_earlier_pod(self):
         value = receipt()
-        value["operations"][-1]["snapshot"]["workload"]["pod"] = value["before"]["workload"]["pod"]
+        value["operations"][-1]["snapshot"]["workload"].update(
+            pod=value["before"]["workload"]["pod"], observedPod=value["before"]["workload"]["pod"])
         self.assert_check(value, "recovery", "failed", "fresh-execution-required")
 
     def test_migration_is_admin_only_healthy_repeated_and_csi_observed(self):
@@ -283,6 +345,18 @@ class LifecycleAcceptanceTests(unittest.TestCase):
         value = receipt()
         value["operations"].pop()
         self.assert_check(value, "recovery", "blocked")
+
+    def test_every_operation_validates_source_identity_and_boolean_observations(self):
+        for index in (0, 1):
+            for key in ("sourceHealthy", "csiReleased", "csiAttached"):
+                for replacement in (None, {}, [], "true", 1):
+                    with self.subTest(index=index, key=key, value=replacement):
+                        value = receipt()
+                        value["operations"][index][key] = replacement
+                        self.assert_check(value, "recovery", "failed")
+            value = receipt()
+            value["operations"][index]["sourceNode"] = digest("unrelated-node")
+            self.assert_check(value, "recovery", "failed")
 
     def test_peers_remain_ready_isolated_and_unchanged_through_cleanup(self):
         for point in ("before", "after", "cleanup"):
@@ -303,6 +377,29 @@ class LifecycleAcceptanceTests(unittest.TestCase):
             snapshot["peer"]["spend"] = "0"
         value["cleanup"]["peer"]["spend"] = "0"
         self.assertEqual(self.assess(value)["status"], "matched")
+
+    def test_peer_home_and_every_recovered_pod_are_independent(self):
+        value = receipt()
+        for snapshot in [value["before"], *[item["snapshot"] for item in value["operations"]], value["cleanup"]]:
+            snapshot["peer"]["home"] = value["before"]["resources"]["homePvc"]
+        self.assert_check(value, "peers", "failed", "independent-peer-required")
+        for index in range(len(receipt()["operations"])):
+            with self.subTest(index=index):
+                value = receipt()
+                value["operations"][index]["snapshot"]["workload"]["pod"] = value["before"]["peer"]["pod"]
+                self.assert_check(value, "peers", "failed", "independent-peer-required")
+
+    def test_peer_storage_requires_the_backing_volume_identity(self):
+        value = receipt()
+        value["before"]["peer"].pop("homePv", None)
+        self.assert_check(value, "peers", "blocked", "missing-evidence-fields")
+        value = receipt()
+        for snapshot in [value["before"], *[item["snapshot"] for item in value["operations"]], value["cleanup"]]:
+            snapshot["peer"]["homePv"] = value["before"]["resources"]["homePv"]
+        self.assert_check(value, "peers", "failed", "independent-peer-required")
+        value = receipt()
+        value["cleanup"]["peer"]["homePv"] = digest("changed-volume")
+        self.assert_check(value, "peers", "failed", "peer-continuity-mismatch")
 
     def test_all_request_cases_are_required_and_duplicate_rows_rejected(self):
         for request in receipt()["requests"]:
@@ -332,12 +429,76 @@ class LifecycleAcceptanceTests(unittest.TestCase):
             value["requests"][0][field] = replacement
             self.assert_check(value, "requests", "failed")
 
+    def test_completed_requests_require_a_workload_apply(self):
+        for name in ("duplicate", "lost-response", "controller-takeover"):
+            with self.subTest(case=name):
+                value = receipt()
+                item = next(item for item in value["requests"] if item["case"] == name)
+                item.update(outcome="completed", reportedState="completed", observedState="completed",
+                            appliesBefore=0, appliesAfter=0)
+                self.assert_check(value, "requests", "failed", "completed-workload-apply-required")
+
+    def test_request_outcomes_require_bound_operations_and_failure_observations(self):
+        for field in ("operationBefore", "operationAfter", "workload", "retryable", "failureObserved"):
+            with self.subTest(field=field):
+                value = receipt()
+                value["requests"][0].pop(field, None)
+                self.assert_check(value, "requests", "blocked", "missing-evidence-fields")
+
+    def test_requests_cannot_replace_or_rebase_the_original_operation(self):
+        for field, replacement in (
+                ("id", digest("replacement-operation")), ("agent", digest("replacement-agent")),
+                ("generation", 3), ("sourcePod", digest("replacement-pod"))):
+            with self.subTest(field=field):
+                value = receipt()
+                item = next(item for item in value["requests"] if item["case"] == "controller-takeover")
+                item["operationAfter"][field] = replacement
+                self.assert_check(value, "requests", "failed", "operation-continuity-mismatch")
+        value = receipt()
+        value["requests"][0]["operationAfter"]["generation"] = True
+        self.assert_check(value, "requests", "failed", "invalid-operation-binding")
+
+    def test_completed_request_uses_the_current_ready_workload(self):
+        for field, replacement in (
+                ("agent", digest("other-agent")), ("generation", 3), ("observedGeneration", 1),
+                ("observedPod", digest("stale-pod")), ("pod", None)):
+            with self.subTest(field=field):
+                value = receipt()
+                value["requests"][0]["workload"][field] = replacement
+                self.assert_check(value, "requests", "failed", "request-workload-binding-mismatch")
+        for change in ({"ready": False}, {"pod": digest("pod-0"), "observedPod": digest("pod-0")}):
+            value = receipt()
+            value["requests"][0]["workload"].update(change)
+            self.assert_check(value, "requests", "failed", "request-completion-unobserved")
+
+    def test_retryable_destination_failure_is_not_terminal_failure_or_success(self):
+        for field, replacement in (("retryable", True), ("failureObserved", False), ("retryable", 0)):
+            value = receipt()
+            item = next(item for item in value["requests"] if item["case"] == "destination-failure")
+            item[field] = replacement
+            self.assert_check(value, "requests", "failed", "request-failure-observation-mismatch")
+        value = receipt()
+        item = next(item for item in value["requests"] if item["case"] == "destination-failure")
+        item.update(outcome="pending", reportedState="pending", observedState="pending", retryable=True)
+        self.assertEqual(self.assess(value)["status"], "matched")
+        item["workload"].update(ready=True, pod=digest("destination"), observedPod=digest("destination"),
+                                observedGeneration=2)
+        self.assert_check(value, "requests", "failed", "request-outcome-workload-mismatch")
+
+    def test_observed_suspension_and_deletion_require_no_current_pod(self):
+        for name in ("suspend-precedence", "delete-precedence"):
+            with self.subTest(case=name):
+                value = receipt()
+                item = next(item for item in value["requests"] if item["case"] == name)
+                item["workload"].update(pod=digest("remaining-pod"), observedPod=digest("remaining-pod"))
+                self.assert_check(value, "requests", "failed", "request-shutdown-unobserved")
+
     def test_reported_suspension_cannot_replace_observed_shutdown(self):
         value = receipt()
         item = next(item for item in value["requests"] if item["case"] == "suspend-precedence")
         item["observedState"] = "pending"
         self.assert_check(value, "requests", "failed", "request-outcome-mismatch")
-        item.update(outcome="pending", reportedState="pending")
+        item.update(outcome="pending", reportedState="pending", retryable=True)
         self.assert_check(value, "requests", "matched")
         value["operations"][1]["stopObserved"] = False
         self.assert_check(value, "recovery", "failed", "acceptance-stop-and-ready-observations-required")
@@ -364,6 +525,14 @@ class LifecycleAcceptanceTests(unittest.TestCase):
                 value["cleanup"]["remaining"][name] = remaining
                 self.assert_check(value, "cleanup", "failed")
 
+    def test_cleanup_must_identify_the_retained_agent(self):
+        value = receipt()
+        value["cleanup"].pop("agent", None)
+        self.assert_check(value, "cleanup", "blocked", "missing-evidence-fields")
+        value = receipt()
+        value["cleanup"]["agent"] = digest("another-agent")
+        self.assert_check(value, "cleanup", "failed", "cleanup-target-mismatch")
+
     def test_invalid_and_private_input_never_appears_in_output(self):
         for replacement in (None, [], "do-not-print-this", 1):
             value = receipt()
@@ -383,7 +552,9 @@ class LifecycleAcceptanceTests(unittest.TestCase):
                 ("before", "accounting"), ("before", "workload"), ("before", "models"),
                 ("before", "models", "shared"), ("before", "peer"), ("before", "extensions"),
                 ("operations",), ("operations", 0), ("operations", 0, "snapshot"),
-                ("requests",), ("requests", 0), ("cleanup", "remaining"), ("cleanup", "peer")):
+                ("requests",), ("requests", 0), ("requests", 0, "operationBefore"),
+                ("requests", 0, "operationAfter"), ("requests", 0, "workload"),
+                ("cleanup", "remaining"), ("cleanup", "peer")):
             for replacement in (None, [], {}, True, "do-not-print-this"):
                 with self.subTest(path=path, value=replacement):
                     value = receipt(helpers=("skills",))
@@ -433,6 +604,22 @@ class LifecycleAcceptanceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "blocked")
         self.assertEqual(result.stderr, "")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires local FIFO support")
+    def test_cli_refuses_nonregular_files_without_waiting_for_a_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "receipt.fifo"
+            os.mkfifo(path)
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-B", str(SCRIPT), "acceptance-check", "--receipt", str(path)],
+                    capture_output=True, text=True, check=False, timeout=2,
+                )
+            except subprocess.TimeoutExpired:
+                self.fail("acceptance-check blocked on a nonregular receipt instead of rejecting it")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["error"], "receipt-not-regular-file")
+            self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":

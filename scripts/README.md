@@ -156,31 +156,61 @@ snapshot, operation, request and cleanup shapes. The reusable
 
 | Check | Required evidence; rejected substitutes |
 | --- | --- |
-| `artifacts` | Full source commit **and tree**, digest-pinned component images and charts, and a digest of the reviewed non-secret configuration/tuple manifest. Every snapshot, request case and cleanup must carry the same recomputed artifact fingerprint. Tags, a shared run label or receipts from different builds are insufficient. |
+| `artifacts` | Full source commit **and tree**, digest-pinned component images and charts, and a digest of the reviewed non-secret configuration/tuple manifest. Every snapshot, request case and cleanup must carry the same recomputed fingerprint of the artifacts **and case**. Tags, tuple relabeling, a shared run label or receipts from different builds are insufficient. |
 | `authorization` | Explicit target, owner, peer, provider, bounded spend and fault authorization, and owner-control availability. Missing prerequisites stay blocked; `true` in a file does not grant permission. |
 | `owner-access` | Real OIDC owner REST/Portal access, stable distinct owners, denied peer reads/mutations, native HTTP 200 and WebSocket 101. Administrator patches, unauthenticated redirects and synthetic identity headers cannot replace these observations. |
 | `home` | Retained Agent/namespace/StatefulSet/PVC/PV identities, a nonempty known synthetic file checksum manifest, matching contents and continued read/write through an allowed owner/application path after every operation. PVC identity alone or protected Pod exec is insufficient. |
 | `accounting` | The same key and budget, strictly positive spend before the journey, nondecreasing cumulative spend across operations, and additional spend from each subsequent model call within the budget. Decimal strings avoid floating-point comparisons. `0 -> 0`, key replacement or budget reset fails. Copilot-only must not silently use a shared priced model; lack of an authorized priced path is a blocker. |
-| `recovery` | Separate apply/request acceptance, stop request, observed shutdown/source termination and actual current-workload Ready witnesses; fresh Pod/execution, recovered model replies and independently matching tool-effect checksums for **each** selected model source. Native moves additionally require a healthy source, distinct destination and CSI witnesses. Generation or a status label alone cannot establish completion. |
-| `peers` | Another owner's independent Agent, Pod, HOME, key and budget remain unchanged and Ready through cleanup; peer spend cannot decrease. An unused peer may have zero spend. |
-| `requests` | Duplicate, stale UID/version, unknown reply, same-version takeover, suspend/delete precedence, and native in-flight replacement/destination-failure cases. Preserve a fingerprint of the original request ID/body/preconditions, bound time and workload apply counts, and compare reported state with authoritative observations. |
-| `cleanup` | Ordinary owner deletion, independently observed absence of Agent/namespace/HOME volumes/attachments/control records/reservations/key, and retained peer health. A retained suspended Agent, an unobserved timeout or forced finalizer/detach operation is not cleanup. |
+| `recovery` | Separate apply/request acceptance, stop request, observed shutdown/source termination and actual current-workload Ready witnesses bound to the retained Agent UID, current generation and Pod UID. Every operation identifies the preceding source Pod/node. Each selected model source needs a reply and a fresh, independently checked tool challenge after every operation; reusing an earlier checksum fails. Native moves additionally require a healthy source, distinct destination and CSI witnesses. Generation or a status label alone cannot establish completion. |
+| `peers` | Another owner's independent Agent, Pod, HOME PVC/PV, key and budget remain unchanged and Ready through cleanup; peer spend cannot decrease. No recovered owner Pod or retained HOME volume may be the peer's. An unused peer may have zero spend. |
+| `requests` | Duplicate, stale UID/version, unknown reply, same-version takeover, suspend/delete precedence, and native in-flight replacement/destination-failure cases. Preserve the original request fingerprint and accepted operation's ID/Agent UID/generation/source Pod, bound time and apply counts, and compare reported state with authoritative, current-workload observations. Completion needs a nonzero apply count and a fresh Ready Pod; pending/retryable and terminal failure remain distinct. |
+| `cleanup` | Ordinary owner deletion of the same retained Agent UID, independently observed absence of Agent/namespace/HOME volumes/attachments/control records/reservations/key, and retained peer health. A retained suspended Agent, an unobserved timeout or forced finalizer/detach operation is not cleanup. |
 | `extensions` | For selected helpers: read-only unchanged skills; private usable Memory; ready doctor/logger; owner-only desktop. Optional identity adds authorized use, peer denial and revocation observations; Azure app-only also requires the MCP path. Merely configuring a connection does not establish these facts. |
 
 Use local consistent pseudonym digests for object/owner/key comparisons, never
 raw identities, credential hashes, tokens, cookies, endpoints, conversations or
 diagnostic bundles. HOME/tool entries are bounded synthetic witness labels and
-checksums, not user files. Artifact fingerprints are SHA256 over the `artifacts`
-object serialized as sorted-key compact JSON; use
+checksums, not user files. Artifact fingerprints are SHA256 over
+`{"artifacts": artifacts, "case": case}` serialized as sorted-key compact JSON,
+with `case.helpers` sorted; use
 `lifecycle_artifact_fingerprint` rather than inventing a label. Reconfirm deployed
 pins at every observation; the checker cannot authenticate a collector's claims.
+
+The following fields bind the measurements; they are receipt projections, not
+new product API fields:
+
+| Record | Binding |
+| --- | --- |
+| Snapshot `resources` | `agent`, `namespace`, `statefulSet`, `homePvc`, `homePv` are consistent pseudonym digests of the retained Kubernetes UIDs, not names. |
+| Snapshot `workload` | `agent` equals `resources.agent`; `pod` and `node` identify the current execution. `generation` is its selected Agent generation, not a local step counter. `observedGeneration` must equal it, and `observedPod` must equal `pod`; `ready` must be `true`. Successful recovery snapshots require fresh Pod UIDs and increasing generations. |
+| Operation | `sourcePod` and `sourceNode` must equal the preceding snapshot's workload. All observation flags are JSON booleans, including CSI flags on non-move operations; use `false` when those observations are not applicable. |
+| Model witness | `expectedToolChecksum` pins a new synthetic challenge for that source and observation. `observedToolChecksum` is read independently of the model reply. Both must match and the checksum must not have appeared in any earlier model witness. |
+| Peer | `home` is the peer HOME PVC UID digest; `homePv` is its backing PV UID digest. Both remain unchanged and differ from the owner's retained volumes. |
+| Request `operationBefore` / `operationAfter` | Each has exactly `id`, `agent`, `generation`, `sourcePod`. The ID, Agent UID and source Pod UID are pseudonym digests; generation is a positive integer. Both records must be identical and belong to the retained Agent. For rejected retries, observe the original protected operation, not an invented replacement for the rejected request. |
+| Request `workload` | Exactly `agent`, `generation`, `observedGeneration`, `pod`, `observedPod`, `ready`; bound to the original operation's Agent/generation. Pod fields must match; both are `null` when no current Pod is observed. Ready requires the current generation and a Pod. Completion additionally requires a Pod different from the original source. Suspended/deleted outcomes require no current Pod; pending/failed outcomes cannot report Ready. |
+| Request failure | `retryable` is `true` only for a pending outcome. `failureObserved` is `true` only for the destination-failure case, including when it remains pending/retryable. These are independent observations, not an inference from submission acceptance or timeout. |
+| Cleanup | `agent` identifies the retained Agent being deleted. All `remaining` values are observed integer zeroes, never booleans or inferred absence following an unsuccessful read. |
+
+To print a complete, machine-readable **synthetic** shape without collecting
+evidence or running a lifecycle:
+
+```bash
+PYTHONPATH=scripts/tests python3 -B -c \
+  'import json; from test_lifecycle_acceptance import receipt; print(json.dumps(receipt(), sort_keys=True))'
+```
+
+The builder accepts `runtime`, `execution`, `model`, `identity` and `helpers`
+arguments for the matrix above. Never relabel this example as live evidence.
+Missing binding fields in older receipts remain blocked; do not fill them with
+invented identities or observations to obtain a match.
 
 Unknown submission must retain its original intent until an authoritative
 observation shows pending or completed work; absence is not rejection or
 cancellation. Confirmed stale requests remain rejected, not silently rebased.
 A pending failure can match its bounded negative-case assertions without being
-a successful migration. Retained stop is neither destruction nor physical
-writer exclusion. Reuse existing controller/unit/envtest cases for fault
+a successful migration. `retryable` describes internal operation recovery, not
+permission to replay an unknown submission. Retained stop is neither destruction
+nor physical writer exclusion. Reuse existing controller/unit/envtest cases for fault
 injection rather than adding a second implementation here.
 
 Output contains only validated case enums, the artifact fingerprint, fixed check
@@ -191,7 +221,8 @@ mean only that the **reported scoped measurements** meet these assertions.
 `not-established`, including receipts labeled `live`: independent evidence
 review and the complete supported matrix are still required. Missing evidence
 returns `blocked`; contradictory evidence returns `failed`; both exit 1.
-Malformed command lines exit 2. Input is capped at 1 MiB; duplicate JSON fields
+Malformed command lines exit 2. Input must be an explicit local regular file
+(not a pipe or device) and is capped at 1 MiB; duplicate JSON fields
 and nonfinite numbers are rejected. Keep live receipts and private validation
 reports outside public PRs; never merge historical versions into a new pass.
 

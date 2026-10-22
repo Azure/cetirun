@@ -22,6 +22,7 @@ import os
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -978,18 +979,23 @@ def network_smoke(kube, image, runtime_class, result, protocol="TCP"):
 LIFECYCLE_SNAPSHOT_FIELDS = (
     "artifactSet", "owner", "resources", "home", "accounting", "workload", "models", "peer", "extensions",
 )
+LIFECYCLE_RESOURCE_FIELDS = ("agent", "namespace", "statefulSet", "homePvc", "homePv")
+LIFECYCLE_WORKLOAD_FIELDS = ("agent", "pod", "observedPod", "node", "generation", "observedGeneration", "ready")
+LIFECYCLE_PEER_FIELDS = ("subject", "agent", "pod", "home", "homePv", "key", "budget", "spend", "ready")
 LIFECYCLE_OPERATION_FIELDS = (
     "operation", "path", "requestAccepted", "stopRequested", "stopObserved", "sourceHealthy",
-    "sourceTerminated", "sourceNode", "csiReleased", "csiAttached", "currentWorkloadReady",
+    "sourceTerminated", "sourceNode", "sourcePod", "csiReleased", "csiAttached", "currentWorkloadReady",
     "elapsedSeconds", "limitSeconds", "snapshot",
 )
 LIFECYCLE_REQUEST_FIELDS = (
     "case", "artifactSet", "response", "outcome", "reportedState", "observedState",
     "authoritativeObservation", "intentBefore", "intentAfter", "appliesBefore", "appliesAfter",
-    "elapsedSeconds", "limitSeconds",
+    "operationBefore", "operationAfter", "workload", "retryable", "failureObserved", "elapsedSeconds", "limitSeconds",
 )
+LIFECYCLE_REQUEST_BINDING_FIELDS = ("id", "agent", "generation", "sourcePod")
+LIFECYCLE_REQUEST_WORKLOAD_FIELDS = ("agent", "pod", "observedPod", "generation", "observedGeneration", "ready")
 LIFECYCLE_CLEANUP_FIELDS = (
-    "artifactSet", "path", "authentication", "subject", "ordinary", "forced", "remaining",
+    "artifactSet", "path", "authentication", "subject", "agent", "ordinary", "forced", "remaining",
     "peer", "elapsedSeconds", "limitSeconds",
 )
 LIFECYCLE_REQUESTS = {
@@ -1103,8 +1109,9 @@ def lifecycle_artifact_fingerprint(artifacts, case):
         require_lifecycle(isinstance(pins, dict) and required.issubset(pins) and
                           set(pins).issubset(allowed) and all(lifecycle_digest(pin) for pin in pins.values()),
                           "digest-pinned-artifacts-required")
+    pinned = {"artifacts": artifacts, "case": {**case, "helpers": sorted(case["helpers"])}}
     return "sha256:" + hashlib.sha256(
-        json.dumps(artifacts, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        json.dumps(pinned, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def lifecycle_snapshots(receipt):
@@ -1144,6 +1151,9 @@ def lifecycle_owners(receipt):
         subjects = pair
         require_lifecycle(owner["path"] in ("owner-rest", "owner-portal") and
                           owner["authentication"] == "oidc", "real-owner-path-required")
+        require_lifecycle(all(type(owner[key]) is int for key in
+                              ("peerReadStatus", "peerMutationStatus", "nativeHttpStatus", "nativeWebSocketStatus")),
+                          "integer-http-status-required")
         require_lifecycle(owner["peerReadStatus"] in (403, 404) and owner["peerMutationStatus"] in (403, 404),
                           "peer-owner-access-not-denied")
         require_lifecycle(owner["nativeHttpStatus"] == 200 and owner["nativeWebSocketStatus"] == 101,
@@ -1157,7 +1167,7 @@ def lifecycle_home(receipt):
                           lifecycle_digest(value) for name, value in expected.items()), "home-fixture-checksums-required")
     baseline = None
     for snapshot in lifecycle_snapshots(receipt):
-        resources = lifecycle_fields(snapshot["resources"], ("agent", "namespace", "statefulSet", "homePvc", "homePv"))
+        resources = lifecycle_fields(snapshot["resources"], LIFECYCLE_RESOURCE_FIELDS)
         require_lifecycle(all(lifecycle_digest(value) for value in resources.values()) and
                           (baseline is None or resources == baseline), "retained-resource-identity-mismatch")
         baseline = resources
@@ -1194,11 +1204,17 @@ def lifecycle_recovery(receipt):
     sources = {"shared": ("shared",), "copilot-only": ("copilot",), "mixed": ("shared", "copilot")}
     previous = None
     pods = set()
+    tool_witnesses = set()
     for snapshot in snapshots:
-        workload = lifecycle_fields(snapshot["workload"], ("pod", "node", "generation", "ready"))
+        resources = lifecycle_fields(snapshot["resources"], LIFECYCLE_RESOURCE_FIELDS)
+        workload = lifecycle_fields(snapshot["workload"], LIFECYCLE_WORKLOAD_FIELDS)
         require_lifecycle(lifecycle_digest(workload["pod"]) and lifecycle_digest(workload["node"]) and
                           type(workload["generation"]) is int and workload["generation"] > 0 and
                           workload["ready"] is True, "current-ready-workload-required")
+        require_lifecycle(lifecycle_digest(workload["agent"]) and workload["agent"] == resources["agent"] and
+                          type(workload["observedGeneration"]) is int and
+                          workload["observedGeneration"] == workload["generation"] and
+                          workload["observedPod"] == workload["pod"], "current-workload-binding-mismatch")
         require_lifecycle(workload["pod"] not in pods, "fresh-execution-required")
         pods.add(workload["pod"])
         if previous is not None:
@@ -1210,15 +1226,23 @@ def lifecycle_recovery(receipt):
             require_lifecycle(model["reply"] is True and lifecycle_digest(model["expectedToolChecksum"]) and
                               model["expectedToolChecksum"] == model["observedToolChecksum"],
                               "model-reply-and-independent-tool-witness-required")
+            require_lifecycle(model["expectedToolChecksum"] not in tool_witnesses, "fresh-tool-witness-required")
+            tool_witnesses.add(model["expectedToolChecksum"])
     for index, operation in enumerate(operations):
         lifecycle_bounds(operation)
+        require_lifecycle(all(type(operation[key]) is bool for key in
+                              ("sourceHealthy", "csiReleased", "csiAttached")), "invalid-operation-observations")
+        require_lifecycle(lifecycle_digest(operation["sourceNode"]) and
+                          operation["sourceNode"] == snapshots[index]["workload"]["node"] and
+                          lifecycle_digest(operation["sourcePod"]) and
+                          operation["sourcePod"] == snapshots[index]["workload"]["pod"],
+                          "source-workload-mismatch")
         require_lifecycle(all(operation[key] is True for key in
                               ("requestAccepted", "stopRequested", "stopObserved", "sourceTerminated",
                                "currentWorkloadReady")), "acceptance-stop-and-ready-observations-required")
         if operation["operation"] == "migrate":
             require_lifecycle(operation["path"] == "admin-kubernetes" and
                               all(operation[key] is True for key in ("sourceHealthy", "csiReleased", "csiAttached")) and
-                              operation["sourceNode"] == snapshots[index]["workload"]["node"] and
                               operation["sourceNode"] != snapshots[index + 1]["workload"]["node"],
                               "healthy-source-and-csi-move-required")
         else:
@@ -1234,16 +1258,19 @@ def lifecycle_peers(receipt):
         "path", "authentication", "subject", "peerSubject", "peerReadStatus", "peerMutationStatus",
         "nativeHttpStatus", "nativeWebSocketStatus",
     ))
-    resources = lifecycle_fields(before["resources"], ("agent", "namespace", "statefulSet", "homePvc", "homePv"))
-    workload = lifecycle_fields(before["workload"], ("pod", "node", "generation", "ready"))
+    resources = lifecycle_fields(before["resources"], LIFECYCLE_RESOURCE_FIELDS)
+    workloads = [lifecycle_fields(snapshot["workload"], LIFECYCLE_WORKLOAD_FIELDS)
+                 for snapshot in snapshots]
     accounting = lifecycle_fields(before["accounting"], ("key", "budget", "spend", "spendAfterCall"))
     baseline, previous_spend = None, Decimal(0)
     for peer in peers:
-        lifecycle_fields(peer, ("subject", "agent", "pod", "home", "key", "budget", "spend", "ready"))
-        identity = tuple(peer[key] for key in ("subject", "agent", "pod", "home", "key"))
+        lifecycle_fields(peer, LIFECYCLE_PEER_FIELDS)
+        identity = tuple(peer[key] for key in ("subject", "agent", "pod", "home", "homePv", "key"))
         require_lifecycle(all(lifecycle_digest(value) for value in identity) and
                           peer["subject"] == owner["peerSubject"] != owner["subject"] and
-                          peer["agent"] != resources["agent"] and peer["pod"] != workload["pod"] and
+                          peer["agent"] != resources["agent"] and
+                          all(peer["pod"] != current["pod"] for current in workloads) and
+                          peer["home"] != resources["homePvc"] and peer["homePv"] != resources["homePv"] and
                           peer["key"] != accounting["key"], "independent-peer-required")
         retained = (*identity, lifecycle_money(peer["budget"]))
         spend = lifecycle_money(peer["spend"])
@@ -1259,6 +1286,9 @@ def lifecycle_requests(receipt):
     require_lifecycle(all(isinstance(name, str) and name in expected for name in names), "unexpected-request-case")
     require_lifecycle(len(set(names)) == len(names), "duplicate-request-evidence")
     require_preflight(set(names) == set(expected), "request-coverage-missing")
+    snapshot = lifecycle_fields(receipt["before"], LIFECYCLE_SNAPSHOT_FIELDS)
+    agent = lifecycle_fields(snapshot["resources"], LIFECYCLE_RESOURCE_FIELDS)["agent"]
+    peer_pod = lifecycle_fields(snapshot["peer"], LIFECYCLE_PEER_FIELDS)["pod"]
     for item in requests:
         response, outcomes, maximum = LIFECYCLE_REQUESTS[item["case"]]
         lifecycle_bounds(item)
@@ -1271,13 +1301,47 @@ def lifecycle_requests(receipt):
         before, after = item["appliesBefore"], item["appliesAfter"]
         require_lifecycle(type(before) is int and type(after) is int and
                           0 <= before <= after <= before + maximum, "unexpected-workload-apply")
+        require_lifecycle(item["outcome"] != "completed" or after > 0, "completed-workload-apply-required")
+        original = lifecycle_fields(item["operationBefore"], LIFECYCLE_REQUEST_BINDING_FIELDS)
+        observed = lifecycle_fields(item["operationAfter"], LIFECYCLE_REQUEST_BINDING_FIELDS)
+        for binding in (original, observed):
+            require_lifecycle(all(lifecycle_digest(binding[key]) for key in ("id", "agent", "sourcePod")) and
+                              type(binding["generation"]) is int and binding["generation"] > 0,
+                              "invalid-operation-binding")
+        require_lifecycle(original == observed and original["agent"] == agent and
+                          original["sourcePod"] != peer_pod, "operation-continuity-mismatch")
+        workload = lifecycle_fields(item["workload"], LIFECYCLE_REQUEST_WORKLOAD_FIELDS)
+        require_lifecycle(workload["agent"] == agent and type(workload["generation"]) is int and
+                          workload["generation"] == original["generation"] and
+                          type(workload["observedGeneration"]) is int and
+                          0 <= workload["observedGeneration"] <= workload["generation"] and
+                          type(workload["ready"]) is bool, "request-workload-binding-mismatch")
+        require_lifecycle(workload["pod"] == workload["observedPod"] and
+                          (workload["pod"] is None or lifecycle_digest(workload["pod"])) and
+                          workload["pod"] != peer_pod and
+                          (not workload["ready"] or (workload["pod"] is not None and
+                                                    workload["observedGeneration"] == workload["generation"])),
+                          "request-workload-binding-mismatch")
+        if item["outcome"] == "completed":
+            require_lifecycle(workload["ready"] and workload["pod"] != original["sourcePod"],
+                              "request-completion-unobserved")
+        elif item["outcome"] != "rejected":
+            require_lifecycle(not workload["ready"], "request-outcome-workload-mismatch")
+            if item["outcome"] in ("suspended", "deleted"):
+                require_lifecycle(workload["pod"] is None, "request-shutdown-unobserved")
+        require_lifecycle(item["retryable"] is (item["outcome"] == "pending") and
+                          item["failureObserved"] is (item["case"] == "destination-failure"),
+                          "request-failure-observation-mismatch")
 
 
 def lifecycle_cleanup(receipt):
     cleanup = lifecycle_fields(receipt["cleanup"], LIFECYCLE_CLEANUP_FIELDS)
     before = lifecycle_snapshots(receipt)[0]
     owner = object_value(before["owner"])
+    resources = lifecycle_fields(before["resources"], LIFECYCLE_RESOURCE_FIELDS)
     lifecycle_bounds(cleanup)
+    require_lifecycle(lifecycle_digest(cleanup["agent"]) and cleanup["agent"] == resources["agent"],
+                      "cleanup-target-mismatch")
     require_lifecycle(cleanup["path"] in ("owner-rest", "owner-portal") and cleanup["authentication"] == "oidc" and
                       lifecycle_digest(cleanup["subject"]) and cleanup["subject"] == owner.get("subject"),
                       "owner-deletion-path-required")
@@ -1343,7 +1407,8 @@ def lifecycle_acceptance(argv):
         print(json.dumps(result, sort_keys=True))
         return 2
     try:
-        with open(args.receipt, "rb") as stream:
+        with open(args.receipt, "rb", opener=lambda path, flags: os.open(path, flags | os.O_NONBLOCK)) as stream:
+            require_preflight(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "receipt-not-regular-file")
             raw = stream.read(1024 * 1024 + 1)
         result = assess_lifecycle_receipt(preflight_json(raw.decode("utf-8")))
     except (OSError, UnicodeError):
