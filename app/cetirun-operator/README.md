@@ -260,10 +260,17 @@ The controller persists `status.plannedMigration` before side effects:
    workloads. `SourceTerminated` requires terminal Pod status and a completed
    status for every named container, while the original source Node/boot and CSI
    identity remain healthy. A missing Pod is not a termination acknowledgement.
-3. `Detached` requires the original, retained VolumeAttachment to be deleting,
-   report `attached: false`, have no detach error, and have released its CSI
-   attacher finalizer. Only then is the migration's attachment finalizer removed.
-   A missing attachment alone does not establish detach.
+3. `Detached` requires the original, retained VolumeAttachment to be deleting
+   and to have released the CSI attacher finalizer observed during capture.
+   The attacher removes that finalizer after successful detach, before updating
+   `attached` and clearing `detachError`; those later status writes may be lost
+   without retry. The retained finalizer transition is therefore the completion
+   evidence, even when status is stale. The attachment UID, volume, driver and
+   source Node must still match. Only after recording `Detached` is the migration's
+   attachment finalizer removed. A missing attachment or `attached: false` with
+   the CSI finalizer still present does not establish detach. Ordinary deletion
+   uses the same evidence to release the captured protection. See the upstream
+   [external-attacher completion ordering](https://github.com/kubernetes-csi/external-attacher/blob/e19b215493af4f130a8a82ef5911b5f052edd81c/pkg/controller/util.go#L82).
 4. `Starting` follows removal of source Pods/attachments and release of any
    configuration reservation. The destination must satisfy the bound PV
    topology, workload/RuntimeClass scheduling and supported Equal/Exists

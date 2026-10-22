@@ -16,6 +16,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,7 +24,7 @@ import (
 )
 
 func TestPlannedMigrationRejectsPreflightWithoutStopping(t *testing.T) {
-	for _, fault := range []string{"disabled", "wrong UID", "zone", "taint", "CSI driver", "restart pending"} {
+	for _, fault := range []string{"disabled", "wrong UID", "zone", "taint", "CSI driver", "restart pending", "attacher missing"} {
 		t.Run(fault, func(t *testing.T) {
 			f := newMigrationFixture(t, "openclaw", false)
 			ctx := context.Background()
@@ -51,6 +52,15 @@ func TestPlannedMigrationRejectsPreflightWithoutStopping(t *testing.T) {
 				}
 				csi.Spec.Drivers = nil
 				if err := f.kube.Update(ctx, csi); err != nil {
+					t.Fatal(err)
+				}
+			case "attacher missing":
+				attachment := &storagev1.VolumeAttachment{}
+				if err := f.kube.Get(ctx, client.ObjectKey{Name: "source-attachment"}, attachment); err != nil {
+					t.Fatal(err)
+				}
+				attachment.Finalizers = nil
+				if err := f.kube.Update(ctx, attachment); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -232,6 +242,154 @@ func TestPlannedMigrationRejectedPreflightStillSuspends(t *testing.T) {
 							t.Fatal("suspension did not block and retain the existing Gateway key")
 						}
 					}
+				}
+			})
+		}
+	}
+}
+
+func TestPlannedMigrationRecoversDetachStatusWriteLoss(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, cleanup := range []bool{false, true} {
+			for _, staleError := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/cleanup=%t/staleError=%t", kind, cleanup, staleError), func(t *testing.T) {
+					f := newMigrationFixture(t, kind, true)
+					initial := reconciledExpectationForTest(t, f)
+					ctx := context.Background()
+					requestMigration(t, f, "migration-00000001", "node-b")
+					f.reconcileOK(t)
+					f.reconcileOK(t)
+					f.reconcileOK(t)
+					acknowledgeMigrationSource(t, f)
+					f.reconcileOK(t)
+					f.reconcileOK(t)
+					migrationPhase(t, f, api.MigrationSourceTerminated)
+					state := f.current(t).Status.PlannedMigration
+					stages := f.installer.stages
+					attachment := &storagev1.VolumeAttachment{}
+					key := client.ObjectKey{Name: state.Attachment.Name}
+					if err := f.kube.Get(ctx, key, attachment); err != nil {
+						t.Fatal(err)
+					}
+					if staleError {
+						attachment.Status.DetachError = &storagev1.VolumeError{Message: "synthetic earlier detach error"}
+						if err := f.kube.Status().Update(ctx, attachment); err != nil {
+							t.Fatal(err)
+						}
+					}
+					acknowledgeMigrationDetachFinalizer(t, f)
+					if cleanup {
+						if err := f.kube.Delete(ctx, f.current(t)); err != nil {
+							t.Fatal(err)
+						}
+						f.reconcileOK(t)
+						if done, err := f.r.cleanupMigration(ctx, f.current(t)); err != nil || !done {
+							t.Fatalf("completed CSI detach stranded cleanup: done=%v err=%v", done, err)
+						}
+					} else {
+						f.reconcileOK(t)
+						migrationPhase(t, f, api.MigrationDetached)
+						if err := f.kube.Get(ctx, key, attachment); err != nil {
+							t.Fatal("detach checkpoint must precede protection release:", err)
+						}
+						if !attachment.Status.Attached || (attachment.Status.DetachError != nil) != staleError ||
+							!slices.Contains(attachment.Finalizers, api.MigrationAttachmentFinalizer) {
+							t.Fatal("migration rewrote CSI status or released protection before its checkpoint")
+						}
+						f.reconcileOK(t)
+					}
+					if err := f.kube.Get(ctx, key, attachment); !apierrors.IsNotFound(err) {
+						t.Fatal("completed CSI detach retained migration protection:", err)
+					}
+					if f.installer.stages != stages || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+						t.Fatal("detach acknowledgement prematurely started a replacement")
+					}
+					if cleanup {
+						return
+					}
+					for range 4 {
+						f.reconcileOK(t)
+					}
+					migrationReadyPod(t, f, "replacement-pod", "node-b")
+					migrationAttachment(t, f, "replacement-attachment", "node-b")
+					migrationWorkloadStatus(t, f, 1)
+					f.reconcileOK(t)
+					migrationPhase(t, f, api.MigrationCompleted)
+					expected := reconciledExpectationForTest(t, f)
+					if f.installer.stages != stages+1 || expected.Home != initial.Home || expected.Agent != initial.Agent ||
+						expected.Namespace != initial.Namespace || len(f.gateway.generated) != 1 {
+						t.Fatal("detach recovery changed retained identities or repeated the replacement")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPlannedMigrationDetachStillRequiresCapturedEvidence(t *testing.T) {
+	for _, cleanup := range []bool{false, true} {
+		for _, fault := range []string{"not deleting", "attacher pending", "detach failed", "UID", "node", "driver", "volume"} {
+			t.Run(fmt.Sprintf("cleanup=%t/%s", cleanup, fault), func(t *testing.T) {
+				f := newMigrationFixture(t, "hermes", true)
+				ctx := context.Background()
+				requestMigration(t, f, "migration-00000001", "node-b")
+				f.reconcileOK(t)
+				f.reconcileOK(t)
+				f.reconcileOK(t)
+				acknowledgeMigrationSource(t, f)
+				f.reconcileOK(t)
+				f.reconcileOK(t)
+				state := f.current(t).Status.PlannedMigration
+				stages := f.installer.stages
+				if cleanup {
+					if err := f.kube.Delete(ctx, f.current(t)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.r.APIReader = interceptor.NewClient(f.kube, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+						if err := c.Get(ctx, key, object, opts...); err != nil {
+							return err
+						}
+						attachment, ok := object.(*storagev1.VolumeAttachment)
+						if !ok || attachment.Name != state.Attachment.Name {
+							return nil
+						}
+						attachment.DeletionTimestamp = ptr.To(metav1.Now())
+						attachment.Status.Attached = false
+						attachment.Finalizers = []string{api.MigrationAttachmentFinalizer}
+						switch fault {
+						case "not deleting":
+							attachment.DeletionTimestamp = nil
+						case "attacher pending", "detach failed":
+							attachment.Finalizers = append(attachment.Finalizers, migrationAttacherFinalizer(state.Driver))
+							if fault == "detach failed" {
+								attachment.Status.DetachError = &storagev1.VolumeError{Message: "synthetic detach rejection"}
+							}
+						case "UID":
+							attachment.UID = "replacement-attachment"
+						case "node":
+							attachment.Spec.NodeName = "node-b"
+						case "driver":
+							attachment.Spec.Attacher = "different.example.com"
+						case "volume":
+							attachment.Spec.Source.PersistentVolumeName = ptr.To("different-volume")
+						}
+						return nil
+					},
+				})
+				_, err := f.reconcile()
+				if (err != nil) != (fault != "not deleting" && fault != "attacher pending") {
+					t.Fatal("detach evidence produced the wrong failure result:", err)
+				}
+				migrationPhase(t, f, api.MigrationSourceTerminated)
+				attachment := &storagev1.VolumeAttachment{}
+				if err := f.kube.Get(ctx, client.ObjectKey{Name: state.Attachment.Name}, attachment); err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Contains(attachment.Finalizers, api.MigrationAttachmentFinalizer) || f.installer.stages != stages ||
+					ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+					t.Fatal("incomplete or foreign detach evidence released protection or started a replacement")
 				}
 			})
 		}

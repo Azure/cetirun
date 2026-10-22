@@ -231,6 +231,13 @@ func migrationAttacherFinalizer(driver string) string {
 	return "external-attacher/" + strings.ReplaceAll(driver, ".", "-")
 }
 
+func migrationDetachAcknowledged(attachment *storagev1.VolumeAttachment, driver string) bool {
+	// Capture verified the CSI finalizer on this pinned attachment. The attacher
+	// removes it after successful detach, before status writes it may never retry.
+	return !attachment.DeletionTimestamp.IsZero() &&
+		!slices.Contains(attachment.Finalizers, migrationAttacherFinalizer(driver))
+}
+
 func (r *AgentReconciler) captureMigration(ctx context.Context, agent *api.Agent) (*api.PlannedMigrationStatus, error) {
 	request := agent.Spec.PlannedMigration
 	// Suspension can overtake the request before capture. Protect a still-ready

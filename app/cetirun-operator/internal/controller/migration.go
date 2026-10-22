@@ -249,11 +249,10 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 			!slices.Contains(attachment.Finalizers, api.MigrationAttachmentFinalizer) {
 			return block(fmt.Errorf("source attachment identity or protection changed"))
 		}
-		if attachment.Status.DetachError != nil {
-			return block(fmt.Errorf("CSI detach has not succeeded"))
-		}
-		if attachment.DeletionTimestamp.IsZero() || attachment.Status.Attached ||
-			slices.Contains(attachment.Finalizers, migrationAttacherFinalizer(state.Driver)) {
+		if !migrationDetachAcknowledged(attachment, state.Driver) {
+			if attachment.Status.DetachError != nil {
+				return block(fmt.Errorf("CSI detach has not succeeded"))
+			}
 			return false, wait, r.migrationWaiting(ctx, agent, nil)
 		}
 		return false, wait, r.migrationCheckpoint(ctx, agent, api.MigrationDetached)
@@ -386,11 +385,10 @@ func (r *AgentReconciler) cleanupMigration(ctx context.Context, agent *api.Agent
 		ptr.Deref(attachment.Spec.Source.PersistentVolumeName, "") != state.Volume.Name {
 		return false, fmt.Errorf("migration cleanup attachment identity changed")
 	}
-	if attachment.Status.DetachError != nil {
-		return false, fmt.Errorf("migration cleanup waits for CSI detach acknowledgement")
-	}
-	if attachment.DeletionTimestamp.IsZero() || attachment.Status.Attached ||
-		slices.Contains(attachment.Finalizers, migrationAttacherFinalizer(state.Driver)) {
+	if !migrationDetachAcknowledged(attachment, state.Driver) {
+		if attachment.Status.DetachError != nil {
+			return false, fmt.Errorf("migration cleanup waits for CSI detach acknowledgement")
+		}
 		return false, nil
 	}
 	return false, r.migrationFinalizer(ctx, agent, attachment, api.MigrationAttachmentFinalizer, false)

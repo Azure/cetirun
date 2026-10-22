@@ -212,6 +212,16 @@ func acknowledgeMigrationSource(t *testing.T, f *nativeSandboxFixture) {
 
 func acknowledgeMigrationDetach(t *testing.T, f *nativeSandboxFixture) {
 	t.Helper()
+	attachment := acknowledgeMigrationDetachFinalizer(t, f)
+	attachment.Status.Attached = false
+	attachment.Status.DetachError = nil
+	if err := f.kube.Status().Update(context.Background(), attachment); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func acknowledgeMigrationDetachFinalizer(t *testing.T, f *nativeSandboxFixture) *storagev1.VolumeAttachment {
+	t.Helper()
 	ctx := context.Background()
 	state := f.current(t).Status.PlannedMigration
 	attachment := &storagev1.VolumeAttachment{}
@@ -225,14 +235,11 @@ func acknowledgeMigrationDetach(t *testing.T, f *nativeSandboxFixture) {
 	if err := f.kube.Get(ctx, key, attachment); err != nil {
 		t.Fatal("attachment protection did not retain its CSI observation:", err)
 	}
-	attachment.Status.Attached = false
-	if err := f.kube.Status().Update(ctx, attachment); err != nil {
-		t.Fatal(err)
-	}
 	attachment.Finalizers = slices.DeleteFunc(attachment.Finalizers, func(s string) bool { return s == migrationAttacherFinalizer(state.Driver) })
 	if err := f.kube.Update(ctx, attachment); err != nil {
 		t.Fatal(err)
 	}
+	return attachment
 }
 
 func completeMigration(t *testing.T, f *nativeSandboxFixture, id, target string) {
