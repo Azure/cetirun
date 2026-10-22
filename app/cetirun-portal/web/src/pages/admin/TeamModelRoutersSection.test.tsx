@@ -94,3 +94,20 @@ it("checks routers the way the Team API does", () => {
     { name: "auto", classifier: "heuristic", simple: "a", medium: "b", complex: "c" },
   ]);
 });
+
+it("offers no router of the Gateway as a tier or classifier model", async () => {
+  vi.mocked(gateway.getAIGatewayCatalog).mockResolvedValue({ known: true, githubCopilot: true, agentTypes: ["hermes"], sharedModels: [
+    { name: "small-model" }, { name: "gateway-auto", routerModels: ["small-model"] }, { name: "gateway-plugin", routerUnverifiable: true },
+  ] });
+  const user = userEvent.setup(); renderEditor();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Add smart-routing model" }));
+  const added = screen.getByRole("group", { name: "Smart-routing model 2" });
+  await user.selectOptions(within(added).getByRole("combobox", { name: "Classifier" }), "llm");
+  await waitFor(() => expect(within(added).getByRole("option", { name: "small-model" })).toBeInTheDocument());
+  const offered = within(added).getAllByRole("option").map((option) => option.textContent);
+  expect(offered).not.toContain("gateway-auto");
+  expect(offered).not.toContain("gateway-plugin");
+  const suggested = Array.from(document.querySelectorAll("datalist option")).map((option) => option.getAttribute("value"));
+  expect(suggested).toEqual(["small-model"]);
+});

@@ -555,6 +555,29 @@ type aiGatewayModelEntry struct {
 	MaxTokens     int64
 }
 
+// aiGatewayCopilotRouteLimits are the limits of the Agent's registered
+// Copilot routes by the Gateway name each is registered under, the smallest
+// when several share a name. A request the Agent sends for that name may
+// reach its own route there, so a model or a router tier of that name fits
+// the Agent only within them.
+func aiGatewayCopilotRouteLimits(instance *cetirunv1alpha1.Agent, routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string][2]int64 {
+	if len(routes) == 0 {
+		return nil
+	}
+	models := map[string]cetirunv1alpha1.CopilotModel{}
+	if parsed, err := parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]); err == nil {
+		for _, model := range parsed {
+			models[model.ID] = model
+		}
+	}
+	limits := map[string][2]int64{}
+	for _, route := range routes {
+		model, current := models[route.Model], limits[route.Name]
+		limits[route.Name] = [2]int64{smallerPositive(current[0], model.ContextWindow), smallerPositive(current[1], model.MaxOutputTokens)}
+	}
+	return limits
+}
+
 // aiGatewayMaxModels is the most models an Agent's configuration lists, the
 // agent chart's limit on aiGateway.models.
 const aiGatewayMaxModels = 256
@@ -636,6 +659,32 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 			})
 		}
 	}
+	// A router configured in the Gateway declares the smallest limits of its
+	// models' shared deployments; a request the Agent sends through it may
+	// also reach the Agent's own Copilot route registered under one of those
+	// models' names.
+	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
+	if routeLimits := aiGatewayCopilotRouteLimits(instance, routes); len(routeLimits) > 0 {
+		for i := range sharedEntries {
+			router, isRouter := gatewayRouters[sharedEntries[i].ID]
+			if !isRouter {
+				continue
+			}
+			for _, model := range router.Models {
+				limit, ok := routeLimits[model.Name]
+				if !ok || model.Use == aigateway.RouterClassifier {
+					continue
+				}
+				entry := &sharedEntries[i]
+				if entry.ContextWindow > 0 && limit[0] > 0 {
+					entry.ContextWindow = min(entry.ContextWindow, limit[0])
+				}
+				if entry.MaxTokens > 0 && limit[1] > 0 {
+					entry.MaxTokens = min(entry.MaxTokens, limit[1])
+				}
+			}
+		}
+	}
 	requested, deploymentDefault := aiGatewayRequestedModel(instance), aiGatewayModelName(instance, r.AIGateway.DefaultModel)
 	routerEntries := aiGatewayRouterEntries(instance)
 	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries)-len(routerEntries),
@@ -656,7 +705,6 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 	// model, not a router of the Gateway: a router picks a model per request,
 	// at a cost the Agent did not choose. A router is the default only when
 	// nothing else is offered.
-	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
 	firstModel := func(names []string) string {
 		for _, name := range names {
 			if _, isRouter := gatewayRouters[name]; !isRouter {

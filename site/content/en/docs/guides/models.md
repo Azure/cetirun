@@ -247,7 +247,11 @@ carries the router's internal Gateway name as the model ID: OpenClaw shows
 the router's name, while Hermes lists the internal name. Choosing the router's
 name as the default model selects it. The instance is configured with the
 smallest context window and output limit among the router's tier models that
-the Gateway reports, so a request sized for the router fits every tier.
+the Gateway reports, so a request sized for the router fits every tier. When
+the owner's GitHub Copilot model is merged into a tier's shared model, the
+instance's requests for that tier may reach its Copilot route too, so the
+router's limits include the route's, as the instance's entry for that shared
+model does; the same holds for a router configured in the Gateway.
 
 Each request is charged to the instance's key at the price of the tier model it
 is sent to, and a model classifier's calls are charged too; the router's own

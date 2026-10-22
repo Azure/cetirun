@@ -118,9 +118,13 @@ Each router has:
   the reserved `cetirun-` prefix, and not the name of a shared model;
 - a **classifier**: `heuristic` (the default) scores each request locally
   without a model call; `llm` asks a shared model to classify each request,
-  and those calls are charged to the instance;
+  and those calls are charged to the instance. The classifier is a model, never
+  a router of the Gateway such as `auto`: the Gateway makes the classifier call
+  on the instance's behalf without its key's checks, and a router would send it
+  on to a model of its own choice;
 - four **tiers**, `simple`, `medium`, `complex` and `reasoning`, each naming a
-  shared model, or `copilot/<model>` for a GitHub Copilot model. `reasoning`
+  shared model that is not itself a router, or `copilot/<model>` for a GitHub
+  Copilot model. `reasoning`
   may be left empty to use the `complex` model. Requests the router cannot
   classify go to the `medium` model.
 
@@ -155,8 +159,8 @@ The operator registers each router in the AI Gateway under an internal name
 and reports it on the Team: `status.modelRouters` lists each router as ready or
 explains why it is not, and the `ModelRoutersReady` condition summarizes them.
 A router is not registered while a tier or the classifier names a model the
-Gateway does not offer as a shared model; the message names the router and the
-tier. A changed router replaces its registration under the same internal name,
+Gateway does not offer as a shared model, or a router of the Gateway; the
+message names the router and the tier. A changed router replaces its registration under the same internal name,
 so instances keep their configuration, and a removed router is unregistered.
 The registrations appear in the Gateway's console under their internal
 `cetirun-router-` names; change them on the Team, not in the console, which

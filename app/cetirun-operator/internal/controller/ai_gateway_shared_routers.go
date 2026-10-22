@@ -117,6 +117,16 @@ func (v aiGatewaySharedRouterView) describe(shared []aiGatewayCatalogModel) []ai
 	return described
 }
 
+// routerSet are the shared routers' names, the models a Team's router may not
+// use: a router is not a model.
+func (v aiGatewaySharedRouterView) routerSet() map[string]bool {
+	set := make(map[string]bool, len(v.routers))
+	for name := range v.routers {
+		set[name] = true
+	}
+	return set
+}
+
 // names are the shared routers' names, in order.
 func (v aiGatewaySharedRouterView) names() []string {
 	names := make([]string, 0, len(v.routers))

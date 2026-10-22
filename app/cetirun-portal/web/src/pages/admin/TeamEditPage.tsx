@@ -139,9 +139,12 @@ export function TeamEditPage() {
 
   const policiesQuery = useQuery({ queryKey: ["admin", "policies"], queryFn: listPolicies, retry: false });
   const sandboxesQuery = useQuery({ queryKey: ["admin", "sandboxes"], queryFn: listSandboxes, retry: false });
-  // Tier pickers suggest the shared models; the operator checks the routers.
+  // Tier and classifier pickers suggest the shared models that are not routers of the Gateway themselves,
+  // which the operator refuses there; the operator checks the routers.
   const catalogQuery = useQuery({ queryKey: ["ai-gateway", "catalog"], queryFn: getAIGatewayCatalog, retry: false });
-  const sharedModelNames = (catalogQuery.data?.sharedModels || []).map((model) => model.name);
+  const sharedModelNames = (catalogQuery.data?.sharedModels || [])
+    .filter((model) => !model.routerModels?.length && !model.routerUnverifiable)
+    .map((model) => model.name);
   const policies = policiesQuery.data || [];
   const sandboxes = (sandboxesQuery.data || []).filter(box => !box.deleting);
   const configurationError = policiesQuery.error || sandboxesQuery.error;

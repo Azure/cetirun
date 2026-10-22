@@ -101,7 +101,7 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 		Name: "auto-llm", Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: testSmallModel},
 		Tiers: api.TeamModelRouterTiers{Simple: "copilot/fast-1", Medium: testSmallModel, Complex: testSharedModelOne, Reasoning: "copilot/deep-1"},
 	})
-	plans := planModelRouters(team, shared, nil)
+	plans := planModelRouters(team, shared, nil, nil)
 	if len(plans) != 2 || plans[0].problem != "" || plans[1].problem != "" {
 		t.Fatalf("plans = %+v", plans)
 	}
@@ -151,17 +151,19 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 
 	// The ID follows the configuration; the model name does not.
 	team.Spec.ModelRouters[0].Tiers.Complex = testSmallModel
-	changed := planModelRouters(team, shared, nil)[0]
+	changed := planModelRouters(team, shared, nil, nil)[0]
 	if changed.gatewayName != plan.gatewayName || changed.request.ID == plan.request.ID {
 		t.Fatalf("a changed router keeps its name %q and gets a new ID, got %q %q", changed.gatewayName, changed.request.ID, plan.request.ID)
 	}
-	if again := planModelRouters(team, shared, nil)[0]; again.request.ID != changed.request.ID {
+	if again := planModelRouters(team, shared, nil, nil)[0]; again.request.ID != changed.request.ID {
 		t.Fatal("the registration ID must be deterministic")
 	}
 }
 
 func TestPlanModelRoutersReportsMisconfiguration(t *testing.T) {
-	shared := []aiGatewayCatalogModel{{Name: testSmallModel}, {Name: testSharedModelOne}}
+	// auto is a router configured in the Gateway, which is a shared model too.
+	shared := []aiGatewayCatalogModel{{Name: testSmallModel}, {Name: testSharedModelOne}, {Name: "auto"}}
+	routers := map[string]bool{"auto": true}
 	for _, tc := range []struct {
 		router api.TeamModelRouter
 		want   string
@@ -172,8 +174,14 @@ func TestPlanModelRoutersReportsMisconfiguration(t *testing.T) {
 		{api.TeamModelRouter{Name: testRouterName, Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: "copilot/fast-1"},
 			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSmallModel, Complex: testSmallModel}}, "the classifier copilot/fast-1 is not a shared model"},
 		{testRouter(testRouterName, testSmallModel, "other-router", testSmallModel), "tier medium names other-router"},
+		// A router as the classifier would pick a model of its own on the
+		// Agent's behalf, outside its key's checks (review); as a tier, it
+		// picks one too.
+		{api.TeamModelRouter{Name: testRouterName, Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: "auto"},
+			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSmallModel, Complex: testSmallModel}}, "the classifier auto is a router, not a model"},
+		{testRouter(testRouterName, testSmallModel, "auto", testSmallModel), "tier medium names auto, which is a router, not a model"},
 	} {
-		plans := planModelRouters(routerTeam(tc.router), shared, nil)
+		plans := planModelRouters(routerTeam(tc.router), shared, routers, nil)
 		if len(plans) != 1 || !strings.Contains(plans[0].problem, tc.want) || !strings.HasPrefix(plans[0].problem, "router "+tc.router.Name+": ") {
 			t.Errorf("router %+v: problem %q, want %q", tc.router, plans[0].problem, tc.want)
 		}
@@ -548,6 +556,79 @@ func TestCopilotTierUnderItsIDNeedsTheAgentsRouteUnderTheID(t *testing.T) {
 	reason := r.modelRouterRefusal(agent, plan, nil, true, map[string]string{"copilot/gpt-5.5": "team-gpt"})
 	if reason != "tier simple uses the GitHub Copilot model gpt-5.5, which this Agent reaches only as team-gpt" {
 		t.Fatalf("reason = %q", reason)
+	}
+}
+
+// A Team's router that classifies with a router of the Gateway is never
+// registered or granted: the classifier call is made on the Agent's behalf
+// without its key's checks, and the nested router would send the request to
+// a model of its own choice (review).
+func TestTeamRouterClassifyingWithAGatewayRouterIsRefused(t *testing.T) {
+	team := routerTeam(api.TeamModelRouter{Name: testRouterName,
+		Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: testGatewayRouter},
+		Tiers:      api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSmallModel, Complex: testSmallModel}})
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	addSmallSharedModel(gateway)
+	gateway.shared = append(gateway.shared, wideSharedModel(), gatewayRouter(testGatewayRouter, tierModel("SIMPLE", testWideModel)))
+	allowTestPolicyModels(t, kube, testSmallModel, testRouterName)
+	current := reconcileRouters(t, r, kube, testAIGatewayTeam)
+	if len(routerRequests(gateway)) != 0 {
+		t.Fatalf("registered %+v", routerRequests(gateway))
+	}
+	want := "router " + testRouterName + ": the classifier " + testGatewayRouter + " is a router, not a model"
+	if status := current.Status.ModelRouters; len(status) != 1 || status[0].Ready || status[0].Message != want {
+		t.Fatalf("Team router status = %+v", status)
+	}
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	router := routerStatuses(agent)[testRouterName]
+	if router.Granted || !strings.Contains(router.Reason, "the classifier "+testGatewayRouter+" is a router, not a model") {
+		t.Fatalf("Agent's router = %+v", router)
+	}
+	if slices.Contains(lastKeyModels(gateway), modelRouterGatewayName(testAIGatewayTeam, testRouterName)) {
+		t.Fatal("the key must not get the router")
+	}
+}
+// A tier written as a shared model's name reaches the owner's Copilot route
+// merged under that name too, and so does a router of the Gateway with such a
+// tier: their limits include the route's, as the Agent's entry for the
+// shared model does (review).
+func TestRouterLimitsIncludeCopilotRoutesMergedUnderASharedTier(t *testing.T) {
+	team := routerTeam(testRouter(testRouterName, "team-gpt", "team-gpt", "team-gpt"))
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace(), readyProxy(1))
+	chartRouter := gatewayRouter("auto-gpt", tierModel("SIMPLE", "team-gpt"))
+	chartRouter.MaxInputTokens, chartRouter.MaxOutputTokens = 1000000, 64000
+	gateway.shared = append(gateway.shared, sharedDeployment("team-gpt-a", "team-gpt", func(d *aigateway.Deployment) {
+		d.BaseModel, d.MaxInputTokens, d.MaxOutputTokens = "openai/gpt-5.5", 1000000, 64000
+	}), chartRouter)
+	allowTestPolicyModels(t, kube, testRouterName, "team-gpt", "auto-gpt")
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	signIn(t, kube, agent, `[{"id":"gpt-5.5","name":"GPT-5.5","contextWindow":400000,"maxOutputTokens":128000}]`)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if router := routerStatuses(agent)[testRouterName]; !router.Granted || router.ContextWindow != 400000 || router.MaxTokens != 64000 {
+		t.Fatalf("Team router = %+v", router)
+	}
+	entries, _, _ := r.aiGatewayModelEntries(agent)
+	seen := 0
+	for _, entry := range entries {
+		if entry.ID == "team-gpt" || entry.ID == "auto-gpt" {
+			seen++
+			if entry.ContextWindow != 400000 || entry.MaxTokens != 64000 {
+				t.Fatalf("%s entry = %+v", entry.ID, entry)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("entries = %+v", entries)
 	}
 }
 func TestRouterNamesDoNotBreakPolicyResolution(t *testing.T) {

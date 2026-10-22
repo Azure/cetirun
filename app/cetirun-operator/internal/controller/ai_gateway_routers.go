@@ -184,7 +184,7 @@ func routerModelNotAllowed(model aigateway.RouterModel) string {
 
 // planModelRouters checks a Team's routers against the shared models of a
 // live catalog and builds their registrations.
-func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, mergedName func(string) string) []modelRouterPlan {
+func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, routers map[string]bool, mergedName func(string) string) []modelRouterPlan {
 	sharedNames := map[string]bool{}
 	for _, model := range shared {
 		sharedNames[model.Name] = true
@@ -214,6 +214,9 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, mergedName
 				} else if !slices.Contains(plan.copilot, model) {
 					plan.copilot = append(plan.copilot, model)
 				}
+			case routers[model]:
+				// A router of the Gateway picks a model of its own for the request.
+				problems = append(problems, routerModelIsARouter(aigateway.RouterModel{Use: aigateway.RouterTier, Tier: tier, Name: model}))
 			case !sharedNames[model]:
 				problems = append(problems, routerModelNotShared(aigateway.RouterModel{Use: aigateway.RouterTier, Tier: tier, Name: model}))
 			case !slices.Contains(plan.shared, model):
@@ -225,7 +228,13 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, mergedName
 			classifier = api.ModelRouterClassifierHeuristic
 		}
 		if classifier == api.ModelRouterClassifierLLM {
-			if !sharedNames[router.Classifier.Model] {
+			// A router as the classifier would send the request on to a model
+			// of its own choice: the classifier call is made on the Agent's
+			// behalf without its key's checks, so that model could be one the
+			// Agent may not use.
+			if routers[router.Classifier.Model] {
+				problems = append(problems, routerModelIsARouter(aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: router.Classifier.Model}))
+			} else if !sharedNames[router.Classifier.Model] {
 				problems = append(problems, routerModelNotShared(aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: router.Classifier.Model}))
 			} else if !slices.Contains(plan.shared, router.Classifier.Model) {
 				plan.shared = append(plan.shared, router.Classifier.Model)
@@ -359,7 +368,7 @@ func (r *TeamModelRouterReconciler) Reconcile(ctx context.Context, request ctrl.
 		if !item.DeletionTimestamp.IsZero() {
 			continue
 		}
-		plans := planModelRouters(item, shared, r.Agents.copilotTierSharedNames())
+		plans := planModelRouters(item, shared, r.Agents.aiGatewayCatalog.sharedRouters().routerSet(), r.Agents.copilotTierSharedNames())
 		if team != nil && item.Name == team.Name {
 			requested = plans
 		}
@@ -557,19 +566,21 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 	}
 	// The Gateway name of each of the owner's Copilot models, by copilot/<ID>.
 	registeredCopilot := map[string]string{}
+	var routes []api.AIGatewayCopilotRoute
 	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil && copilot {
 		for _, route := range status.Copilot.Routes {
 			registeredCopilot[copilotTierPrefix+route.Model] = route.Name
 		}
+		routes = copilotRoutes(status.Copilot)
 	}
 	var groups []string
 	var statuses []api.AIGatewayModelRouterStatus
-	for _, plan := range planModelRouters(team, shared, r.copilotTierSharedNames()) {
+	for _, plan := range planModelRouters(team, shared, r.aiGatewayCatalog.sharedRouters().routerSet(), r.copilotTierSharedNames()) {
 		status := api.AIGatewayModelRouterStatus{Name: plan.router.Name}
 		status.Reason = r.modelRouterRefusal(instance, plan, policy, copilot, registeredCopilot)
 		if status.Reason == "" {
 			status.Granted, status.Model = true, plan.gatewayName
-			status.ContextWindow, status.MaxTokens = r.modelRouterLimits(instance, plan, shared)
+			status.ContextWindow, status.MaxTokens = modelRouterLimits(instance, plan, shared, routes)
 			groups = append(groups, plan.gatewayName)
 		}
 		statuses = append(statuses, status)
@@ -624,28 +635,26 @@ func (r *AgentReconciler) modelRouterRefusal(instance *api.Agent, plan modelRout
 
 // modelRouterLimits are the smallest context window and output limit among
 // the router's tier models that are known, so that a request the Agent sizes
-// for the router fits whichever tier it goes to.
-func (r *AgentReconciler) modelRouterLimits(instance *api.Agent, plan modelRouterPlan, shared []aiGatewayCatalogModel) (int64, int64) {
+// for the router fits whichever tier it goes to. A tier counts as the Gateway
+// name it is registered as, a copilot/<ID> tier's shared model or ID, and the
+// Agent's requests for that name may reach its own Copilot routes registered
+// under it as well as the shared deployments: the tier fits within the
+// smaller limits of both, as the Agent's entry for that model does.
+func modelRouterLimits(instance *api.Agent, plan modelRouterPlan, shared []aiGatewayCatalogModel, routes []api.AIGatewayCopilotRoute) (int64, int64) {
 	limits := map[string][2]int64{}
 	for _, model := range shared {
 		limits[model.Name] = [2]int64{model.ContextWindow, model.MaxOutputTokens}
 	}
-	if models, err := parseCopilotModels(instance.Annotations[api.AnnotationCopilotModels]); err == nil {
-		for _, model := range models {
-			limits[copilotTierPrefix+model.ID] = [2]int64{model.ContextWindow, model.MaxOutputTokens}
-		}
-	}
+	copilot := aiGatewayCopilotRouteLimits(instance, routes)
 	var contextWindow, maxTokens int64
 	for _, model := range plan.router.Tiers.Models() {
-		if name, ok := plan.tierNames[model]; ok && name != strings.TrimPrefix(model, copilotTierPrefix) {
-			// A tier that joins a shared model is answered by its deployments
-			// and by the owner's Copilot route: the smaller limits of both.
-			contextWindow = smallerPositive(contextWindow, limits[model][0])
-			maxTokens = smallerPositive(maxTokens, limits[model][1])
+		if name, ok := plan.tierNames[model]; ok {
 			model = name
 		}
-		contextWindow = smallerPositive(contextWindow, limits[model][0])
-		maxTokens = smallerPositive(maxTokens, limits[model][1])
+		for _, limit := range [][2]int64{limits[model], copilot[model]} {
+			contextWindow = smallerPositive(contextWindow, limit[0])
+			maxTokens = smallerPositive(maxTokens, limit[1])
+		}
 	}
 	return contextWindow, maxTokens
 }
