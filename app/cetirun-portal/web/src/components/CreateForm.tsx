@@ -303,9 +303,10 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
             />
           </Field>}
           {((effectiveShared && sharedAvailable) || modelRouters.length > 0) && (
-            <Field label="Default model (optional)" hint={modelRouters.length > 0
-              ? "GitHub Copilot models can be chosen after sign-in. Smart-routing models pick a model for each request; one works once the agent may use every model it routes to."
-              : "GitHub Copilot models can be chosen after sign-in."}>
+            <Field label="Default model (optional)" hint={[
+              effectiveCopilot ? "GitHub Copilot models can be chosen after sign-in." : "",
+              modelRouters.length > 0 ? "Smart-routing models pick a model for each request; one works once the agent may use every model it routes to." : "",
+            ].filter(Boolean).join(" ") || undefined}>
               <Select value={gatewayModel} onChange={(event) => setGatewayModel(event.target.value)}>
                 <option value="">(automatic)</option>
                 {effectiveShared && sharedModels.map((m) => (

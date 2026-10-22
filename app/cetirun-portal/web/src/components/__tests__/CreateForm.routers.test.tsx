@@ -42,3 +42,19 @@ it("offers the Team's smart-routing models as the default model", async () => {
   await user.click(screen.getByRole("button", { name: "Create Agent" }));
   expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ team: "research", model: "auto" }));
 });
+
+it("mentions GitHub Copilot models only when the agent may use GitHub Copilot", async () => {
+  for (const githubCopilot of [false, true]) {
+    const offered = { ...options, gateway: { ...options.gateway, githubCopilot } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(offered), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { unmount } = render(<QueryClientProvider client={client}><CreateForm /></QueryClientProvider>);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Team" }), "research");
+    await waitFor(() => expect(screen.queryByText("Loading allowed Agent options...")).not.toBeInTheDocument());
+    await screen.findByRole("combobox", { name: /Default model/ });
+    expect(screen.getByText(/Smart-routing models pick a model/)).toBeInTheDocument();
+    expect(screen.queryAllByText(/GitHub Copilot models can be chosen after sign-in/).length > 0).toBe(githubCopilot);
+    unmount();
+  }
+});
