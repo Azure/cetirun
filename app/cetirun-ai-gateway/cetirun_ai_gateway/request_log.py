@@ -13,10 +13,18 @@ the CetiRun operator recorded on the key), the model, tokens, spend, timing and
 the outcome. Request and response content is never written. Every string in it
 is capped, and a line never exceeds MAX_LINE_BYTES (see ``shortened``).
 
+A call to one of LiteLLM's auto routers also records the tier the router chose,
+why, and its score; the model it chose is the call's provider model. A call
+LiteLLM makes itself is marked with its origin in call_origin: the call an auto
+router makes to classify a request, when the router uses a model for that, is
+a line of its own with the classifier's origin, and a background health check
+probe is "health_check", so usage figures can leave probes out.
+
 A client can ask LiteLLM for per-request debug output with
 litellm_request_debug, which makes LiteLLM print that request's prompt and the
-provider's raw response to the log. The callback drops that field from every
-request, so content stays out of the log.
+provider's raw response to the log. The image's guard callback (guard.py),
+which is always registered, drops that field from every request, so content
+stays out of the log, with the fields that would change the Gateway's retries.
 
 The image's entrypoint registers ``handler`` with LiteLLM before the proxy
 loads its configuration, when CETIRUN_REQUEST_LOG is set, rather than listing
@@ -53,8 +61,32 @@ OPERATOR_KEY_METADATA = ("cetirun_agent", "cetirun_agent_uid", "cetirun_user", "
 # LiteLLM tags every request with the client's user agent, which the record
 # already carries in its own field.
 USER_AGENT_TAG_PREFIX = "User-Agent:"
-# A request body field that makes LiteLLM log that request's content.
-DEBUG_PARAMETER = "litellm_request_debug"
+# Where LiteLLM marks a call it makes itself, such as an auto router's
+# classifier call: in the call's own metadata, not in the logging payload.
+CALL_ORIGIN_KEY = "internal_call_origin"
+# The identity LiteLLM gives its background health check probes, as key hash,
+# alias and Team. Clients can choose request tags, not these.
+HEALTH_CHECK_ACCOUNT = "litellm-internal-health-check"
+HEALTH_CHECK_ORIGIN = "health_check"
+
+
+def call_origin(kwargs):
+    """The origin LiteLLM recorded on a call it made itself, or None."""
+    params = as_dict(kwargs.get("litellm_params"))
+    for name in ("metadata", "litellm_metadata"):
+        origin = as_dict(params.get(name)).get(CALL_ORIGIN_KEY)
+        if isinstance(origin, str) and origin:
+            return origin
+    return None
+
+
+def is_health_check(metadata):
+    """Whether the call is one of LiteLLM's background health check probes."""
+    return HEALTH_CHECK_ACCOUNT in (
+        metadata.get("user_api_key_hash"),
+        metadata.get("user_api_key_alias"),
+        metadata.get("user_api_key_team_id"),
+    )
 
 
 def iso_time(timestamp):
@@ -181,11 +213,6 @@ class RequestLog(CustomLogger):
         super().__init__()
         self.stream = stream
 
-    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
-        if isinstance(data, dict):
-            data.pop(DEBUG_PARAMETER, None)
-        return None
-
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         self.write(kwargs)
 
@@ -197,14 +224,19 @@ class RequestLog(CustomLogger):
         if not isinstance(payload, dict):
             return
         stream = self.stream or sys.stdout
-        stream.write(self.line(payload) + "\n")
+        stream.write(self.line(payload, call_origin(kwargs)) + "\n")
         stream.flush()
 
-    def record(self, payload):
+    def record(self, payload, origin=None):
         metadata = as_dict(payload.get("metadata"))
         hidden = as_dict(payload.get("hidden_params"))
         usage = as_dict(metadata.get("usage_object")) or as_dict(hidden.get("usage_object"))
         error = as_dict(payload.get("error_information"))
+        # Only the router's verdict: its signals and keywords quote the prompt,
+        # and the tier's parameters can carry credentials.
+        routing = as_dict(metadata.get("routing_decision"))
+        if is_health_check(metadata):
+            origin = HEALTH_CHECK_ORIGIN
         key_metadata = {
             clip(name): clip(value) if isinstance(value, str) else value
             for name, value in as_dict(metadata.get("user_api_key_auth_metadata")).items()
@@ -232,12 +264,22 @@ class RequestLog(CustomLogger):
             "trace_id": clip(payload.get("trace_id")),
             "route": clip(metadata.get("user_api_key_request_route")),
             "call_type": clip(payload.get("call_type")),
+            "call_origin": clip(origin),
             "stream": stream,
             "model": clip(payload.get("model_group") or payload.get("model")),
             "provider_model": clip(hidden.get("litellm_model_name") or payload.get("model")),
             "provider": clip(payload.get("custom_llm_provider")),
             "deployment_id": clip(payload.get("model_id")),
             "api_base": clip(endpoint_origin(payload.get("api_base") or hidden.get("api_base"))),
+            "routing_tier": clip(routing.get("tier")),
+            "routing_cause": clip(routing.get("cause")),
+            "routing_score": first_number(routing.get("score")),
+            # A keyword or a prompt too long for the decided tier moved it up.
+            "routing_escalated": (
+                True if routing.get("escalated") is True or routing.get("context_escalated") is True else None
+            ),
+            "classifier_model": clip(routing.get("classifier_model")),
+            "classifier_cost": first_number(routing.get("classifier_cost")),
             "duration_ms": milliseconds(start, end),
             "time_to_first_token_ms": milliseconds(start, payload.get("completionStartTime")) if stream else None,
             "prompt_tokens": first_number(payload.get("prompt_tokens")),
@@ -271,9 +313,9 @@ class RequestLog(CustomLogger):
             )
         return without_empty(record)
 
-    def line(self, payload):
+    def line(self, payload, origin=None):
         """The record as one line of JSON, never longer than MAX_LINE_BYTES."""
-        record = self.record(payload)
+        record = self.record(payload, origin)
         text = dump(record)
         if len(text.encode("utf-8")) <= MAX_LINE_BYTES:
             return text
