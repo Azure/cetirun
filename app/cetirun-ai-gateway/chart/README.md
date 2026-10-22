@@ -834,6 +834,40 @@ the models but not the router cannot use the router. With
 The chart rejects a tier, default model or classifier model that is not
 configured in `models`.
 
+**The tiers decide what a router saves.** Each call is charged at the price of
+the model it picked, and, with a classifier that asks a model, the classifier
+call as well, which reads the conversation and so costs more as it grows. A
+router saves where it sends turns to a model cheaper than the one the
+conversation would otherwise use, so order the tiers by price and keep the top
+tier near the model you would use without the router. Measured with the same 30
+turns (three conversations with a 6,000-token context) on Azure OpenAI:
+
+| Through | Cost |
+| --- | --- |
+| A router with tiers gpt-5.4-nano, gpt-5.6-terra, gpt-6-sol, gpt-6-astra and the Decision classifier | 0.250 |
+| gpt-6-sol alone | 0.122 |
+| A router with tiers gpt-5.4-nano, gpt-6-sol, gpt-6-sol, gpt-6-sol (estimated from the same turns) | 0.097 |
+
+In the first router gpt-5.6-terra costs more than gpt-6-sol a tier above it,
+and gpt-6-astra five times as much. Classifier calls were 3.4% of its cost.
+
+Each model keeps its own prompt cache. A turn on a model the conversation has
+not used yet pays the full input price for the whole conversation; a later
+turn on a model it used before reads that model's cached history again, other
+models' turns in between included. A 30,000-token conversation alternating
+between gpt-5.4-nano and gpt-6-astra cost 18 to 23% less than the same turns on
+gpt-6-astra alone, with gpt-6-astra reading its cache on each return; the
+largest single charge, there and on gpt-6-astra alone, was gpt-6-astra's first
+read of the conversation. Providers keep a cache for minutes of inactivity, so
+a model used rarely may find it gone.
+
+Check a classifier with prompts in the languages your users write. Of 24
+prompts, eight each in Chinese, Chinese mixed with English, and English, the
+default classifier sent all eight Chinese ones to the simple tier, proofs and
+system designs included (6 of 24 on the expected tier); the Decision
+classifier placed 8 of 8 English, 6 of 8 mixed and 3 of 8 Chinese prompts on
+the expected tier, sending hard Chinese prompts to the simple one.
+
 **A conversation can change model.** Each request is classified on its own, so
 one conversation can move between tiers. On the same Azure OpenAI resource that
 kept working, encrypted reasoning included. Across resources, with LiteLLM
@@ -924,9 +958,9 @@ models:
 Offer such a router to clients that use the Chat Completions API. A client
 using the Responses API or Anthropic's Messages API sends the provider's own
 reasoning items back with each turn; at a switch between providers, the other
-provider's reasoning is dropped or the request may be refused. The provider's
-prompt cache starts again at every switch, so a conversation that changes
-provider pays the full input price for that turn.
+provider's reasoning is dropped or the request may be refused. The first turn
+on each provider's model pays the full input price for the conversation; see
+"The tiers decide what a router saves" above.
 
 #### Measuring the routers
 
