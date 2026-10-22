@@ -344,19 +344,33 @@ class GuardTest(unittest.TestCase):
         self.filtered(request, deployments, "mixed")
         self.assertNotIn("temperature", request)
 
-    def test_a_model_asked_for_by_name_keeps_its_sampling_parameters(self):
-        # The caller chose the model: LiteLLM's refusal tells it why.
+    def test_a_model_asked_for_by_name_gets_no_sampling_parameters_it_refuses(self):
+        # Measured on the e2e cluster: Hermes sends side tasks such as titles
+        # with temperature 0 to the model the user chose; with a reasoning model
+        # every one of them failed with LiteLLM's 400, out of the user's sight.
         self.with_gpt5_rule()
         terra = self.model_deployment("gpt-5.6-terra", "azure/gpt-5.6-terra")
-        for request in ({"metadata": {"user_api_key_auth": Key(["cetirun-shared"])}, "temperature": 0},
-                        # The router's own selection, before it picks a tier.
-                        self.routed(router="gpt-5.6-terra", temperature=0),
-                        {"metadata": {"routing_decision": None}, "temperature": 0},
-                        {"metadata": {"routing_decision": {"router_model_name": ""}}, "temperature": 0}):
-            with self.subTest(request=request):
-                self.filtered(request, [terra], "gpt-5.6-terra")
-                self.assertEqual(request["temperature"], 0)
+        copilot = self.model_deployment("gpt-6-sol", "litellm_proxy/gpt-6-sol")
+        for deployments, model in (([terra], "gpt-5.6-terra"), ([copilot], "gpt-6-sol")):
+            for request in ({"metadata": {"user_api_key_auth": Key(["cetirun-shared"])}, "temperature": 0, "top_p": 0.5},
+                            # The router's own selection, before it picks a tier.
+                            self.routed(router=model, temperature=0, top_p=0.5),
+                            {"metadata": {"routing_decision": None}, "temperature": 0, "top_p": 0.5},
+                            {"temperature": 0, "top_p": 0.5}):
+                with self.subTest(model=model, request=request):
+                    with self.assertLogs(LOGGER, level="WARNING") as logs:
+                        self.filtered(request, deployments, model)
+                    self.assertNotIn("temperature", request)
+                    self.assertNotIn("top_p", request)
+                    self.assertIn(f"for {model}", logs.output[0])
 
+    def test_a_model_asked_for_by_name_that_takes_sampling_keeps_it(self):
+        self.with_gpt5_rule(none_effort=("gpt-5.4-nano",))
+        for deployment in (self.model_deployment("gpt-4.1", "azure/gpt-4.1"),
+                           self.model_deployment("gpt-5.4-nano", "azure/gpt-5.4-nano")):
+            request = {"temperature": 0, "top_p": 0.5}
+            self.filtered(request, [deployment], deployment["model_name"])
+            self.assertEqual(request, {"temperature": 0, "top_p": 0.5})
     def test_without_litellms_rule_nothing_is_removed(self):
         terra = self.model_deployment("gpt-5.6-terra", "azure/gpt-5.6-terra")
         request = self.routed(temperature=0)
