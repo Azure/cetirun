@@ -505,6 +505,19 @@ def conversation_model(name, router):
     return any(((deployment.get("model_info") or {}).get("mode") if isinstance(deployment, dict) else None) in CHAT_MODES
                for deployment in deployments)
 
+
+def has_deployment(name, router):
+    """Whether the name is a model with a deployment of its own. A Team's router is registered under the
+    same name as its access group, so being one of the key's groups does not make a name a placeholder.
+    Without the router, or when it cannot answer, it is not known to be a model."""
+    if router is None:
+        return False
+    try:
+        return bool(router.get_model_list(model_name=name))
+    except Exception:  # a listing never fails on this filter
+        return False
+
+
 def without_cooldown_list(text):
     """The text without LiteLLM's list of deployments in cooldown, or None when it has none."""
     if not isinstance(text, str) or NO_DEPLOYMENTS not in text or "cooldown_list=" not in text:
@@ -622,7 +635,8 @@ class Guard(CustomLogger):
         """Keep a key the operator issued from listing what is not a model it can talk to.
 
         LiteLLM lists an access group of the key that has no deployment, such as an Agent's GitHub
-        Copilot group before its owner signs in, as if it were a model, and lists a decision or
+        Copilot group before its owner signs in, as if it were a model (a Team's router, registered under
+        its group's name, is a model and stays), and lists a decision or
         embedding model the key may reach because a router classifies with it. The CetiRun operator
         leaves both out of the Agent's configuration; the listing does the same, and a lookup of
         either by name answers 404. Every other caller sees LiteLLM's listing.
@@ -632,7 +646,9 @@ class Guard(CustomLogger):
             return model_names
         router = getattr(sys.modules.get(PROXY_SERVER_MODULE), "llm_router", None)
         return [name for name in model_names
-                if not (isinstance(name, str) and (name in held or not conversation_model(name, router)))]
+                if not (isinstance(name, str)
+                        and ((name in held and not has_deployment(name, router)) or not conversation_model(name, router)))]
+
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict,
                                            traceback_str=None):
         # Logged here rather than where it is raised: a router also asks the

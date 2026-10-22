@@ -808,6 +808,14 @@ class GuardTest(unittest.TestCase):
         names = ["auto", "cetirun-copilot-alice", "decision-1", "embedder", "gpt-6-sol", "mixed", "copilot-only", "cetirun-shared"]
         self.assertEqual(self.listed(key, names), ["auto", "gpt-6-sol", "mixed", "copilot-only"])
 
+    def test_a_teams_router_named_like_its_group_stays_listed(self):
+        # The operator registers a Team's router under the same name as the
+        # access group it grants; it is a model, not a placeholder.
+        router = "cetirun-router-0123456789abcdef"
+        self.listing_router({router: [None], "gpt-6-sol": ["chat"]})
+        key = Key([router, "cetirun-copilot-alice", "cetirun-shared"])
+        names = [router, "cetirun-copilot-alice", "gpt-6-sol", "cetirun-shared"]
+        self.assertEqual(self.listed(key, names), [router, "gpt-6-sol"])
     def test_other_callers_see_litellms_listing(self):
         self.listing_router({"decision-1": ["evaluation"]})
         for models in ([], ["*"], ["decision-1", "gpt-6-sol"], None):
