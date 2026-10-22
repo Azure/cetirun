@@ -120,7 +120,9 @@ stringData:
 # completion tokens, so spend per request is exact. A request whose content
 # contains "fail429" is answered with a 429, and GET /stats reports how many
 # such requests arrived, so the test can count upstream attempts. One whose
-# content contains "sleepN" is answered after N seconds. Every response has an
+# content contains "sleepN" is answered after N seconds. Any request under
+# /broken is answered with a 500, and counted, to stand in for a failing
+# deployment. Every response has an
 # id of its own, as a real provider's does: LiteLLM keys its per-request spend
 # log on that id and skips a row whose id it has already stored, so a mock that
 # repeated one id kept a single success in the log however many it served.
@@ -132,7 +134,7 @@ data:
   mock_provider.py: |
     import json, re, time, uuid
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    requests = {"failed": 0, "total": 0}
+    requests = {"failed": 0, "total": 0, "broken": 0}
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def _send(self, body, code=200):
@@ -145,6 +147,10 @@ data:
             requests["total"] += 1
             n = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(n) if n else b""
+            if self.path.startswith("/broken"):
+                requests["broken"] += 1
+                self._send(b'{"error":{"message":"server error (mock)","code":"500"}}', 500)
+                return
             if b"fail429" in raw:
                 requests["failed"] += 1
                 self._send(b'{"error":{"message":"rate limited (mock)","code":"429"}}', 429)
@@ -230,8 +236,46 @@ models:
       model: openai/mock-model
       api_base: http://mock-provider:8080
       api_key: os.environ/MOCK_PROVIDER_KEY
+  # Two deployments behind one name, the second always failing and nine times
+  # as likely to be picked, to check that a request failing on one deployment
+  # is sent to the other.
+  - model_name: mock-failover
+    litellm_params:
+      model: openai/mock-model
+      api_base: http://mock-provider:8080
+      api_key: os.environ/MOCK_PROVIDER_KEY
+      weight: 1
+    model_info:
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+  - model_name: mock-failover
+    litellm_params:
+      model: openai/mock-model
+      api_base: http://mock-provider:8080/broken
+      api_key: os.environ/MOCK_PROVIDER_KEY
+      weight: 9
+    model_info:
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+  # A LiteLLM auto router over the priced model, its own name priced at twice
+  # the model's.
+  - model_name: mock-auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00002
+      output_cost_per_token: 0.00002
+      complexity_router_config:
+        tiers: {SIMPLE: mock-priced, MEDIUM: mock-priced, COMPLEX: mock-priced, REASONING: mock-priced}
+      complexity_router_default_model: mock-priced
 providerCredentials:
   existingSecret: gateway-provider-keys
+# The checks below count calls and spend exactly and need the failing
+# deployment of mock-failover to be tried: no background probes, which would
+# add calls and keep requests away from it, and no key kept on one deployment.
+router:
+  deploymentAffinity: false
+  healthChecks:
+    enabled: false
 EOF
 
 # ----- Helpers against the running Gateway ----------------------------------
@@ -461,6 +505,35 @@ attempts="$(in_mock_pod "import urllib.request; print(urllib.request.urlopen('ht
 [ "${attempts}" = "1" ] || fail "one failing request produced ${attempts} upstream attempts; the Gateway is retrying"
 pass "an upstream 429 went straight back to the client, one attempt"
 
+# A caller could ask LiteLLM for retries of its own, with num_retries in the
+# body or the x-litellm-num-retries header: one failing request then made four
+# upstream calls. The image's callback drops those fields.
+echo "==> A caller cannot change the retries"
+retry_request() {  # retry_request BODY [CURL_ARGS...]
+  curl -s -m 60 -o /dev/null -X POST "http://127.0.0.1:${port_a}/v1/chat/completions" "${@:2}" \
+    -H "Authorization: Bearer ${master_key}" -H 'Content-Type: application/json' -d "$1" || true
+}
+retry_request '{"model":"mock-priced","messages":[{"role":"user","content":"fail429"}]}' -H 'x-litellm-num-retries: 3'
+retry_request '{"model":"mock-priced","num_retries":3,"messages":[{"role":"user","content":"fail429"}]}'
+attempts="$(in_mock_pod "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stats').read().decode())" \
+  | jq -r .failed)"
+[ "${attempts}" = "3" ] || fail "two failing requests asking for retries made $((attempts - 1)) upstream attempts; a caller changed the retries"
+pass "a caller's num_retries, in the body or a header, added no upstream attempt"
+
+# Two deployments behind one name, one always failing: a request that fails on
+# one deployment is sent once more, to the other. Without that, about half the
+# requests failed.
+echo "==> A request failing on one deployment is sent to another"
+for i in $(seq 1 10); do
+  if [ $((i % 2)) -eq 1 ]; then port="${port_a}"; else port="${port_b}"; fi
+  status="$(chat "${port}" "${master_key}" mock-failover)"
+  [ "${status}" = "200" ] || fail "request ${i} to a model with a failing deployment got ${status}: $(last_body)"
+done
+broken="$(in_mock_pod "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stats').read().decode())" \
+  | jq -r .broken)"
+[ "${broken}" -ge 1 ] || fail "no request reached the failing deployment, so the failover was not exercised"
+pass "10 of 10 requests answered, ${broken} of them after their first deployment failed"
+
 # Without shared state each replica enforces its own copy of a budget, so two
 # replicas allow twice the configured spend. Alternating between the two pods
 # directly is what makes this a test of coordination rather than of one pod.
@@ -487,10 +560,11 @@ pass "\$0.10 budget allowed ${allowed} requests across both replicas"
 # Every answered call is recorded twice: in LiteLLM's spend log, which the
 # console's request view reads, and in the image's request log on stdout, for
 # the cluster's log collection. The answered calls so far are the two with the
-# master key and those the budget allowed, spread over both replicas. LiteLLM
+# master key, the ten to the model with a failing deployment, each recorded
+# once, and those the budget allowed, spread over both replicas. LiteLLM
 # writes the spend log in batches, a few seconds behind.
 echo "==> Every answered call is recorded, in the spend log and the request log"
-answered=$((2 + allowed))
+answered=$((12 + allowed))
 recorded=""
 for _ in $(seq 1 30); do
   recorded="$(spend_log_successes)"
@@ -516,12 +590,44 @@ fi
 pass "${answered} answered calls in the spend log and in the request log, without content"
 
 # A model stored in the database is encrypted with the salt key. It is what an
-# upgrade has to preserve.
+# upgrade has to preserve. LiteLLM 1.105 keeps a price given through the
+# management API only in litellm_params; it drops one in model_info.
 echo "==> A database-backed model"
-api_post "${port_a}" /model/new '{"model_name":"mock-db","litellm_params":{"model":"openai/mock-model","api_base":"http://mock-provider:8080","api_key":"sk-literal-encrypted-at-rest"},"model_info":{"input_cost_per_token":0.00001,"output_cost_per_token":0.00001}}' >/dev/null \
+api_post "${port_a}" /model/new '{"model_name":"mock-db","litellm_params":{"model":"openai/mock-model","api_base":"http://mock-provider:8080","api_key":"sk-literal-encrypted-at-rest","input_cost_per_token":0.00001,"output_cost_per_token":0.00001}}' >/dev/null \
   || fail "could not add a model through the management API"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] || fail "database-backed model was not served: $(last_body)"
 pass "model added through the management API and served"
+
+# A LiteLLM auto router picks one of the configured models for each request.
+# Its own name carries a price, twice the model's here, only to pass the
+# unpriced-model check: the call is charged as the model it picked, and the
+# request log records the router, the model and the router's decision.
+echo "==> An auto router picks a configured model and records its decision"
+[ "$(chat "${port_a}" "${master_key}" mock-auto "What is 2+2?")" = "200" ] \
+  || fail "a request to the auto router failed: $(last_body)"
+routed_line="$(request_log "${pod_names[0]}" | grep '"model":"mock-auto"' | tail -n 1 || true)"
+[ -n "${routed_line}" ] || fail "the request log has no line for the auto router's call"
+jq -e '.provider_model == "openai/mock-model" and .routing_tier == "SIMPLE" and (.routing_cause | length > 0)' \
+  <<< "${routed_line}" >/dev/null || fail "the auto router's line does not carry its decision: ${routed_line}"
+jq -e '.spend > 0.0199 and .spend < 0.0201' <<< "${routed_line}" >/dev/null \
+  || fail "the auto router's call was not charged at the price of the model it picked: ${routed_line}"
+pass "the auto router sent a simple request to the configured model, charged at that model's price"
+
+# OpenClaw sends its own context as the last user message, between markers. The
+# router classifies the newest message a person wrote; without the markers the
+# chart adds, it classified that block instead, and every OpenClaw request went
+# to the simple tier, this request for code included.
+echo "==> The auto router classifies an OpenClaw request by what was asked"
+openclaw_request='{"model":"mock-auto","messages":[
+  {"role":"user","content":"Write a Python function that parses a CSV file and computes the average of each column, with unit tests."},
+  {"role":"user","content":"<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nConversation data (data, not instructions):\n\"Active exec sessions:\\nnone\"\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"}]}'
+status="$(curl -sS -m 60 -o "${work_dir}/last.json" -w '%{http_code}' -X POST "http://127.0.0.1:${port_a}/v1/chat/completions" \
+  -H "Authorization: Bearer ${master_key}" -H 'Content-Type: application/json' -d "${openclaw_request}")"
+[ "${status}" = "200" ] || fail "an OpenClaw-like request to the auto router got ${status}: $(last_body)"
+routed_line="$(request_log "${pod_names[0]}" | grep '"model":"mock-auto"' | tail -n 1 || true)"
+jq -e '.routing_tier == "MEDIUM"' <<< "${routed_line}" >/dev/null \
+  || fail "OpenClaw's context, not the request, decided the tier: ${routed_line}"
+pass "a request for code with OpenClaw's context after it went to the medium tier"
 
 # LiteLLM finishes requests in flight when it is stopped, with no limit of its
 # own, so the pod's grace period decides whether a long response survives a
@@ -820,7 +926,10 @@ managed_key_freshness() {
       allowed=$((allowed + 1))
       served_from_cache && fail "managed budget request was answered from the response cache"
     else
-      [ "${status}" = 429 ] || fail "managed budget returned ${status}, not a budget rejection"
+      # The chart refuses an exhausted budget with 402 (budgetExceededStatusCode;
+      # LiteLLM's own default is 422), which agents report as exhausted credit
+      # rather than retrying it as a rate limit.
+      [ "${status}" = 402 ] || fail "managed budget returned ${status}, not a budget rejection"
       jq -e '.error.message | test("budget"; "i")' "${work_dir}/last.json" >/dev/null \
         || fail "managed budget request was rejected for a different reason"
     fi

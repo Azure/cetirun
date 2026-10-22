@@ -19,21 +19,53 @@ metadata:
 data:
   config.yaml: |
     model_list:
-      {{- if .Values.operatorIntegration }}
       {{- $models := list }}
       {{- range .Values.models }}
       {{- $model := deepCopy . }}
+      {{- if $.Values.operatorIntegration }}
       {{- $suffix := sha256sum (toJson $model) | trunc 16 }}
       {{- $info := deepCopy ($model.model_info | default dict) }}
       {{- $_ := set $info "id" (printf "cetirun-shared-%s" $suffix) }}
       {{- $_ = set $info "access_groups" (append ($info.access_groups | default list) (printf "cetirun-model-%s" $suffix) | uniq) }}
       {{- $_ = set $model "model_info" $info }}
+      {{- end }}
+      {{- /* A complexity router classifies the newest message a person wrote,
+      leaving out blocks between reminder markers. OpenClaw sends its own
+      context as a final user message between the markers below, so without
+      them every OpenClaw request was classified by that block and went to the
+      simple tier. LiteLLM's own pair is listed too, since a list replaces its
+      default. A router that sets reminder_markers keeps its own.
+
+      Three more of LiteLLM 1.105.1's router defaults are changed unless the
+      router sets them: no compaction of the conversation history by the
+      Gateway (agents manage their own context, and compacting costs model
+      calls), the caller's max_tokens forwarded rather than replaced by the
+      tier model's ceiling, and a request too long for the decided tier's
+      models moved to a tier whose models can hold it, rather than refused.
+
+      Added after the ID above, so the binding stays the administrator's
+      configuration. */}}
+      {{- $params := $model.litellm_params | default dict }}
+      {{- if eq (toString (get $params "model")) "auto_router/complexity_router" }}
+      {{- $config := deepCopy (get $params "complexity_router_config" | default dict) }}
+      {{- if not (hasKey $config "reminder_markers") }}
+      {{- $_ := set $config "reminder_markers" (list (dict "open" "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "close" "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>") (dict "open" "<system-reminder>" "close" "</system-reminder>")) }}
+      {{- end }}
+      {{- if not (hasKey $config "context_compaction") }}
+      {{- $_ := set $config "context_compaction" false }}
+      {{- end }}
+      {{- if not (hasKey $config "max_tokens_from_tier_model") }}
+      {{- $_ := set $config "max_tokens_from_tier_model" false }}
+      {{- end }}
+      {{- if not (hasKey $config "enable_context_window_escalation") }}
+      {{- $_ := set $config "enable_context_window_escalation" true }}
+      {{- end }}
+      {{- $_ := set $params "complexity_router_config" $config }}
+      {{- $_ = set $model "litellm_params" $params }}
+      {{- end }}
       {{- $models = append $models $model }}
       {{- end }}
       {{- toYaml $models | nindent 6 }}
-      {{- else }}
-      {{- toYaml .Values.models | nindent 6 }}
-      {{- end }}
 
     general_settings:
       # Required for the management API and the admin console to persist models.
@@ -48,6 +80,43 @@ data:
       # Keep Redis budget/rate-limit coordination, not worker-local key grants.
       user_api_key_cache_ttl: 0
       {{- end }}
+      {{- $router := include "cetirun-ai-gateway.router" . | fromJson }}
+      {{- if $router.healthChecks.enabled }}
+      {{- $interval := int $router.healthChecks.intervalSeconds }}
+      # router.healthChecks: probe every deployment in the background, those
+      # configured here and those added later, such as the GitHub Copilot
+      # routes the CetiRun operator registers for each Agent, and route only to
+      # those that answered. Each probe is a real call. LiteLLM's auto routers
+      # are not probed themselves. A probe answered with 429 or 408 is ignored
+      # for routing: the deployment keeps its previous state and no cooldown
+      # starts, though /health lists it as unhealthy. A result is trusted for
+      # two intervals. At most health_check_concurrency probes run at once.
+      background_health_checks: true
+      health_check_interval: {{ $interval }}
+      health_check_concurrency: {{ int $router.healthChecks.concurrency }}
+      enable_health_check_routing: true
+      health_check_staleness_threshold: {{ mul 2 $interval }}
+      health_check_ignore_transient_errors: true
+      {{- if include "cetirun-ai-gateway.redisEnabled" . }}
+      # One replica probes at a time, under a lock in Redis, and the others
+      # use its results (DEFAULT_SHARED_HEALTH_CHECK_TTL, set to the interval,
+      # as is DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL so a long cycle keeps the lock).
+      use_shared_health_check: true
+      {{- end }}
+      {{- end }}
+      {{- with (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).spendLogs.retention }}
+      # spendLogs.retention: LiteLLM deletes the rows of its spend log older
+      # than this, and the stored health check results as well. Each replica
+      # deletes one interval after it starts, then every interval. At
+      # LiteLLM's default of a day, pods replaced within a day, as every
+      # configuration change replaces them, never delete anything. With an
+      # hour, a replaced pod only postpones the deletion, rows outlive the
+      # retention (an hour at least) by about an hour at most, and a run with
+      # nothing to delete costs each replica two indexed queries per table.
+      maximum_spend_logs_retention_period: {{ . | quote }}
+      maximum_health_check_retention_period: {{ . | quote }}
+      maximum_spend_logs_retention_interval: "1h"
+      {{- end }}
 
     litellm_settings:
       # No retries in the Gateway. LiteLLM retries a failed upstream call twice
@@ -56,6 +125,11 @@ data:
       # retrying twice itself would turn into nine. Retrying a 429 makes rate
       # limiting worse. Errors go straight back to the caller, which decides.
       num_retries: 0
+      # budgetExceededStatusCode: the status of a request refused because the
+      # key's or team's budget is exhausted. LiteLLM's default, 422, makes
+      # agents report a malformed request; 429 makes them retry it as a rate
+      # limit.
+      budget_exceeded_status_code: {{ include "cetirun-ai-gateway.budgetExceededStatusCode" . }}
       {{- if .Values.blockUnpricedModels }}
       # A model missing from LiteLLM's price table costs zero, and budget checks
       # are skipped for zero-cost models, so a budget on a key silently does
@@ -77,7 +151,8 @@ data:
       prometheus_exclude_labels: {{ toJson $metrics.excludeLabels }}
       {{- end }}
       {{- end }}
-    {{- if include "cetirun-ai-gateway.redisEnabled" . }}
+    {{- $redis := include "cetirun-ai-gateway.redisEnabled" . }}
+    {{- if $redis }}
       # Redis is declared here for coordination, not for caching responses.
       #
       # Budgets and rate limits are only shared across replicas once LiteLLM's
@@ -98,14 +173,60 @@ data:
         {{- if include "cetirun-ai-gateway.redisPasswordSecret" . }}
         password: os.environ/REDIS_PASSWORD
         {{- end }}
+    {{- end }}
+    {{- /* The checks besides deployment affinity, which a model with standby
+           deployments keeps when deployment affinity is off for it. */}}
+    {{- $checks := list }}
+    {{- if $router.continuationAffinity }}
+    {{- $checks = append $checks "responses_api_deployment_check" }}
+    {{- end }}
+    {{- if $router.encryptedContentAffinity }}
+    {{- $checks = append $checks "encrypted_content_affinity" }}
+    {{- end }}
+    {{- $groupChecks := $checks }}
+    {{- if $router.deploymentAffinity }}
+    {{- $checks = append $checks "deployment_affinity" }}
+    {{- end }}
+    {{- $ordered := include "cetirun-ai-gateway.orderedModelNames" . | fromJsonArray }}
 
-    # Redis has to be declared in both blocks. Configuring only litellm_settings
-    # leaves router coordination unset: budgets keep doubling across replicas
-    # while the deployment looks correctly configured and Redis stays empty.
     router_settings:
+      {{- if $redis }}
+      # Redis has to be declared in both blocks. Configuring only
+      # litellm_settings leaves router coordination unset: budgets keep
+      # doubling across replicas while the deployment looks correctly
+      # configured and Redis stays empty.
       redis_host: {{ include "cetirun-ai-gateway.redisHost" . | quote }}
       redis_port: {{ include "cetirun-ai-gateway.redisPort" . }}
       {{- if include "cetirun-ai-gateway.redisPasswordSecret" . }}
       redis_password: os.environ/REDIS_PASSWORD
       {{- end }}
-    {{- end }}
+      {{- end }}
+      # router.routingStrategy: how one of a model's deployments is chosen.
+      routing_strategy: {{ $router.routingStrategy | quote }}
+      {{- if $router.failover }}
+      # router.failover: a request that failed on one deployment is sent once
+      # more, to another deployment of the same model. Not a retry: the
+      # failed deployment is not tried again, and num_retries stays 0.
+      enable_weighted_failover: true
+      {{- end }}
+      {{- if $checks }}
+      # router.continuationAffinity, router.encryptedContentAffinity and
+      # router.deploymentAffinity.
+      optional_pre_call_checks: {{ toJson $checks }}
+      {{- end }}
+      {{- if and $router.deploymentAffinity $ordered }}
+      # No deployment affinity for models with standby deployments (order):
+      # a key pinned to a standby would stay there after the primary is back.
+      # The other checks stay on for them.
+      {{- $groups := dict }}
+      {{- range $ordered }}
+      {{- $_ := set $groups . $groupChecks }}
+      {{- end }}
+      model_group_affinity_config: {{ toJson $groups }}
+      {{- end }}
+      {{- with $router.fallbacks }}
+      fallbacks: {{ toJson . }}
+      {{- end }}
+      {{- with $router.contextWindowFallbacks }}
+      context_window_fallbacks: {{ toJson . }}
+      {{- end }}

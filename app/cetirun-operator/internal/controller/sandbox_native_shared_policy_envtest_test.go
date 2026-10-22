@@ -44,7 +44,7 @@ func TestNativeSandboxSharedPolicyAPIServer(t *testing.T) {
 	for i := range lifetimes {
 		run := &lifetimes[i]
 		current := run.harness
-		current.reconcileOK(t)
+		current.seedRetainedBootstrap(t)
 		current.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 			Namespace: instanceNamespace(current.agent.Name), Name: "default",
 		}})

@@ -939,9 +939,9 @@ func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, 
 }
 
 // blockAIGatewayKeyIfPresent revokes an existing operator-owned key without
-// creating a Secret or a replacement key. It is used for an entitlement that
-// has tightened to no model sources. A missing Secret cannot safely identify
-// a key, so the UID-derived alias remains untouched rather than risking an
+// creating a Secret or a replacement key. It is used for suspension and for an
+// entitlement that has tightened to no model sources. A missing Secret cannot
+// safely identify a key, so the UID-derived alias remains untouched rather than risking an
 // unrelated key or resetting spend.
 func (r *AgentReconciler) blockAIGatewayKeyIfPresent(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, reason string) (bool, error) {
 	secret, err := r.aiGatewayKeySecret(ctx, instance)
@@ -974,8 +974,11 @@ func (r *AgentReconciler) blockAIGatewayKeyIfPresent(ctx context.Context, client
 		return false, fmt.Errorf("the AI Gateway key is already blocked outside a CetiRun policy transition")
 	}
 	if status.Reason != reason {
-		if err := r.recordAIGatewayBlockIntent(ctx, instance, reason,
-			"The AI Gateway key will be blocked because the effective policy grants no model source"); err != nil {
+		message := "The AI Gateway key will be blocked because the effective policy grants no model source"
+		if reason == aiGatewayReasonSuspended {
+			message = "The AI Gateway key will remain blocked while the Agent is suspended"
+		}
+		if err := r.recordAIGatewayBlockIntent(ctx, instance, reason, message); err != nil {
 			return false, fmt.Errorf("persist AI Gateway block intent: %w", err)
 		}
 	}

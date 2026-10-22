@@ -32,7 +32,7 @@ func TestNativeSandboxNetworkControlsAPIServer(t *testing.T) {
 		},
 	}
 	h := newNativeStartAPIHarness(t, true, true, network)
-	h.reconcileOK(t)
+	h.seedRetainedBootstrap(t)
 	h.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 		Namespace: instanceNamespace(h.agent.Name), Name: "default",
 	}})

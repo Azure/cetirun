@@ -36,6 +36,34 @@ const (
 	nativeStartAnnotation   = w.NativeStartAnnotation
 )
 
+// Recorded single-start lifetimes retain their owned execution contract.
+// New native lifetimes use common reconciliation.
+func (r *AgentReconciler) reconcileRecordedNativeSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	var namespaceErr, projectionErr error
+	if r.AIGateway.Enabled {
+		namespace := &corev1.Namespace{}
+		namespaceErr = r.customReader().Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace)
+		if namespaceErr == nil {
+			namespaceErr = r.validateSandboxBootstrapNamespace(ctx, agent, namespace)
+			if namespaceErr == nil {
+				projectionErr = r.reconcileAIGateway(ctx, agent, true)
+				projectionErr = errors.Join(projectionErr, r.updateStatus(ctx, agent))
+			}
+		}
+	}
+	var result ctrl.Result
+	var executionErr error
+	if namespaceErr == nil && projectionErr == nil && r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution {
+		result, executionErr = r.reconcileKubernetesSandbox(ctx, agent)
+	} else {
+		result, executionErr = r.holdSandboxWithPolicyFence(ctx, agent, nil)
+	}
+	if apierrors.IsNotFound(namespaceErr) {
+		namespaceErr = nil
+	}
+	return result, errors.Join(namespaceErr, projectionErr, executionErr)
+}
+
 func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 	agent, box, policy := attempt.agent, attempt.resolution.Sandbox, attempt.resolution.AgentPolicy
 	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw ||

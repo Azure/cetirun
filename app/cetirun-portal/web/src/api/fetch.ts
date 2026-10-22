@@ -14,6 +14,19 @@
 //      sign-in page on a different origin and the browser blocked it (CORS).
 //   3. The response is an HTML page (the OAuth2 Proxy sign-in interstitial)
 //      instead of the JSON we expected.
+
+/** An error response from the Portal, with its HTTP status and optional API code. */
+export class PortalError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "PortalError";
+  }
+}
+
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
   let response: Response;
   try {

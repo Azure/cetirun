@@ -327,9 +327,17 @@ runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 | `cetirun-ai-gateway.enabled` | `true`; turn it off only when a Gateway is installed separately in the operator namespace |
 | `cetirun-ai-gateway.operatorIntegration` | `true`; required while the Gateway is installed. Reserves `copilot/` model names for the Agents' GitHub Copilot routes and checks router fallback targets against the caller's key. Set it on a separately installed Gateway too |
 | `cetirun-ai-gateway.models` | `[]`; shared models every OpenClaw and Hermes Agent can use, each with `model_info.access_groups: ["cetirun-shared"]` and, while the Gateway blocks unpriced models, a price. Empty is valid: OpenClaw and Hermes Agents then use their owners' GitHub Copilot |
+| `cetirun-ai-gateway.priceTable` | `remote`; LiteLLM downloads the current price table from GitHub when a Gateway pod starts and falls back to the copy in the image. `bundled` uses only the image's copy, for a cluster without internet access or prices pinned to the image. New models and price changes then arrive only with a new image: while the Gateway blocks unpriced models, a shared model missing from that copy needs a declared price, and a GitHub Copilot model newer than the image is not offered. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#known-gaps) |
 | `cetirun-ai-gateway.requestLog.enabled` | `true`; one JSON line per model call on the Gateway's stdout, with the caller, model, tokens, spend and timing, for the cluster's log collection. It carries no request or response content |
-| `cetirun-ai-gateway.spendLogs.enabled` | `false` in the platform (the Gateway chart defaults to `true`); LiteLLM writes no row per call to `LiteLLM_SpendLogs`, so the LiteLLM console's request log pages stay empty. Spend, budgets and daily usage totals are kept. Turned off only together with the request log |
+| `cetirun-ai-gateway.spendLogs.enabled`, `spendLogs.retention` | `true` and `7d`; LiteLLM writes a row per call to `LiteLLM_SpendLogs`, which the LiteLLM console's request log pages read, without prompts or responses. Each Gateway pod deletes rows older than the retention every hour, the first time an hour after it starts, with the stored health check results. Spend, budgets and daily usage totals are kept beyond it. Turned off only together with the request log |
 | `cetirun-ai-gateway.metrics.enabled` | `true` in the platform (the Gateway chart defaults to `false`); serves LiteLLM's Prometheus metrics on port 9090 of each Gateway pod (9091 when the Gateway itself listens on 9090), without authentication. `metrics.podMonitor.enabled`, also `true` in the platform, adds a PodMonitor for Azure Monitor managed Prometheus when the cluster serves its API |
+| `cetirun-ai-gateway.router.routingStrategy` | `simple-shuffle`; how one of a model's deployments is chosen: also `least-busy`, `latency-based-routing`, `usage-based-routing-v2` or `cost-based-routing`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-deployment) |
+| `cetirun-ai-gateway.router.failover`, `router.continuationAffinity` | `true`; with several deployments behind one model name, a request that failed on one is sent once more to another (not a retry; `simple-shuffle` only), and a Responses API continuation goes to the deployment that stored the earlier response. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#routing) |
+| `cetirun-ai-gateway.router.encryptedContentAffinity`, `router.deploymentAffinity` | `true`; keeps each Responses API conversation on the deployment that encrypted its reasoning, and each key on the deployment that served it last, for the provider's prompt cache. When that deployment fails, the conversation's requests fail with it until it is in cooldown or marked unhealthy by the health checks; only then does the conversation move, without its encrypted reasoning. Keep health checks on: a cooldown lasts five seconds. Deployment affinity is off for models whose deployments set `order`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#encrypted-reasoning-stays-with-its-resource) |
+| `cetirun-ai-gateway.router.healthChecks.enabled`, `router.healthChecks.intervalSeconds`, `router.healthChecks.concurrency` | `true`, `300` and `8`; probes every deployment, at most eight at a time, including each Agent's GitHub Copilot routes, which spends the owner's Copilot allowance, and routes only to those that answered. With Redis, one replica probes for all |
+| `cetirun-ai-gateway.budgetExceededStatusCode` | `402`; the status of a request refused for an exhausted key or team budget. OpenClaw and Hermes stop and report exhausted credits; `422` makes them report a malformed request and `429` a rate limit they retry. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#when-a-budget-runs-out) |
+| `cetirun-ai-gateway.podDisruptionBudget.enabled` | `true`; above one Gateway replica, a PodDisruptionBudget with `maxUnavailable: 1` so a node drain evicts one replica at a time |
+| `cetirun-ai-gateway.router.fallbacks`, `router.contextWindowFallbacks` | `[]`; models to try when a model fails, or when a request is too long for it. Each target is checked against the Agent's key |
 | `cetirun-operator.aiGateway.enabled`, `cetirun-portal.features.aiGatewayEnabled` | `true`; required, the chart refuses to install with either off |
 | `cetirun-operator.domainSuffix`, `cetirun-portal.istio.host` | Required deployment domain for enabled components |
 | `cetirun-operator.istioGateway`, `cetirun-portal.istio.gateway` | Matching Gateway resource in `namespace/name` form |
@@ -367,6 +375,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
 | `azure.*` | Optional Teams provisioning configuration |
 | `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations for configuration admission and sources for held native Sandbox preparation |
+| `sandboxSources.nativeExecution` | `false`; select common OpenClaw/Hermes reconciliation for new lifetimes with owned bootstrap, enforced admission and the AI Gateway |
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; existing operator-namespace ConfigMap containing versioned `platform.json`, shared by configuration admission and the controller |
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing claims stay read-only; bootstrap can create owned HOME only in new namespaces, while published skills stay external |
@@ -391,6 +400,14 @@ native-access input pinning. This is read-only access to shared routing
 infrastructure, not Gateway mutation or automatic route/runtime activation.
 The optional skills catalog adds only PersistentVolume `get` for its dependency
 metadata; it adds no Secret lists or cluster-wide ConfigMap access.
+
+Use one release version across the Operator, Sandbox admission, Portal and
+configuration-change tools. Native execution selects the common flow without a
+second rollout gate. The retired `sandboxSources.reconciledExecution` value is
+rejected and must be removed. Persisted mode and ownership still govern existing
+lifetimes; configuration changes do not migrate namespace or HOME state.
+Mixed-version rollouts and pre-upgrade bootstrap-only recovery are not promised.
+See [common Sandbox reconciliation]({{< repo "app/cetirun-operator/README.md" >}}#common-sandbox-reconciliation-explicit-opt-in).
 
 Sources are read-only by default and do not create capability registrations. With
 `bootstrapOwnedPrerequisites: true`, the operator creates an owned protected
@@ -569,6 +586,8 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `features.tailscaleEnabled` | `false` |
 | `features.maxInstancesPerUser` | `1`; `0` means unlimited |
 | `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`; also accepts opt-in `custom`. Checked by both the form and backend |
+| `sandboxRuntimeProfiles` | Approved chart/image/port pins for built-in Sandbox creation; missing profiles reject creation unless controller defaults are explicitly enabled |
+| `sandboxRuntimeDefaultsFromController` | `false`; permit missing profiles only after the Operator's common Sandbox executor is enabled |
 | `noticeBanner` | Set your deployment notice explicitly or clear it |
 | `image`, `imagePullSecrets` | Portal image pin and pull access |
 
@@ -579,6 +598,12 @@ Per-user and Team-specific type and image policy is deferred to AgentPolicy.
 See [Portal self-service](../agent-harness/#portal-self-service) for the request
 contract and configuration. Operator runtime qualifications and Sandbox
 admission remain separate checks.
+
+Enable `sandboxRuntimeDefaultsFromController` only when the Operator uses
+`sandboxSources.nativeExecution`; the platform chart rejects a mismatch.
+Disable this Portal setting before disabling native execution.
+Configured profiles and explicit image/port requests remain subject
+to their existing validation and admission checks.
 
 `istio.sidecarInjection: true` is only a chart validation assertion; it does
 not label the namespace or inject a running pod. The deploy helper labels the

@@ -91,6 +91,11 @@ Licensed under the MIT License.
 {{- define "cetirun.context.volume" -}}
 {{- if include "cetirun.context.enabled" . }}
 - name: context-view
+  {{- if and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled }}
+  emptyDir:
+    sizeLimit: {{ .Values.sandboxWorkload.scratchSizeLimit | quote }}
+  {{- else }}
   emptyDir: {}
+  {{- end }}
 {{- end }}
 {{- end -}}

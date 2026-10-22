@@ -84,13 +84,23 @@ Sandbox runtime. Each entry contains `chartVersion`, a digest-pinned `image`,
 and `port` (18789 for OpenClaw, 8642 for Hermes). The chart version must match
 the Operator's configured runtime chart, and that chart's profile must approve
 the image and port. Only configure harnesses supported by the selected platform;
-the native single-start profile currently supports OpenClaw.
+the common native executor supports OpenClaw and Hermes, while retained
+single-start records are OpenClaw-only.
 
 The Portal records these inputs in the initial Agent creation request, so users
 do not enter deployment coordinates in the creation form. Explicit image/port
-requests remain subject to admission. Missing or invalid deployment profiles
-reject creation before any Agent, namespace or Secret is written. These defaults
-do not authorize a runtime or change the selected AgentPolicy/Sandbox checks.
+requests remain subject to admission. By default, missing or invalid deployment
+profiles reject creation before any Agent, namespace or Secret is written.
+
+With the Operator's `sandboxSources.nativeExecution` enabled, the deployment may set
+`cetirun-portal.sandboxRuntimeDefaultsFromController: true`. This permits missing
+profiles to use trusted chart/image/port defaulting in the common executor.
+Configured profiles are still validated. The platform chart rejects this Portal
+opt-in unless the Operator and its native sources are enabled.
+For standalone Portal releases, verify the matching Operator configuration
+before enabling it, and turn it off before disabling native execution.
+These defaults do not authorize a runtime or change the
+selected AgentPolicy/Sandbox checks.
 
 ## AI Gateway
 

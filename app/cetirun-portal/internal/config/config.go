@@ -5,6 +5,7 @@ package config
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"slices"
 	"strconv"
@@ -38,9 +39,15 @@ type Config struct {
 	AllowedAgentTypes []string
 	// SandboxRuntimes pins deployment-approved built-in creation inputs.
 	SandboxRuntimes map[string]SandboxRuntime
+	// SandboxControllerDefaults requires the common Sandbox executor.
+	SandboxControllerDefaults bool
 	// AgentIdentityEnabled requires cryptographically verified Entra owner
 	// claims and exposes the per-instance authorization experience.
 	AgentIdentityEnabled bool
+	// AgentToolsEnabled exposes owner-scoped Azure connections and bindings.
+	AgentToolsEnabled      bool
+	AgentToolsRuntimeTypes []string
+	AgentToolsBrokerURL    string
 	// EntraTenantID and PortalClientID identify the issuer and audience of the
 	// ID token passed by oauth2-proxy to the Portal backend.
 	EntraTenantID  string
@@ -67,6 +74,13 @@ type Config struct {
 func Load() Config {
 	var chatLabels map[string]string
 	_ = json.Unmarshal([]byte(os.Getenv("CHAT_CALLER_LABELS")), &chatLabels)
+	rawRuntimes := os.Getenv("SANDBOX_RUNTIME_PROFILES")
+	runtimes := loadSandboxRuntimes(rawRuntimes)
+	controllerDefaults := os.Getenv("SANDBOX_RUNTIME_DEFAULTS_FROM_CONTROLLER") == "true"
+	if rawRuntimes != "" && runtimes == nil {
+		slog.Error("Invalid Sandbox runtime profiles; controller defaults are disabled")
+		controllerDefaults = false
+	}
 	return Config{
 		CustomChatEnabled:                  os.Getenv("FEATURE_CUSTOM_CHAT_ENABLED") == "true",
 		ChatIdentityRealm:                  os.Getenv("CHAT_IDENTITY_REALM"),
@@ -77,8 +91,12 @@ func Load() Config {
 		NoticeBanner:                       os.Getenv("NOTICE_BANNER"),
 		MaxInstancesPerUser:                envOrDefaultInt("MAX_INSTANCES_PER_USER", 1),
 		AllowedAgentTypes:                  envOrDefaultAgentTypes("ALLOWED_AGENT_TYPES", defaultAllowedAgentTypes),
-		SandboxRuntimes:                    loadSandboxRuntimes(os.Getenv("SANDBOX_RUNTIME_PROFILES")),
+		SandboxRuntimes:                    runtimes,
+		SandboxControllerDefaults:          controllerDefaults,
 		AgentIdentityEnabled:               os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
+		AgentToolsEnabled:                  os.Getenv("FEATURE_AGENT_TOOLS_ENABLED") == "true",
+		AgentToolsRuntimeTypes:             strings.Split(envOrDefault("TOOLS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
+		AgentToolsBrokerURL:                envOrDefault("AGENT_TOOLS_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
 		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
 		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),
 		AgentIdentityBrokerURL:             envOrDefault("AGENT_ID_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),

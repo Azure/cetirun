@@ -40,7 +40,7 @@ metadata:
   labels:
     {{- include "cetirun.copilotProxyLabels" . | nindent 4 }}
 spec:
-  replicas: {{ if eq (int .Values.replicaCount) 0 }}0{{ else }}1{{ end }}
+  replicas: {{ if ne $proxy.replicaCount nil }}{{ $proxy.replicaCount }}{{ else if eq (int .Values.replicaCount) 0 }}0{{ else }}1{{ end }}
   strategy:
     type: Recreate
   selector:

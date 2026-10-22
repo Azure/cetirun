@@ -73,6 +73,11 @@ init_block() {
   awk '/^      initContainers:/{f=1} /^      containers:/{f=0} f' <<< "$1"
 }
 
+# The containers block of the Gateway Deployment, without its init containers.
+gateway_block() {
+  awk '/^      containers:/{f=1} f' <<< "$1"
+}
+
 # object_name KIND COMPONENT RENDER: the name of the rendered object of that
 # kind whose own labels carry app.kubernetes.io/component=COMPONENT. Prints
 # one line: awk runs END even after exit, so END checks whether it printed.
@@ -229,6 +234,321 @@ assert_contains "mode: default_off" "the Redis cache does not answer requests by
 echo "==> the Gateway does not retry upstream failures"
 assert_contains "num_retries: 0" "LiteLLM's default retries are turned off" "${output}"
 
+# ----- Routing -----
+
+# Only the strategies LiteLLM selects with on its asynchronous path, which runs
+# the auto routers and the pre-call checks, are accepted.
+echo "==> the routing strategy is the administrator's, among those that run the pre-call checks"
+assert_contains 'routing_strategy: "simple-shuffle"' "deployments are chosen at random by default" "${output}"
+assert_contains 'routing_strategy: "simple-shuffle"' "the strategy does not depend on Redis" "${single}"
+for strategy in least-busy latency-based-routing usage-based-routing-v2 cost-based-routing; do
+  assert_contains "routing_strategy: \"${strategy}\"" "${strategy} can be chosen" \
+    "$(render --set "router.routingStrategy=${strategy}")"
+done
+assert_rejected "usage-based-routing, which skips the pre-call checks" --set router.routingStrategy=usage-based-routing
+assert_rejected "an unknown routing strategy" --set router.routingStrategy=round-robin
+
+# simple-shuffle weighs by the first of weight, rpm and tpm with a positive
+# value and gives a deployment without it no requests; a deployment without
+# order is left out whenever another has one.
+echo "==> weight, order, rpm and tpm are set on every deployment of a model or on none"
+second=(--set-string 'models[1].model_name=lint-model' --set-string 'models[1].litellm_params.model=openai/lint-model-2')
+for field in weight order rpm tpm; do
+  assert_rejected "${field} on one of two deployments" "${second[@]}" --set "models[0].litellm_params.${field}=1"
+  render "${second[@]}" --set "models[0].litellm_params.${field}=1" --set "models[1].litellm_params.${field}=2" > /dev/null || {
+    echo "FAIL: ${field} on both deployments of a model should render" >&2
+    exit 1
+  }
+done
+render "${second[@]}" --set-string 'models[2].model_name=other-model' --set-string 'models[2].litellm_params.model=openai/other' \
+  --set 'models[2].litellm_params.weight=1' > /dev/null || {
+  echo "FAIL: a model with one deployment may set weight" >&2
+  exit 1
+}
+
+# Several deployments behind one model name: a request that fails on one is sent
+# once more, to another. It is not a retry, so num_retries stays 0. Measured with
+# one of two deployments failing: 13 of 30 requests failed without it, none with
+# it.
+echo "==> a failed request is sent to another deployment of the model"
+assert_contains "enable_weighted_failover: true" "failover is on by default" "${output}"
+assert_contains "enable_weighted_failover: true" "failover does not depend on Redis" "${single}"
+assert_absent "enable_weighted_failover" "failover can be turned off" "$(render --set router.failover=false)"
+
+# A Responses API continuation (previous_response_id) works only on the
+# deployment that produced the earlier response. Measured across two
+# deployments: 6 of 20 continuations failed without the check. Only the
+# resource that encrypted a model's reasoning can read it; LiteLLM 1.105.1
+# moves a conversation off its deployment, without that reasoning, only while
+# the deployment is in cooldown or marked unhealthy by the health checks.
+# A key kept on one deployment keeps the provider's prompt cache.
+echo "==> continuations, encrypted reasoning and keys stay on their deployment"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","encrypted_content_affinity","deployment_affinity"\]' \
+  "the three affinity checks are on by default" "${output}"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","deployment_affinity"\]' \
+  "encrypted reasoning affinity can be turned off" "$(render --set router.encryptedContentAffinity=false)"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","encrypted_content_affinity"\]' \
+  "deployment affinity can be turned off" "$(render --set router.deploymentAffinity=false)"
+assert_absent "optional_pre_call_checks" "no pre-call checks when all are off" \
+  "$(render --set router.continuationAffinity=false --set router.encryptedContentAffinity=false --set router.deploymentAffinity=false)"
+assert_absent "model_group_affinity_config" "no per-model affinity without standby deployments" "${output}"
+
+# Deployment affinity pins a key before LiteLLM keeps only the lowest order, so
+# a key pinned to a standby would stay there after the primary is back. It is
+# off for such a model; the other checks stay on for it.
+echo "==> deployment affinity is off for a model with standby deployments"
+ordered="$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+  --set-string 'models[2].model_name=other-model' --set-string 'models[2].litellm_params.model=openai/other')"
+assert_contains 'model_group_affinity_config: {"lint-model":\["responses_api_deployment_check","encrypted_content_affinity"\]}' \
+  "only the ordered model leaves deployment affinity out, keeping the other checks" "${ordered}"
+assert_contains 'model_group_affinity_config: {"lint-model":\[\]}' "a model with standby deployments can have no checks at all" \
+  "$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+    --set router.continuationAffinity=false --set router.encryptedContentAffinity=false)"
+assert_absent "model_group_affinity_config" "nothing to turn off without deployment affinity" \
+  "$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+    --set router.deploymentAffinity=false)"
+
+echo "==> fallbacks are the administrator's"
+assert_absent "fallbacks:" "no fallbacks by default" "${output}"
+assert_contains 'fallbacks: \[{"lint-model":\["other-model"\]}\]' "configured fallbacks reach the router" \
+  "$(render --set 'router.fallbacks[0].lint-model[0]=other-model')"
+assert_contains 'context_window_fallbacks: \[{"lint-model":\["long-model"\]}\]' \
+  "configured context window fallbacks reach the router" \
+  "$(render --set 'router.contextWindowFallbacks[0].lint-model[0]=long-model')"
+assert_rejected "a fallback target that is not a list" --set-string 'router.fallbacks[0].lint-model=other-model'
+
+# Each probe is a real call, to every deployment: those configured here, those
+# added later and the operator's per-Agent GitHub Copilot routes. LiteLLM never
+# probes an auto router itself. With Redis, one replica probes under a lock and
+# the others reuse its results for one interval.
+echo "==> background health checks probe every deployment, once for all replicas"
+assert_contains "background_health_checks: true" "health checks are on by default" "${output}"
+assert_absent "background_health_check_model_groups" "every deployment is probed, not a chosen list" "${output}"
+assert_contains "enable_health_check_routing: true" "requests go only to deployments that answered" "${output}"
+assert_contains "health_check_interval: 300$" "probes every five minutes by default" "${output}"
+assert_contains "health_check_staleness_threshold: 600$" "a result counts for two intervals" "${output}"
+assert_contains "health_check_ignore_transient_errors: true" "a probe answered with 429 does not exclude a deployment" "${output}"
+assert_contains "use_shared_health_check: true" "with Redis, one replica probes for all" "${output}"
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_TTL$' <<< "${output}" | grep -q 'value: "300"' || {
+  echo "FAIL: shared probe results are not reused past the next probe" >&2
+  exit 1
+}
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_TTL$' <<< "$(render --set router.healthChecks.intervalSeconds=120)" \
+  | grep -q 'value: "120"' || {
+  echo "FAIL: the shared result lifetime does not follow the probe interval" >&2
+  exit 1
+}
+assert_contains "health_check_interval: 120$" "the probe interval can be changed" "$(render --set router.healthChecks.intervalSeconds=120)"
+assert_absent "use_shared_health_check" "a single replica without Redis probes on its own" "${single}"
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_TTL" "no shared results without Redis" "${single}"
+assert_contains "background_health_checks: true" "a single replica without Redis still probes" "${single}"
+off="$(render --set router.healthChecks.enabled=false)"
+assert_absent "background_health_checks" "health checks can be turned off" "${off}"
+assert_absent "use_shared_health_check" "no shared health checks when off" "${off}"
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_TTL" "no shared result lifetime when off" "${off}"
+assert_rejected "a probe interval under 30 seconds" --set router.healthChecks.intervalSeconds=10
+
+# Without a limit LiteLLM starts every probe at once: one GitHub account
+# answered 11 to 43 of a cycle's Copilot probes with 429. LiteLLM reads the
+# limit from general_settings, and treats 0 as no limit.
+echo "==> probes run a few at a time, under one lock per cycle"
+assert_contains "health_check_concurrency: 8$" "at most eight probes run at once by default" "${output}"
+assert_contains "health_check_concurrency: 3$" "the probe concurrency can be changed" \
+  "$(render --set router.healthChecks.concurrency=3)"
+assert_contains "health_check_concurrency: 8$" "a single replica limits its probes too" "${single}"
+assert_absent "health_check_concurrency" "no probe concurrency when probes are off" "${off}"
+assert_rejected "a probe concurrency of 0, which LiteLLM reads as no limit" --set router.healthChecks.concurrency=0
+assert_rejected "a negative probe concurrency" --set router.healthChecks.concurrency=-1
+# The probing replica's lock expires after 60 seconds unless set. A longer cycle
+# would let another replica take it and probe every deployment again.
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL$' <<< "${output}" | grep -q 'value: "300"' || {
+  echo "FAIL: the shared probe lock does not last one interval" >&2
+  exit 1
+}
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL$' <<< "$(render --set router.healthChecks.intervalSeconds=120)" \
+  | grep -q 'value: "120"' || {
+  echo "FAIL: the shared probe lock does not follow the probe interval" >&2
+  exit 1
+}
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL" "no shared probe lock without Redis" "${single}"
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL" "no shared probe lock when off" "${off}"
+
+# A LiteLLM auto router is an entry in models whose model is
+# auto_router/complexity_router. Its own name is checked against the unpriced
+# model block like any model; measured, each call is charged at the price of the
+# model it picks and budgets hold. A price of zero would make LiteLLM's notion
+# of a free model the only thing between it and the budget checks, so the
+# chart wants one above zero. Its tiers have to be models served here, and
+# without a LiteLLM licence the proxy refuses to start with more than one
+# router that writes its own classifier prompt.
+echo "==> an auto router is priced, routes to models configured here, and fits the licence"
+router_dir="$(mktemp -d)"
+trap 'rm -rf "${router_dir}"' EXIT
+default_router_config='tiers: {SIMPLE: lint-model, MEDIUM: [lint-model, big-model], COMPLEX: big-model, REASONING: big-model}'
+router_values() {  # router_values FILE [ROUTER_CONFIG] [INPUT_PRICE]: a router named auto over lint-model and big-model
+  local file="$1" config="${2:-${default_router_config}}" price="${3:-0.00001}"
+  cat > "${file}" <<EOF
+models:
+  - model_name: lint-model
+    litellm_params: {model: openai/lint-model}
+  - model_name: big-model
+    litellm_params: {model: openai/big-model}
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: ${price}
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        ${config}
+      complexity_router_default_model: big-model
+EOF
+}
+router_values "${router_dir}/valid.yaml"
+routed="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set operatorIntegration=true)"
+assert_contains "model: auto_router/complexity_router" "a router configured in models reaches LiteLLM" "${routed}"
+assert_absent "background_health_check_model_groups" \
+  "every deployment is probed; LiteLLM never probes a router itself" "${routed}"
+
+# LiteLLM 1.105.1 compacts a conversation near the model's input limit with
+# extra model calls, replaces the caller's max_tokens with the tier model's
+# ceiling, and refuses a request too long for the decided tier's models. The
+# chart changes those defaults, unless a router sets them itself.
+echo "==> a router leaves the conversation and max_tokens to the agent, and moves a request that does not fit"
+assert_contains "context_compaction: false" "no compaction by the Gateway" "${routed}"
+assert_contains "max_tokens_from_tier_model: false" "the caller's max_tokens is forwarded" "${routed}"
+assert_contains "enable_context_window_escalation: true" "a request too long for its tier moves to one that fits" "${routed}"
+router_values "${router_dir}/own-defaults.yaml" "${default_router_config}
+        context_compaction: {trigger_ratio: 0.9}
+        max_tokens_from_tier_model: true
+        enable_context_window_escalation: false"
+own_defaults="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/own-defaults.yaml")"
+assert_contains "trigger_ratio: 0.9" "a router's own compaction is kept" "${own_defaults}"
+assert_contains "max_tokens_from_tier_model: true" "a router's own max_tokens setting is kept" "${own_defaults}"
+assert_contains "enable_context_window_escalation: false" "a router's own escalation setting is kept" "${own_defaults}"
+
+# OpenClaw sends its own context as the last user message, between markers. A
+# router classifies the newest message a person wrote, so without the markers
+# every OpenClaw request was classified by that block: measured, all of them
+# went to the simple tier, a request for code included.
+echo "==> a router skips OpenClaw's context when it classifies"
+assert_contains "open: <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "a router reads past OpenClaw's context" "${routed}"
+assert_contains "open: <system-reminder>" "and keeps LiteLLM's own markers" "${routed}"
+standalone="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set operatorIntegration=false)"
+assert_contains "open: <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "also without the operator integration" "${standalone}"
+router_values "${router_dir}/own-markers.yaml" "${default_router_config}
+        reminder_markers: [{open: '<ctx>', close: '</ctx>'}]"
+own="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/own-markers.yaml")"
+assert_contains "open: <ctx>" "a router's own markers are kept" "${own}"
+assert_absent "OPENCLAW_INTERNAL_CONTEXT" "and not extended" "${own}"
+router_rejected() {  # router_rejected DESCRIPTION FILE
+  if helm template "${release_name}" "${chart_dir}" -f "$2" > /dev/null 2>&1; then
+    echo "FAIL: $1 should have been rejected" >&2
+    exit 1
+  fi
+}
+# LiteLLM 1.105.1 takes only {open, close} pairs, two different strings that
+# are not blank, and refuses to start otherwise.
+for markers in "['<system-reminder>']" "[]" "[{open: '<a>'}]" "[{open: '##', close: '##'}]" "[{open: '<a>', close: ' '}]"; do
+  router_values "${router_dir}/bad-markers.yaml" "${default_router_config}
+        reminder_markers: ${markers}"
+  router_rejected "reminder_markers ${markers}" "${router_dir}/bad-markers.yaml"
+done
+router_values "${router_dir}/zero.yaml" "" 0
+router_rejected "a router priced at zero" "${router_dir}/zero.yaml"
+grep -v 'cost_per_token' "${router_dir}/valid.yaml" > "${router_dir}/unpriced.yaml"
+router_rejected "an unpriced router" "${router_dir}/unpriced.yaml"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/unpriced.yaml" --set blockUnpricedModels=false > /dev/null \
+  || { echo "FAIL: an unpriced router was rejected with blockUnpricedModels off" >&2; exit 1; }
+router_values "${router_dir}/unknown.yaml" 'tiers: {SIMPLE: lint-model, COMPLEX: elsewhere}'
+router_rejected "a router tier outside models" "${router_dir}/unknown.yaml"
+router_values "${router_dir}/itself.yaml" 'tiers: {SIMPLE: lint-model, COMPLEX: auto}'
+router_rejected "a router tier that is a router" "${router_dir}/itself.yaml"
+router_values "${router_dir}/no-tiers.yaml" 'classifier_type: heuristic'
+router_rejected "a router without tiers" "${router_dir}/no-tiers.yaml"
+router_values "${router_dir}/one-prompt.yaml" \
+  'tiers: {SIMPLE: lint-model, COMPLEX: big-model}
+        classifier_type: llm
+        classifier_llm_config: {model: lint-model, system_prompt: rubric}'
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/one-prompt.yaml" > /dev/null \
+  || { echo "FAIL: one router with its own classifier prompt was rejected" >&2; exit 1; }
+sed -n '/model_name: auto$/,$p' "${router_dir}/one-prompt.yaml" | sed 's/model_name: auto$/model_name: auto-two/' \
+  > "${router_dir}/second.yaml"
+cat "${router_dir}/one-prompt.yaml" "${router_dir}/second.yaml" > "${router_dir}/two-prompts.yaml"
+router_rejected "two routers with their own classifier prompt" "${router_dir}/two-prompts.yaml"
+# Without a licence, LiteLLM 1.105.1 lets one router claim each licensed
+# capability: heuristic_v2, capability and llm_v2 classifiers, and its own
+# tiers or classifier prompt. One of each is fine; a model classifier with
+# LiteLLM's own prompt claims none.
+two_routers() {  # two_routers FILE FIRST_SETTINGS SECOND_SETTINGS: routers auto and auto-two over lint-model
+  cat > "$1" <<EOF
+models:
+  - model_name: lint-model
+    litellm_params: {model: openai/lint-model}
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+      complexity_router_config: {tiers: {SIMPLE: lint-model}, $2}
+  - model_name: auto-two
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+      complexity_router_config: {tiers: {SIMPLE: lint-model}, $3}
+EOF
+}
+for type in heuristic_v2 capability llm_v2; do
+  two_routers "${router_dir}/two-${type}.yaml" "classifier_type: ${type}" "classifier_type: ${type}"
+  router_rejected "two routers with classifier_type ${type}" "${router_dir}/two-${type}.yaml"
+done
+two_routers "${router_dir}/mixed.yaml" "classifier_type: heuristic_v2" \
+  "classifier_type: llm, classifier_llm_config: {model: lint-model, system_prompt: rubric}"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/mixed.yaml" > /dev/null \
+  || { echo "FAIL: one heuristic_v2 router and one with its own classifier prompt were rejected" >&2; exit 1; }
+two_routers "${router_dir}/shipped-prompts.yaml" "classifier_type: llm, classifier_llm_config: {model: lint-model}" \
+  "classifier_type: llm, classifier_llm_config: {model: lint-model}"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/shipped-prompts.yaml" > /dev/null \
+  || { echo "FAIL: two model classifiers with LiteLLM's own prompt were counted" >&2; exit 1; }
+
+# ----- Budgets -----
+
+# LiteLLM 1.105 refuses a request over budget with 422 unless told otherwise.
+# Measured with OpenClaw 2026.9.6 and Hermes v2026.9.24: 422 reads to both as a
+# malformed request, 429 as a rate limit they retry, 402 as exhausted credits.
+echo "==> a request over budget is refused with 402"
+assert_contains "budget_exceeded_status_code: 402$" "a budget refusal is 402 by default" "${output}"
+assert_contains "budget_exceeded_status_code: 402$" "a budget refusal does not depend on Redis" "${single}"
+for code in 422 429; do
+  assert_contains "budget_exceeded_status_code: ${code}$" "${code} can be chosen for a budget refusal" \
+    "$(render --set budgetExceededStatusCode=${code})"
+done
+assert_rejected "a budget refusal status that agents were not measured with" --set budgetExceededStatusCode=500
+assert_rejected "a budget refusal status given as text" --set-string budgetExceededStatusCode=402
+
+# ----- Disruptions -----
+
+# A node drain evicts one Gateway replica at a time. maxUnavailable rather than
+# minAvailable, and only above one replica, so the budget never blocks a drain.
+echo "==> the Gateway replicas are drained one at a time"
+pdb="$(render -s templates/poddisruptionbudget.yaml)"
+assert_contains "kind: PodDisruptionBudget" "two replicas get a PodDisruptionBudget" "${pdb}"
+assert_contains "apiVersion: policy/v1$" "the PodDisruptionBudget uses policy/v1" "${pdb}"
+assert_contains "maxUnavailable: 1$" "one replica at a time may be evicted" "${pdb}"
+assert_absent "minAvailable" "the budget never requires a replica to stay up" "${pdb}"
+assert_contains "app.kubernetes.io/component: gateway$" "the budget selects the Gateway pods" \
+  "$(awk '/^  selector:/{f=1} f' <<< "${pdb}")"
+[ "$(awk '/^  selector:/{f=1} f' <<< "${pdb}")" \
+  = "$(awk '/^  selector:/{f=1} /^  template:/{f=0} f' <<< "$(render -s templates/deployment.yaml)")" ] || {
+  echo "FAIL: the PodDisruptionBudget does not select exactly the Deployment's pods" >&2
+  exit 1
+}
+assert_absent "kind: PodDisruptionBudget" "a single replica gets no PodDisruptionBudget" "${single}"
+assert_absent "kind: PodDisruptionBudget" "the PodDisruptionBudget can be turned off" \
+  "$(render --set podDisruptionBudget.enabled=false)"
+assert_contains "kind: PodDisruptionBudget" "three replicas get a PodDisruptionBudget" \
+  "$(render --set replicaCount=3)"
+
 # ----- Shutdown -----
 
 # LiteLLM finishes requests in flight when stopped and sets no limit of its own,
@@ -252,6 +572,24 @@ assert_contains "block_requests_for_models_without_pricing: true" \
 unpriced_allowed="$(render --set blockUnpricedModels=false)"
 assert_absent "block_requests_for_models_without_pricing" \
   "the block can be turned off deliberately" "${unpriced_allowed}"
+
+# ----- Price table -----
+
+# LiteLLM downloads its price table from GitHub whenever it is imported, which
+# the proxy does at start and the migrate step does to build its indexes, and
+# falls back to the copy in the image when that fails. priceTable: bundled keeps
+# both to that copy, for a cluster without internet access or prices pinned to
+# the image.
+echo "==> the price table is downloaded unless it is pinned to the image"
+assert_absent "LITELLM_LOCAL_MODEL_COST_MAP" "LiteLLM downloads the current price table by default" "${output}"
+assert_absent "LITELLM_LOCAL_MODEL_COST_MAP" "priceTable=remote downloads the current price table" \
+  "$(render --set-string priceTable=remote)"
+bundled_pod="$(render --set-string priceTable=bundled -s templates/deployment.yaml)"
+assert_contains 'value: "True"' "priceTable=bundled keeps the proxy to the image's price table" \
+  "$(gateway_block "${bundled_pod}" | grep -A1 'name: LITELLM_LOCAL_MODEL_COST_MAP$')"
+assert_contains 'value: "True"' "priceTable=bundled keeps the migrate step to the image's price table" \
+  "$(init_block "${bundled_pod}" | grep -A1 'name: LITELLM_LOCAL_MODEL_COST_MAP$')"
+assert_rejected "an unknown price table source" --set-string priceTable=local
 
 # ----- Migrations -----
 
@@ -522,6 +860,30 @@ assert_contains 'value: "false"' "spendLogs.enabled=false has the entrypoint sto
 assert_absent "disable_spend_logs" "the spend log setting stays out of LiteLLM's configuration" "${spend_off}"
 assert_rejected "the spend log off without the request log" --set spendLogs.enabled=false --set requestLog.enabled=false
 
+# The spend log grows by a row per call. LiteLLM deletes older rows, and the
+# stored health check results with them, on each replica one interval after it
+# starts and every interval after that. At LiteLLM's default interval, a day,
+# pods replaced sooner, as every configuration change replaces them, never
+# deleted a row, so the chart sets an hour whenever a retention is set. With
+# the spend log off there are still health check results and older rows to
+# delete. Prompts are never stored.
+echo "==> LiteLLM's spend log is kept for seven days, and older rows are deleted every hour"
+assert_contains 'maximum_spend_logs_retention_period: "7d"' "spend log rows are kept for seven days by default" "${output}"
+assert_contains 'maximum_health_check_retention_period: "7d"' "health check results are kept as long" "${output}"
+assert_contains 'maximum_spend_logs_retention_interval: "1h"$' "older rows are deleted every hour, not once a day" "${output}"
+assert_contains 'maximum_spend_logs_retention_interval: "1h"$' "a single replica deletes every hour too" "${single}"
+assert_contains 'maximum_spend_logs_retention_interval: "1h"$' \
+  "with the spend log off, health check results and older rows are still deleted every hour" "${spend_off}"
+retention_30d="$(render --set-string spendLogs.retention=30d)"
+assert_contains 'maximum_spend_logs_retention_period: "30d"' "the retention can be changed" "${retention_30d}"
+assert_contains 'maximum_spend_logs_retention_interval: "1h"$' "a longer retention is still applied every hour" \
+  "${retention_30d}"
+no_retention="$(render --set-string spendLogs.retention=)"
+assert_absent "retention_period" "an empty retention keeps every row" "${no_retention}"
+assert_absent "retention_interval" "nothing is scheduled for deletion without a retention" "${no_retention}"
+assert_rejected "a retention LiteLLM cannot read" --set-string spendLogs.retention=week
+assert_absent "store_prompts_in_spend_logs" "prompts stay out of the spend log" "${output}"
+
 # Container Insights copies each container's environment, Secret values
 # included, into its ContainerInventory table once a minute unless collection
 # is turned off for the cluster or for the container. Every container here
@@ -587,17 +949,28 @@ assert_contains "containerPort: 9100$" "a metrics port set by hand is used" \
 assert_rejected "the metrics port on the Service port" --set metrics.enabled=true --set metrics.port=4000
 
 # helm upgrade --reuse-values keeps the values of the chart version a release
-# was installed with, so a release from before the request log and metrics has
-# none of their settings; reading them directly failed the upgrade with a nil
-# pointer. Without them, the chart renders as with their defaults. Setting a
-# map to null removes it, as --reuse-values leaves it.
+# was installed with, so a release from before the request log, metrics,
+# router and price table settings has none of them; reading them directly
+# failed the upgrade with a nil pointer. Without them, the chart renders as
+# with their defaults. Setting a map to null removes it, as --reuse-values
+# leaves it.
 echo "==> a release from before these settings upgrades with --reuse-values"
-reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null)
-for template in deployment.yaml configmap.yaml; do
+reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null --set router=null
+  --set budgetExceededStatusCode=null --set podDisruptionBudget=null --set priceTable=null)
+for template in deployment.yaml configmap.yaml poddisruptionbudget.yaml; do
   [ "$(render "${reuse_args[@]}" -s "templates/${template}")" = "$(render -s "templates/${template}")" ] || {
-    echo "FAIL: without the request log and metrics settings, ${template} differs from its default render" >&2
+    echo "FAIL: without the request log, metrics, router, budget status, disruption budget and price table settings, ${template} differs from its default render" >&2
     exit 1
   }
+done
+for template in configmap.yaml deployment.yaml; do
+  for setting in intervalSeconds concurrency; do
+    [ "$(render --set "router.healthChecks.${setting}=null" -s "templates/${template}")" \
+      = "$(render -s "templates/${template}")" ] || {
+      echo "FAIL: without router.healthChecks.${setting}, ${template} differs from its default render" >&2
+      exit 1
+    }
+  done
 done
 [ "$(render --set metrics.enabled=true --set metrics.podMonitor=null -s templates/deployment.yaml)" \
   = "$(render --set metrics.enabled=true -s templates/deployment.yaml)" ] || {

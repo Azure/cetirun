@@ -4,6 +4,7 @@
 package helm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -49,6 +50,8 @@ type PreparedRelease struct {
 	apiValidated      bool
 	sandboxBundle     *sandboxworkload.Bundle
 	sandboxTemplate   *corev1.PodTemplateSpec
+	sandboxReconcile  *sandboxworkload.ReconcileExpectation
+	sandboxGuard      func(context.Context) error
 }
 
 // CacheKey includes actual rendered output as well as the consumed inputs.
@@ -260,13 +263,14 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		})
 	}
 	bindings := agents.Bindings{
-		MemoryEnabled:  values[sandboxworkload.ValuesKey] == nil && object(values["memoryContext"])["enabled"] == true,
-		DesktopEnabled: object(values["desktop"])["enabled"] == true,
-		ProfileID:      profile.ID,
-		ChartVersion:   chrt.Metadata.Version,
-		NativeConfig:   config,
-		NativeOptions:  map[string]any{"acpx": native["acpx"], "plugins": native["plugins"]},
-		NativeSandbox:  values[sandboxworkload.ValuesKey] != nil,
+		MemoryEnabled:     (values[sandboxworkload.ValuesKey] == nil || object(values[sandboxworkload.ValuesKey])["reconciled"] == true) && object(values["memoryContext"])["enabled"] == true,
+		DesktopEnabled:    object(values["desktop"])["enabled"] == true,
+		ProfileID:         profile.ID,
+		ChartVersion:      chrt.Metadata.Version,
+		NativeConfig:      config,
+		NativeOptions:     map[string]any{"acpx": native["acpx"], "plugins": native["plugins"]},
+		NativeSandbox:     values[sandboxworkload.ValuesKey] != nil,
+		ReconciledSandbox: object(values[sandboxworkload.ValuesKey])["reconciled"] == true,
 		Model: agents.ModelBinding{
 			Provider:      provider,
 			Name:          text(secrets["model"]),

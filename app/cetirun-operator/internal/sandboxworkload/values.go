@@ -77,6 +77,22 @@ func ValidateUserValues(values map[string]any, authorizedSecrets []string) error
 	return nil
 }
 
+func ValidateReconciledUserValues(values map[string]any, authorizedSecrets []string) error {
+	for name, value := range values {
+		switch name {
+		case "secrets", "extraEnv":
+			if err := ValidateUserValues(map[string]any{name: value}, authorizedSecrets); err != nil {
+				return err
+			}
+		case ValuesKey, "runtime", "runtimeClassName", "replicaCount", "serviceAccount", "azureWorkloadIdentity", "agentIdentity",
+			"persistence", "resources", "securityContext", "podSecurityContext", "networkPolicy", "sidecarScope",
+			"autoscaling", "ingress", "execRestriction":
+			return fmt.Errorf("Sandbox Helm value %q is controlled by the selected Sandbox or AgentPolicy", name)
+		}
+	}
+	return nil
+}
+
 func protectedEnvironment(name string) bool {
 	for _, prefix := range []string{"CETIRUN_", "OPENCLAW_", "HERMES_", "AZURE_", "KUBERNETES_", "LD_", "DYLD_", "NODE_", "PYTHON", "GIT_", "NPM_", "TAILSCALE_", "TS_", "TTYD_", "MSTEAMS_"} {
 		if strings.HasPrefix(name, prefix) {
@@ -218,6 +234,30 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	if b.input.GatewayKey != nil {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
 	}
+	if b.input.Reconciled {
+		overlay["replicaCount"] = 1
+		if value, present := out["replicaCount"]; present {
+			overlay["replicaCount"] = value
+		}
+		control := overlay[ValuesKey].(map[string]any)
+		control["reconciled"], control["executionHeld"] = true, false
+		delete(control, "podFinalizers")
+		annotations := map[string]any{}
+		if existing, ok := out["podAnnotations"].(map[string]any); ok {
+			for key, value := range existing {
+				annotations[key] = value
+			}
+		}
+		for key, value := range overlay["podAnnotations"].(map[string]any) {
+			annotations[key] = value
+		}
+		overlay["podAnnotations"] = annotations
+		annotations[ReconciledAnnotation] = "true"
+		for _, name := range []string{"initContainers", "sidecars", "extraVolumes", "extraVolumeMounts", "extraEnvFrom", "imagePullSecrets"} {
+			delete(overlay, name)
+		}
+		delete(overlay, "doctor")
+	}
 	if len(b.input.Controls.TrustedProxyIPs) != 0 {
 		proxies, err := jsonValue(b.input.Controls.TrustedProxyIPs)
 		if err != nil {
@@ -244,7 +284,10 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		if settings == nil {
 			settings = map[string]any{}
 		}
-		settings["enabled"], settings["resources"] = enabled, helper
+		if !b.input.Reconciled {
+			settings["enabled"] = enabled
+		}
+		settings["resources"] = helper
 		out[name] = settings
 	}
 	secrets["tailscaleAuthKey"] = ""
@@ -253,8 +296,10 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		if native == nil {
 			native = map[string]any{}
 		}
-		native["doctor"] = map[string]any{"enabled": b.input.Helpers.Doctor}
-		if !b.input.Helpers.Desktop {
+		if !b.input.Reconciled {
+			native["doctor"] = map[string]any{"enabled": b.input.Helpers.Doctor}
+		}
+		if !b.input.Reconciled && !b.input.Helpers.Desktop {
 			config, _ := native["config"].(map[string]any)
 			if config == nil {
 				config = map[string]any{}

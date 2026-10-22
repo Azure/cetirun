@@ -69,6 +69,7 @@ type SandboxPreparation struct {
 }
 
 type sandboxPreparationAttempt struct {
+	reconciled     bool
 	agent          *api.Agent
 	team           *api.Team
 	resolution     *sandbox.Resolution
@@ -296,13 +297,18 @@ func (r *AgentReconciler) resolveSandboxPreparation(ctx context.Context, request
 }
 
 func (r *AgentReconciler) resolveSandboxExecutionInputs(ctx context.Context, requested *api.Agent, held bool) (*sandboxPreparationAttempt, error) {
+	return r.resolveSandboxInputs(ctx, requested, held, false)
+}
+
+func (r *AgentReconciler) resolveSandboxInputs(ctx context.Context, requested *api.Agent, held, reconciled bool) (*sandboxPreparationAttempt, error) {
 	config := r.SandboxPreparation
 	agent, authorized, err := sandboxbinding.Read(ctx, r.APIReader, client.ObjectKeyFromObject(requested))
 	if err != nil {
 		return nil, err
 	}
-	if agent.UID != requested.UID || agent.Generation != requested.Generation || agent.Spec.Suspended ||
-		!agent.DeletionTimestamp.IsZero() || controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) != held {
+	if agent.UID != requested.UID || agent.Generation != requested.Generation ||
+		(!reconciled && (agent.Spec.Suspended || controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) != held)) ||
+		!agent.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("Sandbox Agent identity, generation or hold changed")
 	}
 	snapshot, err := configurationSnapshot(ctx, config.Configuration, config.Now, config.MaxSnapshotAge)
@@ -354,7 +360,7 @@ func (r *AgentReconciler) resolveSandboxExecutionInputs(ctx context.Context, req
 		}
 		return nil, fmt.Errorf("%w: %s: %s", cause, condition.Reason, condition.Message)
 	}
-	return &sandboxPreparationAttempt{agent: agent, team: team, resolution: resolution, configuration: snapshot, sources: sources}, nil
+	return &sandboxPreparationAttempt{reconciled: reconciled, agent: agent, team: team, resolution: resolution, configuration: snapshot, sources: sources}, nil
 }
 
 func (a *sandboxPreparationAttempt) selectedPolicy() *api.AgentPolicy {

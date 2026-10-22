@@ -185,14 +185,15 @@ sandboxAdmission:
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
-  # -- Opt in to the single-start OpenClaw/Kata/RWOP profile.
-  # Requires owned bootstrap and AI Gateway shared models. No resume or failover.
-  # When admission coordination is configured, reserve the selected sources
-  # until observed ordinary shutdown; this is not physical writer fencing.
-  # Disabling starts retains recorded native cleanup and Pod finalization RBAC.
+  # -- Opt in to common OpenClaw/Hermes reconciliation with Kata/RWOP constraints.
+  # Requires owned bootstrap, enforced admission and the AI Gateway.
+  # Existing receipts retain their recorded mode and owned resources.
+  # Neither Kubernetes updates nor observed shutdown are physical fencing.
+  # Disabling starts retains recorded cleanup and Pod finalization RBAC.
   nativeExecution: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
-  # Requires explicit Agent chart/image/port pins. Published content stays external.
+  # Requires chart/image/port pins; the common flow can record them first.
+  # Published content stays external.
   bootstrapOwnedPrerequisites: false
   # -- Existing operator-namespace ConfigMap containing versioned platform.json.
   # Shared by configuration admission and the controller only when enabled.

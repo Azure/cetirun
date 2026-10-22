@@ -146,6 +146,11 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 		return admission.Allowed("garbage collector Pod finalization remains independent of policy admission")
 	}
 	releaseFinalizer := nativePodFinalizerRemoval(request, &pod)
+	if pod.Annotations[sandboxworkload.ReconciledAnnotation] == "true" {
+		if response, handled := h.validateReconciledPod(ctx, request, &pod); handled {
+			return response
+		}
+	}
 	expected, state, failure := h.readPodExpectation(ctx, request.Namespace, releaseFinalizer)
 	if failure != nil {
 		return rejectPod(ctx, request, failure)

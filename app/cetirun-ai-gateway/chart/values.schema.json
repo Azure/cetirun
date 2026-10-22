@@ -18,6 +18,17 @@
             "minimum": 1,
             "default": 2
         },
+        "podDisruptionBudget": {
+            "type": "object",
+            "description": "A PodDisruptionBudget for the Gateway pods with maxUnavailable 1, created only when replicaCount is above 1.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Create the PodDisruptionBudget when replicaCount is above 1",
+                    "default": true
+                }
+            }
+        },
         "operatorIntegration": {
             "type": "boolean",
             "description": "Serve CetiRun Agents: derive shared-model deployment/access-group bindings from chart configuration, reserve the copilot/ model-name prefix for per-Agent GitHub Copilot routes, and check router fallback targets against the caller's key (general_settings.enforce_fallback_model_access). The cetirun-platform chart turns it on.",
@@ -102,6 +113,99 @@
             "type": "boolean",
             "description": "Refuse requests to models whose price LiteLLM does not know. A model missing from the price table costs zero, and budget checks are skipped for zero-cost models, so a budget would silently not apply. Azure OpenAI deployment names are not in that table.",
             "default": true
+        },
+        "priceTable": {
+            "type": "string",
+            "description": "Where LiteLLM's price table comes from. remote downloads the current table when a Gateway pod starts, falling back to the copy in the image; bundled uses only the copy in the image (LITELLM_LOCAL_MODEL_COST_MAP), so new models and price changes arrive only with a new image.",
+            "enum": ["remote", "bundled"],
+            "default": "remote"
+        },
+        "budgetExceededStatusCode": {
+            "type": "integer",
+            "description": "HTTP status of a request refused because its key's or team's budget is exhausted (LiteLLM's budget_exceeded_status_code). 402 makes agents report exhausted credits; 422 a malformed request; 429 a rate limit they retry.",
+            "enum": [402, 422, 429],
+            "default": 402
+        },
+        "router": {
+            "type": "object",
+            "description": "How a request reaches one of the deployments that serve its model_name, and what happens when that deployment fails. Rendered into LiteLLM's router_settings and general_settings.",
+            "properties": {
+                "routingStrategy": {
+                    "type": "string",
+                    "description": "How LiteLLM chooses one of a model's deployments (router_settings.routing_strategy). Only the strategies that run the auto routers and the pre-call checks are accepted.",
+                    "enum": ["simple-shuffle", "least-busy", "latency-based-routing", "usage-based-routing-v2", "cost-based-routing"],
+                    "default": "simple-shuffle"
+                },
+                "failover": {
+                    "type": "boolean",
+                    "description": "Send a request that failed on one deployment once more, to another deployment of the same model_name (LiteLLM's enable_weighted_failover). Not a retry of the failed deployment.",
+                    "default": true
+                },
+                "continuationAffinity": {
+                    "type": "boolean",
+                    "description": "Send a Responses API request that continues an earlier response (previous_response_id) to the deployment that produced it.",
+                    "default": true
+                },
+                "encryptedContentAffinity": {
+                    "type": "boolean",
+                    "description": "Keep each Responses API conversation on the deployment that encrypted its reasoning, or one with the same endpoint and key (LiteLLM's encrypted_content_affinity). When that deployment fails, the conversation's requests fail with it until it is in cooldown or marked unhealthy by the health checks; only then does the conversation move, without its encrypted reasoning.",
+                    "default": true
+                },
+                "deploymentAffinity": {
+                    "type": "boolean",
+                    "description": "Keep each virtual key on the deployment that served its last request to a model, for an hour (LiteLLM's deployment_affinity). Off for models whose deployments set litellm_params.order.",
+                    "default": true
+                },
+                "fallbacks": {
+                    "type": "array",
+                    "description": "Models to try when a request to a model fails: a list of maps from a model_name to the model_names to try, in order.",
+                    "items": {
+                        "type": "object",
+                        "minProperties": 1,
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1}
+                        }
+                    },
+                    "default": []
+                },
+                "contextWindowFallbacks": {
+                    "type": "array",
+                    "description": "Models to try when a request is too long for the model's context window, in the format of fallbacks.",
+                    "items": {
+                        "type": "object",
+                        "minProperties": 1,
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1}
+                        }
+                    },
+                    "default": []
+                },
+                "healthChecks": {
+                    "type": "object",
+                    "description": "Background probes of every deployment, including those added through the console and the operator's per-Agent GitHub Copilot routes, and routing only to those that answered. With Redis, one replica probes for all.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Run the probes and route by their results",
+                            "default": true
+                        },
+                        "intervalSeconds": {
+                            "type": "integer",
+                            "description": "Seconds between probes",
+                            "minimum": 30,
+                            "default": 300
+                        },
+                        "concurrency": {
+                            "type": "integer",
+                            "description": "Probes in flight at once (general_settings.health_check_concurrency)",
+                            "minimum": 1,
+                            "default": 8
+                        }
+                    }
+                }
+            }
         },
         "providerCredentials": {
             "type": "object",
@@ -226,9 +330,15 @@
         },
         "spendLogs": {
             "type": "object",
-            "description": "LiteLLM's own row per call in LiteLLM_SpendLogs, read by the console's request log pages. Spend, budgets and daily usage totals are kept either way. Turned off only together with the request log. The cetirun-platform chart turns it off.",
+            "description": "LiteLLM's own row per call in LiteLLM_SpendLogs, read by the console's request log pages, kept for retention. Spend, budgets and daily usage totals are kept either way. Turned off only together with the request log.",
             "properties": {
-                "enabled": {"type": "boolean", "description": "Write a row to LiteLLM_SpendLogs for each call. false needs requestLog.enabled.", "default": true}
+                "enabled": {"type": "boolean", "description": "Write a row to LiteLLM_SpendLogs for each call. false needs requestLog.enabled.", "default": true},
+                "retention": {
+                    "type": "string",
+                    "description": "How long LiteLLM keeps the spend log rows and the stored health check results (maximum_spend_logs_retention_period): a number with h, d, w or mo. Empty keeps them forever.",
+                    "pattern": "^([1-9][0-9]*(h|d|w|mo))?$",
+                    "default": "7d"
+                }
             }
         },
         "metrics": {

@@ -19,6 +19,7 @@ type FeaturesResponse struct {
 	CustomChatEnabled    bool     `json:"customChatEnabled"`
 	TailscaleEnabled     bool     `json:"tailscaleEnabled"`
 	AgentIdentityEnabled bool     `json:"agentIdentityEnabled"`
+	AgentToolsEnabled    bool     `json:"agentToolsEnabled"`
 	MaxInstancesPerUser  int      `json:"maxInstancesPerUser"`
 	AllowedAgentTypes    []string `json:"allowedAgentTypes"`
 	AIGatewayEnabled     bool     `json:"aiGatewayEnabled"`
@@ -30,6 +31,7 @@ func (h *FeaturesHandler) GetFeatures(w http.ResponseWriter, r *http.Request) {
 		CustomChatEnabled:    h.Config.CustomChatEnabled,
 		TailscaleEnabled:     h.Config.TailscaleEnabled,
 		AgentIdentityEnabled: h.Config.AgentIdentityEnabled,
+		AgentToolsEnabled:    h.Config.AgentToolsEnabled,
 		MaxInstancesPerUser:  h.Config.MaxInstancesPerUser,
 		AllowedAgentTypes:    h.Config.AllowedAgentTypes,
 		AIGatewayEnabled:     h.Config.AIGatewayEnabled,
