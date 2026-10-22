@@ -323,7 +323,7 @@ Licensed under the MIT License.
 {{- $_ := set $config "channels" $channels }}
 {{- end }}
 {{- $emptySkills := eq (dig "skillsMode" "" (.Values.sandboxWorkload | default dict)) "empty" }}
-{{- $contextSkills := and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict)) }}
+{{- $contextSkills := and (or (not .Values.sandboxWorkload) (dig "reconciled" false (.Values.sandboxWorkload | default dict))) (dig "enabled" false (.Values.memoryContext | default dict)) }}
 {{- $directSkills := and (not $contextSkills) (or .Values.skills.shared $emptySkills) }}
 {{- if or $contextSkills $directSkills }}
 {{- $skills := dig "skills" (dict) $config }}
@@ -350,7 +350,7 @@ Licensed under the MIT License.
 {{- end }}
 {{- /* Add meta block so the config observer does not flag this as anomalous.
    OpenClaw uses meta.lastTouchedVersion to track the last writer. */}}
-{{- if and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict)) }}
+{{- if $contextSkills }}
 {{- $plugins := dig "plugins" (dict) $config }}
 {{- $pluginLoad := dig "load" (dict) $plugins }}
 {{- $_ := set $pluginLoad "paths" (append (dig "paths" (list) $pluginLoad) "/opt/cetirun-memory/adapters/openclaw" | uniq) }}

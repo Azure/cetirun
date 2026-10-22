@@ -89,8 +89,13 @@ reach the port can read them. The platform chart also creates a PodMonitor, so
 Azure Monitor managed Prometheus collects them where it runs.
 
 The Gateway's PostgreSQL database keeps daily spend totals per key, user and
-Team, and, unless `spendLogs.enabled` is `false` as the platform chart sets it,
-LiteLLM's own record of each call.
+Team. Unless `spendLogs.enabled` is `false`, it also keeps LiteLLM's own record
+of each call, health-check probes included, in `LiteLLM_SpendLogs`: the call's
+metadata, such as the key, user, Team, model, token counts, spend, timing and
+the error of a failed call, but not its prompt or response. LiteLLM deletes
+these rows, and the stored health-check results, once they are older than
+`spendLogs.retention`: seven days by default, checked every hour. An empty
+retention keeps them.
 
 Source: [Gateway chart defaults](app/cetirun-ai-gateway/chart/values.yaml),
 [platform chart defaults](app/cetirun-platform/values.yaml),

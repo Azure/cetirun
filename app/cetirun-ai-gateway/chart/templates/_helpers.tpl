@@ -263,6 +263,126 @@ may already serve a model under such a name.
 {{- end }}
 
 {{/*
+LiteLLM auto routers in models: entries whose litellm_params.model starts with
+auto_router/. A router's own name is checked against the unpriced-model block
+like any model, so it needs a price; measured, each call is still charged at the
+price of the model the router picks, and budgets hold. A price above zero is
+required, so that LiteLLM never takes the router for a free model. A complexity
+router's tiers, default model and classifier model have to be models configured
+here: LiteLLM's own defaults name models this Gateway may not serve. Without a
+LiteLLM licence, LiteLLM 1.105.1 lets at most one complexity router claim each
+licensed capability: classifier_type heuristic_v2, classifier_type capability,
+classifier_type llm_v2, and its own tier_definitions or classifier prompt; the
+proxy refuses to start with more. reminder_markers, when a router sets them,
+have to be {open, close} pairs, as LiteLLM 1.105.1 requires.
+*/}}
+{{- define "cetirun-ai-gateway.validateRouters" -}}
+{{- $plain := list -}}
+{{- range .Values.models -}}
+{{- if not (hasPrefix "auto_router/" (toString (get (.litellm_params | default dict) "model"))) -}}
+{{- $plain = append $plain .model_name -}}
+{{- end -}}
+{{- end -}}
+{{- $licensed := dict -}}
+{{- range .Values.models -}}
+{{- $params := .litellm_params | default dict -}}
+{{- $kind := toString (get $params "model") -}}
+{{- if hasPrefix "auto_router/" $kind -}}
+{{- $name := .model_name -}}
+{{- $priced := true -}}
+{{- range $field := list "input_cost_per_token" "output_cost_per_token" -}}
+{{- if hasKey $params $field -}}
+{{- if le (float64 (index $params $field)) 0.0 -}}
+{{- $priced = false -}}
+{{- end -}}
+{{- else if $.Values.blockUnpricedModels -}}
+{{- $priced = false -}}
+{{- end -}}
+{{- end -}}
+{{- if not $priced -}}
+{{- fail (printf "auto router %s needs input_cost_per_token and output_cost_per_token in litellm_params, above zero. The router's own name is checked against blockUnpricedModels like any model; each call is still charged at the price of the model the router picks. Use the highest price among its models." $name) -}}
+{{- end -}}
+{{- if eq $kind "auto_router/complexity_router" -}}
+{{- $config := get $params "complexity_router_config" | default dict -}}
+{{- $tiers := get $config "tiers" | default dict -}}
+{{- $llm := get $config "classifier_llm_config" | default dict -}}
+{{- if not $tiers -}}
+{{- fail (printf "auto router %s needs complexity_router_config.tiers. LiteLLM's default tiers name models this Gateway may not serve." $name) -}}
+{{- end -}}
+{{- $targets := list -}}
+{{- range $tier, $target := $tiers -}}
+{{- if kindIs "slice" $target -}}
+{{- $targets = concat $targets $target -}}
+{{- else -}}
+{{- $targets = append $targets $target -}}
+{{- end -}}
+{{- end -}}
+{{- with get $params "complexity_router_default_model" -}}
+{{- $targets = append $targets . -}}
+{{- end -}}
+{{- with get $llm "model" -}}
+{{- $targets = append $targets . -}}
+{{- end -}}
+{{- range $targets -}}
+{{- if not (has (toString .) $plain) -}}
+{{- fail (printf "auto router %s sends requests to %v, which is not a model configured in models. A router's tiers, default model and classifier model have to be models configured here, not routers." $name .) -}}
+{{- end -}}
+{{- end -}}
+{{- $type := toString (get $config "classifier_type" | default "heuristic") -}}
+{{- /* The licence class LiteLLM 1.105.1 counts this router in, the first that
+       applies (router_utils/auto_router_model_naming.py). */ -}}
+{{- $writesPrompt := false -}}
+{{- if has $type (list "llm" "capability" "llm_v2" "heuristic_first" "hybrid") -}}
+{{- range $field := list "classification_prompt" "classification_examples" -}}
+{{- if and (hasKey $config $field) (not (kindIs "invalid" (index $config $field))) -}}
+{{- $writesPrompt = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $llm "system_prompt") (not (kindIs "invalid" (index $llm "system_prompt"))) -}}
+{{- $writesPrompt = true -}}
+{{- end -}}
+{{- else if eq $type "jev" -}}
+{{- if kindIs "string" (get (get $config "jev_classifier_config" | default dict) "instructions") -}}
+{{- $writesPrompt = true -}}
+{{- end -}}
+{{- end -}}
+{{- $class := "" -}}
+{{- if has $type (list "heuristic_v2" "capability" "llm_v2") -}}
+{{- $class = $type -}}
+{{- else if or (kindIs "slice" (get $config "tier_definitions")) $writesPrompt -}}
+{{- $class = "tier_or_classifier_prompt" -}}
+{{- end -}}
+{{- if $class -}}
+{{- $_ := set $licensed $class (append (get $licensed $class | default list) $name) -}}
+{{- end -}}
+{{- if hasKey $config "reminder_markers" -}}
+{{- $markers := get $config "reminder_markers" -}}
+{{- if or (not (kindIs "slice" $markers)) (not $markers) -}}
+{{- fail (printf "auto router %s: complexity_router_config.reminder_markers must be a list of {open, close} pairs, such as {open: \"<system-reminder>\", close: \"</system-reminder>\"}; LiteLLM 1.105.1 refuses anything else." $name) -}}
+{{- end -}}
+{{- range $markers -}}
+{{- $pair := . -}}
+{{- if not (kindIs "map" $pair) -}}
+{{- fail (printf "auto router %s: each reminder_markers entry must be an {open, close} pair, not %v." $name $pair) -}}
+{{- end -}}
+{{- $open := lower (trim (toString (get $pair "open"))) -}}
+{{- $close := lower (trim (toString (get $pair "close"))) -}}
+{{- if or (not (kindIs "string" (get $pair "open"))) (not (kindIs "string" (get $pair "close"))) (not $open) (not $close) (eq $open $close) -}}
+{{- fail (printf "auto router %s: reminder_markers entry %v needs open and close, two different strings that are not blank." $name (toJson $pair)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $class, $names := $licensed -}}
+{{- if gt (len $names) 1 -}}
+{{- fail (printf "auto routers %s each claim LiteLLM's licensed %s capability. Without a LiteLLM licence at most one router may claim each of: classifier_type heuristic_v2, classifier_type capability, classifier_type llm_v2, and its own tier_definitions or classifier prompt; the proxy refuses to start with more." (join ", " $names) $class) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Redis is required above one replica. Without it each replica enforces its own
 copy of every budget and rate limit, so the effective limit is multiplied by the
 replica count. Recording stays accurate; enforcement does not.
@@ -321,7 +441,7 @@ defaults.
 {{- $podMonitor := $metrics.podMonitor | default dict -}}
 {{- $settings := dict -}}
 {{- $_ := set $settings "requestLog" (dict "enabled" (dig "enabled" true $requestLog)) -}}
-{{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs)) -}}
+{{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs) "retention" (dig "retention" "7d" $spendLogs)) -}}
 {{- $monitor := dict "enabled" (dig "enabled" false $podMonitor) -}}
 {{- $_ = set $monitor "apiVersion" (dig "apiVersion" "azmonitoring.coreos.com/v1" $podMonitor) -}}
 {{- $_ = set $monitor "interval" (dig "interval" "30s" $podMonitor) -}}
@@ -331,6 +451,145 @@ defaults.
 {{- $_ = set $metricsSettings "podMonitor" $monitor -}}
 {{- $_ = set $settings "metrics" $metricsSettings -}}
 {{- toJson $settings -}}
+{{- end }}
+
+{{/*
+The router settings, as JSON, with the defaults in values.yaml for whatever is
+missing, for the same reason as cetirun-ai-gateway.logsAndMetrics: a release
+installed before them upgrades with --reuse-values. Templates read them
+through this, with fromJson.
+*/}}
+{{- define "cetirun-ai-gateway.router" -}}
+{{- $router := .Values.router | default dict -}}
+{{- $health := $router.healthChecks | default dict -}}
+{{- $settings := dict -}}
+{{- $_ := set $settings "routingStrategy" (dig "routingStrategy" "simple-shuffle" $router) -}}
+{{- $_ = set $settings "failover" (dig "failover" true $router) -}}
+{{- $_ = set $settings "continuationAffinity" (dig "continuationAffinity" true $router) -}}
+{{- $_ = set $settings "encryptedContentAffinity" (dig "encryptedContentAffinity" true $router) -}}
+{{- $_ = set $settings "deploymentAffinity" (dig "deploymentAffinity" true $router) -}}
+{{- $_ = set $settings "fallbacks" (dig "fallbacks" list $router) -}}
+{{- $_ = set $settings "contextWindowFallbacks" (dig "contextWindowFallbacks" list $router) -}}
+{{- $_ = set $settings "healthChecks" (dict "enabled" (dig "enabled" true $health) "intervalSeconds" (dig "intervalSeconds" 300 $health) "concurrency" (dig "concurrency" 8 $health)) -}}
+{{- toJson $settings -}}
+{{- end }}
+
+{{/*
+The status of a request refused for an exhausted budget, 402 unless set, for
+the same reason as cetirun-ai-gateway.router: a release installed before the
+setting upgrades with --reuse-values.
+*/}}
+{{- define "cetirun-ai-gateway.budgetExceededStatusCode" -}}
+{{- if kindIs "invalid" .Values.budgetExceededStatusCode -}}
+402
+{{- else -}}
+{{- .Values.budgetExceededStatusCode -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Where LiteLLM's price table comes from, remote unless set, for the same reason
+as cetirun-ai-gateway.budgetExceededStatusCode: a release installed before the
+setting upgrades with --reuse-values.
+*/}}
+{{- define "cetirun-ai-gateway.priceTable" -}}
+{{- .Values.priceTable | default "remote" -}}
+{{- end }}
+
+{{/*
+A price table source the chart knows: anything else would quietly download the
+table, as remote does.
+*/}}
+{{- define "cetirun-ai-gateway.validatePriceTable" -}}
+{{- $source := include "cetirun-ai-gateway.priceTable" . -}}
+{{- if not (has $source (list "remote" "bundled")) }}
+{{- fail (printf "priceTable %q is not supported. Use remote (LiteLLM downloads the current price table when it starts and falls back to the copy in the image) or bundled (only the copy in the image)." $source) }}
+{{- end }}
+{{- end }}
+
+{{/*
+Whether to create the Gateway's PodDisruptionBudget: on unless turned off, and
+only above one replica, where it cannot block the drain of the only one.
+*/}}
+{{- define "cetirun-ai-gateway.podDisruptionBudgetEnabled" -}}
+{{- $pdb := .Values.podDisruptionBudget | default dict -}}
+{{- if and (dig "enabled" true $pdb) (gt (int .Values.replicaCount) 1) }}true{{ end }}
+{{- end }}
+
+{{/*
+A budget status the agents were measured with, and a positive probe
+concurrency: LiteLLM treats 0 as no limit.
+*/}}
+{{- define "cetirun-ai-gateway.validateLimits" -}}
+{{- $code := include "cetirun-ai-gateway.budgetExceededStatusCode" . -}}
+{{- if not (has $code (list "402" "422" "429")) }}
+{{- fail (printf "budgetExceededStatusCode %s is not supported. Use 402 (agents report exhausted credits), 422 (agents report a malformed request) or 429 (agents retry it as a rate limit)." $code) }}
+{{- end }}
+{{- $router := include "cetirun-ai-gateway.router" . | fromJson -}}
+{{- $concurrency := $router.healthChecks.concurrency -}}
+{{- if or (not (kindIs "float64" $concurrency)) (lt (float64 $concurrency) 1.0) (ne (float64 $concurrency) (float64 (int $concurrency))) }}
+{{- fail (printf "router.healthChecks.concurrency %v is not a positive whole number. It limits how many probes run at once." $concurrency) }}
+{{- end }}
+{{- end }}
+
+{{/*
+The routing strategies the chart accepts: those LiteLLM selects with on its
+asynchronous path, which runs the auto routers and the pre-call checks.
+usage-based-routing (v1) selects synchronously and skips both; lar1 needs
+client metadata, and provider-budget-routing selects nothing itself.
+*/}}
+{{- define "cetirun-ai-gateway.routingStrategies" -}}
+{{- toJson (list "simple-shuffle" "least-busy" "latency-based-routing" "usage-based-routing-v2" "cost-based-routing") -}}
+{{- end }}
+
+{{/*
+The model names some of whose deployments set litellm_params.order, so one
+deployment is a standby for another. Deployment affinity is off for them: it
+pins a key to a deployment before LiteLLM keeps only the lowest order, and
+refreshes the pin only when that deployment serves, so a key pinned to a
+standby would stay there after the primary recovered.
+*/}}
+{{- define "cetirun-ai-gateway.orderedModelNames" -}}
+{{- $names := list -}}
+{{- range .Values.models -}}
+{{- if hasKey (.litellm_params | default dict) "order" -}}
+{{- $names = append $names (toString .model_name) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson (uniq $names) -}}
+{{- end }}
+
+{{/*
+A routing strategy the chart supports, and each of weight, order, rpm and tpm
+set on every deployment of a model or on none. simple-shuffle weighs by the
+first of weight, rpm and tpm with a positive value and gives a deployment
+without it weight 0; a deployment without order is left out whenever another
+has one.
+*/}}
+{{- define "cetirun-ai-gateway.validateRouting" -}}
+{{- $router := include "cetirun-ai-gateway.router" . | fromJson -}}
+{{- $strategies := include "cetirun-ai-gateway.routingStrategies" . | fromJsonArray -}}
+{{- if not (has (toString $router.routingStrategy) $strategies) }}
+{{- fail (printf "router.routingStrategy %q is not supported. Use one of %s: the chart's auto routers and pre-call checks run only with these." (toString $router.routingStrategy) (join ", " $strategies)) }}
+{{- end }}
+{{- $deployments := dict -}}
+{{- range .Values.models -}}
+{{- $name := toString .model_name -}}
+{{- $_ := set $deployments $name (append (get $deployments $name | default list) (.litellm_params | default dict)) -}}
+{{- end -}}
+{{- range $name, $params := $deployments -}}
+{{- range $field := list "weight" "order" "rpm" "tpm" -}}
+{{- $set := 0 -}}
+{{- range $params -}}
+{{- if and (hasKey . $field) (not (kindIs "invalid" (index . $field))) -}}
+{{- $set = add1 $set -}}
+{{- end -}}
+{{- end -}}
+{{- if and (gt $set 0) (lt $set (len $params)) }}
+{{- fail (printf "model %s sets litellm_params.%s on %d of its %d deployments. Set it on every deployment of the model or on none: LiteLLM gives a deployment without %s no share of the requests, or leaves it out." $name $field $set (len $params) $field) }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*

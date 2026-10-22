@@ -50,6 +50,7 @@ type sandboxBootstrapObject struct {
 }
 
 type sandboxBootstrapReceipt struct {
+	Reconciled   bool                      `json:"reconciled,omitempty"`
 	Version      string                    `json:"version"`
 	AgentName    string                    `json:"agentName"`
 	AgentUID     types.UID                 `json:"agentUID"`
@@ -177,7 +178,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 	} else if err != nil {
 		return err
 	}
-	if agent.Spec.Helm.Version != config.ChartVersion || agent.Spec.Agent.Image == nil || *agent.Spec.Agent.Image == "" ||
+	if (!attempt.reconciled && agent.Spec.Helm.Version != config.ChartVersion) || agent.Spec.Helm.Version == "" || agent.Spec.Agent.Image == nil || *agent.Spec.Agent.Image == "" ||
 		agent.Spec.Agent.Port == nil || *agent.Spec.Agent.Port < 1 || *agent.Spec.Agent.Port > 65535 {
 		return fmt.Errorf("Sandbox bootstrap requires explicit approved chart version, native image and port; controller spec defaulting is not authorized")
 	}
@@ -191,8 +192,9 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 	if receipt == nil {
 		role, binding := r.operatorNamespaceRBAC(instanceNamespace(agent.Name))
 		receipt = &sandboxBootstrapReceipt{
-			Version: "v1", AgentName: agent.Name, AgentUID: agent.UID, AgentType: agent.Spec.Agent.Type, Namespace: instanceNamespace(agent.Name),
-			Home: profile, ChartVersion: config.ChartVersion,
+			Reconciled: attempt.reconciled,
+			Version:    "v1", AgentName: agent.Name, AgentUID: agent.UID, AgentType: agent.Spec.Agent.Type, Namespace: instanceNamespace(agent.Name),
+			Home: profile, ChartVersion: agent.Spec.Helm.Version,
 			Objects: []sandboxBootstrapObject{
 				{Kind: "Namespace", Name: instanceNamespace(agent.Name)},
 				{Kind: "Role", Name: role.Name}, {Kind: "RoleBinding", Name: binding.Name},
@@ -236,8 +238,8 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		return fmt.Errorf("Sandbox bootstrap receipt is no longer protected for writes")
 	}
 	if receipt.Home != profile || receipt.Objects[3].Name != config.HomeClaimName ||
-		receipt.Objects[4].Name != agent.Spec.GatewayTokenSecretRef || receipt.ChartVersion != config.ChartVersion ||
-		receipt.AgentType != agent.Spec.Agent.Type {
+		receipt.Objects[4].Name != agent.Spec.GatewayTokenSecretRef || (!receipt.Reconciled && receipt.ChartVersion != config.ChartVersion) ||
+		receipt.AgentType != agent.Spec.Agent.Type || receipt.Reconciled != attempt.reconciled {
 		return fmt.Errorf("%w: changing bootstrap storage, native type, Secret or chart requires an explicit handoff", sandboxworkload.ErrStorageTransitionRequired)
 	}
 	if receipt.Skills != nil {
@@ -334,8 +336,9 @@ func (r *AgentReconciler) sandboxBootstrapGuard(ctx context.Context, attempt *sa
 		return err
 	}
 	after, err := sandboxworkload.AgentSourceReference(current)
-	if err != nil || before != after || binding != attempt.resolution.Binding || current.Spec.Suspended ||
-		!current.DeletionTimestamp.IsZero() || !controllerutil.ContainsFinalizer(current, sandbox.HoldFinalizer) {
+	if err != nil || before != after || binding != attempt.resolution.Binding ||
+		!current.DeletionTimestamp.IsZero() ||
+		(!attempt.reconciled && (current.Spec.Suspended || !controllerutil.ContainsFinalizer(current, sandbox.HoldFinalizer))) {
 		return fmt.Errorf("%w: Sandbox bootstrap intent changed", errSandboxSourceChanged)
 	}
 	config := r.SandboxPreparation

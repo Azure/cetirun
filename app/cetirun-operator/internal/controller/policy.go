@@ -112,7 +112,13 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 		projectionsVerified: policyEnforcementVerified(agent, resolution),
 		reprojectionHold:    policyReprojectionMustHold(agent, resolution),
 	}
-	return result, r.recordPolicy(ctx, agent, resolution, nil)
+	err = r.recordPolicy(ctx, agent, resolution, nil)
+	if err != nil {
+		// A failed observation write does not turn valid authorization into a
+		// denial that destroys the existing virtual key and spending identity.
+		result.dependencyUnavailable = true
+	}
+	return result, err
 }
 
 func (r *AgentReconciler) agentPolicyRequired(ctx context.Context, agent *api.Agent) (bool, error) {

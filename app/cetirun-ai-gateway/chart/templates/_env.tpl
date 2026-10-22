@@ -4,8 +4,8 @@ Licensed under the MIT License.
 */}}
 
 {{/*
-Database connection only: all that schema migration needs, so it is all the
-migrate init container gets.
+Database connection only: all that schema migration needs, so it is the only
+credential the migrate init container gets.
 */}}
 {{- define "cetirun-ai-gateway.databaseEnv" -}}
 - name: DATABASE_URL
@@ -52,6 +52,9 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
 - name: DISABLE_SCHEMA_UPDATE
   value: "True"
 {{- end }}
+{{- if eq (include "cetirun-ai-gateway.priceTable" .) "bundled" }}
+{{ include "cetirun-ai-gateway.priceTableEnv" . }}
+{{- end }}
 {{- if .Values.auth.adminUI.enabled }}
 - name: UI_USERNAME
   value: {{ .Values.auth.adminUI.username | quote }}
@@ -75,6 +78,21 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
     secretKeyRef:
       name: {{ include "cetirun-ai-gateway.redisPasswordSecret" . }}
       key: {{ include "cetirun-ai-gateway.redisPasswordKey" . }}
+{{- end }}
+{{- $router := include "cetirun-ai-gateway.router" . | fromJson }}
+{{- if and $router.healthChecks.enabled (include "cetirun-ai-gateway.redisEnabled" .) }}
+{{- /* The replicas share probe results through Redis (use_shared_health_check).
+       LiteLLM reuses a shared result for this many seconds, 300 unless set,
+       whatever the probe interval; set to the interval, a result is never
+       reused past the next probe. */}}
+- name: DEFAULT_SHARED_HEALTH_CHECK_TTL
+  value: {{ int $router.healthChecks.intervalSeconds | quote }}
+{{- /* The lock that makes one replica probe for all expires after this many
+       seconds, 60 unless set. A cycle that runs longer, as one with many
+       deployments and a concurrency limit can, would let another replica take
+       the lock and probe everything again. */}}
+- name: DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL
+  value: {{ int $router.healthChecks.intervalSeconds | quote }}
 {{- end }}
 {{- $settings := include "cetirun-ai-gateway.logsAndMetrics" . | fromJson }}
 {{- if $settings.metrics.enabled }}
@@ -113,4 +131,16 @@ only applies to that collection; nothing else reads the variable.
 {{- define "cetirun-ai-gateway.monitoringEnv" -}}
 - name: AZMON_COLLECT_ENV
   value: "False"
+{{- end }}
+
+{{/*
+priceTable: bundled. LiteLLM reads the variable when it is imported: it then
+loads the price table in the image instead of downloading the current one, and
+a reload of the price table, from the console at once or on a schedule, loads
+that copy again. The proxy gets it, and so does the migrate init container,
+whose index build imports LiteLLM as well.
+*/}}
+{{- define "cetirun-ai-gateway.priceTableEnv" -}}
+- name: LITELLM_LOCAL_MODEL_COST_MAP
+  value: "True"
 {{- end }}

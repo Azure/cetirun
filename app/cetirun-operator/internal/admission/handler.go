@@ -174,6 +174,9 @@ func (h *Handler) defaultAgent(ctx context.Context, request admission.Request) a
 }
 
 func (h *Handler) validateAgent(ctx context.Context, request admission.Request, agent, old *api.Agent) admission.Response {
+	if response, handled := h.reconciledHoldRelease(ctx, request, agent, old); handled {
+		return response
+	}
 	if old != nil && !slices.Equal(agent.Finalizers, old.Finalizers) {
 		if h.config.NativeExecution && request.UserInfo.Username == h.config.ControllerUsername &&
 			authenticated(request.UserInfo) && nativeHoldReleaseOnly(request, agent, old) {
@@ -230,7 +233,9 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 		}
 		return admission.Allowed("legacy Agent")
 	}
-	if !h.config.administrator(request.UserInfo) {
+	controllerDefaults := h.config.NativeExecution && request.UserInfo.Username == h.config.ControllerUsername &&
+		authenticated(request.UserInfo) && controllerRuntimeDefaults(agent, old)
+	if !h.config.administrator(request.UserInfo) && !controllerDefaults {
 		if err := h.memberAuthority(request, agent); err != nil {
 			return admission.Denied(err.Error())
 		}

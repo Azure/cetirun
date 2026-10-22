@@ -925,8 +925,10 @@ func validateAgentPolicyVersion(policy *cetirunv1alpha1.AgentPolicy, version Age
 	return nil
 }
 
-// UpdateAgentPolicySpec updates the policy fields managed by Portal while
-// preserving component-specific controls that Portal does not expose.
+// UpdateAgentPolicySpec updates the Portal-managed policy fields while
+// preserving runtime-owned controls. The handler supplies a spec already
+// merged from the current resource, allowing newly introduced optional fields
+// to retain their values for older clients.
 func (c *Client) UpdateAgentPolicySpec(ctx context.Context, name string, spec cetirunv1alpha1.AgentPolicySpec, version AgentPolicyVersion) (*cetirunv1alpha1.AgentPolicy, error) {
 	policy, err := c.GetAgentPolicy(ctx, name)
 	if err != nil {
@@ -937,6 +939,10 @@ func (c *Client) UpdateAgentPolicySpec(ctx context.Context, name string, spec ce
 	policy.Spec.Harnesses = managed.Harnesses
 	policy.Spec.Skills = managed.Skills
 	policy.Spec.ModelAccess = managed.ModelAccess
+	policy.Spec.SandboxSelection = managed.SandboxSelection
+	policy.Spec.Security = managed.Security
+	policy.Spec.Network = managed.Network
+	policy.Spec.KubernetesAccess = managed.KubernetesAccess
 	if err := c.recoverConfigurationUpdate(ctx, before, policy); err != nil {
 		return nil, err
 	}

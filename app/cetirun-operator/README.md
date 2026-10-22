@@ -95,10 +95,137 @@ registration revision must represent qualified runtime/chart/topology/grant
 inventory, not merely the existence of a RuntimeClass.
 An observation validator checks an adapter's input; it does not generate evidence.
 
-### Native execution profile (explicit opt-in)
+### Common Sandbox reconciliation (explicit opt-in)
 
-`sandboxSources.nativeExecution: true` enables a bounded Kubernetes execution
-path in the shipped controller. It defaults to `false` and requires enabled,
+With `sandboxSources.nativeExecution: true`, new OpenClaw and Hermes Agents use the
+ordinary controller's feature assembly, Harness adapters, Helm apply, readiness,
+model integration and deletion flow. The selected Sandbox adds runtime, resource,
+HOME, network and credential constraints to that flow; there is no fallback
+deployment mode. The opt-in defaults to `false`.
+
+Use the same release version for the Operator, Sandbox admission, Portal and
+configuration-change tools. Mixed-version rollout sequencing and pre-upgrade
+bootstrap-only recovery are outside this contract. There is no additional
+reader-first switch: remove the retired `sandboxSources.reconciledExecution`
+setting, which is rejected rather than silently ignored.
+
+Persisted lifetime mode and owned namespace/HOME identities still govern recovery
+and cleanup. Configuration changes do not migrate or adopt existing resources,
+and missing ownership evidence still holds execution.
+
+Shared-only, Copilot-only and mixed model configurations use the existing
+Gateway and per-Agent Copilot proxy. The proxy is a separate Deployment, not a
+sidecar: it cannot mount HOME or consume the Agent's runtime/model credentials.
+Its optional controller-owned `aiGateway.copilotProxy.replicaCount` permits
+authentication preparation independently of the Agent replica count. Suspension
+and policy revocation stop both components. Pre-login creation does not grant
+Copilot model access; the Portal continues to report sign-in required.
+Suspension blocks an existing Gateway key, stops owned main/auxiliary workloads
+and withdraws their route before chart or bootstrap prerequisites are checked.
+A Gateway, component-stop or status-write failure does not skip the other
+shutdown attempts. Unacknowledged shutdown still retains its source reservation;
+normal Kubernetes stop requests are not physical fencing.
+Loss of bootstrap/runtime prerequisites also holds an already-running,
+unsuspended reconciled Agent: block its existing key, stop owned components and
+withdraw ingress while preserving HOME and spend. A status error does not skip
+these independent cleanup attempts.
+
+The same protected expectation ConfigMap now has a version-2 representation for
+these lifetimes. It records the current chart-owned workloads, complete source
+identities and compiled controls. Pod admission verifies StatefulSet or
+Deployment/ReplicaSet ownership and the current authorized template, rather than
+permanently consuming one Pod UID or fixing helper names. Common helpers and
+chart components remain subject to runtime, privilege, storage and credential
+constraints. Config/key/model updates use normal Helm reconciliation and preserve
+HOME and the existing Gateway spending identity. Missing or foreign ownership is
+not repaired by adopting resources or clearing protection markers.
+Ready and suspended Agents still recheck current sources and deployed controls.
+Unchanged passes retain their phase and reconcile timestamp between periodic
+refreshes instead of generating status-watch loops.
+
+Private-image Agents complete owned namespace bootstrap before registry
+credentials are synchronized. Missing runtime pins are filled first; existing
+namespaces without the protected bootstrap receipt are not adopted. Credential
+rotation still synchronizes the owned pull Secret before chart preparation.
+The protected expectation pins that Secret's identity as a kubelet image-pull
+binding, not as a Secret that Agent containers or the Copilot proxy may consume.
+
+When Memory Context is enabled, reconciled OpenClaw and Hermes use their ordinary
+native plugin registration and composed skill paths alongside the installed
+assets. OpenClaw retains its conversation hook, and Hermes explicitly includes
+`cetirun-memory-context` in `plugins.enabled`, including after HOME initialization.
+Retained single-start templates remain disabled.
+
+Every disk-backed `emptyDir`, including extension and auxiliary volumes, must
+declare a positive `sizeLimit` no greater than the selected Sandbox scratch limit.
+The common chart bounds its context, empty-skills and Tailscale temporary storage
+too. Helpers with fixed temporary-volume sizes require a sufficiently large
+selected limit; validation does not silently enlarge it. Memory-backed volumes
+retain their separate memory accounting. These are per-volume checks, not a
+replacement for container/Pod storage accounting.
+
+Portal runtime profiles are optional only when its deployment explicitly enables
+`sandboxRuntimeDefaultsFromController` after this common executor is enabled.
+Without that explicit deployment setting, missing profiles reject creation.
+With it enabled, the controller pins chart/image/port from its selected trusted
+chart, with narrowly authorized admission updates. Disable the Portal opt-in
+before disabling native execution. Explicit requests and configured
+profiles are still validated.
+The protected path disables the ordinary immutable-StatefulSet replacement hook;
+unsupported storage/type transitions require a deliberate handoff, not orphaning
+the old HOME writer.
+
+Existing bootstrap receipts, including checkpoints created before the preparation
+finalizer or Gateway projection, select their recorded lifetime mode. They retain
+their HOME identity, chart pins and cleanup even after the new switch is enabled.
+Version-1 preparation/start records also retain their recorded lifecycle.
+They are not a second feature-development path
+or an automatic conversion of a running lifetime. The historical
+`native-single-start` capability-profile identifier remains accepted for
+configuration compatibility; new version-2 lifetimes have the common lifecycle.
+FQDN/mTLS and identity grants still require supported policy capabilities.
+Kubernetes shutdown, RWOP and successful rolling updates do **not** establish
+physical writer fencing, failed-node recovery, durable restart requests or
+cross-node migration guarantees.
+
+When the optional configuration-coordination authority is configured, these
+lifetimes reserve their selected Team/Sandbox/policy too. A normal desired-template
+generation can refresh that reservation only while the selected source identities
+and effective inputs are unchanged. Shared configuration changes remain excluded
+until suspension or deletion has acknowledged controller shutdown and ordinary
+Kubernetes quiescence. This is a logical configuration reservation, not a physical
+workload identity or writer-fencing receipt; unknown shutdown outcomes remain held.
+A resume that encounters a recorded stop restores the hold and finishes that
+guarded shutdown before acquiring new authority. A missing hold marker alone
+does not discard the pending stop or establish quiescence.
+Removed or never-created auxiliary Deployments still require their ReplicaSets
+and namespace Pods to be absent. Their absence does not replace the main HOME
+workload's acknowledged shutdown.
+A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
+StatefulSet shutdown acknowledgement, but only before any apply is submitted and
+after ordinary namespace/Pod cleanup checks. Its expectation is first persisted
+as initializing, before the grant journal, and becomes pending only after the
+empty journal is confirmed. Publication retries, including lost acknowledgements,
+therefore retain the pre-submit evidence without inferring it from a missing
+workload. No grants or workload apply are issued during initialization.
+Cancellation races with submission
+through a conditional state update. Submitted, uncertain or older unmarked
+checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
+not evidence that no workload was submitted.
+The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
+retains this read/list permission when new native starts are disabled so existing
+lifetimes can finish cleanup.
+Normal reconciled deletion revokes its recorded preparation grants and
+releases/deletes the Operator-namespace grant journal before removing the Agent
+finalizer. This cleanup remains available when new starts are disabled and
+retries terminating journals during foreground deletion without adopting foreign
+ownership or discarding grant history.
+
+### Retained single-start profile and capability registration
+
+The following single-start lifecycle notes describe retained version-1 records;
+new native lifetimes use the version-2 common flow above. The explicit native option
+requires enabled,
 enforced configuration/Pod admission, `sandboxSources.enabled`,
 `sandboxSources.bootstrapOwnedPrerequisites`, and an enabled AI Gateway.
 The controller receives the same option through `CETIRUN_SANDBOX_SOURCES`.
@@ -108,7 +235,7 @@ native starts are disabled; admission still limits protected Pod updates.
 The native profile uses the registered RuntimeClass's scheduling constraints;
 the separate durable placement registry is unsupported and rejected.
 
-The supported profile is one OpenClaw Agent, a Kata Sandbox with
+Those earlier execution records support one OpenClaw Agent, a Kata Sandbox with
 ReadWriteOncePod HOME, and shared Gateway model access. It uses the selected
 Sandbox's resources/storage and the selected AgentPolicy's model entitlement
 and budget. Per-Agent Gateway keys are projected through owned Secrets, not
@@ -130,7 +257,8 @@ IP restrictions. Declare `hostResourceLimits`, `guestExternalNetwork`,
 those controls. TCP and UDP, the actual IP families, revisioned complete
 topology, DNS/Gateway peers, and pinned RuntimeClass/StorageClass identities
 remain required; read-only root and ingress support must match the selected
-policy. Its policy harness allow-list contains only `openclaw`.
+policy. The configuration harness allow-list supports `openclaw` and `hermes`;
+the earlier single-start executor itself remains OpenClaw-only.
 `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
 FQDN support, mTLS, Kubernetes access and Entra ID flags must be
 `false`; identity/token grant declarations are unsupported. These are not

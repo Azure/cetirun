@@ -200,7 +200,7 @@ func (r *AgentReconciler) finishSandboxPreparation(ctx context.Context, agent *a
 			return err
 		}
 	}
-	if err := r.sandboxGrantJournal().Delete(ctx, agent.Name, agent.UID); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.sandboxGrantJournal().Delete(ctx, agent.Name, agent.UID); err != nil {
 		return err
 	}
 	if object == nil {

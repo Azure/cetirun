@@ -111,6 +111,7 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		return fmt.Errorf("Sandbox StorageClass approval changed")
 	}
 	attempt.input = sandboxworkload.Input{
+		Reconciled: attempt.reconciled,
 		Resolution: attempt.resolution, AgentName: agent.Name, AgentGeneration: agent.Generation,
 		AgentType: string(agent.Spec.Agent.Type), WorkloadName: instanceServiceName(agent.Name), ReleaseName: helmReleaseName(agent.Name),
 		Namespace: sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID},
@@ -131,7 +132,11 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 	)
 	attempt.sources = append(attempt.sources, inputs.PublicationSources...)
 	if config.NativeExecution {
-		if !sandboxGatewayProjectionReady(agent) {
+		suspendedProjection := attempt.reconciled && agent.Spec.Suspended && agent.Status.AIGateway != nil &&
+			agent.Status.Policy != nil && agent.Status.AIGateway.Phase == api.AIGatewayPhaseReady &&
+			agent.Status.AIGateway.Blocked && agent.Status.AIGateway.Reason == aiGatewayReasonSuspended &&
+			agent.Status.AIGateway.PolicyRevision == agent.Status.Policy.Enforcement.Gateway.DesiredRevision
+		if !sandboxGatewayProjectionReady(agent) && !suspendedProjection {
 			return fmt.Errorf("%w: current Gateway projection is required for native execution", sandboxpolicy.ErrUnavailable)
 		}
 		key := &corev1.Secret{}

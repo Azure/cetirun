@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
@@ -66,7 +67,7 @@ func (p *PreparedRelease) setCustomCapabilities(capabilities *chartutil.Capabili
 	}
 }
 
-func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAgent) error {
+func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAgent, restartRequestID string) error {
 	if err := validateTerminalValues(values); err != nil {
 		return err
 	}
@@ -142,7 +143,10 @@ func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAg
 	if autoscaling["enabled"] == true && (number(autoscaling["minReplicas"]) != 1 || number(autoscaling["maxReplicas"]) != 1) {
 		return fmt.Errorf("autoscaling.enabled requires minReplicas=1 and maxReplicas=1 for CetiRun agents")
 	}
-	for key := range object(values["podAnnotations"]) {
+	for key, value := range object(values["podAnnotations"]) {
+		if key == api.AnnotationRestartRequestID && restartRequestID != "" && value == restartRequestID {
+			continue
+		}
 		if key == "checksum/config" || strings.HasPrefix(key, "cetirun.microsoft.com/") {
 			return fmt.Errorf("Custom pod annotation %s is platform-owned", key)
 		}

@@ -227,6 +227,9 @@ func PodSourceReferences(spec corev1.PodSpec, namespace string) []SourceReferenc
 		}
 	}
 	add("ServiceAccount", spec.ServiceAccountName)
+	for _, secret := range spec.ImagePullSecrets {
+		add("Secret", secret.Name)
+	}
 	for _, volume := range spec.Volumes {
 		if volume.ConfigMap != nil {
 			add("ConfigMap", volume.ConfigMap.Name)
@@ -249,6 +252,14 @@ func PodSourceReferences(spec corev1.PodSpec, namespace string) []SourceReferenc
 		}
 	}
 	for _, container := range append(slices.Clone(spec.Containers), spec.InitContainers...) {
+		for _, env := range container.EnvFrom {
+			if env.SecretRef != nil {
+				add("Secret", env.SecretRef.Name)
+			}
+			if env.ConfigMapRef != nil {
+				add("ConfigMap", env.ConfigMapRef.Name)
+			}
+		}
 		for _, env := range container.Env {
 			if env.ValueFrom == nil {
 				continue
@@ -336,7 +347,20 @@ func defaultPod(spec *corev1.PodSpec) error {
 			Key: key, Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(300)),
 		})
 	}
-	if ptr.Deref(spec.RuntimeClassName, "") != "" && spec.NodeSelector["kubernetes.azure.com/kata-vm-isolation"] == "true" {
+	// TaintToleration admission adds this for every non-BestEffort Pod, not
+	// just Pods with RuntimeClass scheduling constraints.
+	budgets := []corev1.ResourceRequirements{AccountResources(*spec, nil).Pod}
+	if spec.Resources != nil {
+		budgets = append(budgets, *spec.Resources)
+	}
+	nonBestEffort := false
+	for _, budget := range budgets {
+		for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+			request, limit := budget.Requests[name], budget.Limits[name]
+			nonBestEffort = nonBestEffort || request.Sign() > 0 || limit.Sign() > 0
+		}
+	}
+	if nonBestEffort {
 		defaultToleration(spec, corev1.Toleration{
 			Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule,
 		})

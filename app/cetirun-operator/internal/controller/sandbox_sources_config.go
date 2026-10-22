@@ -108,7 +108,7 @@ func (config SandboxSourcesConfig) validate() error {
 }
 
 // NewKubernetesSandboxPreparation defaults to held preparation. NativeExecution
-// separately opts into Kubernetes single-start semantics, not physical fencing.
+// selects common Kubernetes reconciliation for new lifetimes, not physical fencing.
 // The default path still requires a qualified writer-exclusion adapter.
 func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.Reader,
 	installer SandboxHelmInstaller, namespace, chartVersion string,

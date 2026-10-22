@@ -73,7 +73,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// The API server, RBAC, both Agent webhooks, Pod admission, controller writes,
+// Exercises retained single-start state. The API server, RBAC, both Agent webhooks,
+// Pod admission, controller writes,
 // chart rendering and Helm SDK persistence are real. Platform declarations and
 // Gateway/model responses are synthetic. Envtest has no StatefulSet controller,
 // scheduler, kubelet, ServiceAccount controller or namespace/volume cleanup
@@ -89,11 +90,11 @@ func TestNativeSandboxStartAPIServer(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newNativeStartAPIHarness(t, enabled, false)
 			f := h.nativeSandboxFixture
-			f.reconcileOK(t)
+			f.seedRetainedBootstrap(t)
 			f.assertNotReady(t)
 			agent := f.current(t)
 			if !slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
-				t.Fatal("cold reconciliation did not persist the execution hold")
+				t.Fatal("retained bootstrap did not persist the execution hold")
 			}
 			if err := h.admin.Get(h.ctx, client.ObjectKey{
 				Namespace: instanceNamespace(agent.Name), Name: instanceServiceName(agent.Name),
@@ -451,8 +452,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool, n
 	input := testfixture.New("openclaw")
 	h.nativeSandboxFixture = &nativeSandboxFixture{r: r, kube: controllerClient, gateway: gateway, agent: input.Agent}
 	h.installPlatform(t, input, admissionNative, network...)
-	// Deliberate deployment skew is the failure case: the controller is enabled
-	// but the independently served admission process still has its safe default.
+	// Disabled admission must still deny release of the retained execution hold.
 	admissionConfig.NativeExecution = admissionNative
 	handler, err := sandboxadmission.NewHandler(admissionClient, admissionConfig)
 	if err != nil {

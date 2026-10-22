@@ -31,7 +31,7 @@ func customTerminalRequested(values map[string]any) bool {
 }
 
 func (r *AgentReconciler) ensureTerminalReadRoles(ctx context.Context, instance *api.Agent) error {
-	if err := r.checkCustomGeneration(ctx, instance); err != nil {
+	if err := r.checkAgentGeneration(ctx, instance); err != nil {
 		return err
 	}
 	role, reader := terminal.ReadRoles(instanceNamespace(instance.Name), instanceServiceName(instance.Name), instance.Name, string(instance.UID))

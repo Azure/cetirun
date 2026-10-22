@@ -101,9 +101,10 @@ cetirun-ai-gateway:
     enabled: true
     podMonitor:
       enabled: true
-  # -- LiteLLM's own row per call in its database is not kept: the Gateway's
-  # request log on stdout records each call, and the cluster's log collection
-  # keeps it outside the database. Spend, budgets and daily usage totals are
-  # recorded either way.
+  # -- LiteLLM's own row per call in its database, which the console's request
+  # log pages read, kept for seven days (the Gateway chart's
+  # spendLogs.retention). The Gateway's request log on stdout records each call
+  # as well, and the cluster's log collection keeps it outside the database.
+  # Prompts and responses are stored in neither.
   spendLogs:
-    enabled: false
+    enabled: true

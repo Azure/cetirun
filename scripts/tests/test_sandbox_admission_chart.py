@@ -484,6 +484,88 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     "apiGroups": [""], "resources": ["pods"],
                     "verbs": ["get", "list", "delete", "patch"],
                 }, rules)
+                self.assertEqual([
+                    rule for rule in rules
+                    if "apps" in rule["apiGroups"] and "replicasets" in rule["resources"]
+                ], [{
+                    "apiGroups": ["apps"], "resources": ["replicasets"],
+                    "verbs": ["get", "list"],
+                }])
+                self.assertIn({
+                    "apiGroups": ["apps"], "resources": ["controllerrevisions"],
+                    "verbs": ["get"],
+                }, rules)
+
+    def test_native_execution_needs_no_secondary_reconciliation_option(self):
+        admission = self.enforced_values(podsEnabled=True)
+        sources = {
+            "enabled": True, "nativeExecution": True,
+            "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
+        }
+        values = {"sandboxSources": sources, "aiGateway": {"enabled": True}}
+        documents = self.render(admission, values=values)
+        container = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
+        configured = json.loads(next(item["value"] for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_SOURCES"))
+        self.assertTrue(configured["nativeExecution"])
+        self.assertNotIn("reconciledExecution", configured)
+
+    def test_removed_reconciled_execution_option_is_rejected(self):
+        for enabled in (False, True):
+            for setting in (False, True, "true", 1):
+                with self.subTest(enabled=enabled, setting=setting):
+                    sources = {
+                        "enabled": enabled, "nativeExecution": enabled, "reconciledExecution": setting,
+                        "bootstrapOwnedPrerequisites": enabled, "platformConfigMapName": "sandbox-platform",
+                    }
+                    self.assert_rejected(
+                        self.enforced_values(podsEnabled=True), "sandboxSources.reconciledExecution is no longer supported",
+                        values={"sandboxSources": sources, "aiGateway": {"enabled": True}},
+                    )
+
+    def test_portal_controller_defaults_require_the_common_executor(self):
+        chart = ROOT / "app/cetirun-platform"
+        subprocess.run(
+            ["helm", "dependency", "build", "--skip-refresh", str(chart)],
+            cwd=ROOT, env=OFFLINE_ENV, text=True, capture_output=True, check=True, timeout=30,
+        )
+        namespace = "synthetic-release-namespace"
+        sources = {
+            "enabled": True, "nativeExecution": True,
+            "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
+        }
+        operator = {
+            "enabled": True, "namespace": namespace, "domainSuffix": "platform.example.com",
+            "sandboxSources": sources, "sandboxAdmission": self.enforced_values(podsEnabled=True),
+        }
+        portal = {
+            "istio": {"host": "portal.example.com"},
+            "aiGateway": {"catalogNamespace": namespace},
+        }
+        values = {"istio": {"enabled": True}, "cetirun-operator": operator, "cetirun-portal": portal}
+        for native in (False, True):
+            for controller_defaults in (False, True):
+                with self.subTest(native=native, controller_defaults=controller_defaults):
+                    result = self.helm(chart=chart, values={
+                        **values,
+                        "cetirun-operator": {**operator, "sandboxSources": {**sources, "nativeExecution": native}},
+                        "cetirun-portal": {**portal, "sandboxRuntimeDefaultsFromController": controller_defaults},
+                    })
+                    if controller_defaults and not native:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("sandboxRuntimeDefaultsFromController requires", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(
+                            "name: SANDBOX_RUNTIME_DEFAULTS_FROM_CONTROLLER" in result.stdout,
+                            controller_defaults,
+                        )
+        disabled = self.helm(chart=chart, values={
+            **values,
+            "cetirun-operator": {"enabled": False},
+            "cetirun-portal": {**portal, "sandboxRuntimeDefaultsFromController": True},
+        })
+        self.assertNotEqual(disabled.returncode, 0)
+        self.assertIn("sandboxRuntimeDefaultsFromController requires", disabled.stderr)
 
     def test_native_empty_skills_claim_name_is_optional_without_extra_grants(self):
         admission = self.enforced_values(podsEnabled=True)

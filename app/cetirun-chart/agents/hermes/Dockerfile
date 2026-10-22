@@ -18,7 +18,9 @@ ARG HERMES_SOURCE_SHA256
 
 USER vibe
 WORKDIR /usr/local/lib/hermes-agent
-RUN curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 \
+# Let the pinned archive finish on slow runners instead of repeatedly restarting it.
+RUN curl -fsSL --retry 3 --retry-all-errors --retry-delay 15 --retry-max-time 1800 \
+      --connect-timeout 15 --max-time 1800 \
       "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/v${HERMES_RELEASE}" \
       -o /tmp/hermes-agent.tar.gz && \
     echo "${HERMES_SOURCE_SHA256}  /tmp/hermes-agent.tar.gz" | sha256sum --check && \
