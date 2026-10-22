@@ -40,7 +40,7 @@ Licensed under the MIT License.
 {{- fail "Sandbox empty skills require native OpenClaw Gateway lifetime protection, no shared claim or packages, and the fixed skills path" -}}
 {{- end -}}
 {{- end -}}
-{{- if or .Values.azureWorkloadIdentity.enabled .Values.agentIdentity.enabled (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
+{{- if or .Values.azureWorkloadIdentity.enabled .Values.agentIdentity.enabled .Values.toolsMCP.enabled (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
 {{- fail "Sandbox identities must use compiler-owned explicit projections" -}}
 {{- end -}}
 {{- if or .Values.initContainers .Values.sidecars .Values.extraVolumes .Values.extraVolumeMounts .Values.extraEnvFrom .Values.skills.npm .Values.autoscaling.enabled .Values.ingress.enabled .Values.execRestriction.enabled -}}

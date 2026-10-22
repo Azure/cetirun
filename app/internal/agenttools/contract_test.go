@@ -1,23 +1,40 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
 package agenttools
 
-import "testing"
+import (
+	"net/url"
+	"testing"
+)
 
-func TestAzureServiceUsesFixedARMOriginAndAudience(t *testing.T) {
-	service, ok := LookupService("azure_arm")
-	if !ok || service.Provider != "azure" || service.Origin != "https://management.azure.com" || service.Audience != "https://management.azure.com/" {
-		t.Fatalf("invalid ARM profile: %+v", service)
-	}
-	for _, name := range []string{"https://attacker.example", "github", "microsoft_graph", "google_gmail"} {
-		if _, ok := LookupService(name); ok {
-			t.Fatalf("unavailable service exposed: %s", name)
+func TestServiceProfilesHaveFixedDistinctOriginsAndAudiences(t *testing.T) {
+	seen := map[string]bool{}
+	for _, p := range Services() {
+		u, err := url.Parse(p.Origin)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Path != "" || u.User != nil || u.RawQuery != "" || seen[p.ID] {
+			t.Fatalf("invalid profile: %#v", p)
+		}
+		seen[p.ID] = true
+		profile, ok := LookupService(p.ID)
+		if !ok || profile != p {
+			t.Fatal("profile lookup mismatch")
 		}
 	}
-	services := Services()
-	services[0].Origin = "https://attacker.example"
-	if service, _ := LookupService("azure_arm"); service.Origin != "https://management.azure.com" {
-		t.Fatal("caller mutated trusted registry")
+	arm, _ := LookupService("azure_arm")
+	if arm.Audience != "https://management.azure.com/" {
+		t.Fatal("ARM audience changed")
+	}
+	graph, _ := LookupService("microsoft_graph")
+	if graph.Audience != "https://graph.microsoft.com/" {
+		t.Fatal("Graph audience changed")
+	}
+	if _, ok := LookupService("https://example.com"); ok {
+		t.Fatal("accepted arbitrary service")
+	}
+	profiles := Services()
+	profiles[0].Origin = "https://example.com"
+	arm, _ = LookupService("azure_arm")
+	if arm.Origin == profiles[0].Origin {
+		t.Fatal("caller mutated service registry")
 	}
 }

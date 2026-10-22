@@ -1,3 +1,7 @@
+{{- if empty .Values.toolsMCP.runtimeTypes }}{{ fail "toolsMCP.runtimeTypes must include at least one qualified runtime" }}{{ end }}
+{{- range .Values.toolsMCP.runtimeTypes }}
+{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "toolsMCP.runtimeTypes supports only hermes and openclaw" }}{{ end }}
+{{- end }}
 {{- if ne (empty .Values.toolsMCP.brokerNamespace) (empty .Values.toolsMCP.brokerServiceAccount) }}{{ fail "toolsMCP.brokerNamespace and toolsMCP.brokerServiceAccount must be set together" }}{{ end }}
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $chat := deepCopy .Values.chatAccess -}}
@@ -111,12 +115,20 @@ spec:
             - name: FIC_ISSUER_IDS
               value: {{ .Values.azure.ficIssuerIds | quote }}
             {{- end }}
+            - name: AGENT_ID_ENABLED
+              value: {{ .Values.agentIdentity.enabled | quote }}
+            - name: TOOLS_MCP_URL
+              value: {{ .Values.toolsMCP.url | quote }}
+            - name: WORKLOAD_TOKEN_AUDIENCE
+              value: {{ .Values.toolsMCP.audience | quote }}
+            - name: TOOLS_MCP_RUNTIME_TYPES
+              value: {{ join "," .Values.toolsMCP.runtimeTypes | quote }}
+            - name: TOOLS_MCP_CA_SECRET_NAME
+              value: {{ .Values.toolsMCP.caSecretName | quote }}
             - name: TOOLS_MCP_BROKER_NAMESPACE
               value: {{ .Values.toolsMCP.brokerNamespace | quote }}
             - name: TOOLS_MCP_BROKER_SERVICE_ACCOUNT
               value: {{ .Values.toolsMCP.brokerServiceAccount | quote }}
-            - name: AGENT_ID_ENABLED
-              value: {{ .Values.agentIdentity.enabled | quote }}
             - name: AGENT_ID_CLEANUP_ENABLED
               value: {{ .Values.agentIdentity.cleanupEnabled | quote }}
             {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled }}
@@ -127,9 +139,9 @@ spec:
             - name: AGENT_ID_NAME_PREFIX
               value: {{ .Values.agentIdentity.namePrefix | quote }}
             {{- end }}
-            {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled .Values.toolsMCP.brokerNamespace }}
+            {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled .Values.toolsMCP.brokerNamespace .Values.toolsMCP.url }}
             - name: AGENT_ID_BROKER_URL
-              value: {{ required "agentIdentity.brokerURL is required for Agent Identity lifecycle operations" .Values.agentIdentity.brokerURL | quote }}
+              value: {{ required "agentIdentity.brokerURL is required for Agent identity and grant cleanup" .Values.agentIdentity.brokerURL | quote }}
             {{- end }}
             - name: AI_GATEWAY_ENABLED
               value: {{ .Values.aiGateway.enabled | quote }}

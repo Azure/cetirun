@@ -5,7 +5,12 @@ package broker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -53,8 +58,8 @@ func (s *Server) checkServiceAuthorization(ctx context.Context, input serviceReq
 		return fail("invalid_request", 400)
 	}
 	owner := Owner{identity.Agent.OwnerTenantID, identity.Agent.OwnerObjectID}
-	// Require the encrypted binding for this exact Agent before selecting
-	// the connection used to acquire a provider credential.
+	// A same-owner Connection is never sufficient: require its deterministic,
+	// encrypted per-Agent binding before reading a shared provider credential.
 	record, _, err := s.store.getBinding(ctx, bindingKey(identity.Agent.UID, input.ConnectionID), identity.Agent)
 	if errors.Is(err, errNotFound) {
 		return fail("binding_required", 403)
@@ -166,6 +171,9 @@ func (s *Server) toolCredentialsIssue(w http.ResponseWriter, r *http.Request) {
 	token, expiresAt, err := s.issueServiceCredential(r.Context(), connection, input.Service, identity.Agent)
 	if err != nil {
 		code, status := "dependency_unavailable", 503
+		if category, ok := oauthTokenFailureCategory(err); ok && category == string(oauthTokenInvalidGrant) && connectionMode(connection.Connection) == modeDelegated {
+			code, status = "interaction_required", 401
+		}
 		writeAPIError(w, status, code, "Provider credential is unavailable", correlationID(r))
 		return
 	}
@@ -186,10 +194,22 @@ func writeToolAuthorizationError(w http.ResponseWriter, r *http.Request, err err
 	writeAPIError(w, 503, "dependency_unavailable", "Service authorization is unavailable", correlationID(r))
 }
 
+func decodeJSONDiscard(r *http.Request, target any) bool {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxRequestBody))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target) == nil && errors.Is(decoder.Decode(&struct{}{}), io.EOF)
+}
+func opaqueID() string {
+	data := make([]byte, 16)
+	if _, err := rand.Read(data); err != nil {
+		panic("cryptographic random source failed")
+	}
+	return hex.EncodeToString(data)
+}
 func bindingKey(uid, connectionID string) string {
 	return "binding-" + stateHash(uid + "\x00" + connectionID)[:40]
 }
-
+func validProvider(provider string) bool { return len(agenttools.ProviderServices(provider)) > 0 }
 func contains(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {
@@ -198,7 +218,6 @@ func contains(values []string, expected string) bool {
 	}
 	return false
 }
-
 func uniqueStrings(values []string) []string {
 	result := []string{}
 	for _, value := range values {
@@ -208,10 +227,124 @@ func uniqueStrings(values []string) []string {
 	}
 	return result
 }
-
 func ifMatchRevision(r *http.Request) (uint64, bool) {
 	revision, err := strconv.ParseUint(strings.Trim(r.Header.Get("If-Match"), `"`), 10, 64)
 	return revision, err == nil && revision > 0
+}
+func jwtExpiry(token string) (time.Time, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return time.Time{}, errors.New("downstream token has no verifiable expiry")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, errors.New("downstream token has invalid expiry")
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(raw, &claims) != nil || claims.Exp <= time.Now().Unix() {
+		return time.Time{}, errors.New("downstream token is expired")
+	}
+	return time.Unix(claims.Exp, 0).UTC(), nil
+}
+
+func (s *Server) issueServiceCredential(ctx context.Context, connection *connectionRecord, serviceID string, agent Agent) (string, time.Time, error) {
+	profile, ok := agenttools.LookupService(serviceID)
+	if !ok || profile.Provider != connection.Connection.Provider {
+		return "", time.Time{}, errors.New("invalid service")
+	}
+	if !s.connectionMatchesAgent(connection.Connection, agent) {
+		return "", time.Time{}, errors.New("identity binding changed")
+	}
+	if connectionMode(connection.Connection) == modeAgent {
+		return s.issueAgentCredential(ctx, connection.Connection, agent)
+	}
+	if connection.Credential == nil {
+		return "", time.Time{}, errors.New("credential is unavailable")
+	}
+	credential := *connection.Credential
+	if credential.NonExpiring && (connection.Connection.Provider != "github" || !credential.ExpiresAt.IsZero()) {
+		return "", time.Time{}, errors.New("provider credential has an invalid non-expiring marker")
+	}
+	if !credential.NonExpiring && credential.ExpiresAt.IsZero() {
+		return "", time.Time{}, errors.New("provider credential is missing an expiry")
+	}
+	if !credential.NonExpiring && time.Until(credential.ExpiresAt) < 2*time.Minute {
+		provider := s.providers
+		if provider == nil {
+			provider = newProviderClient(s.cfg)
+		}
+		refreshed, err := provider.refresh(ctx, connection.Connection.Provider, credential)
+		if err != nil {
+			if category, ok := oauthTokenFailureCategory(err); ok && category == string(oauthTokenInvalidGrant) {
+				latest, version, readErr := s.store.getConnection(ctx, connection.Connection.ID)
+				if readErr == nil && !latest.Deleted && latest.Connection.Revision == connection.Connection.Revision && reflect.DeepEqual(latest.Credential, connection.Credential) {
+					latest.Connection.Status = "interaction_required"
+					latest.Connection.Revision++
+					latest.Connection.UpdatedAt = s.currentTime().UTC()
+					if writeErr := s.store.putConnection(ctx, latest, version); writeErr != nil {
+						return "", time.Time{}, writeErr
+					}
+				}
+			}
+			return "", time.Time{}, err
+		}
+		latest, version, err := s.store.getConnection(ctx, connection.Connection.ID)
+		if err != nil || latest.Deleted || latest.Connection.Revision != connection.Connection.Revision {
+			return "", time.Time{}, errors.New("connection changed")
+		}
+		latest.Credential = &refreshed
+		if !reflect.DeepEqual(latest.Connection.Scopes, refreshed.Scopes) {
+			latest.Connection.Scopes = refreshed.Scopes
+			latest.Connection.Revision++
+			latest.Connection.UpdatedAt = s.currentTime().UTC()
+		}
+		if err := s.store.putConnection(ctx, latest, version); err != nil {
+			return "", time.Time{}, err
+		}
+		credential = refreshed
+	}
+	if !credential.NonExpiring && time.Now().After(credential.ExpiresAt) {
+		return "", time.Time{}, errors.New("provider credential expired")
+	}
+	if connection.Connection.Provider == "azure" || connection.Connection.Provider == "microsoft" {
+		if !agent.AgentIdentityReady || agent.AgentIdentityClientID == "" {
+			return "", time.Time{}, errors.New("Agent Identity is not ready")
+		}
+		service := "MicrosoftGraph"
+		if serviceID == "azure_arm" {
+			service = "AzureResourceManager"
+		}
+		header, err := s.authSDK.authorizationHeaderFor(ctx, credential.AccessToken, agent.AgentIdentityClientID, service)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		token, err := accessTokenFromAuthorizationHeader(header)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		expiresAt, err := jwtExpiry(token)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return token, expiresAt, nil
+	}
+	if connection.Connection.Provider == "github" {
+		// GitHub OAuth Apps may issue non-expiring user tokens. This is CetiRun's
+		// internal MCP issuance validity, not an upstream token expiry: the Agent
+		// runtime never receives this access token. Keep it short so MCP returns
+		// for binding and revocation checks.
+		expiresAt := s.currentTime().UTC().Add(5 * time.Minute)
+		if !credential.NonExpiring && credential.ExpiresAt.Before(expiresAt) {
+			expiresAt = credential.ExpiresAt
+		}
+		if !expiresAt.After(s.currentTime()) {
+			return "", time.Time{}, errors.New("provider credential is expiring")
+		}
+		return credential.AccessToken, expiresAt, nil
+	}
+	return credential.AccessToken, credential.ExpiresAt, nil
 }
 
 func toolServiceTLSPrincipalAllowed(r *http.Request, cfg Config) bool {
@@ -224,12 +357,4 @@ func toolServiceTLSPrincipalAllowed(r *http.Request, cfg Config) bool {
 	}
 	expected := "spiffe://cluster.local/ns/" + cfg.ToolServiceNamespace + "/sa/" + cfg.ToolServiceAccount
 	return leaf.URIs[0].String() == expected
-}
-
-func (s *Server) issueServiceCredential(ctx context.Context, connection *connectionRecord, serviceID string, agent Agent) (string, time.Time, error) {
-	profile, ok := agenttools.LookupService(serviceID)
-	if !ok || profile.Provider != connection.Connection.Provider {
-		return "", time.Time{}, errors.New("invalid service")
-	}
-	return s.issueAgentCredential(ctx, connection.Connection, agent)
 }

@@ -118,6 +118,14 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 	if options.AgentIdentity.Required && !options.AgentIdentity.Allowed {
 		return block("policy_identity_unavailable", "The Policy requires Agent Identity, but the deployment, Policy capability or verified Microsoft Entra owner identity is unavailable")
 	}
+	if options.AgentIdentity.Required {
+		options.AllowedAgentTypes = slices.DeleteFunc(options.AllowedAgentTypes, func(kind api.AgentType) bool {
+			return kind == api.AgentTypeCustom
+		})
+		if len(options.AllowedAgentTypes) == 0 {
+			return block("policy_identity_unavailable", "The Policy requires Agent Identity, but Custom Agents do not support it")
+		}
+	}
 	return options, nil
 }
 

@@ -58,6 +58,9 @@ spec:
               {{- range .Values.authPolicy.apexPostBypassPaths }}
               - "{{ . }}"
               {{- end }}
+              {{- with .Values.authPolicy.oauthCallbackPath }}
+              - {{ . | quote }}
+              {{- end }}
     {{- if or .Values.authPolicy.webhookBypassPaths .Values.authPolicy.apexPostBypassPaths }}
     # Rule 3 — apex host method guard: only POST bypasses these paths.
     - to:
@@ -93,4 +96,11 @@ spec:
             {{- end }}
             notMethods:
               - "POST"
+    {{- end }}
+    {{- with .Values.authPolicy.oauthCallbackPath }}
+    - to:
+        - operation:
+            hosts: [{{ $.Values.domain | quote }}]
+            paths: [{{ . | quote }}]
+            notMethods: ["GET", "POST"]
     {{- end }}

@@ -12,8 +12,8 @@ network access.
 | `app/cetirun-operator/` | Go Kubernetes operator, API types, and generated CRDs |
 | `app/cetirun-portal/` | Go portal backend and its Helm chart |
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
-| `app/cetirun-agent-broker/` | Agent Identity authorization sessions and workload-bound short-lived credential issuance |
-| `app/agent-tools-mcp/` | Workload-authenticated MCP service for Azure JSON REST execution |
+| `app/cetirun-agent-broker/` | Owner Connections, Agent bindings, encrypted OAuth state and internal credential issuance |
+| `app/agent-tools-mcp/` | Workload-authenticated MCP service for fixed-service JSON REST execution |
 | `app/internal/` | Shared Go implementation packages for Registry credentials and terminal policy |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
@@ -207,75 +207,50 @@ build above until a working lint entry point is added.
 
 ### Agent Identity Broker
 
-The Agent Identity Broker retains OBO authorization state, validates the
-instance workload binding, and issues a short-lived credential for a fixed
-downstream service. Service-specific tools run in the Agent workload and must
-keep that credential out of model context, logs, files, command arguments, and
-environment variables. Run the Broker's Go and chart checks with:
+The Broker owns owner-scoped Connections, per-instance ConnectionBindings, OAuth/OBO,
+and encrypted credential storage. Agent Tools MCP is a separate native remote
+MCP server in `app/agent-tools-mcp/`: it verifies a Pod-bound workload token,
+asks the Broker to independently verify the instance and authorization, and
+executes JSON REST requests against fixed Azure, GitHub, Microsoft Graph, and Google service profiles. Provider
+tokens never enter Agent workloads. There is no MCP bridge or direct Agent
+token-issuance route. Run both components' checks with:
 
 ```bash
 go -C app/cetirun-agent-broker test ./... -count=1
 go -C app/cetirun-agent-broker vet ./...
 make -C app/cetirun-agent-broker build
 bash scripts/cetirun-agent-broker-helm-test.sh
+make -C app/agent-tools-mcp test vet chart-lint
+python3 -B -m unittest scripts.tests.test_native_mcp_runtime -v
+python3 -B -m unittest discover -s app/cetirun-chart/tests -p test_tools_mcp.py -v
 ```
 
 These are offline checks. They do not call Microsoft Entra, the Auth SDK, Key
-Vault, ARM, Resource Graph, or a Kubernetes cluster.
+Vault, ARM, Resource Graph, GitHub, Google, or a Kubernetes cluster. Native
+Hermes and OpenClaw transports include hash-guarded patches to read the rotating
+workload token for each request; they do not run a separate bridge process.
+Held Sandbox and Custom runtimes do not support this integration and fail closed.
 
-The Agent workload's `cetirun-agent az rest` wrapper has separate offline tests:
+See [Agent Tools MCP](app/agent-tools-mcp/README.md) and the
+[authorization guide](site/content/en/docs/guides/agent-identity.md) for the
+TLS reload, Broker service identity, CA distribution, and Agent connection
+binding setup.
 
-```bash
-python3 -B -m unittest discover -s app/cetirun-chart/tests -p 'test_agent*.py' -v
-python3 -B -m unittest discover -s scripts/tests -p test_agent_id_runtime_assets.py -v
-```
-
-The wrapper runs on Linux and uses `/usr/bin/az`, `/dev/stdin`, and anonymous
-memory-backed file descriptors under `/proc/self/fd`. When Azure CLI is installed,
-the tests exercise it against a loopback fixture using synthetic tokens and an
-isolated configuration directory. Otherwise, the real-CLI test is explicitly
-skipped; the mocked and subprocess tests still run. This does not qualify the
-CLI version in a built runtime image or validate a real OBO session.
-
-Custom Agent Identity also uses the Operator's typed runtime bindings and final
-manifest validation. Run its focused checks with:
+Custom Agent Identity requests are rejected before identity provisioning or
+workload preparation. The previous `cetirun-agent az rest` wrapper and its
+provider-token path are removed; Custom images cannot opt in through the legacy
+Chart annotation or typed Broker binding. Focused offline regressions cover this
+boundary:
 
 ```bash
-go -C app/cetirun-operator test ./internal/runtimebindings ./internal/helm ./internal/controller -run 'TestCustomAgentIdentity|TestAgentIdentityBrokerNamespace' -count=1
+go -C app/cetirun-operator test ./internal/runtimebindings ./internal/helm ./internal/controller -run 'TestCustomAgentIdentity' -count=1
 ```
-
-The Custom image supplies Python and Azure CLI; the platform mounts the shared
-CLI and Azure skill read-only. Identity creation and cleanup use the existing
-controller lifecycle, not image-owned credentials or new Azure role assignments.
 
 `npm --prefix app/cetirun-portal/web run dev` starts a local frontend server.
 Its API proxy expects a backend on localhost and injects development identity
 headers. Keep it local; it is not a production authentication configuration.
 Starting the Go backend or operator uses Kubernetes configuration and is
 outside the offline validation loop.
-
-### Agent Tools MCP core
-
-The standalone MCP service consumes the Broker's opt-in Connection/Binding
-APIs and executes JSON REST requests against Azure Resource Manager with an
-independent Agent identity. Provider tokens stay in the service. Azure RBAC
-controls resource operations; CetiRun checks the Agent's connection binding.
-
-```bash
-go -C app/agent-tools-mcp test ./... -count=1
-go -C app/agent-tools-mcp test -race ./... -count=1
-go -C app/agent-tools-mcp vet ./...
-make -C app/agent-tools-mcp build chart-lint
-python3 -B -m unittest scripts.tests.test_agent_tools_mcp_chart -v
-```
-
-The root Go and Helm gates include this module and its independent chart.
-These checks use synthetic workload/provider fixtures and local rendering;
-they do not call Azure or Kubernetes. Native runtime bootstrap, connected-service
-skills, Portal connection management, and platform umbrella wiring are separate
-follow-ups. Existing runtime and authorization paths remain available.
-See [Agent Tools MCP](app/agent-tools-mcp/README.md) for its request contract,
-TLS prerequisites, and execution limits.
 
 ### Runtime chart and Python helpers
 

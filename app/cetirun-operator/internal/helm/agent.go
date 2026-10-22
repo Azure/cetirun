@@ -267,6 +267,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		NativeConfig:   config,
 		NativeOptions:  map[string]any{"acpx": native["acpx"], "plugins": native["plugins"]},
 		NativeSandbox:  values[sandboxworkload.ValuesKey] != nil,
+		ToolsMCP:       agents.ToolsMCPBinding{Enabled: object(values["toolsMCP"])["enabled"] == true, URL: text(object(values["toolsMCP"])["url"])},
 		Model: agents.ModelBinding{
 			Provider:      provider,
 			Name:          text(secrets["model"]),

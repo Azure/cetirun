@@ -119,8 +119,7 @@ RUN npm --min-release-age=0 install \
 
 # Seed OpenClaw personality files into the workspace skeleton.
 COPY --chown=vibe:vibe agents/openclaw/personality/ /home/vibe/.openclaw/workspace/
-COPY --chown=vibe:vibe skills/azure/ /home/vibe/.openclaw/skills/azure/
-COPY --chown=vibe:vibe configs/cetirun-agent /usr/local/bin/cetirun-agent
+COPY --chown=vibe:vibe skills/connected-services/ /home/vibe/.openclaw/skills/connected-services/
 
 COPY --chown=vibe:vibe agents/openclaw/bootstrap/entrypoint.sh /usr/local/bin/entrypoint.sh
 
@@ -130,7 +129,6 @@ RUN tdnf install -y tini && tdnf clean all && \
     test -x /usr/bin/tini
 RUN result=0; /usr/bin/tini -s -g -- /bin/sh -c 'exit 37' || result=$?; test "$result" -eq 37
 RUN chmod 755 /usr/local/share/cetirun/builtin-skill-sync.sh \
-    /usr/local/bin/cetirun-agent \
     /usr/local/bin/entrypoint.sh
 USER vibe
 
@@ -144,6 +142,9 @@ RUN --mount=from=openclaw-source,source=/home/vibe/openclaw-pack/openclaw.tgz,ta
     npm install --omit=dev --no-audit --no-fund && \
     npm ls "undici@${CLAWHUB_UNDICI_VERSION}" --all >/dev/null && \
     ! npm ls undici@7.29.0 --all >/dev/null 2>&1
+
+COPY --chown=vibe:vibe agents/openclaw/compat/ /tmp/cetirun-mcp-compat/
+RUN node /tmp/cetirun-mcp-compat/apply-workload-mcp.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && rm -r /tmp/cetirun-mcp-compat
 
 EXPOSE 18789 7681 3978
 

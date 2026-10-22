@@ -21,6 +21,10 @@ type Service struct {
 func Services() []Service {
 	return []Service{
 		{ID: "azure_arm", Provider: "azure", Origin: "https://management.azure.com", BasePath: "/", Audience: "https://management.azure.com/"},
+		{ID: "github", Provider: "github", Origin: "https://api.github.com", BasePath: "/"},
+		{ID: "microsoft_graph", Provider: "microsoft", Origin: "https://graph.microsoft.com", BasePath: "/v1.0/", Audience: "https://graph.microsoft.com/"},
+		{ID: "google_gmail", Provider: "google", Origin: "https://gmail.googleapis.com", BasePath: "/gmail/v1/"},
+		{ID: "google_calendar", Provider: "google", Origin: "https://www.googleapis.com", BasePath: "/calendar/v3/"},
 	}
 }
 

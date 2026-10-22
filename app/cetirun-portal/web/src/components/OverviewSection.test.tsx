@@ -42,10 +42,6 @@ vi.mock("./ToolAuthorizationBlock", () => ({
   ToolAuthorizationBlock: () => <div>Azure connection management</div>,
 }));
 
-vi.mock("./AgentAuthorizationBlock", () => ({
-  AgentAuthorizationBlock: () => <div>Legacy Entra authorization</div>,
-}));
-
 vi.mock("../api/instance", () => ({
   downloadTeamsApp: vi.fn(),
 }));
@@ -64,7 +60,7 @@ describe("OverviewSection", () => {
     ) });
   };
 
-  it("uses Azure connection management when Agent Tools is enabled and preserves the legacy panel otherwise", () => {
+  it("shows connection management only when Agent Tools is enabled", () => {
     mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: true, agentToolsEnabled: true };
     const view = renderInRouter(<OverviewSection instance={baseInstance} />);
     expect(screen.getByText("Azure connection management")).toBeInTheDocument();
@@ -72,7 +68,7 @@ describe("OverviewSection", () => {
 
     mockFeatures.data = { tailscaleEnabled: false, agentIdentityEnabled: true, agentToolsEnabled: false };
     view.rerender(<OverviewSection instance={baseInstance} />);
-    expect(screen.getByText("Legacy Entra authorization")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy Entra authorization")).not.toBeInTheDocument();
     expect(screen.queryByText("Azure connection management")).not.toBeInTheDocument();
   });
 

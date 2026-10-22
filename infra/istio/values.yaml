@@ -57,10 +57,11 @@ authPolicy:
   # POST-only unauthenticated callbacks that are valid on the apex Portal host
   # and must never be exempted on legacy instance subdomains.
   apexPostBypassPaths:
-    # Entra posts the one-time authorization code directly to the Portal. The
-    # Portal handler accepts form_post only and the Broker validates hashed
-    # state, PKCE, nonce, owner claims, expiry, and single consumption.
-    - "/api/v1/agent-authorization/callback"
+    []
+
+  # Exact apex-only OAuth callback, GET for GitHub/Google and form POST for Entra.
+  # The Broker validates one-time state and provider/account binding.
+  oauthCallbackPath: "/api/v1/connections/callback"
 
   # Prefixes exempted from Lua alias validation but still require OAuth2 Proxy auth.
   # Use for shared services that aren't tied to a specific user alias.

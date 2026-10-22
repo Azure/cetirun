@@ -68,7 +68,7 @@ class PortalChatChartTests(unittest.TestCase):
     def test_umbrella_generates_the_same_caller_as_the_portal(self):
         with tempfile.TemporaryDirectory(prefix="cetirun-chat-charts-") as scratch:
             base = Path(scratch)
-            for relative in ("cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart", "cetirun-ai-gateway/chart"):
+            for relative in ("cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart", "cetirun-ai-gateway/chart", "agent-tools-mcp/chart", "cetirun-agent-broker/chart"):
                 shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts", ".bin", "node_modules"))
             subprocess.run(["helm", "dependency", "build", str(base / "cetirun-platform"), "--skip-refresh"], env=OFFLINE, capture_output=True, text=True, check=True, timeout=30)
             objects = self.render(base / "cetirun-platform", {

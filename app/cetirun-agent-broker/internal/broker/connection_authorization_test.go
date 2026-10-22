@@ -28,7 +28,7 @@ import (
 
 type connectionFixture struct {
 	server     *Server
-	agent      serviceAgentDocument
+	agent      agentDocument
 	connection connectionRecord
 	binding    ConnectionBinding
 	secrets    map[string]secretDocument
@@ -56,7 +56,7 @@ func newConnectionFixture(t *testing.T) *connectionFixture {
 		ClientID string `json:"clientId"`
 		ObjectID string `json:"objectId"`
 	}{"Ready", testFirstAgentID, "55555555-5555-5555-5555-555555555555"}
-	cfg := Config{ConnectionBindingsEnabled: true, PortalNamespace: "portal", PortalServiceAccount: "portal", OperatorNamespace: "operator", OperatorServiceAccount: "operator",
+	cfg := Config{PortalNamespace: "portal", PortalServiceAccount: "portal", OperatorNamespace: "operator", OperatorServiceAccount: "operator",
 		ToolServiceNamespace: "cetirun-system", ToolServiceAccount: "agent-tools-mcp", WorkloadTokenAudience: "agent-tools-mcp",
 		TenantID: owner.TenantID, BlueprintClientID: "44444444-4444-4444-4444-444444444444", AuthorizationClientID: "55555555-5555-5555-5555-555555555555",
 		PortalOrigin: "https://portal.example.com", RedirectURI: "https://portal.example.com/api/v1/connections/callback",
@@ -76,6 +76,9 @@ func newConnectionFixture(t *testing.T) *connectionFixture {
 	store := &kubeClient{baseURL: "https://kubernetes.example.com", namespace: "credentials", agentNamespaces: true, tokenFile: tokenFile, wrapper: memoryWrapper{key: []byte("synthetic-encryption-key")}}
 	store.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		path := request.URL.Path
+		if request.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/namespaces/credentials/secrets/agent-tools-connection-") {
+			return securityJSONResponse(t, http.StatusNotFound, map[string]string{"message": "not found"}), nil
+		}
 		if request.Method == http.MethodPost && path == "/apis/authentication.k8s.io/v1/tokenreviews" {
 			var input tokenReview
 			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
@@ -99,7 +102,7 @@ func newConnectionFixture(t *testing.T) *connectionFixture {
 		case "/api/v1/namespaces/agents/pods/agent-pod":
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": map[string]string{"uid": "pod-uid"}, "spec": map[string]string{"serviceAccountName": "openclaw-agent-cetirun"}}), nil
 		case "/apis/cetirun.microsoft.com/v1alpha1/agents":
-			return securityJSONResponse(t, http.StatusOK, serviceAgentList{Items: []serviceAgentDocument{fixture.agent}}), nil
+			return securityJSONResponse(t, http.StatusOK, agentList{Items: []agentDocument{fixture.agent}}), nil
 		case "/apis/cetirun.microsoft.com/v1alpha1/agents/agent":
 			return securityJSONResponse(t, http.StatusOK, fixture.agent), nil
 		}
@@ -206,7 +209,7 @@ func (fixture *connectionFixture) mutateBinding(t *testing.T, change func(*Conne
 	}
 }
 
-func TestWorkloadProofRejectsTerminatingBindings(t *testing.T) {
+func TestAzureWorkloadProofRejectsTerminatingBindings(t *testing.T) {
 	for _, resource := range []string{"active", "serviceaccount", "pod"} {
 		t.Run(resource, func(t *testing.T) {
 			fixture := newConnectionFixture(t)
@@ -336,7 +339,7 @@ func TestAzureBindingRejectsStaleOrForeignAuthorization(t *testing.T) {
 		{"suspended", func(t *testing.T, f *connectionFixture) { f.agent.Spec.Suspended = true }},
 		{"custom", func(t *testing.T, f *connectionFixture) { f.agent.Spec.Agent.Type = "custom" }},
 		{"sandbox", func(t *testing.T, f *connectionFixture) { f.agent.Spec.SandboxRef = "shared" }},
-		{"feature off", func(t *testing.T, f *connectionFixture) { f.server.cfg.ConnectionBindingsEnabled = false }},
+		{"Azure mode off", func(t *testing.T, f *connectionFixture) { f.server.cfg.DisableAzureAgent = true }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newConnectionFixture(t)
@@ -481,42 +484,6 @@ func TestAgentCleanupDeletesOnlyOwnedRecordsWithPreconditions(t *testing.T) {
 	}
 }
 
-func TestConnectionAPIsAreOptInAndListenersAreSeparated(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		server := &Server{cfg: Config{ConnectionBindingsEnabled: enabled}, mux: http.NewServeMux()}
-		server.routes()
-		for _, test := range []struct {
-			handler      http.Handler
-			method, path string
-			want         int
-		}{
-			{server.Handler(), "POST", "/internal/v1/service-credentials/issue", 404},
-			{server.TLSHandler(), "GET", "/v1/connections", 404},
-			{server.TLSHandler(), "POST", "/v1/credentials/issue", 404},
-		} {
-			response := httptest.NewRecorder()
-			test.handler.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
-			if response.Code != test.want {
-				t.Fatalf("route %s exposed on wrong listener", test.path)
-			}
-		}
-		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/v1/connections", nil))
-		expected := 404
-		if enabled {
-			expected = 403
-		}
-		if response.Code != expected {
-			t.Fatalf("feature flag: %d", response.Code)
-		}
-		response = httptest.NewRecorder()
-		server.TLSHandler().ServeHTTP(response, httptest.NewRequest("POST", "/internal/v1/service-authorizations/list", nil))
-		if response.Code != expected {
-			t.Fatalf("TLS identity/feature guard: %d", response.Code)
-		}
-	}
-}
-
 func TestServiceProofRequiresCurrentAudiencePodAndServiceAccount(t *testing.T) {
 	for _, test := range []string{"wrong audience", "multiple audiences", "old pod", "old service account", "dependency failure"} {
 		t.Run(test, func(t *testing.T) {
@@ -607,7 +574,7 @@ func TestConnectionManagementRejectsForeignCaller(t *testing.T) {
 	}
 }
 
-func TestAgentListPaginationIsCompleteAndBounded(t *testing.T) {
+func TestAzureAgentListPaginationIsCompleteAndBounded(t *testing.T) {
 	for _, variant := range []string{"complete", "repeated", "cycle", "second-page-fails", "oversize"} {
 		t.Run(variant, func(t *testing.T) {
 			f := newConnectionFixture(t)
@@ -620,7 +587,7 @@ func TestAgentListPaginationIsCompleteAndBounded(t *testing.T) {
 				if variant == "second-page-fails" && calls == 2 {
 					return securityJSONResponse(t, 503, map[string]any{}), nil
 				}
-				list := serviceAgentList{}
+				list := agentList{}
 				count := 50
 				if variant == "oversize" {
 					count = 120
@@ -655,7 +622,7 @@ func TestAgentListPaginationIsCompleteAndBounded(t *testing.T) {
 	}
 }
 
-func TestBindingDisconnectAuditMatchesStoredOutcome(t *testing.T) {
+func TestAzureBindingDisconnectAuditMatchesStoredOutcome(t *testing.T) {
 	for _, variant := range []string{"success", "conflict", "write-response-lost", "unauthenticated"} {
 		t.Run(variant, func(t *testing.T) {
 			f := newConnectionFixture(t)

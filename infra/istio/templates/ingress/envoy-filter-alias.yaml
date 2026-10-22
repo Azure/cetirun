@@ -64,6 +64,7 @@ spec:
                 "{{ . }}",
               {{- end }}
               }
+              local OAUTH_CALLBACK_PATH = {{ .Values.authPolicy.oauthCallbackPath | default "" | toJson }}
               local SHARED_HOST_PREFIXES = {
               {{- range .Values.authPolicy.aliasExemptPrefixes }}
                 "{{ . }}",
@@ -252,6 +253,7 @@ spec:
 
               function is_anonymous_apex_bypass(path, method, authority)
                 if request_host(authority) ~= PORTAL_DOMAIN then return false end
+                if OAUTH_CALLBACK_PATH ~= "" and path == OAUTH_CALLBACK_PATH and (method == "GET" or method == "POST") then return true end
                 if path:match("^/oauth2/") or path == "/healthz" or path == "/readyz" then
                   return true
                 end

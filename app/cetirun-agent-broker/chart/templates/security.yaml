@@ -29,7 +29,7 @@ spec:
       to:
         - operation:
             ports: ["8080"]
-            paths: ["/internal/v1/*", "/healthz", "/readyz"{{ if .Values.connectionBindings.enabled }}, "/v1/connections*", "/v1/instances/*"{{ end }}]
+            paths: ["/v1/connections*", "/v1/instances*", "/api/v1/connections/callback", "/healthz", "/readyz"]
     - from:
         - source:
             principals:
@@ -43,21 +43,9 @@ spec:
             paths: ["/operator/v1/instances/*"]
     - from:
         - source:
-            # Istio string matching supports a trailing prefix wildcard. The
-            # Broker still maps the exact mTLS namespace + ServiceAccount to a
-            # single Agent CR before serving any request.
-            namespaces: ["cetirun-*"]
-      to:
-        - operation:
-            ports: ["8080"]
-            paths: ["/v1/*"]
-    {{- if .Values.connectionBindings.enabled }}
-    - from:
-        - source:
             principals:
               - cluster.local/ns/{{ .Values.toolService.namespace }}/sa/{{ .Values.toolService.serviceAccount }}
       to:
         - operation:
             ports: ["8443"]
-    {{- end }}
 {{- end }}

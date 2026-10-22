@@ -2,6 +2,8 @@
 {{- include "cetirun.sandbox.validate" . -}}
 {{- end -}}
 {{- if eq (include "cetirun.agent.type" .) "custom" -}}
+{{- include "cetirun.validateAgentIdentity" . -}}
+{{- include "cetirun.validateToolsMCP" . -}}
 {{- include "cetirun.custom.validate" . -}}
 {{- include "cetirun.validateAutoscaling" . -}}
 {{- else if or .Release.IsInstall .Release.IsUpgrade -}}
@@ -10,6 +12,7 @@
 {{- include "cetirun.validatePorts" . -}}
 {{- include "cetirun.validateWorkloadIdentity" . -}}
 {{- include "cetirun.validateAgentIdentity" . -}}
+{{- include "cetirun.validateToolsMCP" . -}}
 {{- include "cetirun.validateAIGateway" . -}}
 {{- include "cetirun.validateTtydPort" . -}}
 {{- include "cetirun.validateSkills" . -}}

@@ -19,6 +19,7 @@ type managementAudit struct {
 	target    []any
 	mutation  bool
 	committed bool
+	callback  bool
 }
 type auditWriter struct {
 	http.ResponseWriter
@@ -71,8 +72,14 @@ func managementOperation(r *http.Request) string {
 		return "credential.check"
 	case path == "/internal/v1/service-credentials/issue":
 		return "credential.issue"
+	case path == "/api/v1/connections/callback":
+		return "oauth.complete"
 	case r.Method == "GET":
 		return ""
+	case strings.HasSuffix(path, "/connections/start"):
+		return "oauth.start"
+	case strings.HasSuffix(path, "/reconnect"):
+		return "oauth.reauthorize"
 	case strings.Contains(path, "/connection-bindings"):
 		switch r.Method {
 		case "POST":
@@ -84,6 +91,8 @@ func managementOperation(r *http.Request) string {
 		}
 	case strings.HasSuffix(path, "/tool-identities"):
 		return "identity.connect"
+	case r.Method == "DELETE" && strings.HasPrefix(path, "/v1/connections/"):
+		return "account.remove"
 	case r.Method == "DELETE" && strings.HasPrefix(path, "/operator/"):
 		return "agent.cleanup"
 	}
@@ -97,10 +106,8 @@ func (s *Server) auditManagement(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		state := &managementAudit{}
+		state := &managementAudit{callback: operation == "oauth.complete"}
 		r = r.WithContext(context.WithValue(r.Context(), auditKey{}, state))
-		r.Header.Set("X-Correlation-ID", agenttools.AuditText(correlationID(r), 128))
-		w.Header().Set("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
 		started := time.Now()
 		logger := s.logger
 		if logger == nil {
@@ -117,8 +124,9 @@ func (s *Server) auditManagement(next http.Handler) http.Handler {
 			if state.mutation {
 				outcome = "execution_unknown"
 			}
-
-		} else if wrapped.status >= 200 && wrapped.status < 300 {
+		} else if state.callback && state.mutation {
+			outcome = "execution_unknown"
+		} else if wrapped.status >= 200 && wrapped.status < 300 && !state.callback {
 			outcome = "succeeded"
 		}
 		attributes := []any{"operation", operation, "phase", "completed", "outcome", outcome, "http_status", wrapped.status, "correlation_id", correlationID(r), "duration_ms", time.Since(started).Milliseconds()}

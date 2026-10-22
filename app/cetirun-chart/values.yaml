@@ -89,7 +89,14 @@ azureWorkloadIdentity:
 # these values; an instance workload must not select its Broker endpoint.
 agentIdentity:
   enabled: false
-  brokerURL: ""
+
+toolsMCP:
+  enabled: false
+  url: ""
+  audience: agent-tools-mcp
+  namespace: cetirun-tools
+  serviceAccount: agent-tools-mcp
+  caSecretName: ""
 
 # -- Platform AI Gateway access. The CetiRun operator sets these values for
 # Agents whose model traffic goes through the Gateway; they are not user

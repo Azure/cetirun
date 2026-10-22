@@ -43,7 +43,7 @@ func TestGetFeatures(t *testing.T) {
 		t.Errorf("agentIdentityEnabled = false, want true")
 	}
 	if !resp.AgentToolsEnabled {
-		t.Error("agentToolsEnabled = false, want true")
+		t.Errorf("agentToolsEnabled = false, want true")
 	}
 	if resp.MaxInstancesPerUser != 2 {
 		t.Errorf("maxInstancesPerUser = %d, want 2", resp.MaxInstancesPerUser)

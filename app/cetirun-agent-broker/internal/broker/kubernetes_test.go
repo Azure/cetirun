@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServiceAccountTokenIsReloaded(t *testing.T) {
@@ -48,6 +49,44 @@ func TestWorkloadServiceAccountUsesInstanceName(t *testing.T) {
 	} {
 		if got := workloadServiceAccount(strings.Repeat("a", length)); got != want {
 			t.Fatalf("workloadServiceAccount(%d chars) = %q, want %q", length, got, want)
+		}
+	}
+}
+
+func TestWorkloadReadinessDoesNotRequireAgentIdentity(t *testing.T) {
+	document := agentDocument{}
+	document.Metadata.Name = "agent"
+	document.Metadata.UID = "11111111-1111-1111-1111-111111111111"
+	document.Metadata.Annotations = map[string]string{
+		"agentidentity.cetirun.microsoft.com/owner-tenant-id": "22222222-2222-2222-2222-222222222222",
+		"agentidentity.cetirun.microsoft.com/owner-object-id": "33333333-3333-3333-3333-333333333333",
+	}
+	document.Status.Namespace = "agents"
+	document.Status.Phase = "Ready"
+	agent := agentFromDocument(document)
+	if !agent.WorkloadReady || agent.AgentIdentityReady {
+		t.Fatalf("non-Entra ready workload = %#v", agent)
+	}
+
+	document.Spec.Suspended = true
+	if agentFromDocument(document).WorkloadReady {
+		t.Fatal("suspended workload was considered ready")
+	}
+	document.Spec.Suspended = false
+	deleting := time.Now()
+	document.Metadata.DeletionTimestamp = &deleting
+	if agentFromDocument(document).WorkloadReady {
+		t.Fatal("deleting workload was considered ready")
+	}
+}
+
+func TestTokenReviewRequiresRequestedAudience(t *testing.T) {
+	if !tokenReviewAudienceAccepted([]string{"agent-tools-mcp"}, "agent-tools-mcp") {
+		t.Fatal("requested TokenReview audience was rejected")
+	}
+	for _, audiences := range [][]string{nil, {"another-audience"}, {"agent-tools-mcp", "another-audience"}} {
+		if tokenReviewAudienceAccepted(audiences, "agent-tools-mcp") {
+			t.Fatalf("unexpected TokenReview audiences accepted: %#v", audiences)
 		}
 	}
 }

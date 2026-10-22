@@ -110,6 +110,10 @@ type AgentReconciler struct {
 	AgentIdentityNamePrefix        string
 	AgentIdentityBrokerURL         string
 	AgentIdentityHTTPClient        *http.Client
+	ToolsMCPURL                    string
+	ToolsMCPAudience               string
+	ToolsMCPCASecretName           string
+	ToolsMCPRuntimeTypes           []string
 	ToolsMCPBrokerNamespace        string
 	ToolsMCPBrokerServiceAccount   string
 	// agentIdentityGraphClientFactory is test-only dependency injection. A nil
@@ -453,6 +457,17 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// We read the gateway Secret content hash here so that external Secret
 	// modifications (token rotation, tailscale key update) invalidate the
 	// skip cache and trigger a full reconcile with Helm upgrade.
+	toolsMCPEnabled, err := r.toolsMCPEnabledFor(instance)
+	if err != nil {
+		return r.rejectAgentConfig(ctx, instance, err)
+	}
+	toolsCAHash := ""
+	if toolsMCPEnabled {
+		toolsCAHash, err = r.toolsMCPCAHash(ctx)
+		if err != nil {
+			return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust is unavailable")
+		}
+	}
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
 	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
@@ -464,6 +479,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
+		if toolsMCPEnabled && !namespaceMissing {
+			if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+		}
 		gwSecret := &corev1.Secret{}
 		gwSecretKey := types.NamespacedName{
 			Namespace: instanceNamespace(instance.Name),
@@ -485,7 +505,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 				logger.Error(err, "failed to backfill CetiRun auth key before skip-cache", "alias", instance.Spec.User.Alias)
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
-			gwSecretHash = secretContentHash(gwSecret.Data)
+			gwSecretHash = secretContentHash(gwSecret.Data) + toolsCAHash
 		}
 
 		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
@@ -623,6 +643,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	logger.V(1).Info("Ensuring namespaced RBAC", "namespace", ns)
 	if err := r.ensureNamespacedRBAC(ctx, ns); err != nil {
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespaced RBAC: %v", err))
+	}
+	if toolsMCPEnabled {
+		if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
+			return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust distribution failed")
+		}
 	}
 
 	if err := r.reconcileToolsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
@@ -766,7 +791,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 				return ctrl.Result{}, fmt.Errorf("re-read gateway Secret for operator hash: %w", err)
 			}
 		} else {
-			gwSecretHash = secretContentHash(gwSecret.Data)
+			gwSecretHash = secretContentHash(gwSecret.Data) + toolsCAHash
 			gatewaySecretResourceVersion = gwSecret.ResourceVersion
 		}
 	}
@@ -776,8 +801,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// Teams may have resolved its application ID and Tailscale its auth key.
 	// Rebuild from current bindings without reloading the versioned chart.
 	helmValues, err := buildHelmValuesWithAgentIdentity(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel, AgentIdentityHelmConfig{
-		Enabled:   r.AgentIdentityEnabled,
-		BrokerURL: r.AgentIdentityBrokerURL,
+		Enabled:              r.AgentIdentityEnabled,
+		BrokerURL:            r.AgentIdentityBrokerURL,
+		ToolsMCPURL:          r.ToolsMCPURL,
+		ToolsMCPAudience:     r.ToolsMCPAudience,
+		ToolsMCPCASecretName: r.ToolsMCPCASecretName,
+		ToolsMCPRuntimeTypes: r.ToolsMCPRuntimeTypes,
 	})
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
@@ -817,6 +846,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
 	helmValues = prepared.Values
+	if toolsCAHash != "" {
+		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/tools-ca-hash": toolsCAHash})
+	}
 	if !alreadyDeployed && instance.Spec.Agent.RegistrySecretRef != nil {
 		sa, err := registryServiceAccount(helmValues, instanceServiceName(instance.Name))
 		if err != nil {

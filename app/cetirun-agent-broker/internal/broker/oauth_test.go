@@ -4,7 +4,6 @@
 package broker
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -14,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -104,39 +102,6 @@ func TestTokenRequestClassifiesLocalDependencyFailures(t *testing.T) {
 	})
 }
 
-func TestCallbackFailureDoesNotLogIdentityPlatformResponse(t *testing.T) {
-	var logOutput bytes.Buffer
-	previousLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
-	t.Cleanup(func() { slog.SetDefault(previousLogger) })
-
-	assertionFile := filepath.Join(t.TempDir(), "federated-token")
-	if err := os.WriteFile(assertionFile, []byte("synthetic-assertion"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	client := newOAuthClient(Config{TenantID: "11111111-1111-1111-1111-111111111111", FederatedTokenFile: assertionFile})
-	client.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusBadRequest,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant","error_description":"remote-private-detail"}`)),
-		}, nil
-	})}
-	_, err := client.tokenRequest(context.Background(), make(url.Values))
-	server := &Server{cfg: Config{PortalOrigin: "https://portal.example.com"}}
-	server.callbackFailure(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/callback", nil), "exchange_code", err)
-
-	logged := logOutput.String()
-	if !strings.Contains(logged, "category=invalid_grant") {
-		t.Fatalf("safe token failure category was not logged: %s", logged)
-	}
-	for _, forbidden := range []string{"remote-private-detail", "error_description", "authorization_code", "client_assertion", "access_token", "refresh_token"} {
-		if strings.Contains(logged, forbidden) {
-			t.Fatalf("sensitive identity platform field %q appeared in callback log", forbidden)
-		}
-	}
-}
-
 func TestTokenGrantsUseScopesBoundToAuthorizationCode(t *testing.T) {
 	assertionFile := filepath.Join(t.TempDir(), "federated-token")
 	if err := os.WriteFile(assertionFile, []byte("synthetic-assertion"), 0o600); err != nil {
@@ -145,7 +110,7 @@ func TestTokenGrantsUseScopesBoundToAuthorizationCode(t *testing.T) {
 	client := newOAuthClient(Config{
 		TenantID:              "11111111-1111-1111-1111-111111111111",
 		AuthorizationClientID: "33333333-3333-3333-3333-333333333333",
-		RedirectURI:           "https://portal.example.com/api/v1/agent-authorization/callback",
+		RedirectURI:           "https://portal.example.com/api/v1/connections/callback",
 		FederatedTokenFile:    assertionFile,
 	})
 	wantGrants := []string{"authorization_code", "refresh_token"}

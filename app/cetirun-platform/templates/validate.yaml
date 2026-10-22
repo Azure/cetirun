@@ -9,6 +9,23 @@
 {{- end }}
 {{- $portal := index .Values "cetirun-portal" }}
 {{- $operator := index .Values "cetirun-operator" }}
+{{- $tools := index .Values "agent-tools-mcp" }}
+{{- $broker := index .Values "cetirun-agent-broker" }}
+{{- if $broker.enabled }}
+{{- fail "Install the Agent Broker separately in its private credential namespace; do not colocate it with Agent Tools MCP in this umbrella release" }}
+{{- end }}
+{{- if $tools.enabled }}
+{{- if not ($tools.broker | default dict).baseURL }}
+{{- fail "agent-tools-mcp.broker.baseURL is required" }}
+{{- end }}
+{{- if not ($operator.toolsMCP | default dict).url }}
+{{- fail "cetirun-operator.toolsMCP.url is required when Agent Tools MCP is enabled" }}
+{{- end }}
+{{- if not ($portal.features | default dict).agentToolsEnabled }}
+{{- fail "cetirun-portal.features.agentToolsEnabled must be true when Agent Tools MCP is enabled" }}
+{{- end }}
+
+{{- end }}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) }}
 {{- if or (not $portal.enabled) (not $operator.enabled) }}
 {{- fail "global.portalChat requires both Portal and Operator" }}

@@ -111,6 +111,10 @@ COPY --from=hermes-ui-build --chown=vibe:vibe \
 COPY --from=hermes-ui-build --chown=vibe:vibe \
   /opt/hermes/ui-tui/dist/ /usr/local/lib/hermes-agent/ui-tui/dist/
 
+COPY --chown=vibe:vibe agents/hermes/compat/workload_mcp.py /usr/local/lib/hermes-agent/cetirun_compat/workload_mcp.py
+COPY --chown=vibe:vibe agents/hermes/compat/apply_workload_mcp.py /tmp/apply-workload-mcp.py
+RUN python3 /tmp/apply-workload-mcp.py --root /usr/local/lib/hermes-agent && rm /tmp/apply-workload-mcp.py
+
 # Install the CetiRun-specific Teams adapter as a normal bundled Hermes plugin.
 COPY --chown=vibe:vibe agents/hermes/plugins/platforms/cetirun_teams/ \
   /usr/local/lib/hermes-agent/plugins/platforms/cetirun_teams/
@@ -167,10 +171,8 @@ COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-copilot-auth.py /usr/local
 COPY --chown=vibe:vibe configs/cetirun-auth-service.py /usr/local/share/cetirun/cetirun-auth-service.py
 COPY --chown=vibe:vibe configs/builtin-skill-sync.sh /usr/local/share/cetirun/builtin-skill-sync.sh
 COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-entrypoint.sh /usr/local/bin/hermes-entrypoint.sh
-COPY --chown=vibe:vibe configs/cetirun-agent /usr/local/bin/cetirun-agent
-COPY --chown=vibe:vibe skills/azure/ /home/vibe/.hermes/skills/azure/
+COPY --chown=vibe:vibe skills/connected-services/ /home/vibe/.hermes/skills/connected-services/
 RUN chmod 755 /usr/local/bin/hermes-entrypoint.sh \
-    /usr/local/bin/cetirun-agent \
     /usr/local/share/cetirun/builtin-skill-sync.sh \
     /usr/local/share/cetirun/hermes-auth.sh \
     /usr/local/share/cetirun/cetirun-auth-service.py

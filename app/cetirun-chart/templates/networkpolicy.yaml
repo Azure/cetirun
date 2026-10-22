@@ -85,18 +85,17 @@ spec:
         - protocol: TCP
           port: 15012
 
-    {{- if .Values.agentIdentity.enabled }}
-    # 3. Agent Identity Broker — fixed in-cluster credential boundary.
+    {{- if .Values.toolsMCP.enabled }}
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.agentIdentityBrokerNamespace }}
+              kubernetes.io/metadata.name: {{ .Values.toolsMCP.namespace }}
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: cetirun-agent-broker
+              app.kubernetes.io/name: agent-tools-mcp
       ports:
         - protocol: TCP
-          port: 8080
+          port: 8443
     {{- end }}
 
     {{- if (.Values.aiGateway | default dict).enabled }}

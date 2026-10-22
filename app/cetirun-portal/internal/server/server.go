@@ -23,8 +23,7 @@ func New(
 	adminPolicyHandler *handler.AdminPolicyHandler,
 	authMiddleware func(http.Handler) http.Handler,
 	requireAdmin func(http.Handler) http.Handler,
-	agentAuthorizationHandler *handler.AgentAuthorizationHandler,
-	toolConnectionsHandler *handler.ToolConnectionsHandler,
+	toolConnectionsHandlers ...*handler.ToolConnectionsHandler,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -70,18 +69,21 @@ func New(
 	api.HandleFunc("POST /api/v1/instances/{name}/copilot/login", instanceHandler.StartCopilotLogin)
 	api.HandleFunc("GET /api/v1/instances/{name}/copilot/login", instanceHandler.PollCopilotLogin)
 	api.HandleFunc("DELETE /api/v1/instances/{name}/copilot/login", instanceHandler.CancelCopilotLogin)
-	if agentAuthorizationHandler != nil {
-		api.HandleFunc("GET /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.Status)
-		api.HandleFunc("POST /api/v1/instances/{name}/agent-authorization/start", agentAuthorizationHandler.Start)
-		api.HandleFunc("DELETE /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.End)
-		mux.HandleFunc("POST /api/v1/agent-authorization/callback", agentAuthorizationHandler.Callback)
-	}
-
-	if toolConnectionsHandler != nil {
+	if len(toolConnectionsHandlers) > 0 && toolConnectionsHandlers[0] != nil {
+		toolConnectionsHandler := toolConnectionsHandlers[0]
+		mux.HandleFunc("GET /api/v1/connections/callback", toolConnectionsHandler.ConnectionCallback)
+		mux.HandleFunc("POST /api/v1/connections/callback", toolConnectionsHandler.ConnectionCallback)
 		api.HandleFunc("GET /api/v1/connections", toolConnectionsHandler.ListConnections)
-		api.HandleFunc("POST /api/v1/instances/{name}/tool-identities", toolConnectionsHandler.CreateToolIdentity)
+		api.HandleFunc("POST /api/v1/connections/start", toolConnectionsHandler.StartConnection)
+		api.HandleFunc("GET /api/v1/connections/{id}", toolConnectionsHandler.GetConnection)
+		api.HandleFunc("GET /api/v1/connection-authorizations/{id}", toolConnectionsHandler.GetConnectionAuthorization)
+		api.HandleFunc("GET /api/v1/connections/{id}/usage", toolConnectionsHandler.GetConnectionUsage)
+		api.HandleFunc("DELETE /api/v1/connections/{id}", toolConnectionsHandler.DeleteConnection)
+		api.HandleFunc("POST /api/v1/connections/{id}/reconnect", toolConnectionsHandler.ReconnectConnection)
 		api.HandleFunc("GET /api/v1/instances/{name}/connection-bindings", toolConnectionsHandler.ListConnectionBindings)
+		api.HandleFunc("POST /api/v1/instances/{name}/tool-identities", toolConnectionsHandler.CreateToolIdentity)
 		api.HandleFunc("POST /api/v1/instances/{name}/connection-bindings", toolConnectionsHandler.CreateConnectionBinding)
+		api.HandleFunc("PUT /api/v1/instances/{name}/connection-bindings/{id}", toolConnectionsHandler.UpdateConnectionBinding)
 		api.HandleFunc("DELETE /api/v1/instances/{name}/connection-bindings/{id}", toolConnectionsHandler.DeleteConnectionBinding)
 	}
 

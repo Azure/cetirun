@@ -85,6 +85,9 @@ func (r *AgentReconciler) customOverrides(instance *api.Agent, team *api.Team) (
 	if instance.Spec.GatewayTokenSecretRef != "" || instance.Spec.Tailscale != nil || instance.Spec.MSTeams != nil {
 		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support native credentials, Tailscale or Teams")
 	}
+	if agentIdentityRequested(instance) {
+		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support Agent Identity")
+	}
 	if err := runtimebindings.ValidateOverrides(r.CetiRunHelmValues); err != nil {
 		return nil, fmt.Errorf("CETIRUN_HELM_VALUES platform configuration: %w", err)
 	}
@@ -169,7 +172,9 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		bindings.Namespace.Name != instanceNamespace(instance.Name) {
 		return r.customWaiting(ctx, instance, "CustomBindingRejected", "Platform bindings do not belong to this Agent generation")
 	}
-	if ready, err := r.bindCustomAgentIdentity(ctx, instance, &bindings); err != nil || !ready {
+	if ready, err := r.bindCustomAgentIdentity(ctx, instance, &bindings); err != nil {
+		return r.rejectCustomConfig(ctx, instance, err)
+	} else if !ready {
 		return r.customWaiting(ctx, instance, "AgentIdentityBindingPending", "The instance Agent Identity binding is not ready")
 	}
 	if r.customGatewaySelected(instance) {

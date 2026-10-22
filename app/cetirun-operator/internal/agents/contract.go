@@ -62,6 +62,7 @@ type Bindings struct {
 	Model             ModelBinding
 	Skills            SkillsBinding
 	Integrations      Integrations
+	ToolsMCP          ToolsMCPBinding
 	ConfigTemplate    string
 	ReservedPorts     []PortBinding
 	ContextRevision   string
@@ -93,6 +94,11 @@ type ModelBinding struct {
 	// variable in Hermes' containers, so Hermes' configuration must name the
 	// same one. Empty for charts that do not declare it.
 	GatewayKeyEnv string
+}
+
+type ToolsMCPBinding struct {
+	Enabled bool
+	URL     string
 }
 
 // GatewayModel is one model the AI Gateway offers an Agent, with the limits

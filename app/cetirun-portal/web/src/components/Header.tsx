@@ -21,6 +21,8 @@ import { useMe } from "../context/MeContext";
 import cetirunLogo from "../assets/cetirun.png";
 import { useChatAccount } from "../chat/ChatAccount";
 
+const MyAccountsDialog = lazy(() => import("./MyAccountsDialog"));
+
 const HistoryDrawer = lazy(() => import("../chat/HistoryDrawer"));
 
 const THEME_MODES: ThemeMode[] = ["system", "light", "dark"];
@@ -45,6 +47,7 @@ export function Header() {
   const { themeMode, setThemeMode } = useThemeContext();
   const { me } = useMe();
   const account = useChatAccount();
+  const [accountsOpen, setAccountsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [clearHistory, setClearHistory] = useState(false);
@@ -111,6 +114,7 @@ export function Header() {
               Local history
             </Button>
           )}
+          <Button appearance="subtle" size="small" onClick={() => setAccountsOpen(true)}>My accounts</Button>
           {me?.isAdmin && (
             <NavLink
               to="/admin"
@@ -155,6 +159,7 @@ export function Header() {
           />
         </Suspense>
       )}
+      {accountsOpen && <Suspense fallback={null}><MyAccountsDialog onClose={() => setAccountsOpen(false)} /></Suspense>}
       <Dialog
         open={signOutOpen}
         onOpenChange={(_, data) => setSignOutOpen(data.open)}

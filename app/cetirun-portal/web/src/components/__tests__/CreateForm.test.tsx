@@ -97,17 +97,17 @@ describe("CreateForm", () => {
     expect(screen.getByText(/HTTP port must be an integer/)).toBeInTheDocument();
   });
 
-  it("allows Custom to opt into Agent Identity without native credentials", async () => {
+  it("does not offer Agent Identity for Custom", async () => {
     mockFeatures.data.allowedAgentTypes = ["custom"];
     mockFeatures.data.agentIdentityEnabled = true;
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
     await user.type(await screen.findByLabelText(/Agent Image/), "registry.example.com/assistant:1");
-    await user.click(screen.getByLabelText("Enable Microsoft Entra Agent Identity"));
+    expect(screen.queryByLabelText("Enable Microsoft Entra Agent Identity")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     const input = JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]));
-    expect(input.agentIdentityEnabled).toBe(true);
     expect(input.agent.type).toBe("custom");
+    expect(input).not.toHaveProperty("agentIdentityEnabled");
     expect(input).not.toHaveProperty("gatewayToken");
     expect(input).not.toHaveProperty("teamsEnabled");
   });

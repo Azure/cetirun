@@ -120,7 +120,7 @@ cetirun_managed_skill_metadata() {
     esac
   done < "$manifest"
   [ "$manifest_format" = "1" ] || return 1
-  [ "$manifest_skill" = "azure-readonly" ] || return 1
+  printf '%s' "$manifest_skill" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$' || return 1
   case "$manifest_version" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -150,6 +150,7 @@ cetirun_install_managed_skill() {
     echo "[cetirun-builtins] WARNING: image skill ${skill_directory_name} has an invalid managed manifest; no PVC skill was changed." >&2
     return 0
   }
+  source_skill_id=${source_metadata%%|*}
   source_metadata_rest=${source_metadata#*|}
   source_version=${source_metadata_rest%%|*}
   source_checksum=${source_metadata_rest#*|}
@@ -181,7 +182,7 @@ cetirun_install_managed_skill() {
     destination_version=${destination_metadata_rest%%|*}
     destination_checksum=${destination_metadata_rest#*|}
     if ! destination_actual_checksum=$(cetirun_skill_checksum "$destination_skill" 2>/dev/null) || \
-      [ "$destination_skill_id" != "azure-readonly" ] || \
+      [ "$destination_skill_id" != "$source_skill_id" ] || \
       [ "$destination_actual_checksum" != "$destination_checksum" ]; then
       echo "[cetirun-builtins] WARNING: preserving customized managed skill ${skill_directory_name}; its checksum no longer matches its manifest." >&2
       return 0

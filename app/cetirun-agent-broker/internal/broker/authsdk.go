@@ -69,7 +69,7 @@ func authSDKValidationFailureCategory(err error) (string, bool) {
 }
 
 func newAuthSDKClient(cfg Config) *authSDKClient {
-	return &authSDKClient{baseURL: cfg.AuthSDKURL, client: &http.Client{Timeout: cfg.RequestTimeout}}
+	return &authSDKClient{baseURL: cfg.AuthSDKURL, client: &http.Client{Timeout: cfg.RequestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 func (c *authSDKClient) ready(ctx context.Context) error {
@@ -184,12 +184,15 @@ func rejectedAssertionCategory(userToken, tenantID, audience, authorizationClien
 	return authSDKValidationRejectedClaimsOK
 }
 
-func (c *authSDKClient) authorizationHeader(ctx context.Context, userToken, agentIdentityClientID string) (string, error) {
+func (c *authSDKClient) authorizationHeaderFor(ctx context.Context, userToken, agentIdentityClientID, downstream string) (string, error) {
+	if downstream != "AzureResourceManager" && downstream != "MicrosoftGraph" {
+		return "", errors.New("unsupported Auth SDK downstream service")
+	}
 	query := url.Values{"AgentIdentity": {agentIdentityClientID}}
 	var response struct {
 		AuthorizationHeader string `json:"authorizationHeader"`
 	}
-	status, err := c.get(ctx, "/AuthorizationHeader/AzureResourceManager?"+query.Encode(), userToken, nil, &response)
+	status, err := c.get(ctx, "/AuthorizationHeader/"+downstream+"?"+query.Encode(), userToken, nil, &response)
 	if err != nil {
 		return "", err
 	}

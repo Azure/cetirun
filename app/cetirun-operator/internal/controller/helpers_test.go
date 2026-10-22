@@ -122,7 +122,7 @@ func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1a
 	}
 }
 
-func TestBuildHelmValuesWithAgentIdentityUsesControllerOwnedBroker(t *testing.T) {
+func TestBuildHelmValuesWithToolsMCPUsesControllerOwnedWorkloadIdentity(t *testing.T) {
 	instance := newTestInstance("alice", "Alice", "", "gateway-token")
 	instance.Name = "alice-hermes-v1"
 	instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
@@ -136,17 +136,29 @@ func TestBuildHelmValuesWithAgentIdentityUsesControllerOwnedBroker(t *testing.T)
 	values, err := buildHelmValuesWithAgentIdentity(
 		instance, nil, "example.com", "", nil, "", "gpt-5.4",
 		AgentIdentityHelmConfig{
-			Enabled:   true,
-			BrokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080",
+			Enabled:              true,
+			ToolsMCPURL:          "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp",
+			ToolsMCPAudience:     "agent-tools-mcp",
+			ToolsMCPCASecretName: "agent-tools-mcp-ca",
 		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	identity := values["agentIdentity"].(map[string]interface{})
-	if identity["enabled"] != true ||
-		identity["brokerURL"] != "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080" {
-		t.Fatalf("controller-owned Agent Identity values were not enforced: %#v", identity)
+	if !reflect.DeepEqual(identity, map[string]interface{}{"enabled": true}) {
+		t.Fatalf("Agent Identity must not inject a Broker endpoint: %#v", identity)
+	}
+	toolsMCP := values["toolsMCP"].(map[string]interface{})
+	wantToolsMCP := map[string]interface{}{
+		"enabled":      true,
+		"url":          "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp",
+		"audience":     "agent-tools-mcp",
+		"namespace":    "cetirun-tools",
+		"caSecretName": "agent-tools-mcp-ca",
+	}
+	if !reflect.DeepEqual(toolsMCP, wantToolsMCP) {
+		t.Fatalf("controller-owned Tools MCP values were not enforced: %#v", toolsMCP)
 	}
 	serviceAccount := values["serviceAccount"].(map[string]interface{})
 	if serviceAccount["create"] != true ||
@@ -156,8 +168,8 @@ func TestBuildHelmValuesWithAgentIdentityUsesControllerOwnedBroker(t *testing.T)
 		t.Fatalf("controller-owned ServiceAccount values were not enforced: %#v", serviceAccount)
 	}
 	networkPolicy := values["networkPolicy"].(map[string]interface{})
-	if networkPolicy["agentIdentityBrokerNamespace"] != "cetirun-credentials" {
-		t.Fatalf("Broker namespace = %#v", networkPolicy["agentIdentityBrokerNamespace"])
+	if _, found := networkPolicy["agentIdentityBrokerNamespace"]; found {
+		t.Fatalf("Agent Broker egress must not be injected: %#v", networkPolicy)
 	}
 }
 
@@ -173,6 +185,21 @@ func TestInstanceServiceNameMatchesChartAndBrokerBoundary(t *testing.T) {
 	}
 }
 
+func TestBuildHelmValuesRejectsToolsMCPOverride(t *testing.T) {
+	instance := newTestInstance("alice", "Alice", "", "gateway-token")
+	instance.Spec.Helm.Values["toolsMCP"] = runtime.RawExtension{Raw: []byte(`{"enabled":true,"url":"https://evil.default.svc.cluster.local/mcp"}`)}
+	_, err := buildHelmValuesWithAgentIdentity(
+		instance, nil, "example.com", "", nil, "", "gpt-5.4",
+		AgentIdentityHelmConfig{
+			ToolsMCPURL:          "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp",
+			ToolsMCPCASecretName: "agent-tools-mcp-ca",
+		},
+	)
+	if err == nil {
+		t.Fatal("per-instance Tools MCP override was accepted")
+	}
+}
+
 func TestBuildHelmValuesCannotEnableAgentIdentityOutsideReadyDeployment(t *testing.T) {
 	instance := newTestInstance("alice", "Alice", "", "gateway-token")
 	instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
@@ -182,18 +209,19 @@ func TestBuildHelmValuesCannotEnableAgentIdentityOutsideReadyDeployment(t *testi
 	instance.Spec.Helm.Values["agentIdentity"] = runtime.RawExtension{Raw: []byte(`{"enabled":true,"brokerURL":"http://evil.default.svc.cluster.local:8080"}`)}
 	for name, config := range map[string]AgentIdentityHelmConfig{
 		"deployment disabled": {},
-		"invalid Broker URL": {
-			Enabled:   true,
-			BrokerURL: "https://broker.example.invalid",
+		"invalid Tools MCP URL": {
+			Enabled:              true,
+			ToolsMCPURL:          "https://tools.example.invalid/mcp",
+			ToolsMCPCASecretName: "agent-tools-mcp-ca",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			values, err := buildHelmValuesWithAgentIdentity(
 				instance, nil, "example.com", "", nil, "", "gpt-5.4", config,
 			)
-			if name == "invalid Broker URL" {
+			if name == "invalid Tools MCP URL" {
 				if err == nil {
-					t.Fatal("invalid Broker URL was accepted")
+					t.Fatal("invalid Tools MCP URL was accepted")
 				}
 				return
 			}
@@ -201,7 +229,7 @@ func TestBuildHelmValuesCannotEnableAgentIdentityOutsideReadyDeployment(t *testi
 				t.Fatal(err)
 			}
 			identity := values["agentIdentity"].(map[string]interface{})
-			if identity["enabled"] != false || identity["brokerURL"] != "" {
+			if !reflect.DeepEqual(identity, map[string]interface{}{"enabled": false}) {
 				t.Fatalf("disabled deployment accepted Agent Identity override: %#v", identity)
 			}
 		})
