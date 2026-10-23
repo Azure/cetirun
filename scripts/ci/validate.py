@@ -171,7 +171,8 @@ def go_gate(root, mode, component):
     for name in (component,) if component else MODULES:
         with go_directory(root, name) as module:
             if mode == "test":
-                run(["go", "test", "./...", "-count=1"], module, env=offline_env())
+                command = ["make", "test"] if name == "operator" else ["go", "test", "./...", "-count=1"]
+                run(command, module, env=offline_env())
             else:
                 # Vet is the existing component lint contract. Do not invent a
                 # golangci-lint config or apply formatting to source owned elsewhere.
