@@ -535,7 +535,13 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         }
         operator = {
             "enabled": True, "namespace": namespace, "domainSuffix": "platform.example.com",
-            "sandboxSources": sources, "sandboxAdmission": self.enforced_values(podsEnabled=True),
+            "sandboxSources": sources,
+            # The platform chart requires the Portal's service account as an
+            # admission administrator whenever both run with enforced admission.
+            "sandboxAdmission": self.enforced_values(
+                podsEnabled=True,
+                adminUsers=["admin@example.com", f"system:serviceaccount:{namespace}:cetirun-portal"],
+            ),
         }
         portal = {
             "istio": {"host": "portal.example.com"},
