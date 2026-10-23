@@ -228,10 +228,10 @@ templates or in `helm get values` output.
 
 Model names beginning with `cetirun-` are rejected: that prefix belongs to models
 the CetiRun operator registers automatically. With `operatorIntegration` on, names
-beginning with `copilot/` are rejected too: the operator keeps `copilot/<model>`
-as an alias of each CetiRun Agent's GitHub Copilot model on that Agent's key,
-and the alias takes precedence over a model of the same name. A standalone
-Gateway may keep serving models under `copilot/`. Both prefixes are matched in any letter case. The console checks
+beginning with `copilot/` are rejected too: a CetiRun Team's router names an
+Agent's GitHub Copilot model as `copilot/<model>` in a tier, and a shared model
+of such a name would be ambiguous there. A standalone Gateway may keep serving
+models under `copilot/`. Both prefixes are matched in any letter case. The console checks
 neither, so do not add models under them there; the operator leaves such shared
 models out of the model list it configures for Agents. It does the same for names
 under `openai/`, which the agent chart refuses as a provider prefix, and names
@@ -386,9 +386,16 @@ An AgentPolicy's `modelAccess.rateLimits` makes the CetiRun operator set
 `model_rpm_limit` and `model_tpm_limit` on the key of every Agent bound to it.
 The operator updates them in place and leaves other keys alone. A request over
 a limit receives HTTP 429 with a `retry-after` header; replicas share the
-counters through Redis. The token limit reserves a request's input plus its
-maximum output tokens up front, so it rejects requests whose maximum output
-alone exceeds it. See the
+counters through Redis. The token limit counts the tokens of each finished
+request, cached input tokens excluded, and refuses requests once the minute's
+count has reached it, until the next minute (`tpmReservation: false`, the
+default). LiteLLM's other mode, `tpmReservation: true`, reserves a request's
+input plus its maximum output tokens before calling the model. OpenClaw asks
+for the model's maximum output, 128,000 tokens for current GPT models, with every
+request, so in that mode a limit of 200,000 refused every request of an OpenClaw
+conversation past about 55,000 tokens of input, the reservation alone being
+larger than the limit, and OpenClaw gave up after nine one-minute retries
+(measured on a test cluster). See the
 [AgentPolicy reference](../../../site/content/en/docs/reference/crds.md#agentpolicy-rate-limits).
 
 A `budget_duration` of `30d` or `1mo` resets on the first of each month, UTC,
@@ -1286,8 +1293,9 @@ Gateway serves already has that name and is another real model, the Copilot
 model is left out and reported on the Agent (`status.aiGateway.copilot.skipped`).
 When it is the same real model, as a shared model the Agent is not granted,
 the route takes that name in the Agent's own access group: the Agent's key
-reaches only its own Copilot route there, never the shared deployments. The operator keeps `copilot/<model>`,
-the names of earlier versions, as aliases on the Agent's key. When the shared
+reaches only its own Copilot route there, never the shared deployments. The operator removes the
+`copilot/<model>` aliases earlier versions put on the Agent's key, which listed each Copilot model a
+second time in the key's model list; other aliases on the key are kept. When the shared
 models change, it registers the routes again with the names and fields that
 then apply.
 
@@ -1412,9 +1420,7 @@ standby took requests with the primary and none went to the standby; with the
 primary failing, a shared-only key's requests all went to the standby. A route
 of its own name answering 429 passed the 429 on and served the next request
 right after; the same route without `cooldown_time: 0` answered "No deployments
-available" until its cooldown ended, a few seconds later. `copilot/<model>` aliases on the key reached the
-Agent's own route on the Chat Completions and Responses APIs; a key without the
-alias got 403.
+available" until its cooldown ended, a few seconds later.
 
 Measured on LiteLLM 1.105.1 with one replica, mock models each in an access
 group of its own, and routers over them configured as the chart renders them:

@@ -31,7 +31,7 @@
         },
         "operatorIntegration": {
             "type": "boolean",
-            "description": "Serve CetiRun Agents: derive shared-model deployment/access-group bindings from chart configuration, reserve the copilot/ model-name prefix for the aliases of per-Agent GitHub Copilot routes, and check router fallback targets against the caller's key (general_settings.enforce_fallback_model_access). The cetirun-platform chart turns it on.",
+            "description": "Serve CetiRun Agents: derive shared-model deployment/access-group bindings from chart configuration, reserve the copilot/ model-name prefix, in which Team routers name per-Agent GitHub Copilot models, and check router fallback targets against the caller's key (general_settings.enforce_fallback_model_access). The cetirun-platform chart turns it on.",
             "default": false
         },
         "image": {
@@ -125,6 +125,11 @@
             "description": "HTTP status of a request refused because its key's or team's budget is exhausted (LiteLLM's budget_exceeded_status_code). 402 makes agents report exhausted credits; 422 a malformed request; 429 a rate limit they retry.",
             "enum": [402, 422, 429],
             "default": 402
+        },
+        "tpmReservation": {
+            "type": "boolean",
+            "description": "Whether LiteLLM reserves a request's input plus its maximum output tokens against a key's or team's tokens-per-minute limit before calling the model (LITELLM_TPM_TOKEN_RESERVATION_ENABLED). false counts the tokens of finished requests and refuses requests once the minute's count has reached the limit.",
+            "default": false
         },
         "router": {
             "type": "object",

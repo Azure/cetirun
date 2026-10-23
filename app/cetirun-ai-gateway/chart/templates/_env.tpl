@@ -55,6 +55,10 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
 {{- if eq (include "cetirun-ai-gateway.priceTable" .) "bundled" }}
 {{ include "cetirun-ai-gateway.priceTableEnv" . }}
 {{- end }}
+{{- /* Set either way: LiteLLM reserves tokens unless told not to. See tpmReservation
+       in values.yaml. */}}
+- name: LITELLM_TPM_TOKEN_RESERVATION_ENABLED
+  value: {{ ternary "true" "false" (eq (toString .Values.tpmReservation) "true") | quote }}
 {{- if .Values.auth.adminUI.enabled }}
 - name: UI_USERNAME
   value: {{ .Values.auth.adminUI.username | quote }}

@@ -491,6 +491,18 @@ class NativeGatewayChartTests(unittest.TestCase):
                 self.assertIn("/etc/litellm/config.yaml", gateway["args"])
                 self.assertTrue(deployment["spec"]["template"]["metadata"]["annotations"]["checksum/config"])
 
+    def test_token_limits_count_finished_requests_unless_reservation_is_on(self):
+        # LiteLLM reserves input plus maximum output before each call unless
+        # told not to; OpenClaw's 128,000-token maximum output then refused a
+        # long conversation in every minute under a small limit.
+        for values, expected in (({}, "false"), ({"tpmReservation": False}, "false"), ({"tpmReservation": True}, "true")):
+            with self.subTest(values=values):
+                deployment = object_of_kind(render(GATEWAY_CHART, {"models": [MODEL], **values}), "Deployment")
+                gateway = next(c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "gateway")
+                env = {item["name"]: item.get("value") for item in gateway["env"]}
+                self.assertEqual(env["LITELLM_TPM_TOKEN_RESERVATION_ENABLED"], expected)
+        render(GATEWAY_CHART, {"models": [MODEL], "tpmReservation": "yes"}, error="tpmReservation")
+
     def test_spend_log_cleanup_runs_every_hour_whenever_a_retention_is_set(self):
         # LiteLLM schedules its cleanup only from a string interval, and its
         # default, a day, outlasts pods that configuration changes replace.

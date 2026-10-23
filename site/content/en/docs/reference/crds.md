@@ -389,18 +389,19 @@ model aliases; for an `auto` router that is the router's name, not the model it
 routes to. A request over a limit receives HTTP 429 with a `retry-after` header.
 Gateway replicas share the counters through Redis.
 
-LiteLLM reserves a request's input tokens plus its maximum output tokens when
-the request starts. OpenClaw sends the model's maximum output, for example
-128,000 tokens, with every request, so a `tpm` below the model's context window
-plus its maximum output rejects long conversations. For a model with a
-922,000-token context window and a 128,000-token maximum output that is about
-1.05 million tokens per minute. A turn that calls tools sends several requests
-within a minute, each reserving its maximum output again, so such turns fail
-well before a conversation is long: measured with a `tpm` of 200,000, the
-eighth request of an OpenClaw heartbeat turn with about 30,000 tokens of input
-received 429, and OpenClaw retried the turn every minute. For such Agents,
-`rpm` and `maxParallelRequests` are the effective limits. Below 4,096 tokens
-per minute LiteLLM would also shorten answers, hence the minimum.
+The Gateway counts `tpm` from the tokens of each finished request, cached input
+tokens excluded, and refuses a key's requests once the minute's count has
+reached the limit, until the next minute; a single request can take the count
+past the limit. That is the Gateway chart's default, `tpmReservation: false`.
+With `tpmReservation: true`, LiteLLM instead reserves a request's input plus
+its maximum output tokens before calling the model and refuses the request when
+that does not fit. OpenClaw asks for the model's maximum output, 128,000 tokens
+for current GPT models, with every request, so in that mode a `tpm` of 200,000
+refused every request of an OpenClaw conversation past about 55,000 tokens of
+input, the reservation alone being larger than the limit, and OpenClaw gave up
+after nine one-minute retries (measured on a test cluster). The minimum of
+4,096 tokens per minute keeps a limit from refusing all but the smallest
+requests.
 
 ### AgentPolicy administration
 

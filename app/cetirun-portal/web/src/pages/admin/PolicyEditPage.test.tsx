@@ -474,7 +474,7 @@ describe("PolicyEditPage", () => {
     expect(await screen.findByRole("textbox", { name: "Max parallel requests" })).toHaveValue("4");
     expect(screen.getByRole("textbox", { name: "Requests per minute" })).toHaveValue("");
     expect(screen.getByRole("textbox", { name: "Model name 1" })).toHaveValue("example-model");
-    expect(screen.getByText(/rejects long conversations/i)).toBeInTheDocument();
+    expect(screen.getByText(/counts the tokens of each finished request/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("switch", { name: "Hermes" }));
     fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
     await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalled());

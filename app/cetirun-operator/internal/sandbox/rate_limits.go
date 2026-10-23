@@ -18,7 +18,7 @@ import (
 // Minimum Gateway rate limits. They repeat the CRD's minimums for policies
 // that reach the controller without schema validation. The Gateway rejects
 // every request of a key with a zero limit, and a token limit below a few
-// thousand would also shorten answers.
+// thousand would refuse all but the smallest requests.
 const (
 	minPolicyRequestLimit   int64 = 1
 	minPolicyTokenLimit     int64 = 4096

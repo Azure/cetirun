@@ -59,9 +59,10 @@ already has that name but is another model, the Copilot model is left out, and
 the instance page lists it as not offered. If it is the same model but one the
 instance may not use, the instance keeps that name for its own Copilot model,
 which only its own key reaches.
-Clients configured with the earlier `copilot/<model>` names keep working: the
-operator keeps those names as aliases on the instance's key, and an instance
-whose default model is `copilot/<model>` uses the model's current name.
+The instance's key reaches a Copilot model only by that name; the
+`copilot/<model>` names of earlier versions are removed from the key. An
+instance whose default model is set as `copilot/<model>` uses the model's
+current name.
 
 The Gateway's health checks probe every Copilot model too, every five minutes by
 default. Each probe is a real call, so it spends the owner's Copilot allowance.
@@ -189,7 +190,9 @@ instances are granted: the Gateway chart derives a model's group from its name
 alone. Instances keep using the model, and none of them restarts. After an
 upgrade from a version that named Copilot models `copilot/<model>`, the
 operator registers each instance's Copilot models under their new names at its
-next verification, and the instance restarts with its new model list.
+next verification, and the instance restarts with its new model list. A client
+outside the instance that still requests `copilot/<model>` is refused and must
+use the new name.
 A Gateway upgrade does not interrupt instances either. Each Gateway pod keeps
 the configuration it started with until it is replaced, and the operator waits
 for the rollout to finish before it applies a changed model list, so instances
@@ -206,11 +209,10 @@ key: parallel requests, requests per minute, tokens per minute, and per-model
 limits. The Policy sets them for every Agent of its Teams, each on its own key.
 The operator applies a change to the existing key; like any change to the
 Policy, it also restarts the Agents running under the Policy once. A request
-over a limit receives HTTP 429 with a `retry-after` header. Before setting a tokens per
-minute limit, read the
+over a limit receives HTTP 429 with a `retry-after` header. A tokens per minute
+limit counts the tokens of finished requests; see the
 [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)
-reference: the Gateway counts a request's maximum output before the model
-answers, which rejects long OpenClaw conversations under a small limit.
+reference.
 
 The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
 that Secret is lost while the key still exists in the Gateway, the operator

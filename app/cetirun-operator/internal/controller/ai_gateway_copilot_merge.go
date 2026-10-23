@@ -328,35 +328,24 @@ func copilotDefaultModelAllowed(model string) bool {
 	return strings.HasPrefix(model, aiGatewayCopilotModelPrefix) || copilotModelID.MatchString(model)
 }
 
-// copilotKeyAliases are the key aliases that keep copilot/<ID> working for
-// clients configured before Copilot models took their new names.
-func copilotKeyAliases(copilot *cetirunv1alpha1.AIGatewayCopilotStatus) map[string]string {
-	if copilot == nil {
-		return nil
-	}
-	aliases := map[string]string{}
-	for _, route := range copilot.Routes {
-		aliases[aiGatewayCopilotModelPrefix+route.Model] = route.Name
-	}
-	return aliases
-}
-
-// aiGatewayKeyAliases is the key's alias map with the Copilot aliases set to
-// the Agent's routes: other aliases, such as an administrator's, are kept;
-// copilot/ aliases of models without a route are removed.
-func aiGatewayKeyAliases(current map[string]string, copilot *cetirunv1alpha1.AIGatewayCopilotStatus) map[string]string {
+// aiGatewayKeyAliases is the key's alias map without the copilot/<ID> aliases
+// earlier versions kept, each naming an Agent's Copilot model the way it was
+// named before Copilot models took their Gateway names. The operator renders
+// every Agent with the Gateway names, and the aliases also listed each Copilot
+// model a second time in the key's model list, so they are removed; other
+// aliases, such as an administrator's, are kept.
+func aiGatewayKeyAliases(current map[string]string) map[string]string {
 	aliases := map[string]string{}
 	for name, target := range current {
 		if !strings.HasPrefix(name, aiGatewayCopilotModelPrefix) {
 			aliases[name] = target
 		}
 	}
-	maps.Copy(aliases, copilotKeyAliases(copilot))
 	return aliases
 }
 
-// reconcileAIGatewayKeyAliases brings the key's Copilot aliases in line with
-// the Agent's routes and reads them back. A failure is reported on the
+// reconcileAIGatewayKeyAliases removes the copilot/<ID> aliases an earlier
+// version put on the key and reads the key back. A failure is reported on the
 // Copilot status; it never fails the key reconcile.
 func (r *AgentReconciler) reconcileAIGatewayKeyAliases(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, token string, key *aigateway.Key) {
 	status := instance.Status.AIGateway
@@ -368,7 +357,7 @@ func (r *AgentReconciler) reconcileAIGatewayKeyAliases(ctx context.Context, clie
 	if key != nil {
 		current = key.Aliases
 	}
-	wanted := aiGatewayKeyAliases(current, copilot)
+	wanted := aiGatewayKeyAliases(current)
 	if maps.Equal(current, wanted) || len(current) == 0 && len(wanted) == 0 {
 		return
 	}
@@ -377,11 +366,11 @@ func (r *AgentReconciler) reconcileAIGatewayKeyAliases(ctx context.Context, clie
 		var readBack *aigateway.Key
 		readBack, err = client.GetKey(ctx, token)
 		if err == nil && (readBack == nil || !maps.Equal(readBack.Aliases, wanted) && !(len(readBack.Aliases) == 0 && len(wanted) == 0)) {
-			err = fmt.Errorf("the AI Gateway key's model aliases do not match the Agent's Copilot models")
+			err = fmt.Errorf("the AI Gateway key still has the earlier copilot/ model aliases")
 		}
 	}
 	if err != nil {
-		log.FromContext(ctx).Error(err, "updating the AI Gateway key's Copilot model aliases failed", "instance", instance.Name)
+		log.FromContext(ctx).Error(err, "removing the AI Gateway key's earlier Copilot model aliases failed", "instance", instance.Name)
 		if copilot != nil {
 			copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
 			copilot.Reason = "KeyAliasUpdateFailed"
