@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -113,8 +114,15 @@ func (h *PodHandler) validateMigrationBinding(ctx context.Context, request admis
 		return admission.Allowed("planned HOME migration does not pin auxiliary workloads")
 	}
 	state := agent.Status.PlannedMigration
-	if state == nil || agent.Spec.PlannedMigration == nil || state.PlannedMigrationRequest != *agent.Spec.PlannedMigration ||
-		!state.CanStart() || agent.Spec.Suspended || !agent.DeletionTimestamp.IsZero() || !namespace.DeletionTimestamp.IsZero() ||
+	if state == nil && agent.MigrationNeedsCapture() && pod.Annotations[api.AnnotationMigrationRequest] == "" &&
+		!agent.Spec.Suspended && !slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) &&
+		agent.DeletionTimestamp.IsZero() && namespace.DeletionTimestamp.IsZero() {
+		return admission.Allowed("an uncaptured migration retains ordinary source scheduling")
+	}
+	if state == nil || agent.Spec.PlannedMigration == nil ||
+		(state.PlannedMigrationRequest != *agent.Spec.PlannedMigration && !agent.MigrationNeedsCapture()) ||
+		!state.CanStart() || agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
+		!agent.DeletionTimestamp.IsZero() || !namespace.DeletionTimestamp.IsZero() ||
 		state.Namespace != (api.MigrationObject{Name: namespace.Name, UID: namespace.UID}) ||
 		state.Workload != (api.MigrationObject{Name: owner.Name, UID: owner.UID}) ||
 		pod.UID == state.SourcePod.UID || pod.Annotations[api.AnnotationMigrationRequest] != state.RequestID ||

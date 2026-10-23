@@ -7,12 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -129,6 +131,337 @@ func TestPlannedMigrationProtectionRetriesFailedAndLostWrites(t *testing.T) {
 	}
 }
 
+func deleteMigrationSourceOnScaleDown(ctx context.Context, c client.Client, object client.Object, state *api.PlannedMigrationStatus) (bool, error) {
+	workload, ok := object.(*appsv1.StatefulSet)
+	if !ok || ptr.Deref(workload.Spec.Replicas, -1) != 0 {
+		return false, nil
+	}
+	pod := &corev1.Pod{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: state.SourcePod.Name}, pod); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	attachment := &storagev1.VolumeAttachment{}
+	if err := c.Get(ctx, client.ObjectKey{Name: state.Attachment.Name}, attachment); err != nil {
+		return false, err
+	}
+	unprotected := !slices.Contains(pod.Finalizers, api.MigrationPodFinalizer) ||
+		!slices.Contains(attachment.Finalizers, api.MigrationAttachmentFinalizer)
+	return unprotected, c.Delete(ctx, pod)
+}
+
+func TestPlannedMigrationProtectingSurvivesEarlierHoldFailures(t *testing.T) {
+	faults := []struct {
+		name      string
+		suspended bool
+		committed bool
+	}{
+		{name: "bootstrap receipt"},
+		{name: "bootstrap receipt", suspended: true},
+		{name: "HOME", suspended: true},
+		{name: "source Node", suspended: true},
+		{name: "source Pod", suspended: true},
+		{name: "attachment", suspended: true},
+		{name: "hold write", suspended: true},
+		{name: "pod write", suspended: true},
+		{name: "pod write", suspended: true, committed: true},
+		{name: "attachment write", suspended: true},
+		{name: "attachment write", suspended: true, committed: true},
+	}
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, fault := range faults {
+			t.Run(fmt.Sprintf("%s/%s/suspended=%t/committed=%t", kind, fault.name, fault.suspended, fault.committed), func(t *testing.T) {
+				ctx := context.Background()
+				f := newMigrationFixture(t, kind, true)
+				requestMigration(t, f, "migration-00000001", "node-b")
+				f.reconcileOK(t)
+				state := f.current(t).Status.PlannedMigration.DeepCopy()
+				if fault.suspended {
+					agent := f.current(t)
+					agent.Spec.Suspended = true
+					agent.Generation++
+					if err := f.kube.Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+				}
+				down, unprotectedStop := true, false
+				injected := errors.New("synthetic migration protection dependency failure")
+				f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+						_, home := object.(*corev1.PersistentVolumeClaim)
+						_, node := object.(*corev1.Node)
+						_, pod := object.(*corev1.Pod)
+						_, attachment := object.(*storagev1.VolumeAttachment)
+						_, receipt := object.(*corev1.ConfigMap)
+						if down && ((fault.name == "HOME" && home) || (fault.name == "source Node" && node) ||
+							(fault.name == "source Pod" && pod) || (fault.name == "attachment" && attachment) ||
+							(fault.name == "bootstrap receipt" && receipt && key == f.r.sandboxBootstrapKey(f.current(t)))) {
+							return injected
+						}
+						return c.Get(ctx, key, object, opts...)
+					},
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						_, agent := object.(*api.Agent)
+						_, pod := object.(*corev1.Pod)
+						_, attachment := object.(*storagev1.VolumeAttachment)
+						if down && ((fault.name == "hold write" && agent) || (fault.name == "pod write" && pod) ||
+							(fault.name == "attachment write" && attachment)) {
+							if fault.committed {
+								if err := c.Patch(ctx, object, patch, opts...); err != nil {
+									return err
+								}
+							}
+							return injected
+						}
+						if err := c.Patch(ctx, object, patch, opts...); err != nil {
+							return err
+						}
+						unsafe, err := deleteMigrationSourceOnScaleDown(ctx, c, object, state)
+						unprotectedStop = unprotectedStop || unsafe
+						return err
+					},
+				})
+				f.r.APIReader = f.r.Client
+				for attempt := range 2 {
+					_, err := f.reconcile()
+					if fault.name != "bootstrap receipt" && (!fault.committed || attempt == 0) && !errors.Is(err, injected) {
+						t.Fatal("protection failure was not surfaced:", err)
+					}
+				}
+				if unprotectedStop {
+					t.Fatal("an earlier hold removed captured observations before both protections existed")
+				}
+				pod := &corev1.Pod{}
+				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: state.SourcePod.Name}, pod); err != nil ||
+					pod.UID != state.SourcePod.UID {
+					t.Fatal("the accepted source Pod was lost:", err)
+				}
+				if fault.name != "bootstrap receipt" && !fault.committed {
+					migrationPhase(t, f, api.MigrationProtecting)
+					if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 1 {
+						t.Fatal("failed protection stopped the source")
+					}
+				}
+				down = false
+				f.reconcileOK(t)
+				migrationPhase(t, f, api.MigrationStopping)
+				if fault.suspended {
+					if f.current(t).Status.Phase == api.PhaseSuspended {
+						t.Fatal("suspension was acknowledged before source termination")
+					}
+					agent := f.current(t)
+					agent.Spec.Suspended = false
+					agent.Generation++
+					if err := f.kube.Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+				}
+				finishMigration(t, f)
+				current := f.current(t).Status.PlannedMigration
+				if current.SourcePod != state.SourcePod || current.Attachment != state.Attachment ||
+					current.PlannedMigrationRequest != state.PlannedMigrationRequest || !current.StartedAt.Equal(&state.StartedAt) {
+					t.Fatal("recovery replaced the accepted source observations")
+				}
+			})
+		}
+	}
+}
+
+func TestPlannedMigrationPreCaptureHoldRecoversSource(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, dependency := range []string{"Team", "AgentPolicy", "catalog"} {
+			for _, previous := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/previous=%t", kind, dependency, previous), func(t *testing.T) {
+					ctx := context.Background()
+					f := newMigrationFixture(t, kind, true)
+					source, target, id := "node-a", "node-b", "migration-00000001"
+					if previous {
+						completeMigration(t, f, id, target)
+						source, target, id = target, source, "migration-00000002"
+					}
+					initial := reconciledExpectationForTest(t, f)
+					recorded := f.current(t).Status.PlannedMigration.DeepCopy()
+					keyID, stages := f.current(t).Status.AIGateway.KeyID, f.installer.stages
+					requestMigration(t, f, id, target)
+					request := *f.current(t).Spec.PlannedMigration
+					down := true
+					injected := errors.New("synthetic pre-capture authorization outage")
+					f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+						Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+							_, team := object.(*api.Team)
+							_, policy := object.(*api.AgentPolicy)
+							if down && ((dependency == "Team" && team) || (dependency == "AgentPolicy" && policy)) {
+								return injected
+							}
+							return c.Get(ctx, key, object, opts...)
+						},
+					})
+					f.r.APIReader = f.r.Client
+					f.r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) {
+						if down && dependency == "catalog" {
+							return &failingListGateway{fakeAIGateway: f.gateway}, nil
+						}
+						return f.gateway, nil
+					}
+					if _, err := f.reconcile(); err == nil {
+						t.Fatal("the pre-capture authorization failure was hidden")
+					}
+					if !reflect.DeepEqual(recorded, f.current(t).Status.PlannedMigration) ||
+						ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 ||
+						isConditionTrue(f.current(t).Status.Conditions, api.ConditionSandboxReady) {
+						t.Fatal("the pre-capture outage did not hold the uncaptured source")
+					}
+					workload := f.workload(t)
+					pod := &corev1.Pod{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: workload.Name + "-0"}, pod); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.kube.Delete(ctx, pod); err != nil {
+						t.Fatal(err)
+					}
+					attachments, err := f.r.migrationAttachments(ctx, "synthetic-home-volume")
+					if err != nil || len(attachments) != 1 {
+						t.Fatal("read ordinary source attachment:", err)
+					}
+					attachment := &attachments[0]
+					if err := f.kube.Delete(ctx, attachment); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.kube.Get(ctx, client.ObjectKeyFromObject(attachment), attachment); err != nil {
+						t.Fatal(err)
+					}
+					attachment.Finalizers = nil
+					if err := f.kube.Update(ctx, attachment); err != nil {
+						t.Fatal(err)
+					}
+					migrationWorkloadStatus(t, f, 0)
+					for range 2 {
+						result, err := f.reconcile()
+						current := f.current(t)
+						if err != nil || result.RequeueAfter == 0 || current.Status.Policy == nil ||
+							current.Status.Policy.Phase != "Pending" {
+							t.Fatalf("source dependency outage did not remain a reported retrying hold: result=%+v err=%v", result, err)
+						}
+						if f.installer.stages != stages || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+							t.Fatal("an unavailable dependency allowed pre-capture execution")
+						}
+						for _, key := range f.gateway.keys {
+							if !key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+								t.Fatal("pre-capture outage did not retain the blocked accounting identity")
+							}
+						}
+					}
+					down = false
+					for range 6 {
+						f.reconcileOK(t)
+						if ptr.Deref(f.workload(t).Spec.Replicas, -1) == 1 {
+							break
+						}
+					}
+					workload = f.workload(t)
+					wantAnnotation := ""
+					if recorded != nil {
+						wantAnnotation = recorded.RequestID
+					}
+					if f.installer.stages != stages+1 || ptr.Deref(workload.Spec.Replicas, -1) != 1 ||
+						workload.Spec.Template.Annotations[api.AnnotationMigrationRequest] != wantAnnotation ||
+						!reflect.DeepEqual(recorded, f.current(t).Status.PlannedMigration) {
+						t.Fatal("recovery did not restore only the authorized source projection")
+					}
+					migrationReadyPod(t, f, "recovered-source-pod", source)
+					migrationAttachment(t, f, "recovered-source-attachment", source)
+					migrationWorkloadStatus(t, f, 1)
+					f.reconcileOK(t)
+					if f.current(t).Status.Phase != api.PhaseReady {
+						t.Fatal("source recovery never restored readiness")
+					}
+					f.reconcileOK(t)
+					migrationPhase(t, f, api.MigrationProtecting)
+					state := f.current(t).Status.PlannedMigration
+					if state.SourcePod.UID != "recovered-source-pod" || state.Source.Name != source ||
+						state.Attachment.Name != "recovered-source-attachment" || state.PlannedMigrationRequest != request {
+						t.Fatal("capture did not use the recovered source and original request")
+					}
+					finishMigration(t, f)
+					current := f.current(t)
+					expected := reconciledExpectationForTest(t, f)
+					if current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 ||
+						expected.Home != initial.Home || expected.Namespace != initial.Namespace ||
+						slices.Contains(current.Finalizers, sandbox.HoldFinalizer) {
+						t.Fatal("pre-capture recovery changed a retained identity or left execution held")
+					}
+					for _, key := range f.gateway.keys {
+						if key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+							t.Fatal("pre-capture recovery reset spending or left the key blocked")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPlannedMigrationPreCaptureRecoveryStillHonorsHolds(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, hold := range []string{"policy denied", "suspended", "migration disabled"} {
+			t.Run(kind+"/"+hold, func(t *testing.T) {
+				ctx := context.Background()
+				f := newMigrationFixture(t, kind, false)
+				requestMigration(t, f, "migration-00000001", "node-b")
+				injected := errors.New("synthetic pre-capture Team read failure")
+				f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+						if _, team := object.(*api.Team); team {
+							return injected
+						}
+						return c.Get(ctx, key, object, opts...)
+					},
+				})
+				if _, err := f.reconcile(); !errors.Is(err, injected) {
+					t.Fatal("the pre-capture dependency failure was not surfaced:", err)
+				}
+				f.r.Client = f.kube
+				switch hold {
+				case "policy denied":
+					policy := &api.AgentPolicy{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Name: f.current(t).Status.Policy.EffectivePolicyRef.Name}, policy); err != nil {
+						t.Fatal(err)
+					}
+					setCondition(&policy.Status.Conditions, api.ConditionAgentPolicyAccepted, metav1.ConditionFalse,
+						"Denied", "synthetic current policy denial")
+					if err := f.kube.Status().Update(ctx, policy); err != nil {
+						t.Fatal(err)
+					}
+				case "suspended":
+					agent := f.current(t)
+					agent.Spec.Suspended = true
+					agent.Generation++
+					if err := f.kube.Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+				case "migration disabled":
+					f.r.SandboxPreparation.PlannedMigration = false
+				}
+				stages := f.installer.stages
+				for range 2 {
+					result, err := f.reconcile()
+					current := f.current(t)
+					if result.RequeueAfter == 0 && err == nil {
+						t.Fatal("the continuing hold was not surfaced")
+					}
+					if hold == "policy denied" && (err != nil || current.Status.Policy.Phase != "Denied") {
+						t.Fatal("recovery did not recheck the denied current policy:", err)
+					}
+					if current.Status.PlannedMigration != nil || f.installer.stages != stages ||
+						ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 ||
+						isConditionTrue(current.Status.Conditions, api.ConditionReady) {
+						t.Fatal("pre-capture recovery bypassed an independent execution hold")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestPlannedMigrationProtectingRecoversAuthorizationOutage(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, dependency := range []string{"Team", "AgentPolicy", "catalog"} {
@@ -181,22 +514,10 @@ func TestPlannedMigrationProtectingRecoversAuthorizationOutage(t *testing.T) {
 							if err := c.Patch(ctx, object, patch, opts...); err != nil {
 								return err
 							}
-							workload, ok := object.(*appsv1.StatefulSet)
-							if !ok || ptr.Deref(workload.Spec.Replicas, -1) != 0 {
-								return nil
-							}
 							// Model the StatefulSet controller deleting the source immediately on scale-down.
-							pod := &corev1.Pod{}
-							if err := c.Get(ctx, podKey, pod); err != nil {
-								return client.IgnoreNotFound(err)
-							}
-							unprotectedStop = !slices.Contains(pod.Finalizers, api.MigrationPodFinalizer)
-							attachment := &storagev1.VolumeAttachment{}
-							if err := c.Get(ctx, client.ObjectKey{Name: state.Attachment.Name}, attachment); err != nil {
-								return err
-							}
-							unprotectedStop = unprotectedStop || !slices.Contains(attachment.Finalizers, api.MigrationAttachmentFinalizer)
-							return c.Delete(ctx, pod)
+							unsafe, err := deleteMigrationSourceOnScaleDown(ctx, c, object, state)
+							unprotectedStop = unprotectedStop || unsafe
+							return err
 						},
 					})
 					f.r.APIReader = f.r.Client

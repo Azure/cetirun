@@ -265,6 +265,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return r.rejectReservedUIInstance(ctx, instance)
 	}
 
+	// A recorded source must be protected before a lifetime-mode lookup can
+	// fail into a hold that stops compute and removes its observations.
+	if state := instance.Status.PlannedMigration; state != nil && !state.CanStart() {
+		_, result, err := r.reconcileMigration(ctx, instance, false)
+		return result, err
+	}
 	reconciledSandbox, err := r.usesReconciledSandbox(ctx, instance)
 	if err != nil {
 		result, holdErr := r.holdReconciledSandbox(ctx, instance)

@@ -260,6 +260,10 @@ The controller persists `status.plannedMigration` before side effects:
    rather than requiring readiness that its own hold cleared. Destination start
    still requires current authorization through common reconciliation; no
    desired generation is reported as applied merely to pass a migration check.
+   An accepted checkpoint is handled before bootstrap-receipt lookups can enter
+   an independent hold. During `Protecting`, failed source reads or protection
+   writes delay scale-down even when suspension is requested; retries must
+   retain both observations rather than destroy an unprotected source.
 2. `Stopping` blocks the existing key, withdraws routing and stops main/auxiliary
    workloads. `SourceTerminated` requires terminal Pod status and a completed
    status for every named container, while the original source Node/boot and CSI
@@ -296,7 +300,14 @@ the same request. If suspension arrives before the first checkpoint, a still-rea
 source is captured and protected before stopping. A rejected migration preflight
 does not block independently requested suspension; an unaccepted request remains
 available for administrator correction or withdrawal rather than being silently
-cleared. Pending migration/shutdown work reports `Pending`, not completed
+cleared. If an authorization outage holds the source before capture, ordinary
+reconciliation can restore its currently authorized running projection after
+the dependency recovers. The unaccepted destination is not rendered or applied;
+any previous completed destination pin remains in force. Both binding APIs allow
+that source recovery, and capture is retried only after readiness returns.
+Current authorization, suspension and the migration opt-in still apply, and a
+newly persisted checkpoint invalidates an older recovery apply.
+Pending migration/shutdown work reports `Pending`, not completed
 suspension: setting zero replicas alone does not acknowledge source termination.
 Deletion never creates a replacement and releases only the
 captured protections after their acknowledgements. Do not remove finalizers or

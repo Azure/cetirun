@@ -16,6 +16,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -54,6 +55,9 @@ func (r *AgentReconciler) checkMigrationIntent(ctx context.Context, agent *api.A
 		current.Spec.PlannedMigration == nil || agent.Spec.PlannedMigration == nil ||
 		*current.Spec.PlannedMigration != *agent.Spec.PlannedMigration {
 		return fmt.Errorf("migration intent changed before its side effect")
+	}
+	if agent.MigrationNeedsCapture() && !equality.Semantic.DeepEqual(current.Status.PlannedMigration, agent.Status.PlannedMigration) {
+		return fmt.Errorf("migration checkpoint changed before source recovery")
 	}
 	return nil
 }
@@ -114,8 +118,8 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 		return done, wait, err
 	}
 	block := func(err error) (bool, ctrl.Result, error) {
-		if agent.Spec.Suspended || (state != nil && state.Phase != api.MigrationCompleted &&
-			state.Phase != api.MigrationProtecting) {
+		if (agent.Spec.Suspended || (state != nil && state.Phase != api.MigrationCompleted)) &&
+			(state == nil || state.Phase != api.MigrationProtecting) {
 			err = errors.Join(err, r.stopReconciledSandboxForMigration(ctx, agent))
 		}
 		return false, wait, r.migrationWaiting(ctx, agent, err)
@@ -123,9 +127,16 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 	if request == nil || !api.ValidRestartRequestID(request.RequestID) || request.Target.Name == "" || request.Target.UID == "" {
 		return block(fmt.Errorf("migration intent is missing or invalid"))
 	}
-	if state == nil || (state.Phase == api.MigrationCompleted && state.PlannedMigrationRequest != *request) {
+	if agent.MigrationNeedsCapture() {
 		if !reconciled || r.SandboxPreparation == nil || !r.SandboxPreparation.PlannedMigration {
 			return block(fmt.Errorf("new migrations require explicitly enabled common Sandbox execution"))
+		}
+		// Before capture, ordinary authorization and reconciliation must be
+		// able to restore a source held by an earlier dependency outage.
+		if !agent.Spec.Suspended && (agent.Status.Phase != api.PhaseReady ||
+			!isConditionTrue(agent.Status.Conditions, api.ConditionReady) ||
+			!isConditionTrue(agent.Status.Conditions, api.ConditionSandboxReady)) {
+			return true, ctrl.Result{}, nil
 		}
 		if err := r.authorizeMigrationSource(ctx, agent); err != nil {
 			return block(err)
@@ -306,7 +317,10 @@ func (r *AgentReconciler) checkMigrationApply(ctx context.Context, agent *api.Ag
 		return nil
 	}
 	state := agent.Status.PlannedMigration
-	if state == nil || !state.CanStart() || state.PlannedMigrationRequest != *agent.Spec.PlannedMigration {
+	if state == nil && agent.MigrationNeedsCapture() {
+		return r.checkMigrationIntent(ctx, agent)
+	}
+	if !state.CanStart() || (state.PlannedMigrationRequest != *agent.Spec.PlannedMigration && !agent.MigrationNeedsCapture()) {
 		return fmt.Errorf("migration has no acknowledged source shutdown and storage release")
 	}
 	if agent.Spec.Suspended {
@@ -402,7 +416,10 @@ func (r *AgentReconciler) migrationPodReady(ctx context.Context, agent *api.Agen
 		return true, nil
 	}
 	state := agent.Status.PlannedMigration
-	if state == nil || workload.Spec.Template.Annotations[api.AnnotationMigrationRequest] != agent.Spec.PlannedMigration.RequestID {
+	if state == nil && agent.MigrationNeedsCapture() {
+		return workload.Spec.Template.Annotations[api.AnnotationMigrationRequest] == "", nil
+	}
+	if state == nil || workload.Spec.Template.Annotations[api.AnnotationMigrationRequest] != state.RequestID {
 		return false, nil
 	}
 	if err := r.checkMigrationApply(ctx, agent, &workload.Spec.Template.Spec); err != nil {

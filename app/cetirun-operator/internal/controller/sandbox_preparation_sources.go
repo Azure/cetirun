@@ -111,13 +111,15 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		return fmt.Errorf("Sandbox StorageClass approval changed")
 	}
 	attempt.input = sandboxworkload.Input{
-		Reconciled:       attempt.reconciled,
-		PlannedMigration: agent.Spec.PlannedMigration,
-		Resolution:       attempt.resolution, AgentName: agent.Name, AgentGeneration: agent.Generation,
+		Reconciled: attempt.reconciled,
+		Resolution: attempt.resolution, AgentName: agent.Name, AgentGeneration: agent.Generation,
 		AgentType: string(agent.Spec.Agent.Type), WorkloadName: instanceServiceName(agent.Name), ReleaseName: helmReleaseName(agent.Name),
 		Namespace: sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID},
 		Home:      home, Skills: skills, SkillsMode: inputs.SkillsMode, RuntimeClass: runtimeClass,
 		Helpers: inputs.Helpers, AuthorizedSecrets: []string{inputs.RuntimeSecret.Name},
+	}
+	if state := agent.Status.PlannedMigration; state.CanStart() {
+		attempt.input.PlannedMigration = &state.PlannedMigrationRequest
 	}
 	attempt.sources = append(attempt.sources,
 		sandboxSource(namespace, "v1", "Namespace"),

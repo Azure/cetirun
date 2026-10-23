@@ -94,6 +94,12 @@ func (s *PlannedMigrationStatus) CanStart() bool {
 	return s != nil && (s.Phase == MigrationStarting || s.Phase == MigrationCompleted)
 }
 
+func (a *Agent) MigrationNeedsCapture() bool {
+	request, status := a.Spec.PlannedMigration, a.Status.PlannedMigration
+	return request != nil && (status == nil ||
+		(status.Phase == MigrationCompleted && status.PlannedMigrationRequest != *request))
+}
+
 func (a *Agent) MigrationPending() bool {
 	request, status := a.Spec.PlannedMigration, a.Status.PlannedMigration
 	if request == nil {

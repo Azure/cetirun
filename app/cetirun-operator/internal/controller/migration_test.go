@@ -15,6 +15,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	sandboxadmission "github.com/Azure/CetiRun/app/cetirun-operator/internal/admission"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -244,6 +245,16 @@ func acknowledgeMigrationDetachFinalizer(t *testing.T, f *nativeSandboxFixture) 
 
 func completeMigration(t *testing.T, f *nativeSandboxFixture, id, target string) {
 	t.Helper()
+	requestMigration(t, f, id, target)
+	f.reconcileOK(t)
+	migrationPhase(t, f, api.MigrationProtecting)
+	finishMigration(t, f)
+}
+
+func finishMigration(t *testing.T, f *nativeSandboxFixture) {
+	t.Helper()
+	request := f.current(t).Spec.PlannedMigration
+	id, target := request.RequestID, request.Target.Name
 	advance := func() {
 		t.Helper()
 		before := f.current(t).Status.PlannedMigration
@@ -253,11 +264,10 @@ func completeMigration(t *testing.T, f *nativeSandboxFixture, id, target string)
 				ptr.Deref(workload.Spec.Replicas, -1), workload.Status)
 		}
 	}
-	requestMigration(t, f, id, target)
 	stages := f.installer.stages
-	advance()
-	migrationPhase(t, f, api.MigrationProtecting)
-	advance()
+	if f.current(t).Status.PlannedMigration.Phase == api.MigrationProtecting {
+		advance()
+	}
 	migrationPhase(t, f, api.MigrationStopping)
 	advance()
 	if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 || f.installer.stages != stages {
@@ -522,22 +532,8 @@ func TestPlannedMigrationBindingRechecksTheDestinationUID(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	workload := f.workload(t)
-	binding := &corev1.Binding{ObjectMeta: metav1.ObjectMeta{Name: workload.Name + "-0", Namespace: workload.Namespace},
-		Target: corev1.ObjectReference{Kind: "Node", Name: "node-b"}}
-	raw, err := json.Marshal(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, legacy := range []bool{false, true} {
-		request := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
-			UID: "binding-request", Name: binding.Name, Namespace: binding.Namespace, Operation: admissionv1.Create,
-			Resource: metav1.GroupVersionResource{Version: "v1", Resource: "pods"}, SubResource: "binding",
-			Kind: metav1.GroupVersionKind{Version: "v1", Kind: "Binding"}, Object: runtime.RawExtension{Raw: raw},
-		}}
-		if legacy {
-			request.Resource.Resource, request.SubResource, request.Name = "bindings", "", ""
-		}
+		request := migrationBindingRequest(t, f, "node-b", legacy)
 		if response := handler.Validate(ctx, request); !response.Allowed {
 			t.Fatal("the current destination was rejected:", response.Result)
 		}
@@ -562,6 +558,98 @@ func TestPlannedMigrationBindingRechecksTheDestinationUID(t *testing.T) {
 		node.ResourceVersion = ""
 		if err := f.kube.Create(ctx, node); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func migrationBindingRequest(t *testing.T, f *nativeSandboxFixture, target string, legacy bool) admission.Request {
+	t.Helper()
+	workload := f.workload(t)
+	binding := &corev1.Binding{ObjectMeta: metav1.ObjectMeta{Name: workload.Name + "-0", Namespace: workload.Namespace},
+		Target: corev1.ObjectReference{Kind: "Node", Name: target}}
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+		UID: "binding-request", Name: binding.Name, Namespace: binding.Namespace, Operation: admissionv1.Create,
+		Resource: metav1.GroupVersionResource{Version: "v1", Resource: "pods"}, SubResource: "binding",
+		Kind: metav1.GroupVersionKind{Version: "v1", Kind: "Binding"}, Object: runtime.RawExtension{Raw: raw},
+	}}
+	if legacy {
+		request.Resource.Resource, request.SubResource, request.Name = "bindings", "", ""
+	}
+	return request
+}
+
+func TestPlannedMigrationUncapturedSourceBinding(t *testing.T) {
+	for _, previous := range []bool{false, true} {
+		for _, legacy := range []bool{false, true} {
+			t.Run(fmt.Sprintf("previous=%t/legacy=%t", previous, legacy), func(t *testing.T) {
+				ctx := context.Background()
+				f := newMigrationFixture(t, "openclaw", false)
+				source, target, id := "node-a", "node-b", "migration-00000001"
+				if previous {
+					completeMigration(t, f, id, target)
+					source, target, id = target, source, "migration-00000002"
+				}
+				requestMigration(t, f, id, target)
+				handler, err := sandboxadmission.NewPodHandler(f.kube, sandboxadmission.PodConfig{StateNamespace: f.r.OperatorNamespace})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := migrationBindingRequest(t, f, source, legacy)
+				if response := handler.Validate(ctx, request); !response.Allowed {
+					t.Fatal("an uncaptured request blocked ordinary source recovery:", response.Result)
+				}
+				if previous {
+					if response := handler.Validate(ctx, migrationBindingRequest(t, f, target, legacy)); response.Allowed {
+						t.Fatal("an uncaptured request replaced the previous completed destination pin")
+					}
+				}
+				agent := f.current(t)
+				agent.Finalizers = append(agent.Finalizers, sandbox.HoldFinalizer)
+				if err := f.kube.Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				if response := handler.Validate(ctx, request); response.Allowed {
+					t.Fatal("an execution hold allowed source recovery binding")
+				}
+				agent.Finalizers = slices.DeleteFunc(agent.Finalizers, func(value string) bool { return value == sandbox.HoldFinalizer })
+				if err := f.kube.Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				workload := f.workload(t)
+				pod := &corev1.Pod{}
+				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: workload.Name + "-0"}, pod); err != nil {
+					t.Fatal(err)
+				}
+				annotation := pod.Annotations[api.AnnotationMigrationRequest]
+				pod.Annotations[api.AnnotationMigrationRequest] = id
+				if err := f.kube.Update(ctx, pod); err != nil {
+					t.Fatal(err)
+				}
+				if response := handler.Validate(ctx, request); response.Allowed {
+					t.Fatal("an uncaptured destination template bypassed binding admission")
+				}
+				if annotation == "" {
+					delete(pod.Annotations, api.AnnotationMigrationRequest)
+				} else {
+					pod.Annotations[api.AnnotationMigrationRequest] = annotation
+				}
+				if err := f.kube.Update(ctx, pod); err != nil {
+					t.Fatal(err)
+				}
+				stale := f.current(t)
+				f.reconcileOK(t)
+				migrationPhase(t, f, api.MigrationProtecting)
+				if response := handler.Validate(ctx, request); response.Allowed {
+					t.Fatal("source recovery binding bypassed an accepted migration")
+				}
+				if err := f.r.checkMigrationApply(ctx, stale, &workload.Spec.Template.Spec); err == nil {
+					t.Fatal("a stale recovery apply bypassed a same-generation capture checkpoint")
+				}
+			})
 		}
 	}
 }

@@ -156,6 +156,14 @@ Suspension retains the request without starting its destination; resume
 continues it. Deletion destroys the Agent through normal cleanup, never migration
 failover. Portal disables retained restart while migration is pending.
 
+Before a request is captured, a transient authorization outage can stop the
+source. Once authorization recovers, normal reconciliation restores the current
+running configuration before retrying capture; it does not apply the new target
+early or discard a previous completed destination pin. After capture, source
+observations must be protected before any hold stops compute. Suspension remains
+pending if a source read or protection write fails during `Protecting`, and
+retries continue the same request when those operations recover.
+
 Do not clear recorded destination fields, edit checkpoints, force-delete Pods,
 strip finalizers or force-detach storage to make progress. Unknown source
 state and incompatible or replaced Nodes remain blocked. Kubernetes and CSI
