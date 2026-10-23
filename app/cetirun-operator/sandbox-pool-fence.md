@@ -111,6 +111,52 @@ current exclusion/storage evidence and real no-overlap/data-continuity checks
 remain outside this probe. No execution permission or production integration
 is introduced.
 
+### Test-only writer-recovery composition
+
+The [recovery probe](internal/sandboxfence/disk_recovery_test.go) composes that
+disk reader with the existing `sandboxwriter.Provider` methods, `Store` JSON
+journal and `Manager.Quiesce` / `CheckQuiesced` ordering. A fake ConfigMap API
+retains the serialized intent across fresh Manager/Provider instances; disk
+requests use the existing loopback ARM transport. This adds no production
+provider, source activation or schema. The synthetic storage driver's opaque
+handle carries the fixture disk incarnation; this is **not** a claim that an
+Azure CSI handle pins a managed disk's `uniqueId`.
+
+The additional boundary is evidence composition: a later disk read cannot
+refresh stale exclusion evidence, and a delayed exclusion read cannot refresh
+an earlier disk sample. The composite observation retains the oldest component
+time for the Manager's existing freshness checks, including after journal
+reads/writes. Future observations and a backward clock are rejected rather than
+hidden by timestamp selection. Even a restamped proof from the previous
+operation cannot cover a newly reserved writer epoch.
+
+The tests lose a Revoke reply and, separately, a persisted quiescent-update
+reply, then recover through fresh managers without another Revoke. They retain
+the journal/operation/enrollment IDs and complete immutable writer/storage
+history. Every recovery check reads the disk again, including an already
+quiescent journal. Reattached or recreated disks, replaced machine/PV
+incarnations, missing independent storage-release evidence, accepted stops,
+NotReady nodes, Pod absence and missing durable barriers cannot pass.
+
+```bash
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
+  go -C app/cetirun-operator test ./internal/sandboxfence -run '^TestDiskWriterRecovery' -count=1
+
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
+  go -C app/cetirun-operator test -race ./internal/sandboxfence ./internal/sandboxwriter ./cmd/sandbox-pool-fence -count=1
+```
+
+**Production facility remains NO-GO.** Positive barrier, machine-exclusion and
+HOME/volume-release assertions in these tests are independently supplied
+synthetic fixtures, never inferred from `Unattached` or an empty-pool receipt.
+The fake API does not prove API-server or power-loss durability. Before any live
+recovery claim, a separately authorized provider experiment must establish
+complete pre-writer enrollment, a still-installed guest-external start barrier,
+immutable machine/disk binding, independent current storage release, and
+no-overlap/data-continuity results across response loss and controller restart.
+Passing this offline slice is not full M4 qualification or permission to start
+workloads.
+
 ## Explicit workflow
 
 The following placeholders must come from the authorized provisioning run:
