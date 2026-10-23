@@ -110,6 +110,14 @@ before enabling it, and turn it off before disabling native execution.
 These defaults do not authorize a runtime or change the
 selected AgentPolicy/Sandbox checks.
 
+When `cetirun-operator.sandboxAdmission` is enabled and enforced, list the
+Portal's service account, `system:serviceaccount:<namespace>:cetirun-portal`,
+in `cetirun-operator.sandboxAdmission.adminUsers`. The Portal writes Agents,
+Teams, Sandboxes and AgentPolicies with it, and the admission webhook refuses its
+writes to policy-bound Agents otherwise, for example saving an owner's GitHub
+Copilot models after a sign-in. The chart refuses to render enforced admission
+without it, unless an administrator group holds the namespace's service accounts.
+
 ## AI Gateway
 
 OpenClaw and Hermes Agents take their models from the AI Gateway, so the
