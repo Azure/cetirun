@@ -22,6 +22,20 @@ cetirun-copilot-<Agent UID>, is offered only to a key that holds that group.
 LiteLLM lets a key granted every model, such as the master key, reach every
 deployment; a key reaches these only if it holds the route's access group.
 
+A key the CetiRun operator issued reaches only the deployments in its access
+groups, whichever way a request gets to them. LiteLLM checks a key against the
+model the request names; when that is an auto router, the model the router
+picks is not checked against the key, as LiteLLM's own access-group filter
+stops when the key holds none of that model's groups. The operator grants a
+router only to Agents that may use every model it sends requests to; this holds
+each request to that, also before the operator has withdrawn a grant after a
+configuration change. A model the key may not use at all is refused with 403,
+which LiteLLM passes on unchanged, without retrying, falling back or cooling
+the model down. When the key may use the model but none of its deployments is
+available, LiteLLM's own error applies. The call a router makes to classify a
+request is exempt: the router makes it on the key's behalf, to a model of its
+own configuration that the key need not hold.
+
 Error messages returned to callers no longer include LiteLLM's internal list of
 deployments in cooldown: when no deployment of a model is available, LiteLLM's
 message lists the IDs of every deployment in cooldown, of any model. The proxy
@@ -69,10 +83,13 @@ sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
 import re
+import sys
 
 import litellm
+from fastapi import HTTPException
 from litellm._logging import verbose_proxy_logger
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.proxy._types import UserAPIKeyAuth
 
 # A request body field that makes LiteLLM log that request's content.
 DEBUG_PARAMETER = "litellm_request_debug"
@@ -83,10 +100,23 @@ REQUEST_PARAMETERS = (DEBUG_PARAMETER, *RETRY_PARAMETERS)
 # The access groups the CetiRun operator gives each Agent's GitHub Copilot
 # routes: this prefix and the Agent's UID.
 COPILOT_GROUP_PREFIX = "cetirun-copilot-"
+# A key the CetiRun operator issued holds access groups under this prefix only
+# (shared models, model routers, the Agent's Copilot routes), or, with none,
+# LiteLLM's no-access placeholder. The Gateway chart refuses model names under
+# the prefix, so a key granted models by name never looks like one.
+OPERATOR_GROUP_PREFIX = "cetirun-"
+NO_MODELS = "no-default-models"
 # Where the proxy puts the calling key on a request: chat completions use
 # metadata, the Responses and Anthropic Messages APIs litellm_metadata.
 METADATA_BUCKETS = ("litellm_metadata", "metadata")
 CALLER_KEY = "user_api_key_auth"
+# How LiteLLM marks the call an auto router makes to classify a request. The
+# proxy removes the field from the metadata a client sends.
+CALL_ORIGIN = "internal_call_origin"
+CLASSIFIER_ORIGIN = "autorouter_classifier"
+# The proxy's module, which holds the live router. Read from sys.modules only:
+# the callback never imports the proxy itself.
+PROXY_SERVER_MODULE = "litellm.proxy.proxy_server"
 
 # LiteLLM's message when no deployment of a model can take a request, and the
 # list it appends: cooldown_list=['<deployment id>', ...].
@@ -117,6 +147,8 @@ SAMPLING_PARAMETERS = ("temperature", "top_p", "logprobs", "top_logprobs")
 # Where an auto router records its choice on a request, with its own name.
 ROUTING_DECISION = "routing_decision"
 ROUTER_NAME = "router_model_name"
+# The modes of a model Agents can hold a conversation with; a deployment without one counts.
+CHAT_MODES = (None, "", "chat", "completion", "responses")
 
 
 def mark_encrypted_content(encrypted_content, model_id):
@@ -378,13 +410,68 @@ def strip_sampling(request_kwargs, deployments):
     return present
 
 
-def copilot_groups(deployment):
-    """The per-Agent GitHub Copilot access groups a deployment belongs to."""
+def refuses_no_reasoning(deployment):
+    """Whether LiteLLM refuses a reasoning effort of none for the deployment before calling it.
+
+    LiteLLM's own rule in 1.105.1, for Chat Completions to Azure: a model of
+    the GPT-5 or GPT-6 series, by base_model or deployment name, takes none only
+    when the price table marks it as supporting none; otherwise LiteLLM answers
+    400. Other providers, and the Responses API, take the request as it is.
+    """
+    params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+    model = params.get("model") if isinstance(params, dict) else None
+    if not isinstance(model, str) or not model.startswith("azure/"):
+        return False
+    info = deployment.get("model_info")
+    base = params.get("base_model") or (info.get("base_model") if isinstance(info, dict) else None)
+    name = base if isinstance(base, str) and base else model[len("azure/"):]
+    try:
+        from litellm.llms.azure.chat.gpt_5_transformation import AzureOpenAIGPT5Config
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        return bool(AzureOpenAIGPT5Config.is_model_gpt_5_model(name)) and not AzureOpenAIGPT5Config._supports_reasoning_effort_level(name, "none")
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def strip_refused_no_reasoning(request_kwargs, deployments):
+    """Remove a reasoning effort of none that a deployment refuses, in place; whether it was removed.
+
+    The same as LiteLLM's drop_params would do for this one parameter: the model
+    then reasons at its default effort. Removed when any of the deployments
+    refuses it, as for the sampling parameters.
+    """
+    effort = request_kwargs.get("reasoning_effort")
+    level = effort.get("effort") if isinstance(effort, dict) else effort
+    if level != "none" or not any(refuses_no_reasoning(deployment) for deployment in deployments):
+        return False
+    request_kwargs.pop("reasoning_effort", None)
+    return True
+
+def access_groups(deployment):
+    """The access groups a deployment belongs to."""
     info = deployment.get("model_info") if isinstance(deployment, dict) else None
     groups = info.get("access_groups") if isinstance(info, dict) else None
     if not isinstance(groups, (list, tuple)):
         return ()
-    return tuple(group for group in groups if isinstance(group, str) and group.startswith(COPILOT_GROUP_PREFIX))
+    return tuple(group for group in groups if isinstance(group, str))
+
+
+def copilot_groups(deployment):
+    """The per-Agent GitHub Copilot access groups a deployment belongs to."""
+    return tuple(group for group in access_groups(deployment) if group.startswith(COPILOT_GROUP_PREFIX))
+
+
+def caller_key(request_kwargs):
+    """The calling key the proxy put on the request, or None when there is none."""
+    if not isinstance(request_kwargs, dict):
+        return None
+    for name in METADATA_BUCKETS:
+        bucket = request_kwargs.get(name)
+        if isinstance(bucket, dict) and bucket.get(CALLER_KEY) is not None:
+            return bucket[CALLER_KEY]
+    return None
 
 
 def caller_models(request_kwargs):
@@ -393,16 +480,87 @@ def caller_models(request_kwargs):
     An empty list, as the master key has, means every model to LiteLLM; it
     holds no access group, so it reaches no Copilot route.
     """
-    if not isinstance(request_kwargs, dict):
+    caller = caller_key(request_kwargs)
+    if caller is None:
         return None
-    for name in METADATA_BUCKETS:
-        bucket = request_kwargs.get(name)
-        if not isinstance(bucket, dict) or bucket.get(CALLER_KEY) is None:
-            continue
-        caller = bucket[CALLER_KEY]
-        models = caller.get("models") if isinstance(caller, dict) else getattr(caller, "models", None)
-        return [model for model in models if isinstance(model, str)] if isinstance(models, (list, tuple)) else []
-    return None
+    models = caller.get("models") if isinstance(caller, dict) else getattr(caller, "models", None)
+    return [model for model in models if isinstance(model, str)] if isinstance(models, (list, tuple)) else []
+
+
+def operator_groups(caller):
+    """The access groups of a key the CetiRun operator issued, or None for any other caller.
+
+    Only the key the proxy authenticated counts, as LiteLLM's UserAPIKeyAuth,
+    never a dict. The master key, which has no models, keys granted "*",
+    every model or models by name, are other callers.
+    """
+    if not isinstance(caller, UserAPIKeyAuth):
+        return None
+    models = caller.models
+    if not models or not isinstance(models, (list, tuple)):
+        return None
+    if not all(isinstance(name, str) and (name.startswith(OPERATOR_GROUP_PREFIX) or name == NO_MODELS)
+               for name in models):
+        return None
+    return frozenset(models)
+
+
+def classifier_call(request_kwargs):
+    """Whether the request is the call an auto router makes to classify a request."""
+    return isinstance(request_kwargs, dict) and any(
+        isinstance(bucket := request_kwargs.get(name), dict) and bucket.get(CALL_ORIGIN) == CLASSIFIER_ORIGIN
+        for name in METADATA_BUCKETS
+    )
+
+
+def model_groups(model, deployments, team_id):
+    """The access groups of every deployment of the model, available or not.
+
+    The callback is given only the deployments still available; the live
+    router knows the rest. Without it, the deployments given are all there is
+    to go on.
+    """
+    router = getattr(sys.modules.get(PROXY_SERVER_MODULE), "llm_router", None)
+    if router is not None:
+        try:
+            return set(router.get_model_access_groups(model_name=model, team_id=team_id))
+        except Exception:  # the answer only chooses between two refusals; fall back to the deployments given
+            pass
+    return {group for deployment in deployments for group in access_groups(deployment)}
+
+
+def conversation_model(name, router):
+    """Whether a model the listing offers answers conversations: one of its deployments has a chat mode
+    or none, as the CetiRun operator decides which models to give Agents. Without the router, or for a
+    name with no deployment of its own, the name is kept."""
+    if router is None:
+        return True
+    try:
+        deployments = router.get_model_list(model_name=name) or []
+    except Exception:  # a listing never fails on this filter
+        return True
+    if not deployments:
+        return True
+    return any(((deployment.get("model_info") or {}).get("mode") if isinstance(deployment, dict) else None) in CHAT_MODES
+               for deployment in deployments)
+
+
+def evaluation_only(deployment):
+    """Whether the deployment is a decision model, which LiteLLM lists with the evaluation mode."""
+    info = deployment.get("model_info") if isinstance(deployment, dict) else None
+    return isinstance(info, dict) and info.get("mode") == "evaluation"
+
+
+def has_deployment(name, router):
+    """Whether the name is a model with a deployment of its own. A Team's router is registered under the
+    same name as its access group, so being one of the key's groups does not make a name a placeholder.
+    Without the router, or when it cannot answer, it is not known to be a model."""
+    if router is None:
+        return False
+    try:
+        return bool(router.get_model_list(model_name=name))
+    except Exception:  # a listing never fails on this filter
+        return False
 
 
 def without_cooldown_list(text):
@@ -432,8 +590,24 @@ def remove_cooldown_list(error):
     return changed
 
 
+class ModelRefused(HTTPException):
+    """The refusal of a model the calling key may not use.
+
+    LiteLLM treats a 403 HTTPException from a callback as a guardrail's
+    decision: it does not retry it, fall back or cool the model down, and the
+    caller gets a 403 permission_error with the detail as its message. Without
+    deployments LiteLLM would answer "No deployments available" with 429, which
+    agents retry; the message must not contain that text, which the proxy maps
+    to 429 too.
+    """
+
+    def __init__(self, model):
+        super().__init__(status_code=403, detail=f"This key may not use the model {model}.")
+        self.refused_model = model
+
+
 class Guard(CustomLogger):
-    """Request sanitization, per-Agent Copilot route separation and caller-facing errors."""
+    """Request sanitization, the deployments a key reaches, and caller-facing errors."""
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         if isinstance(data, dict):
@@ -449,16 +623,18 @@ class Guard(CustomLogger):
         request_kwargs=None,
         parent_otel_span=None,
     ):
-        """Leave out the Copilot routes whose access group the calling key does not hold.
+        """Leave out the deployments the calling key may not use.
 
-        Every other deployment is left as it is. An auto router's tier
-        selection goes through this again with the same request, so a tier is
-        held to the same rule. While encrypted content affinity applies to the
-        model, unmarked or shortened encrypted reasoning is removed from a
-        Responses API request first. A fallback after a deployment refused the
-        request's encrypted reasoning is ended here, so the client gets that
-        first error. A request to a model that reasons loses the sampling
-        parameters the model refuses.
+        For every caller, the Copilot routes whose access group the key does
+        not hold. For a key the operator issued, then also every deployment
+        outside its access groups, except on a router's classifier call. An
+        auto router's tier selection goes through this again with the same
+        request, so a tier is held to the same rules. While encrypted content
+        affinity applies to the model, unmarked or shortened encrypted reasoning
+        is removed from a Responses API request first. A fallback after a
+        deployment refused the request's encrypted reasoning is ended here, so
+        the client gets that first error. A request to a model that reasons loses
+        the sampling parameters the model refuses.
         """
         refusal = unreadable_reasoning_refusal(request_kwargs)
         if refusal is not None:
@@ -479,18 +655,66 @@ class Guard(CustomLogger):
             for deployment in healthy_deployments
             if not (groups := copilot_groups(deployment)) or granted.intersection(groups)
         ]
+        caller = caller_key(request_kwargs)
+        held = operator_groups(caller)
+        if held is not None and kept and not classifier_call(request_kwargs) and all(map(evaluation_only, kept)):
+            # A decision model answers only a router's classifier calls. Called directly, the provider
+            # refused the request and LiteLLM cooled the deployment down, so every router classifying
+            # with it fell back to its default classifier for everyone.
+            raise ModelRefused(model)
+        if held is not None and kept and not classifier_call(request_kwargs):
+            allowed = [deployment for deployment in kept if held.intersection(access_groups(deployment))]
+            if not allowed:
+                # Nothing left, though the key may use the model: its deployments are
+                # unavailable (cooldown, health checks), which LiteLLM reports itself.
+                if held.intersection(model_groups(model, healthy_deployments, getattr(caller, "team_id", None))):
+                    return allowed
+                raise ModelRefused(model)
+            kept = allowed
         if isinstance(request_kwargs, dict) and kept:
+            router = routing_router(model, request_kwargs)
+            target = f"the router {router} sent to" if router else "for"
+            # First: without the effort of none, the model reasons, and the sampling
+            # parameters it then refuses go too.
+            if strip_refused_no_reasoning(request_kwargs, kept):
+                verbose_proxy_logger.warning(
+                    "CetiRun guard: removed reasoning_effort none from a request %s %s, which does not take it; "
+                    "the model reasons at its default effort.", target, model)
             removed = strip_sampling(request_kwargs, kept)
             if removed:
-                router = routing_router(model, request_kwargs)
                 verbose_proxy_logger.warning(
                     "CetiRun guard: removed %s from a request %s %s, which takes no sampling parameters while it "
                     "reasons.",
-                    ", ".join(removed), f"the router {router} sent to" if router else "for", model)
+                    ", ".join(removed), target, model)
         return kept
+
+    async def async_filter_listed_models(self, user_api_key_dict, model_names):
+        """Keep a key the operator issued from listing what is not a model it can talk to.
+
+        LiteLLM lists an access group of the key that has no deployment, such as an Agent's GitHub
+        Copilot group before its owner signs in, as if it were a model (a Team's router, registered under
+        its group's name, is a model and stays), and lists a decision or
+        embedding model the key may reach because a router classifies with it. The CetiRun operator
+        leaves both out of the Agent's configuration; the listing does the same, and a lookup of
+        either by name answers 404. Every other caller sees LiteLLM's listing.
+        """
+        held = operator_groups(user_api_key_dict)
+        if held is None:
+            return model_names
+        router = getattr(sys.modules.get(PROXY_SERVER_MODULE), "llm_router", None)
+        return [name for name in model_names
+                if not (isinstance(name, str)
+                        and ((name in held and not has_deployment(name, router)) or not conversation_model(name, router)))]
 
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict,
                                            traceback_str=None):
+        # Logged here rather than where it is raised: a router also asks the
+        # filter whether its choice can be served, so a refused request passes
+        # through the filter more than once, and through this hook once.
+        if isinstance(original_exception, ModelRefused):
+            verbose_proxy_logger.warning(
+                "CetiRun guard: refused the model %s to the key %s, which holds none of the model's access groups",
+                original_exception.refused_model, getattr(user_api_key_dict, "key_alias", None))
         remove_cooldown_list(original_exception)
         return None
 

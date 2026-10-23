@@ -10,6 +10,10 @@ export interface SharedModel {
   name: string;
   contextWindow?: number;
   maxOutputTokens?: number;
+  /** For an auto router of the Gateway: the models it sends requests to answer. */
+  routerModels?: string[];
+  /** An auto router whose models the operator cannot read completely. */
+  routerUnverifiable?: boolean;
 }
 
 export interface AIGatewayCatalog {

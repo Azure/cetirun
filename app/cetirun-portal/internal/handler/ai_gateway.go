@@ -37,6 +37,11 @@ type AIGatewayResponse struct {
 	Models       []string                  `json:"models"`
 	DefaultModel string                    `json:"defaultModel,omitempty"`
 	Copilot      *AIGatewayCopilotResponse `json:"copilot,omitempty"`
+	// ModelRouters are the Agent's smart-routing models, its Team's and, with
+	// a policy, the Gateway's own routers the policy lists, by name: whether
+	// the Agent may use each, and why not. Models and DefaultModel name
+	// granted routers by these names too.
+	ModelRouters []AIGatewayModelRouterResponse `json:"modelRouters,omitempty"`
 	// RateLimits are the limits the Agent's policy sets on its key. Only
 	// the single-Agent read fills them in.
 	RateLimits *AgentPolicyRateLimitsDTO `json:"rateLimits,omitempty"`
@@ -47,10 +52,17 @@ type AIGatewayCopilotResponse struct {
 	// Phase is SignInRequired, Starting, Ready or Degraded.
 	Phase  string `json:"phase,omitempty"`
 	Reason string `json:"reason,omitempty"`
-	// Models are the registered Copilot models, as the Agent names them.
+	// Models are the registered Copilot models, as the Agent names them: a
+	// shared model's name or the Copilot model's own ID.
 	Models []string `json:"models"`
 	// Unpriced are the account's models left out for lack of a price.
 	Unpriced []string `json:"unpriced,omitempty"`
+	// Shared are the shared models the Agent's Copilot account serves too:
+	// requests for them may go to either.
+	Shared []string `json:"shared,omitempty"`
+	// Skipped are the account's models left out because a shared model
+	// already has their name.
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 // AIGatewayCatalogResponse is the JSON response for GET /api/v1/ai-gateway/catalog.
@@ -107,8 +119,15 @@ func aiGatewayResponse(instance *cetirunv1alpha1.Agent) *AIGatewayResponse {
 			Reason:   copilot.Reason,
 			Models:   append([]string{}, copilot.Models...),
 			Unpriced: append([]string(nil), copilot.Unpriced...),
+			Skipped:  append([]string(nil), copilot.Skipped...),
+		}
+		for _, route := range copilot.Routes {
+			if route.Shared && !slices.Contains(resp.Copilot.Shared, route.Name) {
+				resp.Copilot.Shared = append(resp.Copilot.Shared, route.Name)
+			}
 		}
 	}
+	applyModelRouterNames(resp, status)
 	return resp
 }
 
@@ -205,7 +224,8 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 		return reject(http.StatusBadRequest, "invalid_model_access", "Choose at least one model source allowed by the selected Team's Policy and available in this deployment")
 	}
 	model := strings.TrimSpace(req.Model)
-	if model != "" && !(shared && slices.ContainsFunc(catalog.SharedModels, func(candidate cetirunv1alpha1.AIGatewayCatalogModel) bool { return candidate.Name == model })) && !(copilot && strings.HasPrefix(model, cetirunv1alpha1.AIGatewayCopilotModelPrefix) && !isAIGatewayPlaceholder(model)) {
+	if model != "" && !(shared && slices.ContainsFunc(catalog.SharedModels, func(candidate cetirunv1alpha1.AIGatewayCatalogModel) bool { return candidate.Name == model })) && !(copilot && strings.HasPrefix(model, cetirunv1alpha1.AIGatewayCopilotModelPrefix) && !isAIGatewayPlaceholder(model)) &&
+		!slices.Contains(options.ModelRouters, model) {
 		return reject(http.StatusForbidden, "model_not_allowed", "The requested default model is not available under the selected Team's Policy and model sources")
 	}
 	return options.Team, options.sandboxRef, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true

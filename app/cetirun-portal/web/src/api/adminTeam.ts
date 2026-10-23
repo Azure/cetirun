@@ -12,6 +12,23 @@ export interface TeamSkillStorage {
   mountPath?: string;
 }
 
+/** One smart-routing model of a Team. Tiers name shared models, or copilot/<model> for GitHub Copilot models. */
+export interface TeamModelRouter {
+  name: string;
+  classifier?: "heuristic" | "llm";
+  classifierModel?: string;
+  simple: string;
+  medium: string;
+  complex: string;
+  reasoning?: string;
+}
+
+export interface TeamModelRouterStatus {
+  name: string;
+  ready: boolean;
+  message?: string;
+}
+
 export interface TeamDTO {
   uid: string;
   resourceVersion: string;
@@ -25,6 +42,8 @@ export interface TeamDTO {
   skills?: string[];
   skillStorage?: TeamSkillStorage;
   createdAt?: string;
+  modelRouters?: TeamModelRouter[];
+  modelRouterStatus?: TeamModelRouterStatus[];
 }
 
 export interface TeamUpsertRequest {
@@ -39,6 +58,7 @@ export interface TeamUpsertRequest {
   defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
+  modelRouters?: TeamModelRouter[];
 }
 
 async function parseError(response: Response, fallback: string): Promise<string> {

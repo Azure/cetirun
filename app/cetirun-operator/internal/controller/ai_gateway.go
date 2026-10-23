@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -38,14 +39,15 @@ const (
 	// aiGatewaySharedAccessGroup is the Gateway access group of the models
 	// administrators share with legacy Agents. Policy-bound keys never receive it.
 	aiGatewaySharedAccessGroup = "cetirun-shared"
-	// aiGatewayModelAccessGroupPrefix identifies an opaque per-configured-model
-	// access group. The Gateway chart derives its suffix from the canonical
-	// model configuration; the controller only trusts groups returned by the
-	// Gateway catalog and never attempts to recreate the suffix from a
-	// LiteLLM-generated deployment ID.
+	// aiGatewayModelAccessGroupPrefix identifies a per-model-name access
+	// group. The Gateway chart derives its suffix from the model name; the
+	// controller trusts only groups returned by the Gateway catalog whose
+	// suffix, members and deployment IDs agree with that derivation
+	// (trustedManagedModelGroups).
 	aiGatewayModelAccessGroupPrefix = "cetirun-model-"
-	// aiGatewaySharedDeploymentIDPrefix pairs a chart-derived deployment ID
-	// with the access-group suffix. The catalog trusts neither value alone.
+	// aiGatewaySharedDeploymentIDPrefix starts a chart-derived deployment ID,
+	// followed by the group suffix and a hash of the configured entry. The
+	// catalog trusts neither value alone.
 	aiGatewaySharedDeploymentIDPrefix = "cetirun-shared-"
 	// aiGatewayTeamPrefix prefixes the Gateway team of a CetiRun Team.
 	aiGatewayTeamPrefix           = "cetirun-team-"
@@ -176,6 +178,7 @@ type aiGatewayKeyClient interface {
 	GetKey(context.Context, string) (*aigateway.Key, error)
 	GenerateKey(context.Context, aigateway.GenerateRequest) error
 	UpdateKeyModels(context.Context, string, []string) error
+	UpdateKeyRoutes(context.Context, string, []string) error
 	UpdateKeyBudget(context.Context, string, float64, string) error
 	UpdateKeyLimits(context.Context, string, aigateway.KeyLimits) error
 	SetKeyBlocked(context.Context, string, bool) error
@@ -190,6 +193,7 @@ type aiGatewayKeyClient interface {
 	AddModel(context.Context, aigateway.ModelRequest) error
 	DeleteModel(context.Context, string) error
 	PricedModels(context.Context) (map[string]bool, error)
+	UpdateKeyAliases(context.Context, string, map[string]string) error
 }
 
 func (r *AgentReconciler) aiGatewayClient(ctx context.Context) (aiGatewayKeyClient, error) {
@@ -254,6 +258,16 @@ type aiGatewayGrant struct {
 	copilot     bool
 	active      bool
 	policyBound bool
+	// Team model routers (ai_gateway_routers.go): the inputs of the router
+	// grant, the router groups in groups and each router's status.
+	team             *cetirunv1alpha1.Team
+	policy           *cetirunv1alpha1.AgentPolicy
+	routerGroups     []string
+	routers          []cetirunv1alpha1.AIGatewayModelRouterStatus
+	routersEvaluated bool
+	// sharedRouters report the routers configured in the Gateway that the
+	// Agent's policy lists (ai_gateway_shared_routers.go).
+	sharedRouters []cetirunv1alpha1.AIGatewayModelRouterStatus
 	// limits are the policy's per-key request limits; set only when
 	// policyBound, and kept out of the Gateway policy revision.
 	limits aigateway.KeyLimits
@@ -291,6 +305,7 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 		return aiGatewayGrant{}, fmt.Errorf("Policy Gateway budget is not a finite positive US-dollar value")
 	}
 	groups := []string{}
+	var sharedRouters aiGatewaySharedRouterDecision
 	if shared {
 		// A current Gateway catalog is the authorization evidence that binds
 		// policy model identifiers to concrete deployment groups. The seeded
@@ -298,21 +313,36 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 		if err := r.refreshAIGatewayCatalogForGrant(ctx, client); err != nil {
 			return aiGatewayGrant{}, err
 		}
+		sharedModels, err := r.aiGatewayPolicySharedModels(ctx, models)
+		if err != nil {
+			return aiGatewayGrant{}, err
+		}
 		var complete bool
-		groups, complete = r.aiGatewayCatalog.resolvedGroups(models)
-		if !complete || len(groups) == 0 {
+		groups, complete = r.aiGatewayCatalog.resolvedGroups(sharedModels)
+		if !complete || (len(groups) == 0 && len(sharedModels) > 0) {
 			return aiGatewayGrant{}, fmt.Errorf("the Gateway catalog has no collision-safe deployment group for an authorized shared model")
 		}
+		// A router configured in the Gateway resolves like any shared model
+		// the policy lists; the key gets it only if the Agent may use every
+		// model it sends requests to.
+		sharedRouters = r.aiGatewaySharedRouterGrant(instance, resolution.policy)
+		groups = withoutGroups(groups, sharedRouters.refusedGroups)
 	}
 	if copilot {
 		groups = append(groups, copilotAccessGroup(instance))
 	}
+	routerGroups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, resolution.team, resolution.policy, copilot)
+	groups = append(groups, routerGroups...)
 	slices.Sort(groups)
 	limits, err := policyAIGatewayKeyLimits(resolution.policy)
 	if err != nil {
 		return aiGatewayGrant{}, err
 	}
-	return aiGatewayGrant{groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true, limits: limits}, nil
+	return aiGatewayGrant{
+		groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true,
+		team: resolution.team, policy: resolution.policy, routerGroups: routerGroups, routers: routers, routersEvaluated: true,
+		sharedRouters: sharedRouters.statuses, limits: limits,
+	}, nil
 }
 
 func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
@@ -326,13 +356,23 @@ func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, clien
 		if err := r.refreshAIGatewayCatalogForGrant(ctx, client); err != nil {
 			return aiGatewayGrant{}, err
 		}
-		// Current Gateway charts use per-deployment groups. Preserve access
-		// to those as well as legacy catalog entries tagged cetirun-shared.
-		groups = append(groups, r.aiGatewayCatalog.legacySharedGroups()...)
+		// Current Gateway charts use per-model-name groups. Preserve access
+		// to those as well as legacy catalog entries tagged cetirun-shared,
+		// but not to a misconfigured router configured in the Gateway, the
+		// only one an Agent without a policy may not use.
+		refused := r.aiGatewaySharedRouterGrant(instance, nil).refusedGroups
+		groups = append(groups, withoutGroups(r.aiGatewayCatalog.legacySharedGroups(), refused)...)
 	}
+	team, err := r.aiGatewayAgentTeam(ctx, instance)
+	if err != nil {
+		return aiGatewayGrant{}, err
+	}
+	routerGroups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, team, nil, copilot)
+	groups = append(groups, routerGroups...)
 	slices.Sort(groups)
 	return aiGatewayGrant{
 		groups: slices.Compact(groups), budget: r.AIGateway.DefaultBudget, copilot: copilot, active: true,
+		team: team, routerGroups: routerGroups, routers: routers, routersEvaluated: true,
 	}, nil
 }
 
@@ -463,14 +503,15 @@ func aiGatewayVerificationDue(instance *cetirunv1alpha1.Agent, enabled bool, now
 
 // aiGatewayReconcileDue reports whether the Agent needs the full Gateway
 // reconcile now rather than the lightweight pass: its key verification is
-// due, its Copilot proxy is starting or failed, or the Gateway no longer has
-// one of its Copilot routes. Without the last, an Agent queued because its
-// routes are gone would take the lightweight pass and wait for the
-// verification after all.
+// due, its Copilot proxy is starting or failed, the Gateway no longer has
+// one of its Copilot routes, the shared models' groups changed since its
+// key was granted, or its key no longer follows the routers configured in
+// the Gateway. Without the last three, an Agent queued because of them
+// would take the lightweight pass and wait for the verification after all.
 func (r *AgentReconciler) aiGatewayReconcileDue(instance *cetirunv1alpha1.Agent, now time.Time) bool {
 	enabled := r.AIGateway.Enabled
 	return aiGatewayVerificationDue(instance, enabled, now) || aiGatewayCopilotPending(instance, enabled) ||
-		enabled && r.copilotRoutesLost(instance)
+		enabled && (r.copilotRoutesLost(instance) || r.aiGatewayBindingsChanged(instance) || r.aiGatewaySharedRoutersStale(instance))
 }
 
 // aiGatewayCopilotPending reports a Copilot proxy that is starting or failed
@@ -599,6 +640,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		}
 		status = ensureAIGatewayStatus(instance)
 		status.Routed, status.AccessGroups, status.Models, status.DefaultModel, status.Blocked = false, nil, nil, "", blocked
+		status.ModelRouters = nil
 		status.Phase, status.Reason = cetirunv1alpha1.AIGatewayPhaseReady, aiGatewayReasonNoModels
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
 			metav1.ConditionFalse, aiGatewayReasonNoModels, "The effective policy grants no AI Gateway model source")
@@ -647,7 +689,8 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			MaxBudget: grant.budget, BudgetDuration: aiGatewayBudgetDuration,
 			Blocked: instance.Spec.Suspended,
 			TeamID:  teamID, UserID: userID,
-			Limits: grant.limits,
+			Aliases: copilotKeyAliases(status.Copilot),
+			Limits:  grant.limits,
 			Metadata: map[string]string{
 				"cetirun_agent": instance.Name, "cetirun_agent_uid": string(instance.UID),
 				"cetirun_user": instance.Spec.User.Alias, "cetirun_team": instance.Spec.Team,
@@ -717,6 +760,12 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			}
 			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyUpdated",
 				"Updated AI Gateway virtual key %s access to %s", status.KeyAlias, strings.Join(models, ","))
+		}
+		// Keys issued before the model lookup was allowed get it too.
+		if !aigateway.KeyRoutesCurrent(key.AllowedRoutes) {
+			if err := client.UpdateKeyRoutes(ctx, token, aigateway.KeyRoutes); err != nil {
+				return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
+			}
 		}
 		if key.TeamID != teamID || key.UserID != userID {
 			if err := client.UpdateKeyOwner(ctx, token, teamID, userID); err != nil {
@@ -807,10 +856,16 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		status.LastVerifiedTime = &now
 	}
 	status.Routed = routed
+	status.ModelRouters = withSharedRouterStatuses(grant.routers, grant.sharedRouters)
 
 	// Copilot registration problems are reported on the Copilot status and
 	// never block the key: shared models keep working.
 	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended)
+	r.reconcileAIGatewayKeyAliases(ctx, client, instance, token, key)
+	if err := r.refreshAIGatewayRouterGrant(ctx, client, instance, grant); err != nil {
+		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayModelRoutersFailed",
+			"Updating the AI Gateway key's model routers after the GitHub Copilot registration failed: %v", err)
+	}
 	r.refreshAIGatewayCatalog(ctx, client)
 	if routed {
 		entries, defaultModel, omitted := r.aiGatewayModelEntries(instance)
@@ -1283,8 +1338,8 @@ func (r *AgentReconciler) applyCopilotResponsesModels(values map[string]any, ins
 	}
 	registered := map[string]bool{}
 	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil {
-		for _, name := range status.Copilot.Models {
-			registered[strings.TrimPrefix(name, aiGatewayCopilotModelPrefix)] = true
+		for _, route := range copilotRoutes(status.Copilot) {
+			registered[route.Model] = true
 		}
 	}
 	models, _ := parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels])
@@ -1338,7 +1393,7 @@ func applyCopilotSignInGeneration(values map[string]any, instance *cetirunv1alph
 // model can decide a routed Agent's default: the Agent names no model, or
 // names one that is not among its models.
 func aiGatewayUsesDeploymentDefault(instance *cetirunv1alpha1.Agent) bool {
-	model := strings.TrimSpace(instance.Spec.Model)
+	model := aiGatewayRequestedModel(instance)
 	if model == "" {
 		return true
 	}
@@ -1377,6 +1432,22 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 		if r.aiGatewayCopilotActive(instance) && status.Copilot.ProxyKeyID != "" {
 			parts = append(parts, "proxy-key", status.Copilot.ProxyKeyID)
 		}
+		if routers := aiGatewayRouterRevision(instance); routers != "" {
+			parts = append(parts, routers)
+		}
+		// The proxy's Responses-only models follow the registered routes. A
+		// Copilot model that joins a shared model leaves the Agent's model
+		// list as it is, so the routes count on their own.
+		if r.aiGatewayCopilotActive(instance) {
+			var routes []string
+			for _, route := range copilotRoutes(status.Copilot) {
+				routes = append(routes, route.Model+"="+route.Name)
+			}
+			// copilot-names: Copilot models are named by their Gateway
+			// name, not GitHub's display name; Agents configured with the
+			// display names are re-rendered once.
+			parts = append(parts, "copilot-routes", strings.Join(routes, ","), "copilot-names:gateway")
+		}
 	}
 	if annotation := instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]; annotation != "" {
 		sum := sha256.Sum256([]byte(annotation))
@@ -1395,6 +1466,19 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 			models = append(models, fmt.Sprintf("%s:%d:%d", model.Name, model.ContextWindow, model.MaxOutputTokens))
 		}
 		parts = append(parts, "shared", strings.Join(models, ","))
+		// A router configured in the Gateway takes smaller limits from the
+		// Agent's Copilot routes under its models' names; a change to the
+		// router's models alone can change them, so they count on their own.
+		if entitled, ok := r.aiGatewayEntitledShared(instance); ok {
+			folds := r.aiGatewayRouterLimitFolds(instance, entitled, r.aiGatewayConfiguredCopilotRoutes(instance))
+			if len(folds) > 0 {
+				limits := make([]string, 0, len(folds))
+				for _, name := range slices.Sorted(maps.Keys(folds)) {
+					limits = append(limits, fmt.Sprintf("%s:%d:%d", name, folds[name][0], folds[name][1]))
+				}
+				parts = append(parts, "router-limits", strings.Join(limits, ","))
+			}
+		}
 	}
 	return strings.Join(parts, "|")
 }

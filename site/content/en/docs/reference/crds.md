@@ -54,15 +54,15 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.image` | Required for Custom; once set, cannot be cleared. Built-in defaults are pinned from the selected chart |
 | `agent.registrySecretRef.name` | Optional Portal-managed source Secret reference; no namespace, key, or inline credentials |
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
-| `agent.port` | HTTP port, 1–65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
+| `agent.port` | HTTP port, 1ΓÇô65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
 | `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
 | `team` | Optional for legacy Agents; required for policy binding. Portal Gateway creation still requires an existing Team |
 | `sandboxRef` | Opt into a Team-permitted Sandbox; omitted for legacy execution |
-| `model` | Optional model name, at most 256 characters; policy-bound Agents must select a policy-allowed model |
+| `model` | Optional model name, at most 256 characters; policy-bound Agents must select a policy-allowed shared model or, when the policy allows Copilot, a Copilot model by its Gateway name or as `copilot/<model ID>` |
 | `modelAccess.sharedModels` | Explicit request for policy-bound Agents; defaults on for legacy Agents |
 | `modelAccess.githubCopilot` | Explicit request for policy-bound Agents; defaults on for legacy Agents when the deployment offers Copilot |
 | `modelAccess.monthlyBudgetUSD` | Optional LiteLLM USD monthly budget override, bounded by the policy maximum |
-| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team ∪ add) − remove` |
+| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team Γê¬ add) ΓêÆ remove` |
 | `helm.version` | Agent chart pin; backfilled from the operator default on first reconciliation |
 | `helm.values` | Map-shaped top-level entries; see admission notes below |
 | `suspended` | Request zero replicas and removal of the instance VirtualService; false when omitted |
@@ -143,7 +143,7 @@ check does not prove that an override will reconcile successfully.
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
-| `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions |
+| `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions; for GitHub Copilot, each registered model's Gateway name (`copilot.routes`) and the models left out for lack of a price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`); `modelRouters` lists the Team's smart-routing models and, for an instance with an Agent Policy, the routers configured in the Gateway that the Policy lists, each with `granted`, the `model` name it sends when granted (a Team router's internal name, or a Gateway router's own name), a Team router's configured limits, or the `reason` it is not granted |
 | `signInHelper` | Whether the workload serves the in-agent model sign-in helper that `/<instance>/cetirun-auth/` routes to; omitted until the operator records it |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
@@ -214,6 +214,19 @@ not material to paste into a public bug report.
 | `skillStorage.storageClassName` | Optional override; chart default `azureblob-nfs-premium` |
 | `skillStorage.storageSize` | Optional shared PVC request; chart default `100Gi` |
 | `skillStorage.mountPath` | Optional read-only alias for native Agents; common view at `$HOME/.agents/skills` |
+| `modelRouters` | Smart-routing models, at most 10, keyed by `name`; see [smart routing](../../guides/teams/#smart-routing) |
+| `modelRouters[].name` | Model name instances request: 1 to 64 characters without whitespace or `/`, not starting with `cetirun-` in any letter case |
+| `modelRouters[].classifier.type` | `heuristic` (default) or `llm`; LiteLLM's licence-limited classifier types are not accepted |
+| `modelRouters[].classifier.model` | Shared model that classifies requests, not a router of the Gateway; required for `llm` and not allowed for `heuristic` |
+| `modelRouters[].tiers.simple`, `.medium`, `.complex` | Required model of each tier: a shared model name that is not a router of the Gateway, or `copilot/<model>` for a GitHub Copilot model; `medium` also takes requests that cannot be classified |
+| `modelRouters[].tiers.reasoning` | Optional; empty uses the `complex` model |
+
+| Field under `status` | Contract |
+| --- | --- |
+| `modelRouters[].name` | Router name from `spec.modelRouters` |
+| `modelRouters[].gatewayModel` | Internal Gateway model name instances send requests to; stable while the router's configuration changes |
+| `modelRouters[].ready` / `message` | Whether the router is registered with its current configuration, and why not |
+| `conditions[type=ModelRoutersReady]` | `True` when every router is registered; `False` names each router that is not; `Unknown` while the Gateway cannot be reached |
 
 Each Team has a single `agentPolicyRef`; Agents do not select a policy class.
 The pre-release `normalAgentPolicyRef`, `adminAgentPolicyRef` and Agent
@@ -263,7 +276,7 @@ returns these fields along with `uid` and `resourceVersion`; updates and deletes
 must send those two version fields. A stale version returns `409 Conflict`,
 and missing version fields return `428 Precondition Required`.
 
-The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
+The **Admin ΓåÆ Sandboxes** pages manage the complete Sandbox configuration:
 runtime type, Agent and helper resource requests/limits, HOME storage, and
 scratch size. They use these admin-only endpoints:
 
@@ -364,8 +377,10 @@ limits with the policy on every reconcile, and updates the same key in place
 when they differ. Removing a field clears it on the key. Other key settings and
 metadata are kept. The limits are not part of the Gateway policy revision, so
 changing them does not start the reprojection fence that a model or budget
-change starts, and the operator does not replace the key or re-install the
-Agent's chart for them. Keys of legacy Agents without a policy are not changed;
+change starts, and the operator keeps each Agent's key. Sandbox execution,
+however, takes the whole AgentPolicy as an input of the Agents it runs: a
+limits change, like any other change to the policy, restarts the policy's
+running Agents once. Keys of legacy Agents without a policy are not changed;
 Gateway administrators manage their limits.
 
 The total limits count every request on the key, including the Agent's GitHub
@@ -379,9 +394,13 @@ the request starts. OpenClaw sends the model's maximum output, for example
 128,000 tokens, with every request, so a `tpm` below the model's context window
 plus its maximum output rejects long conversations. For a model with a
 922,000-token context window and a 128,000-token maximum output that is about
-1.05 million tokens per minute. For such Agents, `rpm` and
-`maxParallelRequests` are the effective limits. Below 4,096 tokens per minute
-LiteLLM would also shorten answers, hence the minimum.
+1.05 million tokens per minute. A turn that calls tools sends several requests
+within a minute, each reserving its maximum output again, so such turns fail
+well before a conversation is long: measured with a `tpm` of 200,000, the
+eighth request of an OpenClaw heartbeat turn with about 30,000 tokens of input
+received 429, and OpenClaw retried the turn every minute. For such Agents,
+`rpm` and `maxParallelRequests` are the effective limits. Below 4,096 tokens
+per minute LiteLLM would also shorten answers, hence the minimum.
 
 ### AgentPolicy administration
 

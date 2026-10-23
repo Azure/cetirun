@@ -27,8 +27,9 @@ requests, requests per minute (RPM), tokens per minute (TPM), and RPM or TPM
 for individual models. Every Agent of a Team that uses the Policy gets the same
 limits on its own Gateway key, so one Agent's traffic does not count against
 another's. Leave a field empty for no limit. The operator applies a change to
-each Agent's existing key, and owners see the limits in the Agent creation form
-and on the Agent's page. TPM counts a request's maximum output before the model
+each Agent's existing key; like any change to the Policy, it also restarts the
+Agents running under the Policy once. Owners see the limits in the Agent
+creation form and on the Agent's page. TPM counts a request's maximum output before the model
 answers; see [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)
 before setting it for OpenClaw Agents.
 
@@ -109,7 +110,108 @@ The Team controller reports whether configuration references are accepted.
 Inspect each member instance's conditions and effective configuration for
 runtime readiness; accepted Team configuration is not runtime enforcement.
 
+## Smart routing
+
+A Team can define up to ten smart-routing models (`spec.modelRouters`). Each is
+a model name, such as `auto`, `auto-gpt` or `auto-claude`, that the Team's
+instances can choose like any other model. For each request, the AI Gateway
+classifies how demanding the request is and sends it to the model of that
+tier. Administrators define routers on the Team page in the Portal, under
+**Smart routing**; members see only whether they may use a router name, never
+its configuration. Routers made in the Gateway's own console are not managed
+by CetiRun, and the routers of the Gateway chart's `models` stay as they are;
+the operator gives those to instances under the same rule as a Team's routers,
+see [Choose a model](../models/#models-through-the-ai-gateway).
+
+Each router has:
+
+- a **name**, 1 to 64 characters without spaces or slashes, not starting with
+  the reserved `cetirun-` prefix, and not the name of a shared model;
+- a **classifier**: `heuristic` (the default) scores each request locally
+  without a model call; `llm` asks a shared model to classify each request,
+  and those calls are charged to the instance. The classifier is a model, never
+  a router of the Gateway such as `auto`: the Gateway makes the classifier call
+  on the instance's behalf without its key's checks, and a router would send it
+  on to a model of its own choice;
+- four **tiers**, `simple`, `medium`, `complex` and `reasoning`, each naming a
+  shared model that is not itself a router, or `copilot/<model>` for a GitHub
+  Copilot model. `reasoning`
+  may be left empty to use the `complex` model. Requests the router cannot
+  classify go to the `medium` model.
+
+A `copilot/<model>` tier whose model is the same model as a shared model is
+registered as that shared model, which GitHub Copilot routes of that model
+join (see [Models](../models/#models-through-the-ai-gateway)): an instance needs that shared model, allowed by
+its AgentPolicy, to be granted the router, and the tier's requests may then be
+answered by the shared deployments too. A tier registered under the Copilot
+model's ID is granted only to instances whose owner's Copilot model has that
+name.
+
+```yaml
+spec:
+  modelRouters:
+    - name: auto
+      tiers:
+        simple: small-model
+        medium: medium-model
+        complex: large-model
+    - name: auto-copilot
+      classifier:
+        type: llm
+        model: small-model
+      tiers:
+        simple: copilot/fast-model
+        medium: medium-model
+        complex: copilot/large-model
+        reasoning: large-model
+```
+
+The operator registers each router in the AI Gateway under an internal name
+and reports it on the Team: `status.modelRouters` lists each router as ready or
+explains why it is not, and the `ModelRoutersReady` condition summarizes them.
+A router is not registered while a tier or the classifier names a model the
+Gateway does not offer as a shared model, or a router of the Gateway; the
+message names the router and the tier. A changed router replaces its registration under the same internal name,
+so instances keep their configuration, and a removed router is unregistered.
+The registrations appear in the Gateway's console under their internal
+`cetirun-router-` names; change them on the Team, not in the console, which
+the operator does not watch for edits. The Gateway's request log, and the
+Log Analytics queries in the Gateway chart's
+[Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
+section, show a Team's router under that internal name too; the Team's
+`status.modelRouters[].gatewayModel` gives the router each name belongs to.
+
+An instance gets a router only when it may use every model the router sends
+requests to, which the Gateway also holds the router to: it refuses, with HTTP
+403, a request a router sends to a model outside the instance's key. So:
+
+- with an Agent Policy, the Policy's allowed shared models must list the
+  router's name and each shared tier, and GitHub Copilot tiers need Copilot to
+  be allowed. The classifier must be a shared model, but need not be listed;
+- the instance must use shared models for a router with a shared tier or a
+  model classifier;
+- a GitHub Copilot tier works for an instance once its owner has signed in to
+  GitHub Copilot with an account that offers that model. Every member's
+  account is assumed to offer the same models; a router whose tiers are all
+  shared models works at once. A Copilot tier only ever uses the instance's
+  own sign-in: if its model is not available to the instance when a request
+  arrives, for example just after a sign-out and before the operator withdraws
+  the router, the Gateway sends the request to the router's medium model.
+
+An instance that cannot use a router reports why in
+`status.aiGateway.modelRouters`, and its Portal page shows the reason. Changing
+a router's tiers or classifier updates instance keys and registrations; it
+does not change the Policy's Gateway projection. Only the limits the instance
+is configured with for the router follow the tiers, as described in
+[Choose a model](../models/#smart-routing-models).
+
+LiteLLM limits some router features to a single router per Gateway without a
+LiteLLM licence: the `heuristic_v2`, `capability` and `llm_v2` classifiers,
+custom tier sets and custom classifier prompts. A Team cannot use them; the
+Gateway chart's own routers can, within that limit.
+
 Sources: [team event handling]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [team defaults and skills]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
+[team model routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_routers.go" >}}),
 [admin team handlers]({{< repo "app/cetirun-portal/internal/handler/admin_team.go" >}}),
 and [runtime initialization]({{< repo "app/cetirun-chart/agents/hermes/bootstrap/hermes-init-home.sh" >}}).

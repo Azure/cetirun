@@ -32,7 +32,8 @@ var teamNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // Only expose known field paths, never arbitrary map keys or admission messages.
 var teamValidationFieldPattern = regexp.MustCompile(`^(metadata\.name|spec(\.(agentPolicyRef|defaultSandboxRef|` +
 	`sandboxRefs(\[[0-9]+\])?|skills(\[[0-9]+\])?|memberContext(\.(role|description(\[[0-9]+\])?))?|` +
-	`defaults(\.provider)?|skillStorage(\.(resourceGroup|storageAccount|containerName|storageClassName|storageSize|mountPath))?))?)$`)
+	`defaults(\.provider)?|skillStorage(\.(resourceGroup|storageAccount|containerName|storageClassName|storageSize|mountPath))?|` +
+	`modelRouters(\[[0-9]+\](\.(name|classifier(\.(type|model))?|tiers(\.(simple|medium|complex|reasoning))?))?)?))?)$`)
 
 func teamValidationMessage(err error) string {
 	message := "Team configuration was rejected by the cluster."
@@ -96,6 +97,10 @@ type TeamDTO struct {
 	Skills            []string             `json:"skills,omitempty"`
 	SkillStorage      *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
 	CreatedAt         string               `json:"createdAt,omitempty"`
+	// ModelRouters are the Team's smart-routing models and
+	// ModelRouterStatus the operator's report on them.
+	ModelRouters      []TeamModelRouterDTO       `json:"modelRouters,omitempty"`
+	ModelRouterStatus []TeamModelRouterStatusDTO `json:"modelRouterStatus,omitempty"`
 }
 
 // TeamUpsertRequest is the JSON body for create/update.
@@ -113,6 +118,7 @@ type TeamUpsertRequest struct {
 	DefaultProvider   string               `json:"defaultProvider,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
 	SkillStorage      *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
+	ModelRouters      []TeamModelRouterDTO `json:"modelRouters,omitempty"`
 }
 
 func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
@@ -126,6 +132,7 @@ func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 		Skills:          t.Spec.Skills,
 		CreatedAt:       t.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
+	dto.ModelRouters, dto.ModelRouterStatus = toTeamModelRouterDTOs(t)
 	if t.Spec.SkillStorage != nil {
 		dto.SkillStorage = &TeamSkillStorageDTO{
 			ResourceGroup:    t.Spec.SkillStorage.ResourceGroup,
@@ -149,7 +156,8 @@ func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
 		Defaults: cetirunv1alpha1.TeamDefaultsSpec{
 			Provider: req.DefaultProvider,
 		},
-		Skills: req.Skills,
+		Skills:       req.Skills,
+		ModelRouters: toTeamModelRouters(req.ModelRouters),
 	}
 	if req.SkillStorage != nil {
 		spec.SkillStorage = &cetirunv1alpha1.SkillStorageSpec{
@@ -349,6 +357,9 @@ func (h *AdminTeamHandler) validateTeamBindings(w http.ResponseWriter, r *http.R
 		if !slices.Contains(policy.Spec.Skills.Allowed, skill) {
 			return invalid("Team Skills must be allowed by the selected Agent Policy")
 		}
+	}
+	if message := validateTeamModelRouters(req.ModelRouters); message != "" {
+		return invalid(message)
 	}
 	for _, name := range req.SandboxRefs {
 		box, err := h.Kube.GetSandbox(r.Context(), name)

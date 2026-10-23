@@ -29,8 +29,9 @@ podDisruptionBudget:
 
 # -- Serve CetiRun Agents. The CetiRun operator gives each Agent a virtual key
 # restricted to access groups, and registers each Agent's GitHub Copilot
-# models under copilot/<model> in the Agent's own group. Turned on, the chart
-# reserves the copilot/ prefix for those registrations, and LiteLLM checks
+# models in the Agent's own group, under a shared model's name or the model's
+# own ID, with copilot/<model> kept as an alias on the Agent's key. Turned on,
+# the chart reserves the copilot/ prefix for those aliases, and LiteLLM checks
 # each router fallback target against the caller's key
 # (general_settings.enforce_fallback_model_access), so a fallback cannot reach
 # a model the key may not use, such as another Agent's GitHub Copilot route.
@@ -90,21 +91,23 @@ fullnameOverride: ""
 # `copilot/` while operatorIntegration is on.
 #
 # With operatorIntegration, model_info.id and the cetirun-model- access group
-# prefix are reserved. The chart hashes the complete configured model object
-# into a matching cetirun-shared- deployment ID and cetirun-model- group.
-# Changing the model configuration intentionally changes that binding.
+# prefix are reserved. The chart derives each model's cetirun-model- group from
+# its model_name, and its cetirun-shared- deployment ID from the name and the
+# complete configured entry. Editing a model's configuration changes its ID
+# but not its group, so Agents keep the model.
 #
 # An entry whose litellm_params.model is auto_router/complexity_router is a
 # router: LiteLLM sends each request to the model configured for the tier it
 # picks. Its tiers, default model and classifier model have to be models in
 # this list, and its own name needs input_cost_per_token and
 # output_cost_per_token above zero in litellm_params; calls are charged at the
-# price of the model picked. A key that may use the router reaches all of its
-# models. Unless it sets reminder_markers, the chart adds the markers around
-# OpenClaw's own context, so the router classifies what was asked; unless it
-# sets them, context_compaction and max_tokens_from_tier_model are off and
-# enable_context_window_escalation is on. See the README's Smart routing
-# section.
+# price of the model picked. With operatorIntegration, the CetiRun operator
+# gives an Agent the router only when the Agent may use every model the router
+# sends requests to. Unless it sets reminder_markers, the chart adds the
+# markers around OpenClaw's own context, so the router classifies what was
+# asked; unless it sets them, context_compaction and max_tokens_from_tier_model
+# are off and enable_context_window_escalation is on. See the README's Smart
+# routing section.
 #
 # Example:
 #   models:
@@ -252,7 +255,8 @@ router:
   # requests are still sent. A probe answered with 429 or 408 does not change
   # routing: the deployment keeps its previous state, though /health lists it
   # as unhealthy. LiteLLM retries a failed probe unless the model sets
-  # model_info.health_check_params: {max_retries: 0}. The results are kept in
+  # model_info.health_check_params: {max_retries: 0}, as the CetiRun operator
+  # does for each Agent's GitHub Copilot routes. The results are kept in
   # PostgreSQL and shown by /health/latest and the console.
   healthChecks:
     # -- Run the probes and route by their results

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,8 +122,38 @@ func TestGenerateKeySendsRestrictedKey(t *testing.T) {
 	if body["key"] != "sk-value" || body["key_alias"] != "cetirun-a" || body["max_budget"] != float64(10) || body["budget_duration"] != "1mo" {
 		t.Fatalf("unexpected body %v", body)
 	}
-	if routes, _ := body["allowed_routes"].([]any); len(routes) != 1 || routes[0] != LLMAPIRoutes {
+	// Inference routes, and the model lookup by name; no management route.
+	if routes, _ := body["allowed_routes"].([]any); len(routes) != 3 || routes[0] != LLMAPIRoutes || routes[1] != "/v1/models" || routes[2] != "/models" {
 		t.Fatalf("allowed_routes = %v", body["allowed_routes"])
+	}
+}
+
+func TestKeyRoutesAreReadAndUpdated(t *testing.T) {
+	client, requests := testServer(t, func(r recordedRequest) (int, string) {
+		if r.method == http.MethodGet {
+			return 200, `{"info":{"key_alias":"a","models":["m"],"allowed_routes":["llm_api_routes"]}}`
+		}
+		return 200, `{}`
+	})
+	key, err := client.GetKey(context.Background(), "abc")
+	if err != nil || !slices.Equal(key.AllowedRoutes, []string{LLMAPIRoutes}) || KeyRoutesCurrent(key.AllowedRoutes) {
+		t.Fatalf("GetKey = %+v, %v", key, err)
+	}
+	if err := client.UpdateKeyRoutes(context.Background(), "abc", KeyRoutes); err != nil {
+		t.Fatal(err)
+	}
+	body := (*requests)[1].body
+	if r := (*requests)[1]; r.path != "/key/update" || body["key"] != "abc" || len(body) != 2 {
+		t.Fatalf("update request %+v", r)
+	}
+	if err := client.UpdateKeyRoutes(context.Background(), "abc", nil); err == nil {
+		t.Fatal("an empty route list allows every route and must be refused")
+	}
+	for routes, current := range map[string]bool{"llm_api_routes,/v1/models,/models": true, "/models,/v1/models,llm_api_routes": true,
+		"llm_api_routes": false, "": false, "llm_api_routes,/v1/models,/models,/key/info": false} {
+		if got := KeyRoutesCurrent(strings.Split(routes, ",")); got != current {
+			t.Errorf("KeyRoutesCurrent(%q) = %v", routes, got)
+		}
 	}
 }
 
@@ -264,6 +295,34 @@ func TestListModelsCountsPricesTheWayTheGatewayBlocksUnpricedModels(t *testing.T
 	}
 	if deployments[1].DatabaseSourceKnown {
 		t.Fatal("an omitted db_model field must not be treated as trusted static provenance")
+	}
+}
+
+func TestListModelsReadsTheMode(t *testing.T) {
+	client, _ := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{"data":[
+			{"model_name":"chat","litellm_params":{"model":"azure/gpt-5"},"model_info":{"id":"a","mode":"chat"}},
+			{"model_name":"decision","litellm_params":{"model":"azure_ai/decision-1"},"model_info":{"id":"b","mode":"evaluation"}},
+			{"model_name":"router","litellm_params":{"model":"auto_router/complexity_router"},"model_info":{"id":"c","mode":null}},
+			{"model_name":"odd","litellm_params":{"model":"azure/x"},"model_info":{"id":"d","mode":7}},
+			{"model_name":"no-info","litellm_params":{"model":"azure/y"}}
+		]}`
+	})
+	deployments, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"chat": "chat", "decision": "evaluation", "router": "", "odd": "", "no-info": ""}
+	for _, deployment := range deployments {
+		if deployment.Mode != want[deployment.ModelName] {
+			t.Errorf("%s: Mode = %q, want %q", deployment.ModelName, deployment.Mode, want[deployment.ModelName])
+		}
+	}
+	for mode, chat := range map[string]bool{"": true, "chat": true, "completion": true, "responses": true,
+		"evaluation": false, "embedding": false, "image_generation": false, "rerank": false, "Chat": false} {
+		if ChatModel(mode) != chat {
+			t.Errorf("ChatModel(%q) = %v, want %v", mode, !chat, chat)
+		}
 	}
 }
 

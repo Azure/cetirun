@@ -21,9 +21,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -36,6 +38,14 @@ const NoModels = "no-default-models"
 // LLMAPIRoutes restricts a key to inference routes, so it cannot call the
 // management API even for its own key.
 const LLMAPIRoutes = "llm_api_routes"
+
+// KeyRoutes are the routes an Agent's key may call: the inference routes, and
+// the model lookup by name, GET /v1/models/<model> and /models/<model>, which
+// LiteLLM files under its internal-user routes rather than the inference ones.
+// Clients such as Hermes look a model up before using it. The prefixes match
+// only the lookup and Google's generateContent routes, which are inference
+// routes already.
+var KeyRoutes = []string{LLMAPIRoutes, "/v1/models", "/models"}
 
 // DefaultTimeout bounds each Gateway call.
 const DefaultTimeout = 15 * time.Second
@@ -68,6 +78,11 @@ type Key struct {
 	BudgetResetAt *time.Time
 	TeamID        string
 	UserID        string
+	// Aliases maps a model name the key's callers send to the model name the
+	// Gateway serves the request with (LiteLLM's key aliases).
+	Aliases map[string]string
+	// AllowedRoutes are the routes the key may call; see KeyRoutes.
+	AllowedRoutes []string
 	// Limits are the key's stored request limits.
 	Limits KeyLimits
 }
@@ -90,6 +105,8 @@ type GenerateRequest struct {
 	// user. The team must exist; the user need not.
 	TeamID string
 	UserID string
+	// Aliases are the key's model aliases; see Key.Aliases.
+	Aliases map[string]string
 	// Limits are the key's request limits; absent limits are unlimited.
 	Limits KeyLimits
 }
@@ -153,6 +170,8 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 			BudgetResetAt  *string  `json:"budget_reset_at"`
 			TeamID         *string  `json:"team_id"`
 			UserID         *string  `json:"user_id"`
+			Aliases        any      `json:"aliases"`
+			AllowedRoutes  []string `json:"allowed_routes"`
 			keyLimitsInfo
 		} `json:"info"`
 	}
@@ -167,7 +186,9 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 	key := &Key{
 		Alias: info.KeyAlias, Models: info.Models, MaxBudget: info.MaxBudget,
 		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked, Spend: info.Spend,
-		TeamID: deref(info.TeamID), UserID: deref(info.UserID), Limits: info.limits(),
+		TeamID: deref(info.TeamID), UserID: deref(info.UserID), Aliases: keyAliases(info.Aliases),
+		AllowedRoutes: info.AllowedRoutes,
+		Limits:        info.limits(),
 	}
 	if info.BudgetResetAt != nil && strings.TrimSpace(*info.BudgetResetAt) != "" {
 		resetAt, err := time.Parse(time.RFC3339, *info.BudgetResetAt)
@@ -201,7 +222,7 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 		"key":            req.Key,
 		"key_alias":      req.Alias,
 		"models":         req.Models,
-		"allowed_routes": []string{LLMAPIRoutes},
+		"allowed_routes": KeyRoutes,
 		"metadata":       req.Metadata,
 	}
 	req.Limits.addTo(body)
@@ -220,6 +241,9 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 	if req.UserID != "" {
 		body["user_id"] = req.UserID
 	}
+	if len(req.Aliases) > 0 {
+		body["aliases"] = req.Aliases
+	}
 	status, err := c.do(ctx, http.MethodPost, "/key/generate", body, nil)
 	var apiErr *APIError
 	if status == http.StatusBadRequest && errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "already exists") {
@@ -236,6 +260,20 @@ func (c *Client) UpdateKeyModels(ctx context.Context, token string, models []str
 	}
 	_, err := c.do(ctx, http.MethodPost, "/key/update", map[string]any{"key": token, "models": models}, nil)
 	return err
+}
+
+// UpdateKeyRoutes replaces the routes the key identified by token may call.
+func (c *Client) UpdateKeyRoutes(ctx context.Context, token string, routes []string) error {
+	if len(routes) == 0 {
+		return fmt.Errorf("virtual key routes must not be empty; an empty list allows every route")
+	}
+	_, err := c.do(ctx, http.MethodPost, "/key/update", map[string]any{"key": token, "allowed_routes": routes}, nil)
+	return err
+}
+
+// KeyRoutesCurrent reports whether a key may call exactly KeyRoutes.
+func KeyRoutesCurrent(routes []string) bool {
+	return len(routes) == len(KeyRoutes) && !slices.ContainsFunc(KeyRoutes, func(route string) bool { return !slices.Contains(routes, route) })
 }
 
 // UpdateKeyBudget replaces the native LiteLLM USD budget without replacing
@@ -327,6 +365,10 @@ type Deployment struct {
 	DatabaseSourceKnown bool
 	MaxInputTokens      int64
 	MaxOutputTokens     int64
+	// Mode is the deployment's model_info.mode, the kind of call LiteLLM
+	// makes to it, such as chat, responses, embedding or evaluation; empty
+	// when the model info names none.
+	Mode string
 	// Priced reports whether the deployment carries a price by the parts of
 	// LiteLLM's unpriced-model check that /model/info shows: a price set in
 	// litellm_params, even zero, or a positive price or tiered pricing in the
@@ -334,6 +376,117 @@ type Deployment struct {
 	// /model/info fills unknown prices with zero, so such a model counts as
 	// unpriced here.
 	Priced bool
+	// Model is litellm_params.model, the provider model LiteLLM calls, and
+	// BaseModel model_info.base_model, the price-table entry the deployment
+	// is billed as, when set.
+	Model     string
+	BaseModel string
+	// Routing is how LiteLLM weighs the deployment against the others of its
+	// model name.
+	Routing Routing
+	// Router is set for a LiteLLM auto router: the models it sends requests
+	// to, as far as its configuration shows them.
+	Router *Router
+}
+
+// Routing holds the litellm_params fields that decide which of a model name's
+// deployments LiteLLM sends a request to. A nil field is not set.
+type Routing struct {
+	// Order: deployments with a higher order serve only while those with
+	// the lowest are unavailable.
+	Order *int64
+	// Weight, RPM and TPM weigh the deployments of one order against each
+	// other.
+	Weight *float64
+	RPM    *int64
+	TPM    *int64
+}
+
+// IsZero reports whether no routing field is set.
+func (r Routing) IsZero() bool {
+	return r.Order == nil && r.Weight == nil && r.RPM == nil && r.TPM == nil
+}
+
+// String renders the set fields in a stable form.
+func (r Routing) String() string {
+	var parts []string
+	if r.Order != nil {
+		parts = append(parts, fmt.Sprintf("order=%d", *r.Order))
+	}
+	if r.Weight != nil {
+		parts = append(parts, fmt.Sprintf("weight=%g", *r.Weight))
+	}
+	if r.RPM != nil {
+		parts = append(parts, fmt.Sprintf("rpm=%d", *r.RPM))
+	}
+	if r.TPM != nil {
+		parts = append(parts, fmt.Sprintf("tpm=%d", *r.TPM))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (r Routing) params(params map[string]any) {
+	if r.Order != nil {
+		params["order"] = *r.Order
+	}
+	if r.Weight != nil {
+		params["weight"] = *r.Weight
+	}
+	if r.RPM != nil {
+		params["rpm"] = *r.RPM
+	}
+	if r.TPM != nil {
+		params["tpm"] = *r.TPM
+	}
+}
+
+// routing reads the routing fields of a deployment's litellm_params. A field
+// that is not a positive number (for order, not a number of at least zero)
+// counts as not set, as LiteLLM's routing ignores it.
+func routing(params map[string]json.RawMessage) Routing {
+	var out Routing
+	// LiteLLM takes order 0 as the lowest, so it is kept, unlike a zero weight,
+	// rpm or tpm.
+	if value, ok := nonNegativeNumber(params["order"]); ok && value == math.Trunc(value) {
+		order := int64(value)
+		out.Order = &order
+	}
+	if value, ok := positiveNumber(params["weight"]); ok {
+		out.Weight = &value
+	}
+	if value, ok := positiveNumber(params["rpm"]); ok && value == math.Trunc(value) {
+		rpm := int64(value)
+		out.RPM = &rpm
+	}
+	if value, ok := positiveNumber(params["tpm"]); ok && value == math.Trunc(value) {
+		tpm := int64(value)
+		out.TPM = &tpm
+	}
+	return out
+}
+
+func nonNegativeNumber(raw json.RawMessage) (float64, bool) {
+	var value float64
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value < 0 || math.IsInf(value, 0) || value > 1<<53 {
+		return 0, false
+	}
+	return value, true
+}
+
+func positiveNumber(raw json.RawMessage) (float64, bool) {
+	var value float64
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value <= 0 || math.IsInf(value, 0) || value > 1<<53 {
+		return 0, false
+	}
+	return value, true
+}
+
+func stringValue(raw json.RawMessage) string {
+	var value string
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return value
 }
 
 // ListModels returns every model deployment the Gateway serves.
@@ -351,11 +504,12 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 	deployments := make([]Deployment, 0, len(response.Data))
 	for _, item := range response.Data {
 		var info struct {
-			ID              string   `json:"id"`
-			AccessGroups    []string `json:"access_groups"`
-			DBModel         *bool    `json:"db_model"`
-			MaxInputTokens  *float64 `json:"max_input_tokens"`
-			MaxOutputTokens *float64 `json:"max_output_tokens"`
+			ID              string          `json:"id"`
+			AccessGroups    []string        `json:"access_groups"`
+			DBModel         *bool           `json:"db_model"`
+			MaxInputTokens  *float64        `json:"max_input_tokens"`
+			MaxOutputTokens *float64        `json:"max_output_tokens"`
+			BaseModel       json.RawMessage `json:"base_model"`
 		}
 		var fields map[string]any
 		if len(item.ModelInfo) > 0 {
@@ -370,7 +524,10 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 			ID: info.ID, ModelName: item.ModelName, AccessGroups: info.AccessGroups,
 			FromDatabase: info.DBModel != nil && *info.DBModel, DatabaseSourceKnown: info.DBModel != nil,
 			MaxInputTokens: tokens(info.MaxInputTokens), MaxOutputTokens: tokens(info.MaxOutputTokens),
+			Mode:   modelMode(fields),
 			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
+			Model:  stringValue(item.LiteLLMParams["model"]), BaseModel: stringValue(info.BaseModel),
+			Routing: routing(item.LiteLLMParams), Router: parseRouter(item.LiteLLMParams),
 		})
 	}
 	return deployments, nil
@@ -427,6 +584,26 @@ func (c *Client) BlockUnpricedModels(ctx context.Context) (bool, error) {
 	return *response.Enabled, nil
 }
 
+// modelMode is the mode a deployment's model info names, or "" for none or a
+// value that is not a string.
+func modelMode(info map[string]any) string {
+	mode, _ := info["mode"].(string)
+	return mode
+}
+
+// ChatModel reports whether Agents can hold a conversation with a deployment
+// of the given mode: LiteLLM serves chat or Responses API requests with it, or
+// its model info names no mode. A model of another mode, such as an embedding
+// model or a decision model an auto router classifies requests with, answers
+// no conversation.
+func ChatModel(mode string) bool {
+	switch mode {
+	case "", "chat", "completion", "responses":
+		return true
+	}
+	return false
+}
+
 func tokens(value *float64) int64 {
 	if value == nil || *value <= 0 {
 		return 0
@@ -449,6 +626,17 @@ type ModelRequest struct {
 	AccessGroups []string
 	// BaseModel names the price-table entry when Model's own name has none.
 	BaseModel string
+	// Routing sets the deployment's routing fields.
+	Routing Routing
+	// NoCooldown sets litellm_params.cooldown_time to 0: LiteLLM never takes
+	// the deployment out of rotation after a failure.
+	NoCooldown bool
+	// ProbeWithoutRetries sets model_info.health_check_params.max_retries to
+	// 0. The Gateway's background health check calls deployments outside its
+	// router, so the provider client's own retries apply: two more calls for
+	// each failed probe, which a rate-limited upstream answers with more
+	// rate limiting.
+	ProbeWithoutRetries bool
 }
 
 // AddModel registers a deployment. The Gateway rejects a second deployment
@@ -461,9 +649,16 @@ func (c *Client) AddModel(ctx context.Context, req ModelRequest) error {
 	if req.BaseModel != "" {
 		info["base_model"] = req.BaseModel
 	}
+	if req.ProbeWithoutRetries {
+		info["health_check_params"] = map[string]any{"max_retries": 0}
+	}
 	params := map[string]any{"model": req.Model, "api_base": req.APIBase}
 	if req.APIKey != "" {
 		params["api_key"] = req.APIKey
+	}
+	req.Routing.params(params)
+	if req.NoCooldown {
+		params["cooldown_time"] = 0
 	}
 	_, err := c.do(ctx, http.MethodPost, "/model/new", map[string]any{
 		"model_name": req.ModelName, "litellm_params": params, "model_info": info,

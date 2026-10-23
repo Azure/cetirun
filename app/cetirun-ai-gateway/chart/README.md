@@ -53,19 +53,49 @@ OpenAI](#azure-openai).
 ### CetiRun AgentPolicy model bindings
 
 With `operatorIntegration: true`, each chart-configured model gets a
-`cetirun-model-<hash>` access group and matching `cetirun-shared-<hash>`
-deployment ID. The suffix is the first 16 hexadecimal characters of SHA-256
-over the complete model object's canonical JSON, before those generated fields
-are added. Existing non-reserved access groups and provider parameters remain
-unchanged. The chart rejects a supplied `model_info.id` or access group using
-the reserved `cetirun-model-` prefix.
+`cetirun-model-<name hash>` access group and a
+`cetirun-shared-<name hash>-<configuration hash>` deployment ID. The name hash
+is the first 16 hexadecimal characters of SHA-256 over `model_name`. The
+configuration hash is the same over the complete model object's canonical
+JSON, before those generated fields are added. Entries with the same
+`model_name`, such as load-balanced deployments of one model, share the group
+and keep distinct IDs. Existing non-reserved access groups and provider
+parameters remain unchanged. The chart rejects a supplied `model_info.id` or
+access group using the reserved `cetirun-model-` prefix.
 
-The Operator requires an exact, unique ID/group pair before granting a shared
-model through AgentPolicy. A same-name console deployment is not automatically
-trusted or granted. Changing the configured endpoint, provider parameters,
-pricing or other model metadata changes the binding; the Operator must
-reconcile the new grant before the Agent can use it. Rotating the value of a
-referenced Secret does not change this configuration hash.
+Agent keys are granted the group, which follows the model name, the identity
+an AgentPolicy grants. Changing a configured model's endpoint, provider
+parameters, price or other metadata changes only its deployment ID: Agents
+keep their grant, and the Operator neither updates their keys nor holds
+policy-bound Agents for it. Changes that reach an Agent's own configuration
+still update it as before: a model's token limits, or a model without a price
+leaving the list while the Gateway blocks unpriced models. Rotating the value
+of a referenced Secret changes neither ID nor group. Adding or removing a
+model name adds or removes a group; when its catalog refresh sees that, the
+Operator updates the keys of Agents with shared models, and re-projects only
+the policy-bound Agents whose AgentPolicy allows that name. A name a policy
+does not allow changes nothing for its Agents; before, any new name re-projected
+every policy-bound Agent, which stops a running native Sandbox Agent for good
+(measured on a Kubernetes 1.37 cluster).
+
+The Operator trusts a group only while every deployment carrying it is
+configured in this chart rather than added through the console, has a unique
+deployment ID of the form above, and serves the model name the group is
+derived from. A console deployment under the same name is not automatically
+trusted or granted. A console deployment that copies the group makes the
+Operator distrust it, and Agents lose that model until the copy is removed.
+Two identical entries render the same deployment ID; if the Gateway lists it
+twice, the Operator does not trust the group.
+
+Earlier versions of this chart derived the group from the complete model
+configuration, so editing a model changed its group, and Agents could not use
+the model until the Operator granted the new one. Upgrading changes every
+group once. Upgrade this chart together with the Operator, as the platform
+chart does: the Operator trusts only groups of the current form. It updates
+the keys of Agents with shared models when its catalog refresh sees the new
+groups, and re-projects policy-bound Agents once. Native Sandbox Agents are
+single-start, so they stay held after that re-projection until they are
+recreated.
 
 This behavior is opt-in. Standalone Gateways retain their existing model list
 and custom deployment IDs unchanged when `operatorIntegration` is false. The
@@ -198,9 +228,10 @@ templates or in `helm get values` output.
 
 Model names beginning with `cetirun-` are rejected: that prefix belongs to models
 the CetiRun operator registers automatically. With `operatorIntegration` on, names
-beginning with `copilot/` are rejected too: `copilot/<model>` names each CetiRun
-Agent's GitHub Copilot models. A standalone Gateway may keep serving models under
-`copilot/`. Both prefixes are matched in any letter case. The console checks
+beginning with `copilot/` are rejected too: the operator keeps `copilot/<model>`
+as an alias of each CetiRun Agent's GitHub Copilot model on that Agent's key,
+and the alias takes precedence over a model of the same name. A standalone
+Gateway may keep serving models under `copilot/`. Both prefixes are matched in any letter case. The console checks
 neither, so do not add models under them there; the operator leaves such shared
 models out of the model list it configures for Agents. It does the same for names
 under `openai/`, which the agent chart refuses as a provider prefix, and names
@@ -248,7 +279,7 @@ sent without the reasoning effort, with nothing to tell the client.
 
 LiteLLM computes spend from a built-in price table, multiplying it by the tokens
 a request used. A model missing from that table costs zero, and **budget checks
-are skipped entirely for zero-cost models** — so a budget set on a virtual key
+are skipped entirely for zero-cost models** ╬ô├ç├╢ so a budget set on a virtual key
 silently does nothing.
 
 This is not an edge case. An Azure OpenAI deployment name such as
@@ -395,12 +426,12 @@ that endpoint exists. Measured directly against one deployment:
 
 | `api_version` | Chat | Chat with tools | Responses | Responses with tools |
 | --- | --- | --- | --- | --- |
-| `2024-10-21` | 200 | 400 | **404** | — |
+| `2024-10-21` | 200 | 400 | **404** | ╬ô├ç├╢ |
 | `2025-04-01-preview` | 200 | 400 | 200 | 200 |
 
 With `2024-10-21`, the failure is easy to miss. A plain chat request succeeds,
-so a smoke test passes. An agent then gets a reply to requests without tools —
-OpenCode's session title generation, for instance — while every real turn fails
+so a smoke test passes. An agent then gets a reply to requests without tools ╬ô├ç├╢
+OpenCode's session title generation, for instance ╬ô├ç├╢ while every real turn fails
 with:
 
 ```
@@ -560,8 +591,19 @@ cost: a request the provider refuses as invalid, with a 400, is sent to the
 other deployment too before the error reaches the client.
 
 The GitHub Copilot routes the CetiRun operator registers for each Agent share
-one name per model, `copilot/<model>`, and are told apart by access group. With
-failover on, no Agent's request reached another Agent's route.
+names with the shared models and with each other's, and are told apart by
+access group. With failover on, no Agent's request reached another Agent's
+route.
+
+With `router.deploymentAffinity` on, a key stays on the deployment that served
+it last, and failover cannot move it while that deployment is still in
+rotation: it moves once LiteLLM has cooled the deployment down. LiteLLM does
+that at once after a 429 from a model with other deployments, and for other
+errors only after repeated failures, weighed against the deployment's
+successes in the current minute. Measured with a key kept on a deployment that
+returned 500: the first 2 of 10 requests failed, the other 8 went to another
+deployment; right after 30 successful requests in the same minute, 8 of 8
+failed. With 429, none of 10 failed.
 
 ### A continuation stays on its deployment
 
@@ -615,7 +657,7 @@ The mark is written so that clients keep it. LiteLLM writes it as
 `litellm_enc:<base64>;<encrypted content>`. OpenClaw keeps encrypted reasoning
 only when it looks like an opaque token (letters, digits, `+ / _ -` and
 trailing `=`); anything else goes through its transcript's secret redaction,
-which shortens a `gAAAA…` value to its first six and last four characters. On
+which shortens a `gAAAA╬ô├ç┬¬` value to its first six and last four characters. On
 a test installation every OpenClaw turn after one with reasoning sent such a
 shortened item back, was refused with `invalid_encrypted_content`, went
 through the model's fallbacks, which failed the same way, and was retried by
@@ -623,7 +665,7 @@ OpenClaw without its reasoning: new conversations too, on Azure OpenAI and
 GitHub Copilot alike. The guard callback therefore makes LiteLLM write the mark
 as `ctrnenc<deployment ID in hex>x<encrypted content>` and read both forms, so
 items marked before an upgrade still route; encrypted content that a client
-shortened (it contains `…`) is removed like an item without the mark. Measured
+shortened (it contains `╬ô├ç┬¬`) is removed like an item without the mark. Measured
 with mock resources on LiteLLM 1.105.1: every item a response carries, streamed
 and not, is in the new form, and items in either form are routed back to their
 deployment and reach it unmarked.
@@ -738,7 +780,10 @@ probe of a cycle at once: measured on LiteLLM 1.105.1, every deployment was
 probed within about 100 ms, and one GitHub account answered 11 to 43 of a
 cycle's Copilot probes with 429. LiteLLM retries a failed probe at the SDK
 level, which adds calls, unless the deployment sets
-`model_info.health_check_params: {max_retries: 0}`.
+`model_info.health_check_params: {max_retries: 0}`. The CetiRun operator
+registers every GitHub Copilot route that way: measured on LiteLLM 1.105.1
+against an upstream answering 429, a route registered with it got one call per
+probe, and one without it three.
 
 A probe answered with 429 or 408 is ignored for routing: the deployment keeps
 the state of its previous probe, for up to two intervals, and no cooldown
@@ -839,11 +884,42 @@ the chart changes three of LiteLLM 1.105.1's router defaults:
   with a model whose declared window fits; set `max_input_tokens` in each
   model's `model_info` for that.
 
-**Using the router uses its models.** A key that may use the router reaches every
-model of its tiers, whether or not it may use them directly; a key that may use
-the models but not the router cannot use the router. With
-`operatorIntegration`, an AgentPolicy that grants the router grants its models.
-The chart rejects a tier, default model or classifier model that is not
+**A router is granted only with its models.** With `operatorIntegration`, the
+CetiRun operator puts a router on an Agent's key only when the Agent may use
+every model the router sends requests to. The models of its tiers, its default
+model and a context compaction model have to be shared models the Agent may
+use: with an AgentPolicy, models its shared-model list names, as it has to name
+the router. A classifier model, `classifier_llm_config.model`, a
+`jev_classifier_config.deployment_name` or the `embedding_model` of semantic
+keyword matching, has to be a shared model but need not be listed: the router
+calls it to classify the Agent's request, charged to the Agent's key. An Agent
+without a policy may use every shared model, so it gets every router whose
+models are all shared models. A router the operator cannot read completely is
+not given to Agents with a policy: one with a `complexity_router_config` field
+LiteLLM 1.105.1 does not have, a classifier or routing plugin, a jev classifier
+without a `deployment_name`, or another kind of LiteLLM auto router. A router
+an Agent may not use stays off its key and out of its model list; when the
+Agent's policy lists the router, the Agent's page in the Portal says why. The
+operator reads the routers from the Gateway's model list, so a changed router
+reaches the keys at its next listing, within about two minutes; a router's
+configuration is not part of an AgentPolicy's Gateway projection.
+
+**Models that answer no conversation are not offered to Agents.** A shared
+model whose `model_info.mode` is set to something other than `chat`,
+`completion` or `responses`, such as `evaluation` for a decision model like
+Microsoft-Decision-1 or `embedding`, is left out of the models Agents are
+configured with, of their default model, and of the catalog the Portal reads.
+It stays a shared model otherwise: a router may classify requests with it, and
+the key of an Agent without a policy keeps its access group. A router whose
+tier, default model or compaction model is such a model is misconfigured. Set
+`mode` on the model's `model_info`; a model without one counts as a chat model.
+
+For the keys the operator issues, the Gateway refuses with HTTP 403 a request a
+router sends to a model outside the key's access groups; the router's own
+classifier calls are exempt (see [The guard callback](#the-guard-callback)).
+Other keys reach every model of the router's tiers, whether or not they may use
+them directly. A key that may use the models but not the router cannot use the
+router. The chart rejects a tier, default model or classifier model that is not
 configured in `models`.
 
 **The tiers decide what a router saves.** Each call is charged at the price of
@@ -1160,14 +1236,60 @@ and are refused on `/health`. Create keys through the API the same way:
 {"models": ["gpt-4o"], "max_budget": 20, "allowed_routes": ["llm_api_routes"]}
 ```
 
+LiteLLM files the lookup of one model, `GET /v1/models/<model>`, under its
+internal-user routes rather than the model routes, so such a key gets a 403
+there while `GET /v1/models` works. Clients that look a model up before using
+it, Hermes among them, need it: add the two prefixes, which match only that
+lookup and Google's `generateContent` routes (model routes already). The keys
+the CetiRun operator issues carry them, and the operator adds them to keys it
+issued before:
+
+```json
+{"allowed_routes": ["llm_api_routes", "/v1/models", "/models"]}
+```
+
 ### Serving CetiRun Agents
 
 The CetiRun operator gives each Agent a key restricted to access groups, and
-registers the Agent's GitHub Copilot models under `copilot/<model>` in a group of
-the Agent's own, each pointing at that Agent's proxy. Set `operatorIntegration:
-true` for such a Gateway; the `cetirun-platform` chart sets it for the Gateway it
-installs. It reserves the `copilot/` prefix, see [Reserved names](#reserved-names),
-and sets `general_settings.enforce_fallback_model_access`.
+registers the Agent's GitHub Copilot models in a group of the Agent's own,
+`cetirun-copilot-<Agent UID>`, each pointing at that Agent's proxy. Set
+`operatorIntegration: true` for such a Gateway; the `cetirun-platform` chart sets
+it for the Gateway it installs. It reserves the `copilot/` prefix, see
+[Reserved names](#reserved-names), and sets
+`general_settings.enforce_fallback_model_access`.
+
+An Agent sees one name per model. A Copilot model goes under the name of a
+shared model the Agent is granted when they are the same model: the shared
+model's real model is each of its deployments' `model_info.base_model` or,
+without one, its `litellm_params.model` when LiteLLM's price table prices that
+name, and all its deployments must agree. Both sides are compared without the
+provider prefix, in lower case, with dots as dashes, so `claude-sonnet-4.5`
+matches `anthropic/claude-sonnet-4-5`. A Copilot model with a date version, such
+as `gpt-4.1-2025-04-14`, is never merged, and when several shared models match,
+the first name in sort order is used. Such a route copies the shared model's
+routing fields: the lowest `litellm_params.order` of its deployments and, of the
+deployments at that order, the largest `weight`, `rpm` and `tpm` any of them
+sets. `router.routingStrategy` then spreads the Agent's requests over the shared
+deployments and its own route, and LiteLLM's default cooldown takes a failing
+route out of rotation, see [Failover](#a-failed-request-goes-to-another-deployment).
+LiteLLM neither cools down nor retries elsewhere a request that could not
+connect, as when the Agent's proxy is down: until the health checks take the
+route out of rotation at their next probe (`router.healthChecks`), the requests
+that land on it fail. Measured with a route whose proxy refused connections:
+4 of 20 requests failed. Spend is counted at the model's list price either way.
+
+Any other Copilot model goes under its own ID, such as `gpt-5.5`, with
+`litellm_params.cooldown_time: 0`: it is the only deployment the Agent's key
+reaches under that name, so a 429 from Copilot reaches the Agent as it is,
+instead of taking the route out of rotation for every request. If a model the
+Gateway serves already has that name and is another real model, the Copilot
+model is left out and reported on the Agent (`status.aiGateway.copilot.skipped`).
+When it is the same real model, as a shared model the Agent is not granted,
+the route takes that name in the Agent's own access group: the Agent's key
+reaches only its own Copilot route there, never the shared deployments. The operator keeps `copilot/<model>`,
+the names of earlier versions, as aliases on the Agent's key. When the shared
+models change, it registers the routes again with the names and fields that
+then apply.
 
 LiteLLM checks a key against the requested model only. A fallback the Gateway
 is configured with, in `router_settings` or the console, is chosen after that
@@ -1177,14 +1299,15 @@ match none. So a shared model's fallback to a Copilot model could reach another
 Agent's proxy. With the setting, LiteLLM skips a fallback target the caller's key
 could not request directly.
 
-The groups only separate Agents while keys and teams are limited to them. To
-LiteLLM, a key or team allowed every model, or a `copilot/` name directly, has
-no group to filter by, so it would spread that key's requests for a `copilot/`
-name over every Agent's proxy. The image's guard callback prevents that: a key
-reaches a per-Agent GitHub Copilot route only if it holds that route's access
-group; keys granted every model, such as the master key, do not reach them.
-The operator creates teams and keys without such grants; do not add them in
-the console.
+The groups only separate Agents while keys and teams are limited to them.
+LiteLLM narrows a key granted a model only through access groups to the
+deployments in those groups, but a key or team allowed every model, or a model
+name directly, has no group to filter by, so it would spread that key's requests
+for a name Copilot routes share over every Agent's proxy. The image's guard
+callback prevents that: a key reaches a per-Agent GitHub Copilot route only if
+it holds that route's access group; keys granted every model, such as the master
+key, reach only the shared deployments of a shared model's name. The operator
+creates teams and keys without such grants; do not add them in the console.
 
 ### The guard callback
 
@@ -1197,11 +1320,44 @@ the console cannot remove it. It:
   [Upstream errors are not retried](#upstream-errors-are-not-retried);
 - leaves the per-Agent GitHub Copilot routes out of a request unless the
   calling key holds the route's access group, `cetirun-copilot-<Agent UID>`.
-  A key granted every model, such as the master key, a key holding `*` or a
-  `copilot/` model name, and a request whose key LiteLLM does not pass on,
-  reach none of them; asking for a `copilot/` model, such a key gets LiteLLM's
-  "No deployments available" 429. Every other deployment is left as it is. An
-  auto router's choice of tier is held to the same rule;
+  A key granted every model, such as the master key, a key holding `*` or the
+  model name of a route, and a request whose key LiteLLM does not pass on,
+  reach none of them; asking for a name only Copilot routes serve, such a key
+  gets LiteLLM's "No deployments available" 429. An auto router's choice of
+  tier is held to the same rule;
+- holds a key the CetiRun operator issued to the deployments in its access
+  groups, also where LiteLLM does not: LiteLLM checks a key against the model
+  a request names, and when that is an auto router, it does not check the
+  model the router picks. The operator grants a router only to Agents that may
+  use every model it sends requests to; the guard enforces that on each
+  request, also before the operator withdraws a grant after a configuration
+  change. A request the router sends to a model the key may not use gets a
+  403, "This key may not use the model <name>.", with no retry, fallback or
+  cooldown, and the Gateway logs a warning with the model and the key's alias.
+  The request log line of such a call has the status `failure`, `error_code`
+  403 and the router's name as `provider_model`, so the queries under
+  [Measuring the routers](#measuring-the-routers) count it as a failed attempt
+  of its tier under the router's name.
+  When the key may use the model but none of its deployments is available,
+  LiteLLM's own error applies. The call a router makes to its classifier model
+  (`classifier_type: llm` and the other classifiers that ask a model) is made
+  on the key's behalf and is not held to the key's groups. A decision model
+  (`mode: evaluation`) answers only those classifier calls: such a key's own
+  request for it gets the same 403. Measured on the e2e cluster before this:
+  the provider refused the direct request, and LiteLLM cooled the deployment
+  down, so every router classifying with it fell back to its default
+  classifier. The guard
+  recognizes the operator's keys by their model list: only `cetirun-` access
+  groups, or `no-default-models`. The master key, and keys granted models by
+  name, `*` or every model, are left to LiteLLM's own checks;
+- keeps a key the CetiRun operator issued from listing what it cannot talk to:
+  `GET /v1/models` (and `/model/info`) leaves out the key's access groups that
+  LiteLLM lists as if they were models, such as an Agent's Copilot group before
+  its owner signs in, and models whose every deployment sets a `mode` other
+  than `chat`, `completion` or `responses`, such as a decision model a router
+  classifies with; `GET /v1/models/<name>` answers 404 for them. The operator
+  leaves them out of the Agent's configuration as well. Other callers see
+  LiteLLM's listing;
 - while `router.encryptedContentAffinity` is on, removes the encrypted content
   of Responses API reasoning items that carry no mark of the deployment that
   produced it, or that a client shortened, keeping their summaries; makes
@@ -1217,6 +1373,14 @@ the console cannot remove it. It:
   and those failed whenever that was a reasoning model, on Azure and on
   Copilot routes alike, without the user seeing it. LiteLLM's own rule
   decides, and the Gateway logs a warning for each request it changes;
+- removes `reasoning_effort: none` from a Chat Completions request to an Azure
+  deployment of the GPT-5 or GPT-6 series whose model LiteLLM's price table
+  does not mark as taking it, which LiteLLM refuses with a 400 before calling
+  Azure. Hermes sends side tasks with `none`; measured on the e2e cluster, one
+  that a router sent to such a tier failed without the user seeing it. The
+  model then reasons at its default effort, as LiteLLM's `drop_params` would
+  leave it, and the sampling parameters it then refuses are removed as above.
+  The Gateway logs a warning for each request it changes;
 - lets a request fail over from the deployment its key is kept on; see
   [A key stays on its deployment](#a-key-stays-on-its-deployment);
 - keeps error messages free of LiteLLM's internal deployment list: error
@@ -1228,7 +1392,7 @@ the console cannot remove it. It:
 
 With `operatorIntegration` off, the guard's request fields and error messages
 apply all the same; a standalone Gateway has no `cetirun-copilot-` groups for
-it to separate.
+it to separate, and no keys the operator issued.
 
 Measured on LiteLLM 1.105.1 with two replicas and two Copilot routes added
 through the management API under one `copilot/` name: each of two Agent keys
@@ -1236,6 +1400,44 @@ reached only its own route, 6 of 6; a key granted every proxy model, a key
 granted the `copilot/` name and the master key got the 429; and the 429 for a
 model with every deployment in cooldown carried no deployment list on the
 Chat Completions, Responses and Anthropic Messages APIs.
+
+Measured again with two Agents' routes under a shared model's name next to its
+two shared deployments, and under a name of their own: 12 keys of each Agent,
+5 requests each, reached the shared deployments and their own route, never the
+other Agent's; shared-only keys, 12 keys granted every proxy model and the master
+key reached only the shared deployments; the master key, a key granted every
+proxy model and a key granted the name directly got the 429 for the name only
+Copilot routes serve. A route with the copied `order: 1` next to a primary and a
+standby took requests with the primary and none went to the standby; with the
+primary failing, a shared-only key's requests all went to the standby. A route
+of its own name answering 429 passed the 429 on and served the next request
+right after; the same route without `cooldown_time: 0` answered "No deployments
+available" until its cooldown ended, a few seconds later. `copilot/<model>` aliases on the key reached the
+Agent's own route on the Chat Completions and Responses APIs; a key without the
+alias got 403.
+
+Measured on LiteLLM 1.105.1 with one replica, mock models each in an access
+group of its own, and routers over them configured as the chart renders them:
+a key granted a router and the models of its simple and medium tiers was
+served on those tiers and got the 403 for its complex tier, on the Chat
+Completions API, streamed or not, and on the Responses and Anthropic Messages
+APIs. That model received no call, and a key granted it was served by it right
+after. A router registered through the management API, as the operator
+registers a Team's routers, behaved the same, and its GitHub Copilot tier
+reached only the caller's own route, 6 of 6. A router with `classifier_type:
+llm` called its classifier model for a key not granted it, then served the
+tiers the key holds. A key granted the router by name and the master key
+reached every tier. The request log records a refused request with status
+`failure` and error code 403: one line, or two for a streamed request.
+
+On a test installation with two replicas and Azure OpenAI models, the same
+held: through a router configured in the chart, a key granted the router and
+its simple tier's model was answered on that tier and refused with the 403 on
+its medium and reasoning tiers, on the Chat Completions and Responses APIs,
+and a key granted every tier was answered on each; through a Team's router
+with an LLM classifier, a key not granted the classifier model got the
+classifier's decision and answers from the tiers it holds, and the 403 for the
+other, also when the request claimed to be a classifier call.
 
 ## Credentials
 
@@ -1428,7 +1630,7 @@ The only sign of the first column was a decryption warning in the log. The model
 rows stay in PostgreSQL, encrypted with a key that no longer exists.
 
 To remove the Gateway completely, delete the Secret yourself after uninstalling
-— and only if the database is being discarded too. Deleting it while keeping the
+╬ô├ç├╢ and only if the database is being discarded too. Deleting it while keeping the
 database leaves every console-added model permanently unreadable.
 
 ### Upgrading LiteLLM
@@ -1459,11 +1661,11 @@ step: the next pod's migration tries again.
 started, passed readiness, served both configured and console-added models, and
 kept key spend.
 
-It does not undo migrations — nothing can — so the older version runs against a
+It does not undo migrations ╬ô├ç├╢ nothing can ╬ô├ç├╢ so the older version runs against a
 newer schema. It notices, and logs this on every start:
 
 ```
-LiteLLM:ERROR: check_migration.py - 🚨🚨🚨 prisma schema out of sync with db.
+LiteLLM:ERROR: check_migration.py - Γëí╞Æ├£┬┐Γëí╞Æ├£┬┐Γëí╞Æ├£┬┐ prisma schema out of sync with db.
 Consider running these sql_commands to sync the two - ['ALTER TABLE ... DROP COLUMN ...', ...]
 ```
 
@@ -1478,8 +1680,8 @@ has not been tested.
 
 ### Editing settings in the console takes them out of chart control
 
-Changing any field of a settings block — through the admin console or through a
-management API that touches one — writes that whole block to the database, after
+Changing any field of a settings block ╬ô├ç├╢ through the admin console or through a
+management API that touches one ╬ô├ç├╢ writes that whole block to the database, after
 which the database wins on every key in it and the corresponding chart values
 stop taking effect. There is no warning.
 
@@ -1564,6 +1766,28 @@ Deployment has been scaled down to one pod. The bundled PostgreSQL and Valkey
 have none. The chart sets no anti-affinity, so both replicas can still land on
 one node and be lost together when that node fails. On a multi-node cluster,
 use `affinity` to spread them.
+
+### Pods keep their configuration until they are replaced
+
+The generated configuration is mounted as a single file (`subPath`), so
+Kubernetes does not update it inside running pods; a configuration change
+replaces the pods instead (`checksum/config`). With the ConfigMap mounted as a
+directory, Kubernetes updated the file in the old pods about a minute after an
+upgrade. LiteLLM re-reads its configuration file every 30 seconds while models
+are stored in the database and removes each configured model whose deployment
+ID is no longer in the file, without adding the new entry until it restarts.
+An upgrade that edited a model therefore made the old pods stop serving it
+until they were replaced. Now each pod serves the configuration it started
+with, and the edited model stays available throughout the rollout.
+
+During a rollout the Service sends requests to old and new pods, which can
+list different models when a model is added, removed or renamed. The CetiRun
+operator lists the models through the Service, so it waits while the ready
+pods behind the Gateway Service belong to more than one pod template, checks
+again every 15 seconds, and applies the new model list once when one template
+serves the Gateway. It keeps its previous view for at most ten minutes of a
+rollout, and does not wait when it cannot read the Gateway's Service or pods.
+Agents are not updated or restarted while the rollout runs.
 
 ### When Redis is unavailable
 

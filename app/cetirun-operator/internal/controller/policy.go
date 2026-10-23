@@ -13,7 +13,6 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
-	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -261,9 +260,12 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		return nil, err
 	}
 	// A display catalog is not authorization evidence. Read the current managed
-	// deployment groups before computing the Gateway projection revision so a
-	// same-name backend replacement invalidates both the projection and any
-	// previously computed grant for the old backend.
+	// model groups before computing the Gateway projection revision, so a
+	// change in which shared model names are bound, or to which groups,
+	// invalidates both the projection and any previously computed grant. The
+	// fingerprint covers model names and their trusted groups only; see
+	// aiGatewayCatalogFingerprint for why configuration edits that keep a
+	// name leave the revision, and therefore running Agents, unchanged.
 	catalogFingerprint := ""
 	if agent.Spec.SharedModelsEnabled() {
 		gateway, err := r.aiGatewayClient(ctx)
@@ -273,13 +275,22 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		if err := r.refreshAIGatewayCatalogForGrant(ctx, gateway); err != nil {
 			return nil, policyDependency("refresh live AI Gateway catalog: %w", err)
 		}
+		// Model router names are granted by their own checks
+		// (ai_gateway_routers.go), not resolved as shared models.
+		sharedModels, err := r.aiGatewayPolicySharedModels(ctx, models)
+		if err != nil {
+			return nil, policyDependency("list Team model routers: %w", err)
+		}
+		if _, complete := r.aiGatewayCatalog.resolvedGroups(sharedModels); !complete {
+			return nil, policyDependency("the live AI Gateway catalog cannot resolve every authorized shared model")
+		}
+		// Only the bindings of the models this policy allows count: a shared
+		// model added to or removed from the Gateway that the policy does not
+		// name changes nothing for its Agents, and must not re-project them.
 		var known bool
-		catalogFingerprint, known = r.aiGatewayCatalog.managedFingerprint()
+		catalogFingerprint, known = r.aiGatewayCatalog.policyFingerprint(sharedModels)
 		if !known || catalogFingerprint == "" {
 			return nil, policyDependency("live AI Gateway managed catalog is unavailable")
-		}
-		if _, complete := r.aiGatewayCatalog.resolvedGroups(models); !complete {
-			return nil, policyDependency("the live AI Gateway catalog cannot resolve every authorized shared model")
 		}
 	}
 	gatewayRevision, err := policyHash(struct {
@@ -426,7 +437,7 @@ func effectivePolicyModels(agent *api.Agent, policy *api.AgentPolicy) (string, [
 	if shared {
 		models = append(models, policy.Spec.ModelAccess.SharedModels.Allowed...)
 	}
-	if agent.Spec.Model != "" && !(shared && slices.Contains(models, agent.Spec.Model)) && !(copilot && strings.HasPrefix(agent.Spec.Model, api.AIGatewayCopilotModelPrefix)) {
+	if agent.Spec.Model != "" && !(shared && slices.Contains(models, agent.Spec.Model)) && !(copilot && copilotDefaultModelAllowed(agent.Spec.Model)) {
 		return "", nil, fmt.Errorf("requested default model %q is not authorized", agent.Spec.Model)
 	}
 	if !shared && !copilot {

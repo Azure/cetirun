@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -53,21 +52,6 @@ const (
 // copilotModelID is the form of Copilot model IDs the operator registers.
 // It keeps IDs usable in Gateway model names and deployment IDs.
 var copilotModelID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
-
-// copilotModelNameSuffix marks a Copilot model's name in the Agent's
-// configuration.
-const copilotModelNameSuffix = " (GitHub Copilot)"
-
-// truncateRunes shortens s to at most n characters.
-func truncateRunes(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	return string([]rune(s)[:n])
-}
 
 func copilotAccessGroup(instance *cetirunv1alpha1.Agent) string {
 	return aiGatewayCopilotGroupPrefix + string(instance.UID)
@@ -175,13 +159,15 @@ func (r *AgentReconciler) pricedModels(ctx context.Context, client aiGatewayKeyC
 
 // copilotRegistration is one Copilot model route the Agent should have.
 type copilotRegistration struct {
-	request aigateway.ModelRequest
-	model   cetirunv1alpha1.CopilotModel
+	request   aigateway.ModelRequest
+	model     cetirunv1alpha1.CopilotModel
+	placement copilotPlacement
 }
 
 // copilotRegistrationID names a route by the Agent UID, the model and a
-// revision of everything the route carries, so a changed proxy address, key
-// or price entry replaces the route instead of leaving a stale one.
+// revision of everything the route carries, so a changed proxy address, key,
+// price entry, Gateway name or routing replaces the route instead of leaving
+// a stale one.
 func copilotRegistrationID(instance *cetirunv1alpha1.Agent, model, revision string) string {
 	return fmt.Sprintf("%s%s-%s-%s", aiGatewayCopilotGroupPrefix, instance.UID, model, revision)
 }
@@ -190,6 +176,13 @@ func copilotRevision(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:])[:8]
 }
+
+// copilotRouteFormat names what every Copilot route carries besides its
+// per-Agent fields: here, health check probes without the provider client's
+// retries, so one GitHub account's probes do not multiply when GitHub rate
+// limits them. It is part of each route's revision, so a change to it
+// registers the existing routes again.
+const copilotRouteFormat = "probe-without-retries"
 
 // reconcileAIGatewayCopilot keeps the Agent's Copilot proxy credentials and
 // model routes in line with the owner's sign-in. The proxy reads the token
@@ -272,24 +265,40 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	}
 
 	desired := map[string]copilotRegistration{}
-	var unpriced []string
+	var unpriced, skipped []string
 	if len(wanted) > 0 {
 		priced, err := r.pricedModels(ctx, client)
 		if err != nil {
 			degraded("PriceTableUnavailable", err)
 			return
 		}
+		// Where a model goes depends on the shared models, so they must
+		// have been listed; until then the routes stay as they are.
+		if _, known := r.aiGatewayCatalog.copilotMergeSnapshot(); !known {
+			r.refreshAIGatewayCatalogWithin(ctx, client, aiGatewayCatalogMaxAge)
+		}
+		placements, skippedModels, ok := r.placeCopilotModels(instance, wanted, priced)
+		if !ok {
+			degraded("CatalogUnavailable", fmt.Errorf("the AI Gateway's models have not been listed"))
+			return
+		}
+		skipped = skippedModels
 		proxyURL := copilotProxyURL(instance)
 		for _, model := range wanted {
+			placement, placed := placements[model.ID]
+			if !placed {
+				continue
+			}
 			base, ok := copilotBaseModel(model.ID, priced)
 			if !ok {
 				unpriced = append(unpriced, model.ID)
 				continue
 			}
-			id := copilotRegistrationID(instance, model.ID, copilotRevision(proxyURL, proxyKey, base))
-			desired[id] = copilotRegistration{model: model, request: aigateway.ModelRequest{
-				ID: id, ModelName: aiGatewayCopilotModelPrefix + model.ID, Model: "litellm_proxy/" + model.ID,
+			id := copilotRegistrationID(instance, model.ID, copilotRevision(append([]string{copilotRouteFormat, proxyURL, proxyKey, base}, copilotPlacementRevision(placement)...)...))
+			desired[id] = copilotRegistration{model: model, placement: placement, request: aigateway.ModelRequest{
+				ID: id, ModelName: placement.name, Model: "litellm_proxy/" + model.ID,
 				APIBase: proxyURL, APIKey: proxyKey, AccessGroups: []string{copilot.AccessGroup}, BaseModel: base,
+				Routing: placement.routing, NoCooldown: !placement.shared, ProbeWithoutRetries: true,
 			}}
 		}
 	}
@@ -338,12 +347,19 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	}
 	slices.Sort(ids)
 	var names []string
+	var routes []cetirunv1alpha1.AIGatewayCopilotRoute
+	route := func(registration copilotRegistration) {
+		names = append(names, registration.request.ModelName)
+		routes = append(routes, cetirunv1alpha1.AIGatewayCopilotRoute{
+			Model: registration.model.ID, Name: registration.request.ModelName, Shared: registration.placement.shared,
+		})
+	}
 	for _, id := range ids {
 		registration := desired[id]
 		present, known := r.aiGatewayCatalog.has(id)
 		if slices.Contains(copilot.Registered, id) && (!known || present) {
 			registered = append(registered, id)
-			names = append(names, registration.request.ModelName)
+			route(registration)
 			continue
 		}
 		if !proxyReady {
@@ -364,14 +380,17 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 		}
 		r.aiGatewayCatalog.noteAdded(id, registration.request.AccessGroups)
 		registered = append(registered, id)
-		names = append(names, registration.request.ModelName)
+		route(registration)
 	}
 	slices.Sort(registered)
 	slices.Sort(names)
 	slices.Sort(unpriced)
+	slices.SortFunc(routes, func(a, b cetirunv1alpha1.AIGatewayCopilotRoute) int { return strings.Compare(a.Model, b.Model) })
 	copilot.Registered = registered
-	copilot.Models = names
+	copilot.Models = slices.Compact(names)
+	copilot.Routes = routes
 	copilot.Unpriced = unpriced
+	copilot.Skipped = skipped
 	switch {
 	case failed != nil:
 		degraded("RouteRegistrationFailed", failed)
@@ -444,7 +463,7 @@ func (r *AgentReconciler) deleteCopilotRegistrations(ctx context.Context, client
 		slices.Sort(remaining)
 		status.Copilot.Registered = remaining
 		if firstErr == nil {
-			status.Copilot.Models = nil
+			status.Copilot.Models, status.Copilot.Routes = nil, nil
 		}
 	}
 	return firstErr
@@ -536,77 +555,165 @@ type aiGatewayModelEntry struct {
 	MaxTokens     int64
 }
 
+// aiGatewayCopilotRouteLimits are the limits of the Agent's registered
+// Copilot routes by the Gateway name each is registered under, the smallest
+// when several share a name. A request the Agent sends for that name may
+// reach its own route there, so a model or a router tier of that name fits
+// the Agent only within them.
+func aiGatewayCopilotRouteLimits(instance *cetirunv1alpha1.Agent, routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string][2]int64 {
+	if len(routes) == 0 {
+		return nil
+	}
+	models := map[string]cetirunv1alpha1.CopilotModel{}
+	if parsed, err := parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]); err == nil {
+		for _, model := range parsed {
+			models[model.ID] = model
+		}
+	}
+	limits := map[string][2]int64{}
+	for _, route := range routes {
+		model, current := models[route.Model], limits[route.Name]
+		limits[route.Name] = [2]int64{smallerPositive(current[0], model.ContextWindow), smallerPositive(current[1], model.MaxOutputTokens)}
+	}
+	return limits
+}
+
+// aiGatewayConfiguredCopilotRoutes are the Copilot routes the Agent's
+// configuration lists: none unless the Agent wants its Copilot models.
+func (r *AgentReconciler) aiGatewayConfiguredCopilotRoutes(instance *cetirunv1alpha1.Agent) []cetirunv1alpha1.AIGatewayCopilotRoute {
+	if status := instance.Status.AIGateway; r.aiGatewayCopilotWanted(instance) && status != nil {
+		return copilotRoutes(status.Copilot)
+	}
+	return nil
+}
+
+// aiGatewayRouterLimitFolds are the limits of the routers configured in the
+// Gateway, among the given shared models, that the Agent's own Copilot routes
+// lower. Such a router declares the smallest limits of its models' shared
+// deployments, and a request the Agent sends through it may also reach the
+// Agent's Copilot route registered under one of those models' names. Only
+// routers whose limits change are listed: the configuration hash covers them
+// (aiGatewayRevision), and an Agent without such a route keeps its hash.
+func (r *AgentReconciler) aiGatewayRouterLimitFolds(instance *cetirunv1alpha1.Agent, shared []aiGatewayCatalogModel, routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string][2]int64 {
+	routeLimits := aiGatewayCopilotRouteLimits(instance, routes)
+	if len(routeLimits) == 0 {
+		return nil
+	}
+	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
+	folds := map[string][2]int64{}
+	for _, model := range shared {
+		router, isRouter := gatewayRouters[model.Name]
+		if !isRouter {
+			continue
+		}
+		contextWindow, maxTokens := model.ContextWindow, model.MaxOutputTokens
+		for _, used := range router.Models {
+			limit, ok := routeLimits[used.Name]
+			if !ok || used.Use == aigateway.RouterClassifier {
+				continue
+			}
+			if contextWindow > 0 && limit[0] > 0 {
+				contextWindow = min(contextWindow, limit[0])
+			}
+			if maxTokens > 0 && limit[1] > 0 {
+				maxTokens = min(maxTokens, limit[1])
+			}
+		}
+		if contextWindow != model.ContextWindow || maxTokens != model.MaxOutputTokens {
+			folds[model.Name] = [2]int64{contextWindow, maxTokens}
+		}
+	}
+	return folds
+}
+
 // aiGatewayMaxModels is the most models an Agent's configuration lists, the
 // agent chart's limit on aiGateway.models.
 const aiGatewayMaxModels = 256
 
 // aiGatewayModelEntries lists the models the Agent is configured with and its
 // default: the shared models when the owner kept them, from the Gateway
-// catalog, then the Agent's registered Copilot models. The default is the
-// Agent's own choice when available, then the deployment default, then the
-// first shared model, then the first Copilot model. An Agent without models
-// gets a placeholder its configuration requires; the Portal explains it.
+// catalog, but for a router configured in the Gateway that the Agent may not
+// use, then the Agent's registered Copilot models. A Copilot model
+// registered under a shared model's name is that shared model's entry, with
+// the smaller of the two context windows and output limits when both are
+// known. The default is the Agent's own choice when available, then the
+// deployment default, then the first shared model, then the first Copilot
+// model. An Agent without models gets a placeholder its configuration
+// requires; the Portal explains it.
 //
 // The configuration lists at most aiGatewayMaxModels models. The owner's
 // Copilot models, of which registration keeps at most
 // aiGatewayMaxCopilotModels, all stay; shared models fill the rest in name
-// order, the Agent's own choice and the deployment default first. The names
-// of the shared models left out are returned. The Agent's key still reaches
-// them; only its configuration does not list them.
+// order, the Agent's own choice, the deployment default and those that are
+// Copilot models too first. The names of the shared models left out are
+// returned. The Agent's key still reaches them; only its configuration does
+// not list them.
 func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent) ([]aiGatewayModelEntry, string, []string) {
 	var sharedEntries, copilotEntries []aiGatewayModelEntry
 	status := instance.Status.AIGateway
+	routes := r.aiGatewayConfiguredCopilotRoutes(instance)
 	if instance.Spec.SharedModelsEnabled() {
-		groups := []string(nil)
-		if status != nil {
-			groups = status.AccessGroups
-		}
-		models, known := r.aiGatewayCatalog.sharedForGroups(groups)
-		if !sandboxRequested(instance, nil) {
-			models, known = r.aiGatewayCatalog.shared()
-		}
+		models, known := r.aiGatewayEntitledShared(instance)
 		if known {
+			folds := r.aiGatewayRouterLimitFolds(instance, models, routes)
 			for _, model := range models {
-				sharedEntries = append(sharedEntries, aiGatewayModelEntry{
+				entry := aiGatewayModelEntry{
 					ID: model.Name, Name: model.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
-				})
+				}
+				if fold, ok := folds[model.Name]; ok {
+					entry.ContextWindow, entry.MaxTokens = fold[0], fold[1]
+				}
+				sharedEntries = append(sharedEntries, entry)
 			}
 		} else if status != nil {
 			// Without a catalog, keep the shared models last configured.
 			for _, name := range status.Models {
-				if !strings.HasPrefix(name, aiGatewayCopilotModelPrefix) && name != aiGatewayNoModelsModel {
+				copilotOnly := slices.ContainsFunc(routes, func(route cetirunv1alpha1.AIGatewayCopilotRoute) bool {
+					return route.Name == name && !route.Shared
+				})
+				if !strings.HasPrefix(name, aiGatewayCopilotModelPrefix) && name != aiGatewayNoModelsModel && !copilotOnly {
 					sharedEntries = append(sharedEntries, aiGatewayModelEntry{ID: name, Name: name})
 				}
 			}
 		}
 	}
-	if r.aiGatewayCopilotWanted(instance) && status != nil && status.Copilot != nil {
+	var merged []string
+	if len(routes) > 0 {
 		limits := map[string]cetirunv1alpha1.CopilotModel{}
 		if models, err := parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]); err == nil {
 			for _, model := range models {
-				limits[aiGatewayCopilotModelPrefix+model.ID] = model
+				limits[model.ID] = model
 			}
 		}
-		for _, name := range status.Copilot.Models {
-			if len(copilotEntries) == aiGatewayMaxCopilotModels {
-				break
+		for _, route := range routes {
+			model := limits[route.Model]
+			if i := slices.IndexFunc(sharedEntries, func(entry aiGatewayModelEntry) bool { return entry.ID == route.Name }); i >= 0 {
+				entry := &sharedEntries[i]
+				if entry.ContextWindow > 0 && model.ContextWindow > 0 {
+					entry.ContextWindow = min(entry.ContextWindow, model.ContextWindow)
+				}
+				if entry.MaxTokens > 0 && model.MaxOutputTokens > 0 {
+					entry.MaxTokens = min(entry.MaxTokens, model.MaxOutputTokens)
+				}
+				merged = append(merged, route.Name)
+				continue
 			}
-			model := limits[name]
-			display := model.Name
-			if display == "" {
-				display = strings.TrimPrefix(name, aiGatewayCopilotModelPrefix)
+			if len(copilotEntries) == aiGatewayMaxCopilotModels ||
+				slices.ContainsFunc(copilotEntries, func(entry aiGatewayModelEntry) bool { return entry.ID == route.Name }) {
+				continue
 			}
-			// The ID is bounded by copilotModelID; the display name comes
-			// from GitHub, so keep the configured name within the chart's
-			// limit.
-			display = truncateRunes(display, aiGatewayModelNameLimit-utf8.RuneCountInString(copilotModelNameSuffix))
+			// Named like every other model the Gateway offers, by its model
+			// name: the Agent cannot tell which backend serves it.
 			copilotEntries = append(copilotEntries, aiGatewayModelEntry{
-				ID: name, Name: display + copilotModelNameSuffix, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
+				ID: route.Name, Name: route.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
 			})
 		}
 	}
-	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries),
-		strings.TrimSpace(instance.Spec.Model), r.AIGateway.DefaultModel)
+	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
+	requested, deploymentDefault := aiGatewayRequestedModel(instance), aiGatewayModelName(instance, r.AIGateway.DefaultModel)
+	routerEntries := aiGatewayRouterEntries(instance)
+	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries)-len(routerEntries),
+		append([]string{requested, deploymentDefault}, merged...)...)
 	var shared, copilot []string
 	for _, entry := range sharedEntries {
 		shared = append(shared, entry.ID)
@@ -615,18 +722,37 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		copilot = append(copilot, entry.ID)
 	}
 	entries := append(sharedEntries, copilotEntries...)
+	entries = append(entries, routerEntries...)
 	available := func(name string) bool {
 		return name != "" && (slices.Contains(shared, name) || slices.Contains(copilot, name))
 	}
+	// Without a model the Agent or the deployment names, the default is a
+	// model, not a router of the Gateway: a router picks a model per request,
+	// at a cost the Agent did not choose. A router is the default only when
+	// nothing else is offered.
+	firstModel := func(names []string) string {
+		for _, name := range names {
+			if _, isRouter := gatewayRouters[name]; !isRouter {
+				return name
+			}
+		}
+		return ""
+	}
 	switch {
-	case available(strings.TrimSpace(instance.Spec.Model)):
-		return entries, strings.TrimSpace(instance.Spec.Model), omitted
-	case available(r.AIGateway.DefaultModel):
-		return entries, r.AIGateway.DefaultModel, omitted
-	case len(shared) > 0:
-		return entries, shared[0], omitted
+	case available(requested):
+		return entries, requested, omitted
+	case aiGatewayRouterDefault(instance) != "":
+		return entries, aiGatewayRouterDefault(instance), omitted
+	case available(deploymentDefault):
+		return entries, deploymentDefault, omitted
+	case firstModel(shared) != "":
+		return entries, firstModel(shared), omitted
 	case len(copilot) > 0:
 		return entries, copilot[0], omitted
+	case len(shared) > 0:
+		return entries, shared[0], omitted
+	case len(routerEntries) > 0:
+		return entries, routerEntries[0].ID, omitted
 	}
 	placeholder := aiGatewayNoModelsModel
 	if r.aiGatewayCopilotWanted(instance) {

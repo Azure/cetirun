@@ -41,7 +41,7 @@ function instance(overrides: Partial<NonNullable<Instance["aiGateway"]>> = {}): 
       phase: "Ready",
       sharedModels: true,
       githubCopilot: true,
-      models: ["gpt-6", "copilot/gpt-5.5"],
+      models: ["gpt-6", "gpt-5.5"],
       defaultModel: "gpt-6",
       copilot: { phase: "SignInRequired", models: [] },
       ...overrides,
@@ -80,11 +80,11 @@ describe("AIGatewayBlock", () => {
     renderBlock(instance());
     const models = within(screen.getByLabelText("Agent models"));
     expect(models.getByText("gpt-6 (default)")).toBeInTheDocument();
-    expect(models.getByText("copilot/gpt-5.5")).toBeInTheDocument();
+    expect(models.getByText("gpt-5.5")).toBeInTheDocument();
     expect(screen.getByText("Sign-in required")).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Default model" }), "copilot/gpt-5.5");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Default model" }), "gpt-5.5");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(mockUpdate).toHaveBeenCalledWith({ uid: "agent-uid", resourceVersion: "42", model: "copilot/gpt-5.5" });
+    expect(mockUpdate).toHaveBeenCalledWith({ uid: "agent-uid", resourceVersion: "42", model: "gpt-5.5" });
   });
 
   it("explains an agent without models", () => {
@@ -182,9 +182,20 @@ describe("AIGatewayBlock", () => {
   });
 
   it("shows models left out for lack of a price", () => {
-    renderBlock(instance({ copilot: { phase: "Ready", models: ["copilot/gpt-5.5"], unpriced: ["mystery-model"] } }));
+    renderBlock(instance({ copilot: { phase: "Ready", models: ["gpt-5.5"], unpriced: ["mystery-model"] } }));
     expect(screen.getByText(/no price for them: mystery-model/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+
+  it("lists a Copilot model that is a shared model once and explains the ones left out", () => {
+    renderBlock(instance({
+      models: ["gpt-6", "o-mini"],
+      copilot: { phase: "Ready", models: ["gpt-6", "o-mini"], shared: ["gpt-6"], skipped: ["gpt-5"] },
+    }));
+    const models = within(screen.getByLabelText("Agent models"));
+    expect(models.getAllByText(/^gpt-6/)).toHaveLength(1);
+    expect(screen.getByText("Also served by your Copilot subscription: gpt-6")).toBeInTheDocument();
+    expect(screen.getByText("Not offered because a shared model already has their name: gpt-5")).toBeInTheDocument();
   });
 
   it("shows the policy's limits on the agent's key, read-only", () => {

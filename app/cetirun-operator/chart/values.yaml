@@ -275,7 +275,10 @@ aiGateway:
   # administrator makes later in the Gateway are kept.
   defaultBudget: 10000
   # -- Preferred default model of Agents that name none. Agents fall back to
-  # the first model available to them when it is not.
+  # the first model available to them when it is not: a shared model, then a
+  # GitHub Copilot model, and an auto router of the Gateway only when nothing
+  # else is offered (a router picks a model per request, at a cost the Agent
+  # did not choose). Naming a router here or on the Agent makes it the default.
   defaultModel: ""
   # -- Per-Agent GitHub Copilot proxy. Agents keep it unless their owner
   # turns GitHub Copilot off. It runs the AI Gateway image. Turned off here,

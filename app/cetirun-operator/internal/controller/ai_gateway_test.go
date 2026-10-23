@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/engine"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
@@ -41,6 +46,10 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 )
 
+// testManagedGroup and testManagedDeploymentID are the Gateway chart's binding
+// of testSharedModelOne: the first 16 hexadecimal characters of
+// SHA-256("gpt-6-sol"), followed in the deployment ID by a synthetic
+// configuration hash.
 const (
 	testAIGatewayUID        = "3f0b5a8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
 	testAIGatewayURL        = "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000"
@@ -48,8 +57,8 @@ const (
 	testProxyImage          = "registry.example.com/cetirun-ai-gateway:0.1.1"
 	testCopilotModels       = `[{"id":"gpt-5.5","name":"GPT-5.5","contextWindow":400000,"maxOutputTokens":128000},{"id":"claude-sonnet-4.5","name":"Claude Sonnet 4.5"},{"id":"grok-code-fast-1"},{"id":"bad/id"}]`
 	testSharedModelOne      = "gpt-6-sol"
-	testManagedGroup        = "cetirun-model-test-shared"
-	testManagedDeploymentID = "cetirun-shared-test-shared"
+	testManagedGroup        = "cetirun-model-7388db16debdff68"
+	testManagedDeploymentID = "cetirun-shared-7388db16debdff68-0123456789abcdef"
 	testPolicyName          = "gateway-test-policy"
 	testSandboxName         = "gateway-test-sandbox"
 )
@@ -58,6 +67,8 @@ const (
 // are stored by the SHA-256 of their value and aliases are unique; teams,
 // users and memberships are created once; model IDs are unique.
 type fakeAIGateway struct {
+	// deleteModelErr fails DeleteModel.
+	deleteModelErr    error
 	keys              map[string]*aigateway.Key
 	getErr            error
 	deleteErr         error
@@ -82,6 +93,9 @@ type fakeAIGateway struct {
 	// prices; the tests about prices turn it on.
 	blockUnpriced bool
 	blockErr      error
+	aliasUpdates  []map[string]string
+	aliasErr      error
+	routeUpdates  [][]string
 	// limitUpdates records UpdateKeyLimits calls; ignoreLimitUpdate makes
 	// the Gateway accept them without storing the limits.
 	limitUpdates      []aigateway.KeyLimits
@@ -110,6 +124,8 @@ func (f *fakeAIGateway) GetKey(_ context.Context, token string) (*aigateway.Key,
 	}
 	copied := *key
 	copied.Models = slices.Clone(key.Models)
+	copied.Aliases = maps.Clone(key.Aliases)
+	copied.AllowedRoutes = slices.Clone(key.AllowedRoutes)
 	copied.Limits = cloneKeyLimits(key.Limits)
 	return &copied, nil
 }
@@ -127,8 +143,36 @@ func (f *fakeAIGateway) GenerateKey(_ context.Context, req aigateway.GenerateReq
 	budget := req.MaxBudget
 	f.keys[aigateway.Token(req.Key)] = &aigateway.Key{
 		Alias: req.Alias, Models: slices.Clone(req.Models), MaxBudget: &budget, BudgetDuration: req.BudgetDuration,
-		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID, Limits: cloneKeyLimits(req.Limits),
+		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID, Aliases: maps.Clone(req.Aliases),
+		AllowedRoutes: slices.Clone(aigateway.KeyRoutes),
+		Limits:        cloneKeyLimits(req.Limits),
 	}
+	return nil
+}
+
+func (f *fakeAIGateway) UpdateKeyRoutes(_ context.Context, token string, routes []string) error {
+	key, ok := f.keys[token]
+	if !ok {
+		return &aigateway.APIError{StatusCode: 404, Message: "not found"}
+	}
+	key.AllowedRoutes = slices.Clone(routes)
+	f.routeUpdates = append(f.routeUpdates, slices.Clone(routes))
+	return nil
+}
+
+func (f *fakeAIGateway) UpdateKeyAliases(_ context.Context, token string, aliases map[string]string) error {
+	if f.aliasErr != nil {
+		return f.aliasErr
+	}
+	key, ok := f.keys[token]
+	if !ok {
+		return &aigateway.APIError{StatusCode: 404, Message: "not found"}
+	}
+	key.Aliases = maps.Clone(aliases)
+	if len(aliases) == 0 {
+		key.Aliases = nil
+	}
+	f.aliasUpdates = append(f.aliasUpdates, maps.Clone(aliases))
 	return nil
 }
 
@@ -224,6 +268,7 @@ func (f *fakeAIGateway) ListModels(context.Context) ([]aigateway.Deployment, err
 		deployments = append(deployments, aigateway.Deployment{
 			ID: id, ModelName: model.ModelName, AccessGroups: model.AccessGroups,
 			FromDatabase: true, DatabaseSourceKnown: true, Priced: true,
+			Model: model.Model, BaseModel: model.BaseModel, Routing: model.Routing,
 		})
 	}
 	return deployments, nil
@@ -242,6 +287,9 @@ func (f *fakeAIGateway) AddModel(_ context.Context, req aigateway.ModelRequest) 
 }
 
 func (f *fakeAIGateway) DeleteModel(_ context.Context, id string) error {
+	if f.deleteModelErr != nil {
+		return f.deleteModelErr
+	}
 	f.deletedModels = append(f.deletedModels, id)
 	delete(f.models, id)
 	return nil
@@ -300,8 +348,8 @@ func modelAccess(shared, copilot bool) *cetirunv1alpha1.ModelAccessSpec {
 
 func aiGatewayTestTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
-		AgentPolicyRef:    testPolicyName,
-		SandboxRefs:       []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
+		AgentPolicyRef: testPolicyName,
+		SandboxRefs:    []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
 	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
 }
 
@@ -689,6 +737,32 @@ func TestReconcileAIGatewayMovesKeyWhenTeamChanges(t *testing.T) {
 	}
 }
 
+func TestReconcileAIGatewayLetsKeysIssuedBeforeTheModelLookupLookUpModels(t *testing.T) {
+	agent := aiGatewayTestAgent("team-a")
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.routeUpdates) != 0 {
+		t.Fatalf("a new key already has the routes: %v", gateway.routeUpdates)
+	}
+	// A key issued by an earlier operator may call the inference routes only.
+	for _, key := range gateway.keys {
+		key.AllowedRoutes = []string{aigateway.LLMAPIRoutes}
+	}
+	for range 2 {
+		if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(gateway.routeUpdates) != 1 || !slices.Equal(gateway.routeUpdates[0], aigateway.KeyRoutes) {
+		t.Fatalf("the key must get the model lookup once: %v", gateway.routeUpdates)
+	}
+	if len(gateway.generated) != 1 {
+		t.Fatalf("the key must be updated in place, not replaced: %d keys generated", len(gateway.generated))
+	}
+}
+
 func TestReconcileAIGatewayRejectsOwnerUpdateWithoutMatchingReadback(t *testing.T) {
 	agent := aiGatewayTestAgent("team-a")
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
@@ -1042,7 +1116,8 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 	if copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady {
 		t.Fatalf("copilot status %+v", copilot)
 	}
-	wantNames := []string{"copilot/claude-sonnet-4.5", "copilot/gpt-5.5"}
+	// A Copilot model that is no shared model's real model keeps its own ID.
+	wantNames := []string{"claude-sonnet-4.5", "gpt-5.5"}
 	if !slices.Equal(copilot.Models, wantNames) || !slices.Equal(gateway.modelNames(), wantNames) {
 		t.Fatalf("registered %v, gateway %v", copilot.Models, gateway.modelNames())
 	}
@@ -1055,11 +1130,14 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 			model.Model != "litellm_proxy/"+strings.TrimPrefix(model.ModelName, "copilot/") {
 			t.Fatalf("unexpected route %s: %+v", id, model)
 		}
-		if model.ModelName == "copilot/claude-sonnet-4.5" && model.BaseModel != "claude-sonnet-4-5" {
+		if !model.NoCooldown || !model.Routing.IsZero() {
+			t.Fatalf("a route of its own is never cooled down and copies no routing: %+v", model)
+		}
+		if model.ModelName == "claude-sonnet-4.5" && model.BaseModel != "claude-sonnet-4-5" {
 			t.Fatalf("Copilot's dotted Claude name must be priced by the dashed entry, got %q", model.BaseModel)
 		}
 	}
-	wantModels := []string{testSharedModelOne, "copilot/claude-sonnet-4.5", "copilot/gpt-5.5"}
+	wantModels := []string{testSharedModelOne, "claude-sonnet-4.5", "gpt-5.5"}
 	if !slices.Equal(agent.Status.AIGateway.Models, wantModels) {
 		t.Fatalf("agent models %v, want %v", agent.Status.AIGateway.Models, wantModels)
 	}
@@ -1078,7 +1156,7 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) || !slices.Equal(agent.Status.AIGateway.Copilot.Models, []string{"copilot/gpt-5.5"}) {
+	if !slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) || !slices.Equal(agent.Status.AIGateway.Copilot.Models, []string{"gpt-5.5"}) {
 		t.Fatalf("stale routes must be removed: gateway %v status %v", gateway.modelNames(), agent.Status.AIGateway.Copilot.Models)
 	}
 
@@ -1093,7 +1171,7 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+	if !slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("a lost route must be re-added, gateway %v", gateway.modelNames())
 	}
 
@@ -1130,13 +1208,13 @@ func TestReconcileAIGatewayCopilotRemovesUnrecordedObsoleteRoutes(t *testing.T) 
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+	if !slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("setup: gateway %v", gateway.modelNames())
 	}
 	obsolete := copilotRegistrationID(agent, "gpt-5.5", "0badc0de")
-	gateway.models[obsolete] = aigateway.ModelRequest{ID: obsolete, ModelName: "copilot/gpt-5.5", APIKey: "sk-obsolete", AccessGroups: []string{copilotGroup()}}
+	gateway.models[obsolete] = aigateway.ModelRequest{ID: obsolete, ModelName: "gpt-5.5", APIKey: "sk-obsolete", AccessGroups: []string{copilotGroup()}}
 	other := aiGatewayCopilotGroupPrefix + "another-agent-uid-gpt-5.5-0badc0de"
-	gateway.models[other] = aigateway.ModelRequest{ID: other, ModelName: "copilot/gpt-5.5", AccessGroups: []string{aiGatewayCopilotGroupPrefix + "another-agent-uid"}}
+	gateway.models[other] = aigateway.ModelRequest{ID: other, ModelName: "gpt-5.5", AccessGroups: []string{aiGatewayCopilotGroupPrefix + "another-agent-uid"}}
 	if slices.Contains(agent.Status.AIGateway.Copilot.Registered, obsolete) {
 		t.Fatal("setup: the obsolete route must not be recorded")
 	}
@@ -1153,7 +1231,7 @@ func TestReconcileAIGatewayCopilotRemovesUnrecordedObsoleteRoutes(t *testing.T) 
 	if _, ok := gateway.models[other]; !ok {
 		t.Fatal("another Agent's route must stay")
 	}
-	if names := gateway.modelNames(); !slices.Equal(names, []string{"copilot/gpt-5.5", "copilot/gpt-5.5"}) {
+	if names := gateway.modelNames(); !slices.Equal(names, []string{"gpt-5.5", "gpt-5.5"}) {
 		t.Fatalf("this Agent's current route must stay: %v", names)
 	}
 	if copilot := agent.Status.AIGateway.Copilot; copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
@@ -1240,15 +1318,21 @@ func TestAIGatewayModelEntriesChooseDefault(t *testing.T) {
 func manySharedModels(gateway *fakeAIGateway, count int) []string {
 	groups := make([]string, 0, count)
 	for i := 0; i < count; i++ {
-		suffix := fmt.Sprintf("many-%03d", i)
-		group := aiGatewayModelAccessGroupPrefix + suffix
+		name := fmt.Sprintf("model-%03d", i)
+		group := aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding(name)
 		gateway.shared = append(gateway.shared, aigateway.Deployment{
-			ID: aiGatewaySharedDeploymentIDPrefix + suffix, ModelName: fmt.Sprintf("model-%03d", i),
+			ID: managedTestDeploymentID(name, i), ModelName: name,
 			AccessGroups: []string{aiGatewaySharedAccessGroup, group}, DatabaseSourceKnown: true,
 		})
 		groups = append(groups, group)
 	}
 	return groups
+}
+
+// managedTestDeploymentID is a deployment ID of the form the Gateway chart
+// renders for name, with a synthetic configuration hash taken from entry.
+func managedTestDeploymentID(name string, entry int) string {
+	return fmt.Sprintf("%s%s-%016x", aiGatewaySharedDeploymentIDPrefix, aiGatewayModelBinding(name), entry)
 }
 
 func TestAIGatewayModelEntriesKeepTheConfigurationWithinTheChartLimit(t *testing.T) {
@@ -1475,6 +1559,19 @@ func TestAIGatewayRevision(t *testing.T) {
 	if signedIn == rotated {
 		t.Fatal("a new Copilot model list must change the revision, so the next reconcile registers it")
 	}
+	// A Copilot model that joins a shared model leaves the Agent's model list
+	// as it is; the revision must still change, since the proxy's
+	// Responses-only models follow the routes.
+	agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{Phase: cetirunv1alpha1.AIGatewayCopilotPhaseReady}
+	if !r.aiGatewayCopilotActive(agent) {
+		t.Fatal("the test Agent must have GitHub Copilot active")
+	}
+	beforeJoin := r.aiGatewayRevision(agent)
+	agent.Status.AIGateway.Copilot.Routes = []cetirunv1alpha1.AIGatewayCopilotRoute{{Model: "gpt-5.5", Name: testSharedModelOne, Shared: true}}
+	if r.aiGatewayRevision(agent) == beforeJoin {
+		t.Fatal("a Copilot route joining a shared model must change the revision")
+	}
+	agent.Status.AIGateway.Copilot = nil
 	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
 	withCatalog := r.aiGatewayRevision(agent)
 	gateway.shared = append(gateway.shared, aigateway.Deployment{ID: "cfg-3", ModelName: "new-shared", AccessGroups: []string{aiGatewaySharedAccessGroup}})
@@ -2246,6 +2343,8 @@ func TestLostCopilotRouteMakesTheFullReconcileDue(t *testing.T) {
 	}
 	gateway.models[route] = aigateway.ModelRequest{ID: route, ModelName: "copilot/gpt-5.5", AccessGroups: []string{copilotAccessGroup(agent)}}
 	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
+	// As recorded by the key reconcile that granted the current groups.
+	agent.Status.AIGateway.PricingRevision, _ = r.aiGatewayCatalog.managedFingerprint()
 	if r.aiGatewayReconcileDue(agent, time.Now()) {
 		t.Fatal("an Agent whose routes the Gateway has waits for its verification")
 	}
@@ -2257,6 +2356,89 @@ func TestLostCopilotRouteMakesTheFullReconcileDue(t *testing.T) {
 	r.AIGateway.Enabled = false
 	if r.aiGatewayReconcileDue(agent, time.Now()) {
 		t.Fatal("nothing is due with the Gateway off")
+	}
+}
+
+// When the groups of the shared model names change, the key gets the new
+// groups at the Agent's next reconcile, without waiting for its verification
+// and without changing its configuration hash, so no Helm upgrade restarts
+// it. That covers the one-time change from the per-configuration groups of
+// earlier Gateway charts, and new model names. A configuration edit that
+// keeps every name changes no group and makes nothing due.
+func TestChangedModelBindingsUpdateTheKeyBeforeTheVerification(t *testing.T) {
+	r, agent, gateway := legacyGatewayFixture(t)
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.generated) != 1 || r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatalf("a freshly granted key is not due: generated=%d", len(gateway.generated))
+	}
+	token := aigateway.Token(gateway.generated[0].Key)
+	verified := agent.Status.AIGateway.LastVerifiedTime
+	revision := r.aiGatewayRevision(agent)
+
+	// As granted by an operator that trusted the groups an earlier chart
+	// derived from the complete model configuration.
+	gateway.keys[token].Models = sortedCopy([]string{aiGatewaySharedAccessGroup, aiGatewayModelAccessGroupPrefix + "0123456789abcdef"})
+	agent.Status.AIGateway.PricingRevision = "sha256:" + strings.Repeat("0", 64)
+	agent.Status.AIGateway.AccessGroups = slices.Clone(gateway.keys[token].Models)
+	if !r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("a key granted under other model groups must get the full reconcile now")
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	want := sortedCopy([]string{aiGatewaySharedAccessGroup, testManagedGroup})
+	if !slices.Equal(gateway.keys[token].Models, want) || len(gateway.generated) != 1 ||
+		!slices.Equal(agent.Status.AIGateway.AccessGroups, want) {
+		t.Fatalf("the same key did not get the current groups: key=%v status=%v generated=%d",
+			gateway.keys[token].Models, agent.Status.AIGateway.AccessGroups, len(gateway.generated))
+	}
+	if after := agent.Status.AIGateway.LastVerifiedTime; !after.Equal(verified) {
+		t.Fatalf("updating the groups is not a verification, yet its time moved: %v -> %v", verified, after)
+	}
+	if r.aiGatewayRevision(agent) != revision {
+		t.Fatal("updating the key's groups must not change the Agent's configuration hash")
+	}
+	if r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("a key with the current groups is not due")
+	}
+
+	// An administrator edits the model: new endpoint or price, same name.
+	updates := len(gateway.updates)
+	gateway.shared[0].ID = managedTestDeploymentID(testSharedModelOne, 7)
+	if r.refreshAIGatewayCatalogWithin(ctx, gateway, 0) || r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("a configuration edit that keeps the model name must neither change the catalog nor make the reconcile due")
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.updates) != updates || !slices.Equal(gateway.keys[token].Models, want) {
+		t.Fatalf("a configuration edit changed the key: %v", gateway.keys[token].Models)
+	}
+
+	// A new shared model name reaches the key before the verification too.
+	added := aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("new-shared")
+	gateway.shared = append(gateway.shared, aigateway.Deployment{
+		ID: managedTestDeploymentID("new-shared", 1), ModelName: "new-shared",
+		AccessGroups: []string{added}, DatabaseSourceKnown: true,
+	})
+	if !r.refreshAIGatewayCatalogWithin(ctx, gateway, 0) || !r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("a new shared model name must change the catalog and make the reconcile due")
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(gateway.keys[token].Models, added) || r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatalf("the new model's group did not reach the key: %v", gateway.keys[token].Models)
+	}
+
+	// Agents without shared models do not depend on the shared groups.
+	agent.Spec.ModelAccess = modelAccess(false, true)
+	agent.Status.AIGateway.PricingRevision = ""
+	if r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("an Agent without shared models is not due for a shared-model change")
 	}
 }
 
@@ -2654,7 +2836,7 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 
 	storeToken("first", time.Now())
 	recordModels("first", `[{"id":"gpt-5.5"}]`)
-	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady || !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady || !slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("a consistent sign-in registers its models: %+v %v", copilot, gateway.modelNames())
 	}
 
@@ -2662,7 +2844,7 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 	// as they are meanwhile.
 	storeToken("second", time.Now())
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseStarting || copilot.Reason != "SignInCompleting" ||
-		!slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+		!slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("models of the previous sign-in are awaited, not dropped yet: %+v %v", copilot, gateway.modelNames())
 	}
 
@@ -2677,7 +2859,7 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 	// The second sign-in's models arrive.
 	recordModels("second", `[{"id":"claude-sonnet-4.5"}]`)
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
-		!slices.Equal(gateway.modelNames(), []string{"copilot/claude-sonnet-4.5"}) {
+		!slices.Equal(gateway.modelNames(), []string{"claude-sonnet-4.5"}) {
 		t.Fatalf("the models of the stored sign-in are registered: %+v %v", copilot, gateway.modelNames())
 	}
 }
@@ -2736,7 +2918,7 @@ func TestReconcileAIGatewayCopilotUsesOnlyCompletedSignIns(t *testing.T) {
 	// Completed, it is used.
 	storeToken("fenced", time.Now().Add(-copilotSignInGrace-time.Minute))
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
-		!slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+		!slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("a completed sign-in's models are registered: %+v %v", copilot, gateway.modelNames())
 	}
 
@@ -2750,7 +2932,7 @@ func TestReconcileAIGatewayCopilotUsesOnlyCompletedSignIns(t *testing.T) {
 	delete(agent.Annotations, cetirunv1alpha1.AnnotationCopilotSignInGeneration)
 	agent.Annotations[cetirunv1alpha1.AnnotationCopilotModels] = `[{"id":"claude-sonnet-4.5"}]`
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
-		!slices.Equal(gateway.modelNames(), []string{"copilot/claude-sonnet-4.5"}) {
+		!slices.Equal(gateway.modelNames(), []string{"claude-sonnet-4.5"}) {
 		t.Fatalf("a sign-in from before generations keeps its models: %+v %v", copilot, gateway.modelNames())
 	}
 }
@@ -2795,39 +2977,55 @@ func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
 	}
 }
 
-func TestAIGatewayCatalogUsesObservedManagedGroupsAndDetectsSameNameReplacement(t *testing.T) {
+func TestAIGatewayCatalogBindsModelNamesAndIgnoresConfigurationEdits(t *testing.T) {
+	// The Gateway chart's group for "gpt": SHA-256("gpt") begins 053ea4804ef1bb33.
+	const group = "cetirun-model-053ea4804ef1bb33"
 	var catalog aiGatewayCatalog
 	first := []aigateway.Deployment{
-		{ID: "cetirun-shared-config-a", ModelName: "gpt", AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-config-a"}, DatabaseSourceKnown: true},
-		{ID: "cetirun-shared-config-b", ModelName: "gpt", AccessGroups: []string{"cetirun-model-config-b"}, DatabaseSourceKnown: true},
+		{ID: managedTestDeploymentID("gpt", 1), ModelName: "gpt", AccessGroups: []string{aiGatewaySharedAccessGroup, group}, DatabaseSourceKnown: true},
+		{ID: managedTestDeploymentID("gpt", 2), ModelName: "gpt", AccessGroups: []string{group}, DatabaseSourceKnown: true},
 	}
 	if changed, _, _ := catalog.update(first, false, time.Now()); !changed {
 		t.Fatal("first catalog listing must change")
 	}
 	groups, ok := catalog.resolvedGroups([]string{"gpt"})
-	if !ok || !slices.Equal(groups, []string{"cetirun-model-config-a", "cetirun-model-config-b"}) {
-		t.Fatalf("resolved groups=%v known=%v", groups, ok)
+	if !ok || !slices.Equal(groups, []string{group}) {
+		t.Fatalf("load-balanced entries of one name must share one trusted group: groups=%v known=%v", groups, ok)
 	}
 	firstFingerprint, ok := catalog.managedFingerprint()
 	if !ok || firstFingerprint == "" {
 		t.Fatal("live managed catalog must have a fingerprint")
 	}
-	// LiteLLM deployment IDs are not stable across a backend replacement. The
-	// display name and limits can be identical, but policy must still
-	// project the newly observed exact access group before it is usable.
-	replaced := []aigateway.Deployment{
-		{ID: "cetirun-shared-config-new", ModelName: "gpt", AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-config-new"}, DatabaseSourceKnown: true},
-		{ID: "cetirun-shared-config-b", ModelName: "gpt", AccessGroups: []string{"cetirun-model-config-b"}, DatabaseSourceKnown: true},
+	// An edit to a configured entry (endpoint, provider parameters, price)
+	// changes its deployment ID but neither its name nor its group. Agents
+	// keep the model: neither the catalog nor its fingerprint changes.
+	edited := slices.Clone(first)
+	edited[0].ID = managedTestDeploymentID("gpt", 3)
+	if changed, _, _ := catalog.update(edited, false, time.Now()); changed {
+		t.Fatal("a configuration edit that keeps the model name must not change the managed catalog")
 	}
-	if changed, _, _ := catalog.update(replaced, false, time.Now()); !changed {
-		t.Fatal("same-name backend replacement must change the managed catalog")
+	if fingerprint, _ := catalog.managedFingerprint(); fingerprint != firstFingerprint {
+		t.Fatal("a configuration edit that keeps the model name must not change the managed fingerprint")
 	}
-	groups, _ = catalog.resolvedGroups([]string{"gpt"})
-	if !slices.Equal(groups, []string{"cetirun-model-config-b", "cetirun-model-config-new"}) {
-		t.Fatalf("replacement groups=%v", groups)
+	if groups, _ := catalog.resolvedGroups([]string{"gpt"}); !slices.Equal(groups, []string{group}) {
+		t.Fatalf("edited groups=%v", groups)
+	}
+	// Adding or removing a model name still changes the fingerprint.
+	added := append(slices.Clone(edited), aigateway.Deployment{
+		ID: managedTestDeploymentID("other", 1), ModelName: "other",
+		AccessGroups: []string{"cetirun-model-d9298a10d1b07358"}, DatabaseSourceKnown: true,
+	})
+	if changed, _, _ := catalog.update(added, false, time.Now()); !changed {
+		t.Fatal("a new model name must change the managed catalog")
 	}
 	if fingerprint, _ := catalog.managedFingerprint(); fingerprint == firstFingerprint {
-		t.Fatal("same-name backend replacement must change the managed fingerprint")
+		t.Fatal("a new model name must change the managed fingerprint")
+	}
+	if changed, _, _ := catalog.update(edited, false, time.Now()); !changed {
+		t.Fatal("a removed model name must change the managed catalog")
+	}
+	if fingerprint, _ := catalog.managedFingerprint(); fingerprint != firstFingerprint {
+		t.Fatal("removing the added name must restore the managed fingerprint")
 	}
 }
 
@@ -2836,17 +3034,23 @@ func TestAIGatewayCatalogRejectsForgedOrCollidingManagedBindings(t *testing.T) {
 		ID: testManagedDeploymentID, ModelName: testSharedModelOne,
 		AccessGroups: []string{aiGatewaySharedAccessGroup, testManagedGroup}, DatabaseSourceKnown: true,
 	}
+	balanced := trusted
+	balanced.ID = managedTestDeploymentID(testSharedModelOne, 2)
 	for name, deployments := range map[string][]aigateway.Deployment{
 		"database model copies trusted group": {
 			trusted,
 			{ID: "db-copy", ModelName: "other", AccessGroups: []string{testManagedGroup}, FromDatabase: true, DatabaseSourceKnown: true},
 		},
-		"static model reuses trusted group": {
+		"database copy of the configured model": {
+			trusted, balanced,
+			{ID: managedTestDeploymentID(testSharedModelOne, 3), ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}, FromDatabase: true, DatabaseSourceKnown: true},
+		},
+		"static model of another name reuses trusted group": {
 			trusted,
-			{ID: "other-static", ModelName: "other", AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true},
+			{ID: managedTestDeploymentID(testSharedModelOne, 2), ModelName: "other", AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true},
 		},
 		"database model forges reserved tuple": {
-			{ID: "cetirun-shared-forged", ModelName: testSharedModelOne, AccessGroups: []string{"cetirun-model-forged"}, FromDatabase: true, DatabaseSourceKnown: true},
+			{ID: testManagedDeploymentID, ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}, FromDatabase: true, DatabaseSourceKnown: true},
 		},
 		"unknown source forges reserved tuple": {
 			{ID: testManagedDeploymentID, ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}},
@@ -2854,9 +3058,30 @@ func TestAIGatewayCatalogRejectsForgedOrCollidingManagedBindings(t *testing.T) {
 		"deployment ID does not match group": {
 			{ID: "different", ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true},
 		},
+		"deployment ID of another binding": {
+			{ID: managedTestDeploymentID("other", 1), ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true},
+		},
+		"deployment ID without a configuration hash": {
+			{ID: aiGatewaySharedDeploymentIDPrefix + "7388db16debdff68", ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true},
+		},
+		"deployment ID with an uppercase configuration hash": {
+			{ID: aiGatewaySharedDeploymentIDPrefix + "7388db16debdff68-0123456789ABCDEF", ModelName: testSharedModelOne, AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true},
+		},
+		"group not derived from the model name": {
+			{ID: aiGatewaySharedDeploymentIDPrefix + "0123456789abcdef-0123456789abcdef", ModelName: testSharedModelOne, AccessGroups: []string{aiGatewayModelAccessGroupPrefix + "0123456789abcdef"}, DatabaseSourceKnown: true},
+		},
+		"binding from a configuration hash, as earlier charts rendered it": {
+			{ID: aiGatewaySharedDeploymentIDPrefix + "0123456789abcdef", ModelName: testSharedModelOne, AccessGroups: []string{aiGatewayModelAccessGroupPrefix + "0123456789abcdef"}, DatabaseSourceKnown: true},
+		},
+		"group with uppercase hexadecimal": {
+			{ID: aiGatewaySharedDeploymentIDPrefix + "7388DB16DEBDFF68-0123456789abcdef", ModelName: testSharedModelOne, AccessGroups: []string{aiGatewayModelAccessGroupPrefix + "7388DB16DEBDFF68"}, DatabaseSourceKnown: true},
+		},
 		"deployment ID is duplicated": {
 			trusted,
 			{ID: testManagedDeploymentID, ModelName: "other", AccessGroups: []string{"cetirun-admin"}, DatabaseSourceKnown: true},
+		},
+		"load-balanced entries share a deployment ID": {
+			trusted, trusted,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -2869,11 +3094,128 @@ func TestAIGatewayCatalogRejectsForgedOrCollidingManagedBindings(t *testing.T) {
 	}
 }
 
-func TestAIGatewayCatalogFingerprintIsStableForDuplicateDeploymentIDs(t *testing.T) {
+// gatewayChartDeployments renders the AI Gateway chart with operatorIntegration
+// and lists its model_list the way LiteLLM reports configured models.
+func gatewayChartDeployments(t *testing.T, models []any) []aigateway.Deployment {
+	t.Helper()
+	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-ai-gateway", "chart"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := chartutil.ToRenderValues(chrt, map[string]any{"operatorIntegration": true, "models": models},
+		chartutil.ReleaseOptions{Name: "gateway", Namespace: "cetirun-system", IsInstall: true}, chartutil.DefaultCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := engine.Render(chrt, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configMap := &corev1.ConfigMap{}
+	if err := sigsyaml.Unmarshal([]byte(rendered["cetirun-ai-gateway/templates/configmap.yaml"]), configMap); err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		ModelList []struct {
+			ModelName string `json:"model_name"`
+			ModelInfo struct {
+				ID           string   `json:"id"`
+				AccessGroups []string `json:"access_groups"`
+			} `json:"model_info"`
+		} `json:"model_list"`
+	}
+	if err := sigsyaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config); err != nil {
+		t.Fatal(err)
+	}
+	deployments := make([]aigateway.Deployment, 0, len(config.ModelList))
+	for _, model := range config.ModelList {
+		deployments = append(deployments, aigateway.Deployment{
+			ID: model.ModelInfo.ID, ModelName: model.ModelName, AccessGroups: model.ModelInfo.AccessGroups,
+			DatabaseSourceKnown: true, Priced: true,
+		})
+	}
+	return deployments
+}
+
+// The Gateway chart and the operator must derive the same binding: the
+// operator trusts the groups the chart renders, for load-balanced entries of
+// one name and for names beyond ASCII, and an edit to an entry keeps them.
+func TestAIGatewayCatalogTrustsTheGatewayChartsBindings(t *testing.T) {
+	entry := func(name, model, apiBase string, price float64) map[string]any {
+		return map[string]any{
+			"model_name":     name,
+			"litellm_params": map[string]any{"model": model, "api_base": apiBase},
+			"model_info":     map[string]any{"input_cost_per_token": price, "access_groups": []any{aiGatewaySharedAccessGroup}},
+		}
+	}
+	const other = "modèle-example"
+	models := []any{
+		entry(testSharedModelOne, "azure/first", "https://first.example.com/", 0.001),
+		entry(testSharedModelOne, "azure/second", "https://second.example.com/", 0.001),
+		entry(other, "openai/example", "https://models.example.com/v1", 0.002),
+	}
+	rendered := gatewayChartDeployments(t, models)
+	if len(rendered) != 3 || rendered[0].ID == rendered[1].ID ||
+		!slices.Equal(rendered[0].AccessGroups, []string{aiGatewaySharedAccessGroup, testManagedGroup}) ||
+		!slices.Equal(rendered[1].AccessGroups, rendered[0].AccessGroups) {
+		t.Fatalf("unexpected chart bindings: %+v", rendered)
+	}
+	var catalog aiGatewayCatalog
+	catalog.update(rendered, true, time.Now())
+	otherGroup := aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding(other)
+	groups, complete := catalog.resolvedGroups([]string{testSharedModelOne, other})
+	if !complete || !slices.Equal(groups, sortedCopy([]string{testManagedGroup, otherGroup})) {
+		t.Fatalf("the chart's bindings are not trusted: groups=%v complete=%v", groups, complete)
+	}
+	fingerprint, _ := catalog.managedFingerprint()
+
+	edited := slices.Clone(models)
+	edited[0] = entry(testSharedModelOne, "azure/replacement", "https://replacement.example.com/", 0.003)
+	editedDeployments := gatewayChartDeployments(t, edited)
+	if editedDeployments[0].ID == rendered[0].ID {
+		t.Fatal("an edited entry must get a new deployment ID")
+	}
+	if changed, _, _ := catalog.update(editedDeployments, true, time.Now()); changed {
+		t.Fatal("an edit to a chart entry changed the managed catalog")
+	}
+	if after, _ := catalog.managedFingerprint(); after != fingerprint {
+		t.Fatal("an edit to a chart entry changed the managed fingerprint")
+	}
+	if groups, complete := catalog.resolvedGroups([]string{testSharedModelOne, other}); !complete ||
+		!slices.Equal(groups, sortedCopy([]string{testManagedGroup, otherGroup})) {
+		t.Fatalf("an edit to a chart entry changed its trusted groups: %v", groups)
+	}
+}
+
+// The configured entries of one name are load-balanced deployments: each of
+// them is a member of the name's group, and the group stays trusted.
+func TestAIGatewayCatalogTrustsEveryConfiguredEntryOfOneName(t *testing.T) {
+	balanced := aigateway.Deployment{
+		ID: managedTestDeploymentID(testSharedModelOne, 2), ModelName: testSharedModelOne,
+		AccessGroups: []string{testManagedGroup}, DatabaseSourceKnown: true, MaxInputTokens: 500000,
+	}
+	var catalog aiGatewayCatalog
+	catalog.update(append(newFakeAIGateway().shared, balanced), false, time.Now())
+	groups, complete := catalog.resolvedGroups([]string{testSharedModelOne})
+	if !complete || !slices.Equal(groups, []string{testManagedGroup}) {
+		t.Fatalf("groups=%v complete=%v", groups, complete)
+	}
+	shared, _ := catalog.shared()
+	if len(shared) != 1 || shared[0].Name != testSharedModelOne || shared[0].ContextWindow != 500000 {
+		t.Fatalf("the name must be listed once with the smallest limits of its entries: %+v", shared)
+	}
+	if got := aiGatewayModelBinding(testSharedModelOne); aiGatewayModelAccessGroupPrefix+got != testManagedGroup {
+		t.Fatalf("binding %q does not match the Gateway chart's group %q", got, testManagedGroup)
+	}
+}
+
+func TestAIGatewayCatalogFingerprintIsIndependentOfListingOrder(t *testing.T) {
 	deployments := []aigateway.Deployment{
-		{ID: "duplicate", ModelName: "same", AccessGroups: []string{"cetirun-model-a"}, DatabaseSourceKnown: true},
-		{ID: "duplicate", ModelName: "same", AccessGroups: []string{"cetirun-model-b"}, FromDatabase: true, DatabaseSourceKnown: true},
-		{ID: "duplicate", ModelName: "same", AccessGroups: []string{"cetirun-model-c"}},
+		{ID: managedTestDeploymentID("same", 1), ModelName: "same", AccessGroups: []string{"cetirun-model-0967115f2813a354"}, DatabaseSourceKnown: true},
+		{ID: managedTestDeploymentID("same", 2), ModelName: "same", AccessGroups: []string{"cetirun-model-0967115f2813a354"}, DatabaseSourceKnown: true},
+		{ID: managedTestDeploymentID("other", 1), ModelName: "other", AccessGroups: []string{"cetirun-model-d9298a10d1b07358"}, DatabaseSourceKnown: true},
+		{ID: "duplicate", ModelName: "untrusted", AccessGroups: []string{"cetirun-model-a"}, DatabaseSourceKnown: true},
+		{ID: "duplicate", ModelName: "untrusted", AccessGroups: []string{"cetirun-model-b"}, FromDatabase: true, DatabaseSourceKnown: true},
 	}
 	var first, reversed aiGatewayCatalog
 	first.update(deployments, false, time.Now())
@@ -2882,7 +3224,10 @@ func TestAIGatewayCatalogFingerprintIsStableForDuplicateDeploymentIDs(t *testing
 	firstFingerprint, _ := first.managedFingerprint()
 	reversedFingerprint, _ := reversed.managedFingerprint()
 	if firstFingerprint != reversedFingerprint {
-		t.Fatalf("duplicate-ID catalog fingerprint depends on listing order: %s != %s", firstFingerprint, reversedFingerprint)
+		t.Fatalf("catalog fingerprint depends on listing order: %s != %s", firstFingerprint, reversedFingerprint)
+	}
+	if groups, complete := first.resolvedGroups([]string{"same", "other"}); !complete || len(groups) != 2 {
+		t.Fatalf("groups=%v complete=%v", groups, complete)
 	}
 }
 
@@ -3156,13 +3501,14 @@ func TestAIGatewayCatalogKeepsItsAgentTypesWhileTheChartCannotBeRead(t *testing.
 	}
 }
 
-// A Copilot model's configured name carries GitHub's display name, which the
-// operator does not control: it must stay within the chart's limit too.
-func TestAIGatewayModelEntriesKeepCopilotNamesWithinTheChartLimit(t *testing.T) {
+// A Copilot model is named like every other model, by its Gateway name, never
+// by GitHub's display name, which the operator does not control and which
+// would tell the Agent which backend serves the model.
+func TestAIGatewayModelEntriesNameCopilotModelsLikeEveryOtherModel(t *testing.T) {
 	r, _, gateway := aiGatewayTestReconciler(t)
 	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
 	agent := routedAgent()
-	raw, err := json.Marshal([]cetirunv1alpha1.CopilotModel{{ID: "gpt-5.5", Name: strings.Repeat("n", 300)}})
+	raw, err := json.Marshal([]cetirunv1alpha1.CopilotModel{{ID: "gpt-5.5", Name: strings.Repeat("n", 300) + " (GitHub Copilot)"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3174,12 +3520,15 @@ func TestAIGatewayModelEntriesKeepCopilotNamesWithinTheChartLimit(t *testing.T) 
 		if utf8.RuneCountInString(entry.ID) > aiGatewayModelNameLimit || utf8.RuneCountInString(entry.Name) > aiGatewayModelNameLimit {
 			t.Fatalf("entry %q exceeds the chart's limit: name has %d characters", entry.ID, utf8.RuneCountInString(entry.Name))
 		}
+		if strings.Contains(entry.Name, "Copilot") || strings.Contains(entry.Name, "nnn") {
+			t.Fatalf("entry %q reveals its backend: %q", entry.ID, entry.Name)
+		}
 		if entry.ID == "copilot/gpt-5.5" {
-			found = strings.HasSuffix(entry.Name, copilotModelNameSuffix)
+			found = entry.Name == entry.ID
 		}
 	}
 	if !found {
-		t.Fatalf("the Copilot model must stay listed with its marked name: %+v", entries)
+		t.Fatalf("the Copilot model must stay listed under its own name: %+v", entries)
 	}
 }
 

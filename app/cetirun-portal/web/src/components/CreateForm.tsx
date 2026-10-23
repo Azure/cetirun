@@ -72,6 +72,8 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
     [catalog],
   );
   const sharedAvailable = sharedModels.length > 0;
+  // The Team's smart-routing models the Team's Policy allows, by name only.
+  const modelRouters = useMemo(() => (catalog?.known ? options?.modelRouters ?? [] : []), [catalog, options?.modelRouters]);
   const copilotOffered = catalogKnown && !!catalog?.githubCopilot;
   // An OpenClaw or Hermes agent needs a model to use: shared models while any are
   // available, or GitHub Copilot while the deployment offers it. Without
@@ -108,8 +110,8 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   }, [usesGitHubCopilot]);
 
   useEffect(() => {
-    if (options && (!effectiveShared || !sharedModels.some((m) => m.name === gatewayModel))) setGatewayModel("");
-  }, [options, effectiveShared, sharedModels, gatewayModel]);
+    if (options && !modelRouters.includes(gatewayModel) && (!effectiveShared || !sharedModels.some((m) => m.name === gatewayModel))) setGatewayModel("");
+  }, [options, effectiveShared, sharedModels, modelRouters, gatewayModel]);
 
   useEffect(() => {
     if (options && (!options.agentIdentity.allowed || agentType === "custom")) setAgentIdentityEnabled(false);
@@ -305,13 +307,21 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
               label="Use GitHub Copilot"
             />
           </Field>}
-          {effectiveShared && sharedAvailable && (
-            <Field label="Default model (optional)" hint="GitHub Copilot models can be chosen after sign-in.">
+          {((effectiveShared && sharedAvailable) || modelRouters.length > 0) && (
+            <Field label="Default model (optional)" hint={[
+              effectiveCopilot ? "GitHub Copilot models can be chosen after sign-in." : "",
+              modelRouters.length > 0 ? "Smart-routing models pick a model for each request; one works once the agent may use every model it routes to." : "",
+            ].filter(Boolean).join(" ") || undefined}>
               <Select value={gatewayModel} onChange={(event) => setGatewayModel(event.target.value)}>
                 <option value="">(automatic)</option>
-                {sharedModels.map((m) => (
+                {effectiveShared && sharedModels.map((m) => (
                   <option key={m.name} value={m.name}>
                     {m.name}
+                  </option>
+                ))}
+                {modelRouters.map((name) => (
+                  <option key={`router-${name}`} value={name}>
+                    {name} (smart routing)
                   </option>
                 ))}
               </Select>

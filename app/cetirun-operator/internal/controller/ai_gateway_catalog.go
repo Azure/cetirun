@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -58,18 +59,53 @@ type aiGatewayCatalog struct {
 	ids       map[string]bool
 	// groups lists the deployment IDs of each access group.
 	groups map[string][]string
-	// modelGroups lists the collision-safe deployment groups for each shared
-	// model identifier. Policy resolution uses these groups rather than a
-	// display name or the broad legacy cetirun-shared group.
+	// modelGroups lists the trusted model groups for each shared model
+	// identifier. Policy resolution uses these groups rather than a display
+	// name or the broad legacy cetirun-shared group.
 	modelGroups map[string][]string
-	// fingerprint identifies the concrete Gateway deployment set backing the
-	// managed access groups. It changes when a same-name backend is replaced,
-	// even if the display-only Portal catalog is unchanged.
+	// fingerprint identifies which shared model names the managed access
+	// groups bind. It is derived from modelGroups only, so a configuration
+	// edit that keeps a model's name and binding leaves it unchanged.
 	fingerprint string
+	// routers are the shared models that are LiteLLM auto routers, by name,
+	// and routerFingerprint identifies what they send requests to. It is
+	// compared like the shared models, so a changed router queues the Agents
+	// that use shared models, but it is kept out of fingerprint, and so out
+	// of every AgentPolicy's Gateway revision (ai_gateway_shared_routers.go).
+	routers           map[string]aigateway.Router
+	routerFingerprint string
+	// nonChat are the shared models no Agent can hold a conversation with,
+	// such as a decision model an auto router classifies requests with: they
+	// stay shared models, for the routers' rule and the keys' groups, but are
+	// left out of the models Agents are configured with and of the published
+	// catalog.
+	nonChat map[string]bool
 	// allowsUnpriced is the Gateway's setting from the last listing. The
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
 	allowsUnpriced bool
+	// copilotMerge is what Copilot registration needs of the listing (see
+	// ai_gateway_copilot_merge.go).
+	copilotMerge copilotMergeView
+	// rollout holds back listings that change the view while the Gateway
+	// is rolling out; see ai_gateway_rollout.go.
+	rollout aiGatewayRollout
+}
+
+// changedBy reports whether a listing would change a view taken from an
+// earlier listing, by the same comparison update makes: the shared models,
+// their bindings and the routers' configurations. Without such a view it
+// reports false: there is nothing to keep.
+func (c *aiGatewayCatalog) changedBy(deployments []aigateway.Deployment, blockUnpriced bool) bool {
+	c.mu.RLock()
+	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, fingerprint: c.fingerprint, routerFingerprint: c.routerFingerprint,
+		nonChat: c.nonChat}
+	c.mu.RUnlock()
+	if !scratch.known {
+		return false
+	}
+	changed, _, _ := scratch.update(deployments, blockUnpriced, time.Time{})
+	return changed
 }
 
 func (c *aiGatewayCatalog) age(now time.Time) time.Duration {
@@ -90,33 +126,39 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	var skipped, unpriced []string
 	ids := map[string]bool{}
 	groups := map[string][]string{}
-	groupMembers := map[string]int{}
-	idMembers := map[string]int{}
 	priced := map[string]bool{}
+	// LiteLLM sends every request for a name with a router deployment through
+	// that router, whatever the name's other deployments.
+	routers := map[string]aigateway.Router{}
 	for _, deployment := range deployments {
-		if deployment.ID != "" {
-			idMembers[deployment.ID]++
-		}
-		if deployment.Priced {
+		// An Agent's Copilot route may serve a shared model's name; it does
+		// not price the shared deployments.
+		if deployment.Priced && !copilotRoute(deployment) {
 			priced[deployment.ModelName] = true
 		}
-		for _, group := range managedModelGroups(deployment.AccessGroups) {
-			groupMembers[group]++
+		if deployment.Router != nil {
+			routers[deployment.ModelName] = mergeRouters(routers[deployment.ModelName], *deployment.Router)
 		}
 	}
+	trusted := trustedManagedModelGroups(deployments)
 	byName := map[string]aiGatewayCatalogModel{}
 	modelGroups := map[string][]string{}
+	merge := newCopilotMergeView()
+	chat := map[string]bool{}
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
 		for _, group := range deployment.AccessGroups {
 			groups[group] = append(groups[group], deployment.ID)
 		}
+		merge.serve(deployment)
 		legacyShared := slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup)
-		managedGroups := trustedManagedModelGroups(deployment, groupMembers, idMembers)
-		policyBoundShared := deployment.ID != "" && len(managedGroups) > 0
+		managedGroups := slices.DeleteFunc(managedModelGroups(deployment.AccessGroups), func(group string) bool {
+			return !trusted[group]
+		})
+		policyBoundShared := len(managedGroups) > 0
 		// Keep publishing legacy shared models while old catalog consumers are
 		// present, but never resolve a Policy policy through their broad
-		// group. Only a per-deployment group below is authorization evidence.
+		// group. Only a trusted model group below is authorization evidence.
 		if !legacyShared && !policyBoundShared {
 			continue
 		}
@@ -137,13 +179,23 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		model.ContextWindow = smallerPositive(model.ContextWindow, deployment.MaxInputTokens)
 		model.MaxOutputTokens = smallerPositive(model.MaxOutputTokens, deployment.MaxOutputTokens)
 		byName[deployment.ModelName] = model
+		merge.share(deployment)
+		// Like the limits, a name serves conversations when any deployment
+		// behind it does.
+		if aigateway.ChatModel(deployment.Mode) {
+			chat[deployment.ModelName] = true
+		}
 		if policyBoundShared {
 			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
 		}
 	}
 	shared := make([]aiGatewayCatalogModel, 0, len(byName))
-	for _, model := range byName {
+	nonChat := map[string]bool{}
+	for name, model := range byName {
 		shared = append(shared, model)
+		if !chat[name] {
+			nonChat[name] = true
+		}
 	}
 	sort.Slice(shared, func(i, j int) bool { return shared[i].Name < shared[j].Name })
 	slices.Sort(unpriced)
@@ -151,32 +203,94 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		slices.Sort(groups)
 		modelGroups[name] = slices.Compact(groups)
 	}
-	fingerprint := aiGatewayCatalogFingerprint(deployments, modelGroups)
+	// Only shared routers are granted by the shared-router rule; the
+	// operator's own Team routers are not shared models.
+	maps.DeleteFunc(routers, func(name string, _ aigateway.Router) bool {
+		_, isShared := byName[name]
+		return !isShared
+	})
+	fingerprint := aiGatewayCatalogFingerprint(modelGroups)
+	routerFingerprint := aiGatewayRouterFingerprint(routers)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared) || c.fingerprint != fingerprint
+	changed := !(c.known || c.seeded) || !slices.EqualFunc(c.sharedSet, shared, sameCatalogModel) || c.fingerprint != fingerprint ||
+		c.routerFingerprint != routerFingerprint || !maps.Equal(c.nonChat, nonChat)
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
+	c.routers, c.routerFingerprint, c.nonChat = routers, routerFingerprint, nonChat
 	c.allowsUnpriced = !blockUnpriced
+	c.copilotMerge = merge
 	return changed, skipped, unpriced
 }
 
-// trustedManagedModelGroups returns only the chart-derived bindings whose
-// observed provenance, deployment ID and access-group membership all agree.
-// Every deployment is counted before this check, including database models,
-// so copying a reserved group invalidates the whole group rather than leaving
-// its configured member trusted.
-func trustedManagedModelGroups(deployment aigateway.Deployment, groupMembers, idMembers map[string]int) []string {
-	if !deployment.DatabaseSourceKnown || deployment.FromDatabase || deployment.ID == "" || idMembers[deployment.ID] != 1 {
-		return nil
+// aiGatewayModelBindingLength is the number of hexadecimal characters the
+// Gateway chart keeps of each SHA-256 in a model binding.
+const aiGatewayModelBindingLength = 16
+
+// aiGatewayModelBinding is the binding the Gateway chart derives from a model
+// name: the first 16 hexadecimal characters of the SHA-256 of the name, as
+// Helm's sha256sum prints them. The model group is cetirun-model-<binding>.
+func aiGatewayModelBinding(modelName string) string {
+	sum := sha256.Sum256([]byte(modelName))
+	return hex.EncodeToString(sum[:])[:aiGatewayModelBindingLength]
+}
+
+// trustedManagedModelGroups returns the chart-derived model groups whose
+// every member agrees with the chart's binding: a group cetirun-model-<g> is
+// trusted only when each deployment carrying it is configured statically
+// (not stored in the Gateway database, with a known source), has the unique
+// deployment ID cetirun-shared-<g>-<16 lowercase hexadecimal characters>, and
+// serves the one model name whose SHA-256 begins with g. Several members are
+// the load-balanced entries of that name. Every deployment is considered,
+// database models included, so a console or database copy of a reserved
+// group invalidates the whole group rather than leaving its configured
+// members trusted.
+func trustedManagedModelGroups(deployments []aigateway.Deployment) map[string]bool {
+	idMembers := map[string]int{}
+	members := map[string][]aigateway.Deployment{}
+	for _, deployment := range deployments {
+		if deployment.ID != "" {
+			idMembers[deployment.ID]++
+		}
+		for _, group := range managedModelGroups(deployment.AccessGroups) {
+			members[group] = append(members[group], deployment)
+		}
 	}
-	trusted := []string{}
-	for _, group := range managedModelGroups(deployment.AccessGroups) {
-		suffix := strings.TrimPrefix(group, aiGatewayModelAccessGroupPrefix)
-		if groupMembers[group] == 1 && deployment.ID == aiGatewaySharedDeploymentIDPrefix+suffix {
-			trusted = append(trusted, group)
+	trusted := map[string]bool{}
+	for group, carriers := range members {
+		binding := strings.TrimPrefix(group, aiGatewayModelAccessGroupPrefix)
+		name := carriers[0].ModelName
+		if !lowercaseHex(binding, aiGatewayModelBindingLength) || aiGatewayModelBinding(name) != binding {
+			continue
+		}
+		if !slices.ContainsFunc(carriers, func(deployment aigateway.Deployment) bool {
+			return !deployment.DatabaseSourceKnown || deployment.FromDatabase || deployment.ModelName != name ||
+				idMembers[deployment.ID] != 1 || !aiGatewayManagedDeploymentID(deployment.ID, binding)
+		}) {
+			trusted[group] = true
 		}
 	}
 	return trusted
+}
+
+// aiGatewayManagedDeploymentID reports whether id is a deployment ID the
+// Gateway chart renders for the binding: cetirun-shared-<binding>-<hash of
+// the complete model entry>. The operator cannot recompute the entry hash; it
+// only keeps distinct entries of one name apart.
+func aiGatewayManagedDeploymentID(id, binding string) bool {
+	configuration, ok := strings.CutPrefix(id, aiGatewaySharedDeploymentIDPrefix+binding+"-")
+	return ok && lowercaseHex(configuration, aiGatewayModelBindingLength)
+}
+
+func lowercaseHex(value string, length int) bool {
+	if len(value) != length {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func managedModelGroups(groups []string) []string {
@@ -190,49 +304,32 @@ func managedModelGroups(groups []string) []string {
 	return slices.Compact(managed)
 }
 
-// aiGatewayCatalogFingerprint deliberately includes deployment IDs and their
-// observed managed groups. A model_name is an API alias, not an immutable
-// backend identity: replacing a same-name deployment must re-project every
-// policy-bound Agent before the old deployment can be considered authorized.
-func aiGatewayCatalogFingerprint(deployments []aigateway.Deployment, modelGroups map[string][]string) string {
-	type member struct {
-		ModelName    string   `json:"modelName"`
-		ID           string   `json:"id"`
-		Groups       []string `json:"groups"`
-		FromDatabase bool     `json:"fromDatabase"`
-		SourceKnown  bool     `json:"sourceKnown"`
-	}
-	members := make([]member, 0, len(deployments))
-	for _, deployment := range deployments {
-		groups := managedModelGroups(deployment.AccessGroups)
-		if deployment.ID == "" || len(groups) == 0 {
-			continue
-		}
-		members = append(members, member{ModelName: deployment.ModelName, ID: deployment.ID, Groups: groups,
-			FromDatabase: deployment.FromDatabase, SourceKnown: deployment.DatabaseSourceKnown})
-	}
-	sort.Slice(members, func(i, j int) bool {
-		if members[i].ModelName != members[j].ModelName {
-			return members[i].ModelName < members[j].ModelName
-		}
-		if members[i].ID != members[j].ID {
-			return members[i].ID < members[j].ID
-		}
-		if groupsI, groupsJ := strings.Join(members[i].Groups, "\x00"), strings.Join(members[j].Groups, "\x00"); groupsI != groupsJ {
-			return groupsI < groupsJ
-		}
-		if members[i].FromDatabase != members[j].FromDatabase {
-			return !members[i].FromDatabase
-		}
-		return !members[i].SourceKnown && members[j].SourceKnown
-	})
-	// modelGroups is included separately so an accidental duplicate or a
-	// changed group assignment cannot hash to the same projection merely
-	// because deployments happened to be listed in a different order.
+// aiGatewayCatalogFingerprint identifies the trusted model groups of each
+// shared model name, and nothing else: no deployment IDs and no
+// configuration hashes. It is part of the Gateway policy revision, so only a
+// change in which names are bound, or in a name's groups, re-projects
+// policy-bound Agents. Editing a configured model's endpoint, provider
+// parameters, price or other metadata changes its deployment ID but neither
+// its name nor its group, so it leaves the fingerprint unchanged. (A model
+// that loses its price while the Gateway blocks unpriced models leaves the
+// shared models, which removes its name.)
+//
+// That is safe because an AgentPolicy authorizes exact catalog model names
+// (AgentPolicySharedModelsAccess.Allowed), not deployments: any deployment
+// the chart configures under an allowed name is within the grant. A model
+// group is derived from the name alone, so it is stable for as long as the
+// name exists and can never stand for another name, and a group counts only
+// while every deployment carrying it is static chart configuration of that
+// name (trustedManagedModelGroups). A console or database deployment that
+// copies a group still invalidates it, which removes the name from this
+// fingerprint and from policy resolution.
+func aiGatewayCatalogFingerprint(modelGroups map[string][]string) string {
+	// encoding/json writes map keys in sorted order, and update sorts each
+	// name's groups, so listing order cannot change the fingerprint.
 	sum, _ := json.Marshal(struct {
-		Members     []member            `json:"members"`
+		Version     string              `json:"version"`
 		ModelGroups map[string][]string `json:"modelGroups"`
-	}{Members: members, ModelGroups: modelGroups})
+	}{Version: "model-name-bindings-v1", ModelGroups: modelGroups})
 	digest := sha256.Sum256(sum)
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
@@ -253,7 +350,11 @@ func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel) {
 	if c.known || c.seeded {
 		return
 	}
-	c.sharedSet, c.seeded = slices.Clone(shared), true
+	c.sharedSet, c.seeded = make([]aiGatewayCatalogModel, len(shared)), true
+	for i, model := range shared {
+		// Router models are published for the Portal; the listing supplies them here.
+		c.sharedSet[i] = aiGatewayCatalogModel{Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens}
+	}
 }
 
 // aiGatewayModelNameLimit is the agent chart's limit, in characters, on a
@@ -265,8 +366,8 @@ const aiGatewayModelNameLimit = 256
 // aiGatewaySharedModelUsable reports whether a shared model name can be given
 // to Agents: the agent chart rejects names with the provider prefix Agents
 // use and names over its length limit, and the Gateway chart reserves the
-// cetirun- and copilot/ prefixes in any letter case, copilot/ for the Agents'
-// own Copilot routes. The console does not check them.
+// cetirun- and copilot/ prefixes in any letter case, copilot/ for the key
+// aliases of the Agents' own Copilot models. The console does not check them.
 func aiGatewaySharedModelUsable(name string) bool {
 	if name == "" || strings.ContainsAny(name, " \t\r\n") || utf8.RuneCountInString(name) > aiGatewayModelNameLimit {
 		return false
@@ -286,10 +387,19 @@ func smallerPositive(current, next int64) int64 {
 	return current
 }
 
+// shared returns the shared models Agents can hold a conversation with: those
+// they are configured with, the published catalog lists, and a Team's router
+// may send requests to.
 func (c *aiGatewayCatalog) shared() ([]aiGatewayCatalogModel, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return slices.Clone(c.sharedSet), c.known || c.seeded
+	return c.chatModels(c.sharedSet), c.known || c.seeded
+}
+
+// chatModels leaves the shared models no Agent can hold a conversation with
+// out of models. Call with c.mu held.
+func (c *aiGatewayCatalog) chatModels(models []aiGatewayCatalogModel) []aiGatewayCatalogModel {
+	return slices.DeleteFunc(slices.Clone(models), func(model aiGatewayCatalogModel) bool { return c.nonChat[model.Name] })
 }
 
 // legacySharedGroups includes every trusted configured shared model; a legacy
@@ -307,7 +417,8 @@ func (c *aiGatewayCatalog) legacySharedGroups() []string {
 
 // managedFingerprint is empty until a live Gateway listing establishes the
 // concrete access groups. Policy uses it in its expected Gateway
-// projection revision; callers must not treat a seeded display catalog as
+// projection revision, and a key reconcile records it as the Agent's
+// pricingRevision; callers must not treat a seeded display catalog as
 // authorization evidence.
 func (c *aiGatewayCatalog) managedFingerprint() (string, bool) {
 	c.mu.RLock()
@@ -315,10 +426,32 @@ func (c *aiGatewayCatalog) managedFingerprint() (string, bool) {
 	return c.fingerprint, c.known
 }
 
-// resolvedGroups returns the collision-safe deployment groups for the exact
-// policy model identifiers. It is false until a live catalog has been listed;
-// a seeded display-only catalog is intentionally insufficient evidence for a
-// Policy grant.
+// policyFingerprint identifies the trusted model groups of the given shared
+// model names only, as aiGatewayCatalogFingerprint does for every name. A
+// policy's Gateway revision uses it, so that only a change to the bindings of
+// the models the policy allows re-projects its Agents. It is empty until a live
+// listing, and for a name the catalog cannot resolve.
+func (c *aiGatewayCatalog) policyFingerprint(models []string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.known {
+		return "", false
+	}
+	bindings := make(map[string][]string, len(models))
+	for _, model := range models {
+		groups := c.modelGroups[model]
+		if len(groups) == 0 {
+			return "", false
+		}
+		bindings[model] = groups
+	}
+	return aiGatewayCatalogFingerprint(bindings), true
+}
+
+// resolvedGroups returns the trusted model groups for the exact policy model
+// identifiers. It is false until a live catalog has been listed; a seeded
+// display-only catalog is intentionally insufficient evidence for a Policy
+// grant.
 func (c *aiGatewayCatalog) resolvedGroups(models []string) ([]string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -352,7 +485,7 @@ func (c *aiGatewayCatalog) sharedForGroups(groups []string) ([]aiGatewayCatalogM
 		allowed[group] = true
 	}
 	shared := make([]aiGatewayCatalogModel, 0, len(c.sharedSet))
-	for _, model := range c.sharedSet {
+	for _, model := range c.chatModels(c.sharedSet) {
 		if slices.ContainsFunc(c.modelGroups[model.Name], func(group string) bool { return allowed[group] }) {
 			shared = append(shared, model)
 		}
@@ -426,6 +559,9 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 		log.FromContext(ctx).Info("reading whether the AI Gateway blocks unpriced models failed; keeping the last setting",
 			"blocks", blockUnpriced, "error", err.Error())
 	}
+	if r.holdAIGatewayCatalog(ctx, deployments, blockUnpriced, time.Now()) {
+		return false
+	}
 	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
 	if len(skipped) > 0 {
 		log.FromContext(ctx).Info("shared models with names Agents cannot use are left out", "models", skipped)
@@ -439,8 +575,8 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 // refreshAIGatewayCatalogForGrant obtains a fresh, live catalog for a
 // Policy grant. Unlike the background refresh, it never falls back to a
 // cached or seeded catalog: doing so could authorize a group which has been
-// deleted or omit a newly added same-name backend. Every policy model must be
-// resolved against the exact current Gateway response.
+// deleted, or which a console or database copy has since invalidated. Every
+// policy model must be resolved against the exact current Gateway response.
 func (r *AgentReconciler) refreshAIGatewayCatalogForGrant(ctx context.Context, client aiGatewayKeyClient) error {
 	catalog := &r.aiGatewayCatalog
 	catalog.refreshMu.Lock()
@@ -452,6 +588,11 @@ func (r *AgentReconciler) refreshAIGatewayCatalogForGrant(ctx context.Context, c
 	blockUnpriced, err := client.BlockUnpricedModels(ctx)
 	if err != nil {
 		return fmt.Errorf("read AI Gateway pricing policy for Policy grant: %w", err)
+	}
+	if r.holdAIGatewayCatalog(ctx, deployments, blockUnpriced, time.Now()) {
+		// While the Gateway rolls out, the grant uses the view of the last
+		// listing adopted, which was live; the hold is bounded.
+		return nil
 	}
 	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
 	if len(skipped) > 0 {
@@ -517,12 +658,22 @@ func (p *AIGatewayCatalogPublisher) Start(ctx context.Context) error {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	maxAge := interval / 2
 	for {
-		p.Reconciler.publishAIGatewayCatalog(ctx, interval/2)
+		p.Reconciler.publishAIGatewayCatalog(ctx, maxAge)
+		maxAge = interval / 2
+		var recheck <-chan time.Time
+		if p.Reconciler.aiGatewayCatalog.rollout.waiting() {
+			recheck = time.After(aiGatewayRolloutRecheck)
+		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+		case <-recheck:
+			// A change held during a Gateway rollout is listed again soon,
+			// whatever the age of the catalog.
+			maxAge = 0
 		}
 	}
 }
@@ -555,7 +706,8 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	if shared == nil {
 		shared = []aiGatewayCatalogModel{}
 	}
-	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: shared, GitHubCopilot: r.aiGatewayCopilotOffered()}
+	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: r.aiGatewayCatalog.sharedRouters().describe(shared),
+		GitHubCopilot: r.aiGatewayCopilotOffered()}
 	key := types.NamespacedName{Namespace: namespace, Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
 	configMap := &corev1.ConfigMap{}
 	err := r.Get(ctx, key, configMap)
@@ -660,6 +812,25 @@ func (r *AgentReconciler) notifyAIGatewayCatalogChanged(ctx context.Context) {
 	})
 }
 
+// aiGatewayBindingsChanged reports whether the live catalog binds shared
+// model names to other groups than when the Agent's key was last granted:
+// its recorded pricingRevision is an earlier catalog fingerprint. That happens
+// when a shared model name is added or removed, or once after an upgrade
+// that changes how bindings are derived. The key then needs its groups now,
+// not at the next verification. Configuration edits that keep the names, and
+// therefore the fingerprint, do not make it due. A queued Agent with this
+// change takes the full reconcile, which updates the key in place; its
+// configuration hash, and so its workload, changes only when the shared
+// models listed for it change.
+func (r *AgentReconciler) aiGatewayBindingsChanged(instance *cetirunv1alpha1.Agent) bool {
+	status := instance.Status.AIGateway
+	if status == nil || status.KeyID == "" || !instance.Spec.SharedModelsEnabled() {
+		return false
+	}
+	fingerprint, known := r.aiGatewayCatalog.managedFingerprint()
+	return known && status.PricingRevision != fingerprint
+}
+
 // notifyAIGatewayRoutesLost queues every Agent whose recorded Copilot routes
 // the Gateway no longer has, such as after it lost its data. Its reconcile
 // adds them again, and creates the key again if that is gone too. Without
@@ -706,4 +877,10 @@ func (r *AgentReconciler) notifyAIGatewayAgents(ctx context.Context, after strin
 			// reconciles the Agent anyway.
 		}
 	}
+}
+
+// sameCatalogModel compares two shared models of the operator's own view.
+func sameCatalogModel(a, b aiGatewayCatalogModel) bool {
+	return a.Name == b.Name && a.ContextWindow == b.ContextWindow && a.MaxOutputTokens == b.MaxOutputTokens &&
+		slices.Equal(a.RouterModels, b.RouterModels) && a.RouterUnverifiable == b.RouterUnverifiable
 }

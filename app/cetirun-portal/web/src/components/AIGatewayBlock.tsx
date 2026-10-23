@@ -156,6 +156,16 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
         <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{emptyHint}</Text>
       )}
 
+      {(gateway.modelRouters ?? []).some((router) => !router.granted) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }} aria-label="Unavailable smart-routing models">
+          {(gateway.modelRouters ?? []).filter((router) => !router.granted).map((router) => (
+            <Text key={router.name} size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+              Smart-routing model {router.name} is not available to this agent{router.reason ? `: ${router.reason}` : "."}
+            </Text>
+          ))}
+        </div>
+      )}
+
       {custom && (
         <Text size={200}>Choose a model in Chat from the models this Agent exposes.</Text>
       )}
@@ -207,9 +217,19 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
               Copilot models could not be registered ({copilot.reason}). Signing in again may help.
             </Text>
           )}
+          {copilot.shared && copilot.shared.length > 0 && (
+            <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+              Also served by your Copilot subscription: {copilot.shared.join(", ")}
+            </Text>
+          )}
           {copilot.unpriced && copilot.unpriced.length > 0 && (
             <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
               Not offered because the Gateway has no price for them: {copilot.unpriced.join(", ")}
+            </Text>
+          )}
+          {copilot.skipped && copilot.skipped.length > 0 && (
+            <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+              Not offered because a shared model already has their name: {copilot.skipped.join(", ")}
             </Text>
           )}
           <div>

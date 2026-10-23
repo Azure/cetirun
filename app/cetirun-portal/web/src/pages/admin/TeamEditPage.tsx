@@ -9,8 +9,11 @@ import {
   Button,
   Spinner,
   MessageBar,
+  MessageBarActions,
+  MessageBarBody,
   Field,
   Input,
+  Label,
   Textarea,
   Text,
   Divider,
@@ -23,12 +26,15 @@ import {
   getTeam,
   updateTeam,
   type TeamDTO,
+  type TeamModelRouter,
   type TeamSkillStorage,
   type TeamUpsertRequest,
 } from "../../api/adminTeam";
 
 import { listPolicies } from "../../api/adminPolicy";
 import { listSandboxes } from "../../api/adminSandbox";
+import { getAIGatewayCatalog } from "../../api/aiGateway";
+import { modelRouterProblem, TeamModelRoutersSection, toModelRouterRequests } from "./TeamModelRoutersSection";
 
 interface FormState {
   uid: string;
@@ -43,6 +49,7 @@ interface FormState {
   skills: string; // newline-separated
   storage: TeamSkillStorage;
   storageEnabled: boolean;
+  modelRouters: TeamModelRouter[];
 }
 
 const emptyStorage: TeamSkillStorage = {
@@ -65,6 +72,7 @@ function fromDTO(t: TeamDTO): FormState {
     skills: (t.skills || []).join("\n"),
     storage: t.skillStorage || { ...emptyStorage },
     storageEnabled: !!t.skillStorage,
+    modelRouters: (t.modelRouters || []).map((router) => ({ ...router })),
   };
 }
 
@@ -84,6 +92,7 @@ function toRequest(s: FormState): TeamUpsertRequest {
     defaultProvider: s.defaultProvider.trim() || undefined,
     skills: splitLines(s.skills),
   };
+  if (s.modelRouters.length > 0) req.modelRouters = toModelRouterRequests(s.modelRouters);
   if (s.storageEnabled) {
     req.skillStorage = {
       resourceGroup: s.storage.resourceGroup.trim(),
@@ -114,6 +123,7 @@ export function TeamEditPage() {
     skills: "",
     storage: { ...emptyStorage },
     storageEnabled: false,
+    modelRouters: [],
   });
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -129,6 +139,12 @@ export function TeamEditPage() {
 
   const policiesQuery = useQuery({ queryKey: ["admin", "policies"], queryFn: listPolicies, retry: false });
   const sandboxesQuery = useQuery({ queryKey: ["admin", "sandboxes"], queryFn: listSandboxes, retry: false });
+  // Tier and classifier pickers suggest the shared models that are not routers of the Gateway themselves,
+  // which the operator refuses there; the operator checks the routers.
+  const catalogQuery = useQuery({ queryKey: ["ai-gateway", "catalog"], queryFn: getAIGatewayCatalog, retry: false });
+  const sharedModelNames = (catalogQuery.data?.sharedModels || [])
+    .filter((model) => !model.routerModels?.length && !model.routerUnverifiable)
+    .map((model) => model.name);
   const policies = policiesQuery.data || [];
   const sandboxes = (sandboxesQuery.data || []).filter(box => !box.deleting);
   const configurationError = policiesQuery.error || sandboxesQuery.error;
@@ -169,6 +185,11 @@ export function TeamEditPage() {
         : "Choose an available Agent Policy, allowed Sandboxes, and a default Sandbox.");
       return;
     }
+    const routerProblem = modelRouterProblem(form.modelRouters);
+    if (routerProblem) {
+      setSubmitError(routerProblem);
+      return;
+    }
     const req = toRequest(form);
     if (isCreate) {
       if (!/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(req.name || "")) {
@@ -207,11 +228,14 @@ export function TeamEditPage() {
       <Text weight="semibold">Agent policy and Sandbox</Text>
       {loadingConfiguration && <Spinner label="Loading policies and Sandboxes..." />}
       {configurationError && <MessageBar intent="error">
-        {configurationError.message}
-        <Button type="button" onClick={() => { void policiesQuery.refetch(); void sandboxesQuery.refetch(); }}>Retry configuration</Button>
+        <MessageBarBody>{configurationError.message}</MessageBarBody>
+        <MessageBarActions>
+          <Button type="button" onClick={() => { void policiesQuery.refetch(); void sandboxesQuery.refetch(); }}>Retry configuration</Button>
+        </MessageBarActions>
       </MessageBar>}
-      {!loadingConfiguration && !configurationError && policies.length === 0 && <MessageBar intent="info">Create an <Link to="/admin/policies/new">Agent Policy</Link> before creating this Team.</MessageBar>}
-      {!loadingConfiguration && !configurationError && sandboxes.length === 0 && <MessageBar intent="info">Create a <Link to="/admin/sandboxes/new">Sandbox</Link> before creating this Team.</MessageBar>}
+      {/* MessageBar lays its children out as a row; MessageBarBody keeps the sentence and its link together. */}
+      {!loadingConfiguration && !configurationError && policies.length === 0 && <MessageBar intent="info"><MessageBarBody>Create an <Link to="/admin/policies/new">Agent Policy</Link> before creating this Team.</MessageBarBody></MessageBar>}
+      {!loadingConfiguration && !configurationError && sandboxes.length === 0 && <MessageBar intent="info"><MessageBarBody>Create a <Link to="/admin/sandboxes/new">Sandbox</Link> before creating this Team.</MessageBarBody></MessageBar>}
       <Field label="Agent Policy" required hint="Controls the harnesses, Skills and model access available to this Team.">
         <Select value={form.agentPolicyRef} disabled={loadingConfiguration} onChange={event => setForm({ ...form, agentPolicyRef: event.target.value })}>
           <option value="">Choose a policy</option>
@@ -221,9 +245,10 @@ export function TeamEditPage() {
       </Field>
       {selectedPolicy && !allowsMultipleSandboxes && <Text size={300}>This policy allows one Sandbox per Team.</Text>}
       {hasTooManySandboxes && <MessageBar intent="warning">This Team keeps its existing Sandbox selections, but the selected policy allows only one. Remove extra Sandboxes before saving.</MessageBar>}
-      <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
-        <legend>Allowed Sandboxes (required)</legend>
-        <Text size={300}>Reusable runtime, resource and storage settings. Manage them in Sandboxes.</Text>
+      <fieldset style={{ border: 0, padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: tokens.spacingVerticalXXS }}>
+        {/* A label like the other fields', rather than the browser's indented legend. */}
+        <legend style={{ padding: 0, marginBottom: tokens.spacingVerticalXXS }}><Label required>Allowed Sandboxes</Label></legend>
+        <Text size={200}>Reusable runtime, resource and storage settings. Manage them in Sandboxes.</Text>
         <div style={{ display: "flex", flexDirection: "column" }}>
           {[...new Set([...sandboxes.map(box => box.name), ...form.sandboxRefs])].map(ref => <Checkbox key={ref}
             label={sandboxes.some(box => box.name === ref) ? ref : `${ref} (unavailable)`}
@@ -281,6 +306,14 @@ export function TeamEditPage() {
           placeholder={"@anthropic/skill-foo\n@scope/skill-bar"}
         />
       </Field>
+
+      <Divider />
+      <TeamModelRoutersSection
+        routers={form.modelRouters}
+        status={existing?.modelRouterStatus}
+        sharedModels={sharedModelNames}
+        onChange={(modelRouters) => setForm({ ...form, modelRouters })}
+      />
 
       <Divider />
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
