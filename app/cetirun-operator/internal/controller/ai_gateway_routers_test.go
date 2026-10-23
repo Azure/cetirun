@@ -591,6 +591,7 @@ func TestTeamRouterClassifyingWithAGatewayRouterIsRefused(t *testing.T) {
 		t.Fatal("the key must not get the router")
 	}
 }
+
 // A tier written as a shared model's name reaches the owner's Copilot route
 // merged under that name too, and so does a router of the Gateway with such a
 // tier: their limits include the route's, as the Agent's entry for the
