@@ -209,11 +209,10 @@ key: parallel requests, requests per minute, tokens per minute, and per-model
 limits. The Policy sets them for every Agent of its Teams, each on its own key.
 The operator applies a change to the existing key; like any change to the
 Policy, it also restarts the Agents running under the Policy once. A request
-over a limit receives HTTP 429 with a `retry-after` header. Before setting a tokens per
-minute limit, read the
+over a limit receives HTTP 429 with a `retry-after` header. A tokens per minute
+limit counts the tokens of finished requests; see the
 [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)
-reference: the Gateway counts a request's maximum output before the model
-answers, which rejects long OpenClaw conversations under a small limit.
+reference.
 
 The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
 that Secret is lost while the key still exists in the Gateway, the operator

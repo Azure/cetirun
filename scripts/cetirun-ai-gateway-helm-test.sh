@@ -599,6 +599,19 @@ assert_contains 'value: "True"' "priceTable=bundled keeps the migrate step to th
   "$(init_block "${bundled_pod}" | grep -A1 'name: LITELLM_LOCAL_MODEL_COST_MAP$')"
 assert_rejected "an unknown price table source" --set-string priceTable=local
 
+# ----- Token limits -----
+
+# LiteLLM reserves a request's input plus its maximum output tokens against a
+# tokens-per-minute limit unless told not to. OpenClaw asks for the model's
+# maximum output with every request, so under a small limit a long conversation
+# was refused in every minute. The chart counts finished requests instead.
+echo "==> token limits count finished requests unless reservation is on"
+assert_contains 'value: "false"' "tokens per minute count finished requests by default" \
+  "$(gateway_block "$(render -s templates/deployment.yaml)" | grep -A1 'name: LITELLM_TPM_TOKEN_RESERVATION_ENABLED$')"
+assert_contains 'value: "true"' "tpmReservation=true reserves tokens before calling the model" \
+  "$(gateway_block "$(render --set tpmReservation=true -s templates/deployment.yaml)" | grep -A1 'name: LITELLM_TPM_TOKEN_RESERVATION_ENABLED$')"
+assert_rejected "a token limit mode that is not a boolean" --set-string tpmReservation=yes
+
 # ----- Migrations -----
 
 # Migrations run in an init container of every Gateway pod, and the image makes

@@ -95,9 +95,8 @@ type AgentPolicyRateLimits struct {
 	// +optional
 	RPM *int64 `json:"rpm,omitempty"`
 	// TPM limits the key's tokens per minute across all of its models. The
-	// Gateway reserves a request's input tokens plus its maximum output
-	// tokens before calling the model, so a limit below the context window
-	// plus the maximum output of a model rejects long requests to it.
+	// Gateway counts the tokens of finished requests and refuses requests
+	// once the minute's count has reached the limit.
 	// +kubebuilder:validation:Minimum=4096
 	// +optional
 	TPM *int64 `json:"tpm,omitempty"`

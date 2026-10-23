@@ -126,6 +126,11 @@
             "enum": [402, 422, 429],
             "default": 402
         },
+        "tpmReservation": {
+            "type": "boolean",
+            "description": "Whether LiteLLM reserves a request's input plus its maximum output tokens against a key's or team's tokens-per-minute limit before calling the model (LITELLM_TPM_TOKEN_RESERVATION_ENABLED). false counts the tokens of finished requests and refuses requests once the minute's count has reached the limit.",
+            "default": false
+        },
         "router": {
             "type": "object",
             "description": "How a request reaches one of the deployments that serve its model_name, and what happens when that deployment fails. Rendered into LiteLLM's router_settings and general_settings.",

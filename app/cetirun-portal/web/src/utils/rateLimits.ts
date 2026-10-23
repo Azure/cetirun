@@ -11,11 +11,9 @@ export const MAX_MODEL_LIMITS = 64;
 export const MAX_PARALLEL_REQUESTS = 2147483647;
 
 export const TPM_HINT =
-  "The Gateway reserves a request's input tokens plus its maximum output tokens before calling the model. " +
-  "OpenClaw asks for the model's maximum output (for example 128,000 tokens) on every request, so a TPM below " +
-  "the model's context window plus its maximum output rejects long conversations, and turns with several tool " +
-  "calls fail sooner. For such Agents, limit RPM " +
-  "and parallel requests instead. Values below 4,096 are not accepted.";
+  "The Gateway counts the tokens of each finished request, cached input tokens excluded, and refuses an Agent's " +
+  "requests once the minute's count has reached the limit, until the next minute. A single long request can " +
+  "take the count past the limit. Values below 4,096 are not accepted.";
 
 export interface RateLimitRow {
   model: string;

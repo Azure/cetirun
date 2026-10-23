@@ -386,9 +386,16 @@ An AgentPolicy's `modelAccess.rateLimits` makes the CetiRun operator set
 `model_rpm_limit` and `model_tpm_limit` on the key of every Agent bound to it.
 The operator updates them in place and leaves other keys alone. A request over
 a limit receives HTTP 429 with a `retry-after` header; replicas share the
-counters through Redis. The token limit reserves a request's input plus its
-maximum output tokens up front, so it rejects requests whose maximum output
-alone exceeds it. See the
+counters through Redis. The token limit counts the tokens of each finished
+request, cached input tokens excluded, and refuses requests once the minute's
+count has reached it, until the next minute (`tpmReservation: false`, the
+default). LiteLLM's other mode, `tpmReservation: true`, reserves a request's
+input plus its maximum output tokens before calling the model. OpenClaw asks
+for the model's maximum output, 128,000 tokens for current GPT models, with every
+request, so in that mode a limit of 200,000 refused every request of an OpenClaw
+conversation past about 55,000 tokens of input, the reservation alone being
+larger than the limit, and OpenClaw gave up after nine one-minute retries
+(measured on a test cluster). See the
 [AgentPolicy reference](../../../site/content/en/docs/reference/crds.md#agentpolicy-rate-limits).
 
 A `budget_duration` of `30d` or `1mo` resets on the first of each month, UTC,

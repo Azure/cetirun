@@ -181,6 +181,20 @@ priceTable: remote
 # and tell the user to wait. See the README's "When a budget runs out".
 budgetExceededStatusCode: 402
 
+# -- How LiteLLM counts a key's or team's tokens-per-minute limit, such as an
+# AgentPolicy's rateLimits.tpm (LITELLM_TPM_TOKEN_RESERVATION_ENABLED). false
+# counts the tokens of each finished request, cached input tokens excluded, and
+# refuses requests once the minute's count has reached the limit, until the
+# next minute; a single request may take the count past the limit. true
+# reserves a request's input plus its maximum output tokens before calling the
+# model and refuses the request when that does not fit. OpenClaw asks for the
+# model's maximum output, 128,000 tokens for current GPT models, with every
+# request: measured with true and a limit of 200,000, a conversation past about
+# 55,000 tokens of input was refused in every minute, the reservation alone being
+# larger than the limit, and OpenClaw gave up after nine retries. Request and
+# parallel request limits count the same either way.
+tpmReservation: false
+
 # -- How a request reaches one of the deployments that serve its model_name,
 # and what happens when that deployment fails. The chart ships these
 # defaults; which deployments serve a model, and which model falls back to
