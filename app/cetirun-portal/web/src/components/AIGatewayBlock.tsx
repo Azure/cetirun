@@ -21,6 +21,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCopilotGatewayLogin } from "../hooks/useAIGateway";
 import { useUpdateInstanceByName } from "../hooks/useInstance";
 import type { CopilotProxyPhase, Instance } from "../types/instance";
+import { RateLimitsSummary } from "./RateLimitsSummary";
 
 const COPILOT_PHASES: Record<CopilotProxyPhase, { label: string; color: "warning" | "informative" | "success" | "danger" }> = {
   SignInRequired: { label: "Sign-in required", color: "warning" },
@@ -168,6 +169,10 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
       {custom && (
         <Text size={200}>Choose a model in Chat from the models this Agent exposes.</Text>
       )}
+      <RateLimitsSummary
+        limits={gateway.rateLimits}
+        intro="Set by the Team's Agent Policy on this Agent's own key. Requests over a limit get HTTP 429 and can be retried."
+      />
       {!custom && gateway.models.length > 1 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <Text size={200}>Default model</Text>

@@ -25,8 +25,11 @@ type CreateOptionsResponse struct {
 	// ModelRouters are the names of the Team's smart-routing models the
 	// selected Team's Policy allows. Whether an Agent can use one also
 	// depends on its model sources; the operator decides and reports it.
-	ModelRouters []string     `json:"modelRouters"`
-	Blocked      *ErrorDetail `json:"blocked,omitempty"`
+	ModelRouters []string `json:"modelRouters"`
+	// RateLimits are the AI Gateway limits the selected Team's policy sets on
+	// each Agent's key; absent when it sets none.
+	RateLimits *AgentPolicyRateLimitsDTO `json:"rateLimits,omitempty"`
+	Blocked    *ErrorDetail              `json:"blocked,omitempty"`
 }
 
 type CreateIdentityOptions struct {
@@ -90,6 +93,7 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 			return nil, &managementError{http.StatusServiceUnavailable, "policy_unavailable", "Unable to read the selected Team's Agent Policy; retry after it is available"}
 		}
 		options.PolicyName = policy.Name
+		options.RateLimits = toAgentPolicyRateLimitsDTO(policy.Spec.ModelAccess.RateLimits)
 		if !policy.DeletionTimestamp.IsZero() {
 			return block("policy_unavailable", "The selected Team's Agent Policy is being deleted")
 		}

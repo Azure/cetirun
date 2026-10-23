@@ -91,6 +91,141 @@ Offline lifecycle regressions replace kubectl and Helm with synthetic processes:
 python3 -B -m unittest discover -s scripts/tests -p test_e2e_lifecycle.py -v
 ```
 
+### Offline lifecycle evidence assertions
+
+`sandbox-platform-qualify.py acceptance-check --receipt FILE` checks a local,
+sanitized JSON receipt. It reuses the qualification helper's bounded, strict
+JSON parser and fixed reason codes. It does **not** collect evidence, run another
+lifecycle runner, read Kubernetes configuration, sign in, call a model, or change
+resources. The receipt fields are validation inputs, not new Agent status fields,
+annotations or API requirements.
+
+Run the offline regression entry point from the repository root:
+
+```bash
+PYTHONPATH=scripts/tests python3 -B -m unittest \
+  test_lifecycle_acceptance test_e2e_lifecycle \
+  test_sandbox_platform_qualify test_sandbox_deployment_preflight -v
+make python-check license-check
+```
+
+The existing `make ci-test` entry point discovers these tests as well. The
+[synthetic fixture](tests/fixtures/lifecycle_acceptance.json) intentionally has
+no authorization or observations:
+
+```bash
+python3 -B scripts/sandbox-platform-qualify.py acceptance-check \
+  --receipt scripts/tests/fixtures/lifecycle_acceptance.json
+```
+
+**Expected result: exit 1, `status: blocked`.** The executable
+[test receipt builder](tests/test_lifecycle_acceptance.py) adds synthetic
+measurements for positive and negative assertions; those measurements are never
+live evidence. No test sends fabricated identity headers to a service.
+
+#### Coverage and support boundary
+
+This is an **assertion coverage matrix**, not a new runtime support declaration.
+Product availability must be checked on the exact selected source, images,
+charts, feature configuration and platform tuple before collecting a receipt.
+In particular, retained native operations and native Copilot/helper combinations
+need an integrated common-execution candidate; this main-based helper does not
+deliver that candidate or enable its features.
+
+| Dimension | Fixture coverage | Connected acceptance |
+| --- | --- | --- |
+| OpenClaw / Hermes; ordinary / retained `sandbox-native`; shared / Copilot-only / mixed | All 12 core tuples | Blocked until the exact supported artifact, target, owners and providers are authorized |
+| Each core tuple with no optional identity / Entra OBO / Azure app-only, and each of skills / Memory / doctor / logger / desktop | 180 single-helper assertion tuples, plus a combined-helper case | Conditional on actual runtime integration and helper/identity availability; no native parity inferred from ordinary support |
+| Owner create, restart, suspend/resume, delete; native HTTP and WebSocket | Required owner-path and distinct-owner negative assertions | Blocked without real OIDC owner and peer sessions and available owner controls |
+| Healthy-source native migration | At least two administrator-only moves, each with source termination and CSI release/attach observations | Separate bounded authorization required; no owner migration action |
+| Custom images, gVisor, failed/unreachable-source recovery, physical fencing | Not covered; unknown runtime/execution values are blocked | Outside this checker; no implied support |
+
+Each tuple needs its own receipt. Helper combinations beyond the tested
+single-helper rows and combined case, other platforms, and optional identity
+integrations are not qualified by neighboring rows. The existing
+[Harness contract](../site/content/en/docs/reference/agent-harness.md),
+[identity availability](../site/content/en/docs/guides/agent-identity.md) and
+[protected renderer](../app/cetirun-chart/README.md#protected-sandbox-rendering)
+remain the product support sources.
+
+#### Required observations
+
+The fixture supplies the v1 envelope. The test builder shows the complete
+snapshot, operation, request and cleanup shapes. The reusable
+`assess_lifecycle_receipt` function returns ten independent check results:
+
+| Check | Required evidence; rejected substitutes |
+| --- | --- |
+| `artifacts` | Full source commit **and tree**, digest-pinned component images and charts, and a digest of the reviewed non-secret configuration/tuple manifest. Every snapshot, request case and cleanup must carry the same recomputed fingerprint of the artifacts **and case**. Tags, tuple relabeling, a shared run label or receipts from different builds are insufficient. |
+| `authorization` | Explicit target, owner, peer, provider, bounded spend and fault authorization, and owner-control availability. Missing prerequisites stay blocked; `true` in a file does not grant permission. |
+| `owner-access` | Real OIDC owner REST/Portal access, stable distinct owners, denied peer reads/mutations, native HTTP 200 and WebSocket 101. Administrator patches, unauthenticated redirects and synthetic identity headers cannot replace these observations. |
+| `home` | Retained Agent/namespace/StatefulSet/PVC/PV identities, a nonempty known synthetic file checksum manifest, matching contents and continued read/write through an allowed owner/application path after every operation. PVC identity alone or protected Pod exec is insufficient. |
+| `accounting` | The same key and budget, strictly positive spend before the journey, nondecreasing cumulative spend across operations, and additional spend from each subsequent model call within the budget. Decimal strings avoid floating-point comparisons. `0 -> 0`, key replacement or budget reset fails. Copilot-only must not silently use a shared priced model; lack of an authorized priced path is a blocker. |
+| `recovery` | Separate apply/request acceptance, stop request, observed shutdown/source termination and actual current-workload Ready witnesses bound to the retained Agent UID, current generation and Pod UID. Every operation identifies the preceding source Pod/node. Each selected model source needs a reply and a fresh, independently checked tool challenge after every operation; reusing an earlier checksum fails. Native moves additionally require a healthy source, distinct destination and CSI witnesses. Generation or a status label alone cannot establish completion. |
+| `peers` | Another owner's independent Agent, Pod, HOME PVC/PV, key and budget remain unchanged and Ready through cleanup; peer spend cannot decrease. No recovered owner Pod or retained HOME volume may be the peer's. An unused peer may have zero spend. |
+| `requests` | Duplicate, stale UID/version, unknown reply, same-version takeover, suspend/delete precedence, and native in-flight replacement/destination-failure cases. Preserve the original request fingerprint and accepted operation's ID/Agent UID/generation/source Pod, bound time and apply counts, and compare reported state with authoritative, current-workload observations. Completion needs a nonzero apply count and a fresh Ready Pod; pending/retryable and terminal failure remain distinct. |
+| `cleanup` | Ordinary owner deletion of the same retained Agent UID, independently observed absence of Agent/namespace/HOME volumes/attachments/control records/reservations/key, and retained peer health. A retained suspended Agent, an unobserved timeout or forced finalizer/detach operation is not cleanup. |
+| `extensions` | For selected helpers: read-only unchanged skills; private usable Memory; ready doctor/logger; owner-only desktop. Optional identity adds authorized use, peer denial and revocation observations; Azure app-only also requires the MCP path. Merely configuring a connection does not establish these facts. |
+
+Use local consistent pseudonym digests for object/owner/key comparisons, never
+raw identities, credential hashes, tokens, cookies, endpoints, conversations or
+diagnostic bundles. HOME/tool entries are bounded synthetic witness labels and
+checksums, not user files. Artifact fingerprints are SHA256 over
+`{"artifacts": artifacts, "case": case}` serialized as sorted-key compact JSON,
+with `case.helpers` sorted; use
+`lifecycle_artifact_fingerprint` rather than inventing a label. Reconfirm deployed
+pins at every observation; the checker cannot authenticate a collector's claims.
+
+The following fields bind the measurements; they are receipt projections, not
+new product API fields:
+
+| Record | Binding |
+| --- | --- |
+| Snapshot `resources` | `agent`, `namespace`, `statefulSet`, `homePvc`, `homePv` are consistent pseudonym digests of the retained Kubernetes UIDs, not names. |
+| Snapshot `workload` | `agent` equals `resources.agent`; `pod` and `node` identify the current execution. `generation` is its selected Agent generation, not a local step counter. `observedGeneration` must equal it, and `observedPod` must equal `pod`; `ready` must be `true`. Successful recovery snapshots require fresh Pod UIDs and increasing generations. |
+| Operation | `sourcePod` and `sourceNode` must equal the preceding snapshot's workload. All observation flags are JSON booleans, including CSI flags on non-move operations; use `false` when those observations are not applicable. |
+| Model witness | `expectedToolChecksum` pins a new synthetic challenge for that source and observation. `observedToolChecksum` is read independently of the model reply. Both must match and the checksum must not have appeared in any earlier model witness. |
+| Peer | `home` is the peer HOME PVC UID digest; `homePv` is its backing PV UID digest. Both remain unchanged and differ from the owner's retained volumes. |
+| Request `operationBefore` / `operationAfter` | Each has exactly `id`, `agent`, `generation`, `sourcePod`. The ID, Agent UID and source Pod UID are pseudonym digests; generation is a positive integer. Both records must be identical and belong to the retained Agent. For rejected retries, observe the original protected operation, not an invented replacement for the rejected request. |
+| Request `workload` | Exactly `agent`, `generation`, `observedGeneration`, `pod`, `observedPod`, `ready`; bound to the original operation's Agent/generation. Pod fields must match; both are `null` when no current Pod is observed. Ready requires the current generation and a Pod. Completion additionally requires a Pod different from the original source. Suspended/deleted outcomes require no current Pod; pending/failed outcomes cannot report Ready. |
+| Request failure | `retryable` is `true` only for a pending outcome. `failureObserved` is `true` only for the destination-failure case, including when it remains pending/retryable. These are independent observations, not an inference from submission acceptance or timeout. |
+| Cleanup | `agent` identifies the retained Agent being deleted. All `remaining` values are observed integer zeroes, never booleans or inferred absence following an unsuccessful read. |
+
+To print a complete, machine-readable **synthetic** shape without collecting
+evidence or running a lifecycle:
+
+```bash
+PYTHONPATH=scripts/tests python3 -B -c \
+  'import json; from test_lifecycle_acceptance import receipt; print(json.dumps(receipt(), sort_keys=True))'
+```
+
+The builder accepts `runtime`, `execution`, `model`, `identity` and `helpers`
+arguments for the matrix above. Never relabel this example as live evidence.
+Missing binding fields in older receipts remain blocked; do not fill them with
+invented identities or observations to obtain a match.
+
+Unknown submission must retain its original intent until an authoritative
+observation shows pending or completed work; absence is not rejection or
+cancellation. Confirmed stale requests remain rejected, not silently rebased.
+A pending failure can match its bounded negative-case assertions without being
+a successful migration. `retryable` describes internal operation recovery, not
+permission to replay an unknown submission. Retained stop is neither destruction
+nor physical writer exclusion. Reuse existing controller/unit/envtest cases for fault
+injection rather than adding a second implementation here.
+
+Output contains only validated case enums, the artifact fingerprint, fixed check
+names/reasons and the supplied evidence kind. It never echoes input paths,
+observed resource identifiers or exception text. `status: matched` and exit 0
+mean only that the **reported scoped measurements** meet these assertions.
+`qualifiesExecution` is always `false` and `liveAcceptance` always
+`not-established`, including receipts labeled `live`: independent evidence
+review and the complete supported matrix are still required. Missing evidence
+returns `blocked`; contradictory evidence returns `failed`; both exit 1.
+Malformed command lines exit 2. Input must be an explicit local regular file
+(not a pipe or device) and is capped at 1 MiB; duplicate JSON fields
+and nonfinite numbers are rejected. Keep live receipts and private validation
+reports outside public PRs; never merge historical versions into a new pass.
+
 ### Native ingress sign-in challenge
 
 The application runner uses `e2e-ingress-check.py` to request the canonical
@@ -214,6 +349,18 @@ The supported footprint is deliberately narrow:
   process's explicit `ms` or `s` request budget must be shorter than each
   webhook timeout.
 
+The exact legacy two-rule Pod webhook remains supported when
+`sandboxSources.plannedMigration` is absent or `false`. The current three-rule
+form adds `CREATE` for both `pods/binding` and `bindings` and requires the
+public chart's garbage-collector cleanup predicate. `plannedMigration: true`
+requires native execution, that complete Binding rule, and the chart's
+controller and Pod cleanup guards. The flag must be a JSON boolean.
+Nonempty match-condition lists must contain exactly the applicable public
+`_sandbox-admission.tpl` predicate, with the pinned controller identity where
+needed; unknown, duplicate or altered conditions fail. Only legacy,
+non-migration wiring may omit guards. Matching predicate text does not verify
+CEL execution, namespace policy or migration readiness.
+
 Unsupported layouts, indirect environment configuration, missing/forbidden
 resources, identity/version drift, malformed responses and timeouts stop the
 inspection with a blocked or unknown check. There is no fallback to Secret
@@ -254,7 +401,7 @@ images, addresses, administrator identities, kubeconfig data or raw diagnostics:
   `check`, `status` (`observed`, `blocked`, or `unknown`) and a fixed `reason`
   code. After the first failure, remaining entries stay `unknown/not-checked`.
 - `unverified` always contains five `unknown` entries: TLS and actual admission
-  invocation; CEL match conditions and namespace policy; source semantics and
+  invocation; effective CEL evaluation and namespace policy; source semantics and
   namespace write protection; running Operator Pods; and runtime/network/storage
   enforcement and provider evidence.
 - `qualifiesExecution` is always `false`, `executionReadiness` always `unknown`,

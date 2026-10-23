@@ -42,6 +42,9 @@ type AIGatewayResponse struct {
 	// the Agent may use each, and why not. Models and DefaultModel name
 	// granted routers by these names too.
 	ModelRouters []AIGatewayModelRouterResponse `json:"modelRouters,omitempty"`
+	// RateLimits are the limits the Agent's policy sets on its key. Only
+	// the single-Agent read fills them in.
+	RateLimits *AgentPolicyRateLimitsDTO `json:"rateLimits,omitempty"`
 }
 
 // AIGatewayCopilotResponse describes the Agent's GitHub Copilot proxy.

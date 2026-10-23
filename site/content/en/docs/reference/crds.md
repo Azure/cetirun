@@ -349,12 +349,60 @@ LiteLLM default and maximum monthly USD budget. Custom is not an allowed policy
 Harness. Agent Identity cannot complete aggregate `PolicyApplied` until a typed
 credential-service executor supplies matching read-back evidence.
 
+### AgentPolicy rate limits
+
+`modelAccess.rateLimits` sets AI Gateway limits on the virtual key of every
+policy-bound Agent whose Team uses the policy. Each Agent's key keeps its own
+counters, so Agents do not use up each other's limits. Every field is optional
+and an omitted field is unlimited. There is no zero value: the Gateway rejects
+every request of a key whose limit is zero, so the schema rejects values below
+the minimums.
+
+| Field | Minimum | Gateway key setting |
+| --- | --- | --- |
+| `maxParallelRequests` | 1 | `max_parallel_requests`, requests in flight at once |
+| `rpm` | 1 | `rpm_limit`, requests per minute across all models |
+| `tpm` | 4096 | `tpm_limit`, tokens per minute across all models |
+| `perModel.<model>.rpm` | 1 | `model_rpm_limit` in the key metadata |
+| `perModel.<model>.tpm` | 4096 | `model_tpm_limit` in the key metadata |
+
+`perModel` limits at most 64 models. Its keys are the exact Gateway model names
+the Agent requests (1 to 256 characters without whitespace), and each entry sets
+`rpm`, `tpm`, or both. `maxParallelRequests` is at most 2,147,483,647, the largest
+value the Gateway stores; the other limits have no upper bound. The values are
+not checked against a model's context window.
+
+The operator sets the limits when it creates a key, compares the key's stored
+limits with the policy on every reconcile, and updates the same key in place
+when they differ. Removing a field clears it on the key. Other key settings and
+metadata are kept. The limits are not part of the Gateway policy revision, so
+changing them does not start the reprojection fence that a model or budget
+change starts, and the operator does not replace the key or re-install the
+Agent's chart for them. Keys of legacy Agents without a policy are not changed;
+Gateway administrators manage their limits.
+
+The total limits count every request on the key, including the Agent's GitHub
+Copilot models. A per-model limit applies to the model name a request uses after
+model aliases; for an `auto` router that is the router's name, not the model it
+routes to. A request over a limit receives HTTP 429 with a `retry-after` header.
+Gateway replicas share the counters through Redis.
+
+LiteLLM reserves a request's input tokens plus its maximum output tokens when
+the request starts. OpenClaw sends the model's maximum output, for example
+128,000 tokens, with every request, so a `tpm` below the model's context window
+plus its maximum output rejects long conversations. For a model with a
+922,000-token context window and a 128,000-token maximum output that is about
+1.05 million tokens per minute. For such Agents, `rpm` and
+`maxParallelRequests` are the effective limits. Below 4,096 tokens per minute
+LiteLLM would also shorten answers, hence the minimum.
+
 ### AgentPolicy administration
 
 The admin Portal displays the complete cluster-scoped `AgentPolicy` configuration.
 Administrators can edit allowed Harnesses and skills, Copilot and shared model
-access, monthly USD budgets, multiple-Sandbox selection, read-only root
-filesystem, network CIDR and port rules, and ingress mode.
+access, monthly USD budgets, per-Agent rate limits, multiple-Sandbox
+selection, read-only root filesystem, network CIDR and port rules, and ingress
+mode.
 
 Kubernetes API access appears under Read-only policy capabilities in the Portal.
 The summary shows any requested ServiceAccount and namespace or cluster-wide permissions already recorded in the
@@ -433,16 +481,21 @@ configuration coordination protects updates and deletions, not new resources.
 
 The API validates model access and budgets as one unit: Copilot or shared model
 access requires a positive default and maximum monthly USD budget, and the
-default cannot exceed the maximum.
+default cannot exceed the maximum. It applies the schema's rate-limit minimums
+before writing. `modelAccess.rateLimits` in an update replaces the stored limits;
+an update without it removes them, so a client saves the limits it read. The
+Portal editor treats an empty input as no limit and never sends zero.
 
 #### Agent creation options
 
 The creation form selects a Team before offering Harness and model choices.
 `GET /api/v1/instance/create-options?team=<name>` requires a signed-in user and
 returns the selected Team, Policy name when bound, allowed Agent types, effective
-Gateway catalog, Agent Identity availability/requirement, and any configuration
-blocker. Responses use `Cache-Control: no-store`. This endpoint does not expose
-administrative Policy fields or grant runtime authorization.
+Gateway catalog, Agent Identity availability/requirement, the Policy's per-Agent
+rate limits, and any configuration blocker. Responses use `Cache-Control: no-store`.
+This endpoint does not expose other administrative Policy fields or grant runtime
+authorization. The form and the Agent details page show the rate limits
+read-only; the details page reads them from the Agent's Team Policy.
 
 Harness choices intersect deployment settings with `harnesses.allowed`. Shared
 models intersect the Gateway catalog with `modelAccess.sharedModels.allowed`;

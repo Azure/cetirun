@@ -201,6 +201,16 @@ model is its default model: OpenClaw would otherwise pick OpenAI's small model,
 which the Gateway does not offer. These calls count against the instance's
 key like any other.
 
+An instance governed by an Agent Policy can also carry request limits on its
+key: parallel requests, requests per minute, tokens per minute, and per-model
+limits. The Policy sets them for every Agent of its Teams, each on its own key.
+The operator applies a change to the existing key, and a request over a limit
+receives HTTP 429 with a `retry-after` header. Before setting a tokens per
+minute limit, read the
+[AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)
+reference: the Gateway counts a request's maximum output before the model
+answers, which rejects long OpenClaw conversations under a small limit.
+
 The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
 that Secret is lost while the key still exists in the Gateway, the operator
 does not replace the key, which would reset its spend, restore the default

@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""Explicit-target preflight and bounded Kata/Cilium network smoke tests.
+"""Explicit-target preflight, bounded network smoke and offline receipt checks.
 
 This does not register capabilities, authorize execution, or prove writer fencing.
 Deployment preflight reports native single-start configuration as unverified,
 not the stock writer-exclusion hold. Bootstrap, Gateway operation and effective
 skill selection still require separate evidence; completion is not E2E readiness.
+Use acceptance-check --receipt FILE for offline lifecycle evidence assertions.
 """
 
 import argparse
 import base64
 import binascii
 from contextlib import contextmanager
+from decimal import Decimal
+import hashlib
 import ipaddress
 import json
 import os
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -169,6 +173,11 @@ class PreflightBlocked(QualificationError):
         self.status = status
 
 
+class SanitizedParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise PreflightBlocked("invalid-command-line")
+
+
 def require_preflight(condition, reason, status="blocked"):
     if not condition:
         raise PreflightBlocked(reason, status)
@@ -228,6 +237,11 @@ DEPLOYMENT_RESOURCES = {
 }
 ADMISSION_NAME = "cetirun-sandbox-admission"
 PINNED_IMAGE = r"[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[0-9a-f]{64}"
+# Public _sandbox-admission.tpl expressions, with the controller identity replaced by "CONTROLLER".
+WEBHOOK_CLEANUP_DIGESTS = {
+    "controller-cleanup-only": "14e2e1fad301b5cef75005b61612777176a7d0b62e6dce79f417fcd1b6f007c5",
+    "garbage-collector-cleanup-only": "6d6bb441b8b56045e100a4eab716b7e4d5993a22ad3d78bfbac87742e8b4ae73",
+}
 
 
 class DeploymentKubernetes(Kubernetes):
@@ -447,6 +461,9 @@ def source_bindings(kube, args, operator, admission):
     require_preflight(type(native_execution) is bool and
                       config.get("nativeExecution", False) is native_execution,
                       "native-execution-mode-mismatch")
+    planned_migration = sources.get("plannedMigration", False)
+    require_preflight(type(planned_migration) is bool and (not planned_migration or native_execution),
+                      "planned-migration-mode-mismatch")
     require_preflight(sources.get("admissionServiceAccount") == args.admission_service_account and
                       config.get("controllerUsername") == f"system:serviceaccount:{args.namespace}:{args.operator_service_account}" and
                       config.get("validationMode") == "strict" and config.get("platformNamespace") == args.namespace,
@@ -491,7 +508,7 @@ def source_bindings(kube, args, operator, admission):
         else:
             for field in ("nodes", "platformDaemonSets"):
                 array_value(document.get(field))
-    return native_execution
+    return native_execution, planned_migration
 
 
 def admission_service(kube, args, admission):
@@ -606,7 +623,27 @@ def webhook_namespace_selector_matches(actual, expected, allow_aks_system_exclus
     return len(expressions) == len(required) and all(expressions.count(item) == 1 for item in required)
 
 
-def webhook_wiring(kube, args, admission, *, native_execution=False):
+def webhook_cleanup_matches(conditions, controller_username, *, pod=False, required=False):
+    if conditions == []:
+        return not required
+    if (not isinstance(conditions, list) or len(conditions) != 1 or not isinstance(conditions[0], dict) or
+            set(conditions[0]) != {"name", "expression"}):
+        return False
+    name = "garbage-collector-cleanup-only" if pod else "controller-cleanup-only"
+    condition = conditions[0]
+    expression = condition["expression"]
+    if (condition["name"] != name or not isinstance(expression, str) or
+            not 0 < len(expression) <= 8192 or not expression.isascii()):
+        return False
+    if not pod:
+        controller = json.dumps(controller_username)
+        if expression.count(controller) != 1:
+            return False
+        expression = expression.replace(controller, '"CONTROLLER"')
+    return hashlib.sha256(expression.strip(" \t\r\n").encode("ascii")).hexdigest() == WEBHOOK_CLEANUP_DIGESTS[name]
+
+
+def webhook_wiring(kube, args, admission, *, native_execution=False, planned_migration=False):
     timeout = admission[3].get("admission-pod-timeout")
     match = re.fullmatch(r"([0-9]{1,5})(ms|s)", timeout) if isinstance(timeout, str) else None
     require_preflight(match, "explicit-admission-request-budget-required", "unknown")
@@ -657,13 +694,25 @@ def webhook_wiring(kube, args, admission, *, native_execution=False):
             "webhook-ca-encoding-invalid")
         ca = bundle
         expected = [dict(zip(("apiGroups", "apiVersions", "operations", "resources", "scope"), rule)) for rule in rules]
+        guarded_pod = False
+        rules_match = hook.get("rules") == expected
+        if name == "cetirun-sandbox-pods":
+            binding = {"apiGroups": [""], "apiVersions": ["v1"], "operations": ["CREATE"],
+                       "resources": ["pods/binding", "bindings"], "scope": "Namespaced"}
+            guarded_pod = hook.get("rules") == expected[:1] + [binding] + expected[1:]
+            rules_match = guarded_pod or (not planned_migration and rules_match)
         namespace_selector = ({"matchExpressions": [{"key": "cetirun.microsoft.com/sandbox-protected", "operator": "Exists"}]}
                               if name == "cetirun-sandbox-pods" else {})
-        require_preflight(hook.get("rules") == expected and not hook.get("objectSelector") and
+        require_preflight(rules_match and not hook.get("objectSelector") and
                           webhook_namespace_selector_matches(
                               hook.get("namespaceSelector", {}), namespace_selector,
                               getattr(args, "allow_aks_system_exclusions", False)),
                           "webhook-resource-wiring-mismatch")
+        require_preflight(webhook_cleanup_matches(
+            hook.get("matchConditions", []),
+            f"system:serviceaccount:{args.namespace}:{args.operator_service_account}",
+            pod=name in ("cetirun-sandbox-pods", "cetirun-sandbox-placement"),
+            required=planned_migration or guarded_pod), "webhook-match-conditions-mismatch")
         require_preflight(kind != "mutating" or hook.get("reinvocationPolicy") == "Never",
                           "webhook-reinvocation-mismatch")
 
@@ -721,7 +770,7 @@ def deployment_preflight(args):
         with step("admission-deployment"):
             admission = deployed_workload(kube, args, "admission")
         with step("source-bindings"):
-            native_execution = source_bindings(kube, args, operator, admission)
+            native_execution, planned_migration = source_bindings(kube, args, operator, admission)
             if native_execution:
                 result["stockExecutionHold"] = "native-single-start-unverified"
                 result["unverified"].append({
@@ -732,7 +781,7 @@ def deployment_preflight(args):
         with step("admission-endpoints"):
             admission_endpoints(kube, args, admission, selector)
         with step("webhook-wiring"):
-            webhook_wiring(kube, args, admission, native_execution=native_execution)
+            webhook_wiring(kube, args, admission, native_execution=native_execution, planned_migration=planned_migration)
         with step("stable-observation"):
             kube.stable(config, version)
         result["status"] = "completed"
@@ -967,10 +1016,453 @@ def network_smoke(kube, image, runtime_class, result, protocol="TCP"):
         result["cleanupComplete"] = True
 
 
+LIFECYCLE_SNAPSHOT_FIELDS = (
+    "artifactSet", "owner", "resources", "home", "accounting", "workload", "models", "peer", "extensions",
+)
+LIFECYCLE_RESOURCE_FIELDS = ("agent", "namespace", "statefulSet", "homePvc", "homePv")
+LIFECYCLE_WORKLOAD_FIELDS = ("agent", "pod", "observedPod", "node", "generation", "observedGeneration", "ready")
+LIFECYCLE_PEER_FIELDS = ("subject", "agent", "pod", "home", "homePv", "key", "budget", "spend", "ready")
+LIFECYCLE_OPERATION_FIELDS = (
+    "operation", "path", "requestAccepted", "stopRequested", "stopObserved", "sourceHealthy",
+    "sourceTerminated", "sourceNode", "sourcePod", "csiReleased", "csiAttached", "currentWorkloadReady",
+    "elapsedSeconds", "limitSeconds", "snapshot",
+)
+LIFECYCLE_REQUEST_FIELDS = (
+    "case", "artifactSet", "response", "outcome", "reportedState", "observedState",
+    "authoritativeObservation", "intentBefore", "intentAfter", "appliesBefore", "appliesAfter",
+    "operationBefore", "operationAfter", "workload", "retryable", "failureObserved", "elapsedSeconds", "limitSeconds",
+)
+LIFECYCLE_REQUEST_BINDING_FIELDS = ("id", "agent", "generation", "sourcePod")
+LIFECYCLE_REQUEST_WORKLOAD_FIELDS = ("agent", "pod", "observedPod", "generation", "observedGeneration", "ready")
+LIFECYCLE_CLEANUP_FIELDS = (
+    "artifactSet", "path", "authentication", "subject", "agent", "ordinary", "forced", "remaining",
+    "peer", "elapsedSeconds", "limitSeconds",
+)
+LIFECYCLE_REQUESTS = {
+    "duplicate": ("accepted", ("pending", "completed"), 0),
+    "stale-uid": ("rejected", ("rejected",), 0),
+    "stale-version": ("rejected", ("rejected",), 0),
+    "lost-response": ("unknown", ("pending", "completed"), 1),
+    "controller-takeover": ("accepted", ("pending", "completed"), 1),
+    "suspend-precedence": ("accepted", ("pending", "suspended"), 0),
+    "delete-precedence": ("accepted", ("pending", "deleted"), 0),
+    "inflight-replacement": ("rejected", ("rejected",), 0),
+    "destination-failure": ("accepted", ("pending", "failed"), 1),
+}
+
+
+def require_lifecycle(condition, reason):
+    require_preflight(condition, reason, "failed")
+
+
+def lifecycle_fields(value, names):
+    require_preflight(value is not None, "missing-evidence")
+    require_lifecycle(isinstance(value, dict), "invalid-evidence-shape")
+    require_lifecycle(set(value).issubset(names), "unexpected-evidence-fields")
+    require_preflight(set(names).issubset(value), "missing-evidence-fields")
+    return value
+
+
+def lifecycle_array(value, limit=64):
+    require_preflight(value is not None, "missing-evidence")
+    require_lifecycle(isinstance(value, list) and len(value) <= limit, "invalid-evidence-array")
+    return value
+
+
+def lifecycle_digest(value):
+    return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def lifecycle_money(value):
+    require_lifecycle(isinstance(value, str) and
+                      re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,9})?", value) is not None,
+                      "invalid-accounting-amount")
+    return Decimal(value)
+
+
+def lifecycle_bounds(value):
+    limit, elapsed = value["limitSeconds"], value["elapsedSeconds"]
+    require_lifecycle(type(limit) is int and 0 < limit <= 9999 and
+                      type(elapsed) in (int, float) and 0 <= elapsed <= limit, "observation-outside-bound")
+
+
+def lifecycle_case(value):
+    lifecycle_fields(value, ("runtime", "execution", "modelSource", "identity", "helpers"))
+    for key, choices in (
+        ("runtime", ("openclaw", "hermes")), ("execution", ("ordinary", "sandbox-native")),
+        ("modelSource", ("shared", "copilot-only", "mixed")),
+        ("identity", ("none", "entra-obo", "azure-app-only")),
+    ):
+        require_preflight(isinstance(value[key], str) and value[key] in choices, "unsupported-case")
+    helpers = lifecycle_array(value["helpers"], 5)
+    require_preflight(all(isinstance(item, str) and item in
+                          ("skills", "memory", "doctor", "logger", "desktop") for item in helpers),
+                      "unsupported-helper")
+    require_lifecycle(len(set(helpers)) == len(helpers), "duplicate-helper")
+    return value
+
+
+def lifecycle_extension_checks(case):
+    checks = {
+        "skills": ("skillsReadOnly", "skillsUnchanged"),
+        "memory": ("memoryReadWrite", "memoryPrivate"),
+        "doctor": ("doctorReady",),
+        "logger": ("loggerReady",),
+        "desktop": ("desktopOwnerAccess", "desktopPeerDenied"),
+    }
+    required = [check for helper in case["helpers"] for check in checks[helper]]
+    if case["identity"] != "none":
+        required += ["identityAuthorized", "identityPeerDenied", "identityRevocationObserved"]
+    if case["identity"] == "azure-app-only":
+        required += ["mcpAuthorized", "mcpPeerDenied"]
+    return required
+
+
+def lifecycle_request_cases(execution):
+    return tuple(name for name in LIFECYCLE_REQUESTS
+                 if execution == "sandbox-native" or name not in ("inflight-replacement", "destination-failure"))
+
+
+def lifecycle_artifact_fingerprint(artifacts, case):
+    lifecycle_case(case)
+    lifecycle_fields(artifacts, ("sourceCommit", "sourceTree", "images", "charts", "configuration"))
+    for key in ("sourceCommit", "sourceTree"):
+        require_lifecycle(isinstance(artifacts[key], str) and
+                          re.fullmatch(r"[0-9a-f]{40}", artifacts[key]) is not None, "source-pin-required")
+    require_lifecycle(lifecycle_digest(artifacts["configuration"]), "configuration-pin-required")
+    images = {"operator", "admission", "portal", "runtime", "gateway"}
+    charts = {"operator", "portal", "runtime", "gateway"}
+    images.update(set(case["helpers"]) - {"skills"})
+    if case["modelSource"] != "shared":
+        images.add("copilot")
+    if case["identity"] != "none":
+        images.add("broker")
+        charts.add("broker")
+    if case["identity"] == "azure-app-only":
+        images.add("mcp")
+        charts.add("mcp")
+    for key, required, allowed in (
+        ("images", images, images | {"copilot", "doctor", "logger", "desktop", "memory", "broker", "mcp"}),
+        ("charts", charts, charts | {"broker", "mcp"}),
+    ):
+        pins = artifacts[key]
+        require_lifecycle(isinstance(pins, dict) and required.issubset(pins) and
+                          set(pins).issubset(allowed) and all(lifecycle_digest(pin) for pin in pins.values()),
+                          "digest-pinned-artifacts-required")
+    pinned = {"artifacts": artifacts, "case": {**case, "helpers": sorted(case["helpers"])}}
+    return "sha256:" + hashlib.sha256(
+        json.dumps(pinned, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def lifecycle_snapshots(receipt):
+    snapshots = [lifecycle_fields(receipt["before"], LIFECYCLE_SNAPSHOT_FIELDS)]
+    for operation in lifecycle_array(receipt["operations"]):
+        lifecycle_fields(operation, LIFECYCLE_OPERATION_FIELDS)
+        snapshots.append(lifecycle_fields(operation["snapshot"], LIFECYCLE_SNAPSHOT_FIELDS))
+    return snapshots
+
+
+def lifecycle_artifacts(receipt):
+    fingerprint = lifecycle_artifact_fingerprint(receipt["artifacts"], receipt["case"])
+    records = lifecycle_snapshots(receipt)
+    records += [lifecycle_fields(item, LIFECYCLE_REQUEST_FIELDS)
+                for item in lifecycle_array(receipt["requests"])]
+    records.append(lifecycle_fields(receipt["cleanup"], LIFECYCLE_CLEANUP_FIELDS))
+    require_lifecycle(all(item["artifactSet"] == fingerprint for item in records), "artifact-set-mismatch")
+    return fingerprint
+
+
+def lifecycle_authorization(receipt):
+    authorization = lifecycle_fields(receipt["authorization"],
+                                     ("target", "owner", "peer", "provider", "spend", "faults", "ownerControls"))
+    require_preflight(all(value is True for value in authorization.values()), "authorization-or-controls-unavailable")
+
+
+def lifecycle_owners(receipt):
+    subjects = None
+    for snapshot in lifecycle_snapshots(receipt):
+        owner = lifecycle_fields(snapshot["owner"], (
+            "path", "authentication", "subject", "peerSubject", "peerReadStatus", "peerMutationStatus",
+            "nativeHttpStatus", "nativeWebSocketStatus",
+        ))
+        pair = (owner["subject"], owner["peerSubject"])
+        require_lifecycle(all(lifecycle_digest(item) for item in pair) and pair[0] != pair[1] and
+                          (subjects is None or subjects == pair), "distinct-stable-owners-required")
+        subjects = pair
+        require_lifecycle(owner["path"] in ("owner-rest", "owner-portal") and
+                          owner["authentication"] == "oidc", "real-owner-path-required")
+        require_lifecycle(all(type(owner[key]) is int for key in
+                              ("peerReadStatus", "peerMutationStatus", "nativeHttpStatus", "nativeWebSocketStatus")),
+                          "integer-http-status-required")
+        require_lifecycle(owner["peerReadStatus"] in (403, 404) and owner["peerMutationStatus"] in (403, 404),
+                          "peer-owner-access-not-denied")
+        require_lifecycle(owner["nativeHttpStatus"] == 200 and owner["nativeWebSocketStatus"] == 101,
+                          "authenticated-native-access-required")
+
+
+def lifecycle_home(receipt):
+    expected = receipt["expectedHome"]
+    require_lifecycle(isinstance(expected, dict) and 0 < len(expected) <= 16 and
+                      all(isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) and
+                          lifecycle_digest(value) for name, value in expected.items()), "home-fixture-checksums-required")
+    baseline = None
+    for snapshot in lifecycle_snapshots(receipt):
+        resources = lifecycle_fields(snapshot["resources"], LIFECYCLE_RESOURCE_FIELDS)
+        require_lifecycle(all(lifecycle_digest(value) for value in resources.values()) and
+                          (baseline is None or resources == baseline), "retained-resource-identity-mismatch")
+        baseline = resources
+        home = lifecycle_fields(snapshot["home"], ("path", "checksums", "readWrite"))
+        require_lifecycle(home["path"] == "owner-application", "allowed-home-path-required")
+        require_lifecycle(home["checksums"] == expected and home["readWrite"] is True,
+                          "home-content-or-read-write-mismatch")
+
+
+def lifecycle_accounting(receipt):
+    baseline, previous_spend = None, Decimal(0)
+    for snapshot in lifecycle_snapshots(receipt):
+        accounting = lifecycle_fields(snapshot["accounting"], ("key", "budget", "spend", "spendAfterCall"))
+        budget, spend, after_call = (lifecycle_money(accounting[key]) for key in ("budget", "spend", "spendAfterCall"))
+        identity = (accounting["key"], budget)
+        require_lifecycle(lifecycle_digest(identity[0]) and (baseline is None or identity == baseline),
+                          "accounting-key-or-budget-changed")
+        require_lifecycle(0 < spend < after_call <= budget and spend >= previous_spend,
+                          "nonzero-cumulative-spend-required")
+        baseline, previous_spend = identity, after_call
+
+
+def lifecycle_recovery(receipt):
+    snapshots = lifecycle_snapshots(receipt)
+    operations = receipt["operations"]
+    names = [operation["operation"] for operation in operations]
+    require_lifecycle(all(isinstance(name, str) and name in ("restart", "suspend-resume", "migrate")
+                          for name in names), "unsupported-operation")
+    require_preflight("restart" in names and "suspend-resume" in names, "lifecycle-coverage-missing")
+    if receipt["case"]["execution"] == "sandbox-native":
+        require_preflight(names.count("migrate") >= 2, "repeated-migration-evidence-missing")
+    else:
+        require_lifecycle("migrate" not in names, "migration-requires-native-execution")
+    sources = {"shared": ("shared",), "copilot-only": ("copilot",), "mixed": ("shared", "copilot")}
+    previous = None
+    pods = set()
+    tool_witnesses = set()
+    for snapshot in snapshots:
+        resources = lifecycle_fields(snapshot["resources"], LIFECYCLE_RESOURCE_FIELDS)
+        workload = lifecycle_fields(snapshot["workload"], LIFECYCLE_WORKLOAD_FIELDS)
+        require_lifecycle(lifecycle_digest(workload["pod"]) and lifecycle_digest(workload["node"]) and
+                          type(workload["generation"]) is int and workload["generation"] > 0 and
+                          workload["ready"] is True, "current-ready-workload-required")
+        require_lifecycle(lifecycle_digest(workload["agent"]) and workload["agent"] == resources["agent"] and
+                          type(workload["observedGeneration"]) is int and
+                          workload["observedGeneration"] == workload["generation"] and
+                          workload["observedPod"] == workload["pod"], "current-workload-binding-mismatch")
+        require_lifecycle(workload["pod"] not in pods, "fresh-execution-required")
+        pods.add(workload["pod"])
+        if previous is not None:
+            require_lifecycle(workload["generation"] > previous["generation"], "fresh-execution-required")
+        previous = workload
+        models = lifecycle_fields(snapshot["models"], sources[receipt["case"]["modelSource"]])
+        for model in models.values():
+            lifecycle_fields(model, ("reply", "expectedToolChecksum", "observedToolChecksum"))
+            require_lifecycle(model["reply"] is True and lifecycle_digest(model["expectedToolChecksum"]) and
+                              model["expectedToolChecksum"] == model["observedToolChecksum"],
+                              "model-reply-and-independent-tool-witness-required")
+            require_lifecycle(model["expectedToolChecksum"] not in tool_witnesses, "fresh-tool-witness-required")
+            tool_witnesses.add(model["expectedToolChecksum"])
+    for index, operation in enumerate(operations):
+        lifecycle_bounds(operation)
+        require_lifecycle(all(type(operation[key]) is bool for key in
+                              ("sourceHealthy", "csiReleased", "csiAttached")), "invalid-operation-observations")
+        require_lifecycle(lifecycle_digest(operation["sourceNode"]) and
+                          operation["sourceNode"] == snapshots[index]["workload"]["node"] and
+                          lifecycle_digest(operation["sourcePod"]) and
+                          operation["sourcePod"] == snapshots[index]["workload"]["pod"],
+                          "source-workload-mismatch")
+        require_lifecycle(all(operation[key] is True for key in
+                              ("requestAccepted", "stopRequested", "stopObserved", "sourceTerminated",
+                               "currentWorkloadReady")), "acceptance-stop-and-ready-observations-required")
+        if operation["operation"] == "migrate":
+            require_lifecycle(operation["path"] == "admin-kubernetes" and
+                              all(operation[key] is True for key in ("sourceHealthy", "csiReleased", "csiAttached")) and
+                              operation["sourceNode"] != snapshots[index + 1]["workload"]["node"],
+                              "healthy-source-and-csi-move-required")
+        else:
+            require_lifecycle(operation["path"] in ("owner-rest", "owner-portal"), "owner-lifecycle-path-required")
+
+
+def lifecycle_peers(receipt):
+    snapshots = lifecycle_snapshots(receipt)
+    cleanup = lifecycle_fields(receipt["cleanup"], LIFECYCLE_CLEANUP_FIELDS)
+    peers = [snapshot["peer"] for snapshot in snapshots] + [cleanup["peer"]]
+    before = snapshots[0]
+    owner = lifecycle_fields(before["owner"], (
+        "path", "authentication", "subject", "peerSubject", "peerReadStatus", "peerMutationStatus",
+        "nativeHttpStatus", "nativeWebSocketStatus",
+    ))
+    resources = lifecycle_fields(before["resources"], LIFECYCLE_RESOURCE_FIELDS)
+    workloads = [lifecycle_fields(snapshot["workload"], LIFECYCLE_WORKLOAD_FIELDS)
+                 for snapshot in snapshots]
+    accounting = lifecycle_fields(before["accounting"], ("key", "budget", "spend", "spendAfterCall"))
+    baseline, previous_spend = None, Decimal(0)
+    for peer in peers:
+        lifecycle_fields(peer, LIFECYCLE_PEER_FIELDS)
+        identity = tuple(peer[key] for key in ("subject", "agent", "pod", "home", "homePv", "key"))
+        require_lifecycle(all(lifecycle_digest(value) for value in identity) and
+                          peer["subject"] == owner["peerSubject"] != owner["subject"] and
+                          peer["agent"] != resources["agent"] and
+                          all(peer["pod"] != current["pod"] for current in workloads) and
+                          peer["home"] != resources["homePvc"] and peer["homePv"] != resources["homePv"] and
+                          peer["key"] != accounting["key"], "independent-peer-required")
+        retained = (*identity, lifecycle_money(peer["budget"]))
+        spend = lifecycle_money(peer["spend"])
+        require_lifecycle((baseline is None or retained == baseline) and peer["ready"] is True and
+                          previous_spend <= spend <= retained[-1], "peer-continuity-mismatch")
+        baseline, previous_spend = retained, spend
+
+
+def lifecycle_requests(receipt):
+    requests = [lifecycle_fields(item, LIFECYCLE_REQUEST_FIELDS) for item in lifecycle_array(receipt["requests"])]
+    expected = lifecycle_request_cases(receipt["case"]["execution"])
+    names = [item["case"] for item in requests]
+    require_lifecycle(all(isinstance(name, str) and name in expected for name in names), "unexpected-request-case")
+    require_lifecycle(len(set(names)) == len(names), "duplicate-request-evidence")
+    require_preflight(set(names) == set(expected), "request-coverage-missing")
+    snapshot = lifecycle_fields(receipt["before"], LIFECYCLE_SNAPSHOT_FIELDS)
+    agent = lifecycle_fields(snapshot["resources"], LIFECYCLE_RESOURCE_FIELDS)["agent"]
+    peer_pod = lifecycle_fields(snapshot["peer"], LIFECYCLE_PEER_FIELDS)["pod"]
+    for item in requests:
+        response, outcomes, maximum = LIFECYCLE_REQUESTS[item["case"]]
+        lifecycle_bounds(item)
+        require_lifecycle(item["response"] == response and item["outcome"] in outcomes and
+                          item["reportedState"] == item["observedState"] == item["outcome"],
+                          "request-outcome-mismatch")
+        require_preflight(item["authoritativeObservation"] is True, "request-state-unobserved")
+        require_lifecycle(lifecycle_digest(item["intentBefore"]) and item["intentBefore"] == item["intentAfter"],
+                          "original-intent-not-retained")
+        before, after = item["appliesBefore"], item["appliesAfter"]
+        require_lifecycle(type(before) is int and type(after) is int and
+                          0 <= before <= after <= before + maximum, "unexpected-workload-apply")
+        require_lifecycle(item["outcome"] != "completed" or after > 0, "completed-workload-apply-required")
+        original = lifecycle_fields(item["operationBefore"], LIFECYCLE_REQUEST_BINDING_FIELDS)
+        observed = lifecycle_fields(item["operationAfter"], LIFECYCLE_REQUEST_BINDING_FIELDS)
+        for binding in (original, observed):
+            require_lifecycle(all(lifecycle_digest(binding[key]) for key in ("id", "agent", "sourcePod")) and
+                              type(binding["generation"]) is int and binding["generation"] > 0,
+                              "invalid-operation-binding")
+        require_lifecycle(original == observed and original["agent"] == agent and
+                          original["sourcePod"] != peer_pod, "operation-continuity-mismatch")
+        workload = lifecycle_fields(item["workload"], LIFECYCLE_REQUEST_WORKLOAD_FIELDS)
+        require_lifecycle(workload["agent"] == agent and type(workload["generation"]) is int and
+                          workload["generation"] == original["generation"] and
+                          type(workload["observedGeneration"]) is int and
+                          0 <= workload["observedGeneration"] <= workload["generation"] and
+                          type(workload["ready"]) is bool, "request-workload-binding-mismatch")
+        require_lifecycle(workload["pod"] == workload["observedPod"] and
+                          (workload["pod"] is None or lifecycle_digest(workload["pod"])) and
+                          workload["pod"] != peer_pod and
+                          (not workload["ready"] or (workload["pod"] is not None and
+                                                    workload["observedGeneration"] == workload["generation"])),
+                          "request-workload-binding-mismatch")
+        if item["outcome"] == "completed":
+            require_lifecycle(workload["ready"] and workload["pod"] != original["sourcePod"],
+                              "request-completion-unobserved")
+        elif item["outcome"] != "rejected":
+            require_lifecycle(not workload["ready"], "request-outcome-workload-mismatch")
+            if item["outcome"] in ("suspended", "deleted"):
+                require_lifecycle(workload["pod"] is None, "request-shutdown-unobserved")
+        require_lifecycle(item["retryable"] is (item["outcome"] == "pending") and
+                          item["failureObserved"] is (item["case"] == "destination-failure"),
+                          "request-failure-observation-mismatch")
+
+
+def lifecycle_cleanup(receipt):
+    cleanup = lifecycle_fields(receipt["cleanup"], LIFECYCLE_CLEANUP_FIELDS)
+    before = lifecycle_snapshots(receipt)[0]
+    owner = object_value(before["owner"])
+    resources = lifecycle_fields(before["resources"], LIFECYCLE_RESOURCE_FIELDS)
+    lifecycle_bounds(cleanup)
+    require_lifecycle(lifecycle_digest(cleanup["agent"]) and cleanup["agent"] == resources["agent"],
+                      "cleanup-target-mismatch")
+    require_lifecycle(cleanup["path"] in ("owner-rest", "owner-portal") and cleanup["authentication"] == "oidc" and
+                      lifecycle_digest(cleanup["subject"]) and cleanup["subject"] == owner.get("subject"),
+                      "owner-deletion-path-required")
+    require_lifecycle(cleanup["ordinary"] is True and cleanup["forced"] is False, "ordinary-finalization-required")
+    remaining = lifecycle_fields(cleanup["remaining"],
+                                 ("agent", "namespace", "homePvc", "homePv", "attachments",
+                                  "controlRecords", "reservations", "gatewayKey"))
+    require_lifecycle(all(type(count) is int and count == 0 for count in remaining.values()), "cleanup-incomplete")
+
+
+def lifecycle_extensions(receipt):
+    expected = lifecycle_extension_checks(receipt["case"])
+    for snapshot in lifecycle_snapshots(receipt):
+        observations = lifecycle_fields(snapshot["extensions"], expected)
+        require_lifecycle(all(value is True for value in observations.values()), "extension-witness-mismatch")
+
+
+def assess_lifecycle_receipt(receipt):
+    checks = {
+        "artifacts": lifecycle_artifacts, "authorization": lifecycle_authorization,
+        "owner-access": lifecycle_owners, "home": lifecycle_home, "accounting": lifecycle_accounting,
+        "recovery": lifecycle_recovery, "peers": lifecycle_peers, "requests": lifecycle_requests,
+        "cleanup": lifecycle_cleanup, "extensions": lifecycle_extensions,
+    }
+    result = {
+        "version": "v1", "mode": "acceptance-check", "status": "blocked", "evidenceKind": "unknown",
+        "qualifiesExecution": False, "liveAcceptance": "not-established",
+        "checks": [{"check": name, "status": "blocked", "reason": "not-checked"} for name in checks],
+    }
+    try:
+        lifecycle_fields(receipt, ("version", "evidenceKind", "case", "artifacts", "authorization",
+                                   "expectedHome", "before", "operations", "requests", "cleanup"))
+        require_lifecycle(receipt["version"] == "v1" and receipt["evidenceKind"] in ("synthetic", "live"),
+                          "invalid-evidence-version-or-kind")
+        lifecycle_case(receipt["case"])
+    except PreflightBlocked as error:
+        result.update(status="failed" if error.status == "failed" else "blocked", error=error.reason)
+        return result
+    result.update(evidenceKind=receipt["evidenceKind"],
+                  case={**receipt["case"], "helpers": sorted(receipt["case"]["helpers"])})
+    for check in result["checks"]:
+        try:
+            observed = checks[check["check"]](receipt)
+            if check["check"] == "artifacts":
+                result["artifactSet"] = observed
+            check.update(status="matched", reason="scoped-assertions-matched")
+        except PreflightBlocked as error:
+            check.update(status="failed" if error.status == "failed" else "blocked", reason=error.reason)
+    statuses = {check["status"] for check in result["checks"]}
+    result["status"] = "failed" if "failed" in statuses else "blocked" if "blocked" in statuses else "matched"
+    return result
+
+
+def lifecycle_acceptance(argv):
+    parser = SanitizedParser(description="Offline assertions over one sanitized, artifact-pinned lifecycle receipt.")
+    parser.add_argument("--receipt", required=True, help="local JSON evidence; never an authorization or execution input")
+    result = {"version": "v1", "mode": "acceptance-check", "status": "blocked",
+              "qualifiesExecution": False, "liveAcceptance": "not-established"}
+    try:
+        args = parser.parse_args(argv)
+    except PreflightBlocked:
+        result["error"] = "invalid-command-line; use acceptance-check --help"
+        print(json.dumps(result, sort_keys=True))
+        return 2
+    try:
+        with open(args.receipt, "rb", opener=lambda path, flags: os.open(path, flags | os.O_NONBLOCK)) as stream:
+            require_preflight(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "receipt-not-regular-file")
+            raw = stream.read(1024 * 1024 + 1)
+        result = assess_lifecycle_receipt(preflight_json(raw.decode("utf-8")))
+    except (OSError, UnicodeError):
+        result["error"] = "receipt-unreadable"
+    except PreflightBlocked as error:
+        result["error"] = error.reason
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result["status"] == "matched" else 1
+
+
 def main(argv=None):
-    class SanitizedParser(argparse.ArgumentParser):
-        def error(self, message):
-            raise PreflightBlocked("invalid-command-line")
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "acceptance-check":
+        return lifecycle_acceptance(argv[1:])
 
     parser = SanitizedParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "network-smoke", "deployment-preflight"))

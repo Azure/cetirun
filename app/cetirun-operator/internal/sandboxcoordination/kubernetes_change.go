@@ -506,6 +506,23 @@ func newConfigurationImage(input client.Object) (configurationImage, error) {
 	if err != nil {
 		return image, err
 	}
+	// Normalize comparison metadata only; retain the original submission image.
+	image.metadata = *image.metadata.DeepCopy()
+	for _, entry := range image.metadata.ManagedFields {
+		if entry.FieldsV1 == nil {
+			continue
+		}
+		var fields map[string]any
+		problems, err := strictjson.UnmarshalStrict(entry.FieldsV1.Raw, &fields)
+		if err != nil || len(problems) != 0 || fields == nil {
+			return image, fmt.Errorf("%w: configuration managed fields must contain an unambiguous JSON object", ErrUnavailable)
+		}
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			return image, fmt.Errorf("encode configuration managed fields: %w", err)
+		}
+		entry.FieldsV1.Raw = raw
+	}
 	if image.digest == "" {
 		raw, err := json.Marshal(struct {
 			Spec                any

@@ -207,8 +207,9 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	if !slices.Contains(policySpec.Properties["harnesses"].Required, "allowed") {
 		t.Fatal("AgentPolicy harness allowlist must be required")
 	}
-	requireSchemaProperties(t, policySpec.Properties["modelAccess"], "copilot", "gatewayBudget", "sharedModels")
+	requireSchemaProperties(t, policySpec.Properties["modelAccess"], "copilot", "gatewayBudget", "rateLimits", "sharedModels")
 	requireSchemaProperties(t, policySpec.Properties["modelAccess"].Properties["gatewayBudget"], "defaultMonthlyUSD", "maxMonthlyUSD")
+	requireSchemaProperties(t, policySpec.Properties["modelAccess"].Properties["rateLimits"], "maxParallelRequests", "perModel", "rpm", "tpm")
 	requireSchemaProperties(t, policy.Properties["status"], "observedGeneration", "conditions")
 
 	agent := apiContractCRD(t, "agents").Spec.Versions[0].Schema.OpenAPIV3Schema

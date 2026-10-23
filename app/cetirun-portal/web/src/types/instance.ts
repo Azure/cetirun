@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import type { AgentPolicyRateLimits } from "./rateLimits";
+
 export interface TeamSummary {
   name: string;
   role: string;
@@ -95,6 +97,8 @@ export interface AIGatewayInfo {
   };
   /** The Team's smart-routing models for this Agent: usable or why not. */
   modelRouters?: { name: string; granted: boolean; reason?: string }[];
+  /** Limits the Agent's policy sets on its key; absent when there are none. */
+  rateLimits?: AgentPolicyRateLimits;
 }
 
 export interface ModelAccess {

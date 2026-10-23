@@ -83,6 +83,8 @@ type Key struct {
 	Aliases map[string]string
 	// AllowedRoutes are the routes the key may call; see KeyRoutes.
 	AllowedRoutes []string
+	// Limits are the key's stored request limits.
+	Limits KeyLimits
 }
 
 // GenerateRequest creates a key with a caller-chosen value, which lets the
@@ -105,6 +107,8 @@ type GenerateRequest struct {
 	UserID string
 	// Aliases are the key's model aliases; see Key.Aliases.
 	Aliases map[string]string
+	// Limits are the key's request limits; absent limits are unlimited.
+	Limits KeyLimits
 }
 
 // Client calls the Gateway management API with the master key.
@@ -168,6 +172,7 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 			UserID         *string  `json:"user_id"`
 			Aliases        any      `json:"aliases"`
 			AllowedRoutes  []string `json:"allowed_routes"`
+			keyLimitsInfo
 		} `json:"info"`
 	}
 	status, err := c.do(ctx, http.MethodGet, "/key/info?"+query.Encode(), nil, &response)
@@ -183,6 +188,7 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked, Spend: info.Spend,
 		TeamID: deref(info.TeamID), UserID: deref(info.UserID), Aliases: keyAliases(info.Aliases),
 		AllowedRoutes: info.AllowedRoutes,
+		Limits:        info.limits(),
 	}
 	if info.BudgetResetAt != nil && strings.TrimSpace(*info.BudgetResetAt) != "" {
 		resetAt, err := time.Parse(time.RFC3339, *info.BudgetResetAt)
@@ -209,6 +215,9 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 	if len(req.Models) == 0 {
 		return fmt.Errorf("virtual key model list must not be empty; an empty list grants every model")
 	}
+	if err := req.Limits.Validate(); err != nil {
+		return err
+	}
 	body := map[string]any{
 		"key":            req.Key,
 		"key_alias":      req.Alias,
@@ -216,6 +225,7 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 		"allowed_routes": KeyRoutes,
 		"metadata":       req.Metadata,
 	}
+	req.Limits.addTo(body)
 	if req.MaxBudget > 0 {
 		body["max_budget"] = req.MaxBudget
 	}

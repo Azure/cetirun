@@ -96,6 +96,10 @@ type fakeAIGateway struct {
 	aliasUpdates  []map[string]string
 	aliasErr      error
 	routeUpdates  [][]string
+	// limitUpdates records UpdateKeyLimits calls; ignoreLimitUpdate makes
+	// the Gateway accept them without storing the limits.
+	limitUpdates      []aigateway.KeyLimits
+	ignoreLimitUpdate bool
 }
 
 func newFakeAIGateway() *fakeAIGateway {
@@ -122,6 +126,7 @@ func (f *fakeAIGateway) GetKey(_ context.Context, token string) (*aigateway.Key,
 	copied.Models = slices.Clone(key.Models)
 	copied.Aliases = maps.Clone(key.Aliases)
 	copied.AllowedRoutes = slices.Clone(key.AllowedRoutes)
+	copied.Limits = cloneKeyLimits(key.Limits)
 	return &copied, nil
 }
 
@@ -140,6 +145,7 @@ func (f *fakeAIGateway) GenerateKey(_ context.Context, req aigateway.GenerateReq
 		Alias: req.Alias, Models: slices.Clone(req.Models), MaxBudget: &budget, BudgetDuration: req.BudgetDuration,
 		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID, Aliases: maps.Clone(req.Aliases),
 		AllowedRoutes: slices.Clone(aigateway.KeyRoutes),
+		Limits:        cloneKeyLimits(req.Limits),
 	}
 	return nil
 }
@@ -342,8 +348,8 @@ func modelAccess(shared, copilot bool) *cetirunv1alpha1.ModelAccessSpec {
 
 func aiGatewayTestTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
-		AgentPolicyRef:    testPolicyName,
-		SandboxRefs:       []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
+		AgentPolicyRef: testPolicyName,
+		SandboxRefs:    []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
 	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
 }
 

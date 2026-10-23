@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "../api/fetch";
 import type { AIGatewayCatalog } from "../api/aiGateway";
 import type { AgentType } from "../types/instance";
+import type { AgentPolicyRateLimits } from "../types/rateLimits";
 
 export interface CreateOptions {
   team: string;
@@ -15,6 +16,8 @@ export interface CreateOptions {
   agentIdentity: { allowed: boolean; required: boolean };
   /** The Team's smart-routing models the Team's Policy allows, by name. */
   modelRouters?: string[];
+  /** AI Gateway limits the Team's policy sets on each Agent's key. */
+  rateLimits?: AgentPolicyRateLimits;
   blocked?: { code: string; message: string };
 }
 
