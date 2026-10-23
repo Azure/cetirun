@@ -384,9 +384,11 @@ func newConfigurationChange(before, after client.Object, admission bool) (*confi
 	}
 	oldMetadata, newMetadata := oldImage.metadata, newImage.metadata
 	if admission {
+		// The API server compares wire spec, not normalized effective inputs.
+		// Materializing defaulted objects can advance generation without changing
+		// the effective spec; the exact reserved mutation digest still must match.
 		if newMetadata.Generation != oldMetadata.Generation &&
-			(equality.Semantic.DeepEqual(oldImage.spec, newImage.spec) || oldMetadata.Generation == math.MaxInt64 ||
-				newMetadata.Generation != oldMetadata.Generation+1) {
+			(oldMetadata.Generation == math.MaxInt64 || newMetadata.Generation != oldMetadata.Generation+1) {
 			return nil, fmt.Errorf("%w: unexpected admission generation", ErrConflict)
 		}
 		newMetadata.Generation = oldMetadata.Generation

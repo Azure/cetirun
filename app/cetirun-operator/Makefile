@@ -103,8 +103,8 @@ verify-generated: generate manifests
 
 ## Uses only a local API server and etcd; never connects to an existing cluster.
 test-envtest:
-	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination -count=1 -v
+	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" && test -x "$(KUBEBUILDER_ASSETS)/kubectl" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries, including kubectl"; exit 1; }
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination ./cmd/sandbox-config-change -count=1 -v
 
 ## Local held Sandbox integration; synthetic providers are not runtime qualification.
 test-sandbox-integration:
@@ -113,8 +113,8 @@ test-sandbox-integration:
 
 ## Durable lifecycle state against isolated API servers; no live runtime providers.
 test-sandbox-lifecycle:
-	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./internal/sandboxwriter ./internal/sandboxcoordination -count=1 -v
+	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" && test -x "$(KUBEBUILDER_ASSETS)/kubectl" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries, including kubectl"; exit 1; }
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./internal/sandboxwriter ./internal/sandboxcoordination ./cmd/sandbox-config-change -count=1 -v
 
 ## Clean build artifacts
 clean:
