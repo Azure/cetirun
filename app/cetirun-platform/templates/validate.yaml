@@ -95,3 +95,14 @@
 {{- fail "cetirun-portal.configurationCoordination must exactly match the Operator namespace and sandboxAdmission coordination ConfigMap name/UID" }}
 {{- end }}
 {{- end }}
+{{- /* The Portal writes Agents, Teams, Sandboxes and AgentPolicies with its own
+       service account, which the Sandbox admission webhook accepts for a policy-bound
+       Agent only as an administrator. Without it, Portal writes to such Agents were
+       refused, for example saving the GitHub Copilot models after a sign-in. */}}
+{{- if and $portal.enabled $operator.enabled $operatorAdmission.enabled $operatorAdmission.enforce }}
+{{- $portalAccount := printf "system:serviceaccount:%s:%s" .Release.Namespace (($portal.serviceAccount | default dict).name | default "cetirun-portal") }}
+{{- $adminGroups := $operatorAdmission.adminGroups | default list }}
+{{- if not (or (has $portalAccount ($operatorAdmission.adminUsers | default list)) (has (printf "system:serviceaccounts:%s" .Release.Namespace) $adminGroups) (has "system:serviceaccounts" $adminGroups)) }}
+{{- fail (printf "cetirun-operator.sandboxAdmission.adminUsers must include %s: the Portal writes Agents, Teams, Sandboxes and AgentPolicies with its service account, and the Sandbox admission webhook refuses its writes to policy-bound Agents otherwise" $portalAccount) }}
+{{- end }}
+{{- end }}

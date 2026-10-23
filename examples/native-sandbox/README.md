@@ -156,7 +156,9 @@ before taking further action. Do not retry creation or delete by name.
    `openclaw devices approve <exact-current-request-id>` after checking the
    request. The registered ingress destinations must include TCP `7681` for
    that terminal as well as the actual OpenClaw listener, from the approved
-   ingress peers only. This is an explicit owner approval, not Kubernetes Pod
+   ingress peers only. For a native Hermes Agent they must include its API port,
+   `8642`, and its Dashboard port, `9119`, which the Portal routes `/ui/<agent>/`
+   to; without them the Hermes UI times out at the ingress. This is an explicit owner approval, not Kubernetes Pod
    exec or disabled device authentication. Verify an authenticated native
    WebSocket session; a handshake challenge alone is insufficient. Confirm
    unauthenticated and nonowner access cannot use the Agent.

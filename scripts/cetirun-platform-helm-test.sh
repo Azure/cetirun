@@ -191,6 +191,7 @@ admission_args=(
   --set-string cetirun-operator.sandboxAdmission.tlsSecretName=sandbox-admission-tls
   --set-string cetirun-operator.sandboxAdmission.caBundle=LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClFRPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQ==
   --set-string 'cetirun-operator.sandboxAdmission.adminUsers[0]=platform-admin@example.com'
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=system:serviceaccount:cetirun-system:cetirun-portal'
   --set-string cetirun-operator.sandboxAdmission.coordinationConfigMapName=configuration-coordination
   --set-string cetirun-operator.sandboxAdmission.coordinationConfigMapUID=11111111-1111-1111-1111-111111111111
 )
@@ -268,6 +269,26 @@ if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission
 fi
 grep -Fq 'configuration coordination requires both Operator and Portal' <<< "${output}" || {
   echo "FAIL: platform did not reject Portal coordination without Operator with the required dependency" >&2
+  exit 1
+}
+
+echo "==> helm template platform (Portal not an admission administrator, expect failure)"
+if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  "${portal_coordination_args[@]}" \
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=someone-else@example.com' 2>&1); then
+  echo "FAIL: platform rendered enforced admission that refuses the Portal's writes" >&2
+  exit 1
+fi
+grep -Fq 'sandboxAdmission.adminUsers must include system:serviceaccount:cetirun-system:cetirun-portal' <<< "${output}" || {
+  echo "FAIL: platform did not name the Portal service account the admission webhook must accept" >&2
+  exit 1
+}
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  "${portal_coordination_args[@]}" \
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=someone-else@example.com' \
+  --set-string 'cetirun-operator.sandboxAdmission.adminGroups[0]=system:serviceaccounts:cetirun-system')
+grep -q 'name: cetirun-sandbox-admission' <<< "${output}" || {
+  echo "FAIL: an administrator group that holds the Portal service account was refused" >&2
   exit 1
 }
 
