@@ -27,8 +27,9 @@ requests, requests per minute (RPM), tokens per minute (TPM), and RPM or TPM
 for individual models. Every Agent of a Team that uses the Policy gets the same
 limits on its own Gateway key, so one Agent's traffic does not count against
 another's. Leave a field empty for no limit. The operator applies a change to
-each Agent's existing key, and owners see the limits in the Agent creation form
-and on the Agent's page. TPM counts a request's maximum output before the model
+each Agent's existing key; like any change to the Policy, it also restarts the
+Agents running under the Policy once. Owners see the limits in the Agent
+creation form and on the Agent's page. TPM counts a request's maximum output before the model
 answers; see [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)
 before setting it for OpenClaw Agents.
 

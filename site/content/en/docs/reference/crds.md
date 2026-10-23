@@ -377,8 +377,10 @@ limits with the policy on every reconcile, and updates the same key in place
 when they differ. Removing a field clears it on the key. Other key settings and
 metadata are kept. The limits are not part of the Gateway policy revision, so
 changing them does not start the reprojection fence that a model or budget
-change starts, and the operator does not replace the key or re-install the
-Agent's chart for them. Keys of legacy Agents without a policy are not changed;
+change starts, and the operator keeps each Agent's key. Sandbox execution,
+however, takes the whole AgentPolicy as an input of the Agents it runs: a
+limits change, like any other change to the policy, restarts the policy's
+running Agents once. Keys of legacy Agents without a policy are not changed;
 Gateway administrators manage their limits.
 
 The total limits count every request on the key, including the Agent's GitHub
