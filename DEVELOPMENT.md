@@ -105,10 +105,16 @@ Run the consumer modules' tests too when changing shared behavior.
 ### Operator
 
 ```bash
-go -C app/cetirun-operator test ./... -count=1
+make -C app/cetirun-operator test
 go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
+
+The Operator's full unit and envtest targets use a bounded 20-minute Go
+per-package timeout because the controller regression suite exceeds Go's
+10-minute default. Root Go test gates and CI use the same component target.
+This does not change individual test assertions, runtime/lifecycle deadlines,
+or the CI job limit.
 
 The build writes `app/cetirun-operator/bin/manager`; it does not start the
 operator. The component's `make test` and `make vet` targets are also available.
