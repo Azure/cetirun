@@ -410,6 +410,45 @@ def strip_sampling(request_kwargs, deployments):
     return present
 
 
+def refuses_no_reasoning(deployment):
+    """Whether LiteLLM refuses a reasoning effort of none for the deployment before calling it.
+
+    LiteLLM's own rule in 1.105.1, for Chat Completions to Azure: a model of
+    the GPT-5 or GPT-6 series, by base_model or deployment name, takes none only
+    when the price table marks it as supporting none; otherwise LiteLLM answers
+    400. Other providers, and the Responses API, take the request as it is.
+    """
+    params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+    model = params.get("model") if isinstance(params, dict) else None
+    if not isinstance(model, str) or not model.startswith("azure/"):
+        return False
+    info = deployment.get("model_info")
+    base = params.get("base_model") or (info.get("base_model") if isinstance(info, dict) else None)
+    name = base if isinstance(base, str) and base else model[len("azure/"):]
+    try:
+        from litellm.llms.azure.chat.gpt_5_transformation import AzureOpenAIGPT5Config
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        return bool(AzureOpenAIGPT5Config.is_model_gpt_5_model(name)) and not AzureOpenAIGPT5Config._supports_reasoning_effort_level(name, "none")
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def strip_refused_no_reasoning(request_kwargs, deployments):
+    """Remove a reasoning effort of none that a deployment refuses, in place; whether it was removed.
+
+    The same as LiteLLM's drop_params would do for this one parameter: the model
+    then reasons at its default effort. Removed when any of the deployments
+    refuses it, as for the sampling parameters.
+    """
+    effort = request_kwargs.get("reasoning_effort")
+    level = effort.get("effort") if isinstance(effort, dict) else effort
+    if level != "none" or not any(refuses_no_reasoning(deployment) for deployment in deployments):
+        return False
+    request_kwargs.pop("reasoning_effort", None)
+    return True
+
 def access_groups(deployment):
     """The access groups a deployment belongs to."""
     info = deployment.get("model_info") if isinstance(deployment, dict) else None
@@ -633,13 +672,20 @@ class Guard(CustomLogger):
                 raise ModelRefused(model)
             kept = allowed
         if isinstance(request_kwargs, dict) and kept:
+            router = routing_router(model, request_kwargs)
+            target = f"the router {router} sent to" if router else "for"
+            # First: without the effort of none, the model reasons, and the sampling
+            # parameters it then refuses go too.
+            if strip_refused_no_reasoning(request_kwargs, kept):
+                verbose_proxy_logger.warning(
+                    "CetiRun guard: removed reasoning_effort none from a request %s %s, which does not take it; "
+                    "the model reasons at its default effort.", target, model)
             removed = strip_sampling(request_kwargs, kept)
             if removed:
-                router = routing_router(model, request_kwargs)
                 verbose_proxy_logger.warning(
                     "CetiRun guard: removed %s from a request %s %s, which takes no sampling parameters while it "
                     "reasons.",
-                    ", ".join(removed), f"the router {router} sent to" if router else "for", model)
+                    ", ".join(removed), target, model)
         return kept
 
     async def async_filter_listed_models(self, user_api_key_dict, model_names):

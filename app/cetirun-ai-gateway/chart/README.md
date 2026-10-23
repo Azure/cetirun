@@ -1373,6 +1373,14 @@ the console cannot remove it. It:
   and those failed whenever that was a reasoning model, on Azure and on
   Copilot routes alike, without the user seeing it. LiteLLM's own rule
   decides, and the Gateway logs a warning for each request it changes;
+- removes `reasoning_effort: none` from a Chat Completions request to an Azure
+  deployment of the GPT-5 or GPT-6 series whose model LiteLLM's price table
+  does not mark as taking it, which LiteLLM refuses with a 400 before calling
+  Azure. Hermes sends side tasks with `none`; measured on the e2e cluster, one
+  that a router sent to such a tier failed without the user seeing it. The
+  model then reasons at its default effort, as LiteLLM's `drop_params` would
+  leave it, and the sampling parameters it then refuses are removed as above.
+  The Gateway logs a warning for each request it changes;
 - lets a request fail over from the deployment its key is kept on; see
   [A key stays on its deployment](#a-key-stays-on-its-deployment);
 - keeps error messages free of LiteLLM's internal deployment list: error

@@ -572,6 +572,87 @@ class GuardTest(unittest.TestCase):
             request = {"temperature": 0, "top_p": 0.5}
             self.filtered(request, [deployment], deployment["model_name"])
             self.assertEqual(request, {"temperature": 0, "top_p": 0.5})
+    # ----- a reasoning effort of none that an Azure deployment refuses -----
+
+    def with_azure_gpt5_rule(self, none_effort=()):
+        """LiteLLM's Azure GPT-5 rule, as 1.105.1 states it; none_effort lists the models marked as taking none."""
+
+        class AzureOpenAIGPT5Config:
+            @classmethod
+            def is_model_gpt_5_model(cls, model):
+                return "gpt-5" in model or "gpt-6" in model
+
+            @classmethod
+            def _supports_reasoning_effort_level(cls, model, level):
+                return level == "none" and model in none_effort
+
+        names = ("litellm.llms", "litellm.llms.azure", "litellm.llms.azure.chat",
+                 "litellm.llms.azure.chat.gpt_5_transformation")
+        stubs = {name: sys.modules.get(name) or types.ModuleType(name) for name in names}
+        stubs[names[-1]] = types.ModuleType(names[-1])
+        stubs[names[-1]].AzureOpenAIGPT5Config = AzureOpenAIGPT5Config
+        saved = {name: sys.modules.get(name) for name in stubs}
+        sys.modules.update(stubs)
+
+        def restore():
+            for name, previous in saved.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+
+        self.addCleanup(restore)
+
+    def test_an_azure_model_that_refuses_no_reasoning_gets_the_request_without_it(self):
+        # Measured on the e2e cluster: Hermes sends side tasks with
+        # reasoning_effort none; a router's Azure tier whose model the price
+        # table does not mark as taking none failed them with LiteLLM's 400.
+        self.with_azure_gpt5_rule()
+        self.with_gpt5_rule()
+        astra = self.model_deployment("gpt-6-astra", "azure/gpt-6-astra")
+        for effort in ("none", {"effort": "none"}):
+            for request in (self.routed(reasoning_effort=effort, temperature=0, max_tokens=16),
+                            {"metadata": {"user_api_key_auth": Key(["cetirun-shared"])}, "reasoning_effort": effort,
+                             "temperature": 0, "max_tokens": 16}):
+                with self.subTest(effort=effort, routed="routing_decision" in request["metadata"]):
+                    with self.assertLogs(LOGGER, level="WARNING") as logs:
+                        kept = self.filtered(request, [astra], "gpt-6-astra")
+                    self.assertEqual(kept, [astra])
+                    # Without the effort the model reasons, so temperature goes too.
+                    self.assertNotIn("reasoning_effort", request)
+                    self.assertNotIn("temperature", request)
+                    self.assertEqual(request["max_tokens"], 16)
+                    self.assertIn("reasoning_effort none", logs.output[0])
+
+    def test_no_reasoning_stays_where_it_is_taken(self):
+        self.with_azure_gpt5_rule(none_effort=("gpt-5.4-nano", "azure/gpt-6-sol"))
+        self.with_gpt5_rule(none_effort=("gpt-5.4-nano",))
+        for deployment in (self.model_deployment("gpt-5.4-nano", "azure/gpt-5.4-nano"),
+                           # Named after no model; LiteLLM goes by base_model.
+                           self.model_deployment("enterprise-sol", "azure/enterprise", base_model="azure/gpt-6-sol"),
+                           # Copilot routes and other providers decide themselves.
+                           self.model_deployment("gpt-6-astra", "litellm_proxy/gpt-6-astra"),
+                           self.model_deployment("gpt-6-astra", "openai/gpt-6-astra"),
+                           # Not of the series LiteLLM applies the rule to.
+                           self.model_deployment("gpt-4.1", "azure/gpt-4.1")):
+            with self.subTest(deployment=deployment["litellm_params"]["model"]):
+                request = self.routed(reasoning_effort="none")
+                self.filtered(request, [deployment], deployment["model_name"])
+                self.assertEqual(request["reasoning_effort"], "none")
+        astra = self.model_deployment("gpt-6-astra", "azure/gpt-6-astra")
+        for effort in ("low", {"effort": "high"}, None):
+            with self.subTest(effort=effort):
+                request = self.routed(reasoning_effort=effort)
+                self.filtered(request, [astra], "gpt-6-astra")
+                self.assertEqual(request["reasoning_effort"], effort)
+
+    def test_one_azure_deployment_that_refuses_no_reasoning_is_enough(self):
+        self.with_azure_gpt5_rule()
+        deployments = [self.model_deployment("gpt-6-astra", "litellm_proxy/gpt-6-astra"),
+                       self.model_deployment("gpt-6-astra", "azure/gpt-6-astra")]
+        request = self.routed(reasoning_effort="none")
+        self.filtered(request, deployments, "gpt-6-astra")
+        self.assertNotIn("reasoning_effort", request)
     def test_without_litellms_rule_nothing_is_removed(self):
         terra = self.model_deployment("gpt-5.6-terra", "azure/gpt-5.6-terra")
         request = self.routed(temperature=0)
