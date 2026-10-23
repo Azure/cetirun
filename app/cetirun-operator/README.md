@@ -2243,6 +2243,55 @@ explicitly unsupported. Required network isolation, port blocking, runtime
 accounting and observation/fencing still need actual target-version tests.
 No cluster was inspected or modified to establish this baseline.
 
+#### Exact-hostname deny projection experiment
+
+[`TestHostnameBlockDNSProjectionFeasibility`](internal/sandboxpolicy/hostname_feasibility_test.go)
+tests one proposed backend reduction: resolve a blocked hostname and deny its
+IPv4/IPv6 host CIDRs. Go's real resolver consumes synthetic A, AAAA and CNAME
+responses over in-memory connections; separate CIDR-only inputs then pass through
+the existing compiler. Assertions use the serialized Cilium policy and the
+existing synthetic L3/L4 evaluator, not a running Cilium dataplane.
+
+The result is **NO-GO for exact-hostname blocking through DNS-to-CIDR denies**:
+
+- The exact blocked name is denied, but so are an unlisted name, a CNAME alias
+  and a child name sharing its addresses. An unrelated address remains allowed.
+  The [API](api/v1alpha1/agentpolicy_types.go) specifies exact names, not address
+  equivalence or suffix rules; wildcard policy input still rejects.
+- Literal IPv4/IPv6 access requires no DNS query and is indistinguishable from
+  named access at this layer. This observation does not assign a new API
+  permission to direct-IP access or establish a DNS-query-filtering backend.
+- After an answer changes, a stale projection permits the new addresses.
+  Replacing the projection releases the old addresses; retaining both denies
+  both, including unlisted names on shared addresses. Recompilation changes the
+  control revision, but these tests do not exercise TTL scheduling, policy
+  propagation, existing connections or failure recovery.
+
+This is not Cilium [`toFQDNs`](https://docs.cilium.io/en/stable/security/policy/layer3/#dns-based):
+those rules generate additive IP **allows**, not hostname denies, and do not
+remove the compiler's public-egress allowance. Nor is this the shared
+[Istio sidecar SNI blacklist](../../infra/istio/templates/egress/blacklist.yaml):
+that filter matches a TLS requested server name, not a guest-external control
+covering arbitrary traffic. No hostname capability, schema, resource ownership
+or execution gate changes. Production `blockedFQDNs` rejection remains intact
+for both adapters; passing this experiment is not M3 completion.
+
+Run this bounded offline check with the documented pinned Go toolchain:
+
+```bash
+go -C app/cetirun-operator test ./internal/sandboxpolicy -run '^TestHostnameBlockDNSProjectionFeasibility$' -count=1
+go -C app/cetirun-operator test -race ./internal/sandboxpolicy -run '^TestHostnameBlockDNSProjectionFeasibility$' -count=1
+```
+
+The smallest separately authorized packet trial is a disposable protected
+client, controlled DNS and a dual-stack test endpoint serving a blocked and an
+unlisted name on the same addresses. Compare the baseline with CIDR denies on
+the explicitly selected Cilium version using new named and direct-IP TCP/UDP
+connections, then change one DNS answer and observe the update. Record both
+denied and allowed controls from outside the guest. This can check the predicted
+counterexample, not qualify hostname support; a different hostname-aware backend
+still needs a separately agreed design and qualification.
+
 ### Offline checks
 
 With the documented pinned tools and dependencies already installed:
