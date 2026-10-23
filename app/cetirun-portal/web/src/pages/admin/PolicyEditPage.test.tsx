@@ -324,7 +324,7 @@ describe("PolicyEditPage", () => {
     const firstPort = screen.getByRole("spinbutton", { name: "Blocked port 1" });
     fireEvent.change(firstPort, { target: { value: "0" } });
     fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
-    expect(await screen.findByText("Ports must be 1–65535 and use TCP, UDP, or SCTP.")).toBeInTheDocument();
+    expect(await screen.findByText("Ports must be 1ΓÇô65535 and use TCP, UDP, or SCTP.")).toBeInTheDocument();
     expect(policyAPI.updatePolicy).not.toHaveBeenCalled();
     fireEvent.change(firstPort, { target: { value: "8443" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -439,5 +439,72 @@ describe("PolicyEditPage", () => {
     await waitFor(() => expect(policyAPI.createPolicy).toHaveBeenCalledWith(expect.objectContaining({
       network: expect.objectContaining({ allowedInternalCIDRs: [] }),
     }), expect.anything()));
+  });
+
+  function renderEdit(name: string) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/admin/policies/${name}/edit`]}>
+          <Routes>
+            <Route path="/admin/policies/:name/edit" element={<PolicyEditPage />} />
+            <Route path="/admin/policies" element={<div>Policy list</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  const limitedPolicy: policyAPI.AgentPolicyDTO = {
+    name: "limited",
+    uid: "policy-uid",
+    resourceVersion: "7",
+    harnesses: { allowed: ["openclaw"] },
+    modelAccess: {
+      sharedModels: { allowed: ["example-model"] },
+      gatewayBudget: { defaultMonthlyUSD: "10", maxMonthlyUSD: "20" },
+      rateLimits: { maxParallelRequests: 4, tpm: 200000, perModel: { "example-model": { rpm: 10 } } },
+    },
+  };
+
+  it("keeps the loaded rate limits when saving another change", async () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(limitedPolicy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(limitedPolicy);
+    renderEdit("limited");
+    expect(await screen.findByRole("textbox", { name: "Max parallel requests" })).toHaveValue("4");
+    expect(screen.getByRole("textbox", { name: "Requests per minute" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Model name 1" })).toHaveValue("example-model");
+    expect(screen.getByText(/rejects long conversations/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "Hermes" }));
+    fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalled());
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].modelAccess?.rateLimits).toEqual(limitedPolicy.modelAccess!.rateLimits);
+  });
+
+  it("sends new limits, removes cleared ones and never sends zero", async () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(limitedPolicy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(limitedPolicy);
+    renderEdit("limited");
+    const parallel = await screen.findByRole("textbox", { name: "Max parallel requests" });
+    fireEvent.change(parallel, { target: { value: "" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Requests per minute" }), { target: { value: "60" } });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add per-model limit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Model name 1" }), { target: { value: "auto" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Tokens per minute for model 1" }), { target: { value: "8192" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalled());
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].modelAccess?.rateLimits).toEqual({
+      rpm: 60, tpm: 200000, perModel: { auto: { tpm: 8192 } },
+    });
+  });
+
+  it("rejects a limit below the minimum before saving", async () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(limitedPolicy);
+    renderEdit("limited");
+    fireEvent.change(await screen.findByRole("textbox", { name: "Tokens per minute" }), { target: { value: "1000" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
+    expect(await screen.findByText(/Tokens per minute must be at least 4,096/)).toBeInTheDocument();
+    expect(policyAPI.updatePolicy).not.toHaveBeenCalled();
   });
 });

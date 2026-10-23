@@ -241,6 +241,7 @@ func normalizePolicyConstraints(policy *v1alpha1.AgentPolicySpec, path *field.Pa
 			errs = append(errs, field.Invalid(budgetPath.Child("defaultMonthlyUSD"), budget.DefaultMonthlyUSD, "must not exceed maxMonthlyUSD"))
 		}
 	}
+	errs = append(errs, ValidatePolicyRateLimits(policy.ModelAccess.RateLimits, path.Child("modelAccess", "rateLimits"))...)
 	identityPath := path.Child("agentIdentity")
 	identity := &policy.AgentIdentity
 	identity.CredentialServices = canonicalNonEmptyStrings(identity.CredentialServices, identityPath.Child("credentialServices"), &errs)

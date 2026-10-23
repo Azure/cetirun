@@ -9,19 +9,28 @@ import {
   createPolicy, getPolicy, updatePolicy, PolicyConflictError, type AgentPolicyDTO,
   type AgentPolicyPort, type AgentPolicyProtocol, type AgentPolicyUpsertRequest,
 } from "../../api/adminPolicy";
+import {
+  emptyRateLimitForm,
+  MAX_MODEL_LIMITS,
+  rateLimitFormFrom,
+  rateLimitsFromForm,
+  TPM_HINT,
+  type RateLimitForm,
+  type RateLimitRow,
+} from "../../utils/rateLimits";
 import { InternalNetworkRules, formatInternalNetworkRules, parseInternalNetworkRules, validCIDR, type InternalNetworkRule } from "./InternalNetworkRules";
 
 export interface PolicyFormState {
   name: string; uid: string; resourceVersion: string; openclaw: boolean; hermes: boolean; skills: string;
   copilot: boolean; sharedModels: string; budgetEnabled: boolean; defaultMonthlyUSD: string; maxMonthlyUSD: string;
   allowMultiple: boolean; readOnlyRootFilesystem: boolean; blockedCIDRs: string; blockedPorts: AgentPolicyPort[];
-  allowedInternalCIDRs: InternalNetworkRule[]; ingressMode: "authenticated" | "disabled";
+  allowedInternalCIDRs: InternalNetworkRule[]; ingressMode: "authenticated" | "disabled"; limits: RateLimitForm;
 }
 
 const emptyForm: PolicyFormState = {
   name: "", uid: "", resourceVersion: "", openclaw: true, hermes: false, skills: "", copilot: false,
   sharedModels: "", budgetEnabled: false, defaultMonthlyUSD: "", maxMonthlyUSD: "", allowMultiple: false,
-  readOnlyRootFilesystem: true, blockedCIDRs: "", blockedPorts: [], allowedInternalCIDRs: [], ingressMode: "authenticated",
+  readOnlyRootFilesystem: true, blockedCIDRs: "", blockedPorts: [], allowedInternalCIDRs: [], ingressMode: "authenticated", limits: emptyRateLimitForm,
 };
 
 function lines(value: string): string[] { return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); }
@@ -36,6 +45,7 @@ export function fromPolicyDTO(policy: AgentPolicyDTO): PolicyFormState {
     allowMultiple: !!policy.sandboxSelection?.allowMultiple, readOnlyRootFilesystem: policy.security?.readOnlyRootFilesystem ?? true,
     blockedCIDRs: (policy.network?.blockedCIDRs || []).join("\n"), blockedPorts: policy.network?.blockedPorts || [],
     allowedInternalCIDRs: formatInternalNetworkRules(policy.network?.allowedInternalCIDRs || []), ingressMode: policy.network?.ingress?.mode || "authenticated",
+    limits: rateLimitFormFrom(policy.modelAccess?.rateLimits),
   };
 }
 
@@ -76,7 +86,7 @@ function validateRequest(request: AgentPolicyUpsertRequest, isCreate: boolean): 
   const network = request.network;
   if (network?.blockedCIDRs?.some((cidr) => !validCIDR(cidr))) return "Blocked CIDRs must be valid IPv4 or IPv6 CIDR values.";
   const allPorts = [...(network?.blockedPorts || []), ...(network?.allowedInternalCIDRs || []).flatMap((rule) => rule.ports)];
-  if (allPorts.some((port) => !validPort(port))) return "Ports must be 1–65535 and use TCP, UDP, or SCTP.";
+  if (allPorts.some((port) => !validPort(port))) return "Ports must be 1ΓÇô65535 and use TCP, UDP, or SCTP.";
   if (new Set((network?.blockedPorts || []).map((port) => `${port.port}/${port.protocol}`)).size !== (network?.blockedPorts || []).length) return "Blocked ports must be unique.";
   if (network?.allowedInternalCIDRs?.some((rule) => !validCIDR(rule.cidr) || rule.ports.length === 0)) return "Each internal CIDR rule needs a valid CIDR and at least one port.";
   return null;
@@ -159,8 +169,14 @@ export function PolicyEditPage() {
     }
     const validationError = validateRequest(request, isCreate);
     if (validationError) { setSubmitError(validationError); return; }
+    const limits = rateLimitsFromForm(form.limits);
+    if (limits.error) { setSubmitError(limits.error); return; }
+    if (limits.limits) request.modelAccess!.rateLimits = limits.limits;
     if (isCreate) createMutation.mutate(request); else updateMutation.mutate(request);
   };
+  const setLimits = (limits: Partial<RateLimitForm>) => setForm({ ...form, limits: { ...form.limits, ...limits } });
+  const setRow = (index: number, row: Partial<RateLimitRow>) =>
+    setLimits({ perModel: form.limits.perModel.map((current, i) => (i === index ? { ...current, ...row } : current)) });
   if (!isCreate && isLoading) return <Spinner label="Loading policy..." />;
   if (reloading) return <Spinner label="Reloading policy..." />;
   if (!isCreate && error && !existing) return <MessageBar intent="error">Failed to load: {error.message}</MessageBar>;
@@ -185,6 +201,26 @@ export function PolicyEditPage() {
     }} placeholder={"gpt-4.1\ngpt-4o-mini"} /></Field>
     <Switch checked={form.budgetEnabled} label="Set monthly Gateway budget" onChange={(_, data) => setForm({ ...form, budgetEnabled: data.checked })} />
     {form.budgetEnabled && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Default monthly USD" required><Input value={form.defaultMonthlyUSD} onChange={(_, data) => setForm({ ...form, defaultMonthlyUSD: data.value })} placeholder="e.g. 20" /></Field><Field label="Maximum monthly USD" required><Input value={form.maxMonthlyUSD} onChange={(_, data) => setForm({ ...form, maxMonthlyUSD: data.value })} placeholder="e.g. 50" /></Field></div>}
+    <Divider /><Text weight="semibold">AI Gateway limits per Agent</Text>
+    <Text size={200}>Every Agent of a Team that uses this policy gets these limits on its own Gateway key; Agents do not share them. Leave a field empty for no limit. A change is applied to each Agent's existing key.</Text>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+      <Field label="Max parallel requests" hint="At least 1."><Input inputMode="numeric" value={form.limits.maxParallelRequests} onChange={(_, data) => setLimits({ maxParallelRequests: data.value })} placeholder="No limit" /></Field>
+      <Field label="Requests per minute" hint="At least 1."><Input inputMode="numeric" value={form.limits.rpm} onChange={(_, data) => setLimits({ rpm: data.value })} placeholder="No limit" /></Field>
+      <Field label="Tokens per minute" hint="At least 4,096."><Input inputMode="numeric" value={form.limits.tpm} onChange={(_, data) => setLimits({ tpm: data.value })} placeholder="No limit" /></Field>
+    </div>
+    <Text size={200}>{TPM_HINT}</Text>
+    <Text size={200}>Total limits count every request of the key, including GitHub Copilot models. A per-model limit applies to the exact model name the Agent requests; for an auto router that is the router's name, not the model it picks.</Text>
+    {form.limits.perModel.map((row, index) => (
+      <div key={index} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
+        <Input aria-label={`Model name ${index + 1}`} value={row.model} onChange={(_, data) => setRow(index, { model: data.value })} placeholder="Gateway model name" />
+        <Input aria-label={`Requests per minute for model ${index + 1}`} inputMode="numeric" value={row.rpm} onChange={(_, data) => setRow(index, { rpm: data.value })} placeholder="RPM" />
+        <Input aria-label={`Tokens per minute for model ${index + 1}`} inputMode="numeric" value={row.tpm} onChange={(_, data) => setRow(index, { tpm: data.value })} placeholder="TPM" />
+        <Button type="button" appearance="subtle" onClick={() => setLimits({ perModel: form.limits.perModel.filter((_, i) => i !== index) })}>Remove</Button>
+      </div>
+    ))}
+    <div>
+      <Button type="button" disabled={form.limits.perModel.length >= MAX_MODEL_LIMITS} onClick={() => setLimits({ perModel: [...form.limits.perModel, { model: "", rpm: "", tpm: "" }] })}>Add per-model limit</Button>
+    </div>
     <Divider /><Text weight="semibold">Sandbox selection and security</Text>
     <Switch checked={form.allowMultiple} label="Allow multiple Sandboxes per Team" onChange={(_, data) => setForm({ ...form, allowMultiple: data.checked })} />
     <Switch checked={form.readOnlyRootFilesystem} label="Use a read-only root filesystem" onChange={(_, data) => setForm({ ...form, readOnlyRootFilesystem: data.checked })} />

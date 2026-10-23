@@ -147,6 +147,14 @@ describe("Policy-controlled Agent creation", () => {
     expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ agentIdentityEnabled: undefined, agent: expect.objectContaining({ type: "custom" }) }));
   });
 
+  it("shows the Team policy's per-Agent Gateway limits read-only", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond(options("restricted", { rateLimits: { rpm: 30, tpm: 100000 } }))));
+    const user = userEvent.setup(); renderForm(); await selectTeam(user);
+    const limits = screen.getByLabelText("AI Gateway limits");
+    expect(within(limits).getByText("30 requests per minute")).toBeInTheDocument();
+    expect(within(limits).getByText("100,000 tokens per minute")).toBeInTheDocument();
+  });
+
   it("refreshes permissions after a create rejection without automatically retrying", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(respond(options())));
     vi.stubGlobal("fetch", fetchMock);

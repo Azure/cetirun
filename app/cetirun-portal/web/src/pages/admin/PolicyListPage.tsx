@@ -26,12 +26,14 @@ import {
 } from "@fluentui/react-components";
 import { Add20Regular, Delete20Regular, Edit20Regular } from "@fluentui/react-icons";
 import { deletePolicy, listPolicies, type AgentPolicyDTO } from "../../api/adminPolicy";
+import { describeRateLimits } from "../../utils/rateLimits";
 
 function modelAccessLabel(policy: AgentPolicyDTO): string {
   const labels: string[] = [];
   if (policy.modelAccess?.copilot?.allowed) labels.push("Copilot");
   const shared = policy.modelAccess?.sharedModels?.allowed?.length ?? 0;
   if (shared > 0) labels.push(`${shared} shared`);
+  if (describeRateLimits(policy.modelAccess?.rateLimits).length > 0) labels.push("rate limits");
   return labels.join(", ") || "—";
 }
 

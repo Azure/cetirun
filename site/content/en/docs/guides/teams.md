@@ -22,6 +22,16 @@ require all three bindings. The editor links to missing prerequisites and
 shows configuration admission errors when the cluster rejects a selection.
 Team Skills must be allowed by the selected Policy.
 
+The Agent Policy can also limit each Agent's AI Gateway traffic: parallel
+requests, requests per minute (RPM), tokens per minute (TPM), and RPM or TPM
+for individual models. Every Agent of a Team that uses the Policy gets the same
+limits on its own Gateway key, so one Agent's traffic does not count against
+another's. Leave a field empty for no limit. The operator applies a change to
+each Agent's existing key, and owners see the limits in the Agent creation form
+and on the Agent's page. TPM counts a request's maximum output before the model
+answers; see [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)
+before setting it for OpenClaw Agents.
+
 Updates and deletions include the resource UID and version that the editor
 read. If another administrator changed or replaced the resource, reload it
 before submitting again. Deployments with configuration coordination use the

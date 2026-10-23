@@ -82,6 +82,10 @@ type fakeAIGateway struct {
 	// prices; the tests about prices turn it on.
 	blockUnpriced bool
 	blockErr      error
+	// limitUpdates records UpdateKeyLimits calls; ignoreLimitUpdate makes
+	// the Gateway accept them without storing the limits.
+	limitUpdates      []aigateway.KeyLimits
+	ignoreLimitUpdate bool
 }
 
 func newFakeAIGateway() *fakeAIGateway {
@@ -106,6 +110,7 @@ func (f *fakeAIGateway) GetKey(_ context.Context, token string) (*aigateway.Key,
 	}
 	copied := *key
 	copied.Models = slices.Clone(key.Models)
+	copied.Limits = cloneKeyLimits(key.Limits)
 	return &copied, nil
 }
 
@@ -122,7 +127,7 @@ func (f *fakeAIGateway) GenerateKey(_ context.Context, req aigateway.GenerateReq
 	budget := req.MaxBudget
 	f.keys[aigateway.Token(req.Key)] = &aigateway.Key{
 		Alias: req.Alias, Models: slices.Clone(req.Models), MaxBudget: &budget, BudgetDuration: req.BudgetDuration,
-		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID,
+		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID, Limits: cloneKeyLimits(req.Limits),
 	}
 	return nil
 }

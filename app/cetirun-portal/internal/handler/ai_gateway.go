@@ -37,6 +37,9 @@ type AIGatewayResponse struct {
 	Models       []string                  `json:"models"`
 	DefaultModel string                    `json:"defaultModel,omitempty"`
 	Copilot      *AIGatewayCopilotResponse `json:"copilot,omitempty"`
+	// RateLimits are the limits the Agent's policy sets on its key. Only
+	// the single-Agent read fills them in.
+	RateLimits *AgentPolicyRateLimitsDTO `json:"rateLimits,omitempty"`
 }
 
 // AIGatewayCopilotResponse describes the Agent's GitHub Copilot proxy.

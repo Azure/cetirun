@@ -64,6 +64,8 @@ type AgentPolicyModelAccessDTO struct {
 	Copilot       AgentPolicyCopilotAccessDTO      `json:"copilot,omitempty"`
 	SharedModels  AgentPolicySharedModelsAccessDTO `json:"sharedModels,omitempty"`
 	GatewayBudget *AgentPolicyGatewayBudgetDTO     `json:"gatewayBudget,omitempty"`
+	// RateLimits replaces the policy's limits on save; omitting it removes them.
+	RateLimits *AgentPolicyRateLimitsDTO `json:"rateLimits,omitempty"`
 }
 
 type AgentPolicyAgentIdentityDTO struct {
@@ -213,6 +215,7 @@ func toAgentPolicyDTO(policy *cetirunv1alpha1.AgentPolicy) AgentPolicyDTO {
 			Copilot:       AgentPolicyCopilotAccessDTO{Allowed: policy.Spec.ModelAccess.Copilot.Allowed},
 			SharedModels:  AgentPolicySharedModelsAccessDTO{Allowed: append([]string(nil), policy.Spec.ModelAccess.SharedModels.Allowed...)},
 			GatewayBudget: toAgentPolicyGatewayBudgetDTO(policy.Spec.ModelAccess.GatewayBudget),
+			RateLimits:    toAgentPolicyRateLimitsDTO(policy.Spec.ModelAccess.RateLimits),
 		},
 		AgentIdentity: AgentPolicyAgentIdentityDTO{
 			Allowed:            policy.Spec.AgentIdentity.Allowed,
@@ -292,6 +295,7 @@ func toAgentPolicySpec(req AgentPolicyUpsertRequest) cetirunv1alpha1.AgentPolicy
 			Copilot:       cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: req.ModelAccess.Copilot.Allowed},
 			SharedModels:  cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: append([]string(nil), req.ModelAccess.SharedModels.Allowed...)},
 			GatewayBudget: toAgentPolicyGatewayBudget(req.ModelAccess.GatewayBudget),
+			RateLimits:    toAgentPolicyRateLimits(req.ModelAccess.RateLimits),
 		},
 		Security: cetirunv1alpha1.AgentPolicySecurity{ReadOnlyRootFilesystem: &readOnly},
 		Network:  cetirunv1alpha1.AgentPolicyNetwork{Ingress: cetirunv1alpha1.AgentPolicyIngress{Mode: cetirunv1alpha1.AgentPolicyIngressAuthenticated}},
@@ -406,7 +410,7 @@ func validateAgentPolicyRequest(req AgentPolicyUpsertRequest) string {
 	if hasDuplicateStrings(req.ModelAccess.SharedModels.Allowed) {
 		return "sharedModels.allowed must not contain duplicate entries"
 	}
-	return ""
+	return validateAgentPolicyRateLimits(req.ModelAccess.RateLimits)
 }
 
 func hasDuplicateStrings(values []string) bool {

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { apiFetch } from "./fetch";
+import type { AgentPolicyRateLimits } from "../types/rateLimits";
 
 export type PolicyHarness = "openclaw" | "hermes";
 
@@ -48,6 +49,7 @@ export interface AgentPolicyDTO {
     copilot?: { allowed?: boolean };
     sharedModels?: { allowed?: string[] };
     gatewayBudget?: AgentPolicyGatewayBudget;
+    rateLimits?: AgentPolicyRateLimits;
   };
   agentIdentity?: {
     allowed?: boolean;
@@ -82,6 +84,8 @@ export interface AgentPolicyUpsertRequest {
     copilot?: { allowed?: boolean };
     sharedModels?: { allowed?: string[] };
     gatewayBudget?: AgentPolicyGatewayBudget;
+    /** Replaces the policy's limits; leaving it out removes them. */
+    rateLimits?: AgentPolicyRateLimits;
   };
   sandboxSelection?: { allowMultiple?: boolean };
   security?: { readOnlyRootFilesystem?: boolean };

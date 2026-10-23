@@ -10,6 +10,7 @@ import { GITHUB_COPILOT_PROVIDER, useEffectiveTeamProvider } from "../hooks/useT
 import type { AgentType } from "../types/instance";
 import { TeamPicker } from "./TeamPicker";
 import { CopilotModelPicker } from "./CopilotModelPicker";
+import { RateLimitsSummary } from "./RateLimitsSummary";
 import { CreateInstanceError } from "../api/instance";
 
 const NO_AGENT_TYPES: AgentType[] = [];
@@ -179,6 +180,9 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
 
       <TeamPicker value={team} onChange={setTeam} required={gatewayOn} />
       {options?.policyName && <p style={{ margin: 0 }}>Agent Policy: {options.policyName}</p>}
+      {options?.policyName && (
+        <RateLimitsSummary limits={options.rateLimits} intro="The policy limits each Agent's own AI Gateway key:" />
+      )}
       {optionsEnabled && optionsQuery.isFetching && <MessageBar intent="info">Loading allowed Agent options...</MessageBar>}
       {(featuresError || optionsQuery.error) && (
         <MessageBar intent="error">

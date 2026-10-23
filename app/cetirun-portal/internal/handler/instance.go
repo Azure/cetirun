@@ -258,6 +258,9 @@ func (h *InstanceHandler) GetInstanceByName(w http.ResponseWriter, r *http.Reque
 		http.Error(w, fmt.Sprintf("failed to build response: %v", err), http.StatusInternalServerError)
 		return
 	}
+	if resp.AIGateway != nil {
+		resp.AIGateway.RateLimits = h.policyRateLimits(r.Context(), instance)
+	}
 	w.Header().Set("ETag", kube.RegistryETag(instance))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
