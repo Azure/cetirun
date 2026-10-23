@@ -63,7 +63,7 @@ func decodeManagementRequest(w http.ResponseWriter, r *http.Request, target any)
 }
 
 func hasNativeCreateFields(fields map[string]json.RawMessage) bool {
-	for _, key := range []string{"gatewayToken", "tailscaleAuthKey", "teamsEnabled"} {
+	for _, key := range []string{"gatewayToken", "tailscaleAuthKey", "teamsEnabled", "agentIdentityEnabled"} {
 		if _, exists := fields[key]; exists {
 			return true
 		}

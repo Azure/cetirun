@@ -4,14 +4,12 @@
 package broker
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -291,30 +289,5 @@ func TestAuthSDKRequestsUseAllowedLoopbackHostHeader(t *testing.T) {
 	}
 	if host := <-observedHost; host != "localhost" {
 		t.Fatalf("Auth SDK Host header = %q; want localhost", host)
-	}
-}
-
-func TestCallbackFailureLogsOnlyAuthSDKValidationCategory(t *testing.T) {
-	var logOutput bytes.Buffer
-	previousLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
-	t.Cleanup(func() { slog.SetDefault(previousLogger) })
-
-	server := &Server{cfg: Config{PortalOrigin: "https://portal.example.com"}}
-	server.callbackFailure(
-		httptest.NewRecorder(),
-		httptest.NewRequest(http.MethodPost, "/callback", nil),
-		"validate_access_token",
-		newAuthSDKValidationError(authSDKValidationRejectedClaimsOK),
-	)
-
-	logged := logOutput.String()
-	if !strings.Contains(logged, "stage=validate_access_token") || !strings.Contains(logged, "category=auth_sdk_rejected_matching_claims") {
-		t.Fatalf("safe Auth SDK failure category was not logged: %s", logged)
-	}
-	for _, forbidden := range []string{"authorization_code", "refresh_token", "Bearer ", "claims="} {
-		if strings.Contains(logged, forbidden) {
-			t.Fatalf("sensitive field %q appeared in callback log", forbidden)
-		}
 	}
 }

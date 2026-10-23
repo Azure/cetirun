@@ -105,9 +105,9 @@ features:
   allowedAgentTypes:
     - hermes
     - openclaw
-  # -- Enable the Microsoft Entra Agent Identity authorization experience.
+  # -- Enable the Microsoft Entra Agent Identity lifecycle for new Agents.
   agentIdentityEnabled: false
-  # -- Opt in to Azure Connection/Binding management instead of the legacy panel.
+  # -- Enable owner-scoped account connections and Agent tool grants.
   agentToolsEnabled: false
   # -- Expose the platform AI Gateway: model sources for new OpenClaw and
   # Hermes Agents, the GitHub Copilot sign-in and each Agent's model list.
@@ -148,11 +148,6 @@ agentIdentity:
   portalClientId: ""
   brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
 
-# -- Azure connection management. Uses the Entra tenant and Portal client above.
-# Broker connectionBindings.enabled and its trusted Portal mesh boundary must be
-# configured separately. This does not enable runtime MCP integration.
 agentTools:
+  runtimeTypes: [hermes, openclaw]
   brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
-  runtimeTypes:
-    - hermes
-    - openclaw

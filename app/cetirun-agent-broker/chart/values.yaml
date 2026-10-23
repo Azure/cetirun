@@ -10,9 +10,9 @@ image:
 
 authSDK:
   repository: mcr.microsoft.com/entra-sdk/auth-sidecar
-  tag: 1.0.0-azurelinux3.0-distroless
+  tag: 1.1.2-azurelinux3.0-distroless
   # Pinned digest for the tag above. Update tag and digest together.
-  digest: sha256:b3e6204abb87daa9c414dcade11f16060e030d114b81ecbd8bd2a7346e107523
+  digest: sha256:73a8763100c93c3da1a3ed1ba3af2c6122c0517687354dceded30537a1aee97f
   pullPolicy: IfNotPresent
 
 serviceAccount:
@@ -22,6 +22,19 @@ serviceAccount:
 
 service:
   port: 8080
+
+tls:
+  enabled: false
+  secretName: ""
+  certKey: tls.crt
+  keyKey: tls.key
+  clientCAKey: ca.crt
+
+identityModes:
+  azureAgent:
+    enabled: true
+  microsoftDelegated:
+    enabled: true
 
 agentIdentity:
   tenantId: ""
@@ -34,10 +47,31 @@ agentIdentity:
   portalBaseUrl: ""
   armScopes:
     - https://management.azure.com/user_impersonation
+  graphScopes:
+    - https://graph.microsoft.com/.default
 
 portal:
   namespace: cetirun-portal
   serviceAccount: cetirun-portal
+
+# Must match the MCP chart workloadTokenAudience and Operator toolsMCP.audience.
+workloadTokenAudience: agent-tools-mcp
+
+toolService:
+  runtimeTypes: [hermes, openclaw]
+  namespace: cetirun-system
+  serviceAccount: agent-tools-mcp
+
+providers:
+  github:
+    # Standard GitHub OAuth App credentials for personal delegated connections.
+    credentialsSecretName: ""
+    clientIDKey: client-id
+    clientSecretKey: client-secret
+  google:
+    credentialsSecretName: ""
+    clientIDKey: client-id
+    clientSecretKey: client-secret
 
 operator:
   namespace: cetirun-system
@@ -65,19 +99,3 @@ resources:
     limits:
       cpu: 500m
       memory: 256Mi
-
-# Additive backend for per-Agent Azure connections; existing OBO remains active.
-connectionBindings:
-  enabled: false
-
-tls:
-  enabled: false
-  secretName: ""
-  certKey: tls.crt
-  keyKey: tls.key
-  clientCAKey: ca.crt
-
-toolService:
-  namespace: cetirun-tools
-  serviceAccount: agent-tools-mcp
-  workloadTokenAudience: agent-tools-mcp

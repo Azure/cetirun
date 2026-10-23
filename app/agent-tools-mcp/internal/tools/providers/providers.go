@@ -226,7 +226,7 @@ func Target(input Request) (*url.URL, error) {
 		}
 		seen[lower] = true
 		switch lower {
-		case "if-match", "if-none-match", "prefer":
+		case "if-match", "if-none-match", "prefer", "consistencylevel", "x-github-api-version":
 		default:
 			return invalid()
 		}
@@ -281,18 +281,22 @@ func (c *Client) Execute(ctx context.Context, input Request, token, correlation 
 	if profile.Provider == "azure" {
 		request.Header.Set("x-ms-client-request-id", correlation)
 	}
+	if profile.Provider == "microsoft" {
+		request.Header.Set("client-request-id", correlation)
+		request.Header.Set("return-client-request-id", "true")
+	}
 	response, err := c.http.Do(request)
 	if err != nil {
 		return Result{}, &Error{Code: "execution_unknown", Unknown: true}
 	}
 	defer response.Body.Close()
 	result := Result{Status: response.StatusCode, Headers: map[string]string{}, RequestIDs: []string{}, CorrelationID: correlation}
-	for _, name := range []string{"x-ms-request-id", "x-ms-correlation-request-id"} {
+	for _, name := range []string{"x-ms-request-id", "x-ms-correlation-request-id", "request-id", "x-github-request-id", "x-guploader-uploadid"} {
 		if value := response.Header.Get(name); safeResponseHeader(value, token) && len(value) < 1024 {
 			result.RequestIDs = append(result.RequestIDs, value)
 		}
 	}
-	for _, name := range []string{"etag", "retry-after", "location", "azure-asyncoperation", "operation-location"} {
+	for _, name := range []string{"etag", "retry-after", "location", "azure-asyncoperation", "operation-location", "link", "x-ratelimit-remaining", "x-ratelimit-reset"} {
 		if value := response.Header.Get(name); safeResponseHeader(value, token) {
 			result.Headers[name] = value
 		}

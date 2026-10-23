@@ -782,7 +782,7 @@ def provision_deployment(args: argparse.Namespace) -> None:
 
     authorization = deployment.get("authorizationClient")
     if not isinstance(authorization, dict) or not authorization:
-        redirect_uri = f"{args.portal_origin.rstrip('/')}/api/v1/agent-authorization/callback"
+        redirect_uri = f"{args.portal_origin.rstrip('/')}/api/v1/connections/callback"
         created = graph.call(
             "POST",
             "/applications",

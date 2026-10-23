@@ -219,11 +219,21 @@ sandboxSources:
     logger: false
     desktop: false
 
-# -- Optional Broker access to encrypted Connection/Binding records in Agent namespaces.
-# Both fields are required together. Keep configured until all records are cleaned.
+# -- Native MCP runtime integration and optional access to Agent credential records.
 toolsMCP:
+  url: ""
+  audience: agent-tools-mcp
+  # The Broker ServiceAccount receives Secret access only through Roles in
+  # Agent namespaces. Both fields are required together. Keep them configured
+  # until all records are cleaned; leave both empty to disable Broker access.
   brokerNamespace: ""
   brokerServiceAccount: ""
+  # Native runtime allowlist. Restrict to hermes during a Hermes-only rollout.
+  runtimeTypes:
+    - hermes
+    - openclaw
+  # Existing CA-only source Secret in the operator namespace; distributed to each Agent.
+  caSecretName: ""
 
 # -- Microsoft Entra Agent Identity lifecycle configuration. The feature is
 # deployment-scoped and remains disabled unless every required field is set.

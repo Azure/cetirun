@@ -18,59 +18,33 @@ func customIdentityInput() map[string]any {
 	return input
 }
 
-func TestCustomAgentIdentityUsesSharedToolsAndBoundBroker(t *testing.T) {
-	for _, memory := range []bool{false, true} {
-		input := customIdentityInput()
-		if !memory {
-			input["memoryOptions"] = MemoryOptions{Enabled: false}
-		}
-		prepared, err := PrepareChart(testChart(t), input)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := prepared.ValidateCustom("cetirun-example", "openclaw-example"); err != nil {
-			t.Fatal(err)
-		}
-		for _, expected := range []string{"CETIRUN_AGENT_BROKER_URL", "/usr/local/bin/cetirun-agent", "skills/azure/SKILL.md", "agent-identity-tools"} {
-			if !strings.Contains(string(prepared.manifest), expected) {
-				t.Fatalf("missing %s", expected)
-			}
-		}
-		object(prepared.Values["agentIdentity"])["brokerURL"] = "http://other.credentials.svc.cluster.local:8080"
-		if err := prepared.ValidateCustom("cetirun-example", "openclaw-example"); err == nil {
-			t.Fatal("a changed Broker endpoint was accepted")
-		}
+func TestCustomAgentIdentityIsRejected(t *testing.T) {
+	_, err := PrepareChart(testChart(t), customIdentityInput())
+	if err == nil || !strings.Contains(err.Error(), "Custom does not support Agent Identity") {
+		t.Fatalf("Custom Agent Identity was accepted: %v", err)
 	}
 }
 
-func TestCustomAgentIdentityRejectsUnsupportedInputs(t *testing.T) {
-	for _, name := range []string{"old-chart", "external-broker", "no-network", "no-sidecar", "context-conflict", "raw-override"} {
+func TestCustomRejectsNativeIdentityAndToolOverrides(t *testing.T) {
+	for name, value := range map[string]any{
+		"agent identity": map[string]any{"enabled": true},
+		"tools MCP":      map[string]any{"enabled": true},
+	} {
 		t.Run(name, func(t *testing.T) {
-			input, chrt := customIdentityInput(), testChart(t)
-			b := input["customBindings"].(runtimebindings.Custom)
-			switch name {
-			case "old-chart":
-				delete(chrt.Metadata.Annotations, "cetirun.microsoft.com/custom-agent-identity")
-			case "external-broker":
-				b.AgentIdentity.BrokerURL = "https://broker.example.invalid"
-			case "no-network":
-				input["networkPolicy"] = map[string]any{"enabled": false}
-			case "no-sidecar":
-				input["sidecarScope"] = map[string]any{"enabled": false}
-			case "context-conflict":
-				b.Context.Files["owned-azure"] = "skills/azure/SKILL.md"
-			case "raw-override":
-				input["agentIdentity"] = map[string]any{"enabled": true}
+			input := customInput(8080)
+			if name == "agent identity" {
+				input["agentIdentity"] = value
+			} else {
+				input["toolsMCP"] = value
 			}
-			input["customBindings"] = b
-			if _, err := PrepareChart(chrt, input); err == nil {
-				t.Fatal("unapproved Agent Identity configuration was accepted")
+			if _, err := PrepareChart(testChart(t), input); err == nil {
+				t.Fatalf("Custom accepted %s override", name)
 			}
 		})
 	}
 }
 
-func TestCustomAgentIdentityChangesWorkloadAndPreservesOptOut(t *testing.T) {
+func TestCustomPlainWorkloadHasNoIdentityTools(t *testing.T) {
 	plain, err := PrepareChart(testChart(t), customInput(8080))
 	if err != nil {
 		t.Fatal(err)
@@ -78,11 +52,9 @@ func TestCustomAgentIdentityChangesWorkloadAndPreservesOptOut(t *testing.T) {
 	if strings.Contains(string(plain.manifest), "CETIRUN_AGENT_BROKER_URL") || strings.Contains(string(plain.manifest), "agent-identity-tools") {
 		t.Fatal("identity tools appeared without an approved binding")
 	}
-	identity, err := PrepareChart(testChart(t), customIdentityInput())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plain.WorkloadHash == identity.WorkloadHash {
-		t.Fatal("identity activation did not invalidate the workload")
+	for _, value := range []string{"cetirun-agent", "azure-skill", "CETIRUN_AGENT_IDENTITY_ENABLED"} {
+		if strings.Contains(string(plain.manifest), value) {
+			t.Fatalf("plain Custom workload contains obsolete identity asset %q", value)
+		}
 	}
 }

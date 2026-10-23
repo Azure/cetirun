@@ -22,9 +22,8 @@ spec:
         # Istio ingress gateway (when separate from istiod)
         - "{{ . }}/*"
         {{- end }}
-        {{- if .Values.agentIdentity.enabled }}
-        # Deployment-level Agent Identity Broker.
-        - "{{ .Values.networkPolicy.agentIdentityBrokerNamespace }}/*"
+        {{- if .Values.toolsMCP.enabled }}
+        - "{{ .Values.toolsMCP.namespace }}/*"
         {{- end }}
         {{- if (.Values.aiGateway | default dict).enabled }}
         # Platform AI Gateway.

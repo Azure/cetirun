@@ -384,10 +384,9 @@ func (r *AgentReconciler) deleteAgentIdentity(ctx context.Context, instance *cet
 			return fmt.Errorf("persist Agent Identity deletion gate: %w", err)
 		}
 	}
-	// Delete the encrypted authorization cache before deleting the delegated
-	// principal. This is a blocking operation: retaining the CR finalizer keeps
-	// both operations retryable and prevents refresh tokens from becoming
-	// orphaned in the shared credential namespace.
+	// Revoke the Agent's authorizations before deleting the delegated principal.
+	// This is a blocking operation: retaining the CR finalizer keeps both
+	// operations retryable while the Broker removes Agent-scoped records.
 	if err := r.deleteAgentAuthorization(ctx, string(instance.UID)); err != nil {
 		return err
 	}
@@ -495,7 +494,11 @@ func (r *AgentReconciler) deleteAgentAuthorization(ctx context.Context, instance
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
-	response, err := client.Do(req)
+	requestClient := *client
+	requestClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	response, err := requestClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("delete Agent authorization: %w", err)
 	}

@@ -1,156 +1,213 @@
-# CetiRun Agent Identity Broker
+# CetiRun Agent Connection Broker
 
-The Agent Identity Broker is the trusted execution boundary between CetiRun
-agent workloads, the Microsoft Entra Agent ID Auth SDK, and approved downstream
-services.
+The Broker manages owner-scoped Connections and explicit per-Agent connection
+bindings. Azure RBAC and personal-provider OAuth permissions are the resource
+authorization authorities. There are no business-level AgentGrants, resource
+allowlists, per-tool permissions or prerequisite Azure RBAC verification.
 
-The Broker owns the OBO authorization session, validates the calling workload
-and instance binding, and asks the Auth SDK for a short-lived downstream access
-token. It does not implement service-specific tool operations. A trusted CLI in
-the Agent workload receives the downstream token, keeps it in process memory,
-calls the downstream service, and returns only business data to the Agent.
+A binding associates an immutable Agent UID with a Connection and selected
+services. New associations are always enabled. Sharing an owner does not share
+connections automatically.
+Every Agent needs an explicit binding. Services are defined with fixed origins
+and audiences in `app/internal/agenttools`, shared with MCP.
 
-The initial credential service is `azure-resource-manager`. Callers cannot
-select an arbitrary audience, scope, Agent Identity, Auth SDK endpoint, or user
-authorization record. The Broker never returns the user's Blueprint access
-token, refresh token, authorization code, or encrypted authorization cache.
+## Management API
 
-The broker and the Microsoft Auth SDK are separate containers in one Pod. This
-keeps the vendor authentication component isolated while avoiding a reusable
-credential protocol between independently reachable services.
+Portal APIs require the verified Portal mesh identity plus owner tenant/object
+headers. Agent-scoped operations additionally require `X-CetiRun-Instance-UID`
+and match the live Agent owner. Provider credentials are absent from API views.
 
-Returning a bearer token to an Agent workload is an explicit trust decision,
-not a hard process boundary. The supported CLI must not print, persist, place in
-an environment variable, or include the token in model context. Code with
-arbitrary execution inside the same workload can still request and misuse a
-token. Ending the CetiRun connection blocks new issuance but cannot revoke a
-token already returned to the workload; that token remains usable until its
-Microsoft Entra expiry or external revocation takes effect.
+- `GET /v1/connections`
+- `POST /v1/connections/start`
+- `GET|DELETE /v1/connections/{id}`
+- `POST /v1/connections/{id}/reconnect`
+- `GET /v1/connection-authorizations/{id}` (owner-scoped OAuth result)
+- `GET /v1/connections/{id}/usage` (associated Agents and `canRemove`)
+- `POST /v1/instances/{name}/tool-identities` (independent Azure connection)
+- `GET|POST /v1/instances/{name}/connection-bindings`
+- `PUT|DELETE /v1/instances/{name}/connection-bindings/{id}`
 
-## Azure app-only connection backend
+Binding input is `connectionId`, `services`, `enabled: true`; PUT includes `revision`,
+and DELETE requires `If-Match`. A deterministic Agent/Connection record key and
+Kubernetes resourceVersion CAS prevent duplicate binding races and lost updates.
+Revocation retains a tombstone so re-creation cannot reuse an issued revision.
+Disconnect revokes the binding and blocks future issuance. New disabled writes
+are rejected; historical disabled records require explicit reconnection. Requests already sent
+to providers cannot be recalled; provider-side revocation remains external.
 
-An optional backend adds per-Agent Connections and ConnectionBindings alongside
-those existing authorization routes. It uses the final service connection model:
-a binding selects an identity and services; Azure RBAC determines the permitted
-resource operations. There is no additional resource/action grant in CetiRun.
-The Portal, CLI, and runtime keep using the existing flow until their separate
-integration changes land.
+## Internal credential issuance
 
-For an Azure connection, the Broker reads the Agent UID, owner, tenant, client
-ID, and principal ID from platform state. It validates the current identity on
-every issuance, exchanges its federated workload assertion through the Blueprint
-for a child identity assertion, and requests an app-only ARM token for that
-Agent. This path never uses an owner token, personal refresh token, or OBO.
-Azure resource owners assign RBAC directly to the Agent principal. Creating a
-Connection or Binding does not assign or verify an Azure role.
+The three internal routes are registered only on the direct mTLS listener:
 
-### Storage and lifecycle
+- `POST /internal/v1/service-authorizations/list`
+- `POST /internal/v1/service-authorizations/check`
+- `POST /internal/v1/service-credentials/issue`
 
-Connection and Binding records are envelope-encrypted Kubernetes Secrets in the
-Agent's own namespace, with Agent owner references and
-`agenttools.cetirun.microsoft.com/` labels for record type, Agent name/UID,
-Connection ID, and owner. Namespace ownership and encrypted record ownership
-must agree; there is no central-record fallback for these Agent identities.
-The existing OBO authorization records remain in the Broker namespace.
+Input contains `callerProof`, `connectionId`, `service`, `contractVersion`, and
+(for issuance) connection/binding revisions. It contains no REST arguments or
+operation policy. The Broker independently TokenReviews the Pod-bound proof,
+checks the live Pod and ServiceAccount, follows the namespace Agent owner
+reference to a named Agent GET, validates its immutable UID, owner and binding,
+and resolves the service from the trusted profile. Identity, connection and
+binding are rechecked
+after OAuth refresh or app-only/OBO acquisition before returning a credential.
 
-Binding updates require the current revision. Disconnect requires `If-Match`
-and leaves a revoked tombstone so reconnect cannot reuse an earlier revision.
-The Operator establishes namespace-scoped Broker permissions before cleanup;
-cleanup validates ownership and deletes with UID/resource-version preconditions
-before the Agent namespace is removed. Keep the Broker storage configuration
-available until all associated records have been cleaned up.
+Independent Azure uses the platform-derived tenant, child Agent client ID and
+principal ID. Its two-step autonomous OAuth exchange obtains an ARM app-only
+token; it never falls back to a personal account. Personal Azure and Microsoft
+Graph retain the Entra Auth SDK OBO flow and require a ready Agent Identity.
+GitHub and Google use personal OAuth credentials and need only a supported ready
+workload. Returned tokens exist only in the trusted MCP process for execution.
 
-### Opt-in configuration
+HTTP `:8080` serves Portal/Operator mesh APIs; HTTPS `:8443` serves MCP internal
+APIs. The latter validates a client certificate with exactly the configured
+MCP ServiceAccount SPIFFE URI SAN, never an XFCC header. Configure `tls.enabled`,
+server certificate and client CA, plus MCP's client certificate and Broker CA.
+Set the Broker chart's `workloadTokenAudience` to the same value as the MCP
+chart's `workloadTokenAudience` and the Operator chart's `toolsMCP.audience`.
+All three default to `agent-tools-mcp`; a custom audience must match across
+all three releases because both MCP and the Broker independently verify the
+Agent's projected workload token.
 
-The Broker chart defaults `connectionBindings.enabled` and `tls.enabled` to
-false. To enable the backend, set both to true and configure:
+## Availability and identity modes
 
-- `tls.secretName`: an existing Secret containing `tls.crt`, `tls.key`, and the
-  trusted client `ca.crt` (key names are configurable).
-- `portal.namespace` and `portal.serviceAccount`: the trusted management caller.
-- `toolService.namespace` and `toolService.serviceAccount`: the trusted internal
-  credential caller. Its verified client certificate must contain exactly the
-  corresponding `spiffe://cluster.local/ns/<namespace>/sa/<serviceaccount>` URI.
-- `toolService.workloadTokenAudience`: the audience for the separate Agent
-  workload proof, defaulting to `agent-tools-mcp`.
+Both chart switches default to `true`:
 
-On the Operator chart, explicitly set `toolsMCP.brokerNamespace` and
-`toolsMCP.brokerServiceAccount` together, plus `agentIdentity.brokerURL` for
-cleanup. These two storage settings do not install or enable an MCP server.
-The existing identity, encryption, authorization, and Istio settings are still
-required while the legacy flow coexists.
-
-Before enabling Operator Broker storage, each existing built-in Agent namespace
-must have an owner reference matching the current Agent name and UID. This
-requirement also applies to Agents without Connections. Automatic migration or
-adoption of older namespaces without owner references is not supported. For
-disposable development/test instances, delete and recreate the Agents while
-Broker storage is still disabled. To retain an instance, an administrator must
-verify its persisted Agent/namespace binding and repair ownership explicitly;
-a matching namespace name alone is not sufficient evidence.
-
-Unowned or conflicting namespaces block reconciliation and deletion cleanup;
-the finalizer remains until ownership is repaired. The Operator reports
-`BrokerStorageAccessFailed` events and logs the expected Agent name and UID.
-New namespaces receive the Agent owner reference at creation. If a built-in
-Agent's namespace is missing, the full reconcile recreates it and establishes
-Broker RBAC before continuing; namespace recovery does not restore lost records
-or other deleted namespace contents.
-
-The extra ClusterRole permissions only read namespaces, Pods, and
-ServiceAccounts and create TokenReviews. Secret permissions are granted in
-individual Agent namespaces, not cluster-wide. Client TLS material is mounted
-only in the Broker container. Valid replacement material is reloaded for new
-handshakes; invalid replacements retain the last valid set. Existing TLS
-connections and already issued provider tokens are not immediately revoked.
-
-### Interfaces
-
-Management routes stay on the Istio-protected HTTP listener and require a
-verified Portal principal and owner headers. Per-Agent routes also require the
-current Agent UID.
-
-| Method | Route | Purpose |
-| --- | --- | --- |
-| GET | `/v1/connections` | List the owner's Agent connections |
-| GET | `/v1/connections/{id}` | Read credential-free connection metadata |
-| POST | `/v1/instances/{name}/tool-identities` | Idempotently connect the current Azure Agent identity |
-| GET, POST | `/v1/instances/{name}/connection-bindings` | List or create service bindings |
-| PUT, DELETE | `/v1/instances/{name}/connection-bindings/{id}` | Update services or disconnect using revision checks |
-
-Only the mutual TLS listener on port 8443 exposes the internal APIs:
-
-| Method | Route | Purpose |
-| --- | --- | --- |
-| POST | `/internal/v1/service-authorizations/list` | List bindings for the proven workload |
-| POST | `/internal/v1/service-authorizations/check` | Validate a connection/service selection |
-| POST | `/internal/v1/service-credentials/issue` | Issue an ARM token after checking current revisions |
-
-The shared `app/internal/agenttools` contract fixes the service ID `azure_arm`,
-ARM origin, and audience. It includes `callerProof`, `contractVersion`, and
-connection/binding revisions. TokenReview, live Pod/ServiceAccount checks, and
-the owning namespace's live Agent must agree. The credential endpoint rechecks
-these bindings after obtaining the token and rejects changes before returning
-it to the trusted service. Management responses and audit logs contain no
-credentials. This backend does not expose a new token endpoint to Agent Pods.
-Only supported native Hermes/OpenClaw Agents qualify; sandbox/custom runtimes
-are rejected.
-
-Structured management and issuance audit events include operation, outcome,
-Agent/binding/connection identifiers, and correlation ID. They require external
-log retention for durable auditing. Actual Azure Activity Log attribution must
-be verified against a provider operation; offline tests do not establish it.
-
-### Offline verification
-
-Run the repository checks and focused race tests with the pinned Go toolchain:
-
-```bash
-make check
-make docs-check
-go -C app/cetirun-agent-broker test -race ./... -count=1
-go -C app/internal test -race ./agenttools ./tlsreload -count=1
+```yaml
+identityModes:
+  azureAgent:
+    enabled: true
+  microsoftDelegated:
+    enabled: true
 ```
 
-Tests use synthetic Kubernetes state and token endpoints. The backend PR does
-not deploy a new Portal, runtime, or MCP service and needs no live Azure access.
+They map to `AZURE_AGENT_ENABLED` and `MICROSOFT_DELEGATED_ENABLED`. Disabling a
+mode blocks new connections and credential issuance for that mode; it does not
+delete saved Connections or bindings. The blueprint client ID is required when
+either Entra mode is enabled; the authorization client ID is required only for
+Microsoft delegated mode. Common tenant and Key Vault encryption configuration
+remains required, including for GitHub/Google-only deployments.
+
+Disabling Microsoft delegated mode removes the Auth SDK container and its
+scratch volumes from the chart. Broker `/readyz` reports local readiness without
+calling the SDK. SDK request failures affect delegated Azure/Microsoft Graph
+issuance, not independent Azure or GitHub/Google flows. When enabled, the SDK
+still shares the Broker Pod: scheduling, resource exhaustion and container/Pod
+failure can affect the deployment. This change is not Pod-level isolation.
+
+Broker TLS and MCP serving/client TLS reload mounted material every five
+seconds without a restart. Invalid updates retain the previous valid snapshot;
+expired leaf material fails new TLS handshakes or outbound requests. Rotate CAs
+by distributing old+new trust first, then replacing leaf certificates, then
+removing old trust. Allow for Kubernetes projection and poll delays. In-flight
+requests and established server connections can finish. See the
+[MCP trust boundary](../agent-tools-mcp/README.md#runtime-and-trust-boundaries)
+for mount and rollover details. Broker shutdown cancels reload/maintenance loops
+and allows HTTP requests up to ten seconds to drain.
+
+## Personal OAuth
+
+The callback is `/api/v1/connections/callback`. OAuth transactions bind owner,
+state, nonce and PKCE. GitHub/Google additionally require a Portal-generated
+same-browser proof stored in a state-specific Secure HttpOnly host cookie.
+Reconnect must preserve the original provider account; changing accounts needs
+Connect. Single-use state and storage CAS protect concurrent callbacks.
+Transactions are separate encrypted records and start responses include an
+`authorizationId`. The popup includes this ID; the Portal validates its origin,
+window source and ID, then fetches the owner-scoped result before selecting an
+account. Only explicit confirmation creates an Agent binding.
+
+A conditional account index keys owner tenant/object IDs, provider and the
+provider-verified stable account ID. Concurrent logins select one Connection ID;
+healthy repeat logins preserve credentials and bindings. Reauthorization keeps
+old credentials until successful sign-in to the same account. Explicit refresh
+`invalid_grant` marks sign-in required; transport failures do not. Old duplicate
+Connections retain their IDs, with `canonicalConnectionId` projected for selection.
+Expired transactions are removed at startup, every five minutes, and on the
+owner's next sign-in, once one hour has elapsed after transaction expiry.
+Cleanup scans paginated authorization Secrets in the Broker credential
+namespace, checks encrypted record identity and uses UID/resourceVersion delete
+preconditions. Corrupt records are skipped with a warning; concurrent cleanup
+conflicts are harmless. Connections, account indexes, references and revocation
+tombstones are outside this sweep.
+
+GitHub uses an OAuth App with `repo` scope, configured by
+`providers.github.credentialsSecretName` (`client-id`, `client-secret`). Calls
+execute as the connected user. OAuth and repository/organization permissions
+apply in full; CetiRun does not narrow them to repositories or operations.
+GitHub App installation identities are not used. Non-expiring GitHub tokens are
+explicitly marked; internal issuance still has a finite five-minute validity.
+
+Google uses a Web OAuth client configured by
+`providers.google.credentialsSecretName` with the same keys. Enable Gmail and
+Calendar APIs and register the exact Portal callback URI. Authorization requests
+openid/email, Gmail read/send and Calendar with offline access and explicit
+consent. Initial/reconnect exchange requires a refresh token. Refresh preserves
+an existing refresh token or scope set when the provider omits replacements.
+Actual returned scopes are retained and displayed; they are not translated into
+a fixed operation catalog. Google's testing-mode token expiry still applies.
+
+## Storage and lifecycle
+
+| Record | Storage | Owner |
+| --- | --- | --- |
+| ConnectionBinding | Agent workload namespace | Agent UID |
+| Independent Azure Connection | Agent workload namespace | Agent UID |
+| Credential-free delegated connection reference | Agent workload namespace | Agent UID |
+| Personal OAuth Connection | Broker credential namespace | Portal owner |
+| OAuth client configuration / Broker TLS | Broker namespace | Platform |
+
+Per-Agent storage is mandatory for this contract. There is no migration command
+or compatibility reader for the previous grant model. The Broker resolves the
+namespace from live Agent state and checks its owner reference. Encrypted
+records bind owner, immutable IDs and revisions. Labels and display snapshots
+support inventory only and cannot establish authority. Workload authentication
+uses namespace ownership and named Agent reads, without a cluster-wide Agent
+list fallback. Management inventory scans use pages of 50 Agents, with a 1 MiB
+response bound per page; a failed, oversized or repeated page fails the entire
+scan rather than returning partial results.
+
+The Operator supplies Broker Secret RBAC in ordinary managed Agent namespaces.
+This is namespace-wide Secret access, not label-scoped isolation. Records are
+never mounted in Agent workloads. The Operator cleanup endpoint deletes checked
+records with UID/resourceVersion preconditions before releasing the Agent
+finalizer. Namespace/Agent garbage collection also owns their lifetime. Personal
+credentials survive deletion of any individual Agent. Unsupported runtimes,
+including Sandbox, do not receive Broker Secret access.
+
+## Audit
+
+Broker emits structured started/completed events for OAuth start/reauthorize/
+completion, independent identity connection, binding connect/update/disconnect,
+account removal, Operator cleanup and internal credential operations. Events
+include correlation ID, duration, HTTP status, outcome and verified owner/target
+IDs when available. A confirmed storage commit is recorded as succeeded;
+ambiguous storage failures after a mutation starts are `execution_unknown`.
+An OAuth error page is not a successful account connection. An interrupted
+request may have only a started event, so logs are not a durable transaction
+ledger. Queries, credentials, request/response bodies and headers are not logged.
+
+MCP audit adds the validated provider method/path, stable executor account ID,
+Agent and connection/binding revisions, and upstream results. MCP uses the same
+correlation for its Broker calls and provider request. These IDs correlate
+observations; they do not deduplicate execution.
+
+## Offline checks
+
+```bash
+go test ./... -count=1
+go test -race ./...
+go vet ./...
+bash ../../scripts/cetirun-agent-broker-helm-test.sh
+```
+
+No live provider or Kubernetes access is needed for these checks.
+
+Account removal requires no active binding and no pending binding registration.
+Each binding write first reserves its own token on the Connection with Kubernetes
+resourceVersion CAS. After the namespace Binding commits, superseded tokens are
+released; Disconnect persists a tombstone before releasing its token. Usage
+checks include deleting and unsupported Agents. Interrupted registrations are
+reclaimed only after a Binding revision fence proves a delayed write cannot
+commit. Personal account deletion uses the same Connection CAS, preventing a
+check-then-delete race. Local removal never revokes provider-wide OAuth consent.

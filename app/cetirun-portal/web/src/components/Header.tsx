@@ -17,9 +17,12 @@ import {
 import { lazy, Suspense, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useThemeContext, type ThemeMode } from "../context/ThemeContext";
+import { useFeatures } from "../hooks/useFeatures";
 import { useMe } from "../context/MeContext";
 import cetirunLogo from "../assets/cetirun.png";
 import { useChatAccount } from "../chat/ChatAccount";
+
+const MyAccountsDialog = lazy(() => import("./MyAccountsDialog"));
 
 const HistoryDrawer = lazy(() => import("../chat/HistoryDrawer"));
 
@@ -44,7 +47,9 @@ export function buildSignOutUrl(location: {
 export function Header() {
   const { themeMode, setThemeMode } = useThemeContext();
   const { me } = useMe();
+  const { data: features } = useFeatures();
   const account = useChatAccount();
+  const [accountsOpen, setAccountsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [clearHistory, setClearHistory] = useState(false);
@@ -111,6 +116,7 @@ export function Header() {
               Local history
             </Button>
           )}
+          {features?.agentToolsEnabled && <Button appearance="subtle" size="small" onClick={() => setAccountsOpen(true)}>My accounts</Button>}
           {me?.isAdmin && (
             <NavLink
               to="/admin"
@@ -155,6 +161,7 @@ export function Header() {
           />
         </Suspense>
       )}
+      {features?.agentToolsEnabled && accountsOpen && <Suspense fallback={null}><MyAccountsDialog onClose={() => setAccountsOpen(false)} /></Suspense>}
       <Dialog
         open={signOutOpen}
         onOpenChange={(_, data) => setSignOutOpen(data.open)}

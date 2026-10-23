@@ -5,58 +5,116 @@ package broker
 
 import "time"
 
-type AuthorizationRecord struct {
-	InstanceUID           string       `json:"instanceUid"`
-	InstanceName          string       `json:"instanceName"`
-	OwnerTenantID         string       `json:"ownerTenantId"`
-	OwnerObjectID         string       `json:"ownerObjectId"`
-	AgentIdentityClientID string       `json:"agentIdentityClientId"`
-	Generation            uint64       `json:"generation"`
-	Revoked               bool         `json:"revoked"`
-	Transaction           *Transaction `json:"transaction,omitempty"`
-	Tokens                *TokenCache  `json:"tokens,omitempty"`
-	AccountDisplay        string       `json:"accountDisplay,omitempty"`
-	LastRenewed           *time.Time   `json:"lastRenewed,omitempty"`
-	LastUsed              *time.Time   `json:"lastUsed,omitempty"`
+type Owner struct {
+	TenantID string `json:"-"`
+	ObjectID string `json:"-"`
 }
 
-type Transaction struct {
-	StateHash    string    `json:"stateHash"`
-	CodeVerifier string    `json:"codeVerifier"`
-	Nonce        string    `json:"nonce"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	Consumed     bool      `json:"consumed"`
+const (
+	modeDelegated = "delegated"
+	modeAgent     = "agent"
+)
+
+// IdentityBinding is derived from platform status and verified provider data.
+type IdentityBinding struct {
+	InstanceUID string `json:"instanceUid"`
+	TenantID    string `json:"tenantId,omitempty"`
+	PrincipalID string `json:"principalId,omitempty"`
+	ClientID    string `json:"clientId,omitempty"`
 }
 
-type TokenCache struct {
+type Connection struct {
+	CanonicalConnectionID string           `json:"canonicalConnectionId,omitempty"`
+	Mode                  string           `json:"mode,omitempty"`
+	Identity              *IdentityBinding `json:"identity,omitempty"`
+	ID                    string           `json:"id"`
+	Provider              string           `json:"provider"`
+	AccountDisplay        string           `json:"accountDisplay"`
+	Services              []string         `json:"services"`
+	Scopes                []string         `json:"scopes"`
+	Revision              uint64           `json:"revision"`
+	Status                string           `json:"status"`
+	CreatedAt             time.Time        `json:"createdAt"`
+	UpdatedAt             time.Time        `json:"-"`
+	Owner                 Owner            `json:"-"`
+	AccountID             string           `json:"-"`
+}
+
+// ConnectionBinding permits one Agent to use selected services of a Connection.
+// Provider RBAC or OAuth scopes determine which resource operations succeed.
+type ConnectionBinding struct {
+	ID           string    `json:"id"`
+	InstanceUID  string    `json:"instanceUid"`
+	ConnectionID string    `json:"connectionId"`
+	Services     []string  `json:"services"`
+	Enabled      bool      `json:"enabled"`
+	Revision     uint64    `json:"revision"`
+	Owner        Owner     `json:"-"`
+	Revoked      bool      `json:"-"`
+	CreatedAt    time.Time `json:"-"`
+	UpdatedAt    time.Time `json:"-"`
+}
+
+type providerCredential struct {
 	AccessToken  string    `json:"accessToken"`
 	RefreshToken string    `json:"refreshToken"`
 	ExpiresAt    time.Time `json:"expiresAt"`
+	// NonExpiring is set only for provider credential responses that explicitly
+	// permit an access token without an expiry. It prevents a missing expiry
+	// from becoming an implicit provider-agnostic exception.
+	NonExpiring bool     `json:"nonExpiring,omitempty"`
+	Scopes      []string `json:"scopes"`
+}
+
+type connectionTransaction struct {
+	TargetConnectionID string `json:"targetConnectionId,omitempty"`
+	ResultConnectionID string `json:"resultConnectionId,omitempty"`
+	Status             string `json:"status,omitempty"`
+	Provider           string `json:"provider"`
+	StateHash          string `json:"stateHash"`
+	// BrowserBindingHash is present only for GitHub OAuth transactions. The
+	// Portal holds the corresponding browser secret in an HttpOnly cookie.
+	BrowserBindingHash string    `json:"browserBindingHash,omitempty"`
+	CodeVerifier       string    `json:"codeVerifier"`
+	Nonce              string    `json:"nonce,omitempty"`
+	ExpectedAccountID  string    `json:"expectedAccountId,omitempty"`
+	ExpiresAt          time.Time `json:"expiresAt"`
+	Consumed           bool      `json:"consumed"`
+}
+
+type connectionRecord struct {
+	References  map[string]bindingReservation `json:"references,omitempty"`
+	Connection  Connection                    `json:"connection"`
+	Credential  *providerCredential           `json:"credential,omitempty"`
+	Transaction *connectionTransaction        `json:"transaction,omitempty"`
+	Deleted     bool                          `json:"deleted"`
+	// Display snapshots come from the trusted Agent resource. They are never
+	// used to resolve ownership or authorize calls; instance UID remains binding.
+	InstanceName      string `json:"instanceName,omitempty"`
+	InstanceNamespace string `json:"instanceNamespace,omitempty"`
+}
+
+type bindingRecord struct {
+	ReservationToken  string            `json:"reservationToken,omitempty"`
+	Binding           ConnectionBinding `json:"binding"`
+	InstanceName      string            `json:"instanceName,omitempty"`
+	InstanceNamespace string            `json:"instanceNamespace,omitempty"`
 }
 
 type Agent struct {
 	Deleting              bool
 	RuntimeType           string
-	AgentIdentityObjectID string
-	WorkloadReady         bool
-	UnsupportedRuntime    bool
 	Name                  string
 	UID                   string
 	Namespace             string
 	ServiceAccount        string
 	OwnerTenantID         string
 	OwnerObjectID         string
+	AgentIdentityObjectID string
 	AgentIdentityClientID string
+	WorkloadReady         bool
 	AgentIdentityReady    bool
-}
-
-type statusResponse struct {
-	Status        string     `json:"status"`
-	Account       string     `json:"account,omitempty"`
-	LastRenewed   *time.Time `json:"lastRenewed,omitempty"`
-	LastUsed      *time.Time `json:"lastUsed,omitempty"`
-	ActionURL     string     `json:"actionUrl,omitempty"`
-	CorrelationID string     `json:"correlationId"`
+	UnsupportedRuntime    bool
 }
 
 type apiError struct {

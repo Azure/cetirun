@@ -51,9 +51,6 @@ func (p *PreparedRelease) ValidateCustom(namespace, release string) error {
 	if err := bindings.Validate(p.Agent); err != nil {
 		return err
 	}
-	if err := p.validateCustomAgentIdentity(bindings); err != nil {
-		return err
-	}
 	if namespace != bindings.Namespace.Name || release != p.releaseName {
 		return fmt.Errorf("custom namespace or release mismatch")
 	}
@@ -103,9 +100,6 @@ func (p *PreparedRelease) validateCustomManifest(namespace, release string, mani
 		return fmt.Errorf("Custom manifest identity mismatch")
 	}
 	if err := bindings.Validate(p.Agent); err != nil {
-		return err
-	}
-	if err := p.validateCustomAgentIdentity(bindings); err != nil {
 		return err
 	}
 	if err := validateCustomPlatformValues(p.Values, p.Agent, bindings.RestartRequestID); err != nil {
@@ -328,10 +322,6 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			"init-home-common.sh": string(asset(p.chart, "configs/init-home-common.sh")),
 			"custom-init-home.sh": string(asset(p.chart, "agents/custom/bootstrap/init-home.sh")),
 		}
-		if b.AgentIdentity != nil {
-			expected["cetirun-agent"] = string(asset(p.chart, "configs/cetirun-agent"))
-			expected["azure-skill"] = string(asset(p.chart, "skills/azure/SKILL.md"))
-		}
 		if obj["apiVersion"] != "v1" || !sameJSON(data, expected) || data["custom-init-home.sh"] == "" {
 			return fail()
 		}
@@ -521,9 +511,6 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 				corev1.EnvVar{Name: "CETIRUN_WEB_BASE_PATH", Value: "/ui/" + b.AgentName + "/"},
 				corev1.EnvVar{Name: "CETIRUN_WEB_INSTANCE", Value: b.AgentUID})
 		}
-		if b.AgentIdentity != nil {
-			env = append(env, corev1.EnvVar{Name: "CETIRUN_AGENT_BROKER_URL", Value: b.AgentIdentity.BrokerURL})
-		}
 		if b.Memory != nil {
 			env = append(env, memoryEnvironment(p.Agent.HomeDir)...)
 		}
@@ -555,12 +542,6 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 		if b.Memory != nil {
 			mounts = append(mounts, memoryMounts()...)
 			volumes = append(volumes, memoryVolumes()...)
-		}
-		if b.AgentIdentity != nil {
-			volumes = append(volumes, corev1.Volume{Name: "agent-identity-tools", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: name + "-config"}, DefaultMode: ptr.To[int32](0555),
-				Items: []corev1.KeyToPath{{Key: "cetirun-agent", Path: "cetirun-agent"}},
-			}}})
 		}
 		if !reflect.DeepEqual(main.VolumeMounts, mounts) ||
 			!reflect.DeepEqual(init.VolumeMounts, p.customInitMounts()) || !reflect.DeepEqual(pod.Volumes, volumes) {
@@ -648,15 +629,6 @@ func customVolumes(name string, b runtimebindings.Custom) []corev1.Volume {
 	contextSource := corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: b.Context.Name}, DefaultMode: ptr.To[int32](0444), Items: items,
 	}}
-	if b.AgentIdentity != nil {
-		contextSource = corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
-			DefaultMode: ptr.To[int32](0444), Sources: []corev1.VolumeProjection{
-				{ConfigMap: &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: b.Context.Name}, Items: items}},
-				{ConfigMap: &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: name + "-config"},
-					Items: []corev1.KeyToPath{{Key: "azure-skill", Path: "skills/azure/SKILL.md"}}}},
-			},
-		}}
-	}
 	return []corev1.Volume{
 		{Name: "context", VolumeSource: contextSource},
 		{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -664,20 +636,4 @@ func customVolumes(name string, b runtimebindings.Custom) []corev1.Volume {
 		}}},
 		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	}
-}
-
-func (p *PreparedRelease) validateCustomAgentIdentity(b runtimebindings.Custom) error {
-	expected := map[string]any{"enabled": b.AgentIdentity != nil, "brokerURL": ""}
-	if b.AgentIdentity != nil {
-		expected["brokerURL"] = b.AgentIdentity.BrokerURL
-		namespace, err := runtimebindings.AgentIdentityBrokerNamespace(b.AgentIdentity.BrokerURL)
-		if err != nil || object(p.Values["networkPolicy"])["agentIdentityBrokerNamespace"] != namespace ||
-			p.chart.Metadata.Annotations["cetirun.microsoft.com/custom-agent-identity"] != "v1" {
-			return fmt.Errorf("Custom Agent Identity does not match its platform binding")
-		}
-	}
-	if !sameJSON(p.Values["agentIdentity"], expected) {
-		return fmt.Errorf("Custom Agent Identity does not match its platform binding")
-	}
-	return nil
 }

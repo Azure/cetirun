@@ -1,165 +1,191 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Connection, ConnectionBinding } from "../../api/toolAuthorization";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Connection, type ConnectionBinding } from "../../api/toolAuthorization";
 import type { Instance } from "../../types/instance";
 import { ToolAuthorizationBlock } from "../ToolAuthorizationBlock";
+import MyAccountsDialog from "../MyAccountsDialog";
 
-const api = vi.hoisted(() => ({
-  listConnections: vi.fn(), listConnectionBindings: vi.fn(), createToolIdentity: vi.fn(), createConnectionBinding: vi.fn(), deleteConnectionBinding: vi.fn(),
-}));
+const api = vi.hoisted(() => ({ listConnections: vi.fn(), listConnectionBindings: vi.fn(), startConnection: vi.fn(), reconnectConnection: vi.fn(), deleteConnection: vi.fn(), getConnectionUsage: vi.fn(), createToolIdentity: vi.fn(), createConnectionBinding: vi.fn(), updateConnectionBinding: vi.fn(), deleteConnectionBinding: vi.fn() }));
 vi.mock("../../api/toolAuthorization", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../api/toolAuthorization")>()), ...api }));
+const instance: Instance = { instanceName: "agent-a", uid: "agent-uid", resourceVersion: "1", agent: { type: "hermes" }, alias: "owner", displayName: "Agent A", team: "platform", phase: "Ready", createdAt: "2026-10-10T00:00:00Z", upgradeAvailable: false };
+const github: Connection = { id: "connection-github", provider: "github", accountDisplay: "octocat", services: ["github"], scopes: ["repo"], mode: "delegated", revision: 3, status: "connected", createdAt: "2026-10-10T00:00:00Z" };
+const binding: ConnectionBinding = { id: "binding-1", instanceUid: instance.uid, connectionId: github.id, services: ["github"], enabled: true, revision: 7 };
+function renderUI(content = <ToolAuthorizationBlock instance={instance} />) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}>{content}</QueryClientProvider>), client }; }
 
-const instance: Instance = {
-  instanceName: "agent-a", uid: "agent-uid", resourceVersion: "1", agent: { type: "hermes" }, alias: "owner", displayName: "Agent A", team: "platform", phase: "Ready", createdAt: "2026-10-10T00:00:00Z", upgradeAvailable: false,
-  agentIdentity: { enabled: true, phase: "Ready" },
-};
-const azure: Connection = {
-  id: "azure-connection", provider: "azure", accountDisplay: "Agent A", services: ["azure_arm"], revision: 1, status: "connected", createdAt: "2026-10-10T00:00:00Z", mode: "agent",
-  identity: { instanceUid: instance.uid, principalId: "principal", clientId: "client", tenantId: "tenant" },
-};
-const binding: ConnectionBinding = { id: "binding-1", instanceUid: instance.uid, connectionId: azure.id, services: ["azure_arm"], enabled: true, revision: 7 };
+describe("Agent connection lifecycle", () => {
+ afterEach(() => vi.restoreAllMocks());
+ beforeEach(() => {
+  // Give Tabster a visible layout so dialog focus and reopening behave as in a browser.
+  vi.spyOn(document.body, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1024, 768));
+  vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(function (this: HTMLElement) { return this.parentElement; });
+  Object.values(api).forEach((mock) => mock.mockReset());
+  api.listConnections.mockResolvedValue([github]); api.listConnectionBindings.mockResolvedValue({ bindings: [], readOnly: false });
+  api.createConnectionBinding.mockResolvedValue({}); api.updateConnectionBinding.mockResolvedValue({}); api.deleteConnectionBinding.mockResolvedValue(undefined);
+  api.getConnectionUsage.mockResolvedValue({ connectionId: github.id, agents: [], canRemove: true });
+ });
+ it("shows only associated connections and requires confirmation in Connect", async () => {
+  const user = userEvent.setup(); renderUI();
+  await screen.findByText("No connections for this agent.");
+  expect(screen.queryByText(/octocat/)).toBeNull(); expect(api.createConnectionBinding).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Connect" }));
+  await user.click(screen.getByRole("button", { name: "GitHub — octocat" }));
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByRole("checkbox", { name: "GitHub REST API" })).toBeChecked();
+  expect(api.createConnectionBinding).not.toHaveBeenCalled();
+  await user.click(dialog.getByRole("button", { name: "Connect" }));
+  await waitFor(() => expect(api.createConnectionBinding).toHaveBeenCalledWith("agent-a", { connectionId: github.id, services: ["github"], enabled: true }));
+ });
+ it("Disconnect uses the current Agent revision and never removes the account", async () => {
+  api.listConnectionBindings.mockResolvedValue({ bindings: [binding], readOnly: false });
+  const user = userEvent.setup(); renderUI();
+  await user.click(await screen.findByRole("button", { name: "Disconnect" }));
+  await waitFor(() => expect(api.deleteConnectionBinding).toHaveBeenCalledWith("agent-a", "binding-1", 7));
+  expect(api.deleteConnection).not.toHaveBeenCalled();
+  for (const name of ["Refresh", "Reconnect", "Reauthorize", "Use for this agent", "Disable for this agent", "Edit services"]) expect(screen.queryByRole("button", { name })).toBeNull();
+ });
+ it("allows Disconnect for unavailable connections and read-only runtimes", async () => {
+  api.listConnections.mockResolvedValue([]); api.listConnectionBindings.mockResolvedValue({ bindings: [binding], readOnly: true });
+  const user = userEvent.setup(); renderUI();
+  await user.click(await screen.findByRole("button", { name: "Disconnect" }));
+  expect(api.deleteConnectionBinding).toHaveBeenCalledWith("agent-a", "binding-1", 7);
+  expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
+ });
+ it("reuses this Agent's Azure identity without a second resource grant", async () => {
+  const azure: Connection = { ...github, id: "azure", mode: "agent", provider: "azure", accountDisplay: "Agent A", services: ["azure_arm"], scopes: [], identity: { instanceUid: instance.uid, tenantId: "tenant", principalId: "principal", clientId: "client" } };
+  api.listConnections.mockResolvedValue([azure, { ...azure, id: "other", identity: { ...azure.identity!, instanceUid: "other-agent" } }]);
+  const user = userEvent.setup(); renderUI(); await screen.findByText("No connections for this agent.");
+  await user.click(screen.getByRole("button", { name: "Connect" })); await user.click(screen.getByRole("button", { name: "Azure Agent identity" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
+  expect(api.createToolIdentity).not.toHaveBeenCalled(); expect(api.createConnectionBinding).toHaveBeenCalledWith("agent-a", expect.objectContaining({ connectionId: "azure" }));
+ });
+ it("requires at least one service and shows Edit services only for multiple services", async () => {
+  const google: Connection = { ...github, provider: "google", services: ["google_gmail", "google_calendar"] };
+  api.listConnections.mockResolvedValue([google]); api.listConnectionBindings.mockResolvedValue({ bindings: [{ ...binding, services: google.services }], readOnly: false });
+  const user = userEvent.setup(); renderUI(); await user.click(await screen.findByRole("button", { name: "Edit services" }));
+  await user.click(screen.getByRole("checkbox", { name: "Gmail" })); await user.click(screen.getByRole("checkbox", { name: "Google Calendar" }));
+  expect(screen.getByRole("button", { name: "Save services" })).toBeDisabled();
+ });
+ it("does not restore disabled records or bind when cancelled", async () => {
+  api.listConnectionBindings.mockResolvedValue({ bindings: [{ ...binding, enabled: false }], readOnly: false });
+  const user = userEvent.setup(); renderUI(); await screen.findByText("No connections for this agent.");
+  await user.click(screen.getByRole("button", { name: "Connect" })); await user.click(screen.getByRole("button", { name: "GitHub — octocat" })); await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(api.createConnectionBinding).not.toHaveBeenCalled(); expect(api.updateConnectionBinding).not.toHaveBeenCalled();
+ });
+ it("offers only the canonical account when old duplicate connections exist", async () => {
+  api.listConnections.mockResolvedValue([{ ...github, canonicalConnectionId: github.id }, { ...github, id: "duplicate", canonicalConnectionId: github.id }]);
+  const user = userEvent.setup(); renderUI(); await screen.findByText("No connections for this agent."); await user.click(screen.getByRole("button", { name: "Connect" }));
+  expect(screen.getAllByRole("button", { name: "GitHub — octocat" })).toHaveLength(1);
+ });
+ it("fails closed on load errors and offers Retry", async () => {
+  api.listConnectionBindings.mockRejectedValue(new Error("Unavailable")); renderUI(); await screen.findByRole("alert");
+  expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+ });
+ it("does not start OAuth when the popup is blocked", async () => {
+  vi.spyOn(window, "open").mockReturnValue(null);
+  const user = userEvent.setup(); renderUI(); await screen.findByText("No connections for this agent."); await user.click(screen.getByRole("button", { name: "Connect" })); await user.click(screen.getByRole("button", { name: "Sign in" }));
+  expect(screen.getByText(/Allow popups/)).toBeInTheDocument(); expect(api.startConnection).not.toHaveBeenCalled(); vi.restoreAllMocks();
+ });
+ it("My accounts blocks removal while any Agent uses an account", async () => {
+  api.getConnectionUsage.mockResolvedValue({ connectionId: github.id, agents: [{ instanceUid: "b", instanceName: "agent-b", instanceNamespace: "ns-b" }], canRemove: false });
+  renderUI(<MyAccountsDialog onClose={() => {}} />); await screen.findByText(/Used by: agent-b/);
+  expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled(); expect(api.deleteConnection).not.toHaveBeenCalled();
+ });
+ it("My accounts removes only unused accounts after explicit confirmation", async () => {
+  api.deleteConnection.mockResolvedValue(undefined);
+  const user = userEvent.setup(); renderUI(<MyAccountsDialog onClose={() => {}} />); await screen.findByText("No agents use this account.");
+  await user.click(screen.getByRole("button", { name: "Remove" })); expect(api.deleteConnection).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Remove account" })); await waitFor(() => expect(api.deleteConnection).toHaveBeenCalledWith(github.id));
+ });
+ it("isolates Binding cache and workflow state when the same Agent name gets a new UID", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  api.listConnectionBindings.mockResolvedValueOnce({ bindings: [binding], readOnly: false });
+  const user = userEvent.setup();
+  const view = render(<QueryClientProvider client={client}><ToolAuthorizationBlock instance={instance} /></QueryClientProvider>);
+  await screen.findByText("GitHub — octocat");
+  await user.click(screen.getByRole("button", { name: "Connect" }));
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  let finish!: (value: { bindings: ConnectionBinding[]; readOnly: boolean }) => void;
+  api.listConnectionBindings.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  view.rerender(<QueryClientProvider client={client}><ToolAuthorizationBlock instance={{ ...instance, uid: "new-agent-uid" }} /></QueryClientProvider>);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
+  await waitFor(() => expect(api.listConnectionBindings).toHaveBeenCalledTimes(2));
+  finish({ bindings: [], readOnly: false });
+  await screen.findByText("No connections for this agent.");
+  expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+ });
+ it("recovers from a Binding load failure through Retry", async () => {
+  api.listConnectionBindings.mockRejectedValueOnce(new Error("Unavailable"));
+  const user = userEvent.setup(); renderUI(); await screen.findByRole("alert");
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  await screen.findByText("No connections for this agent.");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+ });
+ it("refetches a conflicted Disconnect and retries with the refreshed revision", async () => {
+  api.listConnectionBindings.mockResolvedValue({ bindings: [{ ...binding, revision: 8 }], readOnly: false }).mockResolvedValueOnce({ bindings: [binding], readOnly: false });
+  api.deleteConnectionBinding.mockRejectedValueOnce(new Error("Connection changed"));
+  const user = userEvent.setup(); renderUI();
+  await user.click(await screen.findByRole("button", { name: "Disconnect" }));
+  await screen.findByText("Connection changed");
+  await waitFor(() => expect(api.listConnectionBindings).toHaveBeenCalledTimes(2));
+  await user.click(screen.getByRole("button", { name: "Disconnect" }));
+  await waitFor(() => expect(api.deleteConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", 8));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+ });
+ it("keeps a service draft paired with its original revision across refetches and retries", async () => {
+  const google: Connection = { ...github, provider: "google", services: ["google_gmail", "google_calendar"] };
+  const current = { ...binding, services: google.services };
+  const refreshed = { ...current, services: ["google_gmail"], revision: 9 };
+  api.listConnections.mockResolvedValue([google]);
+  api.listConnectionBindings.mockResolvedValue({ bindings: [current], readOnly: false });
+  api.updateConnectionBinding.mockRejectedValue(new Error("Services changed; cancel and reopen to reload."));
+  const user = userEvent.setup(); const view = renderUI();
+  await user.click(await screen.findByRole("button", { name: "Edit services" }));
+  await user.click(screen.getByRole("checkbox", { name: "Gmail" }));
+  api.listConnectionBindings.mockResolvedValue({ bindings: [refreshed], readOnly: false });
+  await act(async () => { await view.client.refetchQueries({ queryKey: ["connection-bindings", instance.instanceName, instance.uid] }); });
+  expect(screen.getByRole("checkbox", { name: "Google Calendar" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Gmail" })).not.toBeChecked();
+  const originalDraft = { connectionId: github.id, services: ["google_calendar"], enabled: true, revision: 7 };
+  await user.click(screen.getByRole("button", { name: "Save services" }));
+  await screen.findByText("Services changed; cancel and reopen to reload.");
+  expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", originalDraft);
+  await user.click(screen.getByRole("button", { name: "Save services" }));
+  await waitFor(() => expect(api.updateConnectionBinding).toHaveBeenCalledTimes(2));
+  expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", originalDraft);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Edit services" }));
+  expect(screen.getByRole("checkbox", { name: "Gmail" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Google Calendar" })).not.toBeChecked();
+  api.updateConnectionBinding.mockResolvedValue({});
+  await user.click(screen.getByRole("button", { name: "Save services" }));
+  await waitFor(() => expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", { connectionId: github.id, services: ["google_gmail"], enabled: true, revision: 9 }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
+ });
 
-function renderUI(value = instance, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
-  return render(<QueryClientProvider client={client}><ToolAuthorizationBlock instance={value} /></QueryClientProvider>);
-}
+ it("recovers an identity write whose response failed without creating it twice", async () => {
+  const azure: Connection = { ...github, id: "azure", mode: "agent", provider: "azure", accountDisplay: "Agent A", services: ["azure_arm"], scopes: [], identity: { instanceUid: instance.uid, tenantId: "tenant", principalId: "principal", clientId: "client" } };
+  const user = userEvent.setup(); renderUI(); await screen.findByText("No connections for this agent.");
+  await user.click(screen.getByRole("button", { name: "Connect" }));
+  api.listConnections.mockResolvedValue([github, azure]);
+  api.createToolIdentity.mockRejectedValueOnce(new Error("Response unavailable"));
+  await user.click(screen.getByRole("button", { name: "Azure Agent identity" }));
+  await screen.findByText("Response unavailable");
+  await waitFor(() => expect(api.listConnections).toHaveBeenCalledTimes(2));
+  await user.click(screen.getByRole("button", { name: "Azure Agent identity" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(api.createToolIdentity).toHaveBeenCalledTimes(1);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
+  await waitFor(() => expect(api.createConnectionBinding).toHaveBeenCalledWith("agent-a", { connectionId: "azure", services: ["azure_arm"], enabled: true }));
+ });
 
-describe("ToolAuthorizationBlock", () => {
-  beforeEach(() => {
-    Object.values(api).forEach((mock) => mock.mockReset());
-    api.listConnections.mockResolvedValue([azure]);
-    api.listConnectionBindings.mockResolvedValue({ bindings: [], readOnly: false });
-    api.createToolIdentity.mockResolvedValue(azure);
-    api.createConnectionBinding.mockResolvedValue(binding);
-    api.deleteConnectionBinding.mockResolvedValue(undefined);
-  });
-
-  it("connects the current Agent's Azure identity with Azure Resource Manager only", async () => {
-    const user = userEvent.setup();
-    renderUI();
-    await screen.findByText("No Azure connection is configured for this Agent.");
-    await user.click(screen.getByRole("button", { name: "Connect" }));
-    await waitFor(() => expect(api.createToolIdentity).toHaveBeenCalledWith("agent-a"));
-    expect(api.createConnectionBinding).toHaveBeenCalledWith("agent-a", "azure-connection");
-    expect(screen.getByText("Agent principal ID: principal")).toBeInTheDocument();
-    expect(screen.getByText(/does not verify Azure permissions/)).toBeInTheDocument();
-  });
-
-  it("disconnects only the current Agent binding with its revision", async () => {
-    api.listConnectionBindings.mockResolvedValue({ bindings: [binding], readOnly: false });
-    const user = userEvent.setup();
-    renderUI();
-    await user.click(await screen.findByRole("button", { name: "Disconnect" }));
-    await waitFor(() => expect(api.deleteConnectionBinding).toHaveBeenCalledWith("agent-a", "binding-1", 7));
-    expect(screen.queryByRole("button", { name: /remove account|disable|reauthorize/i })).not.toBeInTheDocument();
-  });
-
-  it("clears a failed Connect error after a conflict is resolved by Disconnect", async () => {
-    api.listConnectionBindings
-      .mockResolvedValueOnce({ bindings: [], readOnly: false })
-      .mockResolvedValue({ bindings: [binding], readOnly: false });
-    api.createConnectionBinding.mockRejectedValue(new Error("Binding changed; reload before updating"));
-    const user = userEvent.setup();
-    renderUI();
-    await user.click(await screen.findByRole("button", { name: "Connect" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Binding changed; reload before updating");
-    await user.click(await screen.findByRole("button", { name: "Disconnect" }));
-    await waitFor(() => expect(api.deleteConnectionBinding).toHaveBeenCalledWith("agent-a", "binding-1", 7));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("shows partial Connect failure honestly and retries through the deterministic identity endpoint", async () => {
-    let identityCreated = false;
-    let connected = false;
-    let bindingAttempts = 0;
-    api.listConnections.mockImplementation(async () => identityCreated ? [azure] : []);
-    api.listConnectionBindings.mockImplementation(async () => ({ bindings: connected ? [binding] : [], readOnly: false }));
-    api.createToolIdentity.mockImplementation(async () => { identityCreated = true; return azure; });
-    api.createConnectionBinding.mockImplementation(async () => {
-      if (bindingAttempts++ === 0) {
-        throw new Error("Binding changed; reload before updating");
-      }
-      connected = true;
-      return binding;
-    });
-    const user = userEvent.setup();
-    renderUI();
-    await user.click(await screen.findByRole("button", { name: "Connect" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Binding changed; reload before updating");
-    expect(screen.getByText("Not connected")).toBeInTheDocument();
-    expect(screen.getByText("Agent principal ID: principal")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Connect" }));
-    await waitFor(() => expect(api.createToolIdentity).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByText("Connected")).toBeInTheDocument());
-    expect(screen.getAllByText("Azure Agent identity")).toHaveLength(1);
-  });
-
-  it("refreshes a revision conflict and retries Disconnect with the current revision", async () => {
-    let currentRevision = 7;
-    api.listConnectionBindings.mockImplementation(async () => ({ bindings: [{ ...binding, revision: currentRevision }], readOnly: false }));
-    api.deleteConnectionBinding.mockImplementation(async (_name: string, _id: string, revision: number) => {
-      if (revision === 7) {
-        currentRevision = 8;
-        throw new Error("Binding revision changed");
-      }
-    });
-    const user = userEvent.setup();
-    renderUI();
-    await user.click(await screen.findByRole("button", { name: "Disconnect" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Binding revision changed");
-    await user.click(screen.getByRole("button", { name: "Disconnect" }));
-    await waitFor(() => expect(api.deleteConnectionBinding).toHaveBeenLastCalledWith("agent-a", "binding-1", 8));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("does not expose another Agent's Azure identity", async () => {
-    api.listConnections.mockResolvedValue([{ ...azure, identity: { ...azure.identity!, instanceUid: "other-agent" } }]);
-    renderUI();
-    expect(await screen.findByText("No Azure connection is configured for this Agent.")).toBeInTheDocument();
-    expect(screen.queryByText("Agent principal ID: principal")).not.toBeInTheDocument();
-  });
-
-  it("fails closed while a connection load failed and retries", async () => {
-    api.listConnections.mockRejectedValue(new Error("Unavailable"));
-    renderUI();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Unavailable");
-    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
-    expect(api.listConnections).toHaveBeenCalledTimes(2);
-  });
-
-  it("blocks create until identity readiness, and allows cleanup on a read-only runtime", async () => {
-    const view = renderUI({ ...instance, agentIdentity: { enabled: true, phase: "Provisioning" } });
-    await screen.findByText(/Connect is available when its identity is ready/);
-    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
-
-    view.unmount();
-    api.listConnectionBindings.mockResolvedValue({ bindings: [binding], readOnly: true });
-    renderUI();
-    expect(await screen.findByText(/no longer supports creating Azure connections/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Disconnect" })).toBeEnabled();
-  });
-
-  it("does not offer Connect for a stale ready phase after identity was disabled", async () => {
-    renderUI({ ...instance, agentIdentity: { enabled: false, phase: "Ready" } });
-    await screen.findByText(/Connect is available when its identity is ready/);
-    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
-  });
-
-  it("does not reuse cache after the same Agent name receives a new UID", async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-    const view = renderUI(instance, client);
-    await screen.findByText("Agent principal ID: principal");
-    api.listConnections.mockResolvedValue([]);
-    api.listConnectionBindings.mockResolvedValue({ bindings: [], readOnly: false });
-    view.rerender(<QueryClientProvider client={client}><ToolAuthorizationBlock instance={{ ...instance, uid: "replacement-uid" }} /></QueryClientProvider>);
-    expect(await screen.findByText("No Azure connection is configured for this Agent.")).toBeInTheDocument();
-    expect(screen.queryByText("Agent principal ID: principal")).not.toBeInTheDocument();
-  });
 });

@@ -82,13 +82,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create auth middleware. Both identity features require a signed Entra ID token
-	// from oauth2-proxy in addition to display-only identity headers.
+	// Agent Identity lifecycle management and account connection management both
+	// require a signed Entra ID token from oauth2-proxy in addition to
+	// display-only identity headers.
 	var oidcVerifier *auth.OIDCVerifier
 	if cfg.AgentIdentityEnabled || cfg.AgentToolsEnabled {
 		oidcVerifier, err = auth.NewOIDCVerifier(cfg.EntraTenantID, cfg.PortalClientID)
 		if err != nil {
-			slog.Error("Invalid Portal identity OIDC configuration", "error", err)
+			slog.Error("Invalid Portal OIDC configuration", "error", err)
 			os.Exit(1)
 		}
 	}
@@ -118,11 +119,6 @@ func main() {
 	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
 	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient}
 	adminPolicyHandler := &handler.AdminPolicyHandler{Kube: kubeClient}
-	var agentAuthorizationHandler *handler.AgentAuthorizationHandler
-	if cfg.AgentIdentityEnabled {
-		agentAuthorizationHandler = handler.NewAgentAuthorizationHandler(kubeClient, cfg.AgentIdentityBrokerURL, cfg.PortalOrigin)
-	}
-
 	var toolConnectionsHandler *handler.ToolConnectionsHandler
 	if cfg.AgentToolsEnabled {
 		toolConnectionsHandler = handler.NewToolConnectionsHandler(kubeClient, cfg.AgentToolsBrokerURL, cfg.PortalOrigin)
@@ -137,7 +133,7 @@ func main() {
 	}
 
 	// Build and start public server.
-	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminPolicyHandler, authMiddleware, requireAdmin, agentAuthorizationHandler, toolConnectionsHandler)
+	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminPolicyHandler, authMiddleware, requireAdmin, toolConnectionsHandler)
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: mux,

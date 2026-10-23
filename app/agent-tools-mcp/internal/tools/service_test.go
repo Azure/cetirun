@@ -92,21 +92,40 @@ func TestBindingAndIssuanceChangesStopExecution(t *testing.T) {
 	}
 }
 
-func TestDelegatedOrNonAzureConnectionsNeverReachProvider(t *testing.T) {
+func TestDelegatedServicesUseProviderPermissions(t *testing.T) {
+	for _, service := range agenttools.Services() {
+		t.Run(service.ID, func(t *testing.T) {
+			s, broker, provider, caller, _ := serviceFixture()
+			broker.check.Service = service.ID
+			broker.check.Connection.Mode = "delegated"
+			broker.check.Connection.Identity = nil
+			broker.check.Connection.Provider = service.Provider
+			broker.check.Connection.Services = []string{service.ID}
+			broker.check.Binding.Services = []string{service.ID}
+			args := arguments()
+			args["service"] = service.ID
+			args["path"] = "/example"
+			if _, err := s.Call(context.Background(), caller, "service_request", args); err != nil || provider.calls != 1 || broker.issued != 1 {
+				t.Fatalf("delegated execution: calls=%d issued=%d err=%v", provider.calls, broker.issued, err)
+			}
+		})
+	}
+}
+
+func TestMismatchedProviderOrDelegatedIdentityNeverExecutes(t *testing.T) {
 	for _, mutate := range []func(*brokerclient.CheckResponse){
-		func(response *brokerclient.CheckResponse) {
-			response.Connection.Mode = "delegated"
-			response.Connection.Identity = nil
-		},
-		func(response *brokerclient.CheckResponse) { response.Connection.Provider = "github" },
+		func(r *brokerclient.CheckResponse) { r.Connection.Mode = "delegated" },
+		func(r *brokerclient.CheckResponse) { r.Connection.Provider = "github" },
+		func(r *brokerclient.CheckResponse) { r.Connection.Mode = "unknown" },
 	} {
 		s, broker, provider, caller, _ := serviceFixture()
 		mutate(&broker.check)
 		if _, err := s.Call(context.Background(), caller, "service_request", arguments()); err == nil || provider.calls != 0 || broker.issued != 0 {
-			t.Fatal("unsupported connection reached provider")
+			t.Fatal("invalid executor reached provider")
 		}
 	}
 }
+
 func TestIsolationAndPlatformRejectionAudit(t *testing.T) {
 	s, b, p, caller, log := serviceFixture()
 	b.check.Binding.InstanceUID = "other-agent"

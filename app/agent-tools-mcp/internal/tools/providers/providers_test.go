@@ -31,6 +31,10 @@ func TestArbitraryServiceRoutesAndProviderAuthority(t *testing.T) {
 		{"azure_arm", "/subscriptions/example/resourcegroups/new", "PUT", "management.azure.com", "/subscriptions/example/resourcegroups/new"},
 		{"azure_arm", "/providers/Microsoft.ResourceGraph/resources", "POST", "management.azure.com", "/providers/Microsoft.ResourceGraph/resources"},
 		{"azure_arm", "/subscriptions", "GET", "management.azure.com", "/subscriptions"},
+		{"github", "/repos/example/project/issues", "POST", "api.github.com", "/repos/example/project/issues"},
+		{"microsoft_graph", "/me/drive/root/children", "GET", "graph.microsoft.com", "/v1.0/me/drive/root/children"},
+		{"google_gmail", "/users/me/messages", "GET", "gmail.googleapis.com", "/gmail/v1/users/me/messages"},
+		{"google_calendar", "/calendars/primary/events", "POST", "www.googleapis.com", "/calendar/v3/calendars/primary/events"},
 	} {
 		t.Run(item.service+item.path, func(t *testing.T) {
 			calls := 0

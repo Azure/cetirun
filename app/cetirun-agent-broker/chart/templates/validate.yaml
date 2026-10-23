@@ -1,7 +1,9 @@
 {{- $identity := .Values.agentIdentity -}}
-{{- range $name, $value := dict "tenantId" $identity.tenantId "blueprintClientId" $identity.blueprintClientId "authorizationClientId" $identity.authorizationClientId "encryptionClientId" $identity.encryptionClientId "keyVaultKeyUrl" $identity.keyVaultKeyUrl "redirectUri" $identity.redirectUri "portalOrigin" $identity.portalOrigin "portalBaseUrl" $identity.portalBaseUrl -}}
+{{- range $name, $value := dict "tenantId" $identity.tenantId "encryptionClientId" $identity.encryptionClientId "keyVaultKeyUrl" $identity.keyVaultKeyUrl "redirectUri" $identity.redirectUri "portalOrigin" $identity.portalOrigin "portalBaseUrl" $identity.portalBaseUrl -}}
 {{- if empty $value }}{{ fail (printf "agentIdentity.%s is required" $name) }}{{ end -}}
 {{- end -}}
+{{- if and (or .Values.identityModes.azureAgent.enabled .Values.identityModes.microsoftDelegated.enabled) (empty $identity.blueprintClientId) }}{{ fail "agentIdentity.blueprintClientId is required for enabled Entra modes" }}{{ end -}}
+{{- if and .Values.identityModes.microsoftDelegated.enabled (empty $identity.authorizationClientId) }}{{ fail "agentIdentity.authorizationClientId is required for Microsoft delegated mode" }}{{ end -}}
 {{- if not (hasPrefix "https://" $identity.redirectUri) }}{{ fail "agentIdentity.redirectUri must use HTTPS" }}{{ end -}}
 {{- if not (hasPrefix "https://" $identity.portalOrigin) }}{{ fail "agentIdentity.portalOrigin must use HTTPS" }}{{ end -}}
 {{- if not (hasPrefix "https://" $identity.portalBaseUrl) }}{{ fail "agentIdentity.portalBaseUrl must use HTTPS" }}{{ end -}}
@@ -11,10 +13,7 @@
 {{- if not .Values.istio.sidecarInjection }}{{ fail "istio.sidecarInjection must be true to confirm that the release namespace has injection enabled" }}{{ end -}}
 {{- if empty .Values.istio.revision }}{{ fail "istio.revision is required for revision-based sidecar injection" }}{{ end -}}
 {{- if or (empty .Values.operator.namespace) (empty .Values.operator.serviceAccount) }}{{ fail "operator namespace and ServiceAccount are required" }}{{ end -}}
-
-{{- if ne .Values.connectionBindings.enabled .Values.tls.enabled }}{{ fail "connectionBindings.enabled and tls.enabled must match" }}{{ end -}}
-{{- if .Values.connectionBindings.enabled -}}
-{{- range $name, $value := dict "tls.secretName" .Values.tls.secretName "tls.certKey" .Values.tls.certKey "tls.keyKey" .Values.tls.keyKey "tls.clientCAKey" .Values.tls.clientCAKey "toolService.namespace" .Values.toolService.namespace "toolService.serviceAccount" .Values.toolService.serviceAccount "toolService.workloadTokenAudience" .Values.toolService.workloadTokenAudience "portal.namespace" .Values.portal.namespace "portal.serviceAccount" .Values.portal.serviceAccount -}}
-{{- if empty $value }}{{ fail (printf "%s is required for connection bindings" $name) }}{{ end -}}
-{{- end -}}
-{{- end -}}
+{{- if or (empty .Values.portal.namespace) (empty .Values.portal.serviceAccount) }}{{ fail "portal namespace and ServiceAccount are required" }}{{ end -}}
+{{- if or (empty .Values.toolService.namespace) (empty .Values.toolService.serviceAccount) }}{{ fail "tool service namespace and ServiceAccount are required" }}{{ end -}}
+{{- if and .Values.tls.enabled (or (empty .Values.tls.secretName) (empty .Values.tls.certKey) (empty .Values.tls.keyKey) (empty .Values.tls.clientCAKey)) }}{{ fail "tls.secretName, certKey, keyKey, and clientCAKey are required when TLS is enabled" }}{{ end -}}
+{{- if empty .Values.workloadTokenAudience }}{{ fail "workloadTokenAudience is required" }}{{ end -}}
