@@ -63,6 +63,14 @@ func (r *AgentReconciler) checkMigrationIntent(ctx context.Context, agent *api.A
 }
 
 func (r *AgentReconciler) authorizeMigrationSource(ctx context.Context, agent *api.Agent) error {
+	if err := r.reconcileMigrationSourceAccess(ctx, agent); err != nil {
+		_, holdErr := r.holdSandbox(ctx, agent)
+		return errors.Join(err, holdErr)
+	}
+	return nil
+}
+
+func (r *AgentReconciler) reconcileMigrationSourceAccess(ctx context.Context, agent *api.Agent) error {
 	resolution, err := r.resolvePolicy(ctx, agent)
 	if err == nil {
 		// The new lifecycle request has not been applied yet. Check fresh
@@ -77,11 +85,10 @@ func (r *AgentReconciler) authorizeMigrationSource(ctx context.Context, agent *a
 	if err == nil {
 		_, err = r.resolveSandboxInputs(ctx, agent, false, true)
 	}
-	if err != nil {
-		_, holdErr := r.holdPolicyDependencyUnavailable(ctx, agent)
-		return errors.Join(err, holdErr)
+	if err != nil && r.AIGateway.configured() {
+		err = errors.Join(err, r.beginAIGatewayPolicyReprojection(ctx, agent))
 	}
-	return nil
+	return err
 }
 
 func (r *AgentReconciler) migrationFinalizer(ctx context.Context, agent *api.Agent, object client.Object, name string, add bool) error {
@@ -118,8 +125,10 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 		return done, wait, err
 	}
 	block := func(err error) (bool, ctrl.Result, error) {
-		if (agent.Spec.Suspended || (state != nil && state.Phase != api.MigrationCompleted)) &&
-			(state == nil || state.Phase != api.MigrationProtecting) {
+		if state != nil && state.Phase == api.MigrationProtecting {
+			// Preserve source observations without retaining an obsolete grant.
+			err = errors.Join(err, r.reconcileMigrationSourceAccess(ctx, agent))
+		} else if agent.Spec.Suspended || (state != nil && state.Phase != api.MigrationCompleted) {
 			err = errors.Join(err, r.stopReconciledSandboxForMigration(ctx, agent))
 		}
 		return false, wait, r.migrationWaiting(ctx, agent, err)

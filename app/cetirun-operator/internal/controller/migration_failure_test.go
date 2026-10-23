@@ -266,6 +266,219 @@ func TestPlannedMigrationProtectingSurvivesEarlierHoldFailures(t *testing.T) {
 	}
 }
 
+func TestPlannedMigrationProtectionFailureRechecksAccess(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, failure := range []string{"source read", "attachment write"} {
+			for _, access := range []string{"unchanged", "models withdrawn", "budget tightened", "Team outage", "AgentPolicy outage", "catalog outage"} {
+				t.Run(kind+"/"+failure+"/"+access, func(t *testing.T) {
+					ctx := context.Background()
+					f := newMigrationFixture(t, kind, true)
+					requestMigration(t, f, "migration-00000001", "node-b")
+					f.reconcileOK(t)
+					state := f.current(t).Status.PlannedMigration.DeepCopy()
+					keyID, stages := f.current(t).Status.AIGateway.KeyID, f.installer.stages
+					policy := &api.AgentPolicy{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Name: f.current(t).Status.Policy.EffectivePolicyRef.Name}, policy); err != nil {
+						t.Fatal(err)
+					}
+					originalPolicy := policy.Spec.DeepCopy()
+					savePolicy := func() {
+						t.Helper()
+						policy.Generation++
+						if err := f.kube.Update(ctx, policy); err != nil {
+							t.Fatal(err)
+						}
+						policy.Status.ObservedGeneration = policy.Generation
+						for index := range policy.Status.Conditions {
+							policy.Status.Conditions[index].ObservedGeneration = policy.Generation
+						}
+						if err := f.kube.Status().Update(ctx, policy); err != nil {
+							t.Fatal(err)
+						}
+					}
+					protectionDown, dependencyDown, unprotectedStop := true, false, false
+					protectionErr := errors.New("synthetic source protection failure")
+					dependencyErr := errors.New("synthetic authorization read failure")
+					f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+						Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+							_, pod := object.(*corev1.Pod)
+							_, team := object.(*api.Team)
+							_, policy := object.(*api.AgentPolicy)
+							if protectionDown && failure == "source read" && pod {
+								return protectionErr
+							}
+							if dependencyDown && ((access == "Team outage" && team) || (access == "AgentPolicy outage" && policy)) {
+								return dependencyErr
+							}
+							return c.Get(ctx, key, object, opts...)
+						},
+						Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+							if _, attachment := object.(*storagev1.VolumeAttachment); attachment && protectionDown && failure == "attachment write" {
+								return protectionErr
+							}
+							if err := c.Patch(ctx, object, patch, opts...); err != nil {
+								return err
+							}
+							unsafe, err := deleteMigrationSourceOnScaleDown(ctx, c, object, state)
+							unprotectedStop = unprotectedStop || unsafe
+							return err
+						},
+					})
+					f.r.APIReader = f.r.Client
+					f.r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) {
+						if dependencyDown && access == "catalog outage" {
+							return &failingListGateway{fakeAIGateway: f.gateway}, nil
+						}
+						return f.gateway, nil
+					}
+					if _, err := f.reconcile(); !errors.Is(err, protectionErr) {
+						t.Fatal("initial protection failure was not surfaced:", err)
+					}
+					for _, key := range f.gateway.keys {
+						if key.Blocked {
+							t.Fatal("unchanged source authorization was unnecessarily blocked")
+						}
+					}
+					switch access {
+					case "models withdrawn":
+						policy.Spec.ModelAccess.SharedModels.Allowed = nil
+						savePolicy()
+					case "budget tightened":
+						policy.Spec.ModelAccess.GatewayBudget.DefaultMonthlyUSD = "5"
+						savePolicy()
+					default:
+						dependencyDown = true
+					}
+					for range 2 {
+						result, err := f.reconcile()
+						if !errors.Is(err, protectionErr) || result.RequeueAfter == 0 {
+							t.Fatalf("protection failure did not remain retryable: result=%+v err=%v", result, err)
+						}
+						if (access == "Team outage" || access == "AgentPolicy outage") && !errors.Is(err, dependencyErr) {
+							t.Fatal("protection retry skipped the current authorization read:", err)
+						}
+						current := f.current(t)
+						migrationPhase(t, f, api.MigrationProtecting)
+						if unprotectedStop || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 1 || f.installer.stages != stages {
+							t.Fatal("key authorization stopped or replaced the unprotected source")
+						}
+						pod := &corev1.Pod{}
+						if err := f.kube.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: state.SourcePod.Name}, pod); err != nil ||
+							pod.UID != state.SourcePod.UID || !pod.DeletionTimestamp.IsZero() {
+							t.Fatal("the captured source observation was lost:", err)
+						}
+						if !reflect.DeepEqual(current.Status.PlannedMigration, state) || current.Status.AIGateway.KeyID != keyID ||
+							len(f.gateway.keys) != 1 || len(f.gateway.generated) != 1 ||
+							len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {
+							t.Fatal("protection retry reset the migration or retained accounting identity")
+						}
+						wantBlocked := access != "unchanged"
+						for _, key := range f.gateway.keys {
+							if key.Blocked != wantBlocked || ptr.Deref(key.Spend, 0) != 3.25 {
+								t.Fatal("current authorization did not independently control the retained key")
+							}
+						}
+						if wantBlocked && (!current.Status.AIGateway.Blocked || current.Status.AIGateway.Routed ||
+							current.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection) {
+							t.Fatal("the independent key block was not recorded")
+						}
+					}
+					if access == "models withdrawn" || access == "budget tightened" {
+						policy.Spec = *originalPolicy
+						savePolicy()
+					}
+					protectionDown, dependencyDown = false, false
+					if _, err := f.reconcile(); (err != nil) != (access != "unchanged") {
+						t.Fatal("protection recovery did not preserve the source authorization hold:", err)
+					}
+					migrationPhase(t, f, api.MigrationStopping)
+					finishMigration(t, f)
+					if unprotectedStop || f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+						t.Fatal("recovery changed the retained key or stopped before source protection")
+					}
+					for _, key := range f.gateway.keys {
+						if key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+							t.Fatal("completed authorized recovery did not retain and unblock the same key")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPlannedMigrationProtectionAccessFailureRetries(t *testing.T) {
+	for _, failure := range []string{"Gateway read", "block receipt", "administrator block"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			f := newMigrationFixture(t, "openclaw", false)
+			requestMigration(t, f, "migration-00000001", "node-b")
+			f.reconcileOK(t)
+			state := f.current(t).Status.PlannedMigration.DeepCopy()
+			policy := &api.AgentPolicy{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Name: f.current(t).Status.Policy.EffectivePolicyRef.Name}, policy); err != nil {
+				t.Fatal(err)
+			}
+			policy.Spec.ModelAccess.SharedModels.Allowed = nil
+			if err := f.kube.Update(ctx, policy); err != nil {
+				t.Fatal(err)
+			}
+			protectionErr := errors.New("synthetic protection write failure")
+			accessErr := errors.New("synthetic key access failure")
+			down := true
+			f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if _, pod := object.(*corev1.Pod); pod {
+						return protectionErr
+					}
+					return c.Patch(ctx, object, patch, opts...)
+				},
+				SubResourcePatch: func(ctx context.Context, c client.Client, sub string, object client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					agent, ok := object.(*api.Agent)
+					if down && failure == "block receipt" && sub == "status" && ok &&
+						agent.Status.AIGateway != nil && agent.Status.AIGateway.Blocked {
+						return accessErr
+					}
+					return c.SubResource(sub).Patch(ctx, object, patch, opts...)
+				},
+			})
+			if failure == "Gateway read" {
+				f.gateway.getErr = accessErr
+			}
+			if failure == "administrator block" {
+				for _, key := range f.gateway.keys {
+					key.Blocked = true
+				}
+			}
+			_, err := f.reconcile()
+			if !errors.Is(err, protectionErr) || (failure != "administrator block" && !errors.Is(err, accessErr)) {
+				t.Fatal("independent access/protection failures were not joined:", err)
+			}
+			if failure == "administrator block" && !strings.Contains(err.Error(), "already blocked outside") {
+				t.Fatal("an administrator block was silently adopted:", err)
+			}
+			down, f.gateway.getErr = false, nil
+			_, err = f.reconcile()
+			if !errors.Is(err, protectionErr) || errors.Is(err, accessErr) {
+				t.Fatal("key access did not retry independently of failed protection:", err)
+			}
+			current := f.current(t)
+			if !reflect.DeepEqual(current.Status.PlannedMigration, state) || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 1 ||
+				len(f.gateway.keys) != 1 || len(f.gateway.generated) != 1 || len(f.gateway.deletedTokens) != 0 {
+				t.Fatal("key access retry changed the source or accounting identity")
+			}
+			for _, key := range f.gateway.keys {
+				if !key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+					t.Fatal("key access recovery left withdrawn access usable")
+				}
+			}
+			if failure == "administrator block" && current.Status.AIGateway.Reason == aiGatewayReasonPolicyReprojection {
+				t.Fatal("an external block became controller-owned during protection retries")
+			}
+		})
+	}
+}
+
 func TestPlannedMigrationPreCaptureHoldRecoversSource(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, dependency := range []string{"Team", "AgentPolicy", "catalog"} {

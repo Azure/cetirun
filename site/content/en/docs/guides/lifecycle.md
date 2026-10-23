@@ -162,7 +162,11 @@ running configuration before retrying capture; it does not apply the new target
 early or discard a previous completed destination pin. After capture, source
 observations must be protected before any hold stops compute. Suspension remains
 pending if a source read or protection write fails during `Protecting`, and
-retries continue the same request when those operations recover.
+retries continue the same request when those operations recover. These retries
+still check current authorization: withdrawn or unverified model access blocks
+the existing Gateway key independently of the deferred source shutdown, without
+resetting its accounting identity. A failed key operation remains an explicit
+retrying error, not a successful block.
 
 Do not clear recorded destination fields, edit checkpoints, force-delete Pods,
 strip finalizers or force-detach storage to make progress. Unknown source

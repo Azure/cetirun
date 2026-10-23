@@ -254,16 +254,22 @@ The controller persists `status.plannedMigration` before side effects:
 
 1. `Protecting` captures exact source/storage/Node identities and protects the
    source Pod and VolumeAttachment with separate finalizers. The stop transition
-   is recorded before rechecking source authorization, because an authorization
-   failure stops compute and clears its readiness. A transient dependency failure
-   then retains the source observations and continues shutdown from `Stopping`,
+   is recorded before an authorization failure can stop compute and clear its
+   readiness. A transient dependency failure then retains the source
+   observations and continues shutdown from `Stopping`,
    rather than requiring readiness that its own hold cleared. Destination start
    still requires current authorization through common reconciliation; no
    desired generation is reported as applied merely to pass a migration check.
    An accepted checkpoint is handled before bootstrap-receipt lookups can enter
    an independent hold. During `Protecting`, failed source reads or protection
    writes delay scale-down even when suspension is requested; retries must
-   retain both observations rather than destroy an unprotected source.
+   retain both observations rather than destroy an unprotected source. Those
+   retries still recheck current authorization and independently block the
+   existing Gateway key when access is withdrawn, its projection changes or
+   authorization evidence is unavailable. The temporary block retains key/spend
+   identity without applying a new grant or claiming an administrator's block.
+   Access failures are returned with the protection failure for retry; preserving
+   source observations does not permit continued use of an obsolete grant.
 2. `Stopping` blocks the existing key, withdraws routing and stops main/auxiliary
    workloads. `SourceTerminated` requires terminal Pod status and a completed
    status for every named container, while the original source Node/boot and CSI
