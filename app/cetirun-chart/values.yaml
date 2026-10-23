@@ -90,12 +90,12 @@ azureWorkloadIdentity:
 agentIdentity:
   enabled: false
 
-toolsMCP:
+connectionsMCP:
   enabled: false
   url: ""
-  audience: agent-tools-mcp
+  audience: cetirun-connections-mcp
   namespace: cetirun-tools
-  serviceAccount: agent-tools-mcp
+  serviceAccount: cetirun-connections-mcp
   caSecretName: ""
 
 # -- Platform AI Gateway access. The CetiRun operator sets these values for

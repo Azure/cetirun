@@ -27,15 +27,15 @@ func TestCustomAgentIdentityIsRejected(t *testing.T) {
 
 func TestCustomRejectsNativeIdentityAndToolOverrides(t *testing.T) {
 	for name, value := range map[string]any{
-		"agent identity": map[string]any{"enabled": true},
-		"tools MCP":      map[string]any{"enabled": true},
+		"agent identity":  map[string]any{"enabled": true},
+		"connections MCP": map[string]any{"enabled": true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			input := customInput(8080)
 			if name == "agent identity" {
 				input["agentIdentity"] = value
 			} else {
-				input["toolsMCP"] = value
+				input["connectionsMCP"] = value
 			}
 			if _, err := PrepareChart(testChart(t), input); err == nil {
 				t.Fatalf("Custom accepted %s override", name)

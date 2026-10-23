@@ -85,14 +85,14 @@ spec:
         - protocol: TCP
           port: 15012
 
-    {{- if .Values.toolsMCP.enabled }}
+    {{- if .Values.connectionsMCP.enabled }}
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.toolsMCP.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.connectionsMCP.namespace }}
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: agent-tools-mcp
+              app.kubernetes.io/name: cetirun-connections-mcp
       ports:
         - protocol: TCP
           port: 8443

@@ -51,8 +51,8 @@ func TestListenersExposeSeparateRouteSets(t *testing.T) {
 }
 
 func TestToolServiceTLSPrincipalIsExact(t *testing.T) {
-	cfg := Config{ToolServiceNamespace: "cetirun-system", ToolServiceAccount: "agent-tools-mcp"}
-	valid, err := url.Parse("spiffe://cluster.local/ns/cetirun-system/sa/agent-tools-mcp")
+	cfg := Config{ToolServiceNamespace: "cetirun-system", ToolServiceAccount: "cetirun-connections-mcp"}
+	valid, err := url.Parse("spiffe://cluster.local/ns/cetirun-system/sa/cetirun-connections-mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,14 +70,14 @@ func TestToolServiceTLSPrincipalIsExact(t *testing.T) {
 		t.Fatal("multiple tool service URI SANs were accepted")
 	}
 	request.TLS = nil
-	request.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-system/sa/agent-tools-mcp")
+	request.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-system/sa/cetirun-connections-mcp")
 	if toolServiceTLSPrincipalAllowed(request, cfg) {
 		t.Fatal("XFCC was accepted without a verified TLS client certificate")
 	}
 }
 
 func TestTLSListenerUsesMCPPermissionDeniedCode(t *testing.T) {
-	server := &Server{cfg: Config{ToolServiceNamespace: "cetirun-system", ToolServiceAccount: "agent-tools-mcp"}, mux: http.NewServeMux(), tlsMux: http.NewServeMux()}
+	server := &Server{cfg: Config{ToolServiceNamespace: "cetirun-system", ToolServiceAccount: "cetirun-connections-mcp"}, mux: http.NewServeMux(), tlsMux: http.NewServeMux()}
 	server.routes()
 	response := httptest.NewRecorder()
 	server.TLSHandler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/internal/v1/service-authorizations/list", nil))

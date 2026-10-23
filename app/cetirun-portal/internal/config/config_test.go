@@ -149,14 +149,14 @@ func TestCustomTypeCanBeOptedIn(t *testing.T) {
 func TestAgentToolsOptIn(t *testing.T) {
 	t.Setenv("FEATURE_AGENT_TOOLS_ENABLED", "")
 	t.Setenv("FEATURE_AGENT_IDENTITY_ENABLED", "false")
-	t.Setenv("TOOLS_MCP_RUNTIME_TYPES", "")
+	t.Setenv("CONNECTIONS_MCP_RUNTIME_TYPES", "")
 	t.Setenv("AGENT_TOOLS_BROKER_URL", "")
 	cfg := Load()
 	if cfg.AgentToolsEnabled || !reflect.DeepEqual(cfg.AgentToolsRuntimeTypes, []string{"hermes", "openclaw"}) {
 		t.Fatalf("unexpected Agent Tools defaults: enabled=%v runtimes=%v", cfg.AgentToolsEnabled, cfg.AgentToolsRuntimeTypes)
 	}
 	t.Setenv("FEATURE_AGENT_TOOLS_ENABLED", "true")
-	t.Setenv("TOOLS_MCP_RUNTIME_TYPES", "hermes")
+	t.Setenv("CONNECTIONS_MCP_RUNTIME_TYPES", "hermes")
 	t.Setenv("AGENT_TOOLS_BROKER_URL", "http://broker.example.com:8080")
 	cfg = Load()
 	if !cfg.AgentToolsEnabled || cfg.AgentIdentityEnabled ||

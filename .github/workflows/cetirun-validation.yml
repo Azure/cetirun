@@ -13,13 +13,13 @@ permissions:
   contents: read
 
 jobs:
-  agent-tools-mcp:
-    name: Agent Tools MCP offline Go checks
+  cetirun-connections-mcp:
+    name: CetiRun Connections MCP offline Go checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: app/agent-tools-mcp
+        working-directory: app/cetirun-connections-mcp
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

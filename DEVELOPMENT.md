@@ -13,7 +13,7 @@ network access.
 | `app/cetirun-portal/` | Go portal backend and its Helm chart |
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
 | `app/cetirun-agent-broker/` | Owner Connections, Agent bindings, encrypted OAuth state and internal credential issuance |
-| `app/agent-tools-mcp/` | Workload-authenticated MCP service for fixed-service JSON REST execution |
+| `app/cetirun-connections-mcp/` | Workload-authenticated MCP service for fixed-service JSON REST execution |
 | `app/internal/` | Shared Go implementation packages for Registry credentials and terminal policy |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
@@ -221,8 +221,8 @@ build above until a working lint entry point is added.
 ### Agent Identity Broker
 
 The Broker owns owner-scoped Connections, per-instance ConnectionBindings, OAuth/OBO,
-and encrypted credential storage. Agent Tools MCP is a separate native remote
-MCP server in `app/agent-tools-mcp/`: it verifies a Pod-bound workload token,
+and encrypted credential storage. CetiRun Connections MCP is a separate native remote
+MCP server in `app/cetirun-connections-mcp/`: it verifies a Pod-bound workload token,
 asks the Broker to independently verify the instance and authorization, and
 executes JSON REST requests against fixed Azure, GitHub, Microsoft Graph, and Google service profiles. Provider
 tokens never enter Agent workloads. There is no MCP bridge or direct Agent
@@ -233,9 +233,9 @@ go -C app/cetirun-agent-broker test ./... -count=1
 go -C app/cetirun-agent-broker vet ./...
 make -C app/cetirun-agent-broker build
 bash scripts/cetirun-agent-broker-helm-test.sh
-make -C app/agent-tools-mcp test vet chart-lint
+make -C app/cetirun-connections-mcp test vet chart-lint
 python3 -B -m unittest scripts.tests.test_native_mcp_runtime -v
-python3 -B -m unittest discover -s app/cetirun-chart/tests -p test_tools_mcp.py -v
+python3 -B -m unittest discover -s app/cetirun-chart/tests -p test_connections_mcp.py -v
 ```
 
 These are offline checks. They do not call Microsoft Entra, the Auth SDK, Key
@@ -244,7 +244,7 @@ Hermes and OpenClaw transports include hash-guarded patches to read the rotating
 workload token for each request; they do not run a separate bridge process.
 Held Sandbox and Custom runtimes do not support this integration and fail closed.
 
-See [Agent Tools MCP](app/agent-tools-mcp/README.md) and the
+See [CetiRun Connections MCP](app/cetirun-connections-mcp/README.md) and the
 [authorization guide](site/content/en/docs/guides/agent-identity.md) for the
 TLS reload, Broker service identity, CA distribution, and Agent connection
 binding setup.

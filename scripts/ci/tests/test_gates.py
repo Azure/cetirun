@@ -113,7 +113,7 @@ class GateTests(unittest.TestCase):
             {str(Path(c[3]).relative_to(self.root)) for c in commands if c[:2] == ["helm", "lint"]},
             {
                 "app/cetirun-chart", "app/cetirun-operator/chart", "app/cetirun-portal/chart",
-                "app/agent-tools-mcp/chart", "app/cetirun-agent-broker/chart", "app/cetirun-ai-gateway/chart",
+                "app/cetirun-connections-mcp/chart", "app/cetirun-agent-broker/chart", "app/cetirun-ai-gateway/chart",
                 "app/cetirun-platform", "infra/istio",
             },
         )

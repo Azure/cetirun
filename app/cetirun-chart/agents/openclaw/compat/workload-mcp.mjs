@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 
 export function workloadFetch(fetchFn, endpoint) {
-  const target = process.env.CETIRUN_TOOLS_MCP_URL;
+  const target = process.env.CETIRUN_CONNECTIONS_MCP_URL;
   if (!target || endpoint !== target) return fetchFn;
   const expected = new URL(target);
   if (expected.protocol !== "https:" || expected.pathname !== "/mcp" || expected.username || expected.password || expected.search || expected.hash) {
@@ -16,7 +16,7 @@ export function workloadFetch(fetchFn, endpoint) {
     }
     let token;
     try {
-      const raw = readFileSync("/var/run/cetirun/tools/token");
+      const raw = readFileSync("/var/run/cetirun/connections/token");
       if (raw.length > 65536) throw new Error();
       token = raw.toString("ascii").trim();
       const parts = token.split(".");

@@ -22,8 +22,8 @@ spec:
         # Istio ingress gateway (when separate from istiod)
         - "{{ . }}/*"
         {{- end }}
-        {{- if .Values.toolsMCP.enabled }}
-        - "{{ .Values.toolsMCP.namespace }}/*"
+        {{- if .Values.connectionsMCP.enabled }}
+        - "{{ .Values.connectionsMCP.namespace }}/*"
         {{- end }}
         {{- if (.Values.aiGateway | default dict).enabled }}
         # Platform AI Gateway.

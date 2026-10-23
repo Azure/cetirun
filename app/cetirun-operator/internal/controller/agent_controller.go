@@ -105,18 +105,18 @@ type AgentReconciler struct {
 	AzureOIDCIssuerURL  string // auto-detected from cluster at startup
 
 	// Microsoft Entra Agent Identity deployment configuration.
-	AgentIdentityEnabled           bool
-	AgentIdentityTenantID          string
-	AgentIdentityBlueprintClientID string
-	AgentIdentityNamePrefix        string
-	AgentIdentityBrokerURL         string
-	AgentIdentityHTTPClient        *http.Client
-	ToolsMCPURL                    string
-	ToolsMCPAudience               string
-	ToolsMCPCASecretName           string
-	ToolsMCPRuntimeTypes           []string
-	ToolsMCPBrokerNamespace        string
-	ToolsMCPBrokerServiceAccount   string
+	AgentIdentityEnabled               bool
+	AgentIdentityTenantID              string
+	AgentIdentityBlueprintClientID     string
+	AgentIdentityNamePrefix            string
+	AgentIdentityBrokerURL             string
+	AgentIdentityHTTPClient            *http.Client
+	ConnectionsMCPURL                  string
+	ConnectionsMCPAudience             string
+	ConnectionsMCPCASecretName         string
+	ConnectionsMCPRuntimeTypes         []string
+	ConnectionsMCPBrokerNamespace      string
+	ConnectionsMCPBrokerServiceAccount string
 	// agentIdentityGraphClientFactory is test-only dependency injection. A nil
 	// factory constructs the deployment's workload-identity-backed Graph client.
 	agentIdentityGraphClientFactory func() (agentIdentityDirectoryClient, error)
@@ -466,34 +466,34 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// We read the gateway Secret content hash here so that external Secret
 	// modifications (token rotation, tailscale key update) invalidate the
 	// skip cache and trigger a full reconcile with Helm upgrade.
-	toolsMCPEnabled, err := r.toolsMCPEnabledFor(instance)
+	connectionsMCPEnabled, err := r.connectionsMCPEnabledFor(instance)
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
 	// A suspended workload renders zero replicas and does not consume MCP trust.
 	// Keep CA reads and distribution out of its stop path; resume verifies trust
 	// again before Helm can start any workload.
-	toolsMCPTrustRequired := toolsMCPEnabled && !instance.Spec.Suspended
-	toolsCAHash := ""
-	if toolsMCPTrustRequired {
-		toolsCAHash, err = r.toolsMCPCAHash(ctx)
+	connectionsMCPTrustRequired := connectionsMCPEnabled && !instance.Spec.Suspended
+	connectionsCAHash := ""
+	if connectionsMCPTrustRequired {
+		connectionsCAHash, err = r.connectionsMCPCAHash(ctx)
 		if err != nil {
-			return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust is unavailable")
+			return r.failWith(ctx, instance, "ProvisioningFailed", "Connections MCP CA trust is unavailable")
 		}
 	}
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
 	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
-		brokerRBACErr := r.reconcileToolsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team))
-		namespaceMissing := stderrors.Is(brokerRBACErr, errToolsMCPBrokerNamespaceMissing)
+		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team))
+		namespaceMissing := stderrors.Is(brokerRBACErr, errConnectionsMCPBrokerNamespaceMissing)
 		if brokerRBACErr != nil && !namespaceMissing {
 			logger.Error(brokerRBACErr, "Broker storage access setup failed", "instance", instance.Name)
 			r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "BrokerStorageAccessFailed", "%v", brokerRBACErr)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
-		if toolsMCPTrustRequired && !namespaceMissing {
-			if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
+		if connectionsMCPTrustRequired && !namespaceMissing {
+			if err := r.ensureConnectionsMCPCA(ctx, instance); err != nil {
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
 		}
@@ -518,7 +518,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 				logger.Error(err, "failed to backfill CetiRun auth key before skip-cache", "alias", instance.Spec.User.Alias)
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
-			gwSecretHash = secretContentHash(gwSecret.Data) + toolsCAHash
+			gwSecretHash = secretContentHash(gwSecret.Data) + connectionsCAHash
 		}
 
 		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
@@ -668,13 +668,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if err := r.ensureNamespacedRBAC(ctx, ns); err != nil {
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespaced RBAC: %v", err))
 	}
-	if toolsMCPTrustRequired {
-		if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
-			return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust distribution failed")
+	if connectionsMCPTrustRequired {
+		if err := r.ensureConnectionsMCPCA(ctx, instance); err != nil {
+			return r.failWith(ctx, instance, "ProvisioningFailed", "Connections MCP CA trust distribution failed")
 		}
 	}
 
-	if err := r.reconcileToolsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
+	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
 		return r.failWith(ctx, instance, "BrokerStorageAccessFailed", fmt.Sprintf("Broker storage access setup failed: %v", err))
 	}
 	// 7. Ensure gateway token secret.
@@ -820,7 +820,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 				return ctrl.Result{}, fmt.Errorf("re-read gateway Secret for operator hash: %w", err)
 			}
 		} else {
-			gwSecretHash = secretContentHash(gwSecret.Data) + toolsCAHash
+			gwSecretHash = secretContentHash(gwSecret.Data) + connectionsCAHash
 			gatewaySecretResourceVersion = gwSecret.ResourceVersion
 		}
 	}
@@ -830,12 +830,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// Teams may have resolved its application ID and Tailscale its auth key.
 	// Rebuild from current bindings without reloading the versioned chart.
 	helmValues, err := buildHelmValuesWithAgentIdentity(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel, AgentIdentityHelmConfig{
-		Enabled:              r.AgentIdentityEnabled,
-		BrokerURL:            r.AgentIdentityBrokerURL,
-		ToolsMCPURL:          r.ToolsMCPURL,
-		ToolsMCPAudience:     r.ToolsMCPAudience,
-		ToolsMCPCASecretName: r.ToolsMCPCASecretName,
-		ToolsMCPRuntimeTypes: r.ToolsMCPRuntimeTypes,
+		Enabled:                    r.AgentIdentityEnabled,
+		BrokerURL:                  r.AgentIdentityBrokerURL,
+		ConnectionsMCPURL:          r.ConnectionsMCPURL,
+		ConnectionsMCPAudience:     r.ConnectionsMCPAudience,
+		ConnectionsMCPCASecretName: r.ConnectionsMCPCASecretName,
+		ConnectionsMCPRuntimeTypes: r.ConnectionsMCPRuntimeTypes,
 	})
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
@@ -893,8 +893,8 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
 	helmValues = prepared.Values
-	if toolsCAHash != "" {
-		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/tools-ca-hash": toolsCAHash})
+	if connectionsCAHash != "" {
+		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
 	}
 	if reconciledSandbox {
 		alreadyDeployed = isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
@@ -1169,7 +1169,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 
 	// Agent Identity cleanup is blocking. Removing the finalizer before the
 	// authorization record and directory principal are gone would orphan them.
-	if err := r.ensureToolsMCPBrokerCleanupRBAC(ctx, instance); err != nil {
+	if err := r.ensureConnectionsMCPBrokerCleanupRBAC(ctx, instance); err != nil {
 		logger.Error(err, "Broker cleanup access setup failed; retaining finalizer", "instance", instance.Name)
 		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "BrokerStorageAccessFailed", "%v", err)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -1180,7 +1180,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 			logger.Error(err, "Agent Identity cleanup failed; retaining finalizer", "instance", instance.Name)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
-	} else if r.ToolsMCPBrokerNamespace != "" {
+	} else if r.ConnectionsMCPBrokerNamespace != "" {
 		// Clean remaining bindings even if Agent Identity was previously disabled.
 		if err := r.deleteAgentAuthorization(ctx, string(instance.UID)); err != nil {
 			logger.Error(err, "Agent connection cleanup failed; retaining finalizer", "instance", instance.Name)

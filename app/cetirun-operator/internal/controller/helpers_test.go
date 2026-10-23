@@ -122,7 +122,7 @@ func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1a
 	}
 }
 
-func TestBuildHelmValuesWithToolsMCPUsesControllerOwnedWorkloadIdentity(t *testing.T) {
+func TestBuildHelmValuesWithConnectionsMCPUsesControllerOwnedWorkloadIdentity(t *testing.T) {
 	instance := newTestInstance("alice", "Alice", "", "gateway-token")
 	instance.Name = "alice-hermes-v1"
 	instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
@@ -136,10 +136,10 @@ func TestBuildHelmValuesWithToolsMCPUsesControllerOwnedWorkloadIdentity(t *testi
 	values, err := buildHelmValuesWithAgentIdentity(
 		instance, nil, "example.com", "", nil, "", "gpt-5.4",
 		AgentIdentityHelmConfig{
-			Enabled:              true,
-			ToolsMCPURL:          "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp",
-			ToolsMCPAudience:     "agent-tools-mcp",
-			ToolsMCPCASecretName: "agent-tools-mcp-ca",
+			Enabled:                    true,
+			ConnectionsMCPURL:          "https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp",
+			ConnectionsMCPAudience:     "cetirun-connections-mcp",
+			ConnectionsMCPCASecretName: "cetirun-connections-mcp-ca",
 		},
 	)
 	if err != nil {
@@ -149,16 +149,16 @@ func TestBuildHelmValuesWithToolsMCPUsesControllerOwnedWorkloadIdentity(t *testi
 	if !reflect.DeepEqual(identity, map[string]interface{}{"enabled": true}) {
 		t.Fatalf("Agent Identity must not inject a Broker endpoint: %#v", identity)
 	}
-	toolsMCP := values["toolsMCP"].(map[string]interface{})
-	wantToolsMCP := map[string]interface{}{
+	connectionsMCP := values["connectionsMCP"].(map[string]interface{})
+	wantConnectionsMCP := map[string]interface{}{
 		"enabled":      true,
-		"url":          "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp",
-		"audience":     "agent-tools-mcp",
+		"url":          "https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp",
+		"audience":     "cetirun-connections-mcp",
 		"namespace":    "cetirun-tools",
-		"caSecretName": "agent-tools-mcp-ca",
+		"caSecretName": "cetirun-connections-mcp-ca",
 	}
-	if !reflect.DeepEqual(toolsMCP, wantToolsMCP) {
-		t.Fatalf("controller-owned Tools MCP values were not enforced: %#v", toolsMCP)
+	if !reflect.DeepEqual(connectionsMCP, wantConnectionsMCP) {
+		t.Fatalf("controller-owned Connections MCP values were not enforced: %#v", connectionsMCP)
 	}
 	serviceAccount := values["serviceAccount"].(map[string]interface{})
 	if serviceAccount["create"] != true ||
@@ -185,18 +185,18 @@ func TestInstanceServiceNameMatchesChartAndBrokerBoundary(t *testing.T) {
 	}
 }
 
-func TestBuildHelmValuesRejectsToolsMCPOverride(t *testing.T) {
+func TestBuildHelmValuesRejectsConnectionsMCPOverride(t *testing.T) {
 	instance := newTestInstance("alice", "Alice", "", "gateway-token")
-	instance.Spec.Helm.Values["toolsMCP"] = runtime.RawExtension{Raw: []byte(`{"enabled":true,"url":"https://evil.default.svc.cluster.local/mcp"}`)}
+	instance.Spec.Helm.Values["connectionsMCP"] = runtime.RawExtension{Raw: []byte(`{"enabled":true,"url":"https://evil.default.svc.cluster.local/mcp"}`)}
 	_, err := buildHelmValuesWithAgentIdentity(
 		instance, nil, "example.com", "", nil, "", "gpt-5.4",
 		AgentIdentityHelmConfig{
-			ToolsMCPURL:          "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp",
-			ToolsMCPCASecretName: "agent-tools-mcp-ca",
+			ConnectionsMCPURL:          "https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp",
+			ConnectionsMCPCASecretName: "cetirun-connections-mcp-ca",
 		},
 	)
 	if err == nil {
-		t.Fatal("per-instance Tools MCP override was accepted")
+		t.Fatal("per-instance Connections MCP override was accepted")
 	}
 }
 
@@ -209,19 +209,19 @@ func TestBuildHelmValuesCannotEnableAgentIdentityOutsideReadyDeployment(t *testi
 	instance.Spec.Helm.Values["agentIdentity"] = runtime.RawExtension{Raw: []byte(`{"enabled":true,"brokerURL":"http://evil.default.svc.cluster.local:8080"}`)}
 	for name, config := range map[string]AgentIdentityHelmConfig{
 		"deployment disabled": {},
-		"invalid Tools MCP URL": {
-			Enabled:              true,
-			ToolsMCPURL:          "https://tools.example.invalid/mcp",
-			ToolsMCPCASecretName: "agent-tools-mcp-ca",
+		"invalid Connections MCP URL": {
+			Enabled:                    true,
+			ConnectionsMCPURL:          "https://tools.example.invalid/mcp",
+			ConnectionsMCPCASecretName: "cetirun-connections-mcp-ca",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			values, err := buildHelmValuesWithAgentIdentity(
 				instance, nil, "example.com", "", nil, "", "gpt-5.4", config,
 			)
-			if name == "invalid Tools MCP URL" {
+			if name == "invalid Connections MCP URL" {
 				if err == nil {
-					t.Fatal("invalid Tools MCP URL was accepted")
+					t.Fatal("invalid Connections MCP URL was accepted")
 				}
 				return
 			}

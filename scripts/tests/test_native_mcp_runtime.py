@@ -21,7 +21,7 @@ HERMES_AUTH = ROOT / "app/cetirun-chart/agents/hermes/compat/workload_mcp.py"
 HERMES_INSTALLER = ROOT / "app/cetirun-chart/agents/hermes/compat/apply_workload_mcp.py"
 OPENCLAW_AUTH = ROOT / "app/cetirun-chart/agents/openclaw/compat/workload-mcp.mjs"
 OPENCLAW_INSTALLER = ROOT / "app/cetirun-chart/agents/openclaw/compat/apply-workload-mcp.mjs"
-TARGET = "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp"
+TARGET = "https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp"
 
 
 def synthetic_token(expiration):
@@ -56,7 +56,7 @@ class NativeMCPRuntimeTests(unittest.TestCase):
             token_path = Path(directory) / "token"
             with (
                 mock.patch.dict(
-                    os.environ, {"CETIRUN_TOOLS_MCP_URL": TARGET}, clear=True
+                    os.environ, {"CETIRUN_CONNECTIONS_MCP_URL": TARGET}, clear=True
                 ),
                 mock.patch.object(self.hermes, "TOKEN_PATH", token_path),
             ):
@@ -74,7 +74,7 @@ class NativeMCPRuntimeTests(unittest.TestCase):
             token_path = Path(directory) / "token"
             with (
                 mock.patch.dict(
-                    os.environ, {"CETIRUN_TOOLS_MCP_URL": TARGET}, clear=True
+                    os.environ, {"CETIRUN_CONNECTIONS_MCP_URL": TARGET}, clear=True
                 ),
                 mock.patch.object(self.hermes, "TOKEN_PATH", token_path),
             ):
@@ -95,7 +95,7 @@ class NativeMCPRuntimeTests(unittest.TestCase):
             module_path = temporary / "workload-mcp.mjs"
             module_path.write_text(
                 OPENCLAW_AUTH.read_text(encoding="utf-8").replace(
-                    "/var/run/cetirun/tools/token", str(token_path)
+                    "/var/run/cetirun/connections/token", str(token_path)
                 ),
                 encoding="utf-8",
             )
@@ -104,7 +104,7 @@ class NativeMCPRuntimeTests(unittest.TestCase):
                 """
 import { workloadFetch } from './workload-mcp.mjs';
 import { existsSync, writeFileSync } from 'node:fs';
-const target = process.env.CETIRUN_TOOLS_MCP_URL;
+const target = process.env.CETIRUN_CONNECTIONS_MCP_URL;
 const seen = [];
 const fetchFn = async (_input, init) => { seen.push({ authorization: init.headers.get('authorization'), redirect: init.redirect }); return { status: 200 }; };
 const guarded = workloadFetch(fetchFn, target);
@@ -124,7 +124,7 @@ async function rejects(action, expected) { try { await action(); } catch (error)
             continue_path = temporary / "continue"
             process = subprocess.Popen(
                 ["node", str(runner)], cwd=temporary,
-                env={**os.environ, "CETIRUN_TOOLS_MCP_URL": TARGET, "CETIRUN_TEST_READY": str(ready_path), "CETIRUN_TEST_CONTINUE": str(continue_path)},
+                env={**os.environ, "CETIRUN_CONNECTIONS_MCP_URL": TARGET, "CETIRUN_TEST_READY": str(ready_path), "CETIRUN_TEST_CONTINUE": str(continue_path)},
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             for _ in range(100):
@@ -163,10 +163,10 @@ async function rejects(action, expected) { try { await action(); } catch (error)
 
     def test_hermes_platform_ca_extends_default_trust_only_for_platform_endpoint(self):
         context = mock.Mock()
-        with mock.patch.dict(os.environ, {"CETIRUN_TOOLS_MCP_URL": TARGET}, clear=True), mock.patch.object(self.hermes.ssl, "create_default_context", return_value=context) as factory:
+        with mock.patch.dict(os.environ, {"CETIRUN_CONNECTIONS_MCP_URL": TARGET}, clear=True), mock.patch.object(self.hermes.ssl, "create_default_context", return_value=context) as factory:
             self.assertIs(self.hermes.workload_tls(TARGET), context)
             factory.assert_called_once_with()
-            context.load_verify_locations.assert_called_once_with(cafile="/var/run/cetirun/tools-ca/ca.crt")
+            context.load_verify_locations.assert_called_once_with(cafile="/var/run/cetirun/connections-ca/ca.crt")
             self.assertIs(self.hermes.workload_tls("https://other.example.invalid/mcp", True), True)
             with self.assertRaisesRegex(ValueError, "requires verified TLS"):
                 self.hermes.workload_tls(TARGET, False)

@@ -14,7 +14,7 @@ updates:
   # contract requires every Go builder to use the same digest.
   - package-ecosystem: "docker"
     directories:
-      - "/app/agent-tools-mcp"
+      - "/app/cetirun-connections-mcp"
       - "/app/cetirun-agent-broker"
       - "/app/cetirun-memory-context"
       - "/app/cetirun-chart"
@@ -30,7 +30,7 @@ updates:
   # including dependencies that are indirect in the consumer.
   - package-ecosystem: "gomod"
     directories:
-      - "/app/agent-tools-mcp"
+      - "/app/cetirun-connections-mcp"
       - "/app/internal"
       - "/app/cetirun-memory-context"
       - "/app/cetirun-agent-broker"

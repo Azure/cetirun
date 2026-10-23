@@ -9,20 +9,20 @@
 {{- end }}
 {{- $portal := index .Values "cetirun-portal" }}
 {{- $operator := index .Values "cetirun-operator" }}
-{{- $tools := index .Values "agent-tools-mcp" }}
+{{- $tools := index .Values "cetirun-connections-mcp" }}
 {{- $broker := index .Values "cetirun-agent-broker" }}
 {{- if $broker.enabled }}
-{{- fail "Install the Agent Broker separately in its private credential namespace; do not colocate it with Agent Tools MCP in this umbrella release" }}
+{{- fail "Install the Agent Broker separately in its private credential namespace; do not colocate it with CetiRun Connections MCP in this umbrella release" }}
 {{- end }}
 {{- if $tools.enabled }}
 {{- if not ($tools.broker | default dict).baseURL }}
-{{- fail "agent-tools-mcp.broker.baseURL is required" }}
+{{- fail "cetirun-connections-mcp.broker.baseURL is required" }}
 {{- end }}
-{{- if not ($operator.toolsMCP | default dict).url }}
-{{- fail "cetirun-operator.toolsMCP.url is required when Agent Tools MCP is enabled" }}
+{{- if not ($operator.connectionsMCP | default dict).url }}
+{{- fail "cetirun-operator.connectionsMCP.url is required when CetiRun Connections MCP is enabled" }}
 {{- end }}
 {{- if not ($portal.features | default dict).agentToolsEnabled }}
-{{- fail "cetirun-portal.features.agentToolsEnabled must be true when Agent Tools MCP is enabled" }}
+{{- fail "cetirun-portal.features.agentToolsEnabled must be true when CetiRun Connections MCP is enabled" }}
 {{- end }}
 {{- end }}
 {{- if and $portal.enabled ($portal.sandboxRuntimeDefaultsFromController | default false) }}

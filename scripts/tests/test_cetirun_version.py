@@ -54,7 +54,7 @@ VERSION_FILES = (
     "infra/istio/Chart.yaml",
     "app/cetirun-ai-gateway/chart/Chart.yaml",
     "app/cetirun-agent-broker/chart/Chart.yaml",
-    "app/agent-tools-mcp/chart/Chart.yaml",
+    "app/cetirun-connections-mcp/chart/Chart.yaml",
     "app/cetirun-operator/chart/values.yaml",
     "app/cetirun-operator/cmd/main.go",
     "app/cetirun-operator/deploy/deploy.sh",

@@ -81,11 +81,11 @@ func TestWorkloadReadinessDoesNotRequireAgentIdentity(t *testing.T) {
 }
 
 func TestTokenReviewRequiresRequestedAudience(t *testing.T) {
-	if !tokenReviewAudienceAccepted([]string{"agent-tools-mcp"}, "agent-tools-mcp") {
+	if !tokenReviewAudienceAccepted([]string{"cetirun-connections-mcp"}, "cetirun-connections-mcp") {
 		t.Fatal("requested TokenReview audience was rejected")
 	}
-	for _, audiences := range [][]string{nil, {"another-audience"}, {"agent-tools-mcp", "another-audience"}} {
-		if tokenReviewAudienceAccepted(audiences, "agent-tools-mcp") {
+	for _, audiences := range [][]string{nil, {"another-audience"}, {"cetirun-connections-mcp", "another-audience"}} {
+		if tokenReviewAudienceAccepted(audiences, "cetirun-connections-mcp") {
 			t.Fatalf("unexpected TokenReview audiences accepted: %#v", audiences)
 		}
 	}

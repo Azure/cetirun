@@ -54,13 +54,13 @@ portal:
   namespace: cetirun-portal
   serviceAccount: cetirun-portal
 
-# Must match the MCP chart workloadTokenAudience and Operator toolsMCP.audience.
-workloadTokenAudience: agent-tools-mcp
+# Must match the MCP chart workloadTokenAudience and Operator connectionsMCP.audience.
+workloadTokenAudience: cetirun-connections-mcp
 
 toolService:
   runtimeTypes: [hermes, openclaw]
   namespace: cetirun-system
-  serviceAccount: agent-tools-mcp
+  serviceAccount: cetirun-connections-mcp
 
 providers:
   github:

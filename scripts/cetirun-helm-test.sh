@@ -122,7 +122,7 @@ if grep -q 'command: \["openclaw", "doctor"' <<< "$output"; then
   echo "FAIL: OpenClaw doctor init should not render for Hermes" >&2; exit 1
 fi
 
-# Tools MCP uses projected workload identity and never exposes provider credentials.
+# Connections MCP uses projected workload identity and never exposes provider credentials.
 for agent_type in openclaw hermes; do
   echo "==> helm template ${release_name} ${chart_dir} (agentType=${agent_type}, agentIdentity.enabled=true)"
   agent_identity_output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
@@ -132,13 +132,13 @@ for agent_type in openclaw hermes; do
     --set serviceAccount.name=agent-workload \
     --set serviceAccount.automountToken=false \
     --set agentIdentity.enabled=true \
-    --set toolsMCP.enabled=true \
-    --set toolsMCP.caSecretName=tools-ca \
-    --set toolsMCP.url=https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp)
-  grep -q 'name: CETIRUN_TOOLS_MCP_URL' <<< "$agent_identity_output" || { echo "FAIL: Agent Tools MCP environment variable missing for ${agent_type}" >&2; exit 1; }
-  grep -q 'value: "https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp"' <<< "$agent_identity_output" || { echo "FAIL: Agent Tools MCP URL missing for ${agent_type}" >&2; exit 1; }
-  grep -q 'kubernetes.io/metadata.name: cetirun-tools' <<< "$agent_identity_output" || { echo "FAIL: Agent Tools MCP network policy missing for ${agent_type}" >&2; exit 1; }
-  grep -q 'app.kubernetes.io/name: agent-tools-mcp' <<< "$agent_identity_output" || { echo "FAIL: Agent Tools MCP pod selector missing for ${agent_type}" >&2; exit 1; }
+    --set connectionsMCP.enabled=true \
+    --set connectionsMCP.caSecretName=connections-ca \
+    --set connectionsMCP.url=https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp)
+  grep -q 'name: CETIRUN_CONNECTIONS_MCP_URL' <<< "$agent_identity_output" || { echo "FAIL: CetiRun Connections MCP environment variable missing for ${agent_type}" >&2; exit 1; }
+  grep -q 'value: "https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp"' <<< "$agent_identity_output" || { echo "FAIL: CetiRun Connections MCP URL missing for ${agent_type}" >&2; exit 1; }
+  grep -q 'kubernetes.io/metadata.name: cetirun-tools' <<< "$agent_identity_output" || { echo "FAIL: CetiRun Connections MCP network policy missing for ${agent_type}" >&2; exit 1; }
+  grep -q 'app.kubernetes.io/name: cetirun-connections-mcp' <<< "$agent_identity_output" || { echo "FAIL: CetiRun Connections MCP pod selector missing for ${agent_type}" >&2; exit 1; }
   grep -q 'automountServiceAccountToken: false' <<< "$agent_identity_output" || { echo "FAIL: default Kubernetes token must be disabled for ${agent_type}" >&2; exit 1; }
   if grep -q 'AGENT_IDENTITY_CLIENT_ID' <<< "$agent_identity_output"; then
     echo "FAIL: Agent Identity client ID must not be exposed to ${agent_type}" >&2; exit 1
@@ -162,9 +162,9 @@ if helm_template "${release_name}" "${chart_dir}" \
   --set serviceAccount.create=true \
   --set-string serviceAccount.name="${long_service_account}" \
   --set agentIdentity.enabled=true \
-  --set toolsMCP.enabled=true \
-    --set toolsMCP.caSecretName=tools-ca \
-    --set toolsMCP.url=https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp 2>/dev/null; then
+  --set connectionsMCP.enabled=true \
+    --set connectionsMCP.caSecretName=connections-ca \
+    --set connectionsMCP.url=https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp 2>/dev/null; then
   echo "FAIL: Agent Identity accepted a ServiceAccount name longer than 63 characters" >&2
   exit 1
 fi
@@ -173,8 +173,8 @@ echo "==> helm template ${release_name} ${chart_dir} (invalid Agent Identity Bro
 if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
   --set agentType=hermes \
   --set agentIdentity.enabled=true \
-  --set toolsMCP.enabled=true \
-  --set toolsMCP.url=https://broker.example.invalid/mcp 2>/dev/null; then
+  --set connectionsMCP.enabled=true \
+  --set connectionsMCP.url=https://broker.example.invalid/mcp 2>/dev/null; then
   echo "FAIL: external Agent Identity Broker URL should have been rejected" >&2; exit 1
 fi
 
@@ -183,9 +183,9 @@ for required_setting in sidecarScope.enabled networkPolicy.enabled; do
   if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
     --set agentType=hermes \
     --set agentIdentity.enabled=true \
-    --set toolsMCP.enabled=true \
-    --set toolsMCP.caSecretName=tools-ca \
-    --set toolsMCP.url=https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp \
+    --set connectionsMCP.enabled=true \
+    --set connectionsMCP.caSecretName=connections-ca \
+    --set connectionsMCP.url=https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp \
     --set "${required_setting}=false" 2>/dev/null; then
     echo "FAIL: Agent Identity accepted ${required_setting}=false" >&2
     exit 1
@@ -196,10 +196,10 @@ echo "==> helm template ${release_name} ${chart_dir} (reserved Agent Identity en
 if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
   --set agentType=hermes \
   --set agentIdentity.enabled=true \
-  --set toolsMCP.enabled=true \
-    --set toolsMCP.caSecretName=tools-ca \
-    --set toolsMCP.url=https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp \
-  --set extraEnv[0].name=CETIRUN_TOOLS_MCP_URL \
+  --set connectionsMCP.enabled=true \
+    --set connectionsMCP.caSecretName=connections-ca \
+    --set connectionsMCP.url=https://cetirun-connections-mcp.cetirun-tools.svc.cluster.local/mcp \
+  --set extraEnv[0].name=CETIRUN_CONNECTIONS_MCP_URL \
   --set extraEnv[0].value=http://evil.default.svc.cluster.local:8080 2>/dev/null; then
   echo "FAIL: reserved Agent Identity environment variable should have been rejected" >&2; exit 1
 fi
