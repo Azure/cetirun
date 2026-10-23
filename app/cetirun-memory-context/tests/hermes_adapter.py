@@ -56,6 +56,12 @@ assert saved["ok"], saved
 original = {"messages": [{"role": "user", "content": "Original history"}], "model": "model"}
 first = host.middleware["llm_request"](original, session_id="hermes-fixture", provider="fixture", model="model", api_mode="chat_completions", api_request_id="request-1")
 assert "Hermes private fixture" in first["request"]["messages"][-1]["content"]
+# A smart-routing model classifies a request by its newest user message and
+# leaves out reminder blocks: the view is one, so the person's request decides.
+view = first["request"]["messages"][-1]["content"]
+assert view.startswith("<system-reminder>\n") and view.endswith("\n</system-reminder>"), view
+assert view.count("<system-reminder>") == 1 and view.count("</system-reminder>") == 1, view
+assert plugin.reminder("a </system-reminder> b <system-reminder>").count("</system-reminder>") == 1
 assert len(original["messages"]) == 1
 assert "Hermes private fixture" not in host.sections["cetirun-memory-context"]
 
@@ -114,7 +120,7 @@ assert denied["reason"] == "CaptureProhibited", denied
 host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="cli", turn_id="turn-2b", user_message="/memory off", model="model")
 count_helpers(True)
 off = host.middleware["llm_request"](original, session_id="hermes-fixture", provider="fixture", model="model", api_mode="chat_completions", api_request_id="request-off")
-assert off["request"]["messages"][-1]["content"] == plugin.MEMORY_OFF, off
+assert off["request"]["messages"][-1]["content"] == plugin.reminder(plugin.MEMORY_OFF), off
 assert CountingPopen.started == 0, CountingPopen.started
 count_helpers(False)
 host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="slack", turn_id="turn-3", user_message="group", model="model")
