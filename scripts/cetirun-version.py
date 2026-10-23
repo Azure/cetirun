@@ -45,8 +45,8 @@ def top_level_yaml(path, field):
     return match.group(1)
 
 
-# Subcharts of the platform chart: Operator, Portal and AI Gateway.
-PLATFORM_DEPENDENCIES = 3
+# Subcharts of the platform chart: Operator, Portal, AI Gateway and optional MCP.
+PLATFORM_DEPENDENCIES = 4
 
 
 def set_version(version):

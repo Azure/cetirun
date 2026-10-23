@@ -30,8 +30,8 @@ def agent(request, tmp_path):
     (source / "dependency").chmod(0o755)
     shutil.copy(CHART / "configs/init-home-common.sh", config)
     shutil.copytree(
-        CHART / "skills/azure",
-        source / f".{kind}/skills/azure",
+        CHART / "skills/connected-services",
+        source / f".{kind}/skills/connected-services",
         dirs_exist_ok=True,
     )
     if kind == "hermes":
@@ -103,9 +103,12 @@ def test_native_first_start_and_repeat_preserve_user_files(agent):
     else:
         # OpenClaw's models come through the AI Gateway; no in-agent sign-in.
         assert not helper.exists()
-    assert (
-        agent["target"] / f'.{agent["kind"]}/skills/azure/SKILL.md'
-    ).read_text() == (CHART / "skills/azure/SKILL.md").read_text()
+    skill_source = CHART / "skills/connected-services"
+    skill_target = agent["target"] / f'.{agent["kind"]}/skills/connected-services'
+    for path in skill_source.rglob("*"):
+        if path.is_file():
+            installed = skill_target / path.relative_to(skill_source)
+            assert installed.read_bytes() == path.read_bytes()
     if agent["kind"] == "openclaw":
         user = agent["target"] / ".openclaw/workspace/USER.md"
         assert read_config(agent)["channels"]["msteams"]["allowFrom"] == ["00000000-0000-0000-0000-000000000000"]

@@ -131,20 +131,24 @@ describe("Policy-controlled Agent creation", () => {
     expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ agentIdentityEnabled: true }));
   });
 
-  it("clears a Custom Identity choice when refreshed options no longer allow it", async () => {
+  it("does not offer Identity to Custom when it is otherwise allowed", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(respond(options("restricted", {
       policyName: undefined, allowedAgentTypes: ["custom"], agentIdentity: { allowed: true, required: false },
     }))));
     vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup(); const { client } = renderForm(); await selectTeam(user);
+    const user = userEvent.setup(); renderForm(); await selectTeam(user);
     await user.type(screen.getByLabelText(/Agent Image/), "registry.example.com/assistant:1");
-    await user.click(screen.getByRole("switch", { name: /Entra Agent Identity/ }));
-    expect(screen.getByRole("switch", { name: /Entra Agent Identity/ })).toBeChecked();
-    fetchMock.mockImplementation(() => Promise.resolve(respond(options("restricted", { policyName: undefined, allowedAgentTypes: ["custom"] }))));
-    await act(async () => { await client.invalidateQueries({ queryKey: ["instance-create-options"] }); });
-    await waitFor(() => expect(screen.queryByRole("switch", { name: /Entra Agent Identity/ })).not.toBeInTheDocument());
+    expect(screen.queryByRole("switch", { name: /Entra Agent Identity/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ agentIdentityEnabled: undefined, agent: expect.objectContaining({ type: "custom" }) }));
+  });
+
+  it("shows the Team policy's per-Agent Gateway limits read-only", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond(options("restricted", { rateLimits: { rpm: 30, tpm: 100000 } }))));
+    const user = userEvent.setup(); renderForm(); await selectTeam(user);
+    const limits = screen.getByLabelText("AI Gateway limits");
+    expect(within(limits).getByText("30 requests per minute")).toBeInTheDocument();
+    expect(within(limits).getByText("100,000 tokens per minute")).toBeInTheDocument();
   });
 
   it("refreshes permissions after a create rejection without automatically retrying", async () => {

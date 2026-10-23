@@ -7,7 +7,6 @@ export interface Features {
   customChatEnabled?: boolean;
   tailscaleEnabled: boolean;
   agentIdentityEnabled: boolean;
-  /** Azure Agent connection management in the Portal. */
   agentToolsEnabled: boolean;
   maxInstancesPerUser: number; // 0 = unlimited
   allowedAgentTypes?: AgentType[];

@@ -199,7 +199,14 @@ func validAuthorization(check brokerclient.CheckResponse, caller identity.Caller
 	if !ok || check.ContractVersion != agenttools.ContractVersion || check.InstanceUID != caller.InstanceUID || check.Service != service || c.ID != connectionID || c.Status != "connected" || c.Revision == 0 || c.Provider != p.Provider || !contains(c.Services, service) || b.ID == "" || b.Revision == 0 || !b.Enabled || b.InstanceUID != caller.InstanceUID || b.ConnectionID != c.ID || !contains(b.Services, service) {
 		return false
 	}
-	return c.Mode == "agent" && c.Provider == "azure" && c.Identity != nil && c.Identity.InstanceUID == caller.InstanceUID && c.Identity.TenantID != "" && c.Identity.PrincipalID != "" && c.Identity.ClientID != ""
+	switch c.Mode {
+	case "delegated":
+		return c.Identity == nil
+	case "agent":
+		return c.Provider == "azure" && c.Identity != nil && c.Identity.InstanceUID == caller.InstanceUID && c.Identity.TenantID != "" && c.Identity.PrincipalID != "" && c.Identity.ClientID != ""
+	default:
+		return false
+	}
 }
 func contains(values []string, value string) bool {
 	for _, v := range values {

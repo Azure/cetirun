@@ -258,6 +258,9 @@ func (h *InstanceHandler) GetInstanceByName(w http.ResponseWriter, r *http.Reque
 		http.Error(w, fmt.Sprintf("failed to build response: %v", err), http.StatusInternalServerError)
 		return
 	}
+	if resp.AIGateway != nil {
+		resp.AIGateway.RateLimits = h.policyRateLimits(r.Context(), instance)
+	}
 	w.Header().Set("ETag", kube.RegistryETag(instance))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -527,7 +530,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if agent.Type == cetirunv1alpha1.AgentTypeCustom && hasNativeCreateFields(fields) {
-		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token, Teams or Tailscale settings")
+		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token, Teams, Tailscale or Agent Identity settings")
 		return
 	}
 	if err := h.validateAgentType(agent.Type); err != nil {

@@ -98,13 +98,19 @@ func TestConnectionRoutesAreOptInAndAuthenticated(t *testing.T) {
 		if enabled {
 			tools = handler.NewToolConnectionsHandler(nil, "http://broker.example.com", "https://portal.example.com")
 		}
-		legacy := handler.NewAgentAuthorizationHandler(nil, "http://broker.example.com", "https://portal.example.com")
 		mux := New(fstest.MapFS{}, &handler.InstanceHandler{}, &handler.HealthHandler{},
 			&handler.FeaturesHandler{}, &handler.ConfigHandler{}, &handler.MeHandler{},
 			&handler.AdminTeamHandler{}, &handler.AdminInstanceHandler{}, &handler.AdminPolicyHandler{},
-			auth.Middleware(nil), auth.RequireAdmin(), legacy, tools)
+			auth.Middleware(nil), auth.RequireAdmin(), tools)
 		for _, route := range []struct{ method, path string }{
 			{http.MethodGet, "/api/v1/connections"},
+			{http.MethodPost, "/api/v1/connections/start"},
+			{http.MethodGet, "/api/v1/connections/id"},
+			{http.MethodGet, "/api/v1/connections/id/usage"},
+			{http.MethodGet, "/api/v1/connection-authorizations/id"},
+			{http.MethodDelete, "/api/v1/connections/id"},
+			{http.MethodPost, "/api/v1/connections/id/reconnect"},
+			{http.MethodPut, "/api/v1/instances/demo/connection-bindings/binding-id"},
 			{http.MethodPost, "/api/v1/instances/demo/tool-identities"},
 			{http.MethodGet, "/api/v1/instances/demo/connection-bindings"},
 			{http.MethodPost, "/api/v1/instances/demo/connection-bindings"},
@@ -130,13 +136,13 @@ func TestConnectionRoutesAreOptInAndAuthenticated(t *testing.T) {
 				}
 			}
 		}
-		// Opting into the panel must not remove existing authorization routes.
+		// The final cutover removes the legacy authorization API.
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/demo/agent-authorization", nil)
 		req.Header.Set("X-Auth-Request-Email", "alice@example.com")
 		response := httptest.NewRecorder()
 		mux.ServeHTTP(response, req)
-		if response.Code != http.StatusForbidden {
-			t.Errorf("legacy route enabled=%v: got %d want 403", enabled, response.Code)
+		if response.Code != http.StatusNotFound {
+			t.Errorf("legacy route enabled=%v: got %d want 404", enabled, response.Code)
 		}
 	}
 }

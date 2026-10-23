@@ -42,18 +42,18 @@ type Config struct {
 	// SandboxControllerDefaults requires the common Sandbox executor.
 	SandboxControllerDefaults bool
 	// AgentIdentityEnabled requires cryptographically verified Entra owner
-	// claims and exposes the per-instance authorization experience.
+	// claims for Agent Identity lifecycle management.
 	AgentIdentityEnabled bool
-	// AgentToolsEnabled exposes owner-scoped Azure connections and bindings.
+	// AgentToolsEnabled exposes owner-scoped external account connections and
+	// per-instance tool grants. It independently requires verified owner claims.
 	AgentToolsEnabled      bool
 	AgentToolsRuntimeTypes []string
-	AgentToolsBrokerURL    string
 	// EntraTenantID and PortalClientID identify the issuer and audience of the
 	// ID token passed by oauth2-proxy to the Portal backend.
 	EntraTenantID  string
 	PortalClientID string
-	// AgentIdentityBrokerURL is an internal cluster URL, never browser-visible.
-	AgentIdentityBrokerURL      string
+	// AgentToolsBrokerURL is an internal cluster URL, never browser-visible.
+	AgentToolsBrokerURL         string
 	PortalOrigin                string
 	RegistryCredentialNamespace string
 	// AIGatewayEnabled exposes the platform AI Gateway choices: the model
@@ -94,12 +94,11 @@ func Load() Config {
 		SandboxRuntimes:                    runtimes,
 		SandboxControllerDefaults:          controllerDefaults,
 		AgentIdentityEnabled:               os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
-		AgentToolsEnabled:                  os.Getenv("FEATURE_AGENT_TOOLS_ENABLED") == "true",
 		AgentToolsRuntimeTypes:             strings.Split(envOrDefault("TOOLS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
-		AgentToolsBrokerURL:                envOrDefault("AGENT_TOOLS_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
+		AgentToolsEnabled:                  os.Getenv("FEATURE_AGENT_TOOLS_ENABLED") == "true",
 		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
 		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),
-		AgentIdentityBrokerURL:             envOrDefault("AGENT_ID_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
+		AgentToolsBrokerURL:                envOrDefault("AGENT_TOOLS_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
 		PortalOrigin:                       envOrDefault("PORTAL_ORIGIN", ""),
 		RegistryCredentialNamespace:        envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),
 		AIGatewayEnabled:                   os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",

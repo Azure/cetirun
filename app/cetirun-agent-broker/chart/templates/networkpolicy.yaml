@@ -16,13 +16,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.operator.namespace }}
-        - namespaceSelector:
-            matchLabels:
-              app.kubernetes.io/managed-by: cetirun-operator
       ports:
         - protocol: TCP
           port: 8080
-    {{- if .Values.connectionBindings.enabled }}
     - from:
         - namespaceSelector:
             matchLabels:
@@ -30,4 +26,3 @@ spec:
       ports:
         - protocol: TCP
           port: 8443
-    {{- end }}

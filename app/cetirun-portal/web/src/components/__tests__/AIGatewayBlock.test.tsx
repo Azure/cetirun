@@ -187,6 +187,20 @@ describe("AIGatewayBlock", () => {
     expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 
+  it("shows the policy's limits on the agent's key, read-only", () => {
+    renderBlock(instance({ rateLimits: { maxParallelRequests: 4, rpm: 60, perModel: { "gpt-6": { tpm: 200000 } } } }));
+    const limits = screen.getByLabelText("AI Gateway limits");
+    expect(within(limits).getByText("Up to 4 requests at a time")).toBeInTheDocument();
+    expect(within(limits).getByText("60 requests per minute")).toBeInTheDocument();
+    expect(within(limits).getByText("gpt-6: 200,000 tokens per minute")).toBeInTheDocument();
+    expect(within(limits).queryByRole("textbox")).toBeNull();
+  });
+
+  it("shows no limits section when the policy sets none", () => {
+    renderBlock(instance());
+    expect(screen.queryByLabelText("AI Gateway limits")).toBeNull();
+  });
+
   it("resumes a sign-in still pending after a reload", async () => {
     api.pollCopilotLogin.mockResolvedValue({
       state: "pending", userCode: "KLMN-4321", verificationUri: "https://github.com/login/device", interval: 5,

@@ -124,14 +124,7 @@ func (b Custom) Validate(agent agents.ResolvedAgent) error {
 		return fmt.Errorf("invalid Agent restart request ID")
 	}
 	if b.AgentIdentity != nil {
-		if _, err := AgentIdentityBrokerNamespace(b.AgentIdentity.BrokerURL); err != nil {
-			return err
-		}
-		for _, file := range b.Context.Files {
-			if file == "skills/azure" || strings.HasPrefix(file, "skills/azure/") {
-				return fmt.Errorf("AgentIdentityBindingInvalid: the managed Azure skill conflicts with Custom context")
-			}
-		}
+		return fmt.Errorf("UnsupportedFeature: Custom does not support Agent Identity")
 	}
 	if err := b.Memory.Validate(agent.HomeDir); err != nil {
 		return err

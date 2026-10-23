@@ -348,6 +348,18 @@ problem in the wrong place. To choose another status, set
 `budgetExceededStatusCode` to 422 or 429; the chart refuses any other value.
 Other agents and other versions were not measured.
 
+### Key request limits
+
+An AgentPolicy's `modelAccess.rateLimits` makes the CetiRun operator set
+`max_parallel_requests`, `rpm_limit`, `tpm_limit` and the per-model
+`model_rpm_limit` and `model_tpm_limit` on the key of every Agent bound to it.
+The operator updates them in place and leaves other keys alone. A request over
+a limit receives HTTP 429 with a `retry-after` header; replicas share the
+counters through Redis. The token limit reserves a request's input plus its
+maximum output tokens up front, so it rejects requests whose maximum output
+alone exceeds it. See the
+[AgentPolicy reference](../../../site/content/en/docs/reference/crds.md#agentpolicy-rate-limits).
+
 A `budget_duration` of `30d` or `1mo` resets on the first of each month, UTC,
 rather than thirty days after the key was created. Resets are applied by a
 background job that runs about every ten minutes, so a key can stay refused for

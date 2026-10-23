@@ -187,8 +187,12 @@ func generateRandomToken(byteLen int) (string, error) {
 // Merge order (later wins): controller defaults → cetirunHelmValues → team
 // context/skills → per-instance spec.helm.values → controller-enforced model.
 type AgentIdentityHelmConfig struct {
-	Enabled   bool
-	BrokerURL string
+	Enabled              bool
+	BrokerURL            string
+	ToolsMCPURL          string
+	ToolsMCPAudience     string
+	ToolsMCPCASecretName string
+	ToolsMCPRuntimeTypes []string
 }
 
 func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
@@ -426,17 +430,13 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	// Agent Identity values are controller-owned and applied after arbitrary
 	// per-instance Helm overrides. The workload cannot select a Broker endpoint,
 	// service account, Kubernetes role, or default token mount.
-	values["agentIdentity"] = map[string]interface{}{"enabled": false, "brokerURL": ""}
+	values["agentIdentity"] = map[string]interface{}{"enabled": false}
+	values["toolsMCP"] = map[string]interface{}{"enabled": false, "url": "", "audience": "agent-tools-mcp", "namespace": "cetirun-tools"}
 	if agentIdentityRequested(instance) && agentIdentityConfig.Enabled &&
 		instance.Status.AgentIdentity != nil &&
 		instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
-		namespace, err := agentIdentityBrokerNamespace(agentIdentityConfig.BrokerURL)
-		if err != nil {
-			return nil, err
-		}
 		values["agentIdentity"] = map[string]interface{}{
-			"enabled":   true,
-			"brokerURL": agentIdentityConfig.BrokerURL,
+			"enabled": true,
 		}
 		values["serviceAccount"] = deepMerge(values["serviceAccount"], map[string]interface{}{
 			"create":         true,
@@ -444,12 +444,25 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 			"role":           "",
 			"automountToken": false,
 		})
-		networkPolicy, _ := values["networkPolicy"].(map[string]interface{})
-		if networkPolicy == nil {
-			networkPolicy = map[string]interface{}{}
+	}
+	toolsMCPEnabled, err := toolsMCPRuntimeAllowed(agentType, agentIdentityConfig.ToolsMCPRuntimeTypes)
+	if err != nil {
+		return nil, err
+	}
+	if agentIdentityConfig.ToolsMCPURL != "" && toolsMCPEnabled && !sandboxRequested(instance, team) {
+		namespace, err := toolsMCPNamespace(agentIdentityConfig.ToolsMCPURL)
+		if err != nil {
+			return nil, err
 		}
-		networkPolicy["agentIdentityBrokerNamespace"] = namespace
-		values["networkPolicy"] = networkPolicy
+		audience := agentIdentityConfig.ToolsMCPAudience
+		if audience == "" {
+			audience = "agent-tools-mcp"
+		}
+		if agentIdentityConfig.ToolsMCPCASecretName == "" {
+			return nil, fmt.Errorf("Tools MCP requires a workload-local CA trust Secret")
+		}
+		values["toolsMCP"] = map[string]interface{}{"enabled": true, "url": agentIdentityConfig.ToolsMCPURL, "audience": audience, "namespace": namespace, "caSecretName": agentIdentityConfig.ToolsMCPCASecretName}
+		values["serviceAccount"] = deepMerge(values["serviceAccount"], map[string]interface{}{"create": true, "name": instanceServiceName(instance.Name), "role": "", "automountToken": false})
 	}
 	if spec.RestartRequestID != "" {
 		if !cetirunv1alpha1.ValidRestartRequestID(spec.RestartRequestID) {
@@ -460,6 +473,18 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		})
 	}
 	return values, nil
+}
+
+func toolsMCPNamespace(raw string) (string, error) {
+	endpoint, err := url.Parse(raw)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Path != "/mcp" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return "", fmt.Errorf("Tools MCP URL must be a fixed in-cluster HTTPS /mcp endpoint")
+	}
+	parts := strings.Split(endpoint.Hostname(), ".")
+	if len(parts) != 5 || parts[0] == "" || parts[1] == "" || parts[2] != "svc" || parts[3] != "cluster" || parts[4] != "local" {
+		return "", fmt.Errorf("Tools MCP URL must use service.namespace.svc.cluster.local")
+	}
+	return parts[1], nil
 }
 
 func agentIdentityBrokerNamespace(raw string) (string, error) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"reflect"
 )
 
 const recordLabelPrefix = "agenttools.cetirun.microsoft.com/"
@@ -16,17 +17,19 @@ func agentRecordOwner(agent Agent) ownerReference {
 	return ownerReference{APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: agent.Name, UID: agent.UID}
 }
 
+// agentRecordStore resolves authority from the live Agent and namespace, never
+// from a caller-supplied namespace or a persisted display snapshot.
 func (k *kubeClient) agentRecordStore(ctx context.Context, uid string, names ...string) (*kubeClient, error) {
 	var agent Agent
 	var err error
 	if len(names) == 1 && names[0] != "" {
 		// A stored name is only a lookup hint. Recreated objects must not gain access.
-		agent, err = k.getServiceAgent(ctx, names[0])
+		agent, err = k.getAgent(ctx, names[0])
 		if err == nil && agent.UID != uid {
 			return nil, errNotFound
 		}
 	} else {
-		agent, err = k.getServiceAgentByUID(ctx, uid)
+		agent, err = k.getAgentByUID(ctx, uid)
 	}
 	if err != nil {
 		return nil, err
@@ -81,6 +84,35 @@ func (k *kubeClient) validateBindingLocation(record *bindingRecord) error {
 	return nil
 }
 
+// Agent identities and bindings have no central-record fallback.
+func (k *kubeClient) getConnectionForAgent(ctx context.Context, agent Agent, id string) (*connectionRecord, string, error) {
+	if !k.agentNamespaces {
+		return k.getConnection(ctx, id)
+	}
+	target, err := k.recordStoreForAgent(ctx, agent)
+	if err != nil {
+		return nil, "", err
+	}
+	secret, err := target.getToolSecret(ctx, "connection", id)
+	if err == nil && secret.Metadata.Labels[recordLabelPrefix+"record-type"] == "connection" {
+		return target.getConnection(ctx, id)
+	}
+	if err != nil && !errors.Is(err, errNotFound) {
+		return nil, "", err
+	}
+	if err == nil && !validConnectionReference(secret, *target.recordAgent, id) {
+		return nil, "", errors.New("Connection reference is invalid")
+	}
+	record, version, err := k.getConnection(ctx, id)
+	if err != nil {
+		return nil, "", err
+	}
+	if connectionMode(record.Connection) != modeDelegated || record.Connection.Identity != nil {
+		return nil, "", errNotFound
+	}
+	return record, version, nil
+}
+
 func (k *kubeClient) ownerAgentStores(ctx context.Context, owner Owner) ([]*kubeClient, error) {
 	agents, err := k.listAgents(ctx)
 	if err != nil {
@@ -102,6 +134,109 @@ func (k *kubeClient) ownerAgentStores(ctx context.Context, owner Owner) ([]*kube
 		result = append(result, target)
 	}
 	return result, nil
+}
+
+func (k *kubeClient) getOwnedConnection(ctx context.Context, owner Owner, id string) (*connectionRecord, string, error) {
+	if !k.agentNamespaces {
+		return k.getConnection(ctx, id)
+	}
+	record, version, err := k.getConnection(ctx, id)
+	if err == nil && connectionMode(record.Connection) == modeDelegated {
+		if !sameOwner(owner, record.Connection.Owner) {
+			return nil, "", errNotFound
+		}
+		return record, version, nil
+	}
+	if err != nil && !errors.Is(err, errNotFound) {
+		return nil, "", err
+	}
+	stores, err := k.ownerAgentStores(ctx, owner)
+	if err != nil {
+		return nil, "", err
+	}
+	var found *connectionRecord
+	for _, target := range stores {
+		secret, readErr := target.getToolSecret(ctx, "connection", id)
+		if errors.Is(readErr, errNotFound) {
+			continue
+		}
+		if readErr != nil {
+			return nil, "", readErr
+		}
+		if secret.Metadata.Labels[recordLabelPrefix+"record-type"] != "connection" {
+			continue
+		}
+		r, v, readErr := target.getConnection(ctx, id)
+		if readErr != nil {
+			return nil, "", readErr
+		}
+		if found != nil {
+			return nil, "", errors.New("Connection has ambiguous ownership")
+		}
+		found, version = r, v
+	}
+	if found == nil {
+		return nil, "", errNotFound
+	}
+	return found, version, nil
+}
+
+func validConnectionReference(secret secretDocument, agent Agent, id string) bool {
+	l := secret.Metadata.Labels
+	return l[recordLabelPrefix+"record-type"] == "connection-reference" &&
+		l[recordLabelPrefix+"id"] == id && l[recordLabelPrefix+"connection-id"] == id &&
+		l[recordLabelPrefix+"instance-uid"] == agent.UID &&
+		sameOwner(Owner{l[recordLabelPrefix+"owner-tenant"], l[recordLabelPrefix+"owner-object"]}, Owner{agent.OwnerTenantID, agent.OwnerObjectID}) &&
+		len(secret.Data) == 0 && reflect.DeepEqual(secret.Metadata.OwnerReferences, []ownerReference{agentRecordOwner(agent)})
+}
+
+// This credential-free reference is for inventory/lifecycle only. Binding and
+// decrypted owner checks remain the authority for using the shared credential.
+func (k *kubeClient) ensureConnectionReference(ctx context.Context, agent Agent, connection Connection) error {
+	if !k.agentNamespaces || connectionMode(connection) != modeDelegated {
+		return nil
+	}
+	target, err := k.recordStoreForAgent(ctx, agent)
+	if err != nil {
+		return err
+	}
+	agent = *target.recordAgent
+	if agent.Deleting || target.recordNamespaceDeleting || !sameOwner(connection.Owner, Owner{agent.OwnerTenantID, agent.OwnerObjectID}) {
+		return errors.New("Connection reference owner is invalid")
+	}
+	labels := map[string]string{
+		recordLabelPrefix + "id": connection.ID, recordLabelPrefix + "connection-id": connection.ID,
+		recordLabelPrefix + "instance-uid": agent.UID, recordLabelPrefix + "owner-tenant": connection.Owner.TenantID,
+		recordLabelPrefix + "owner-object": connection.Owner.ObjectID, recordLabelPrefix + "provider": connection.Provider,
+		recordLabelPrefix + "mode": modeDelegated,
+	}
+	annotations := recordInstanceMetadata(labels, agent.Name, agent.Namespace)
+	annotations[recordLabelPrefix+"credential-namespace"] = k.namespace
+	secret, err := target.getToolSecret(ctx, "connection", connection.ID)
+	if err == nil {
+		if !validConnectionReference(secret, agent, connection.ID) {
+			return errors.New("Connection reference conflicts with an existing record")
+		}
+		return nil
+	}
+	if !errors.Is(err, errNotFound) {
+		return err
+	}
+	// Keep the familiar Connection name while distinguishing the record type.
+	labels["app.kubernetes.io/managed-by"] = "cetirun-agent-broker"
+	labels[recordLabelPrefix+"record-type"] = "connection-reference"
+	secret = secretDocument{APIVersion: "v1", Kind: "Secret", Metadata: secretMetadata{
+		Name: toolRecordName("connection", connection.ID), Namespace: target.namespace, Labels: labels, Annotations: annotations,
+		OwnerReferences: []ownerReference{agentRecordOwner(agent)},
+	}}
+	_, err = target.request(ctx, http.MethodPost, "/api/v1/namespaces/"+url.PathEscape(target.namespace)+"/secrets", secret, nil)
+	if errors.Is(err, errConflict) {
+		current, readErr := target.getToolSecret(ctx, "connection", connection.ID)
+		if readErr == nil && validConnectionReference(current, agent, connection.ID) {
+			return nil
+		}
+	}
+	return err
 }
 
 func (k *kubeClient) listToolSecrets(ctx context.Context, kind, selector string) (secretList, error) {
@@ -150,37 +285,4 @@ func (k *kubeClient) deleteToolSecret(ctx context.Context, secret secretDocument
 		return nil
 	}
 	return err
-}
-
-func (k *kubeClient) getConnectionForAgent(ctx context.Context, agent Agent, id string) (*connectionRecord, string, error) {
-	target, err := k.recordStoreForAgent(ctx, agent)
-	if err != nil {
-		return nil, "", err
-	}
-	return target.getConnection(ctx, id)
-}
-func (k *kubeClient) getOwnedConnection(ctx context.Context, owner Owner, id string) (*connectionRecord, string, error) {
-	stores, err := k.ownerAgentStores(ctx, owner)
-	if err != nil {
-		return nil, "", err
-	}
-	var found *connectionRecord
-	var version string
-	for _, target := range stores {
-		record, v, err := target.getConnection(ctx, id)
-		if errors.Is(err, errNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, "", err
-		}
-		if found != nil {
-			return nil, "", errors.New("Connection has ambiguous ownership")
-		}
-		found, version = record, v
-	}
-	if found == nil {
-		return nil, "", errNotFound
-	}
-	return found, version, nil
 }

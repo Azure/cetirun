@@ -72,6 +72,9 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	} else if adapter.Name != AzureCNIOverlayCilium || !adapter.Qualified || adapter.Revision == "" {
 		return platform, fmt.Errorf("%w: no qualified candidate adapter registration", ErrUnsupportedControl)
 	}
+	if capabilities.BlockedFQDNs {
+		return platform, fmt.Errorf("%w: the selected Cilium adapter cannot declare full FQDN blocking", ErrUnsupportedControl)
+	}
 	if !adapter.Available {
 		return platform, fmt.Errorf("%w: the registered network adapter is unavailable", ErrUnavailable)
 	}

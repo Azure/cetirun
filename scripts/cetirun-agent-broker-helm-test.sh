@@ -18,18 +18,65 @@ values=(
   --set-string agentIdentity.authorizationClientId=33333333-3333-3333-3333-333333333333
   --set-string agentIdentity.encryptionClientId=44444444-4444-4444-4444-444444444444
   --set-string agentIdentity.keyVaultKeyUrl=https://example.vault.azure.net/keys/cache/version
-  --set-string agentIdentity.redirectUri=https://portal.example.invalid/api/v1/agent-authorization/callback
+  --set-string agentIdentity.redirectUri=https://portal.example.invalid/api/v1/connections/callback
   --set-string agentIdentity.portalOrigin=https://portal.example.invalid
   --set-string agentIdentity.portalBaseUrl=https://portal.example.invalid
   --set-string istio.revision=asm-example
   --set istio.sidecarInjection=true
+  --set-string portal.namespace=portal-example
+  --set-string portal.serviceAccount=portal-example
 )
 
 output="$(helm template broker-test "${chart_dir}" "${values[@]}")"
+# Exercise the Portal's OAuth flow against the rendered mesh allowlist, not
+# just the HTTP handlers. Istio trailing wildcards match literal prefixes.
+"${PYTHON:-python3}" -c '
+import sys
+import yaml
+
+policy = next(doc for doc in yaml.safe_load_all(sys.stdin)
+              if doc and doc.get("kind") == "AuthorizationPolicy")
+principal = "cluster.local/ns/portal-example/sa/portal-example"
+paths = [path
+         for rule in policy["spec"]["rules"]
+         if any(principal in source["source"].get("principals", [])
+                for source in rule.get("from", []))
+         for target in rule.get("to", [])
+         if "8080" in target["operation"].get("ports", [])
+         for path in target["operation"].get("paths", [])]
+for route in ("/v1/connections/start", "/api/v1/connections/callback",
+              "/v1/connection-authorizations/oauth-example"):
+    assert any(route.startswith(path[:-1]) if path.endswith("*") else route == path
+               for path in paths), f"Portal OAuth route blocked by Istio: {route}"
+' <<<"${output}"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"
 grep -Fq "image: \"ghcr.io/azure/cetirun-agent-broker:${app_version}\"" <<<"${output}"
-grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:1.0.0-azurelinux3.0-distroless@sha256:b3e6204abb87daa9c414dcade11f16060e030d114b81ecbd8bd2a7346e107523"' <<<"${output}"
+grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:1.1.2-azurelinux3.0-distroless@sha256:73a8763100c93c3da1a3ed1ba3af2c6122c0517687354dceded30537a1aee97f"' <<<"${output}"
+grep -Fq 'name: AzureAd__ClientCredentials__0__SignedAssertionFileDiskPath' <<<"${output}"
+grep -Fq 'value: /var/run/secrets/azure/tokens/azure-identity-token' <<<"${output}"
+if grep -Fq 'value: $(AZURE_FEDERATED_TOKEN_FILE)' <<<"${output}"; then
+  echo 'SDK assertion path must not depend on a later webhook-injected variable' >&2
+  exit 1
+fi
+grep -Fq 'name: Sidecar__AllowOverrides__GetAuthorizationHeader' <<<"${output}"
+oauth_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string providers.github.credentialsSecretName=github-oauth-example)"
+grep -Fq 'name: GITHUB_OAUTH_CLIENT_ID' <<<"${oauth_output}"
+grep -Fq 'name: GITHUB_OAUTH_CLIENT_SECRET' <<<"${oauth_output}"
+grep -Fq 'name: "github-oauth-example"' <<<"${oauth_output}"
+if grep -Fq 'name: GITHUB_APP_' <<<"${oauth_output}"; then
+  echo 'FAIL: personal GitHub OAuth must not configure GitHub App credentials' >&2
+  exit 1
+fi
+google_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string providers.google.credentialsSecretName=google-oauth-example --set-string providers.google.clientIDKey=google-client-id --set-string providers.google.clientSecretKey=google-client-secret)"
+grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_ID' <<<"${google_output}" | grep -Fq 'name: "google-oauth-example"'
+grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_ID' <<<"${google_output}" | grep -Fq 'key: "google-client-id"'
+grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_SECRET' <<<"${google_output}" | grep -Fq 'name: "google-oauth-example"'
+grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_SECRET' <<<"${google_output}" | grep -Fq 'key: "google-client-secret"'
+if grep -Fq 'name: GOOGLE_OAUTH_' <<<"${output}"; then
+  echo 'FAIL: Google OAuth credentials must require an explicit Secret reference' >&2
+  exit 1
+fi
 if grep -Fq ':latest' <<<"${output}"; then
   echo "FAIL: chart rendered a latest image tag" >&2
   exit 1
@@ -70,25 +117,41 @@ if helm template broker-test "${chart_dir}" "${values[@]}" --set istio.sidecarIn
   exit 1
 fi
 
-# Connection/Binding and app-only issuance are opt-in; TLS and TokenReview
-# permissions must not silently appear on the legacy deployment.
-if grep -Fq 'containerPort: 8443' <<<"${output}" || grep -Fq 'resources: ["tokenreviews"]' <<<"${output}"; then
-  echo "FAIL: legacy chart enabled the new credential surface" >&2
+# The credential listener is exposed only with complete client TLS material.
+if grep -Fq 'containerPort: 8443' <<<"${output}"; then
+  echo "FAIL: credential listener enabled without client TLS" >&2
   exit 1
 fi
-if helm template broker-test "${chart_dir}" "${values[@]}" --set connectionBindings.enabled=true >/dev/null 2>&1; then
-  echo "FAIL: connections enabled without client TLS" >&2
-  exit 1
-fi
-if helm template broker-test "${chart_dir}" "${values[@]}" --set connectionBindings.enabled=true --set tls.enabled=true >/dev/null 2>&1; then
-  echo "FAIL: connections enabled without a TLS Secret" >&2
-  exit 1
-fi
-connection_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set connectionBindings.enabled=true --set tls.enabled=true --set-string tls.secretName=broker-client-trust)"
+for field in secretName certKey keyKey clientCAKey; do
+  if helm template broker-test "${chart_dir}" "${values[@]}" --set tls.enabled=true --set-string tls.secretName=broker-client-trust --set-string "tls.${field}=" >/dev/null 2>&1; then
+    echo "FAIL: TLS enabled without ${field}" >&2
+    exit 1
+  fi
+done
+connection_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set tls.enabled=true --set-string tls.secretName=broker-client-trust)"
 grep -Fq 'containerPort: 8443' <<<"${connection_output}"
 grep -Fq 'resources: ["tokenreviews"]' <<<"${connection_output}"
 grep -Fq 'ports: ["8443"]' <<<"${connection_output}"
-grep -Fq 'name: CONNECTION_BINDINGS_ENABLED' <<<"${connection_output}"
 [[ "$(grep -Fc 'mountPath: /var/run/cetirun/tls' <<<"${connection_output}")" == 1 ]]
-grep -Fq 'paths: ["/v1/*"]' <<<"${connection_output}"
 grep -Fq '/v1/connections*' <<<"${connection_output}"
+grep -Fq '/operator/v1/instances/*' <<<"${connection_output}"
+
+# The independent Broker TokenReview must accept the same configured audience
+# used by the Operator's projected token and the MCP verifier.
+for audience in agent-tools-mcp tools.example.com; do
+  audience_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string "workloadTokenAudience=${audience}")"
+  "${PYTHON:-python3}" -c '
+import sys
+import yaml
+
+deployment = next(doc for doc in yaml.safe_load_all(sys.stdin)
+                  if doc and doc.get("kind") == "Deployment")
+values = [entry["value"] for container in deployment["spec"]["template"]["spec"]["containers"]
+          for entry in container.get("env", []) if entry["name"] == "WORKLOAD_TOKEN_AUDIENCE"]
+assert values == [sys.argv[1]], f"Unexpected Broker workload audience: {values}"
+' "${audience}" <<<"${audience_output}"
+done
+if helm template broker-test "${chart_dir}" "${values[@]}" --set-string workloadTokenAudience= >/dev/null 2>&1; then
+  echo 'FAIL: Broker chart allowed an empty workload token audience' >&2
+  exit 1
+fi

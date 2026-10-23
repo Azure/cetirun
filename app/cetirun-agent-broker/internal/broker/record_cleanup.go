@@ -8,11 +8,13 @@ import (
 	"errors"
 )
 
+// Called by the authenticated Operator before the Agent finalizer is removed.
+// Shared personal credentials are never owned or deleted by an Agent.
 func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error {
 	stores := []*kubeClient{}
 	// Unsupported runtimes rely on namespace/Agent garbage collection.
 	if k.agentNamespaces && agent.Namespace != "" && !agent.UnsupportedRuntime {
-		target, err := k.agentRecordStore(ctx, agent.UID, agent.Name)
+		target, err := k.agentRecordStore(ctx, agent.UID)
 		if err != nil && !errors.Is(err, errNotFound) {
 			return err
 		}
@@ -25,14 +27,14 @@ func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error 
 	}
 	owner := Owner{agent.OwnerTenantID, agent.OwnerObjectID}
 	for _, target := range stores {
-		bindings, err := target.listToolSecrets(ctx, "binding", recordLabelPrefix+"instance-uid="+agent.UID)
+		grants, err := target.listToolSecrets(ctx, "binding", recordLabelPrefix+"instance-uid="+agent.UID)
 		if errors.Is(err, errNotFound) && target.recordAgent != nil {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		for _, secret := range bindings.Items {
+		for _, secret := range grants.Items {
 			record, err := target.decodeBinding(ctx, secret)
 			if err != nil {
 				return err
@@ -44,7 +46,7 @@ func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error 
 				return err
 			}
 		}
-
+		// Shared personal credentials are outside the Agent record store.
 		connections, err := target.listToolSecrets(ctx, "connection", recordLabelPrefix+"owner-tenant="+owner.TenantID+","+recordLabelPrefix+"owner-object="+owner.ObjectID)
 		if errors.Is(err, errNotFound) && target.recordAgent != nil {
 			continue
@@ -63,6 +65,25 @@ func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error 
 			}
 			if !sameOwner(c.Owner, owner) || secret.Metadata.Name != toolRecordName("connection", c.ID) {
 				return errors.New("Connection cleanup ownership is invalid")
+			}
+			if err := target.deleteToolSecret(ctx, secret); err != nil {
+				return err
+			}
+		}
+		if target.recordAgent == nil {
+			continue
+		}
+		references, err := target.listToolSecrets(ctx, "connection-reference", recordLabelPrefix+"instance-uid="+agent.UID)
+		if errors.Is(err, errNotFound) && target.recordAgent != nil {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, secret := range references.Items {
+			id := secret.Metadata.Labels[recordLabelPrefix+"connection-id"]
+			if !validConnectionReference(secret, agent, id) || secret.Metadata.Name != toolRecordName("connection", id) {
+				return errors.New("Connection reference cleanup ownership is invalid")
 			}
 			if err := target.deleteToolSecret(ctx, secret); err != nil {
 				return err

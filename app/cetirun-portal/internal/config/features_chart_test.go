@@ -23,7 +23,7 @@ func TestCustomChartKeepsAgentIdentitySeparate(t *testing.T) {
 	if !strings.Contains(string(output), `value: "hermes,openclaw,custom"`) {
 		t.Fatal("Custom type was not enabled")
 	}
-	for _, absent := range []string{"name: AGENT_ADMISSION_RULES", "name: REQUIRE_VERIFIED_OWNER", "name: ENTRA_TENANT_ID", "name: PORTAL_OIDC_CLIENT_ID", "name: AGENT_ID_BROKER_URL"} {
+	for _, absent := range []string{"name: AGENT_ADMISSION_RULES", "name: REQUIRE_VERIFIED_OWNER", "name: ENTRA_TENANT_ID", "name: PORTAL_OIDC_CLIENT_ID", "name: AGENT_TOOLS_BROKER_URL"} {
 		if strings.Contains(string(output), absent) {
 			t.Errorf("Custom enabled unrelated configuration: %s", absent)
 		}
@@ -39,9 +39,26 @@ func TestCustomChartKeepsAgentIdentitySeparate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Agent Identity chart render: %v\n%s", err, output)
 	}
-	for _, expected := range []string{"name: ENTRA_TENANT_ID", "name: PORTAL_OIDC_CLIENT_ID", "name: PORTAL_ORIGIN", "name: AGENT_ID_BROKER_URL"} {
+	for _, expected := range []string{"name: ENTRA_TENANT_ID", "name: PORTAL_OIDC_CLIENT_ID", "name: PORTAL_ORIGIN"} {
 		if !strings.Contains(string(output), expected) {
 			t.Errorf("Agent Identity configuration is missing: %s", expected)
+		}
+	}
+	args = []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com", "--set", "features.agentToolsEnabled=true"}
+	output, err = exec.Command(helm, args...).CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "tenantId is required") {
+		t.Fatalf("Agent Tools accepted missing OIDC configuration: %v\n%s", err, output)
+	}
+	args = append(args,
+		"--set", "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+		"--set", "agentIdentity.portalClientId=33333333-3333-3333-3333-333333333333")
+	output, err = exec.Command(helm, args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("Agent Tools chart render: %v\n%s", err, output)
+	}
+	for _, expected := range []string{"name: FEATURE_AGENT_TOOLS_ENABLED", "name: AGENT_TOOLS_BROKER_URL", "name: ENTRA_TENANT_ID", "name: PORTAL_OIDC_CLIENT_ID"} {
+		if !strings.Contains(string(output), expected) {
+			t.Errorf("Agent Tools configuration is missing: %s", expected)
 		}
 	}
 }

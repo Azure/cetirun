@@ -23,6 +23,9 @@ Lua-safe domain pattern (dots escaped as %.).
 
 {{/* Keep anonymous Teams webhook bypasses on exact route shapes only. */}}
 {{- define "cetirun-istio.validateWebhookBypasses" -}}
+{{- if and .Values.authPolicy.oauthCallbackPath (ne .Values.authPolicy.oauthCallbackPath "/api/v1/connections/callback") -}}
+{{- fail "authPolicy.oauthCallbackPath supports only /api/v1/connections/callback" -}}
+{{- end -}}
 {{- range .Values.authPolicy.webhookBypassPaths -}}
 {{- if ne . "/{*}/api/messages" -}}
 {{- fail "authPolicy.webhookBypassPaths supports only /{*}/api/messages" -}}

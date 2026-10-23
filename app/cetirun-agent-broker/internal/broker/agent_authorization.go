@@ -16,6 +16,9 @@ type toolIdentityRequest struct {
 }
 
 func connectionMode(c Connection) string {
+	if c.Mode == "" {
+		return modeDelegated
+	}
 	return c.Mode
 }
 
@@ -24,6 +27,8 @@ func connectionMatchesAgent(c Connection, agent Agent, tenant string) bool {
 		return false
 	}
 	switch connectionMode(c) {
+	case modeDelegated:
+		return c.Identity == nil
 	case modeAgent:
 		b := c.Identity
 		return c.Provider == "azure" && b != nil && !agent.UnsupportedRuntime && agent.AgentIdentityReady &&

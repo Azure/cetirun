@@ -40,6 +40,7 @@ func main() {
 		go material.Run(ctx, nil)
 		servers = append(servers, &http.Server{Addr: cfg.TLSListenAddress, Handler: service.TLSHandler(), TLSConfig: material.ServerConfig(true), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second})
 	}
+	go service.RunMaintenance(ctx)
 	failures := make(chan error, len(servers))
 	for _, server := range servers {
 		go func() {

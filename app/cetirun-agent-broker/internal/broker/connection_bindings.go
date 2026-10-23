@@ -125,13 +125,30 @@ func (s *Server) bindingSave(w http.ResponseWriter, r *http.Request, update bool
 	}
 	auditTarget(r, binding.ConnectionID, agent.UID, binding.ID)
 	auditMutation(r)
-	if err := s.store.putBinding(r.Context(), &bindingRecord{Binding: binding, InstanceName: agent.Name, InstanceNamespace: agent.Namespace}, version); err != nil {
+	token, err := s.store.reserveBinding(r.Context(), connection.Connection, agent, binding, s.currentTime())
+	if err != nil {
+		status, code := 503, "dependency_unavailable"
+		if errors.Is(err, errConflict) {
+			status, code = 409, "conflict"
+		}
+		writeAPIError(w, status, code, "Connection changed; reload before connecting", correlationID(r))
+		return
+	}
+	if err := s.store.putBinding(r.Context(), &bindingRecord{Binding: binding, ReservationToken: token, InstanceName: agent.Name, InstanceNamespace: agent.Namespace}, version); err != nil {
+		// A conflict guarantees this write did not commit. For an unknown
+		// outcome keep the reservation until it can be safely fenced.
+		if errors.Is(err, errConflict) {
+			_ = s.store.releaseBindingReservation(r.Context(), owner, binding.ConnectionID, token)
+		}
 		status, code := 503, "dependency_unavailable"
 		if errors.Is(err, errConflict) {
 			status, code = 409, "conflict"
 		}
 		writeAPIError(w, status, code, "Binding changed; reload before updating", correlationID(r))
 		return
+	}
+	if prior != nil {
+		_ = s.store.releaseBindingReservation(r.Context(), owner, binding.ConnectionID, prior.ReservationToken)
 	}
 	auditCommit(r)
 	writeJSON(w, http.StatusOK, binding)
@@ -174,6 +191,7 @@ func (s *Server) bindingDelete(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, status, code, "Binding changed; reload before deleting", correlationID(r))
 		return
 	}
+	_ = s.store.releaseBindingReservation(r.Context(), owner, record.Binding.ConnectionID, record.ReservationToken)
 	auditCommit(r)
 	w.WriteHeader(http.StatusNoContent)
 }

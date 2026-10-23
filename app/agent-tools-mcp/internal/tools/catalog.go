@@ -21,10 +21,10 @@ type Spec struct {
 func Catalog() []Spec {
 	empty := map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
 	return []Spec{
-		{"connections_status", "List this Agent's enabled Azure identity binding, principal and connection status. Credentials are never returned.", empty},
-		{"connections_start_link", "Open the configured Portal URL for connection management.", empty},
+		{"connections_status", "List this Agent's bound connections, executor identity, actual OAuth scopes and status. Credentials are never returned.", empty},
+		{"connections_start_link", "Open the configured Portal to connect an account and explicitly associate it with this Agent.", empty},
 		{"services_list", "Discover enabled services and their fixed origin/base path for this Agent. API knowledge comes from service skills.", empty},
-		{"service_request", "Execute one JSON Azure Resource Manager request with the bound Agent Identity. Azure RBAC decides access. Path starts with / and is relative to the discovered service base path; query is separate. No redirects or automatic retries. A correlation ID is for tracing, not idempotency. On execution_unknown, inspect provider state before considering another request. Pagination and async polling require separate calls with a validated relative path; never pass an absolute URL.", map[string]any{
+		{"service_request", "Execute one JSON REST request with the bound connection. Provider RBAC/OAuth permissions decide access. Path starts with / and is relative to the discovered service base path; query is separate. No redirects or automatic retries. A correlation ID is for tracing, not idempotency. On execution_unknown, inspect provider state before considering another request. Pagination and async polling require separate calls with a validated relative path; never pass an absolute URL.", map[string]any{
 			"type": "object", "additionalProperties": false, "required": []string{"connection_id", "service", "method", "path"},
 			"properties": map[string]any{
 				"connection_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
@@ -32,7 +32,7 @@ func Catalog() []Spec {
 				"method":        map[string]any{"type": "string", "enum": []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}},
 				"path":          map[string]any{"type": "string", "minLength": 1, "maxLength": 8192},
 				"query":         map[string]any{"type": "object", "additionalProperties": map[string]any{"oneOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}}},
-				"headers":       map[string]any{"type": "object", "description": "Only If-Match, If-None-Match and Prefer are allowed.", "additionalProperties": map[string]any{"type": "string"}},
+				"headers":       map[string]any{"type": "object", "description": "Only If-Match, If-None-Match, Prefer, ConsistencyLevel and X-GitHub-Api-Version are allowed.", "additionalProperties": map[string]any{"type": "string"}},
 				"body":          map[string]any{"description": "Optional JSON value; not supported for GET or HEAD. Maximum 256 KiB."},
 			},
 		}},

@@ -82,10 +82,6 @@ func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAg
 		return fmt.Errorf("invalid podAnnotations: %s", problems.ToAggregate())
 	}
 	network := object(values["networkPolicy"])
-	if object(values["agentIdentity"])["enabled"] == true &&
-		(network["enabled"] != true || object(values["sidecarScope"])["enabled"] != true) {
-		return fmt.Errorf("Custom Agent Identity requires networkPolicy.enabled and sidecarScope.enabled")
-	}
 	if agent.Port != nil && network["enabled"] != true {
 		return fmt.Errorf("Custom HTTP requires networkPolicy.enabled=true: its Agent endpoint has no application token")
 	}
@@ -291,9 +287,6 @@ func (p *PreparedRelease) customPlatformObjects(namespace string) map[string]pla
 		if ingress := text(network["istioIngressNamespace"]); ingress != "" {
 			hosts = append(hosts, ingress+"/*")
 		}
-		if object(p.Values["agentIdentity"])["enabled"] == true {
-			hosts = append(hosts, text(network["agentIdentityBrokerNamespace"])+"/*")
-		}
 		hosts = append(hosts, array(scope["additionalEgressHosts"])...)
 		bindings := object(object(p.Values["runtime"])["bindings"])
 		if bindings["agentManagedModel"] != true {
@@ -382,13 +375,6 @@ func (p *PreparedRelease) customNetwork(n runtimebindings.Network) networkv1.Net
 		spec.Egress = append([]networkv1.NetworkPolicyEgressRule{{
 			To: []networkv1.NetworkPolicyPeer{boundPeer(n.Gateway)}, Ports: []networkv1.NetworkPolicyPort{tcp(n.GatewayPort)},
 		}}, spec.Egress...)
-	}
-	if object(p.Values["agentIdentity"])["enabled"] == true {
-		spec.Egress = append(spec.Egress, networkv1.NetworkPolicyEgressRule{
-			To: []networkv1.NetworkPolicyPeer{boundPeer(runtimebindings.Peer{
-				Namespace: text(config["agentIdentityBrokerNamespace"]), PodLabels: map[string]string{"app.kubernetes.io/name": "cetirun-agent-broker"},
-			})}, Ports: []networkv1.NetworkPolicyPort{tcp(8080)},
-		})
 	}
 	if p.desktopEnabled() || p.Agent.WebUI {
 		namespace := text(config["istioIngressNamespace"])

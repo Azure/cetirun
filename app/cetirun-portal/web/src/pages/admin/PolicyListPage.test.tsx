@@ -14,7 +14,8 @@ vi.mock("../../api/adminPolicy");
 describe("PolicyListPage", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // Tabster needs layout to focus dialog buttons; jsdom does not calculate it.
+    // jsdom has no layout. Tabster otherwise treats every dialog control as hidden,
+    // which prevents focus activation and can mark a reopened dialog aria-hidden.
     vi.spyOn(document.body, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1024, 768));
     vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(function (this: HTMLElement) {
       return this.parentElement;

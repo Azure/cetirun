@@ -53,7 +53,7 @@ func TestOperatorBrokerStorageConfiguration(t *testing.T) {
 			if vars["TOOLS_MCP_BROKER_NAMESPACE"] != test.namespace || vars["TOOLS_MCP_BROKER_SERVICE_ACCOUNT"] != test.account || vars["AGENT_ID_BROKER_URL"] != test.brokerURL {
 				t.Fatal("storage configuration was not rendered")
 			}
-			if _, present := vars["TOOLS_MCP_URL"]; present {
+			if vars["TOOLS_MCP_URL"] != "" {
 				t.Fatal("storage settings activated runtime integration")
 			}
 		})

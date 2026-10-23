@@ -207,7 +207,7 @@ limit_output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
 assert_sign_in_flags "${limit_output}" 50
 policy_output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   --show-only templates/ingress/authorization-policy.yaml)
-callback_count="$(grep -Fc '/api/v1/agent-authorization/callback' <<< "${policy_output}")"
+callback_count="$(grep -Fc '/api/v1/connections/callback' <<< "${policy_output}")"
 [[ "${callback_count}" == 2 ]] || {
   echo "FAIL: apex callback bypass leaked into a legacy instance-subdomain rule" >&2
   exit 1
@@ -255,7 +255,8 @@ echo "==> helm template cetirun-istio (legacy webhook bypass only)"
 legacy_only_policy=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   --show-only templates/ingress/authorization-policy.yaml \
   --set-json 'authPolicy.webhookBypassPaths=[]' \
-  --set-json 'authPolicy.apexPostBypassPaths=[]')
+  --set-json 'authPolicy.apexPostBypassPaths=[]' \
+  --set-string 'authPolicy.oauthCallbackPath=')
 [[ "$(grep -Ec '^[[:space:]]+paths:$' <<< "${legacy_only_policy}")" == 1 ]] || {
   echo "FAIL: legacy-only webhook configuration rendered an empty apex method guard" >&2
   exit 1

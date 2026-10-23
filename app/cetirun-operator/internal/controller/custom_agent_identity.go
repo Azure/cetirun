@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
@@ -16,36 +15,22 @@ import (
 
 func (r *AgentReconciler) bindCustomAgentIdentity(ctx context.Context, instance *api.Agent, bindings *runtimebindings.Custom) (bool, error) {
 	if bindings.AgentIdentity != nil {
-		return false, fmt.Errorf("only the identity controller may supply an Agent Identity binding")
+		return false, fmt.Errorf("UnsupportedFeature: Custom bindings cannot supply Agent Identity")
 	}
-	if instance.Spec.AgentIdentity == nil && instance.Status.AgentIdentity == nil {
-		return true, nil
+	if agentIdentityRequested(instance) {
+		return false, fmt.Errorf("UnsupportedFeature: Custom does not support Agent Identity")
 	}
 	status := instance.Status.AgentIdentity
-	if status == nil || status.ObservedGeneration != instance.Generation || agentIdentityVerificationDue(instance, time.Now()) ||
-		(!agentIdentityRequested(instance) && status.Phase != api.AgentIdentityPhaseDisabled) {
+	if status != nil && (status.Phase != api.AgentIdentityPhaseDisabled || status.ObservedGeneration != instance.Generation) {
 		previous := instance.DeepCopy().Status
 		err := r.reconcileAgentIdentity(ctx, instance)
 		if err != nil {
 			setCondition(&instance.Status.Conditions, api.ConditionAgentIdentityReady, metav1.ConditionFalse,
-				"ReconcileFailed", "Agent Identity is not ready")
-		} else if agentIdentityRequested(instance) && instance.Status.AgentIdentity.Phase == api.AgentIdentityPhaseReady {
-			now := metav1.Now()
-			instance.Status.AgentIdentity.LastVerifiedTime = &now
+				"CleanupFailed", "Agent Identity cleanup is not ready")
 		}
 		if err := errors.Join(err, r.updateCustomStatus(ctx, instance, previous)); err != nil {
 			return false, err
 		}
 	}
-	if !agentIdentityRequested(instance) {
-		return true, nil
-	}
-	if !r.AgentIdentityEnabled || instance.Status.AgentIdentity == nil || instance.Status.AgentIdentity.Phase != api.AgentIdentityPhaseReady {
-		return false, nil
-	}
-	if _, err := runtimebindings.AgentIdentityBrokerNamespace(r.AgentIdentityBrokerURL); err != nil {
-		return false, err
-	}
-	bindings.AgentIdentity = &runtimebindings.AgentIdentity{BrokerURL: r.AgentIdentityBrokerURL}
 	return true, nil
 }

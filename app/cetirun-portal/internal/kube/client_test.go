@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -148,6 +149,16 @@ func TestCreateInstanceAgentIdentityPersistsOwnerBinding(t *testing.T) {
 	if instance.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID] != tenantID ||
 		instance.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] != objectID {
 		t.Fatalf("owner annotations = %#v", instance.Annotations)
+	}
+}
+
+func TestCreateInstanceRejectsCustomAgentIdentity(t *testing.T) {
+	c := NewClient(newFakeClient())
+	_, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "",
+		cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:test"), Username: ptr.To("vibe")},
+		"", "", "", false, CreateInstanceOptions{AgentIdentityEnabled: true, OwnerTenantID: "tenant", OwnerObjectID: "owner"})
+	if !IsUnsupportedCustomUpdate(err) {
+		t.Fatalf("CreateInstance() error = %v, want unsupported Custom identity error", err)
 	}
 }
 

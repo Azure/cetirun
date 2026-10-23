@@ -146,11 +146,11 @@ Validate Azure Workload Identity prerequisites
 {{/* Validate the fixed in-cluster Agent Identity Broker boundary. */}}
 {{- define "cetirun.validateAgentIdentity" -}}
 {{- if .Values.agentIdentity.enabled -}}
+{{- if eq .Values.agentType "custom" -}}
+{{- fail "Custom runtimes do not support Agent Identity with Agent Tools MCP" -}}
+{{- end -}}
 {{- if gt (len (include "cetirun.serviceAccountName" .)) 63 -}}
 {{- fail "agentIdentity.enabled requires a ServiceAccount name no longer than 63 characters" -}}
-{{- end -}}
-{{- if not (regexMatch "^http://[a-z0-9-]+\\.[a-z0-9-]+\\.svc\\.cluster\\.local:8080$" .Values.agentIdentity.brokerURL) -}}
-{{- fail "agentIdentity.brokerURL must be an in-cluster HTTP service URL on port 8080" -}}
 {{- end -}}
 {{- if not .Values.sidecarScope.enabled -}}
 {{- fail "agentIdentity.enabled requires sidecarScope.enabled" -}}
@@ -158,13 +158,33 @@ Validate Azure Workload Identity prerequisites
 {{- if not .Values.networkPolicy.enabled -}}
 {{- fail "agentIdentity.enabled requires networkPolicy.enabled" -}}
 {{- end -}}
-{{- range .Values.extraEnv -}}
-{{- if eq (get . "name") "CETIRUN_AGENT_BROKER_URL" -}}
-{{- fail "CETIRUN_AGENT_BROKER_URL is reserved when agentIdentity.enabled" -}}
-{{- end -}}
-{{- end -}}
 {{- end -}}
 {{- end }}
+
+{{- define "cetirun.validateToolsMCP" -}}
+{{- if .Values.toolsMCP.enabled -}}
+{{- if eq .Values.agentType "custom" -}}
+{{- fail "Custom runtimes do not support Agent Tools MCP" -}}
+{{- end -}}
+{{- if .Values.sandboxWorkload -}}
+{{- fail "Tools MCP requires an executable protected workload identity contract; Sandbox execution remains held" -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[a-z0-9-]+\\.[a-z0-9-]+\\.svc\\.cluster\\.local(:[0-9]+)?/mcp$" .Values.toolsMCP.url) -}}
+{{- fail "toolsMCP.url must be an in-cluster HTTPS MCP endpoint" -}}
+{{- end -}}
+{{- if or (not .Values.serviceAccount.create) (not .Values.serviceAccount.name) (gt (len .Values.serviceAccount.name) 63) (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
+{{- fail "Tools MCP requires a dedicated explicitly named ServiceAccount without automount" -}}
+{{- end -}}
+{{- if or (not .Values.networkPolicy.enabled) (not .Values.sidecarScope.enabled) (not .Values.toolsMCP.audience) (not .Values.toolsMCP.caSecretName) -}}
+{{- fail "Tools MCP requires protected network controls and a token audience" -}}
+{{- end -}}
+{{- range .Values.extraEnv -}}
+{{- if has (get . "name") (list "CETIRUN_TOOLS_MCP_URL" "NODE_EXTRA_CA_CERTS") -}}
+{{- fail "Tools MCP environment variables are platform-owned" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 
 {{/* Validate the platform AI Gateway wiring set by the CetiRun operator. */}}
 {{- define "cetirun.validateAIGateway" -}}

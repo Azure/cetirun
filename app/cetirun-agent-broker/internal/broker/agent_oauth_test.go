@@ -5,7 +5,6 @@ package broker
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -16,10 +15,10 @@ import (
 )
 
 const (
-	testTenantID           = "11111111-1111-1111-1111-111111111111"
-	testAppOnlyBlueprintID = "22222222-2222-2222-2222-222222222222"
-	testFirstAgentID       = "33333333-3333-3333-3333-333333333333"
-	testSecondAgentID      = "44444444-4444-4444-4444-444444444444"
+	testTenantID      = "11111111-1111-1111-1111-111111111111"
+	testBlueprintID   = "22222222-2222-2222-2222-222222222222"
+	testFirstAgentID  = "33333333-3333-3333-3333-333333333333"
+	testSecondAgentID = "44444444-4444-4444-4444-444444444444"
 )
 
 func agentOAuthTestClient(t *testing.T, transport http.RoundTripper) *oauthClient {
@@ -29,7 +28,7 @@ func agentOAuthTestClient(t *testing.T, transport http.RoundTripper) *oauthClien
 		t.Fatal(err)
 	}
 	return &oauthClient{
-		cfg:    Config{TenantID: testTenantID, BlueprintClientID: testAppOnlyBlueprintID, FederatedTokenFile: assertionFile},
+		cfg:    Config{TenantID: testTenantID, BlueprintClientID: testBlueprintID, FederatedTokenFile: assertionFile},
 		client: &http.Client{Transport: transport},
 	}
 }
@@ -79,7 +78,7 @@ func TestAgentOAuthUsesTwoStepAutonomousFlowWithOpaqueAssertions(t *testing.T) {
 		t.Fatalf("token requests = %d, want 2", len(requests))
 	}
 	exchange, resource := requests[0], requests[1]
-	if exchange.Get("client_id") != testAppOnlyBlueprintID || exchange.Get("grant_type") != "client_credentials" || exchange.Get("scope") != "api://AzureADTokenExchange/.default" || exchange.Get("fmi_path") != testFirstAgentID || exchange.Get("client_assertion_type") != tokenAssertionType || exchange.Get("client_assertion") != "federated-workload-assertion" {
+	if exchange.Get("client_id") != testBlueprintID || exchange.Get("grant_type") != "client_credentials" || exchange.Get("scope") != "api://AzureADTokenExchange/.default" || exchange.Get("fmi_path") != testFirstAgentID || exchange.Get("client_assertion_type") != tokenAssertionType || exchange.Get("client_assertion") != "federated-workload-assertion" {
 		t.Fatalf("exchange form = %#v", exchange)
 	}
 	if resource.Get("client_id") != testFirstAgentID || resource.Get("grant_type") != "client_credentials" || resource.Get("scope") != "https://management.azure.com/.default" || resource.Get("fmi_path") != "" || resource.Get("client_assertion_type") != tokenAssertionType || resource.Get("client_assertion") != "opaque-exchange-token" {
@@ -171,13 +170,4 @@ func TestAgentOAuthRejectsRedirectsAndMalformedTokenResponses(t *testing.T) {
 			}
 		})
 	}
-}
-
-func securityJSONResponse(t *testing.T, status int, value any) *http.Response {
-	t.Helper()
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(data)))}
 }
