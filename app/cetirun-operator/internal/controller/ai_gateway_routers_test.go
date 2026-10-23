@@ -632,6 +632,54 @@ func TestRouterLimitsIncludeCopilotRoutesMergedUnderASharedTier(t *testing.T) {
 		t.Fatalf("entries = %+v", entries)
 	}
 }
+
+// A router of the Gateway whose tier moves to a shared model the owner's
+// smaller Copilot model is merged into lowers the Agent's limits for it with
+// nothing else of the Agent changing; the configuration hash must change too,
+// or an Agent already deployed keeps the larger limits (review).
+func TestGatewayRouterLimitsLoweredByACopilotRouteChangeTheRevision(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), readyProxy(1))
+	chartRouter := gatewayRouter("auto-gpt", tierModel("SIMPLE", testSharedModelOne))
+	chartRouter.MaxInputTokens, chartRouter.MaxOutputTokens = 1000000, 64000
+	gateway.shared = append(gateway.shared, sharedDeployment("team-gpt-a", "team-gpt", func(d *aigateway.Deployment) {
+		d.BaseModel, d.MaxInputTokens, d.MaxOutputTokens = "openai/gpt-5.5", 1000000, 64000
+	}), chartRouter)
+	allowTestPolicyModels(t, kube, "team-gpt", "auto-gpt")
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	signIn(t, kube, agent, `[{"id":"gpt-5.5","name":"GPT-5.5","contextWindow":400000,"maxOutputTokens":128000}]`)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	entryLimits := func() [2]int64 {
+		entries, _, _ := r.aiGatewayModelEntries(agent)
+		for _, entry := range entries {
+			if entry.ID == "auto-gpt" {
+				return [2]int64{entry.ContextWindow, entry.MaxTokens}
+			}
+		}
+		t.Fatalf("no auto-gpt entry in %+v", entries)
+		return [2]int64{}
+	}
+	if got := entryLimits(); got != [2]int64{1000000, 64000} {
+		t.Fatalf("before: %v", got)
+	}
+	before := r.aiGatewayRevision(agent)
+
+	setRouter(t, gateway, "auto-gpt", aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", "team-gpt")}})
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := entryLimits(); got != [2]int64{400000, 64000} {
+		t.Fatalf("after: %v", got)
+	}
+	if after := r.aiGatewayRevision(agent); after == before {
+		t.Fatal("the configuration hash must change with the router's lowered limits")
+	}
+}
 func TestRouterNamesDoNotBreakPolicyResolution(t *testing.T) {
 	team := routerTeam(testRouter(testRouterName, testSharedModelOne, testSharedModelOne, testSharedModelOne))
 	agent := aiGatewayTestAgent(testAIGatewayTeam)

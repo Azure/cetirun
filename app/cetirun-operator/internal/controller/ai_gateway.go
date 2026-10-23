@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -1465,6 +1466,19 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 			models = append(models, fmt.Sprintf("%s:%d:%d", model.Name, model.ContextWindow, model.MaxOutputTokens))
 		}
 		parts = append(parts, "shared", strings.Join(models, ","))
+		// A router configured in the Gateway takes smaller limits from the
+		// Agent's Copilot routes under its models' names; a change to the
+		// router's models alone can change them, so they count on their own.
+		if entitled, ok := r.aiGatewayEntitledShared(instance); ok {
+			folds := r.aiGatewayRouterLimitFolds(instance, entitled, r.aiGatewayConfiguredCopilotRoutes(instance))
+			if len(folds) > 0 {
+				limits := make([]string, 0, len(folds))
+				for _, name := range slices.Sorted(maps.Keys(folds)) {
+					limits = append(limits, fmt.Sprintf("%s:%d:%d", name, folds[name][0], folds[name][1]))
+				}
+				parts = append(parts, "router-limits", strings.Join(limits, ","))
+			}
+		}
 	}
 	return strings.Join(parts, "|")
 }

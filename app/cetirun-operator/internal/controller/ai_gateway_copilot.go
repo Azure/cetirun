@@ -578,6 +578,54 @@ func aiGatewayCopilotRouteLimits(instance *cetirunv1alpha1.Agent, routes []cetir
 	return limits
 }
 
+// aiGatewayConfiguredCopilotRoutes are the Copilot routes the Agent's
+// configuration lists: none unless the Agent wants its Copilot models.
+func (r *AgentReconciler) aiGatewayConfiguredCopilotRoutes(instance *cetirunv1alpha1.Agent) []cetirunv1alpha1.AIGatewayCopilotRoute {
+	if status := instance.Status.AIGateway; r.aiGatewayCopilotWanted(instance) && status != nil {
+		return copilotRoutes(status.Copilot)
+	}
+	return nil
+}
+
+// aiGatewayRouterLimitFolds are the limits of the routers configured in the
+// Gateway, among the given shared models, that the Agent's own Copilot routes
+// lower. Such a router declares the smallest limits of its models' shared
+// deployments, and a request the Agent sends through it may also reach the
+// Agent's Copilot route registered under one of those models' names. Only
+// routers whose limits change are listed: the configuration hash covers them
+// (aiGatewayRevision), and an Agent without such a route keeps its hash.
+func (r *AgentReconciler) aiGatewayRouterLimitFolds(instance *cetirunv1alpha1.Agent, shared []aiGatewayCatalogModel, routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string][2]int64 {
+	routeLimits := aiGatewayCopilotRouteLimits(instance, routes)
+	if len(routeLimits) == 0 {
+		return nil
+	}
+	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
+	folds := map[string][2]int64{}
+	for _, model := range shared {
+		router, isRouter := gatewayRouters[model.Name]
+		if !isRouter {
+			continue
+		}
+		contextWindow, maxTokens := model.ContextWindow, model.MaxOutputTokens
+		for _, used := range router.Models {
+			limit, ok := routeLimits[used.Name]
+			if !ok || used.Use == aigateway.RouterClassifier {
+				continue
+			}
+			if contextWindow > 0 && limit[0] > 0 {
+				contextWindow = min(contextWindow, limit[0])
+			}
+			if maxTokens > 0 && limit[1] > 0 {
+				maxTokens = min(maxTokens, limit[1])
+			}
+		}
+		if contextWindow != model.ContextWindow || maxTokens != model.MaxOutputTokens {
+			folds[model.Name] = [2]int64{contextWindow, maxTokens}
+		}
+	}
+	return folds
+}
+
 // aiGatewayMaxModels is the most models an Agent's configuration lists, the
 // agent chart's limit on aiGateway.models.
 const aiGatewayMaxModels = 256
@@ -603,17 +651,19 @@ const aiGatewayMaxModels = 256
 func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent) ([]aiGatewayModelEntry, string, []string) {
 	var sharedEntries, copilotEntries []aiGatewayModelEntry
 	status := instance.Status.AIGateway
-	var routes []cetirunv1alpha1.AIGatewayCopilotRoute
-	if r.aiGatewayCopilotWanted(instance) && status != nil {
-		routes = copilotRoutes(status.Copilot)
-	}
+	routes := r.aiGatewayConfiguredCopilotRoutes(instance)
 	if instance.Spec.SharedModelsEnabled() {
 		models, known := r.aiGatewayEntitledShared(instance)
 		if known {
+			folds := r.aiGatewayRouterLimitFolds(instance, models, routes)
 			for _, model := range models {
-				sharedEntries = append(sharedEntries, aiGatewayModelEntry{
+				entry := aiGatewayModelEntry{
 					ID: model.Name, Name: model.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
-				})
+				}
+				if fold, ok := folds[model.Name]; ok {
+					entry.ContextWindow, entry.MaxTokens = fold[0], fold[1]
+				}
+				sharedEntries = append(sharedEntries, entry)
 			}
 		} else if status != nil {
 			// Without a catalog, keep the shared models last configured.
@@ -659,32 +709,7 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 			})
 		}
 	}
-	// A router configured in the Gateway declares the smallest limits of its
-	// models' shared deployments; a request the Agent sends through it may
-	// also reach the Agent's own Copilot route registered under one of those
-	// models' names.
 	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
-	if routeLimits := aiGatewayCopilotRouteLimits(instance, routes); len(routeLimits) > 0 {
-		for i := range sharedEntries {
-			router, isRouter := gatewayRouters[sharedEntries[i].ID]
-			if !isRouter {
-				continue
-			}
-			for _, model := range router.Models {
-				limit, ok := routeLimits[model.Name]
-				if !ok || model.Use == aigateway.RouterClassifier {
-					continue
-				}
-				entry := &sharedEntries[i]
-				if entry.ContextWindow > 0 && limit[0] > 0 {
-					entry.ContextWindow = min(entry.ContextWindow, limit[0])
-				}
-				if entry.MaxTokens > 0 && limit[1] > 0 {
-					entry.MaxTokens = min(entry.MaxTokens, limit[1])
-				}
-			}
-		}
-	}
 	requested, deploymentDefault := aiGatewayRequestedModel(instance), aiGatewayModelName(instance, r.AIGateway.DefaultModel)
 	routerEntries := aiGatewayRouterEntries(instance)
 	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries)-len(routerEntries),
