@@ -19,6 +19,17 @@ NATIVE_VERSION = "0.21.5"
 COMMANDS = ("status", "query", "capture", "prepare", "commit", "propose", "check", "advance",
             "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source", "evaluate")
 MEMORY_OFF = "CetiRun Memory is off for this conversation. Do not read or save private memory, or claim to have done so."
+# The Memory view reaches the model as a final user message. A smart-routing
+# model, such as the AI Gateway's complexity routers, classifies a request by
+# its newest user message and leaves out blocks between these markers, so
+# without them the view, not the person's request, chose the tier. A marker
+# inside the view would end the block early, so it is broken up.
+REMINDER_OPEN, REMINDER_CLOSE = "<system-reminder>", "</system-reminder>"
+
+
+def reminder(text):
+    body = text.replace(REMINDER_OPEN, "<system reminder>").replace(REMINDER_CLOSE, "</system reminder>")
+    return REMINDER_OPEN + "\n" + body + "\n" + REMINDER_CLOSE
 
 
 def model_revision(provider, model, base_url, api_mode):
@@ -307,7 +318,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
         if text.startswith(memory_contract):
             text = text[len(memory_contract):].lstrip()
         next_request = dict(request)
-        next_request["messages"] = [*messages, {"role": "user", "content": text}]
+        next_request["messages"] = [*messages, {"role": "user", "content": reminder(text)}]
         return {"request": next_request, "source": "cetirun-memory-context", "reason": "current private Memory view"}
 
     def tool(args, **kwargs):
