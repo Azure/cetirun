@@ -502,6 +502,7 @@ class NativeGatewayChartTests(unittest.TestCase):
                 env = {item["name"]: item.get("value") for item in gateway["env"]}
                 self.assertEqual(env["LITELLM_TPM_TOKEN_RESERVATION_ENABLED"], expected)
         render(GATEWAY_CHART, {"models": [MODEL], "tpmReservation": "yes"}, error="tpmReservation")
+
     def test_spend_log_cleanup_runs_every_hour_whenever_a_retention_is_set(self):
         # LiteLLM schedules its cleanup only from a string interval, and its
         # default, a day, outlasts pods that configuration changes replace.
