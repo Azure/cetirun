@@ -228,9 +228,10 @@ Whether the chart generates the bundled Valkey's password.
 Models configured at install. None is valid: standalone Gateways can add
 console models later; AgentPolicy shared grants require chart bindings.
 A CetiRun deployment may instead use the GitHub Copilot models the operator
-registers for each Agent. The copilot/ prefix, which Agents' keys use as
-aliases of those models, is reserved only while operatorIntegration is on: a
-standalone Gateway may already serve a model under such a name.
+registers for each Agent. The copilot/ prefix, in which a CetiRun Team's
+router names such a model in a tier, is reserved only while
+operatorIntegration is on: a standalone Gateway may already serve a model under
+such a name.
 */}}
 {{- define "cetirun-ai-gateway.validateModels" -}}
 {{- range .Values.models }}
@@ -257,7 +258,7 @@ standalone Gateway may already serve a model under such a name.
 {{- if hasPrefix "cetirun-" (lower .model_name) }}
 {{- fail (printf "model_name %s uses the reserved cetirun- prefix. That prefix belongs to models the CetiRun operator registers automatically; a collision would serve both under one name and split traffic between them." .model_name) }}
 {{- else if and $.Values.operatorIntegration (hasPrefix "copilot/" (lower .model_name)) }}
-{{- fail (printf "model_name %s uses the copilot/ prefix, which operatorIntegration reserves for the names of the GitHub Copilot models the CetiRun operator registers for each Agent, kept as aliases on each Agent's key, which take precedence over a model of the same name." .model_name) }}
+{{- fail (printf "model_name %s uses the copilot/ prefix, which operatorIntegration reserves: a CetiRun Team's router names an Agent's GitHub Copilot model as copilot/<model> in a tier, and a shared model of such a name would be ambiguous there." .model_name) }}
 {{- end }}
 {{- end }}
 {{- end }}

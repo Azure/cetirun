@@ -689,8 +689,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			MaxBudget: grant.budget, BudgetDuration: aiGatewayBudgetDuration,
 			Blocked: instance.Spec.Suspended,
 			TeamID:  teamID, UserID: userID,
-			Aliases: copilotKeyAliases(status.Copilot),
-			Limits:  grant.limits,
+			Limits: grant.limits,
 			Metadata: map[string]string{
 				"cetirun_agent": instance.Name, "cetirun_agent_uid": string(instance.UID),
 				"cetirun_user": instance.Spec.User.Alias, "cetirun_team": instance.Spec.Team,

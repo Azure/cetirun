@@ -30,8 +30,8 @@ podDisruptionBudget:
 # -- Serve CetiRun Agents. The CetiRun operator gives each Agent a virtual key
 # restricted to access groups, and registers each Agent's GitHub Copilot
 # models in the Agent's own group, under a shared model's name or the model's
-# own ID, with copilot/<model> kept as an alias on the Agent's key. Turned on,
-# the chart reserves the copilot/ prefix for those aliases, and LiteLLM checks
+# own ID. Turned on, the chart reserves the copilot/ prefix, in which a Team's
+# router names an Agent's GitHub Copilot model in a tier, and LiteLLM checks
 # each router fallback target against the caller's key
 # (general_settings.enforce_fallback_model_access), so a fallback cannot reach
 # a model the key may not use, such as another Agent's GitHub Copilot route.

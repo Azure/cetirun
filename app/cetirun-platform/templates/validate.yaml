@@ -72,7 +72,7 @@
 {{- fail (printf "the AI Gateway is installed in the release namespace %s, but cetirun-operator.namespace is %s: the operator reads the Gateway master key from its own namespace, so install both in the same namespace" .Release.Namespace $operator.namespace) }}
 {{- end }}
 {{- if and $gateway.enabled (not $gateway.operatorIntegration) }}
-{{- fail "cetirun-ai-gateway.operatorIntegration must be true: the Gateway serves each Agent's GitHub Copilot models in the Agent's own access group, reserves copilot/ names for their aliases, and must check router fallback targets against the caller's key" }}
+{{- fail "cetirun-ai-gateway.operatorIntegration must be true: the Gateway serves each Agent's GitHub Copilot models in the Agent's own access group, reserves copilot/ names for Team routers' GitHub Copilot tiers, and must check router fallback targets against the caller's key" }}
 {{- end }}
 {{- if and $portal.enabled $operator.enabled (($portal.features | default dict).aiGatewayEnabled) }}
 {{- $catalogNamespace := (($portal.aiGateway | default dict).catalogNamespace | default "cetirun-system") }}

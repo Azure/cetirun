@@ -176,10 +176,11 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 			t.Fatalf("a Copilot entry is named like any other model: %+v", entry)
 		}
 	}
+	// The key gets no copilot/<ID> aliases: each would list the Copilot model
+	// a second time in the key's model list.
 	key := gateway.keys[aigateway.Token(string(readSecret(t, kube, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))]
-	wantAliases := map[string]string{"copilot/gpt-5.5": "team-gpt", "copilot/gpt-4o-2024-11-20": "gpt-4o-2024-11-20", "copilot/gpt-4.1": "gpt-4.1"}
-	if !maps.Equal(key.Aliases, wantAliases) {
-		t.Fatalf("earlier copilot/ names stay usable as key aliases: %v", key.Aliases)
+	if len(key.Aliases) != 0 {
+		t.Fatalf("the key has no copilot/ aliases: %v", key.Aliases)
 	}
 	// A route under a shared name changes neither the shared models nor the
 	// policy's view of them.
@@ -252,7 +253,7 @@ func TestReconcileAIGatewayCopilotFollowsSharedModelsOfALegacyAgent(t *testing.T
 		t.Fatalf("the route moves to the model's own name: %+v", gateway.models)
 	}
 	key := gateway.keys[aigateway.Token(string(readSecret(t, r.Client, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))]
-	if !maps.Equal(key.Aliases, map[string]string{"copilot/gpt-5.5": "gpt-5.5"}) || !slices.Contains(agent.Status.AIGateway.Models, "gpt-5.5") {
+	if len(key.Aliases) != 0 || !slices.Contains(agent.Status.AIGateway.Models, "gpt-5.5") {
 		t.Fatalf("aliases %v models %v", key.Aliases, agent.Status.AIGateway.Models)
 	}
 
@@ -313,9 +314,9 @@ func TestCopilotDefaultModelNamesAndAliases(t *testing.T) {
 	if got := aiGatewayRequestedModel(agent); got != "copilot/unknown" {
 		t.Fatalf("an unknown Copilot model is left as it is: %q", got)
 	}
-	aliases := aiGatewayKeyAliases(map[string]string{"copilot/gone": "gone", "admin-alias": "team-gpt"}, agent.Status.AIGateway.Copilot)
-	if !maps.Equal(aliases, map[string]string{"admin-alias": "team-gpt", "copilot/gpt-5.5": "team-gpt"}) {
-		t.Fatalf("Copilot aliases follow the routes, others stay: %v", aliases)
+	aliases := aiGatewayKeyAliases(map[string]string{"copilot/gone": "gone", "copilot/gpt-5.5": "team-gpt", "admin-alias": "team-gpt"})
+	if !maps.Equal(aliases, map[string]string{"admin-alias": "team-gpt"}) {
+		t.Fatalf("earlier copilot/ aliases go, others stay: %v", aliases)
 	}
 	for model, allowed := range map[string]bool{"copilot/gpt-5.5": true, "gpt-5.5": true, "team-gpt": true, "has space": false, "a/b": false} {
 		if got := copilotDefaultModelAllowed(model); got != allowed {
@@ -380,5 +381,35 @@ func TestAIGatewayModelEntriesWithoutCatalogKeepCopilotModelsApart(t *testing.T)
 	want := []string{testSharedModelOne + "=" + testSharedModelOne, "team-gpt=team-gpt", "gpt-4o=gpt-4o"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("entries %v, want %v", got, want)
+	}
+}
+
+// A key an earlier version gave copilot/<ID> aliases loses them on the next
+// reconcile, without a new key; an administrator's alias stays.
+func TestEarlierCopilotKeyAliasesAreRemoved(t *testing.T) {
+	r, agent, gateway := legacyGatewayFixture(t)
+	r.AIGateway.CopilotProxyImage = testProxyImage
+	ctx := context.Background()
+	if err := r.Create(ctx, readyProxy(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	signIn(t, r.Client, agent, `[{"id":"gpt-5.5"}]`)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(string(readSecret(t, r.Client, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))
+	gateway.keys[token].Aliases = map[string]string{"copilot/gpt-5.5": "gpt-5.5", "admin-alias": "gpt-5.5"}
+	keys := len(gateway.keys)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if key := gateway.keys[token]; key == nil || !maps.Equal(key.Aliases, map[string]string{"admin-alias": "gpt-5.5"}) || len(gateway.keys) != keys {
+		t.Fatalf("the same key keeps only the administrator's alias: %+v (keys %d -> %d)", key, keys, len(gateway.keys))
+	}
+	if phase := agent.Status.AIGateway.Copilot.Phase; phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady {
+		t.Fatalf("copilot phase %q", phase)
 	}
 }

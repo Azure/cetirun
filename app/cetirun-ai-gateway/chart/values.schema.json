@@ -31,7 +31,7 @@
         },
         "operatorIntegration": {
             "type": "boolean",
-            "description": "Serve CetiRun Agents: derive shared-model deployment/access-group bindings from chart configuration, reserve the copilot/ model-name prefix for the aliases of per-Agent GitHub Copilot routes, and check router fallback targets against the caller's key (general_settings.enforce_fallback_model_access). The cetirun-platform chart turns it on.",
+            "description": "Serve CetiRun Agents: derive shared-model deployment/access-group bindings from chart configuration, reserve the copilot/ model-name prefix, in which Team routers name per-Agent GitHub Copilot models, and check router fallback targets against the caller's key (general_settings.enforce_fallback_model_access). The cetirun-platform chart turns it on.",
             "default": false
         },
         "image": {

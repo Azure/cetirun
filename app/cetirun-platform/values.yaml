@@ -88,9 +88,9 @@ cetirun-ai-gateway:
   # The operator reaches the Gateway as cetirun-ai-gateway and reads its master
   # key from the cetirun-ai-gateway-auth Secret, so keep this name.
   fullnameOverride: cetirun-ai-gateway
-  # This Gateway serves CetiRun Agents: it reserves the copilot/ model names
-  # for the aliases of their GitHub Copilot models and checks router fallback targets against
-  # the caller's key. The chart refuses to install it turned off.
+  # This Gateway serves CetiRun Agents: it reserves the copilot/ model names,
+  # in which Team routers name GitHub Copilot models, and checks router fallback
+  # targets against the caller's key. The chart refuses to install it turned off.
   operatorIntegration: true
   # -- Shared model candidates granted through the selected AgentPolicy.
   # The Gateway chart generates their deployment IDs and per-model access
