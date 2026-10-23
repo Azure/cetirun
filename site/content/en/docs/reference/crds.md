@@ -394,9 +394,13 @@ the request starts. OpenClaw sends the model's maximum output, for example
 128,000 tokens, with every request, so a `tpm` below the model's context window
 plus its maximum output rejects long conversations. For a model with a
 922,000-token context window and a 128,000-token maximum output that is about
-1.05 million tokens per minute. For such Agents, `rpm` and
-`maxParallelRequests` are the effective limits. Below 4,096 tokens per minute
-LiteLLM would also shorten answers, hence the minimum.
+1.05 million tokens per minute. A turn that calls tools sends several requests
+within a minute, each reserving its maximum output again, so such turns fail
+well before a conversation is long: measured with a `tpm` of 200,000, the
+eighth request of an OpenClaw heartbeat turn with about 30,000 tokens of input
+received 429, and OpenClaw retried the turn every minute. For such Agents,
+`rpm` and `maxParallelRequests` are the effective limits. Below 4,096 tokens
+per minute LiteLLM would also shorten answers, hence the minimum.
 
 ### AgentPolicy administration
 
