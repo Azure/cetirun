@@ -63,7 +63,7 @@ type Bindings struct {
 	Model             ModelBinding
 	Skills            SkillsBinding
 	Integrations      Integrations
-	ToolsMCP          ToolsMCPBinding
+	ConnectionsMCP    ConnectionsMCPBinding
 	ConfigTemplate    string
 	ReservedPorts     []PortBinding
 	ContextRevision   string
@@ -97,7 +97,7 @@ type ModelBinding struct {
 	GatewayKeyEnv string
 }
 
-type ToolsMCPBinding struct {
+type ConnectionsMCPBinding struct {
 	Enabled bool
 	URL     string
 }

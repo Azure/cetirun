@@ -17,7 +17,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 COMPONENTS = ("operator", "portal", "agent-broker", "memory-context")
 MODULES = {"internal": "app/internal", **{name: f"app/cetirun-{name}" for name in COMPONENTS}}
-MODULES["agent-tools-mcp"] = "app/agent-tools-mcp"
+MODULES["cetirun-connections-mcp"] = "app/cetirun-connections-mcp"
 WORKFLOWS = (
     "memory-context-ci.yml",
     "operator-ci.yml",
@@ -29,7 +29,7 @@ WORKFLOWS = (
     "cetirun-validation.yml",
 )
 CHARTS = (
-    ("app/agent-tools-mcp/chart", (
+    ("app/cetirun-connections-mcp/chart", (
         "tls.secretName=tools-tls", "broker.clientTLSSecretName=broker-client-tls",
         "broker.baseURL=https://broker.example.com",
         "istio.sidecarInjection=true", "istio.revision=asm-example",

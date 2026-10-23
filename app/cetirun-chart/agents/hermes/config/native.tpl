@@ -83,12 +83,12 @@ Licensed under the MIT License.
 {{- $_ := set $plugins "enabled" (append (dig "enabled" (list) $plugins) "cetirun-memory-context" | uniq) }}
 {{- $_ := set $config "plugins" $plugins }}
 {{- end }}
-{{- if .Values.toolsMCP.enabled }}
+{{- if .Values.connectionsMCP.enabled }}
 {{- $servers := dig "mcp_servers" (dict) $config }}
-{{- $_ := set $servers "agent-tools" (dict "url" .Values.toolsMCP.url "transport" "streamable-http" "strict_redirect_headers" true "ssl_verify" true) }}
+{{- $_ := set $servers "cetirun-connections" (dict "url" .Values.connectionsMCP.url "transport" "streamable-http" "strict_redirect_headers" true "ssl_verify" true) }}
 {{- $_ := set $config "mcp_servers" $servers }}
 {{- else }}
 {{- $servers := dig "mcp_servers" (dict) $config }}
-{{- $_ := unset $servers "agent-tools" }}
+{{- $_ := unset $servers "cetirun-connections" }}
 {{- end }}
 {{ $config | toYaml }}

@@ -20,13 +20,20 @@ func TestConnectionConfigRequiresTrustedCallersAndCompleteTLS(t *testing.T) {
 	if _, err := LoadConfig(); err == nil {
 		t.Fatal("missing trusted caller configuration accepted")
 	}
-	for k, v := range map[string]string{"PORTAL_NAMESPACE": "portal", "PORTAL_SERVICE_ACCOUNT": "portal", "TOOL_SERVICE_NAMESPACE": "tools", "TOOL_SERVICE_ACCOUNT": "tools", "WORKLOAD_TOKEN_AUDIENCE": "agent-tools-mcp", "TLS_CERT_FILE": "/synthetic/tls.crt", "TLS_KEY_FILE": "/synthetic/tls.key", "TLS_CLIENT_CA_FILE": "/synthetic/ca.crt"} {
+	for k, v := range map[string]string{"PORTAL_NAMESPACE": "portal", "PORTAL_SERVICE_ACCOUNT": "portal", "TOOL_SERVICE_NAMESPACE": "tools", "TOOL_SERVICE_ACCOUNT": "tools", "WORKLOAD_TOKEN_AUDIENCE": "cetirun-connections-mcp", "TLS_CERT_FILE": "/synthetic/tls.crt", "TLS_KEY_FILE": "/synthetic/tls.key", "TLS_CLIENT_CA_FILE": "/synthetic/ca.crt"} {
 		t.Setenv(k, v)
 	}
 	cfg, err := LoadConfig()
 	if err != nil || cfg.TLSCertFile == "" {
 		t.Fatalf("complete configuration rejected: %v", err)
 	}
+	t.Run("default MCP audience", func(t *testing.T) {
+		t.Setenv("WORKLOAD_TOKEN_AUDIENCE", "")
+		cfg, err := LoadConfig()
+		if err != nil || cfg.WorkloadTokenAudience != "cetirun-connections-mcp" {
+			t.Fatalf("unexpected default MCP audience %q: %v", cfg.WorkloadTokenAudience, err)
+		}
+	})
 	for _, field := range []string{"PORTAL_NAMESPACE", "PORTAL_SERVICE_ACCOUNT", "TOOL_SERVICE_NAMESPACE", "TOOL_SERVICE_ACCOUNT", "TLS_CERT_FILE", "TLS_KEY_FILE", "TLS_CLIENT_CA_FILE"} {
 		t.Run(field, func(t *testing.T) {
 			t.Setenv(field, "")

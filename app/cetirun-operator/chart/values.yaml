@@ -220,9 +220,9 @@ sandboxSources:
     desktop: false
 
 # -- Native MCP runtime integration and optional access to Agent credential records.
-toolsMCP:
+connectionsMCP:
   url: ""
-  audience: agent-tools-mcp
+  audience: cetirun-connections-mcp
   # The Broker ServiceAccount receives Secret access only through Roles in
   # Agent namespaces. Both fields are required together. Keep them configured
   # until all records are cleaned; leave both empty to disable Broker access.

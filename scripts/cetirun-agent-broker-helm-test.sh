@@ -138,7 +138,7 @@ grep -Fq '/operator/v1/instances/*' <<<"${connection_output}"
 
 # The independent Broker TokenReview must accept the same configured audience
 # used by the Operator's projected token and the MCP verifier.
-for audience in agent-tools-mcp tools.example.com; do
+for audience in cetirun-connections-mcp tools.example.com; do
   audience_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string "workloadTokenAudience=${audience}")"
   "${PYTHON:-python3}" -c '
 import sys

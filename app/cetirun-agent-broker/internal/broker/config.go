@@ -79,10 +79,10 @@ func LoadConfig() (Config, error) {
 		KubernetesCAFile:        env("KUBERNETES_CA_FILE", "/var/run/cetirun/kubernetes/ca.crt"),
 		OperatorNamespace:       os.Getenv("OPERATOR_NAMESPACE"),
 		OperatorServiceAccount:  os.Getenv("OPERATOR_SERVICE_ACCOUNT"),
-		ToolRuntimeTypes:        strings.Split(env("TOOLS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
+		ToolRuntimeTypes:        strings.Split(env("CONNECTIONS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
 		ToolServiceNamespace:    os.Getenv("TOOL_SERVICE_NAMESPACE"),
 		ToolServiceAccount:      os.Getenv("TOOL_SERVICE_ACCOUNT"),
-		WorkloadTokenAudience:   env("WORKLOAD_TOKEN_AUDIENCE", "agent-tools-mcp"),
+		WorkloadTokenAudience:   env("WORKLOAD_TOKEN_AUDIENCE", "cetirun-connections-mcp"),
 		GitHubOAuthClientID:     os.Getenv("GITHUB_OAUTH_CLIENT_ID"),
 		GitHubOAuthClientSecret: os.Getenv("GITHUB_OAUTH_CLIENT_SECRET"),
 		GoogleClientID:          os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
@@ -103,7 +103,7 @@ func LoadConfig() (Config, error) {
 	cfg.DisableAzureAgent, cfg.DisableMicrosoftDelegated = !azureAgent, !microsoftDelegated
 	for _, kind := range cfg.ToolRuntimeTypes {
 		if kind != "hermes" && kind != "openclaw" {
-			return Config{}, errors.New("TOOLS_MCP_RUNTIME_TYPES must list hermes or openclaw")
+			return Config{}, errors.New("CONNECTIONS_MCP_RUNTIME_TYPES must list hermes or openclaw")
 		}
 	}
 	requiredIDs := []string{cfg.TenantID, cfg.EncryptionClientID}

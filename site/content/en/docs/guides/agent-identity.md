@@ -264,7 +264,7 @@ distributing old+new trust to every peer, then rotating leaf certificates, then
 removing old trust. Account for Secret projection and reload delays. Existing
 requests can finish; changing trust does not immediately revoke established
 connections. See the [component configuration](https://github.com/Azure/cetirun/tree/main/app/cetirun-agent-broker)
-for identity flags and the [MCP configuration](https://github.com/Azure/cetirun/tree/main/app/agent-tools-mcp)
+for identity flags and the [MCP configuration](https://github.com/Azure/cetirun/tree/main/app/cetirun-connections-mcp)
 for TLS mounts and trust boundaries.
 
 Local automated tests use synthetic providers; a deployment still needs explicit

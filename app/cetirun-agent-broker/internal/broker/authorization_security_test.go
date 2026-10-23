@@ -59,7 +59,7 @@ func newAuthorizationFixture(t *testing.T, provider, service string) *authorizat
 	}
 	fixture.agent.Status.Namespace, fixture.agent.Status.Phase = "agents", "Ready"
 	cfg := Config{
-		ToolServiceNamespace: "cetirun-system", ToolServiceAccount: "agent-tools-mcp", WorkloadTokenAudience: "agent-tools-mcp",
+		ToolServiceNamespace: "cetirun-system", ToolServiceAccount: "cetirun-connections-mcp", WorkloadTokenAudience: "cetirun-connections-mcp",
 		TenantID: owner.TenantID, BlueprintClientID: "44444444-4444-4444-4444-444444444444", AuthorizationClientID: "55555555-5555-5555-5555-555555555555",
 		PortalOrigin: "https://portal.example.com", RedirectURI: "https://portal.example.com/api/v1/connections/callback",
 	}
@@ -83,11 +83,11 @@ func newAuthorizationFixture(t *testing.T, provider, service string) *authorizat
 			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(input.Spec.Audiences, []string{"agent-tools-mcp"}) {
+			if !reflect.DeepEqual(input.Spec.Audiences, []string{"cetirun-connections-mcp"}) {
 				t.Fatalf("TokenReview audiences = %#v", input.Spec.Audiences)
 			}
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"status": map[string]any{
-				"authenticated": true, "audiences": []string{"agent-tools-mcp"},
+				"authenticated": true, "audiences": []string{"cetirun-connections-mcp"},
 				"user": map[string]any{"username": "system:serviceaccount:agents:openclaw-agent-cetirun", "uid": "service-account-uid", "extra": map[string][]string{
 					"authentication.kubernetes.io/pod-name": {"agent-pod"}, "authentication.kubernetes.io/pod-uid": {"pod-uid"},
 				}},
@@ -168,7 +168,7 @@ func (fixture *authorizationFixture) request(t *testing.T, path string) *httptes
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
-	identity, err := url.Parse("spiffe://cluster.local/ns/cetirun-system/sa/agent-tools-mcp")
+	identity, err := url.Parse("spiffe://cluster.local/ns/cetirun-system/sa/cetirun-connections-mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestWorkloadProofRejectsTerminatingBindings(t *testing.T) {
 				}
 				return transport.RoundTrip(request)
 			})
-			_, err := fixture.server.store.verifyWorkloadProof(context.Background(), "synthetic-workload-proof", "agent-tools-mcp")
+			_, err := fixture.server.store.verifyWorkloadProof(context.Background(), "synthetic-workload-proof", "cetirun-connections-mcp")
 			if resource == "active" {
 				if err != nil {
 					t.Fatalf("active workload rejected: %v", err)

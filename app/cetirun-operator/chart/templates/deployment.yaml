@@ -1,8 +1,8 @@
-{{- if empty .Values.toolsMCP.runtimeTypes }}{{ fail "toolsMCP.runtimeTypes must include at least one qualified runtime" }}{{ end }}
-{{- range .Values.toolsMCP.runtimeTypes }}
-{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "toolsMCP.runtimeTypes supports only hermes and openclaw" }}{{ end }}
+{{- if empty .Values.connectionsMCP.runtimeTypes }}{{ fail "connectionsMCP.runtimeTypes must include at least one qualified runtime" }}{{ end }}
+{{- range .Values.connectionsMCP.runtimeTypes }}
+{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "connectionsMCP.runtimeTypes supports only hermes and openclaw" }}{{ end }}
 {{- end }}
-{{- if ne (empty .Values.toolsMCP.brokerNamespace) (empty .Values.toolsMCP.brokerServiceAccount) }}{{ fail "toolsMCP.brokerNamespace and toolsMCP.brokerServiceAccount must be set together" }}{{ end }}
+{{- if ne (empty .Values.connectionsMCP.brokerNamespace) (empty .Values.connectionsMCP.brokerServiceAccount) }}{{ fail "connectionsMCP.brokerNamespace and connectionsMCP.brokerServiceAccount must be set together" }}{{ end }}
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $chat := deepCopy .Values.chatAccess -}}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) -}}
@@ -117,18 +117,18 @@ spec:
             {{- end }}
             - name: AGENT_ID_ENABLED
               value: {{ .Values.agentIdentity.enabled | quote }}
-            - name: TOOLS_MCP_URL
-              value: {{ .Values.toolsMCP.url | quote }}
+            - name: CONNECTIONS_MCP_URL
+              value: {{ .Values.connectionsMCP.url | quote }}
             - name: WORKLOAD_TOKEN_AUDIENCE
-              value: {{ .Values.toolsMCP.audience | quote }}
-            - name: TOOLS_MCP_RUNTIME_TYPES
-              value: {{ join "," .Values.toolsMCP.runtimeTypes | quote }}
-            - name: TOOLS_MCP_CA_SECRET_NAME
-              value: {{ .Values.toolsMCP.caSecretName | quote }}
-            - name: TOOLS_MCP_BROKER_NAMESPACE
-              value: {{ .Values.toolsMCP.brokerNamespace | quote }}
-            - name: TOOLS_MCP_BROKER_SERVICE_ACCOUNT
-              value: {{ .Values.toolsMCP.brokerServiceAccount | quote }}
+              value: {{ .Values.connectionsMCP.audience | quote }}
+            - name: CONNECTIONS_MCP_RUNTIME_TYPES
+              value: {{ join "," .Values.connectionsMCP.runtimeTypes | quote }}
+            - name: CONNECTIONS_MCP_CA_SECRET_NAME
+              value: {{ .Values.connectionsMCP.caSecretName | quote }}
+            - name: CONNECTIONS_MCP_BROKER_NAMESPACE
+              value: {{ .Values.connectionsMCP.brokerNamespace | quote }}
+            - name: CONNECTIONS_MCP_BROKER_SERVICE_ACCOUNT
+              value: {{ .Values.connectionsMCP.brokerServiceAccount | quote }}
             - name: AGENT_ID_CLEANUP_ENABLED
               value: {{ .Values.agentIdentity.cleanupEnabled | quote }}
             {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled }}
@@ -139,7 +139,7 @@ spec:
             - name: AGENT_ID_NAME_PREFIX
               value: {{ .Values.agentIdentity.namePrefix | quote }}
             {{- end }}
-            {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled .Values.toolsMCP.brokerNamespace .Values.toolsMCP.url }}
+            {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled .Values.connectionsMCP.brokerNamespace .Values.connectionsMCP.url }}
             - name: AGENT_ID_BROKER_URL
               value: {{ required "agentIdentity.brokerURL is required for Agent identity and grant cleanup" .Values.agentIdentity.brokerURL | quote }}
             {{- end }}

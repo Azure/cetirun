@@ -28,8 +28,8 @@ func TestOperatorBrokerStorageConfiguration(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			rendered, err := renderChartValues(t, chart, map[string]any{
-				"toolsMCP":      map[string]any{"brokerNamespace": test.namespace, "brokerServiceAccount": test.account},
-				"agentIdentity": map[string]any{"brokerURL": test.brokerURL},
+				"connectionsMCP": map[string]any{"brokerNamespace": test.namespace, "brokerServiceAccount": test.account},
+				"agentIdentity":  map[string]any{"brokerURL": test.brokerURL},
 			})
 			if test.invalid {
 				if err == nil {
@@ -50,10 +50,10 @@ func TestOperatorBrokerStorageConfiguration(t *testing.T) {
 					vars[env.Name] = env.Value
 				}
 			}
-			if vars["TOOLS_MCP_BROKER_NAMESPACE"] != test.namespace || vars["TOOLS_MCP_BROKER_SERVICE_ACCOUNT"] != test.account || vars["AGENT_ID_BROKER_URL"] != test.brokerURL {
+			if vars["CONNECTIONS_MCP_BROKER_NAMESPACE"] != test.namespace || vars["CONNECTIONS_MCP_BROKER_SERVICE_ACCOUNT"] != test.account || vars["AGENT_ID_BROKER_URL"] != test.brokerURL {
 				t.Fatal("storage configuration was not rendered")
 			}
-			if vars["TOOLS_MCP_URL"] != "" {
+			if vars["CONNECTIONS_MCP_URL"] != "" {
 				t.Fatal("storage settings activated runtime integration")
 			}
 		})

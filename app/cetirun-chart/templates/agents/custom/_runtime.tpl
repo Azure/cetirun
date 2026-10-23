@@ -32,7 +32,7 @@ Licensed under the MIT License.
 {{- end -}}
 {{- if ne $r.bindings.namespace.name .Release.Namespace -}}{{- fail "Custom binding namespace mismatch" -}}{{- end -}}
 {{- if or .Values.agentIdentity.enabled $r.bindings.agentIdentity -}}{{- fail "Custom does not support Agent Identity" -}}{{- end -}}
-{{- if .Values.toolsMCP.enabled -}}{{- fail "Custom does not support Agent Tools MCP" -}}{{- end -}}
+{{- if .Values.connectionsMCP.enabled -}}{{- fail "Custom does not support CetiRun Connections MCP" -}}{{- end -}}
 {{- if or .Values.extraEnv .Values.extraEnvFrom .Values.initContainers .Values.sidecars .Values.extraVolumes .Values.extraVolumeMounts .Values.imagePullSecrets -}}
 {{- fail "Custom does not accept raw environment, container, volume or pull-Secret overrides" -}}
 {{- end -}}

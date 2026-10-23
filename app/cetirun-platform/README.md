@@ -4,12 +4,12 @@
 Helm release. It does not install AKS managed Istio, the CetiRun Istio release,
 certificates, credentials, Agent Instances, or retained Agent data.
 
-Agent Tools MCP can optionally be enabled as an independent component. Install
+CetiRun Connections MCP can optionally be enabled as an independent component. Install
 the Agent Broker separately in its private credential namespace; the umbrella
 rejects colocating an enabled Broker with the Tool service. Provision TLS and
 OAuth separately, then configure the MCP Broker HTTPS origin, Portal/Operator
 management HTTP origins, and Operator MCP URL/CA-only Secret. The sample
-`app/agent-tools-mcp/chart/ci/render-values.yaml` contains synthetic render-only
+`app/cetirun-connections-mcp/chart/ci/render-values.yaml` contains synthetic render-only
 configuration; it does not create certificates or authorize deployment.
 
 The bundled Operator chart manages the four CetiRun CRDs as Helm templates,

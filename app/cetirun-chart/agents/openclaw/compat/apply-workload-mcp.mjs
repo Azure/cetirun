@@ -13,7 +13,7 @@ const prefix = 'import { workloadFetch } from "./cetirun-workload-mcp.mjs";\n';
 const before = "fetch: httpFetch\n";
 const after = "fetch: workloadFetch(httpFetch, resolved.url)\n";
 const guardBefore = "\tconst baseFetch = buildMcpHttpFetch({";
-const guardAfter = '\tif (resolved.url === process.env.CETIRUN_TOOLS_MCP_URL && (resolved.sslVerify === false || resolved.transportType !== "streamable-http")) throw new Error("Platform MCP requires verified TLS and Streamable HTTP");\n' + guardBefore;
+const guardAfter = '\tif (resolved.url === process.env.CETIRUN_CONNECTIONS_MCP_URL && (resolved.sslVerify === false || resolved.transportType !== "streamable-http")) throw new Error("Platform MCP requires verified TLS and Streamable HTTP");\n' + guardBefore;
 const source = readFileSync(path, "utf8");
 const original = source.startsWith(prefix) ? source.slice(prefix.length).replace(after, before).replace(guardAfter, guardBefore) : source;
 if (createHash("sha256").update(original).digest("hex") !== "a26c67e52216040d4deb81ede67d357b7a3b6e4313626d8a7b1dc285f9224c46") {

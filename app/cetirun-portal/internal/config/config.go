@@ -94,7 +94,7 @@ func Load() Config {
 		SandboxRuntimes:                    runtimes,
 		SandboxControllerDefaults:          controllerDefaults,
 		AgentIdentityEnabled:               os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
-		AgentToolsRuntimeTypes:             strings.Split(envOrDefault("TOOLS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
+		AgentToolsRuntimeTypes:             strings.Split(envOrDefault("CONNECTIONS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
 		AgentToolsEnabled:                  os.Getenv("FEATURE_AGENT_TOOLS_ENABLED") == "true",
 		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
 		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),

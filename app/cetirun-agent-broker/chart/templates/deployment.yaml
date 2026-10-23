@@ -63,7 +63,7 @@ spec:
               value: {{ .Values.portal.namespace | quote }}
             - name: PORTAL_SERVICE_ACCOUNT
               value: {{ .Values.portal.serviceAccount | quote }}
-            - name: TOOLS_MCP_RUNTIME_TYPES
+            - name: CONNECTIONS_MCP_RUNTIME_TYPES
               value: {{ join "," .Values.toolService.runtimeTypes | quote }}
             - name: TOOL_SERVICE_NAMESPACE
               value: {{ .Values.toolService.namespace | quote }}

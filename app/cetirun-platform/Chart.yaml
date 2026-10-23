@@ -9,10 +9,10 @@ keywords:
   - platform
   - kubernetes
 dependencies:
-  - name: agent-tools-mcp
+  - name: cetirun-connections-mcp
     version: 0.1.1
-    repository: file://../agent-tools-mcp/chart
-    condition: agent-tools-mcp.enabled
+    repository: file://../cetirun-connections-mcp/chart
+    condition: cetirun-connections-mcp.enabled
   - name: cetirun-operator
     version: 0.1.1
     repository: file://../cetirun-operator/chart

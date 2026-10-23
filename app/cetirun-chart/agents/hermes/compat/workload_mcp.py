@@ -12,12 +12,12 @@ import time
 from urllib.parse import urlsplit
 
 
-TOKEN_PATH = Path("/var/run/cetirun/tools/token")
-CA_PATH = Path("/var/run/cetirun/tools-ca/ca.crt")
+TOKEN_PATH = Path("/var/run/cetirun/connections/token")
+CA_PATH = Path("/var/run/cetirun/connections-ca/ca.crt")
 
 
 def workload_tls(endpoint, existing=True):
-    if endpoint != os.environ.get("CETIRUN_TOOLS_MCP_URL", ""):
+    if endpoint != os.environ.get("CETIRUN_CONNECTIONS_MCP_URL", ""):
         return existing
     if existing is not True:
         raise ValueError("Platform MCP requires verified TLS")
@@ -30,7 +30,7 @@ def workload_tls(endpoint, existing=True):
 
 
 def workload_auth(httpx, endpoint, existing=None):
-    target = os.environ.get("CETIRUN_TOOLS_MCP_URL", "")
+    target = os.environ.get("CETIRUN_CONNECTIONS_MCP_URL", "")
     if not target or endpoint != target:
         return existing
     parsed = urlsplit(target)

@@ -64,8 +64,8 @@ APIs. The latter validates a client certificate with exactly the configured
 MCP ServiceAccount SPIFFE URI SAN, never an XFCC header. Configure `tls.enabled`,
 server certificate and client CA, plus MCP's client certificate and Broker CA.
 Set the Broker chart's `workloadTokenAudience` to the same value as the MCP
-chart's `workloadTokenAudience` and the Operator chart's `toolsMCP.audience`.
-All three default to `agent-tools-mcp`; a custom audience must match across
+chart's `workloadTokenAudience` and the Operator chart's `connectionsMCP.audience`.
+All three default to `cetirun-connections-mcp`; a custom audience must match across
 all three releases because both MCP and the Broker independently verify the
 Agent's projected workload token.
 
@@ -101,7 +101,7 @@ expired leaf material fails new TLS handshakes or outbound requests. Rotate CAs
 by distributing old+new trust first, then replacing leaf certificates, then
 removing old trust. Allow for Kubernetes projection and poll delays. In-flight
 requests and established server connections can finish. See the
-[MCP trust boundary](../agent-tools-mcp/README.md#runtime-and-trust-boundaries)
+[MCP trust boundary](../cetirun-connections-mcp/README.md#execution-and-trust-boundaries)
 for mount and rollover details. Broker shutdown cancels reload/maintenance loops
 and allows HTTP requests up to ten seconds to drain.
 

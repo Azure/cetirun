@@ -79,8 +79,8 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 	if _, ok := values["aiGateway"]; ok {
 		return fmt.Errorf("helm.values.aiGateway is reserved for the platform")
 	}
-	if _, ok := values["toolsMCP"]; ok {
-		return fmt.Errorf("helm.values.toolsMCP is reserved for the platform")
+	if _, ok := values["connectionsMCP"]; ok {
+		return fmt.Errorf("helm.values.connectionsMCP is reserved for the platform")
 	}
 	if secrets, ok := values["secrets"].(map[string]any); ok {
 		for _, field := range []string{"provider", "authMode", "apiBase", "apiKey", "model"} {
@@ -90,7 +90,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 		}
 	}
 	if annotations, ok := values["podAnnotations"].(map[string]any); ok {
-		for _, field := range []string{"cetirun.microsoft.com/registry-binding-only", "cetirun.microsoft.com/tools-ca-hash", aiGatewayKeyIDPodAnnotation} {
+		for _, field := range []string{"cetirun.microsoft.com/registry-binding-only", "cetirun.microsoft.com/connections-ca-hash", aiGatewayKeyIDPodAnnotation} {
 			if _, present := annotations[field]; present {
 				return fmt.Errorf("platform rollout annotations are platform-owned")
 			}
@@ -103,7 +103,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 		for _, item := range extraEnv {
 			entry, _ := item.(map[string]any)
 			name, _ := entry["name"].(string)
-			if name == "CETIRUN_AGENT_BROKER_URL" || name == "CETIRUN_TOOLS_MCP_URL" || name == "SSL_CERT_FILE" || name == "NODE_EXTRA_CA_CERTS" || strings.HasPrefix(name, "CETIRUN_MEMORY_") {
+			if name == "CETIRUN_AGENT_BROKER_URL" || name == "CETIRUN_CONNECTIONS_MCP_URL" || name == "SSL_CERT_FILE" || name == "NODE_EXTRA_CA_CERTS" || strings.HasPrefix(name, "CETIRUN_MEMORY_") {
 				return fmt.Errorf("helm.values.extraEnv contains a platform-reserved environment variable")
 			}
 		}

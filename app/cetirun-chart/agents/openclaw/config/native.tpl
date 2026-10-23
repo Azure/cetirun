@@ -353,14 +353,14 @@ Licensed under the MIT License.
 {{- $meta := dig "meta" (dict) $config }}
 {{- $_ := set $meta "lastTouchedVersion" (.Chart.Version | default "unknown") }}
 {{- $_ := set $config "meta" $meta }}
-{{- if .Values.toolsMCP.enabled }}
+{{- if .Values.connectionsMCP.enabled }}
 {{- $mcp := dig "mcp" (dict) $config }}
 {{- $servers := dig "servers" (dict) $mcp }}
-{{- $_ := set $servers "agent-tools" (dict "url" .Values.toolsMCP.url "transport" "streamable-http" "sslVerify" true) }}
+{{- $_ := set $servers "cetirun-connections" (dict "url" .Values.connectionsMCP.url "transport" "streamable-http" "sslVerify" true) }}
 {{- $_ := set $mcp "servers" $servers }}
 {{- $_ := set $config "mcp" $mcp }}
 {{- else }}
 {{- $servers := dig "mcp" "servers" (dict) $config }}
-{{- $_ := unset $servers "agent-tools" }}
+{{- $_ := unset $servers "cetirun-connections" }}
 {{- end }}
 {{ $config | toPrettyJson }}

@@ -133,7 +133,7 @@ func TestAgentToolsChartRequiresVerifiedOwnerConfiguration(t *testing.T) {
 				t.Fatalf("render: %v: %s", err, output)
 			}
 			text := string(output)
-			for _, env := range []string{"ENTRA_TENANT_ID", "PORTAL_OIDC_CLIENT_ID", "AGENT_TOOLS_BROKER_URL", "TOOLS_MCP_RUNTIME_TYPES"} {
+			for _, env := range []string{"ENTRA_TENANT_ID", "PORTAL_OIDC_CLIENT_ID", "AGENT_TOOLS_BROKER_URL", "CONNECTIONS_MCP_RUNTIME_TYPES"} {
 				if got := strings.Contains(text, "name: "+env); got != (tc.name == "tools only") {
 					t.Errorf("unexpected %s configuration: present=%v", env, got)
 				}

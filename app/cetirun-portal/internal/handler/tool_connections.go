@@ -300,9 +300,9 @@ func (h *ToolConnectionsHandler) instanceHeaders(w http.ResponseWriter, r *http.
 	readOnly := !h.runtimeSupported(instance)
 	if readOnly && !allowReadOnly {
 		if instance.Spec.SandboxRef != "" {
-			writeError(w, http.StatusBadRequest, "unsupported_sandbox", "Agent Tools MCP is not available to Sandbox Agents")
+			writeError(w, http.StatusBadRequest, "unsupported_sandbox", "CetiRun Connections MCP is not available to Sandbox Agents")
 		} else {
-			writeError(w, http.StatusBadRequest, "unsupported_agent_type", "Agent Tools MCP is not qualified for this runtime in this deployment")
+			writeError(w, http.StatusBadRequest, "unsupported_agent_type", "CetiRun Connections MCP is not qualified for this runtime in this deployment")
 		}
 		return nil, false, false
 	}

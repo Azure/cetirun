@@ -38,11 +38,11 @@ describe("tool authorization API", () => {
   });
 
   it("retains Portal error codes for unsupported runtimes", async () => {
-    global.fetch = vi.fn().mockResolvedValue(new Response(`{"error":{"code":"unsupported_sandbox","message":"Agent Tools MCP is not available to Sandbox Agents"}}`, { status: 400, headers: { "Content-Type": "application/json" } }));
+    global.fetch = vi.fn().mockResolvedValue(new Response(`{"error":{"code":"unsupported_sandbox","message":"CetiRun Connections MCP is not available to Sandbox Agents"}}`, { status: 400, headers: { "Content-Type": "application/json" } }));
 
     await expect(listConnectionBindings("agent-a")).rejects.toMatchObject({
       name: "Error",
-      message: "Agent Tools MCP is not available to Sandbox Agents",
+      message: "CetiRun Connections MCP is not available to Sandbox Agents",
       code: "unsupported_sandbox",
     } satisfies Partial<ToolAuthorizationError>);
   });

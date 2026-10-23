@@ -89,11 +89,11 @@ spec:
             # errors before IPv4 can connect. Force IPv4-first to avoid this.
             - name: NODE_OPTIONS
               value: "--dns-result-order=ipv4first"
-            {{- if .Values.toolsMCP.enabled }}
-            - name: CETIRUN_TOOLS_MCP_URL
-              value: {{ .Values.toolsMCP.url | quote }}
+            {{- if .Values.connectionsMCP.enabled }}
+            - name: CETIRUN_CONNECTIONS_MCP_URL
+              value: {{ .Values.connectionsMCP.url | quote }}
             - name: NODE_EXTRA_CA_CERTS
-              value: /var/run/cetirun/tools-ca/ca.crt
+              value: /var/run/cetirun/connections-ca/ca.crt
             {{- end }}
             {{- include "cetirun.agent.envVars" . | nindent 12 }}
             {{- if gt (int .Values.msteamsWebhookPort) 0 }}
@@ -201,12 +201,12 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             {{- include "cetirun.memory.mounts" . | nindent 12 }}
-            {{- if .Values.toolsMCP.enabled }}
-            - name: tools-identity
-              mountPath: /var/run/cetirun/tools
+            {{- if .Values.connectionsMCP.enabled }}
+            - name: connections-identity
+              mountPath: /var/run/cetirun/connections
               readOnly: true
-            - name: tools-ca
-              mountPath: /var/run/cetirun/tools-ca
+            - name: connections-ca
+              mountPath: /var/run/cetirun/connections-ca
               readOnly: true
             {{- end }}
             - name: data
@@ -281,18 +281,18 @@ spec:
       volumes:
         {{- include "cetirun.memory.volumes" . | nindent 8 }}
         {{- include "cetirun.context.volume" . | nindent 8 }}
-        {{- if .Values.toolsMCP.enabled }}
-        - name: tools-identity
+        {{- if .Values.connectionsMCP.enabled }}
+        - name: connections-identity
           projected:
             defaultMode: 0440
             sources:
               - serviceAccountToken:
                   path: token
-                  audience: {{ .Values.toolsMCP.audience | quote }}
+                  audience: {{ .Values.connectionsMCP.audience | quote }}
                   expirationSeconds: 600
-        - name: tools-ca
+        - name: connections-ca
           secret:
-            secretName: {{ .Values.toolsMCP.caSecretName | quote }}
+            secretName: {{ .Values.connectionsMCP.caSecretName | quote }}
             items:
               - key: ca.crt
                 path: ca.crt
