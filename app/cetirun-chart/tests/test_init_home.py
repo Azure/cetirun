@@ -760,3 +760,41 @@ def test_hermes_on_the_gateway_takes_no_copilot_token_from_the_secret(agent):
     assert result.returncode == 0, result.stderr
     names = env_names(agent)
     assert "COPILOT_GITHUB_TOKEN" not in names and "API_SERVER_KEY" in names
+
+PORTAL_SIGN_IN = {
+    "mode": "trusted-proxy",
+    "trustedProxy": {"userHeader": "x-auth-request-email", "allowLoopback": True, "deviceAutoApprove": {"enabled": True}},
+}
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth(agent):
+    # A HOME that saved a token: OpenClaw refuses a token in trusted-proxy mode.
+    assert run(agent).returncode == 0
+    saved = read_config(agent)
+    saved["gateway"] = {"port": 18789, "auth": {"mode": "token", "token": "saved-test-token"}}
+    agent["config_file"].write_text(json.dumps(saved))
+    source_file = agent["config"] / "openclaw.json"
+    source = json.loads(source_file.read_text())
+    source["gateway"] = {"trustedProxies": ["127.0.0.6"], "auth": PORTAL_SIGN_IN}
+    source_file.write_text(json.dumps(source))
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    config = read_config(agent)
+    assert config["gateway"]["auth"] == PORTAL_SIGN_IN
+    assert config["gateway"]["port"] == 18789
+    # Turned off again: the chart's mode goes, and OpenClaw falls back to the
+    # token from its environment.
+    del source["gateway"]["auth"]
+    source_file.write_text(json.dumps(source))
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    config = read_config(agent)
+    assert "auth" not in config["gateway"]
+    assert config["gateway"]["trustedProxies"] == ["127.0.0.6"]
+    # An owner's own non-proxy auth settings are not the chart's to remove.
+    config["gateway"]["auth"] = {"mode": "password"}
+    agent["config_file"].write_text(json.dumps(config))
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert read_config(agent)["gateway"]["auth"] == {"mode": "password"}

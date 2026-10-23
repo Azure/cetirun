@@ -275,8 +275,13 @@ OpenClaw container env vars (agent-specific only)
       key: MODEL_API_KEY
       optional: true
 {{- end }}
-# Gateway token (required)
+# Gateway token (required). With Portal sign-in, OpenClaw refuses a token and
+# the same secret becomes the password of clients on loopback.
+{{- if eq (include "cetirun.agent.openclaw.portalSignIn" .) "true" }}
+- name: OPENCLAW_GATEWAY_PASSWORD
+{{- else }}
 - name: OPENCLAW_GATEWAY_TOKEN
+{{- end }}
   valueFrom:
     secretKeyRef:
       name: {{ include "cetirun.secretName" . }}
@@ -415,4 +420,18 @@ OpenClaw configmap data
 OpenClaw secret data (agent-specific only)
 */}}
 {{- define "cetirun.agent.openclaw.secretData" -}}
+{{- end }}
+
+{{/*
+Whether OpenClaw signs the owner in from their Portal sign-in: asked for, and
+reached only through the Istio sidecar. A native Sandbox workload has no
+sidecar, and Tailscale Serve is another way in that does not carry the
+Portal sign-in, so both keep the gateway token.
+*/}}
+{{- define "cetirun.agent.openclaw.portalSignIn" -}}
+{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (not .Values.sandboxWorkload) (ne (include "cetirun.tailscaleEnabled" .) "true") -}}
+true
+{{- else -}}
+false
+{{- end -}}
 {{- end }}
