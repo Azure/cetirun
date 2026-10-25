@@ -127,7 +127,7 @@ func (s *requestState) validateDaemonPod(ctx context.Context, registry *registry
 	if failure != nil {
 		return failure
 	}
-	if !nodeMatchesSpec(node, &daemon.Spec.Template.Spec) ||
+	if !NodeMatchesSpec(node, &daemon.Spec.Template.Spec) ||
 		(daemon.Spec.Template.Spec.NodeName != "" && daemon.Spec.Template.Spec.NodeName != target) {
 		return denied("DaemonSetSchedulingMismatch", "registered Node does not satisfy the DaemonSet template's scheduling intent")
 	}
@@ -321,7 +321,9 @@ func addDaemonTolerations(spec *corev1.PodSpec) {
 	}
 }
 
-func nodeMatchesSpec(node *corev1.Node, spec *corev1.PodSpec) bool {
+// NodeMatchesSpec checks node selectors and required node affinity, not health,
+// taints, storage compatibility, or permission to bind a Pod.
+func NodeMatchesSpec(node *corev1.Node, spec *corev1.PodSpec) bool {
 	for key, value := range spec.NodeSelector {
 		if actual, found := node.Labels[key]; !found || actual != value {
 			return false
