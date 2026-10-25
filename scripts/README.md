@@ -99,12 +99,14 @@ JSON parser and fixed reason codes. It does **not** collect evidence, run anothe
 lifecycle runner, read Kubernetes configuration, sign in, call a model, or change
 resources. The receipt fields are validation inputs, not new Agent status fields,
 annotations or API requirements.
+For a narrow current-resource collector, see
+[read-only lifecycle snapshots](#read-only-lifecycle-snapshots) below.
 
 Run the offline regression entry point from the repository root:
 
 ```bash
 PYTHONPATH=scripts/tests python3 -B -m unittest \
-  test_lifecycle_acceptance test_e2e_lifecycle \
+  test_lifecycle_acceptance test_lifecycle_snapshot test_e2e_lifecycle \
   test_sandbox_platform_qualify test_sandbox_deployment_preflight -v
 make python-check license-check
 ```
@@ -225,6 +227,144 @@ Malformed command lines exit 2. Input must be an explicit local regular file
 (not a pipe or device) and is capped at 1 MiB; duplicate JSON fields
 and nonfinite numbers are rejected. Keep live receipts and private validation
 reports outside public PRs; never merge historical versions into a new pass.
+
+### Read-only lifecycle snapshots
+
+`sandbox-platform-qualify.py lifecycle-snapshot` collects a small set of current
+Kubernetes facts for **one explicitly selected Agent and run**. It is not a
+lifecycle runner, an acceptance receipt, or authorization to use an environment.
+Only run it after separately authorizing read access to that exact target:
+
+```bash
+python3 -B scripts/sandbox-platform-qualify.py lifecycle-snapshot \
+  --kubeconfig "$TEST_KUBECONFIG" --context "$TEST_CONTEXT" \
+  --cluster-uid "$TEST_CLUSTER_UID" --scope "$REVIEWED_SNAPSHOT_SCOPE"
+```
+
+Supply a trusted, absolute, static-credential kubeconfig and independently obtained
+pins; never adopt discovered resources or the ambient current context. Both local
+inputs must be regular files, not symlinks, directories, devices or pipes. Keep
+real inputs private. The scope JSON is capped at 64 KiB and has **exactly** these
+fields:
+
+| Field | Required input |
+| --- | --- |
+| `version` | `"v1"` |
+| `run` | One explicit, nonempty DNS-style run-label value, at most 63 characters |
+| `case`, `artifacts` | The existing acceptance receipt shapes above, including full source commit/tree, configuration digest, and all required image/chart digests; no tags |
+| `resources` | The seven entries shown below; no additional discovery inputs |
+
+Example **synthetic `resources` fragment**, not a runnable live scope:
+
+```json
+{
+  "agent": {
+    "name": "selected-agent", "uid": "agent-uid",
+    "resourceVersion": "1", "generation": 3
+  },
+  "namespace": {"name": "snapshot-example", "uid": "namespace-uid"},
+  "statefulSet": {"name": "selected-runtime", "uid": "statefulset-uid"},
+  "pod": {"name": "selected-runtime-0", "uid": "pod-uid"},
+  "homePvc": {"name": "selected-home", "uid": "pvc-uid"},
+  "homePv": {"name": "selected-pv", "uid": "pv-uid"},
+  "attachment": {"name": "selected-attachment", "uid": "attachment-uid"}
+}
+```
+
+Use `attachment: null` explicitly when no attachment identity has been pinned.
+This leaves CSI attachment unknown and exits 1; it never discovers attachments
+cluster-wide or interprets the missing pin as absence/release. Names and UIDs
+are mandatory for every other entry. Agent generation and resourceVersion are
+also mandatory; replaced or stale pins are not refreshed automatically.
+
+The supported collection footprint is deliberately strict:
+
+- The Agent and its controller-owned namespace must both carry the exact
+  `qualification.cetirun.microsoft.com/run` label. Workload/storage objects are
+  scoped by the pinned identities and ownership/binding chain; any run label
+  they carry must agree. The namespace must be Active and the Agent report Ready
+  for the pinned generation and selected runtime. No owner authentication is
+  inferred from the Agent's user information or from administrative access.
+- There must be exactly one StatefulSet in that namespace, controller-owned by
+  the Agent, at one current Ready replica. The main Pod must have the pinned UID,
+  that StatefulSet controller owner, matching selector/revision, Running/Ready
+  status and one ready `cetirun` container. The selector must use precisely the
+  chart's `app.kubernetes.io/name` and `app.kubernetes.io/instance` labels.
+  A namespace-scoped StatefulSet list and a selector-scoped Pod list each use
+  `limit=2`; empty, multiple, paginated or truncated results stop collection.
+  Other layouts, suspended workloads and in-progress rollouts remain blocked.
+- The template and Pod must declare the same digest-pinned main image matching
+  `artifacts.images.runtime`; the reported main-container `imageID` digest must
+  also match. A differing platform-image digest is **unknown**, not silently
+  adopted from a multi-architecture tag/index. No registry lookup occurs.
+- Both template and Pod must explicitly mount volume `data` from the pinned
+  HOME PVC at `/home/vibe`, without subpaths or a read-only declaration.
+  Implicit claim-template layouts are outside this slice. PVC and PV must be
+  Bound, filesystem-mode and linked by the exact claim UID/name/namespace.
+  Only the explicitly named CSI VolumeAttachment is checked, including its UID,
+  PV, driver, Pod node name, reported attached flag and absence of reported errors.
+  This neither inventories other attachments nor proves physical attachment,
+  detachment, writer exclusion or actual HOME read/write.
+
+This mode reuses the deployed-preflight POSIX runner: 5-second request timeout,
+10-second command deadline, 90-second total deadline, 64-command ceiling,
+1 MiB stdout cap per command and a separate one-second process-cleanup wait.
+Only redacted local `kubectl config view --minify` and allowlisted API GETs run:
+the pinned `kube-system` namespace, Agent, namespace, StatefulSet, Pod, HOME
+PVC/PV, optional VolumeAttachment and the two bounded lists above. It never reads
+Secrets, Nodes, application logs or HOME contents; no exec, attach, port-forward,
+proxy, watch, mutation, login, model call or retry is available. Credential plugins,
+token-file/impersonation indirection and external client-key/certificate files are
+rejected before API reads. Do not replace the trusted kubeconfig or `kubectl`
+during collection.
+
+Every selected object and candidate set is rechecked, together with the redacted
+context selection and kubeconfig file identity. UID, resourceVersion, content,
+run-label or configuration drift blocks the snapshot. These checks detect
+observed changes; they are not an atomic API snapshot or a promise of future
+state. Failed/forbidden GETs never establish absence or cleanup.
+
+One sanitized JSON object below 8 KiB is emitted. `checks` use the existing
+`observed` / `unknown` / `blocked` statuses and fixed reason codes:
+
+- Exit 0 and `status: observed` mean only that the selected current-object
+  checks matched. `qualifiesExecution` stays `false` and `liveAcceptance` stays
+  `not-established`. Exit 1 reports a blocker/unknown; malformed arguments exit
+  2, and cancellation exits 130.
+- After stable reads, `snapshot` reuses the receipt's `artifactSet`, `resources`
+  and `workload` projections. Resource UIDs, the Pod UID, node **name** and
+  cluster/context/run scope are pseudonymized with SHA256 of compact JSON
+  `[clusterUID, role, value]`, without raw names, identifiers, endpoints, paths,
+  credentials or diagnostics. Keep the same convention when assembling later
+  observations; node-name equality does not establish node/provider identity.
+- `workload.observedPod` identifies the independently read Pod, but
+  `observedGeneration` and `ready` remain `null`. The controller's
+  `reported.agentObservedGeneration` and the independently read
+  `reported.podReady` do not establish generation-bound runtime readiness.
+  `storage` reports only the checked bindings/attachment; `csiReleased` is
+  always `null`. With no attachment pin, the other stable projections are
+  retained, the attachment check is unknown and the overall result is blocked.
+  Other failures leave `snapshot: null`; earlier checks are only partial reads.
+- `owner`, `home`, `accounting`, `models`, `peer` and `extensions` remain `null`.
+  No owner/provider authorization, model/tool witness, HOME checksum, nonzero
+  spend, peer continuity, source shutdown or cleanup proof is manufactured.
+
+The artifact fingerprint binds the **supplied** case/pins, not proof that the
+source, charts, other component images or effective case are deployed. Those
+facts and collector authenticity remain explicitly `unverified`, as do the
+acceptance observations above. An edited JSON file or successful administrator
+snapshot is not real-owner acceptance, billing evidence, a signed attestation
+or live qualification. Independently authorized collection and review of the
+remaining evidence are still required.
+
+Offline regressions replace every kubectl subprocess and use synthetic JSON:
+
+```bash
+PYTHONPATH=scripts/tests python3 -B -m unittest \
+  test_lifecycle_snapshot test_lifecycle_acceptance \
+  test_sandbox_deployment_preflight test_sandbox_platform_qualify test_sandbox_udp_probe
+make python-check license-check
+```
 
 ### Native ingress sign-in challenge
 
