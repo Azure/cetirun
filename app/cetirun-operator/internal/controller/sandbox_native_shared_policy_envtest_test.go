@@ -6,7 +6,10 @@
 package controller
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -17,9 +20,200 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func TestNativeSandboxMetadataUpdatePreservesAuthorizationAPIServer(t *testing.T) {
+	h := newNativeStartAPIHarness(t, true, true)
+	store := h.r.SandboxNativeCoordination
+	team := &api.Team{}
+	if err := h.admin.Get(h.ctx, client.ObjectKey{Name: h.agent.Spec.Team}, team); err != nil {
+		t.Fatal(err)
+	}
+	policy := &api.AgentPolicy{}
+	if err := h.admin.Get(h.ctx, client.ObjectKey{Name: team.Spec.AgentPolicyRef}, policy); err != nil {
+		t.Fatal(err)
+	}
+	original := policy.DeepCopy()
+	policy.Labels = map[string]string{"example.com/manifest": "minimal"}
+	raw := &unstructured.Unstructured{}
+	raw.SetAPIVersion(api.GroupVersion.String())
+	raw.SetKind("AgentPolicy")
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(policy), raw); err != nil {
+		t.Fatal(err)
+	}
+	if policy.Spec.AgentIdentity.Allowed || policy.Spec.AgentIdentity.Required || len(policy.Spec.AgentIdentity.CredentialServices) != 0 {
+		t.Fatal("fixture must not remove an effective identity entitlement")
+	}
+	raw.SetLabels(policy.Labels)
+	unstructured.RemoveNestedField(raw.Object, "spec", "agentIdentity")
+	ticket, err := store.AcquireConfigurationChange(h.ctx, original, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket, err = store.BeginChange(h.ctx, ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Establish the minimal wire representation before any Agent starts.
+	if err := h.admin.Update(h.ctx, raw, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := sandboxcoordination.NewKubernetesChangeAdapter(h.admin, h.admin, original, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconcileChange(h.ctx, ticket, adapter); err != nil {
+		t.Fatal(err)
+	}
+	policies := &AgentPolicyReconciler{Client: h.kube, APIReader: h.kube,
+		Source: h.r.SandboxPreparation.Configuration, NativeExecution: true}
+	if _, err := policies.Reconcile(h.ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(policy), raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := unstructured.NestedFieldNoCopy(raw.Object, "spec", "agentIdentity"); err != nil || found {
+		t.Fatal("fixture did not retain an omitted defaulted spec object:", err)
+	}
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+		t.Fatal(err)
+	}
+
+	otherTeam := team.DeepCopy()
+	otherTeam.ObjectMeta = metav1.ObjectMeta{Name: "other-team"}
+	otherTeam.Status = api.TeamStatus{}
+	h.create(t, otherTeam)
+	teams := &TeamReconciler{Client: h.kube, APIReader: h.kube}
+	if _, err := teams.Reconcile(h.ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(otherTeam)}); err != nil {
+		t.Fatal(err)
+	}
+	agent := h.agent.DeepCopy()
+	agent.ObjectMeta = metav1.ObjectMeta{Name: "other-agent"}
+	agent.Status = api.AgentStatus{}
+	agent.Spec.User.Alias, agent.Spec.Team = agent.Name, otherTeam.Name
+	h.create(t, agent)
+	peer := *h
+	peer.nativeSandboxFixture = &nativeSandboxFixture{r: h.r, kube: h.kube, gateway: h.gateway, agent: agent}
+	type running struct {
+		harness  *nativeStartAPIHarness
+		expected *w.Expectation
+		route    *unstructured.Unstructured
+	}
+	runs := []running{{harness: h}, {harness: &peer}}
+	for i := range runs {
+		run := &runs[i]
+		current := run.harness
+		current.seedRetainedBootstrap(t)
+		current.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Namespace: instanceNamespace(current.agent.Name), Name: "default",
+		}})
+		current.prepare(t)
+		current.reconcileOK(t)
+		_, expected := current.expectation(t)
+		pod := testfixture.Pod(*expected)
+		pod.Spec.Overhead = nil
+		current.create(t, pod)
+		current.observeReadyPod(t, pod)
+		current.reconcileOK(t)
+		current.assertReady(t)
+		_, run.expected = current.expectation(t)
+		run.route = &unstructured.Unstructured{}
+		run.route.SetAPIVersion("networking.istio.io/v1beta1")
+		run.route.SetKind("VirtualService")
+		if err := h.admin.Get(h.ctx, client.ObjectKey{
+			Namespace: run.expected.Namespace.Name, Name: virtualServiceName(current.agent.Name),
+		}, run.route); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs[0].expected.Binding.TeamUID == runs[1].expected.Binding.TeamUID ||
+		runs[0].expected.Binding.AgentPolicyUID != runs[1].expected.Binding.AgentPolicyUID {
+		t.Fatal("fixture must share a policy across distinct Teams")
+	}
+	for _, key := range h.gateway.keys {
+		key.Spend = ptr.To(1.25)
+	}
+	gateway := &metadataContinuityGateway{fakeAIGateway: h.gateway}
+	h.r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return gateway, nil }
+	keysBefore, err := json.Marshal(h.gateway.keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedBefore := len(h.gateway.generated)
+	before := policy.DeepCopy()
+	after := policy.DeepCopy()
+	after.Labels["example.com/change"] = "metadata"
+	ticket, err = store.AcquireConfigurationChange(h.ctx, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err = sandboxcoordination.NewKubernetesChangeAdapter(h.admin, h.admin, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconcileChange(h.ctx, ticket, adapter); err != nil {
+		t.Fatal(err)
+	}
+	// Reconcile both Agents before either configuration controller can refresh.
+	for _, run := range runs {
+		current := run.harness
+		if _, err := current.reconcile(); err != nil {
+			t.Error("metadata-only update could not preserve Agent reconciliation:", err)
+		}
+		workload := current.workload(t)
+		if workload.UID != run.expected.Workload.UID || ptr.Deref(workload.Spec.Replicas, -1) != 1 ||
+			current.pod(t).UID != run.expected.PodUID {
+			t.Error("metadata-only update stopped or replaced a referencing Agent's compute")
+		}
+		route := run.route.DeepCopy()
+		if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(route), route); err != nil || route.GetUID() != run.route.GetUID() {
+			t.Error("metadata-only update removed or replaced a referencing Agent's route:", err)
+		}
+		if current.current(t).Status.Phase != api.PhaseReady {
+			t.Error("metadata-only update interrupted a referencing Agent's readiness")
+		}
+	}
+	keysAfter, err := json.Marshal(h.gateway.keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(keysBefore) != string(keysAfter) || len(h.gateway.generated) != generatedBefore ||
+		len(h.gateway.deletedTokens) != 0 || len(h.gateway.deletedAliases) != 0 || gateway.blocks != 0 {
+		t.Error("metadata-only update blocked, changed or replaced an Agent's key/spend")
+	}
+	currentPolicy := &api.AgentPolicy{}
+	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(policy), currentPolicy); err != nil {
+		t.Fatal(err)
+	}
+	if currentPolicy.Generation != before.Generation || !reflect.DeepEqual(currentPolicy.Status, before.Status) {
+		t.Error("metadata-only update invalidated the existing acceptance observation")
+	}
+	if currentPolicy.ResourceVersion == before.ResourceVersion || currentPolicy.Labels["example.com/change"] != "metadata" {
+		t.Fatal("metadata update was not persisted")
+	}
+	changed := currentPolicy.DeepCopy()
+	changed.Spec.Security.ReadOnlyRootFilesystem = ptr.To(false)
+	if _, err := store.AcquireConfigurationChange(h.ctx, currentPolicy, changed); !errors.Is(err, sandboxcoordination.ErrConflict) {
+		t.Fatal("actual policy change bypassed active native reservations:", err)
+	}
+}
+
+type metadataContinuityGateway struct {
+	*fakeAIGateway
+	blocks int
+}
+
+func (g *metadataContinuityGateway) SetKeyBlocked(ctx context.Context, token string, blocked bool) error {
+	if blocked {
+		g.blocks++
+	}
+	return g.fakeAIGateway.SetKeyBlocked(ctx, token, blocked)
+}
 
 func TestNativeSandboxSharedPolicyAPIServer(t *testing.T) {
 	h := newNativeStartAPIHarness(t, true, true)

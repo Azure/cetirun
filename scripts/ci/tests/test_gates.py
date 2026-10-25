@@ -354,6 +354,12 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn("-count=1", commands)
                 self.assertNotIn("-run", commands)
                 self.assertNotIn("|| true", commands)
+        for target in ("test-envtest", "test-sandbox-lifecycle"):
+            with self.subTest(target=target):
+                commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
+                self.assertIn("./cmd/sandbox-config-change", commands)
+                self.assertIn('test -x "$(KUBEBUILDER_ASSETS)/kubectl"', commands)
+                self.assertIn("USE_EXISTING_CLUSTER=false go test -tags=envtest", commands)
         self.assertIn("go test ./... -v", makefile)
         for name in ("operator-ci.yml", "operator-release.yml"):
             with self.subTest(workflow=name):

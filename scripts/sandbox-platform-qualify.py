@@ -1483,7 +1483,7 @@ def snapshot_regular_file(path):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
-def snapshot_scope(path):
+def snapshot_scope(path, state="ready"):
     snapshot_regular_file(path)
     try:
         with open(path, "rb", opener=lambda p, flags: os.open(p, flags | os.O_NONBLOCK | os.O_NOFOLLOW)) as stream:
@@ -1497,7 +1497,7 @@ def snapshot_scope(path):
     resources = lifecycle_fields(scope["resources"], tuple(key for key in SNAPSHOT_RESOURCES if key != "cluster"))
     uids = []
     for key, pin in resources.items():
-        if key == "attachment" and pin is None:
+        if pin is None and (key == "attachment" or (key == "pod" and state == "suspended")):
             continue
         fields = ("name", "uid", "resourceVersion", "generation") if key == "agent" else ("name", "uid")
         lifecycle_fields(pin, fields)
@@ -1513,12 +1513,35 @@ def snapshot_scope(path):
     return scope, fingerprint
 
 
+def snapshot_selector(labels):
+    labels = object_value(labels)
+    require_preflight(set(labels) == {"app.kubernetes.io/name", "app.kubernetes.io/instance"} and
+                      all(resource_name(value, 63) for value in labels.values()),
+                      "unsupported-runtime-selector")
+    return labels
+
+
+def snapshot_attachment_unknown(error):
+    return error.status == "unknown" and error.reason in (
+        "kubernetes-request-failed", "command-unavailable-timeout-or-invalid-output", "request-timeout",
+        "response-too-large", "invalid-document-size", "invalid-json-document", "duplicate-json-field",
+        "unexpected-object-shape", "missing-resource-identity", "csi-attachment-not-observed",
+    )
+
+
+def snapshot_content(value):
+    # Python equates False with 0; stability comparisons must retain JSON types.
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 class SnapshotKubernetes(DeploymentKubernetes):
     """Only pinned objects and two bounded candidate lists in the owned namespace."""
 
     def __init__(self, args, scope):
         super().__init__(args.kubeconfig, args.context, args.cluster_uid)
         self.scope = scope
+        self.state = getattr(args, "state", "ready")
+        self.attachment_error = None
         self.pins = {"cluster": {"name": "kube-system", "uid": args.cluster_uid}, **scope["resources"]}
         self.namespace = self.pins["namespace"]["name"]
         self.paths = {
@@ -1543,20 +1566,23 @@ class SnapshotKubernetes(DeploymentKubernetes):
                           meta.get("name") == pin["name"] and
                           meta.get("namespace") == (self.namespace if "{namespace}" in base else None),
                           "resource-identity-mismatch")
-        require_preflight(exact_text(meta.get("uid")) and exact_text(meta.get("resourceVersion")),
-                          "missing-resource-identity", "unknown")
-        require_preflight(meta["uid"] == pin["uid"], "resource-uid-mismatch")
+        # Incomplete attachment evidence must not hide a known identity/lifecycle conflict.
+        if exact_text(meta.get("uid")):
+            require_preflight(meta["uid"] == pin["uid"], "resource-uid-mismatch")
         require_preflight(not meta.get("deletionTimestamp"), "resource-terminating")
         if key != "cluster":
             labels = object_value(meta.get("labels", {}))
             require_preflight((key not in ("agent", "namespace") and RUN_LABEL not in labels) or
                               labels.get(RUN_LABEL) == self.scope["run"], "run-label-mismatch")
+        require_preflight(exact_text(meta.get("uid")) and exact_text(meta.get("resourceVersion")),
+                          "missing-resource-identity", "unknown")
         if key == "agent":
             require_preflight(meta["resourceVersion"] == pin["resourceVersion"] and
                               type(meta.get("generation")) is int and meta["generation"] == pin["generation"],
                               "agent-version-mismatch")
-        require_preflight(key not in self.observed or self.observed[key] == value, "resource-version-drift")
-        self.observed[key] = value
+        content = snapshot_content(value)
+        require_preflight(key not in self.observed or self.observed[key] == content, "resource-version-drift")
+        self.observed[key] = content
         return value
 
     def get(self, key):
@@ -1567,13 +1593,13 @@ class SnapshotKubernetes(DeploymentKubernetes):
         self.get("cluster")
 
     def unique(self, key, labels=None):
+        """Require the pinned singleton, or zero namespace Pods when suspended."""
         require_preflight(key in ("statefulSet", "pod"), "resource-not-allowlisted")
         query = {"limit": 2}
-        if key == "pod":
-            labels = object_value(labels)
-            require_preflight(set(labels) == {"app.kubernetes.io/name", "app.kubernetes.io/instance"} and
-                              all(resource_name(value, 63) for value in labels.values()),
-                              "unsupported-runtime-selector")
+        # Suspension must also see Pods with stale or missing selector labels.
+        empty_pods = key == "pod" and self.state == "suspended"
+        if key == "pod" and not empty_pods:
+            labels = snapshot_selector(labels)
             query["labelSelector"] = ",".join(name + "=" + labels[name] for name in sorted(labels))
         else:
             require_preflight(labels is None, "unsupported-runtime-selector")
@@ -1589,14 +1615,21 @@ class SnapshotKubernetes(DeploymentKubernetes):
                           (remaining is None or (type(remaining) is int and remaining == 0)),
                           "candidate-list-incomplete", "unknown")
         items = array_value(value.get("items"))
-        require_preflight(len(items) == 1, "candidate-set-not-singleton")
-        self.observe(key, {"apiVersion": api, "kind": kind, **object_value(items[0])})
+        require_preflight(len(items) == (0 if empty_pods else 1),
+                          "pod-candidates-not-empty" if empty_pods else "candidate-set-not-singleton")
+        if not empty_pods:
+            self.observe(key, {"apiVersion": api, "kind": kind, **object_value(items[0])})
         self.lists[key] = labels
 
     def stable(self, config):
-        require_preflight(self.credentials() == config, "kubeconfig-drift")
+        require_preflight(snapshot_content(self.credentials()) == snapshot_content(config), "kubeconfig-drift")
         for key in tuple(self.observed):
-            self.get(key)
+            try:
+                self.get(key)
+            except PreflightBlocked as error:
+                if key != "attachment" or self.state != "suspended" or not snapshot_attachment_unknown(error):
+                    raise
+                self.attachment_error = error.reason
         for key, labels in tuple(self.lists.items()):
             self.unique(key, labels)
         require_preflight(time.monotonic() < self.deadline, "deadline-exhausted", "unknown")
@@ -1642,14 +1675,24 @@ def snapshot_workload(kube):
     kube.unique("statefulSet")
     spec, status = object_value(stateful_set.get("spec")), object_value(stateful_set.get("status"))
     generation = stateful_set["metadata"].get("generation")
-    require_preflight(type(generation) is int and generation > 0 and
-                      type(status.get("observedGeneration")) is int and status["observedGeneration"] == generation and
-                      type(spec.get("replicas")) is int and spec["replicas"] == 1 and
-                      all(type(status.get(key)) is int and status[key] == 1 for key in
-                          ("replicas", "readyReplicas", "currentReplicas", "updatedReplicas")) and
-                      exact_text(status.get("currentRevision")) and status["currentRevision"] == status.get("updateRevision"),
-                      "statefulset-not-current-ready")
+    current = (type(generation) is int and generation > 0 and
+               type(status.get("observedGeneration")) is int and status["observedGeneration"] == generation)
+    if kube.state == "suspended":
+        require_preflight(current and type(spec.get("replicas")) is int and spec["replicas"] == 0 and
+                          type(status.get("replicas")) is int and status["replicas"] == 0 and
+                          all(type(status.get(key, 0)) is int and status.get(key, 0) == 0 for key in (
+                              "readyReplicas", "currentReplicas", "updatedReplicas", "availableReplicas",
+                              "terminatingReplicas",
+                          )), "statefulset-not-current-zero")
+    else:
+        require_preflight(current and type(spec.get("replicas")) is int and spec["replicas"] == 1 and
+                          all(type(status.get(key)) is int and status[key] == 1 for key in
+                              ("replicas", "readyReplicas", "currentReplicas", "updatedReplicas")) and
+                          exact_text(status.get("currentRevision")) and
+                          status["currentRevision"] == status.get("updateRevision"), "statefulset-not-current-ready")
     selector = lifecycle_fields(spec.get("selector"), ("matchLabels",))
+    if kube.state == "suspended":
+        snapshot_selector(selector["matchLabels"])
     template = object_value(spec.get("template"))
     template_labels = object_value(object_value(template.get("metadata")).get("labels"))
     require_preflight(RUN_LABEL not in template_labels or template_labels[RUN_LABEL] == kube.scope["run"],
@@ -1658,7 +1701,7 @@ def snapshot_workload(kube):
                           object_value(selector["matchLabels"]).items()), "runtime-selector-mismatch")
     image = snapshot_runtime(object_value(template.get("spec")), kube.scope["artifacts"]["images"]["runtime"],
                              kube.pins["homePvc"]["name"])
-    return selector["matchLabels"], image, status["currentRevision"]
+    return selector["matchLabels"], image, status.get("currentRevision")
 
 
 def snapshot_pod(kube, labels, image, revision):
@@ -1709,18 +1752,22 @@ def snapshot_home(kube):
 
 def snapshot_attachment(kube, node, driver):
     attachment = kube.get("attachment")
-    spec, status = object_value(attachment.get("spec")), object_value(attachment.get("status"))
-    require_preflight(spec.get("attacher") == driver and spec.get("nodeName") == node and
+    spec = object_value(attachment.get("spec"))
+    require_preflight(spec.get("attacher") == driver and
+                      (resource_name(spec.get("nodeName")) if kube.state == "suspended" else spec.get("nodeName") == node) and
                       object_value(spec.get("source")) == {"persistentVolumeName": kube.pins["homePv"]["name"]},
                       "csi-attachment-binding-mismatch")
+    status = object_value(attachment.get("status"))
     require_preflight(status.get("attached") is True and not status.get("attachError") and not status.get("detachError"),
-                      "csi-attachment-not-observed")
+                      "csi-attachment-not-observed", "unknown" if kube.state == "suspended" else "blocked")
 
 
 def lifecycle_snapshot(argv):
     parser = SanitizedParser(description="Read-only, explicitly pinned current lifecycle facts; never acceptance.")
     for name in ("kubeconfig", "context", "cluster-uid", "scope"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--state", choices=("ready", "suspended"), default="ready",
+                        help="current state to observe (default: ready); never proves physical shutdown or release")
     names = ("arguments", "scope-pins", "local-credentials", "cluster-identity", "agent-and-namespace",
              "statefulset", "pod", "home-storage", "csi-attachment", "stable-observation")
     result = {
@@ -1740,6 +1787,8 @@ def lifecycle_snapshot(argv):
         result["error"] = "invalid-command-line; use lifecycle-snapshot --help"
         print(json.dumps(result, sort_keys=True))
         return 2
+    if args.state == "suspended":
+        result["state"] = "suspended"
 
     @contextmanager
     def step(name):
@@ -1767,7 +1816,7 @@ def lifecycle_snapshot(argv):
                               "invalid-explicit-target")
             config_file = snapshot_regular_file(args.kubeconfig)
         with step("scope-pins"):
-            scope, fingerprint = snapshot_scope(args.scope)
+            scope, fingerprint = snapshot_scope(args.scope, args.state)
         kube = SnapshotKubernetes(args, scope)
         with step("local-credentials"):
             config = kube.credentials()
@@ -1785,38 +1834,69 @@ def lifecycle_snapshot(argv):
                               "namespace-not-active")
             require_preflight(object_value(spec.get("agent")).get("type") == scope["case"]["runtime"],
                               "agent-runtime-mismatch")
-            require_preflight(spec.get("suspended", False) is False and status.get("phase") == "Ready" and
-                              type(status.get("observedGeneration")) is int and
-                              status["observedGeneration"] == kube.pins["agent"]["generation"], "agent-not-current-ready")
+            if args.state == "suspended":
+                require_preflight(spec.get("suspended") is True and status.get("phase") == "Suspended" and
+                                  type(status.get("observedGeneration")) is int and
+                                  status["observedGeneration"] == kube.pins["agent"]["generation"],
+                                  "agent-not-current-suspended")
+                # The completed suspension path stamps the top-level generation, not each condition.
+                conditions = [object_value(c) for c in array_value(status.get("conditions", []))]
+                for kind, reason in (("Ready", "InstanceSuspended"), ("PodReady", "Suspended"),
+                                     ("IngressReady", "Suspended")):
+                    selected = [c for c in conditions if c.get("type") == kind]
+                    require_preflight(len(selected) == 1 and selected[0].get("status") == "False" and
+                                      selected[0].get("reason") == reason, "agent-suspension-not-observed")
+            else:
+                require_preflight(spec.get("suspended", False) is False and status.get("phase") == "Ready" and
+                                  type(status.get("observedGeneration")) is int and
+                                  status["observedGeneration"] == kube.pins["agent"]["generation"], "agent-not-current-ready")
         with step("statefulset"):
             labels, image, revision = snapshot_workload(kube)
         with step("pod"):
-            node = snapshot_pod(kube, labels, image, revision)
+            node = None
+            if args.state == "suspended":
+                kube.unique("pod")
+            else:
+                node = snapshot_pod(kube, labels, image, revision)
         with step("home-storage"):
             driver = snapshot_home(kube)
         if kube.pins["attachment"] is None:
             result["checks"][names.index("csi-attachment")]["reason"] = "attachment-not-pinned"
         else:
-            with step("csi-attachment"):
-                snapshot_attachment(kube, node, driver)
+            try:
+                with step("csi-attachment"):
+                    snapshot_attachment(kube, node, driver)
+            except PreflightBlocked as error:
+                if args.state != "suspended" or not snapshot_attachment_unknown(error):
+                    raise
+                kube.attachment_error = error.reason
         with step("stable-observation"):
             require_preflight(snapshot_regular_file(args.kubeconfig) == config_file, "kubeconfig-file-drift")
-            kube.stable(config)
+            try:
+                kube.stable(config)
+            finally:
+                if kube.attachment_error is not None:
+                    result["checks"][names.index("csi-attachment")].update(status="unknown", reason=kube.attachment_error)
             require_preflight(snapshot_regular_file(args.kubeconfig) == config_file, "kubeconfig-file-drift")
         identities = {key: kube.pseudonym(key, kube.pins[key]["uid"]) for key in LIFECYCLE_RESOURCE_FIELDS}
-        pod_uid = kube.pseudonym("pod", kube.pins["pod"]["uid"])
+        pod_uid = kube.pseudonym("pod", kube.pins["pod"]["uid"]) if kube.pins["pod"] is not None else None
         result["scope"] = {key: kube.pseudonym(key, value) for key, value in
                            (("cluster", args.cluster_uid), ("context", args.context), ("run", scope["run"]))}
         result["snapshot"] = {
             **dict.fromkeys(LIFECYCLE_SNAPSHOT_FIELDS), "artifactSet": fingerprint, "resources": identities,
-            "workload": {"agent": identities["agent"], "pod": pod_uid, "observedPod": pod_uid,
-                         "node": kube.pseudonym("node-name", node), "generation": kube.pins["agent"]["generation"],
+            "workload": {"agent": identities["agent"], "pod": pod_uid,
+                         "observedPod": pod_uid if args.state == "ready" else None,
+                         "node": kube.pseudonym("node-name", node) if node is not None else None,
+                         "generation": kube.pins["agent"]["generation"],
                          "observedGeneration": None, "ready": None},
         }
         result["reported"] = {"agentObservedGeneration": status["observedGeneration"], "podReady": True}
+        if args.state == "suspended":
+            result["reported"].update(agentSuspended=True, agentPhase="Suspended", podReady=None,
+                                      desiredReplicas=0, currentReplicas=0, podCandidates=0, runtimeImageID=None)
         result["storage"] = {"pvcBound": True, "pvBound": True, "csiReleased": None,
                              "attachment": None, "csiAttached": None}
-        if kube.pins["attachment"] is not None:
+        if kube.pins["attachment"] is not None and kube.attachment_error is None:
             result["storage"].update(attachment=kube.pseudonym("attachment", kube.pins["attachment"]["uid"]),
                                      csiAttached=True)
             result["status"] = "observed"
