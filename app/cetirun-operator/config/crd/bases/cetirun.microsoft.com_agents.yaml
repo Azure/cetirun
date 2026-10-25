@@ -250,6 +250,40 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              plannedMigration:
+                description: |-
+                  PlannedMigration requests a healthy-source cold move of a reconciled
+                  OpenClaw/Hermes Agent. It does not authorize force deletion or failover.
+                properties:
+                  requestID:
+                    description: Reusing the current ID only observes that request.
+                    maxLength: 128
+                    minLength: 16
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  target:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                required:
+                - requestID
+                - target
+                type: object
               restartRequestID:
                 description: |-
                   RestartRequestID requests a retained restart through normal reconciliation.
@@ -370,6 +404,11 @@ spec:
               message: a suspended Agent cannot request a new restart
               rule: '!(has(self.suspended) && self.suspended) || !has(self.restartRequestID)
                 || (has(oldSelf.restartRequestID) && self.restartRequestID == oldSelf.restartRequestID)'
+            - fieldPath: .plannedMigration
+              message: a migration request ID cannot select a different destination
+              rule: '!has(self.plannedMigration) || !has(oldSelf.plannedMigration)
+                || self.plannedMigration.requestID != oldSelf.plannedMigration.requestID
+                || self.plannedMigration == oldSelf.plannedMigration'
           status:
             description: AgentStatus defines the observed state of Agent.
             properties:
@@ -820,6 +859,339 @@ spec:
                 - Deleting
                 - Suspended
                 type: string
+              plannedMigration:
+                description: |-
+                  PlannedMigration preserves the current migration's observations across
+                  retries. Only the controller writes these checkpoints.
+                properties:
+                  attachment:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  destination:
+                    properties:
+                      bootID:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                      csiNode:
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                          uid:
+                            description: |-
+                              UID is a type that holds unique ID values, including UUIDs.  Because we
+                              don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                              intent and helps make sure that UIDs and names do not get conflated.
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                      csiNodeID:
+                        maxLength: 2048
+                        minLength: 1
+                        type: string
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      providerID:
+                        maxLength: 2048
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - bootID
+                    - csiNode
+                    - csiNodeID
+                    - name
+                    - providerID
+                    - uid
+                    type: object
+                  driver:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  home:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  namespace:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  phase:
+                    enum:
+                    - Protecting
+                    - Stopping
+                    - SourceTerminated
+                    - Detached
+                    - Starting
+                    - Completed
+                    type: string
+                  previousRequestID:
+                    maxLength: 128
+                    type: string
+                  replacementAttachment:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  replacementPod:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  requestID:
+                    description: Reusing the current ID only observes that request.
+                    maxLength: 128
+                    minLength: 16
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  source:
+                    properties:
+                      bootID:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                      csiNode:
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                          uid:
+                            description: |-
+                              UID is a type that holds unique ID values, including UUIDs.  Because we
+                              don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                              intent and helps make sure that UIDs and names do not get conflated.
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                      csiNodeID:
+                        maxLength: 2048
+                        minLength: 1
+                        type: string
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      providerID:
+                        maxLength: 2048
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - bootID
+                    - csiNode
+                    - csiNodeID
+                    - name
+                    - providerID
+                    - uid
+                    type: object
+                  sourcePod:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  startedAt:
+                    format: date-time
+                    type: string
+                  target:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  volume:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  volumeHandle:
+                    maxLength: 2048
+                    minLength: 1
+                    type: string
+                  workload:
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  workloadTemplateHash:
+                    pattern: ^[a-f0-9]{64}$
+                    type: string
+                required:
+                - attachment
+                - destination
+                - driver
+                - home
+                - namespace
+                - phase
+                - requestID
+                - source
+                - sourcePod
+                - startedAt
+                - target
+                - volume
+                - volumeHandle
+                - workload
+                - workloadTemplateHash
+                type: object
               policy:
                 description: |-
                   Policy records the resolved AgentPolicy and the revisions each enforcement
@@ -936,6 +1308,15 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: a recorded migration destination cannot be removed
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.plannedMigration) ||
+            has(self.spec.plannedMigration)'
+        - message: an accepted migration must finish before requesting another destination
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.plannedMigration) ||
+            oldSelf.status.plannedMigration.phase == ''Completed'' || (has(self.spec.plannedMigration)
+            && has(oldSelf.spec.plannedMigration) && self.spec.plannedMigration ==
+            oldSelf.spec.plannedMigration)'
     served: true
     storage: true
     subresources:

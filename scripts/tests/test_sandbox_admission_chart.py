@@ -335,7 +335,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         node_rule = {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}
         rules = configured[("ClusterRole", "cetirun-operator-manager-role")]["rules"]
         self.assertEqual(rules.count(node_rule), 1)
-        rules.remove(node_rule)
+        self.assertEqual(baseline[("ClusterRole", "cetirun-operator-manager-role")]["rules"].count(node_rule), 1)
         after["value"] = before["value"]
         self.assertEqual(configured, baseline)
 
@@ -438,7 +438,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             "helpers", "admissionServiceAccount",
         })
 
-    def test_native_execution_adds_only_node_reads_and_retains_cleanup_patch(self):
+    def test_native_execution_retains_migration_readers_and_cleanup_patch(self):
         admission = self.enforced_values(podsEnabled=True)
         sources = {
             "enabled": True, "platformConfigMapName": "sandbox-platform",
@@ -460,7 +460,8 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertNotIn("nativeExecution", baseline_config)
         role = ("ClusterRole", "cetirun-operator-manager-role")
         added = [rule for rule in configured[role]["rules"] if rule not in baseline[role]["rules"]]
-        self.assertEqual(added, [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}])
+        self.assertEqual(added, [])
+        self.assertIn({"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}, baseline[role]["rules"])
         removed = [rule for rule in baseline[role]["rules"] if rule not in configured[role]["rules"]]
         self.assertEqual(removed, [])
 
@@ -1091,11 +1092,48 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assert_rejected({"podsEnabled": True}, "podsEnabled requires sandboxAdmission.enabled")
         self.assert_rejected(self.server_values(podsEnabled="true"), "podsEnabled must be a boolean")
 
+    def test_planned_migration_is_opt_in_without_removing_cleanup_readers(self):
+        admission = self.enforced_values(podsEnabled=True)
+        sources = {
+            "enabled": True, "platformConfigMapName": "sandbox-platform",
+            "bootstrapOwnedPrerequisites": True, "nativeExecution": True,
+        }
+        values = {"sandboxSources": sources, "aiGateway": {"enabled": True}}
+        baseline = self.render(admission, values=values)
+        enabled = self.render(admission, values={
+            **values, "sandboxSources": {**sources, "plannedMigration": True},
+        })
+
+        def config(documents):
+            env = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]["env"]
+            return json.loads(next(item["value"] for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES"))
+
+        self.assertNotIn("plannedMigration", config(baseline))
+        self.assertEqual(config(enabled), {**config(baseline), "plannedMigration": True})
+        role = ("ClusterRole", "cetirun-operator-manager-role")
+        self.assertEqual(baseline[role], enabled[role])
+        disabled = self.render(admission)
+        for group, resources, verbs in (
+            ("", ["nodes"], ["get"]),
+            ("storage.k8s.io", ["csinodes", "csidrivers"], ["get"]),
+            ("storage.k8s.io", ["volumeattachments"], ["get", "list", "patch"]),
+        ):
+            rule = {"apiGroups": [group], "resources": resources, "verbs": verbs}
+            self.assertIn(rule, baseline[role]["rules"])
+            self.assertIn(rule, disabled[role]["rules"])
+        for change in ({"plannedMigration": "true"}, {"plannedMigration": 1},
+                       {"plannedMigration": True, "nativeExecution": False}):
+            with self.subTest(change=change):
+                self.assert_rejected(admission, "sandboxSources.plannedMigration", values={
+                    **values, "sandboxSources": {**sources, **change},
+                })
+
     def test_placement_default_off_and_separate_serving_bootstrap(self):
         baseline = self.render(self.enforced_values(podsEnabled=True))
         self.assertNotIn(("ValidatingWebhookConfiguration", "cetirun-sandbox-placement"), baseline)
+        self.assertIn({"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]},
+                      baseline[("ClusterRole", NAME)]["rules"])
         for rule in baseline[("ClusterRole", NAME)]["rules"]:
-            self.assertNotIn("nodes", rule["resources"])
             self.assertNotIn("daemonsets", rule["resources"])
             self.assertNotIn("priorityclasses", rule["resources"])
 
@@ -1158,6 +1196,9 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertEqual(webhook["rules"], [{
             "operations": ["CREATE", "UPDATE"], "apiGroups": [""], "apiVersions": ["v1"],
             "resources": ["pods", "pods/ephemeralcontainers", "pods/resize"], "scope": "Namespaced",
+        }, {
+            "operations": ["CREATE"], "apiGroups": [""], "apiVersions": ["v1"],
+            "resources": ["pods/binding", "bindings"], "scope": "Namespaced",
         }, {
             "operations": ["CONNECT"], "apiGroups": [""], "apiVersions": ["v1"],
             "resources": ["pods/exec", "pods/attach", "pods/portforward"], "scope": "Namespaced",

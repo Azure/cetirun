@@ -236,6 +236,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 
 	// 2. Handle deletion.
 	if !instance.DeletionTimestamp.IsZero() {
+		if allowed, result, err := r.reconcileMigration(ctx, instance, false); !allowed {
+			return result, err
+		}
 		recorded, readErr := r.recordedReconciledSandbox(ctx, instance)
 		if readErr == nil && recorded {
 			return r.handleDelete(ctx, instance)
@@ -266,10 +269,19 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return r.rejectReservedUIInstance(ctx, instance)
 	}
 
+	// A recorded source must be protected before a lifetime-mode lookup can
+	// fail into a hold that stops compute and removes its observations.
+	if state := instance.Status.PlannedMigration; state != nil && !state.CanStart() {
+		_, result, err := r.reconcileMigration(ctx, instance, false)
+		return result, err
+	}
 	reconciledSandbox, err := r.usesReconciledSandbox(ctx, instance)
 	if err != nil {
 		result, holdErr := r.holdReconciledSandbox(ctx, instance)
 		return result, stderrors.Join(err, holdErr)
+	}
+	if allowed, result, err := r.reconcileMigration(ctx, instance, reconciledSandbox); !allowed {
+		return result, err
 	}
 	if reconciledSandbox && instance.Spec.Suspended {
 		if err := r.stopReconciledSandboxForSuspension(ctx, instance); err != nil {

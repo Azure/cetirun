@@ -34,6 +34,7 @@ type SkillOverrideSpec struct {
 // +kubebuilder:validation:XValidation:rule="self.agent.type == 'custom' ? !has(self.gatewayTokenSecretRef) : has(self.gatewayTokenSecretRef)",message="gatewayTokenSecretRef is required for built-in agents and forbidden for custom agents",fieldPath=".gatewayTokenSecretRef"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.restartRequestID) || has(self.restartRequestID)",message="restartRequestID cannot be removed once set",fieldPath=".restartRequestID"
 // +kubebuilder:validation:XValidation:rule="!(has(self.suspended) && self.suspended) || !has(self.restartRequestID) || (has(oldSelf.restartRequestID) && self.restartRequestID == oldSelf.restartRequestID)",message="a suspended Agent cannot request a new restart",fieldPath=".restartRequestID"
+// +kubebuilder:validation:XValidation:rule="!has(self.plannedMigration) || !has(oldSelf.plannedMigration) || self.plannedMigration.requestID != oldSelf.plannedMigration.requestID || self.plannedMigration == oldSelf.plannedMigration",message="a migration request ID cannot select a different destination",fieldPath=".plannedMigration"
 type AgentSpec struct {
 	// Agent is the required per-instance Agent configuration.
 	// +required
@@ -124,6 +125,11 @@ type AgentSpec struct {
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
 	// +optional
 	RestartRequestID string `json:"restartRequestID,omitempty"`
+
+	// PlannedMigration requests a healthy-source cold move of a reconciled
+	// OpenClaw/Hermes Agent. It does not authorize force deletion or failover.
+	// +optional
+	PlannedMigration *PlannedMigrationRequest `json:"plannedMigration,omitempty"`
 }
 
 // TailscaleSpec configures the Tailscale mesh VPN sidecar.
@@ -259,6 +265,11 @@ type AgentStatus struct {
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
 	// +optional
 	ObservedRestartRequestID string `json:"observedRestartRequestID,omitempty"`
+
+	// PlannedMigration preserves the current migration's observations across
+	// retries. Only the controller writes these checkpoints.
+	// +optional
+	PlannedMigration *PlannedMigrationStatus `json:"plannedMigration,omitempty"`
 
 	// ObservedOperatorHash is a hash of the operator-level configuration (e.g. ChartVersion, DomainSuffix)
 	// that was in effect during the last successful reconciliation. A change in this hash
@@ -792,6 +803,8 @@ const (
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=agents,scope=Cluster,shortName=cra,singular=agent
 // +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.plannedMigration) || has(self.spec.plannedMigration)",message="a recorded migration destination cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.plannedMigration) || oldSelf.status.plannedMigration.phase == 'Completed' || (has(self.spec.plannedMigration) && has(oldSelf.spec.plannedMigration) && self.spec.plannedMigration == oldSelf.spec.plannedMigration)",message="an accepted migration must finish before requesting another destination"
 // +kubebuilder:printcolumn:name="Alias",type=string,JSONPath=`.spec.user.alias`
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=`.spec.agent.type`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`

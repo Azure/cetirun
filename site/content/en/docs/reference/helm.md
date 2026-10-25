@@ -377,6 +377,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `azure.*` | Optional Teams provisioning configuration |
 | `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations for configuration admission and sources for held native Sandbox preparation |
 | `sandboxSources.nativeExecution` | `false`; select common OpenClaw/Hermes reconciliation for new lifetimes with owned bootstrap, enforced admission and the AI Gateway |
+| `sandboxSources.plannedMigration` | `false`; permit new administrator-requested healthy-source moves with one CSI/RWOP HOME. Requires `nativeExecution` and upgraded CRD/Operator/admission/Portal readers; existing checkpoints and cleanup permissions remain when disabled |
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; existing operator-namespace ConfigMap containing versioned `platform.json`, shared by configuration admission and the controller |
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing claims stay read-only; bootstrap can create owned HOME only in new namespaces, while published skills stay external |
