@@ -1318,6 +1318,79 @@ func TestConfigurationMetadataAdmissionGenerationBounds(t *testing.T) {
 	}
 }
 
+func TestConfigurationMetadataRequestRetainsAuthoritativeSpec(t *testing.T) {
+	for _, editSpec := range []bool{false, true} {
+		name := "metadata-only"
+		if editSpec {
+			name = "actual-spec-edit"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store, storage, before, _ := configurationFixture(t, "AgentPolicy")
+			after := before.DeepCopyObject().(*api.AgentPolicy)
+			after.Labels = map[string]string{"example.com/change": "metadata"}
+			after.Annotations = map[string]string{"example.com/description": "updated"}
+			after.Finalizers = []string{"example.com/retain"}
+			after.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(),
+				Kind: "Team", Name: "owner", UID: "owner-uid"}}
+			if editSpec {
+				after.Spec.ModelAccess.Copilot.Allowed = true
+			}
+			reader := interceptor.NewClient(storage, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, key, object, opts...); err != nil {
+						return err
+					}
+					if raw, ok := object.(*unstructured.Unstructured); ok && raw.GetKind() == "AgentPolicy" {
+						unstructured.RemoveNestedField(raw.Object, "spec", "agentIdentity")
+					}
+					return nil
+				},
+			})
+			var submitted client.Object
+			writer := interceptor.NewClient(storage, interceptor.Funcs{
+				Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+					submitted = object.DeepCopyObject().(client.Object)
+					return c.Update(ctx, object, opts...)
+				},
+			})
+			store.APIReader = reader
+			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := configurationAdapter(t, writer, reader, before, after)
+			if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
+				t.Fatal(err)
+			}
+			if submitted == nil || submitted.GetUID() != before.GetUID() ||
+				submitted.GetResourceVersion() != before.GetResourceVersion() || submitted.GetGeneration() != before.GetGeneration() ||
+				!reflect.DeepEqual(submitted.GetLabels(), after.Labels) ||
+				!reflect.DeepEqual(submitted.GetAnnotations(), after.Annotations) ||
+				!reflect.DeepEqual(submitted.GetFinalizers(), after.Finalizers) ||
+				!reflect.DeepEqual(submitted.GetOwnerReferences(), after.OwnerReferences) {
+				t.Fatal("wire preservation changed reserved metadata or original conditional-write identities")
+			}
+			encoded, err := json.Marshal(submitted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := &unstructured.Unstructured{}
+			if err := raw.UnmarshalJSON(encoded); err != nil {
+				t.Fatal(err)
+			}
+			if editSpec {
+				value, found, err := unstructured.NestedBool(raw.Object, "spec", "modelAccess", "copilot", "allowed")
+				if err != nil || !found || !value {
+					t.Fatal("wire preservation discarded an actual requested spec edit:", err)
+				}
+			} else if _, found, err := unstructured.NestedFieldNoCopy(raw.Object, "spec", "agentIdentity"); err != nil || found {
+				t.Fatal("metadata-only update materialized an omitted zero-value object:", err)
+			}
+		})
+	}
+}
+
 func TestConfigurationManagedFieldsFormattingPreservesUpdates(t *testing.T) {
 	const compact = `{"f:metadata":{"f:labels":{"f:example.com/label":{}}},"f:spec":{}}`
 	var pretty bytes.Buffer

@@ -232,7 +232,7 @@ func TestCLIConfigurationMetadataAPIServer(t *testing.T) {
 				}
 				return &metadataCLIWriter{Client: writer, update: func(ctx context.Context, object client.Object, opts ...client.UpdateOption) error {
 					updates++
-					_, source := object.(*api.AgentPolicy)
+					source := object.GetObjectKind().GroupVersionKind() == api.GroupVersion.WithKind("AgentPolicy")
 					if source {
 						sourceUpdates++
 						if scenario == "pending-submission" {
@@ -296,12 +296,8 @@ func TestCLIConfigurationMetadataAPIServer(t *testing.T) {
 			if err := storage.Get(ctx, client.ObjectKeyFromObject(policy), observed); err != nil {
 				t.Fatal(err)
 			}
-			generation := before.GetGeneration() + 1
-			if scenario == "typed-manifest" {
-				generation = before.GetGeneration()
-			}
 			observedDigest, err := w.ExecutionObjectDigest(observed)
-			if err != nil || observedDigest != effective || observed.Generation != generation ||
+			if err != nil || observedDigest != effective || observed.Generation != before.GetGeneration() ||
 				observed.UID != policy.UID || observed.ResourceVersion == before.GetResourceVersion() ||
 				observed.Labels["example.com/change"] != "metadata" {
 				t.Fatal("metadata change lost its original lifetime, effective inputs or API generation:", err)
