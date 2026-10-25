@@ -29,6 +29,10 @@ export interface RestartInstanceRequest extends InstanceVersion {
   requestId: string;
 }
 
+export interface SetInstanceSuspendedRequest extends InstanceVersion {
+  suspended: boolean;
+}
+
 export interface RegistryAuth {
   username: string;
   password: string;
@@ -40,6 +44,9 @@ export interface Instance extends InstanceVersion {
   registryAuthConfigured?: boolean;
   generation?: number;
   observedGeneration?: number;
+  suspended?: boolean;
+  suspendAvailable?: boolean;
+  resumeAvailable?: boolean;
   restartAvailable?: boolean;
   restartRequestId?: string;
   observedRestartRequestId?: string;

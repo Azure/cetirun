@@ -12,12 +12,13 @@ import {
   upgradeInstance,
   upgradeInstanceByName,
   restartInstanceByName,
+  setInstanceSuspendedByName,
   getInstanceStatus,
   getInstanceStatusByName,
   fetchInstances,
   fetchInstanceByName,
 } from "../api/instance";
-import type { InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest } from "../types/instance";
+import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest, SetInstanceSuspendedRequest } from "../types/instance";
 
 const INSTANCE_KEY = ["instance"] as const;
 
@@ -146,6 +147,28 @@ export function useRestartInstanceByName(name: string) {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["instance", name] });
+      queryClient.invalidateQueries({ queryKey: ["instances"] });
+    },
+  });
+}
+
+export function useSetInstanceSuspendedByName(name: string) {
+  const queryClient = useQueryClient();
+  const viewer = useViewerKey();
+  return useMutation({
+    mutationFn: (request: SetInstanceSuspendedRequest) => setInstanceSuspendedByName(name, request),
+    retry: false,
+    onSuccess: (instance, request) => {
+      queryClient.setQueryData<Instance>(["instance", name, viewer], (current) => {
+        if (current && (current.uid !== request.uid || (current.generation ?? 0) > (instance.generation ?? 0))) return current;
+        // Status-only writes do not advance generation, and resourceVersions
+        // are opaque. Keep a refreshed observation until invalidation refetches.
+        if (current && current.generation === instance.generation && current.resourceVersion !== request.resourceVersion) return current;
+        return instance;
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: INSTANCE_KEY });
       queryClient.invalidateQueries({ queryKey: ["instances"] });
     },
   });

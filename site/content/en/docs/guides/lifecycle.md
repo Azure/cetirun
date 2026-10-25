@@ -40,6 +40,48 @@ probe templates.
 
 ## Suspend and resume
 
+Owners can choose **Suspend Agent** or **Resume Agent** in Portal. These controls
+change only the existing `spec.suspended` intent; they do not delete the Agent,
+HOME or Gateway key, reset spending history, or create another lifecycle operation.
+
+| Current Agent | Suspend | Resume |
+| --- | --- | --- |
+| Ordinary OpenClaw, Hermes or Custom; common-executor Sandbox built-ins | Allowed, including while provisioning or recovering | Allowed when suspension is requested |
+| Pending restart or administrator migration | Suspension takes precedence | Continue the original operation, retaining its request ID and controller safeguards |
+| Recorded legacy single-start Sandbox lifetime | Rejected; no lifetime conversion | Rejected |
+| Deleting Agent | Rejected; deletion takes precedence | Rejected |
+| Same requested intent on the same Agent UID | Observe without another write | Observe without another write |
+
+The owner endpoints are `POST /api/v1/instances/{name}/suspend` and
+`POST /api/v1/instances/{name}/resume`; the default-instance equivalents use
+`/api/v1/instance/suspend` and `/api/v1/instance/resume`. Both require the current
+`uid` and `resourceVersion` in the JSON body, ownership and the normal management
+origin checks. They return HTTP `202` with the Agent's requested `suspended` value,
+`suspendAvailable`/`resumeAvailable` capabilities and existing controller status.
+These capabilities describe whether intent can be changed, not whether compute
+has stopped or recovered. Restart remains unavailable during suspension or a
+pending restart/migration.
+
+A repeated intent can be observed after status updates without changing the
+Agent again. A stale version cannot reverse a newer intent or target a same-name
+replacement. After a lost or unreadable reply, retry with the **original action,
+UID and version**, or observe the current Agent. Portal refreshes after every
+outcome and does not automatically resubmit. A delayed acknowledgement does not
+replace an already refreshed observation at the same generation, including
+controller-only status changes. Closing an unsent dialog discards
+its draft; closing after an uncertain submission retains it for retry and does
+not cancel accepted work. A definite rejection requires a new confirmation
+against the current Agent; it does not prove an earlier uncertain attempt never
+took effect.
+
+Portal deliberately says **Suspension requested**, not that shutdown is complete.
+Its controller phase is not a Pod-termination or access-removal observation.
+Likewise, HTTP acceptance of resume is not readiness: wait for the current
+generation's Ready condition and the existing restart/migration completion
+checks. Failed recovery remains visible in Status, and suspension is still
+available. Portal does not advance migration phases or provide owner migration
+controls. Use matching supported Portal, Operator and CRD versions.
+
 To suspend an instance, set `spec.suspended` to `true`. The operator scales the
 workload, and the instance's GitHub Copilot proxy if it has one, to zero and
 removes its ingress route while retaining persistent data.
