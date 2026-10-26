@@ -291,6 +291,18 @@ aiGateway:
       # -- Defaults to the release version.
       tag: ""
       digest: ""
+    # -- Let the Gateway's background health checks probe each Agent's GitHub
+    # Copilot routes. Off by default: each probe is a real model call on the
+    # Agent owner's own Copilot allowance, about 288 a day per route at the
+    # Gateway's default interval, and an Agent has a route per Copilot model.
+    # On, the routes are probed like the Gateway's other deployments (its
+    # router.healthChecks), without retries. Off, a route whose proxy cannot
+    # be reached stays in rotation: where it shares a model's name with shared
+    # deployments, the requests that land on it fail until the proxy is back.
+    # A change registers each Agent's routes again within about ten minutes,
+    # without restarting Agents.
+    healthChecks:
+      enabled: false
 
 # -- Override the chart's default skills storage account.
 # Empty string (default) means use the chart's built-in default.

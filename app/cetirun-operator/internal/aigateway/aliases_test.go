@@ -91,7 +91,7 @@ func TestAddModelSendsRoutingAndCooldown(t *testing.T) {
 	}
 	if err := client.AddModel(context.Background(), ModelRequest{
 		ID: "route-b", ModelName: "gpt-4.1", Model: "litellm_proxy/gpt-4.1", APIBase: "http://proxy.example.com:4000", NoCooldown: true,
-		ProbeWithoutRetries: true,
+		ProbeWithoutRetries: true, NoBackgroundHealthCheck: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +102,9 @@ func TestAddModelSendsRoutingAndCooldown(t *testing.T) {
 	if info := (*requests)[0].body["model_info"].(map[string]any); info["health_check_params"] != nil {
 		t.Fatalf("health check parameters are sent only when asked for: %v", info)
 	}
+	if _, set := (*requests)[0].body["model_info"].(map[string]any)["disable_background_health_check"]; set {
+		t.Fatalf("a route is left out of the background health checks only when asked for: %v", (*requests)[0].body["model_info"])
+	}
 	own := (*requests)[1].body["litellm_params"].(map[string]any)
 	if cooldown, set := own["cooldown_time"]; !set || cooldown != float64(0) || own["order"] != nil {
 		t.Fatalf("a route of its own is never cooled down: %v", own)
@@ -109,5 +112,8 @@ func TestAddModelSendsRoutingAndCooldown(t *testing.T) {
 	probe, _ := (*requests)[1].body["model_info"].(map[string]any)["health_check_params"].(map[string]any)
 	if retries, set := probe["max_retries"]; !set || retries != float64(0) {
 		t.Fatalf("a route probed without retries carries max_retries 0 in its health check parameters: %v", probe)
+	}
+	if info := (*requests)[1].body["model_info"].(map[string]any); info["disable_background_health_check"] != true {
+		t.Fatalf("a route left out of the background health checks says so in its model info: %v", info)
 	}
 }

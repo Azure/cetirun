@@ -167,8 +167,11 @@ over.
 
 Shared models are optional. Without them OpenClaw Agents use their owners'
 GitHub Copilot; with `cetirun-operator.aiGateway.copilotProxy.enabled` turned
-off, the Portal creates no OpenClaw Agent until a shared model is offered. A
-model added in the console is shared only with the access group
+off, the Portal creates no OpenClaw Agent until a shared model is offered. The
+Gateway's health checks do not probe the Agents' GitHub Copilot routes, since
+each probe is a real call on the owner's Copilot allowance;
+`cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` turns their
+probes on. A model added in the console is shared only with the access group
 `cetirun-shared` and a price, and only with Agents without a policy. Open the
 console with:
 
