@@ -52,19 +52,22 @@ type AdapterRegistration struct {
 }
 
 // Peer is a trusted, resolved destination, including Service and backend IPs.
-// A namespaced peer denotes Cilium-managed Pods bearing the protected PeerUIDLabel
-// with this UID. An empty namespace denotes a guest-external IP destination.
-// The platform must reconcile endpoint membership and labels before observation.
+// A namespaced peer normally selects Pods bearing the protected PeerUIDLabel.
+// Native ingress may instead select platform-owned Pod labels without pinning
+// Pod IPs. An empty namespace denotes a guest-external IP destination.
+// The platform owns selector protection and endpoint realization.
 type Peer struct {
-	Name      string    `json:"name"`
-	Namespace string    `json:"namespace,omitempty"`
-	UID       types.UID `json:"uid"`
-	IPs       []string  `json:"ips"`
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace,omitempty"`
+	UID         types.UID         `json:"uid"`
+	IPs         []string          `json:"ips,omitempty"`
+	PodSelector map[string]string `json:"podSelector,omitempty"`
 }
 
 type Destination struct {
-	Peer  Peer                  `json:"peer"`
-	Ports []api.AgentPolicyPort `json:"ports"`
+	Peer              Peer                  `json:"peer"`
+	Ports             []api.AgentPolicyPort `json:"ports"`
+	TrustedProxyCIDRs []string              `json:"trustedProxyCIDRs,omitempty"`
 }
 
 // Topology is supplied by an operator/platform source, never AgentPolicy input.
@@ -153,11 +156,12 @@ type Plan struct {
 }
 
 type NetworkPlan struct {
-	Adapter         string                     `json:"adapter"`
-	IngressMode     api.AgentPolicyIngressMode `json:"ingressMode"`
-	DNSIPs          []string                   `json:"dnsIPs"`
-	TrustedProxyIPs []string                   `json:"trustedProxyIPs,omitempty"`
-	Policy          CiliumNetworkPolicy        `json:"policy"`
+	Adapter     string                     `json:"adapter"`
+	IngressMode api.AgentPolicyIngressMode `json:"ingressMode"`
+	DNSIPs      []string                   `json:"dnsIPs"`
+	// The existing wire field also carries explicitly registered ingress Pod CIDRs.
+	TrustedProxyIPs []string            `json:"trustedProxyIPs,omitempty"`
+	Policy          CiliumNetworkPolicy `json:"policy"`
 }
 
 type IdentityPlan struct {

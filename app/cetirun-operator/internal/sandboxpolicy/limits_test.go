@@ -66,6 +66,16 @@ func TestControlInputBudgetThresholds(t *testing.T) {
 		{"peer IPs", func(count int) (api.AgentPolicySpec, Platform) {
 			return api.AgentPolicySpec{}, Platform{Topology: Topology{Peers: []Peer{{IPs: make([]string, count-1)}}}}
 		}},
+		{"peer selector labels", func(count int) (api.AgentPolicySpec, Platform) {
+			selected := make(map[string]string, count-1)
+			for i := range count - 1 {
+				selected[fmt.Sprintf("label-%d", i)] = "gateway"
+			}
+			return api.AgentPolicySpec{}, Platform{Topology: Topology{Peers: []Peer{{PodSelector: selected}}}}
+		}},
+		{"ingress proxy CIDRs", func(count int) (api.AgentPolicySpec, Platform) {
+			return api.AgentPolicySpec{}, Platform{Topology: Topology{Ingress: []Destination{{TrustedProxyCIDRs: make([]string, count-1)}}}}
+		}},
 		{"DNS resolver IPs", func(count int) (api.AgentPolicySpec, Platform) {
 			return api.AgentPolicySpec{}, Platform{Topology: Topology{DNSResolverIPs: make([]string, count)}}
 		}},
