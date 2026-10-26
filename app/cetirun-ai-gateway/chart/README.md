@@ -937,20 +937,29 @@ configured in `models`.
 
 **The tiers decide what a router saves.** Each call is charged at the price of
 the model it picked, and, with a classifier that asks a model, the classifier
-call as well, which reads the conversation and so costs more as it grows. A
-router saves where it sends turns to a model cheaper than the one the
-conversation would otherwise use, so order the tiers by price and keep the top
-tier near the model you would use without the router. Measured with the same 30
-turns (three conversations with a 6,000-token context) on Azure OpenAI:
+call as well, which reads the system prompt and the latest user messages and so
+costs more as they grow. A router saves where it sends turns to a model cheaper
+than the one the conversation would otherwise use, so order the tiers by price
+and keep the top tier near the model you would use without the router. Measured
+with the same 30 turns (three conversations with a 6,000-token context, answers
+of up to 800 tokens) on Azure OpenAI:
 
 | Through | Cost |
 | --- | --- |
-| A router with tiers gpt-5.4-nano, gpt-5.6-terra, gpt-6-sol, gpt-6-astra and the Decision classifier | 0.250 |
-| gpt-6-sol alone | 0.122 |
-| A router with tiers gpt-5.4-nano, gpt-6-sol, gpt-6-sol, gpt-6-sol (estimated from the same turns) | 0.097 |
+| A router with tiers gpt-5.4-nano, gpt-5.6-terra, gpt-6-sol, gpt-6-astra and the Decision classifier | 0.312 |
+| The same router with the default classifier | 0.082 |
+| gpt-6-sol alone | 0.130 |
 
-In the first router gpt-5.6-terra costs more than gpt-6-sol a tier above it,
-and gpt-6-astra five times as much. Classifier calls were 3.4% of its cost.
+In that router gpt-5.6-terra costs more than gpt-6-sol a tier above it, and
+gpt-6-astra almost six times as much, where the Decision classifier sent every
+reasoning turn. Its classifier calls were 2.7% of its cost. With the tiers in
+price order, gpt-5.4-nano, gpt-6-sol, gpt-6-sol and gpt-6-sol, and answers of
+up to 6,000 tokens, the same 30 turns cost 0.194 with the Decision classifier
+and 0.099 with the default one, against 0.215 through gpt-6-sol alone. The
+default classifier saved more by sending 24 of the 30 turns to gpt-5.4-nano,
+hard ones included: judged by gpt-6-sol against its own answers, 3 of those 24
+answers were clearly worse, against 2 of the 14 turns the Decision classifier
+sent there.
 
 Each model keeps its own prompt cache. A turn on a model the conversation has
 not used yet pays the full input price for the whole conversation; a later
@@ -962,12 +971,20 @@ largest single charge, there and on gpt-6-astra alone, was gpt-6-astra's first
 read of the conversation. Providers keep a cache for minutes of inactivity, so
 a model used rarely may find it gone.
 
-Check a classifier with prompts in the languages your users write. Of 24
-prompts, eight each in Chinese, Chinese mixed with English, and English, the
-default classifier sent all eight Chinese ones to the simple tier, proofs and
-system designs included (6 of 24 on the expected tier); the Decision
-classifier placed 8 of 8 English, 6 of 8 mixed and 3 of 8 Chinese prompts on
-the expected tier, sending hard Chinese prompts to the simple one.
+Check a classifier with prompts like your users'. The default classifier scores
+English keywords and the prompt's length. Of 40 prompts, ten for each tier, it
+placed 15 on the expected tier and 11 of their Chinese translations, never
+chose the complex or reasoning tier, and sent 37 of the Chinese ones to the
+simple tier. The Decision classifier placed 39 of the 40 in each language, each
+translation on the same tier as its original.
+
+The Decision classifier sees the caller's whole system prompt, which LiteLLM
+does not shorten, and the latest user messages. Microsoft-Decision-1 refuses a
+request it counts at more than 64,000 tokens: with a system prompt of about
+40,000 tokens, every classification failed and the router used the default
+classifier instead, without an error. Only the response header
+`x-litellm-complexity-router-cause` and the request log's `routing_cause`
+(`heuristic_scorer` instead of `jev_classifier`) show it.
 
 **A conversation can change model.** Each request is classified on its own, so
 one conversation can move between tiers. On the same Azure OpenAI resource that
