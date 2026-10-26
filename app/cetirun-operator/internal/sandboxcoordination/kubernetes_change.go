@@ -4,12 +4,14 @@
 package sandboxcoordination
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"sync/atomic"
 
@@ -30,6 +32,7 @@ const MaxConfigurationBytes = 256 * 1024
 
 type configurationImage struct {
 	object    client.Object
+	wire      *unstructured.Unstructured
 	reference w.SourceReference
 	digest    string
 	spec      any
@@ -206,6 +209,8 @@ var _ ChangeAdapter = (*KubernetesChangeAdapter)(nil)
 // Only spec, labels, annotations, owner references and finalizers may differ.
 // Schema defaults and omitted empty metadata are applied before pinning the
 // complete write, without sorting or rewriting explicitly supplied values.
+// Spec no-ops retain the verified server representation so serialization alone
+// cannot invalidate a current acceptance observation.
 func NewKubernetesChangeAdapter(writer client.Client, reader client.Reader, before, after client.Object) (*KubernetesChangeAdapter, error) {
 	change, err := newConfigurationChange(before, after, false)
 	if err != nil {
@@ -231,10 +236,14 @@ func (a *KubernetesChangeAdapter) Submit(ctx context.Context, ticket ChangeTicke
 	if err := guard(ctx); err != nil {
 		return err
 	}
-	if err := a.change.checkBefore(ctx, a.reader); err != nil {
+	current, err := a.change.readBefore(ctx, a.reader)
+	if err != nil {
 		return err
 	}
-	request := a.change.after.object.DeepCopyObject().(client.Object)
+	request, err := a.change.updateRequest(current)
+	if err != nil {
+		return err
+	}
 	if err := guard(ctx); err != nil {
 		return err
 	}
@@ -247,6 +256,52 @@ func (a *KubernetesChangeAdapter) Submit(ctx context.Context, ticket ChangeTicke
 		return fmt.Errorf("%w: configuration Update outcome is uncertain; observe with the same inputs: %w", ErrUnavailable, err)
 	}
 	return nil
+}
+
+func (change *configurationChange) updateRequest(current configurationImage) (client.Object, error) {
+	request := change.after.object.DeepCopyObject().(client.Object)
+	beforeSpec, err := json.Marshal(change.before.spec)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode original configuration spec: %w", ErrUnavailable, err)
+	}
+	afterSpec, err := json.Marshal(change.after.spec)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode desired configuration spec: %w", ErrUnavailable, err)
+	}
+	if !bytes.Equal(beforeSpec, afterSpec) {
+		return request, nil
+	}
+	if current.wire == nil {
+		return nil, fmt.Errorf("%w: authoritative configuration representation is required", ErrUnavailable)
+	}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode configuration Update: %w", ErrUnavailable, err)
+	}
+	proposed := &unstructured.Unstructured{}
+	if err := proposed.UnmarshalJSON(raw); err != nil {
+		return nil, fmt.Errorf("%w: decode configuration Update: %w", ErrUnavailable, err)
+	}
+	if reflect.DeepEqual(current.wire.Object["spec"], proposed.Object["spec"]) {
+		return request, nil
+	}
+	// A complete typed update can insert omitted zero-value objects. Retain
+	// only the verified original spec; desired metadata and original CAS pins
+	// still come from the reserved request, never from a newer source version.
+	spec, found, err := unstructured.NestedFieldCopy(current.wire.Object, "spec")
+	if err != nil {
+		return nil, fmt.Errorf("%w: read original configuration spec: %w", ErrUnavailable, err)
+	}
+	if found {
+		proposed.Object["spec"] = spec
+	} else {
+		delete(proposed.Object, "spec")
+	}
+	raw, err = proposed.MarshalJSON()
+	if err != nil || len(raw) > MaxConfigurationBytes {
+		return nil, fmt.Errorf("%w: metadata-only configuration Update exceeds its encoding bound", ErrUnavailable)
+	}
+	return proposed, nil
 }
 
 // ObserveChange never submits, adopts, aborts or clears an operation. An
@@ -345,21 +400,27 @@ func (change *configurationChange) readCurrent(ctx context.Context, reader clien
 	if sourceKey(current.reference) != sourceKey(change.before.reference) {
 		return configurationImage{}, ErrConflict
 	}
+	current.wire = observed
 	return current, ctx.Err()
 }
 
 func (change *configurationChange) checkBefore(ctx context.Context, reader client.Reader) error {
+	_, err := change.readBefore(ctx, reader)
+	return err
+}
+
+func (change *configurationChange) readBefore(ctx context.Context, reader client.Reader) (configurationImage, error) {
 	current, err := change.readCurrent(ctx, reader)
 	if err != nil {
-		return err
+		return configurationImage{}, err
 	}
 	before := change.before
 	if before.reference != current.reference || before.digest != current.digest ||
 		!equality.Semantic.DeepEqual(before.metadata, current.metadata) ||
 		!equality.Semantic.DeepEqual(before.status, current.status) {
-		return fmt.Errorf("%w: configuration before image is not authoritative", ErrConflict)
+		return configurationImage{}, fmt.Errorf("%w: configuration before image is not authoritative", ErrConflict)
 	}
-	return nil
+	return current, nil
 }
 
 func newConfigurationChange(before, after client.Object, admission bool) (*configurationChange, error) {
@@ -384,9 +445,11 @@ func newConfigurationChange(before, after client.Object, admission bool) (*confi
 	}
 	oldMetadata, newMetadata := oldImage.metadata, newImage.metadata
 	if admission {
+		// The API server compares wire spec, not normalized effective inputs.
+		// Materializing defaulted objects can advance generation without changing
+		// the effective spec; the exact reserved mutation digest still must match.
 		if newMetadata.Generation != oldMetadata.Generation &&
-			(equality.Semantic.DeepEqual(oldImage.spec, newImage.spec) || oldMetadata.Generation == math.MaxInt64 ||
-				newMetadata.Generation != oldMetadata.Generation+1) {
+			(oldMetadata.Generation == math.MaxInt64 || newMetadata.Generation != oldMetadata.Generation+1) {
 			return nil, fmt.Errorf("%w: unexpected admission generation", ErrConflict)
 		}
 		newMetadata.Generation = oldMetadata.Generation

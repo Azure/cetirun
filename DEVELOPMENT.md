@@ -492,6 +492,19 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   Concrete configuration updates are covered by the coordination package and
   `cmd/sandbox-config-change` tests. Their API-server cases exercise real
   conditional writes and observation-only recovery, not a runtime provider.
+  Both `test-envtest` and `test-sandbox-lifecycle` run the production CLI client
+  against isolated coordinating admission, including metadata-only updates of
+  minimal manifests. For an unchanged normalized spec, the writer preserves the
+  authoritative spec representation instead of materializing omitted objects.
+  This keeps generation and acceptance current without weakening policy checks.
+  A controller API regression reconciles Agents from two Teams sharing a policy
+  before any acceptance refresh, checking compute, routes, readiness and keys.
+  Actual spec edits still require current acceptance. Admission permits only an
+  unchanged generation or one increment for the exact reserved mutation,
+  including older delayed submissions; file inputs still preserve the original
+  generation, UID and resource version. An existing `Changing` operation is
+  never resubmitted: an unchanged source is still uncertain, and recovery must
+  positively observe the desired state at a superseding version of the same UID.
   Build the explicit command with
   `make -C app/cetirun-operator build-sandbox-config-change`; do not run it against
   a cluster as part of an offline check. It requires separately authorized

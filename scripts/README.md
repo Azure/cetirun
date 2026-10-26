@@ -241,6 +241,11 @@ python3 -B scripts/sandbox-platform-qualify.py lifecycle-snapshot \
   --cluster-uid "$TEST_CLUSTER_UID" --scope "$REVIEWED_SNAPSHOT_SCOPE"
 ```
 
+The default is `--state ready`, with the existing ready input and output
+contract. Add `--state suspended` to collect an **already suspended** instance;
+this selector never requests suspension. Deleted and migrating states are not
+supported.
+
 Supply a trusted, absolute, static-credential kubeconfig and independently obtained
 pins; never adopt discovered resources or the ambient current context. Both local
 inputs must be regular files, not symlinks, directories, devices or pipes. Keep
@@ -273,56 +278,92 @@ Example **synthetic `resources` fragment**, not a runnable live scope:
 
 Use `attachment: null` explicitly when no attachment identity has been pinned.
 This leaves CSI attachment unknown and exits 1; it never discovers attachments
-cluster-wide or interprets the missing pin as absence/release. Names and UIDs
-are mandatory for every other entry. Agent generation and resourceVersion are
-also mandatory; replaced or stale pins are not refreshed automatically.
+cluster-wide or interprets the missing pin as absence/release. With explicit
+`--state suspended`, `pod: null` is also permitted. A supplied Pod pin remains an
+input identity, not an observed Pod; the collector must observe zero Pods in
+the entire owned namespace either way. Ready mode still requires the Pod name
+and UID. All seven resource entries remain mandatory, and every other entry
+requires its name and UID. Agent generation and resourceVersion are also
+mandatory; replaced or stale pins are not refreshed automatically.
 
 The supported collection footprint is deliberately strict:
 
 - The Agent and its controller-owned namespace must both carry the exact
   `qualification.cetirun.microsoft.com/run` label. Workload/storage objects are
   scoped by the pinned identities and ownership/binding chain; any run label
-  they carry must agree. The namespace must be Active and the Agent report Ready
-  for the pinned generation and selected runtime. No owner authentication is
-  inferred from the Agent's user information or from administrative access.
+  they carry must agree. The namespace must be Active and the Agent report the
+  selected runtime and exact pinned `status.observedGeneration`.
+  Ready mode requires unsuspended intent and phase `Ready`. Suspended mode
+  requires `spec.suspended: true`, phase `Suspended`, and exactly one each of
+  the controller's completed-suspension conditions: `Ready=False` with reason
+  `InstanceSuspended`, plus `PodReady=False` and `IngressReady=False`, both with
+  reason `Suspended`. A suspension request, stale generation, or the intermediate
+  Sandbox hold's `Ready=False/Suspended` condition is insufficient. The completed
+  controller path stamps the top-level generation, not each condition's
+  `observedGeneration`; these status reports are not independent shutdown proof.
+  No owner authentication is inferred from the Agent's user information or from
+  administrative access.
 - There must be exactly one StatefulSet in that namespace, controller-owned by
-  the Agent, at one current Ready replica. The main Pod must have the pinned UID,
-  that StatefulSet controller owner, matching selector/revision, Running/Ready
-  status and one ready `cetirun` container. The selector must use precisely the
-  chart's `app.kubernetes.io/name` and `app.kubernetes.io/instance` labels.
-  A namespace-scoped StatefulSet list and a selector-scoped Pod list each use
-  `limit=2`; empty, multiple, paginated or truncated results stop collection.
-  Other layouts, suspended workloads and in-progress rollouts remain blocked.
-- The template and Pod must declare the same digest-pinned main image matching
-  `artifacts.images.runtime`; the reported main-container `imageID` digest must
-  also match. A differing platform-image digest is **unknown**, not silently
-  adopted from a multi-architecture tag/index. No registry lookup occurs.
-- Both template and Pod must explicitly mount volume `data` from the pinned
-  HOME PVC at `/home/vibe`, without subpaths or a read-only declaration.
+  the Agent, with current `status.observedGeneration`. In ready mode it must
+  have one current Ready replica. The main Pod must have the pinned UID, that
+  StatefulSet controller owner, matching selector/revision, Running/Ready status
+  and one ready `cetirun` container. Both modes require precisely the chart's
+  `app.kubernetes.io/name` and `app.kubernetes.io/instance` selector labels.
+  The namespace-scoped StatefulSet list and ready mode's selector-scoped Pod
+  list each use `limit=2`; empty, multiple, paginated or truncated results stop
+  ready collection.
+- Suspended mode requires explicit integer zero `spec.replicas` and
+  `status.replicas`. Optional current/ready/updated/available/terminating replica
+  counters must also be integer zero when present; Kubernetes may omit zero
+  optional counters. Its Pod list is **namespace-wide**, without a label selector,
+  still using `limit=2`. It must return a complete empty list with a resourceVersion
+  and no continuation or remaining items, both initially and on recheck. Any Pod,
+  including a terminating/completed Pod or one with missing/stale labels, blocks
+  collection. A missing, forbidden, malformed or truncated list never establishes
+  absence. No named Pod GET is made and no discovered identity is adopted.
+- The template must declare the digest-pinned main image matching
+  `artifacts.images.runtime`. Ready mode additionally requires the same Pod
+  declaration and matching main-container `imageID` digest. A differing
+  platform-image digest is **unknown**, not silently adopted from a
+  multi-architecture tag/index. Suspended mode checks the declaration only;
+  it neither requires matching old/new workload revisions nor claims a current
+  runtime `imageID`. No registry lookup occurs.
+- The template, and in ready mode the Pod, must explicitly mount volume `data`
+  from the pinned HOME PVC at `/home/vibe`, without subpaths or a read-only declaration.
   Implicit claim-template layouts are outside this slice. PVC and PV must be
   Bound, filesystem-mode and linked by the exact claim UID/name/namespace.
   Only the explicitly named CSI VolumeAttachment is checked, including its UID,
-  PV, driver, Pod node name, reported attached flag and absence of reported errors.
-  This neither inventories other attachments nor proves physical attachment,
-  detachment, writer exclusion or actual HOME read/write.
+  PV, driver, reported attached flag and absence of reported errors. Ready mode
+  also requires the independently read Pod's node name. Without a Pod, suspended
+  mode only validates the attachment's node-name shape; it never adopts that
+  name as a current runtime node. A checked attachment record still does not
+  inventory other attachments or prove physical attachment, detachment, writer
+  exclusion or actual HOME read/write. **Zero replicas and zero Pods are only
+  Kubernetes observations**, never physical writer exclusion, CSI release or cleanup.
 
 This mode reuses the deployed-preflight POSIX runner: 5-second request timeout,
 10-second command deadline, 90-second total deadline, 64-command ceiling,
 1 MiB stdout cap per command and a separate one-second process-cleanup wait.
 Only redacted local `kubectl config view --minify` and allowlisted API GETs run:
-the pinned `kube-system` namespace, Agent, namespace, StatefulSet, Pod, HOME
-PVC/PV, optional VolumeAttachment and the two bounded lists above. It never reads
+the pinned `kube-system` namespace, Agent, namespace, StatefulSet, ready-mode Pod,
+HOME PVC/PV, optional VolumeAttachment and the two bounded lists above. It never reads
 Secrets, Nodes, application logs or HOME contents; no exec, attach, port-forward,
 proxy, watch, mutation, login, model call or retry is available. Credential plugins,
 token-file/impersonation indirection and external client-key/certificate files are
 rejected before API reads. Do not replace the trusted kubeconfig or `kubectl`
 during collection.
 
-Every selected object and candidate set is rechecked, together with the redacted
-context selection and kubeconfig file identity. UID, resourceVersion, content,
-run-label or configuration drift blocks the snapshot. These checks detect
-observed changes; they are not an atomic API snapshot or a promise of future
-state. Failed/forbidden GETs never establish absence or cleanup.
+Every successfully read selected object and candidate set is rechecked, together
+with the redacted context selection and kubeconfig file identity. UID,
+resourceVersion, content, run-label or configuration drift blocks the snapshot.
+In suspended mode, an unavailable/uncertain attachment read or recheck can leave
+the other stable projections intact, with the attachment unknown and the overall
+result blocked. Failed initial reads are not retried. Replacement, binding
+mismatch, terminating resources or observed content drift still block the whole
+snapshot, including for attachments. Process-cleanup failure, exhausted budgets
+and cancellation cannot produce a snapshot. These checks detect observed changes;
+they are not an atomic API snapshot or a promise of future state.
+Failed/forbidden GETs never establish absence or cleanup.
 
 One sanitized JSON object below 8 KiB is emitted. `checks` use the existing
 `observed` / `unknown` / `blocked` statuses and fixed reason codes:
@@ -331,20 +372,35 @@ One sanitized JSON object below 8 KiB is emitted. `checks` use the existing
   checks matched. `qualifiesExecution` stays `false` and `liveAcceptance` stays
   `not-established`. Exit 1 reports a blocker/unknown; malformed arguments exit
   2, and cancellation exits 130.
+- Only explicit suspended selection adds top-level `state: suspended`. Ready
+  output remains unchanged.
+- Suspension blockers use `agent-not-current-suspended`,
+  `agent-suspension-not-observed`, `statefulset-not-current-zero` and
+  `pod-candidates-not-empty`, alongside the existing shared fixed reason codes.
 - After stable reads, `snapshot` reuses the receipt's `artifactSet`, `resources`
   and `workload` projections. Resource UIDs, the Pod UID, node **name** and
   cluster/context/run scope are pseudonymized with SHA256 of compact JSON
   `[clusterUID, role, value]`, without raw names, identifiers, endpoints, paths,
   credentials or diagnostics. Keep the same convention when assembling later
   observations; node-name equality does not establish node/provider identity.
-- `workload.observedPod` identifies the independently read Pod, but
+- In ready mode, `workload.observedPod` identifies the independently read Pod, but
   `observedGeneration` and `ready` remain `null`. The controller's
   `reported.agentObservedGeneration` and the independently read
   `reported.podReady` do not establish generation-bound runtime readiness.
-  `storage` reports only the checked bindings/attachment; `csiReleased` is
+- Suspended `workload.pod` is either the supplied pin's pseudonym or `null`;
+  `observedPod`, `node`, `observedGeneration` and `ready` are all `null`.
+  `reported` adds `agentSuspended: true`, `agentPhase: Suspended`,
+  `desiredReplicas: 0`, `currentReplicas: 0`, and `podCandidates: 0`.
+  `reported.podReady` and `reported.runtimeImageID` are `null`: no current Pod,
+  node or runtime image identity is inferred from the stopped template.
+- `storage` reports only the checked bindings/attachment; `csiReleased` is
   always `null`. With no attachment pin, the other stable projections are
   retained, the attachment check is unknown and the overall result is blocked.
-  Other failures leave `snapshot: null`; earlier checks are only partial reads.
+  Suspended mode also retains that partial shape for unavailable/malformed
+  attachment responses, a missing/false/uncertain attached flag, or reported
+  attach/detach errors. `storage.attachment` and `csiAttached` then remain `null`.
+  An unattached or missing record is not successful release. Other failures
+  leave `snapshot: null`; earlier checks are only partial reads.
 - `owner`, `home`, `accounting`, `models`, `peer` and `extensions` remain `null`.
   No owner/provider authorization, model/tool witness, HOME checksum, nonzero
   spend, peer continuity, source shutdown or cleanup proof is manufactured.
