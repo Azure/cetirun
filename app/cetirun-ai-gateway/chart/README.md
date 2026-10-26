@@ -942,7 +942,7 @@ costs more as they grow. A router saves where it sends turns to a model cheaper
 than the one the conversation would otherwise use, so order the tiers by price
 and keep the top tier near the model you would use without the router. Measured
 with the same 30 turns (three conversations with a 6,000-token context, answers
-of up to 800 tokens) on Azure OpenAI:
+of up to 800 tokens), at the models' Azure OpenAI list prices:
 
 | Through | Cost |
 | --- | --- |
@@ -950,6 +950,9 @@ of up to 800 tokens) on Azure OpenAI:
 | The same router with the default classifier | 0.082 |
 | gpt-6-sol alone | 0.130 |
 
+These turns were sent with a CetiRun Agent's key, so the Agent's own GitHub
+Copilot route answered its gpt-5.6-terra and gpt-6-astra turns, charged at the
+same prices (see [Serving CetiRun Agents](#serving-cetirun-agents)).
 In that router gpt-5.6-terra costs more than gpt-6-sol a tier above it, and
 gpt-6-astra almost six times as much, where the Decision classifier sent every
 reasoning turn. Its classifier calls were 2.7% of its cost. With the tiers in
