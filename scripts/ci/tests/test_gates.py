@@ -176,6 +176,22 @@ class GateTests(unittest.TestCase):
             validate.go_gate(self.root, "test", "internal")
         self.assertEqual(run.call_args.args[:2], (["go", "test", "./...", "-count=1"], shared))
 
+    def test_operator_go_test_uses_the_component_test_target(self):
+        with patch.object(validate, "run") as run:
+            validate.go_gate(self.root, "test", "operator")
+        self.assertEqual(run.call_args.args[:2], (["make", "test"], self.module))
+        self.assertEqual(run.call_args.kwargs["env"]["GOPROXY"], "off")
+        self.assertEqual(run.call_args.kwargs["env"]["GOFLAGS"], "-mod=readonly")
+
+    def test_operator_test_failure_propagates(self):
+        with patch.object(
+            validate, "run", side_effect=subprocess.CalledProcessError(1, "make")
+        ), redirect_stderr(io.StringIO()):
+            self.assertEqual(
+                validate.main(["go-test", "--component", "operator", "--root", str(self.root)]),
+                1,
+            )
+
     def test_missing_tools_never_pass(self):
         with patch("shutil.which", return_value=None):
             with self.assertRaisesRegex(ValueError, "Required tool is missing"):
@@ -327,6 +343,39 @@ class PythonSafetyTests(unittest.TestCase):
 
 class WorkflowContractTests(unittest.TestCase):
     """Check small cross-file invariants; actionlint handles YAML/Actions semantics."""
+
+    def test_operator_suite_budget_is_bounded_and_shared_by_all_entrypoints(self):
+        makefile = (validate.ROOT / "app/cetirun-operator/Makefile").read_text()
+        self.assertIn("GO_TEST_TIMEOUT := 20m", makefile)
+        for target in ("test", "test-envtest"):
+            with self.subTest(target=target):
+                commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
+                self.assertIn("-timeout=$(GO_TEST_TIMEOUT)", commands)
+                self.assertIn("-count=1", commands)
+                self.assertNotIn("-run", commands)
+                self.assertNotIn("|| true", commands)
+        for target in ("test-envtest", "test-sandbox-lifecycle"):
+            with self.subTest(target=target):
+                commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
+                self.assertIn("./cmd/sandbox-config-change", commands)
+                self.assertIn('test -x "$(KUBEBUILDER_ASSETS)/kubectl"', commands)
+                self.assertIn("USE_EXISTING_CLUSTER=false go test -tags=envtest", commands)
+        self.assertIn("go test ./... -v", makefile)
+        for name in ("operator-ci.yml", "operator-release.yml"):
+            with self.subTest(workflow=name):
+                text = (validate.ROOT / ".github/workflows" / name).read_text()
+                steps = {
+                    step.splitlines()[0]: step
+                    for step in text.split("\n      - name: ")[1:]
+                }
+                self.assertIn("make test", steps["Run go test"])
+                self.assertNotIn("go test ./...", steps["Run go test"])
+                self.assertNotIn("continue-on-error", steps["Run go test"])
+                self.assertIn("timeout-minutes: 60", text)
+        self.assertIn(
+            "go -C ../internal test ./... -v -count=1",
+            steps["Run go test"],
+        )
 
     def test_operator_envtest_and_helm_use_manifest_installer_without_duplicate_pins(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()

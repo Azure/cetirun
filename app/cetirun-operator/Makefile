@@ -15,6 +15,8 @@ LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.V
 	-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=$(GIT_SHA)
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
+# The full controller suite exceeds Go's default 10m package timeout.
+GO_TEST_TIMEOUT := 20m
 
 .PHONY: all build build-terminal build-node-guard build-sandbox-config-change test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
@@ -45,7 +47,7 @@ build-sandbox-config-change:
 
 ## Run unit tests
 test:
-	go test ./... -v -count=1
+	go test ./... -v -count=1 -timeout=$(GO_TEST_TIMEOUT)
 
 ## Run go vet
 vet:
@@ -104,7 +106,7 @@ verify-generated: generate manifests
 ## Uses only a local API server and etcd; never connects to an existing cluster.
 test-envtest:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" && test -x "$(KUBEBUILDER_ASSETS)/kubectl" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries, including kubectl"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination ./cmd/sandbox-config-change -count=1 -v
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination ./cmd/sandbox-config-change -count=1 -v -timeout=$(GO_TEST_TIMEOUT)
 
 ## Local held Sandbox integration; synthetic providers are not runtime qualification.
 test-sandbox-integration:

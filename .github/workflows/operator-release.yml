@@ -78,7 +78,7 @@ jobs:
         working-directory: app/cetirun-operator
         run: |
           go -C ../internal test ./... -v -count=1
-          go test ./... -v -count=1
+          make test
 
       - name: Run go build
         working-directory: app/cetirun-operator
