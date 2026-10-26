@@ -183,6 +183,10 @@ func TestAgentPolicyExecutionDigestPreservesExplicitControls(t *testing.T) {
 		{"identity", []string{"entraID", "enabled"}, true},
 		{"mTLS", []string{"network", "ingress", "requireMTLS"}, true},
 		{"read-only root", []string{"security", "readOnlyRootFilesystem"}, false},
+		{"budget", []string{"modelAccess", "gatewayBudget"}, map[string]any{"defaultMonthlyUSD": "10", "maxMonthlyUSD": "20"}},
+		{"shared models", []string{"modelAccess", "sharedModels", "allowed"}, []any{"example-model"}},
+		{"Copilot", []string{"modelAccess", "copilot", "allowed"}, true},
+		{"unknown model control", []string{"modelAccess", "futureControl"}, true},
 		{"CIDR", []string{"network", "blockedCIDRs"}, []any{"203.0.113.0/24"}},
 		{"hostname", []string{"network", "blockedFQDNs"}, []any{"blocked.example.com"}},
 		{"port", []string{"network", "blockedPorts"}, []any{map[string]any{"port": int64(8080), "protocol": "TCP"}}},
@@ -208,6 +212,46 @@ func TestAgentPolicyExecutionDigestPreservesExplicitControls(t *testing.T) {
 	}
 	if _, err := ExecutionObjectDigest(malformed); err == nil {
 		t.Fatal("malformed policy was silently replaced by defaults")
+	}
+}
+
+func TestAgentPolicyExecutionDigestIgnoresGatewayRateLimits(t *testing.T) {
+	policy := executionPolicyFixture()
+	initial, err := ExecutionObjectDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, limits := range []map[string]any{
+		{"rpm": int64(60), "tpm": int64(200000), "maxParallelRequests": int64(4)},
+		{"rpm": int64(30), "perModel": map[string]any{"example-model": map[string]any{"rpm": int64(10), "tpm": int64(8192)}}},
+		{"perModel": map[string]any{"auto": map[string]any{"rpm": int64(20)}}},
+		{},
+		nil,
+	} {
+		current := policy.DeepCopy()
+		if limits != nil {
+			if err := unstructured.SetNestedMap(current.Object, limits, "spec", "modelAccess", "rateLimits"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		current.SetResourceVersion("2")
+		current.SetGeneration(2)
+		typed := &api.AgentPolicy{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(current.Object, typed); err != nil {
+			t.Fatal(err)
+		}
+		beforeRaw, beforeTyped := current.DeepCopy(), typed.DeepCopy()
+		rawDigest, err := ExecutionObjectDigest(current)
+		if err != nil || rawDigest != initial {
+			t.Fatalf("Gateway-only limits changed raw execution inputs: limits=%v err=%v", limits, err)
+		}
+		typedDigest, err := ExecutionObjectDigest(typed)
+		if err != nil || typedDigest != initial {
+			t.Fatalf("Gateway-only limits changed typed execution inputs: limits=%v err=%v", limits, err)
+		}
+		if !reflect.DeepEqual(current, beforeRaw) || !reflect.DeepEqual(typed, beforeTyped) {
+			t.Fatal("digest calculation mutated the policy or discarded its Gateway limits")
+		}
 	}
 }
 

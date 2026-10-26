@@ -27,8 +27,9 @@ requests, requests per minute (RPM), tokens per minute (TPM), and RPM or TPM
 for individual models. Every Agent of a Team that uses the Policy gets the same
 limits on its own Gateway key, so one Agent's traffic does not count against
 another's. Leave a field empty for no limit. The operator applies a change to
-each Agent's existing key; like any change to the Policy, it also restarts the
-Agents running under the Policy once. Owners see the limits in the Agent
+each Agent's existing key without restarting running Agents when only the
+limits change. Budget, model access, and Sandbox control changes keep their
+normal enforcement checks. Owners see the limits in the Agent
 creation form and on the Agent's page. TPM counts the tokens of finished
 requests; see [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits).
 
