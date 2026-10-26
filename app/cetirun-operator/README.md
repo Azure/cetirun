@@ -246,6 +246,8 @@ destination Node's current `name` and `uid`. IDs use the retained-restart
 16-128 character format. Submit with Agent UID/resourceVersion preconditions.
 The same ID cannot select a different destination; an accepted request cannot
 be replaced until completed. A rejected, unaccepted request can be corrected.
+An uncaptured request rejected by the activation gate still rechecks source
+authorization; leaving that request present cannot retain revoked access.
 After a recorded migration, keep the destination rather than removing the field.
 Portal has no migration action in this increment and rejects new owner restarts
 while a migration is pending.
@@ -253,9 +255,9 @@ while a migration is pending.
 The controller persists `status.plannedMigration` before side effects:
 
 1. `Protecting` captures exact source/storage/Node identities and protects the
-   source Pod and VolumeAttachment with separate finalizers. The stop transition
-   is recorded before an authorization failure can stop compute and clear its
-   readiness. A transient dependency failure then retains the source
+   source Pod and VolumeAttachment with separate finalizers. Once both are
+   protected, failure to write the stop checkpoint does not skip independent
+   authorization checks or shutdown of an unauthorized source. A transient dependency failure retains the source
    observations and continues shutdown from `Stopping`,
    rather than requiring readiness that its own hold cleared. Destination start
    still requires current authorization through common reconciliation; no
@@ -264,9 +266,14 @@ The controller persists `status.plannedMigration` before side effects:
    an independent hold. During `Protecting`, failed source reads or protection
    writes delay scale-down even when suspension is requested; retries must
    retain both observations rather than destroy an unprotected source. Those
-   retries still recheck current authorization and independently block the
-   existing Gateway key when access is withdrawn, its projection changes or
-   authorization evidence is unavailable. The temporary block retains key/spend
+   retries still recheck current authorization. Suspension, withdrawn access,
+   changed projections or unavailable authorization independently block the
+   existing Gateway key, withdraw ingress and apply an all-traffic deny to the
+   exact owned Cilium policy while incomplete protection prevents scale-down.
+   Its Agent/namespace selector and the captured source/storage identities are
+   unchanged; ordinary reconciliation restores the policy before destination use.
+   Network write/read-back failures remain explicit and retryable, not evidence
+   of successful dataplane isolation. The temporary block retains key/spend
    identity without applying a new grant or claiming an administrator's block.
    Access failures are returned with the protection failure for retry; preserving
    source observations does not permit continued use of an obsolete grant.

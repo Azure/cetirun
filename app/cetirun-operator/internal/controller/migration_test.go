@@ -33,9 +33,9 @@ import (
 
 const migrationTestDriver = "csi.example.com"
 
-func newMigrationFixture(t *testing.T, kind string, coordinated bool) *nativeSandboxFixture {
+func newMigrationFixture(t *testing.T, kind string, coordinated bool, setup ...func(*AgentReconciler, client.Client)) *nativeSandboxFixture {
 	t.Helper()
-	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false)
+	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, setup...)
 	f.r.SandboxPreparation.PlannedMigration = true
 	ctx := context.Background()
 	workload := f.workload(t)
