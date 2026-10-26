@@ -7,6 +7,7 @@ import { NoticeBanner } from "./components/NoticeBanner";
 import { AdminGuard } from "./components/AdminGuard";
 import { InstanceListPage } from "./pages/InstanceListPage";
 import { WorkspacePage } from "./pages/WorkspacePage";
+import { ConnectedServicesPage } from "./pages/ConnectedServicesPage";
 import { AdminLayout } from "./pages/admin/AdminLayout";
 import { TeamListPage } from "./pages/admin/TeamListPage";
 import { TeamEditPage } from "./pages/admin/TeamEditPage";
@@ -39,6 +40,7 @@ export default function App() {
       >
         <Routes>
           <Route path="/" element={<InstanceListPage />} />
+          <Route path="/connections" element={<ConnectedServicesPage />} />
           <Route
             path="/instances/:instanceName/:section"
             element={<WorkspacePage />}

@@ -35,6 +35,7 @@
     pages = [
       "/docs/guides",
       "/docs/guides/agent-identity",
+      "/docs/guides/github-app",
       "/docs/guides/models",
       "/docs/guides/custom-chat",
       "/docs/guides/lifecycle",

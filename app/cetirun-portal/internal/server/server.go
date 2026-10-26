@@ -75,9 +75,16 @@ func New(
 		toolConnectionsHandler := toolConnectionsHandlers[0]
 		mux.HandleFunc("GET /api/v1/connections/callback", toolConnectionsHandler.ConnectionCallback)
 		mux.HandleFunc("POST /api/v1/connections/callback", toolConnectionsHandler.ConnectionCallback)
+		mux.HandleFunc("GET /api/v1/connections/github-app/setup", toolConnectionsHandler.GitHubAppSetup)
 		api.HandleFunc("GET /api/v1/connections", toolConnectionsHandler.ListConnections)
 		api.HandleFunc("POST /api/v1/connections/start", toolConnectionsHandler.StartConnection)
+		// Keep this exact route before the parameterized connection routes. The
+		// App configuration is not a connection named "github-app".
+		api.HandleFunc("GET /api/v1/connections/github-app/config", toolConnectionsHandler.GitHubAppConfig)
 		api.HandleFunc("GET /api/v1/connections/{id}", toolConnectionsHandler.GetConnection)
+		api.HandleFunc("GET /api/v1/connections/{id}/github/installations", toolConnectionsHandler.ListGitHubInstallations)
+		api.HandleFunc("GET /api/v1/connections/{id}/github/repositories", toolConnectionsHandler.ListGitHubRepositories)
+		api.HandleFunc("POST /api/v1/connections/{id}/github/installation", toolConnectionsHandler.SelectGitHubInstallation)
 		api.HandleFunc("GET /api/v1/connection-authorizations/{id}", toolConnectionsHandler.GetConnectionAuthorization)
 		api.HandleFunc("GET /api/v1/connections/{id}/usage", toolConnectionsHandler.GetConnectionUsage)
 		api.HandleFunc("DELETE /api/v1/connections/{id}", toolConnectionsHandler.DeleteConnection)

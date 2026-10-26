@@ -9,12 +9,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"strings"
 )
 
 const connectionBindingHeader = "X-CetiRun-Connection-Binding"
 
 type connectionStartRequest struct {
 	Provider string `json:"provider"`
+	Mode     string `json:"mode,omitempty"`
 }
 type toolAuthorizationError struct {
 	code   string
@@ -85,6 +87,18 @@ func (s *Server) connectionStart(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "Personal sign-in requires a browser binding proof", correlation)
 		return
 	}
+	if input.Mode != "" && input.Mode != modeInstallation {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "The connection mode is not supported", correlation)
+		return
+	}
+	if input.Mode == modeInstallation {
+		if input.Provider != "github" || !s.cfg.githubAppEnabled() {
+			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "GitHub App connections are not configured", correlation)
+			return
+		}
+		s.startInstallationAuthorization(w, r, owner, "", "")
+		return
+	}
 	s.startAuthorization(w, r, owner, input.Provider, "", "")
 }
 
@@ -124,7 +138,7 @@ func (s *Server) connectionDelete(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Connection storage is unavailable", correlation)
 			return
 		}
-		if connectionMode(record.Connection) != modeDelegated {
+		if !isSharedConnectionMode(connectionMode(record.Connection)) {
 			writeAPIError(w, 400, "invalid_request", "Disconnect this identity from its Agent instead", correlation)
 			return
 		}
@@ -183,8 +197,17 @@ func (s *Server) connectionReconnect(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, 503, "dependency_unavailable", "Connection storage is unavailable", correlation)
 		return
 	}
-	if connectionMode(record.Connection) != modeDelegated || record.Connection.AccountID == "" {
+	if !isSharedConnectionMode(connectionMode(record.Connection)) || record.Connection.AccountID == "" {
 		writeAPIError(w, 400, "invalid_request", "This identity does not support personal sign-in", correlation)
+		return
+	}
+	if connectionMode(record.Connection) == modeInstallation {
+		accountID := strings.TrimPrefix(record.Connection.AccountID, "github-app-user-")
+		if accountID == "" || accountID == record.Connection.AccountID {
+			writeAPIError(w, 409, "conflict", "GitHub App connection identity is invalid", correlation)
+			return
+		}
+		s.startInstallationAuthorization(w, r, owner, record.Connection.ID, accountID)
 		return
 	}
 	s.startAuthorization(w, r, owner, record.Connection.Provider, record.Connection.ID, record.Connection.AccountID)
@@ -220,6 +243,13 @@ func validConnectionBrowserBindingProof(proof string) bool {
 }
 
 func (s *Server) finishConnectionCallback(ctx context.Context, record *connectionRecord, tx connectionTransaction, code string) (providerCredential, string, string, error) {
+	if tx.Mode == modeInstallation {
+		provider := s.providers
+		if provider == nil {
+			provider = newProviderClient(s.cfg)
+		}
+		return provider.exchangeGitHubAppUserCode(ctx, code, tx.CodeVerifier)
+	}
 	if tx.Provider == "azure" || tx.Provider == "microsoft" {
 		oauth := s.oauth
 		if oauth == nil {

@@ -95,6 +95,21 @@ spec:
                   name: {{ .Values.providers.google.credentialsSecretName | quote }}
                   key: {{ .Values.providers.google.clientSecretKey | quote }}
             {{- end }}
+            {{- if .Values.providers.github.app.credentialsSecretName }}
+            - name: GITHUB_APP_ID
+              value: {{ .Values.providers.github.app.id | quote }}
+            - name: GITHUB_APP_SLUG
+              value: {{ .Values.providers.github.app.slug | quote }}
+            - name: GITHUB_APP_CLIENT_ID
+              value: {{ .Values.providers.github.app.clientId | quote }}
+            - name: GITHUB_APP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.providers.github.app.credentialsSecretName | quote }}
+                  key: {{ .Values.providers.github.app.clientSecretKey | quote }}
+            - name: GITHUB_APP_PRIVATE_KEY_FILE
+              value: /var/run/cetirun/github-app/private-key.pem
+            {{- end }}
             - name: KEY_VAULT_KEY_URL
               value: {{ .Values.agentIdentity.keyVaultKeyUrl | quote }}
             - name: AZURE_CLIENT_ID
@@ -122,6 +137,11 @@ spec:
               value: /var/run/cetirun/tls/{{ .Values.tls.clientCAKey }}
             {{- end }}
           volumeMounts:
+            {{- if .Values.providers.github.app.credentialsSecretName }}
+            - name: github-app-key
+              mountPath: /var/run/cetirun/github-app
+              readOnly: true
+            {{- end }}
             - name: kubernetes-api-credential
               mountPath: /var/run/cetirun/kubernetes
               readOnly: true
@@ -193,6 +213,15 @@ spec:
             {{- toYaml .Values.resources.authSDK | nindent 12 }}
         {{- end }}
       volumes:
+        {{- if .Values.providers.github.app.credentialsSecretName }}
+        - name: github-app-key
+          secret:
+            secretName: {{ .Values.providers.github.app.credentialsSecretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.providers.github.app.privateKeyKey | quote }}
+                path: private-key.pem
+        {{- end }}
         {{- if .Values.identityModes.microsoftDelegated.enabled }}
         - name: auth-sdk-keys
           emptyDir:

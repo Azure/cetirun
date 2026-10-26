@@ -54,29 +54,68 @@ type IdentityBinding struct {
 	ClientID    string `json:"clientId,omitempty"`
 }
 
+// GitHubInstallation identifies an App installation without exposing credentials.
+type GitHubInstallation struct {
+	InstallationID int64  `json:"installationId,omitempty"`
+	AppSlug        string `json:"appSlug,omitempty"`
+	AccountLogin   string `json:"accountLogin,omitempty"`
+	UserLogin      string `json:"userLogin"`
+}
+
+// GitHubGrant narrows an installation credential to explicit repositories and
+// repository permissions. Metadata read access is always required by GitHub.
+type GitHubGrant struct {
+	RepositoryIDs []int64           `json:"repositoryIds"`
+	Permissions   map[string]string `json:"permissions"`
+}
+
+func (g *GitHubGrant) Valid() bool {
+	if g == nil || len(g.RepositoryIDs) == 0 || len(g.RepositoryIDs) > 500 || len(g.Permissions) == 0 {
+		return false
+	}
+	seen := make(map[int64]bool, len(g.RepositoryIDs))
+	for _, id := range g.RepositoryIDs {
+		if id <= 0 || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	for permission, level := range g.Permissions {
+		if permission != "contents" && permission != "pull_requests" && permission != "issues" {
+			return false
+		}
+		if level != "read" && level != "write" {
+			return false
+		}
+	}
+	return true
+}
+
 // Connection exposes credential-free account and service metadata.
 type Connection struct {
-	ID             string           `json:"id"`
-	Mode           string           `json:"mode"`
-	Identity       *IdentityBinding `json:"identity,omitempty"`
-	Provider       string           `json:"provider"`
-	AccountDisplay string           `json:"accountDisplay"`
-	Services       []string         `json:"services"`
-	Scopes         []string         `json:"scopes"`
-	Revision       uint64           `json:"revision"`
-	Status         string           `json:"status"`
-	CreatedAt      time.Time        `json:"createdAt"`
+	ID             string              `json:"id"`
+	Mode           string              `json:"mode"`
+	Identity       *IdentityBinding    `json:"identity,omitempty"`
+	GitHub         *GitHubInstallation `json:"github,omitempty"`
+	Provider       string              `json:"provider"`
+	AccountDisplay string              `json:"accountDisplay"`
+	Services       []string            `json:"services"`
+	Scopes         []string            `json:"scopes"`
+	Revision       uint64              `json:"revision"`
+	Status         string              `json:"status"`
+	CreatedAt      time.Time           `json:"createdAt"`
 }
 
 // Binding associates exactly one trusted Agent with a Connection and services.
-// It does not authorize provider operations or resources.
+// GitHub App grants also narrow the installation credential at issuance.
 type Binding struct {
-	ID           string   `json:"id"`
-	InstanceUID  string   `json:"instanceUid"`
-	ConnectionID string   `json:"connectionId"`
-	Services     []string `json:"services"`
-	Enabled      bool     `json:"enabled"`
-	Revision     uint64   `json:"revision"`
+	ID           string       `json:"id"`
+	InstanceUID  string       `json:"instanceUid"`
+	ConnectionID string       `json:"connectionId"`
+	Services     []string     `json:"services"`
+	Enabled      bool         `json:"enabled"`
+	Revision     uint64       `json:"revision"`
+	GitHub       *GitHubGrant `json:"github,omitempty"`
 }
 
 type Request struct {

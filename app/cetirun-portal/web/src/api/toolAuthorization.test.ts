@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { describe, expect, it, vi } from "vitest";
-import { createConnectionBinding, createToolIdentity, deleteConnectionBinding, listConnectionBindings, startConnection, ToolAuthorizationError, updateConnectionBinding } from "./toolAuthorization";
+import { createConnectionBinding, createToolIdentity, deleteConnectionBinding, getGitHubAppConfig, listConnectionBindings, listGitHubInstallations, listGitHubRepositories, selectGitHubInstallation, startConnection, ToolAuthorizationError, updateConnectionBinding } from "./toolAuthorization";
 
 describe("tool authorization API", () => {
   it("uses canonical connection and grant paths without browser credentials", async () => {
@@ -27,6 +27,28 @@ describe("tool authorization API", () => {
     global.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204, headers: { "Content-Type": "application/json" } }));
     await deleteConnectionBinding("agent-a", "grant-1", 7);
     expect(fetch).toHaveBeenLastCalledWith("/api/v1/instances/agent-a/connection-bindings/grant-1", expect.objectContaining({ method: "DELETE", headers: expect.objectContaining({ "If-Match": "7" }) }));
+  });
+
+  it("uses the installation mode and owner-scoped GitHub App paths", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(`{"authorizationId":"tx","authorizationUrl":"https://provider.example.invalid/authorize","expiresAt":"2026-10-11T00:00:00Z"}`, { status: 200, headers: { "Content-Type": "application/json" } }));
+    await startConnection("github", "installation");
+    expect(fetch).toHaveBeenLastCalledWith("/api/v1/connections/start", expect.objectContaining({ method: "POST", body: JSON.stringify({ provider: "github", mode: "installation" }) }));
+
+    global.fetch = vi.fn().mockResolvedValue(new Response(`{"enabled":true}`, { status: 200, headers: { "Content-Type": "application/json" } }));
+    await getGitHubAppConfig();
+    expect(fetch).toHaveBeenLastCalledWith("/api/v1/connections/github-app/config", expect.anything());
+
+    global.fetch = vi.fn().mockResolvedValue(new Response(`{"installations":[],"installUrl":"https://github.com/apps/cetirun/installations/new"}`, { status: 200, headers: { "Content-Type": "application/json" } }));
+    await listGitHubInstallations("conn-1");
+    expect(fetch).toHaveBeenLastCalledWith("/api/v1/connections/conn-1/github/installations", expect.anything());
+
+    global.fetch = vi.fn().mockResolvedValue(new Response(`{"repositories":[],"hasNextPage":false}`, { status: 200, headers: { "Content-Type": "application/json" } }));
+    await listGitHubRepositories("conn-1", 7, 2);
+    expect(fetch).toHaveBeenLastCalledWith("/api/v1/connections/conn-1/github/repositories?installationId=7&page=2", expect.anything());
+
+    global.fetch = vi.fn().mockResolvedValue(new Response(`{"id":"conn-1"}`, { status: 200, headers: { "Content-Type": "application/json" } }));
+    await selectGitHubInstallation("conn-1", 7);
+    expect(fetch).toHaveBeenLastCalledWith("/api/v1/connections/conn-1/github/installation", expect.objectContaining({ method: "POST", body: JSON.stringify({ installationId: 7 }) }));
   });
 
   it("creates an Azure Agent binding and verifies with an optimistic revision", async () => {

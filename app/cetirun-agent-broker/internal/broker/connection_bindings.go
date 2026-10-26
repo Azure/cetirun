@@ -12,10 +12,11 @@ import (
 )
 
 type bindingRequest struct {
-	ConnectionID string   `json:"connectionId"`
-	Services     []string `json:"services"`
-	Enabled      bool     `json:"enabled"`
-	Revision     uint64   `json:"revision,omitempty"`
+	ConnectionID string                  `json:"connectionId"`
+	Services     []string                `json:"services"`
+	Enabled      bool                    `json:"enabled"`
+	Revision     uint64                  `json:"revision,omitempty"`
+	GitHub       *agenttools.GitHubGrant `json:"github,omitempty"`
 }
 
 func buildBinding(input bindingRequest, owner Owner, uid string, c Connection, now time.Time) (ConnectionBinding, error) {
@@ -34,7 +35,14 @@ func buildBinding(input bindingRequest, owner Owner, uid string, c Connection, n
 			return ConnectionBinding{}, errors.New("service is not available for this connection")
 		}
 	}
-	return ConnectionBinding{ID: bindingKey(uid, c.ID), InstanceUID: uid, ConnectionID: c.ID, Services: input.Services, Enabled: input.Enabled, Revision: 1, Owner: owner, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, nil
+	if connectionMode(c) == modeInstallation {
+		if c.Provider != "github" || c.GitHub == nil || c.GitHub.InstallationID <= 0 || !input.GitHub.Valid() || len(input.Services) != 1 || input.Services[0] != "github" {
+			return ConnectionBinding{}, errors.New("a GitHub App binding requires explicit repositories and permissions")
+		}
+	} else if input.GitHub != nil {
+		return ConnectionBinding{}, errors.New("GitHub App permissions are only valid for a GitHub App connection")
+	}
+	return ConnectionBinding{ID: bindingKey(uid, c.ID), InstanceUID: uid, ConnectionID: c.ID, Services: input.Services, Enabled: input.Enabled, Revision: 1, Owner: owner, CreatedAt: now.UTC(), UpdatedAt: now.UTC(), GitHub: input.GitHub}, nil
 }
 
 func (s *Server) bindingAgent(w http.ResponseWriter, r *http.Request) (Owner, Agent, bool) {
@@ -99,6 +107,27 @@ func (s *Server) bindingSave(w http.ResponseWriter, r *http.Request, update bool
 	if err != nil {
 		writeAPIError(w, 400, "invalid_request", err.Error(), correlationID(r))
 		return
+	}
+	if connectionMode(connection.Connection) == modeInstallation {
+		if err := s.validateGitHubAppBinding(r.Context(), connection, binding); err != nil {
+			writeAPIError(w, 403, "permission_denied", "GitHub installation cannot authorize this binding", correlationID(r))
+			return
+		}
+		// Validation may persist a renamed installation account. Reload before
+		// reserving so that the reservation is fenced by the current revision.
+		connection, _, err = s.store.getConnectionForAgent(r.Context(), agent, input.ConnectionID)
+		if errors.Is(err, errNotFound) || (err == nil && (connection.Deleted || !sameOwner(connection.Connection.Owner, owner))) {
+			writeAPIError(w, 404, "not_found", "Connection not found", correlationID(r))
+			return
+		}
+		if err != nil {
+			writeAPIError(w, 503, "dependency_unavailable", "Connection storage is unavailable", correlationID(r))
+			return
+		}
+		if !s.connectionMatchesAgent(connection.Connection, agent) {
+			writeAPIError(w, 403, "identity_changed", "Identity does not belong to this Agent", correlationID(r))
+			return
+		}
 	}
 	if update && (input.Revision == 0 || r.PathValue("id") != binding.ID) {
 		writeAPIError(w, 400, "invalid_request", "Binding and revision are required", correlationID(r))
