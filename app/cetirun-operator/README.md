@@ -446,13 +446,18 @@ claims are still rejected.
 Native owner access uses the existing `/ui/<agent>/` route and authentication
 deployment. An unauthenticated sign-in challenge alone is not an access test.
 For authenticated native ingress, the protected renderer replaces OpenClaw's
-`gateway.trustedProxies` with the sorted exact IPs of the approved ingress peers
-from the same platform snapshot. The compiler revision binds those IPs through
-the canonical topology, and the rendered configuration must match the derived
-list; no CIDR-wide or loopback fallback is added. The ingress proxy must overwrite
+`gateway.trustedProxies` with the sorted approved ingress addresses from the same
+platform snapshot. By default these are exact peer IPs selected with the protected
+peer-UID label. The native single-start profile can explicitly register stable
+Pod labels and bounded proxy Pod CIDRs instead; see the
+[managed ingress example](../../examples/native-sandbox/README.md#rollout-stable-managed-ingress).
+The compiler revision binds the selector, namespace and trust ranges through the
+canonical topology, and the rendered configuration must match the derived list.
+No wildcard or loopback fallback is added. The ingress proxy must overwrite
 or safely rebuild forwarded-client headers. Proxy trust does not bypass Gateway
 authentication, owner authorization or device authentication. The
-`sandboxWorkload.trustedProxyIPs` hook is supplied
+existing `sandboxWorkload.trustedProxyIPs` hook carries either exact IPs or the
+explicitly registered Pod CIDRs and is supplied
 only for authenticated native execution; held and legacy rendering without that
 hook preserve their existing proxy configuration.
 Native Agents awaiting preparation can retain chart pins predating this hook.

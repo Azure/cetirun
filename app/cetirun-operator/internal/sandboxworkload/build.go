@@ -169,13 +169,11 @@ func validateControls(input Input) error {
 	}
 	nativeIngress := input.GatewayKey != nil && (input.AgentType == "openclaw" || input.Reconciled) && c.IngressMode == api.AgentPolicyIngressAuthenticated
 	if nativeIngress != (len(c.TrustedProxyIPs) != 0) {
-		return fmt.Errorf("native authenticated ingress requires explicit compiler proxy IPs; other modes cannot grant proxy trust")
+		return fmt.Errorf("native authenticated ingress requires explicit compiler proxy trust; other modes cannot grant it")
 	}
 	for i, value := range c.TrustedProxyIPs {
-		address, err := netip.ParseAddr(value)
-		if err != nil || address.Is4In6() || address.Zone() != "" || address.String() != value ||
-			!address.IsGlobalUnicast() || (i > 0 && c.TrustedProxyIPs[i-1] >= value) {
-			return fmt.Errorf("compiler proxy IPs must be sorted, distinct canonical unicast addresses, not CIDRs")
+		if err := sandboxpolicy.ValidateProxyTrust(value); err != nil || (i > 0 && c.TrustedProxyIPs[i-1] >= value) {
+			return fmt.Errorf("compiler proxy trust must contain sorted, distinct canonical unicast IPs or bounded Pod CIDRs")
 		}
 	}
 	volumes := map[string]bool{}

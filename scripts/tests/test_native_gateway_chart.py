@@ -203,6 +203,10 @@ class NativeGatewayChartTests(unittest.TestCase):
         objects = render(RUNTIME_CHART, values)
         config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
         self.assertEqual(config["gateway"]["trustedProxies"], ["192.0.2.24", "2001:db8::24"])
+        values["sandboxWorkload"]["trustedProxyIPs"] = ["10.244.0.0/16", "fd00:244::/64"]
+        objects = render(RUNTIME_CHART, values)
+        config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
+        self.assertEqual(config["gateway"]["trustedProxies"], ["10.244.0.0/16", "fd00:244::/64"])
         values["sandboxWorkload"]["trustedProxyIPs"] = []
         objects = render(RUNTIME_CHART, values)
         config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])

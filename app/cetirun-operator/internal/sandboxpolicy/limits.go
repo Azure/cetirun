@@ -62,7 +62,7 @@ func validateControlInput(policy api.AgentPolicySpec, platform Platform) error {
 			return err
 		}
 		for _, peer := range peers {
-			if err := take(len(peer.IPs)); err != nil {
+			if err := take(len(peer.IPs) + len(peer.PodSelector)); err != nil {
 				return err
 			}
 		}
@@ -72,7 +72,7 @@ func validateControlInput(policy api.AgentPolicySpec, platform Platform) error {
 			return err
 		}
 		for _, destination := range destinations {
-			if err := take(len(destination.Peer.IPs)); err != nil {
+			if err := take(len(destination.Peer.IPs) + len(destination.Peer.PodSelector) + len(destination.TrustedProxyCIDRs)); err != nil {
 				return err
 			}
 			if err := take(len(destination.Ports)); err != nil {
