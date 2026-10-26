@@ -46,6 +46,7 @@ export interface Instance extends InstanceVersion {
   observedGeneration?: number;
   suspended?: boolean;
   suspendAvailable?: boolean;
+  suspensionUnavailableReason?: string;
   resumeAvailable?: boolean;
   restartAvailable?: boolean;
   restartRequestId?: string;

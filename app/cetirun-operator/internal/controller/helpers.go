@@ -382,6 +382,9 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		if retention, present := persistence["retainPolicy"]; present && retention != "Retain" && retention != "Delete" {
 			return nil, fmt.Errorf("helm values persistence.retainPolicy must be Retain or Delete")
 		}
+		if err := validateSuspendedHome(values); err != nil {
+			return nil, err
+		}
 		// A retained stop must win over every override, without changing the
 		// stored retention preference that will apply again after resume.
 		values["replicaCount"] = 0
@@ -479,6 +482,19 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		})
 	}
 	return values, nil
+}
+
+func validateSuspendedHome(values map[string]any) error {
+	persistence, ok := values["persistence"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("retained suspension requires a valid persistence configuration")
+	}
+	if enabled, explicit := persistence["enabled"].(bool); explicit && !enabled {
+		if claim, _ := persistence["existingClaim"].(string); claim == "" {
+			return fmt.Errorf("retained suspension cannot scale down ephemeral HOME; persistent storage is required")
+		}
+	}
+	return nil
 }
 
 func connectionsMCPNamespace(raw string) (string, error) {

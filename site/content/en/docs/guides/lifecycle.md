@@ -46,7 +46,8 @@ HOME or Gateway key, reset spending history, or create another lifecycle operati
 
 | Current Agent | Suspend | Resume |
 | --- | --- | --- |
-| Ordinary OpenClaw, Hermes or Custom; common-executor Sandbox built-ins | Allowed, including while provisioning or recovering | Allowed when suspension is requested |
+| Ordinary OpenClaw, Hermes or Custom; common-executor Sandbox built-ins | Allowed when the current owned workload has confirmed PVC-backed HOME, including while provisioning or recovering | Allowed when suspension is requested |
+| Ephemeral HOME or unverified/missing workload storage | Unavailable; no retained suspension is accepted | Existing resume intent remains available |
 | Pending restart or administrator migration | Suspension takes precedence | Continue the original operation, retaining its request ID and controller safeguards |
 | Recorded legacy single-start Sandbox lifetime | Rejected; no lifetime conversion | Rejected |
 | Deleting Agent | Rejected; deletion takes precedence | Rejected |
@@ -61,6 +62,15 @@ origin checks. They return HTTP `202` with the Agent's requested `suspended` val
 These capabilities describe whether intent can be changed, not whether compute
 has stopped or recovered. Restart remains unavailable during suspension or a
 pending restart/migration.
+
+Portal checks the effective StatefulSet HOME mount, not only Agent overrides:
+chart and deployment defaults may select `emptyDir`. Such HOME would be lost
+when its Pod stops, so the owner action returns `409 suspension_home_required`
+without writing intent. Missing, unreadable or unowned workload storage returns
+`503 suspension_home_unverified`; the disabled control explains the reason via
+`suspensionUnavailableReason`. No automatic storage conversion or data-loss
+confirmation is offered. Resume and observation of an already accepted intent
+do not depend on a fresh storage check.
 
 A repeated intent can be observed after status updates without changing the
 Agent again. A stale version cannot reverse a newer intent or target a same-name
@@ -78,8 +88,8 @@ Portal deliberately says **Suspension requested**, not that shutdown is complete
 Its controller phase is not a Pod-termination or access-removal observation.
 Likewise, HTTP acceptance of resume is not readiness: wait for the current
 generation's Ready condition and the existing restart/migration completion
-checks. Failed recovery remains visible in Status, and suspension is still
-available. Portal does not advance migration phases or provide owner migration
+checks. Failed recovery remains visible in Status, and suspension remains
+available when persistent HOME can be verified. Portal does not advance migration phases or provide owner migration
 controls. Use matching supported Portal, Operator and CRD versions.
 
 To suspend an instance, set `spec.suspended` to `true`. The operator scales the
@@ -101,6 +111,10 @@ resume reapplies the configured retention policy. Older suspended-state cache
 entries are invalidated so an Operator upgrade does not skip this retention
 repair. Keep autoscaling disabled for this lifecycle. `Suspended` alone is not
 proof that all access paths have stopped.
+The ordinary built-in apply path also rejects effective ephemeral-HOME
+configuration during retained suspension, including defaults resolved from the
+selected chart; a configuration change must not turn an accepted retained stop
+into a destructive scale-down.
 
 The runtime chart permits only `replicaCount: 0` or `1`. Its HPA validation
 requires `minReplicas=maxReplicas=1`, so it cannot scale an agent horizontally

@@ -163,7 +163,8 @@ export function isRestartRequestRejected(error: unknown): boolean {
 
 export function isSuspensionRequestRejected(error: unknown): boolean {
   if (!(error instanceof PortalError)) return false;
-  return (error.status === 409 && ["instance_changed", "instance_deleting", "suspension_unavailable"].includes(error.code ?? "")) ||
+  return (error.status === 409 && ["instance_changed", "instance_deleting", "suspension_unavailable", "suspension_home_required"].includes(error.code ?? "")) ||
+    (error.status === 503 && error.code === "suspension_home_unverified") ||
     (error.status === 403 && ["forbidden", "invalid_origin", "admission_rejected"].includes(error.code ?? "")) ||
     (error.status === 400 && ["invalid_body", "invalid_agent", "invalid_name"].includes(error.code ?? "")) ||
     (error.status === 428 && error.code === "version_required") ||

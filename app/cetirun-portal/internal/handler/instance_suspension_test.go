@@ -12,8 +12,51 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/internal/chataccess"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
+
+func managementSuspensionWorkload(agent *api.Agent) *appsv1.StatefulSet {
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: chataccess.ServiceName(agent.Name), Namespace: "cetirun-" + agent.Name,
+			UID: "workload-uid", OwnerReferences: []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(),
+				Kind: "Agent", Name: agent.Name, UID: agent.UID, Controller: ptr.To(true)}}},
+		Spec: appsv1.StatefulSetSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "cetirun", VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/home/vibe"}}}},
+			Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "home"},
+			}}},
+		}}},
+	}
+}
+
+func TestOwnerSuspensionDoesNotOfferEphemeralHome(t *testing.T) {
+	agent := customManagementInstance()
+	agent.UID, agent.Spec.Agent.Type = "agent-uid", api.AgentTypeOpenClaw
+	workload := managementSuspensionWorkload(agent)
+	workload.Spec.Template.Spec.Volumes[0].VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	h := customManagementHandler(agent, workload)
+	response, err := h.toInstanceResponse(context.Background(), agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.SuspendAvailable || response.SuspensionUnavailableReason == "" {
+		t.Fatal("the owner was offered retained suspension for ephemeral HOME")
+	}
+	current, err := h.Kube.GetInstanceByName(context.Background(), agent.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	h.SuspendInstanceByName(w, managementRequest(http.MethodPost,
+		fmt.Sprintf(`{"uid":%q,"resourceVersion":%q}`, current.UID, current.ResourceVersion)))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("ephemeral HOME suspension status=%d body=%s", w.Code, w.Body.String())
+	}
+}
 
 func TestOwnerSuspendResumeUsesExistingIntent(t *testing.T) {
 	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes, api.AgentTypeCustom} {
@@ -22,7 +65,7 @@ func TestOwnerSuspendResumeUsesExistingIntent(t *testing.T) {
 			agent.UID, agent.Generation, agent.Spec.Agent.Type = "agent-uid", 2, kind
 			agent.Status = api.AgentStatus{Phase: api.PhaseReady, ObservedGeneration: 2,
 				Conditions: []metav1.Condition{{Type: api.ConditionReady, Status: metav1.ConditionTrue}}}
-			h := customManagementHandler(agent)
+			h := customManagementHandler(agent, managementSuspensionWorkload(agent))
 			for _, suspended := range []bool{true, false} {
 				current, err := h.Kube.GetInstanceByName(context.Background(), agent.Name)
 				if err != nil {

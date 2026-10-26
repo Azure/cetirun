@@ -1511,7 +1511,8 @@ func TestBuildHelmValues_SuspendedHomeRetention(t *testing.T) {
 }
 
 func TestBuildHelmValues_SuspendedRejectsInvalidPersistence(t *testing.T) {
-	for _, raw := range []string{`null`, `"invalid"`, `{"retainPolicy":"invalid"}`, `{"retainPolicy":null}`, `{"retainPolicy":false}`} {
+	for _, raw := range []string{`null`, `"invalid"`, `{"retainPolicy":"invalid"}`, `{"retainPolicy":null}`, `{"retainPolicy":false}`,
+		`{"enabled":false}`, `{"enabled":false,"existingClaim":""}`} {
 		t.Run(raw, func(t *testing.T) {
 			instance := newTestInstance("retained", "Retained Agent", "", "gateway-token")
 			instance.Spec.Suspended = true
@@ -1520,6 +1521,34 @@ func TestBuildHelmValues_SuspendedRejectsInvalidPersistence(t *testing.T) {
 				t.Fatal("suspension must not hide invalid persistence values")
 			}
 		})
+	}
+}
+
+func TestSuspendedHomeChecksEffectiveChartDefaults(t *testing.T) {
+	for _, kind := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes} {
+		for _, claim := range []string{"", "existing-home"} {
+			t.Run(string(kind)+"/"+claim, func(t *testing.T) {
+				instance := newTestInstance("retained", "Retained Agent", "", "gateway-token")
+				instance.Spec.Agent.Type, instance.Spec.Suspended, instance.Spec.Model = kind, true, "gpt-5.4"
+				chrt, err := loader.Load("../../../cetirun-chart")
+				if err != nil {
+					t.Fatal(err)
+				}
+				persistence := chrt.Values["persistence"].(map[string]any)
+				persistence["enabled"], persistence["existingClaim"] = false, claim
+				values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				prepared, err := helm.PrepareChart(chrt, values)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := validateSuspendedHome(prepared.Values); (err != nil) != (claim == "") {
+					t.Fatalf("effective persistent HOME check for claim %q: %v", claim, err)
+				}
+			})
+		}
 	}
 }
 

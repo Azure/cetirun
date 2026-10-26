@@ -49,6 +49,15 @@ describe("SuspendAgentButton", () => {
     }, expect.anything());
   });
 
+  it("explains why an ephemeral HOME cannot use retained suspension", () => {
+    const reason = "Retained suspension requires persistent HOME storage";
+    render(<SuspendAgentButton instance={{ ...instance, suspendAvailable: false, suspensionUnavailableReason: reason }} />);
+    expect(screen.getByRole("button", { name: "Suspend Agent" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(reason);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mutation.mutate).not.toHaveBeenCalled();
+  });
+
   it.each(["Cancel", "Escape"])("discards only an unsent draft on %s", (dismissal) => {
     const view = render(<SuspendAgentButton instance={instance} />);
     fireEvent.click(screen.getByRole("button", { name: "Suspend Agent" }));

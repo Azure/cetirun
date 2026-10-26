@@ -11,14 +11,103 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/internal/chataccess"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+func suspensionWorkload(agent *api.Agent) *appsv1.StatefulSet {
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: chataccess.ServiceName(agent.Name), Namespace: InstanceNamespace(agent.Name),
+			UID: "workload-uid",
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(),
+				Kind: "Agent", Name: agent.Name, UID: agent.UID, Controller: ptr.To(true)}},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](1),
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "cetirun",
+					VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/home/vibe"}}}},
+				Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "home"},
+				}}},
+			}},
+		},
+	}
+}
+
+func TestOwnerSuspensionRejectsEphemeralHome(t *testing.T) {
+	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes} {
+		t.Run(string(kind), func(t *testing.T) {
+			agent := restartableInstance()
+			agent.Spec.Agent.Type = kind
+			workload := suspensionWorkload(agent)
+			workload.Spec.Template.Spec.Volumes[0].VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+			fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(agent, workload).Build()
+			if err := fc.Get(context.Background(), client.ObjectKeyFromObject(agent), agent); err != nil {
+				t.Fatal(err)
+			}
+			before := agent.DeepCopy()
+			_, err := NewClient(fc).SetInstanceSuspendedByName(context.Background(), agent.Name,
+				InstanceVersion{UID: agent.UID, ResourceVersion: agent.ResourceVersion}, true, nil)
+			if err == nil {
+				t.Fatal("retained suspension accepted emptyDir HOME")
+			}
+			if err := fc.Get(context.Background(), client.ObjectKeyFromObject(agent), agent); err != nil ||
+				!reflect.DeepEqual(agent.Spec, before.Spec) {
+				t.Fatal("rejected suspension changed intent:", err)
+			}
+		})
+	}
+}
+
+func TestSuspensionHomeRequiresTheOwnedEffectiveMount(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*appsv1.StatefulSet)
+		want   error
+	}{
+		{"existing claim", func(_ *appsv1.StatefulSet) {}, nil},
+		{"claim template", func(s *appsv1.StatefulSet) {
+			s.Spec.Template.Spec.Volumes = nil
+			s.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{ObjectMeta: metav1.ObjectMeta{Name: "data"}}}
+		}, nil},
+		{"empty claim", func(s *appsv1.StatefulSet) {
+			s.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName = ""
+		}, ErrSuspensionHomeRequired},
+		{"unmounted persistent data", func(s *appsv1.StatefulSet) {
+			s.Spec.Template.Spec.Containers[0].VolumeMounts[0].Name = "ephemeral"
+			s.Spec.Template.Spec.Volumes = append(s.Spec.Template.Spec.Volumes, corev1.Volume{Name: "ephemeral",
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		}, ErrSuspensionHomeRequired},
+		{"unknown HOME mount", func(s *appsv1.StatefulSet) {
+			s.Spec.Template.Spec.Containers[0].VolumeMounts = nil
+		}, ErrSuspensionHomeUnverified},
+		{"replaced Agent", func(s *appsv1.StatefulSet) {
+			s.OwnerReferences[0].UID = "previous-agent"
+		}, ErrSuspensionHomeUnverified},
+		{"unowned workload", func(s *appsv1.StatefulSet) { s.OwnerReferences = nil }, ErrSuspensionHomeUnverified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := restartableInstance()
+			workload := suspensionWorkload(agent)
+			tc.change(workload)
+			fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(agent, workload).Build()
+			err := NewClient(fc).CheckSuspensionHome(context.Background(), agent)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("effective HOME check=%v, want %v", err, tc.want)
+			}
+		})
+	}
+}
 
 func TestOwnerSuspensionPreservesPendingOperationsAndRetainedResources(t *testing.T) {
 	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes, api.AgentTypeCustom} {
@@ -38,7 +127,7 @@ func TestOwnerSuspensionPreservesPendingOperationsAndRetainedResources(t *testin
 				writes := 0
 				lost := errors.New("synthetic response lost after persistence")
 				fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().
-					WithStatusSubresource(&api.Agent{}).WithObjects(agent, home, key).
+					WithStatusSubresource(&api.Agent{}).WithObjects(agent, home, key, suspensionWorkload(agent)).
 					WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 						writes++
 						if _, ok := obj.(*api.Agent); !ok {
@@ -146,7 +235,7 @@ func TestOwnerSuspensionDoesNotRetryConcurrentChanges(t *testing.T) {
 				agent := restartableInstance()
 				agent.Spec.Suspended, agent.Finalizers = !suspended, []string{api.Finalizer}
 				writes := 0
-				fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().WithObjects(agent).
+				fc := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().WithObjects(agent, suspensionWorkload(agent)).
 					WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 						writes++
 						current := &api.Agent{}

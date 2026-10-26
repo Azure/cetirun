@@ -49,6 +49,8 @@ export function SuspendAgentButton({ instance }: { instance: Instance }) {
     }}>
       {request && sent ? `Review ${action.toLowerCase()} request` : `${action} Agent`}
     </Button>
+    {instance.suspended === false && !instance.suspendAvailable && instance.suspensionUnavailableReason &&
+      <Text role="status">{instance.suspensionUnavailableReason}</Text>}
     {instance.suspended === true && <Text role="status">
       Suspension requested. This view does not confirm Pod termination or removal of every access path.
       The Agent, HOME and Gateway key are retained.

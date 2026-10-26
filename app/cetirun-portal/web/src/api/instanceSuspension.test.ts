@@ -27,6 +27,7 @@ describe("owner suspension API", () => {
   it.each([
     [409, "instance_changed", true], [409, "instance_deleting", true],
     [409, "suspension_unavailable", true], [403, "forbidden", true],
+    [409, "suspension_home_required", true], [503, "suspension_home_unverified", true],
     [403, "admission_rejected", true], [428, "version_required", true],
     [500, "internal_error", false], [503, "instance_changed", false], [409, undefined, false],
   ])("preserves HTTP %s / %s without inferring acceptance from text", async (status, code, rejected) => {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -56,6 +57,18 @@ func TestRetainedRestartThroughServedAPI(t *testing.T) {
 		Conditions: []metav1.Condition{{Type: api.ConditionReady, Status: metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(), Reason: "TestReady", Message: "Synthetic readiness for API validation"}}}
 	if err := kc.Status().Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	workload := suspensionWorkload(agent)
+	workload.UID = ""
+	workload.Spec.ServiceName = workload.Name
+	workload.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": "suspension-fixture"}}
+	workload.Spec.Template.Labels = workload.Spec.Selector.MatchLabels
+	workload.Spec.Template.Spec.Containers[0].Image = "registry.example.com/fixture:1"
+	if err := kc.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workload.Namespace}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kc.Create(ctx, workload); err != nil {
 		t.Fatal(err)
 	}
 	version := InstanceVersion{UID: agent.UID, ResourceVersion: agent.ResourceVersion}
