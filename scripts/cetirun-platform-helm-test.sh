@@ -191,7 +191,6 @@ admission_args=(
   --set-string cetirun-operator.sandboxAdmission.tlsSecretName=sandbox-admission-tls
   --set-string cetirun-operator.sandboxAdmission.caBundle=LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClFRPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQ==
   --set-string 'cetirun-operator.sandboxAdmission.adminUsers[0]=platform-admin@example.com'
-  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=system:serviceaccount:cetirun-system:cetirun-portal'
   --set-string cetirun-operator.sandboxAdmission.coordinationConfigMapName=configuration-coordination
   --set-string cetirun-operator.sandboxAdmission.coordinationConfigMapUID=11111111-1111-1111-1111-111111111111
 )
@@ -200,10 +199,26 @@ portal_coordination_args=(
   --set-string cetirun-portal.configurationCoordination.name=configuration-coordination
   --set-string cetirun-portal.configurationCoordination.uid=11111111-1111-1111-1111-111111111111
 )
+# Without the bundled Portal, the release names no Portal service account.
+no_portal_args=(
+  --set cetirun-portal.enabled=false
+  --set-string cetirun-operator.sandboxAdmission.portalServiceAccount=
+)
+portal_account=system:serviceaccount:cetirun-system:cetirun-portal
+
+# Prints the Sandbox admission configuration: JSON in a quoted YAML string.
+admission_config() {
+  grep -A1 'name: CETIRUN_SANDBOX_ADMISSION$' <<< "$1" | tail -n 1
+}
+
+# Prints how many times that configuration lists a user as an administrator.
+admission_admin_count() {
+  { admission_config "$1" | grep -o 'adminUsers\\":\[[^]]*\]' | grep -oF "\\\"$2\\\"" || true; } | wc -l
+}
 
 echo "==> helm template platform (operator-only admission coordination)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
-  --set cetirun-portal.enabled=false)
+  "${no_portal_args[@]}")
 grep -q 'name: cetirun-sandbox-admission' <<< "${output}" || {
   echo "FAIL: operator admission was not rendered" >&2
   exit 1
@@ -214,6 +229,21 @@ grep -q 'coordinationConfigMapName\\":\\"configuration-coordination' <<< "${outp
 }
 grep -q 'coordinationConfigMapUID\\":\\"11111111-1111-1111-1111-111111111111' <<< "${output}" || {
   echo "FAIL: operator admission did not render the coordination ConfigMap UID" >&2
+  exit 1
+}
+[ "$(admission_admin_count "${output}" "${portal_account}")" -eq 0 ] || {
+  echo "FAIL: operator admission made the service account of a Portal it does not install an administrator" >&2
+  exit 1
+}
+
+echo "==> helm template platform (Portal service account without the Portal, expect failure)"
+if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  --set cetirun-portal.enabled=false 2>&1); then
+  echo "FAIL: platform made the Portal service account an administrator without installing the Portal" >&2
+  exit 1
+fi
+grep -Fq 'clear cetirun-operator.sandboxAdmission.portalServiceAccount when the bundled Portal is disabled' <<< "${output}" || {
+  echo "FAIL: platform did not ask to clear the Portal service account without the Portal" >&2
   exit 1
 }
 
@@ -230,7 +260,7 @@ grep -Fq 'cetirun-portal.configurationCoordination must exactly match' <<< "${ou
 echo "==> helm template platform (Portal disabled with inherited coordination values)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
   "${portal_coordination_args[@]}" \
-  --set cetirun-portal.enabled=false \
+  "${no_portal_args[@]}" \
   --set-string cetirun-portal.configurationCoordination.namespace=stale-namespace \
   --set-string cetirun-portal.configurationCoordination.name=stale-coordination \
   --set-string cetirun-portal.configurationCoordination.uid=22222222-2222-2222-2222-222222222222)
@@ -244,6 +274,62 @@ output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_ar
   "${portal_coordination_args[@]}")
 grep -A1 'name: CONFIGURATION_COORDINATION_UID$' <<< "${output}" | grep -q 'value: "11111111-1111-1111-1111-111111111111"' || {
   echo "FAIL: Portal did not render the matched coordination ConfigMap UID" >&2
+  exit 1
+}
+# The Portal writes with its service account, which the operator adds to the
+# admission administrators.
+[ "$(admission_admin_count "${output}" "${portal_account}")" -eq 1 ] || {
+  echo "FAIL: admission does not list the Portal service account as an administrator exactly once" >&2
+  exit 1
+}
+[ "$(admission_admin_count "${output}" platform-admin@example.com)" -eq 1 ] || {
+  echo "FAIL: admission does not keep the configured administrator" >&2
+  exit 1
+}
+default_admission=$(admission_config "${output}")
+
+echo "==> helm template platform (Portal service account also listed in adminUsers)"
+# Releases that list it already keep the same configuration, so an upgrade does
+# not roll the admission server.
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  "${portal_coordination_args[@]}" \
+  --set-string "cetirun-operator.sandboxAdmission.adminUsers[1]=${portal_account}")
+[ "$(admission_admin_count "${output}" "${portal_account}")" -eq 1 ] || {
+  echo "FAIL: admission lists the Portal service account more than once" >&2
+  exit 1
+}
+[ "$(admission_config "${output}")" = "${default_admission}" ] || {
+  echo "FAIL: listing the Portal service account changed the admission configuration" >&2
+  exit 1
+}
+
+echo "==> helm template platform (custom Portal service account)"
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  "${portal_coordination_args[@]}" \
+  --set-string cetirun-portal.serviceAccount.name=custom-portal \
+  --set-string cetirun-operator.sandboxAdmission.portalServiceAccount=custom-portal)
+grep -q 'serviceAccountName: custom-portal$' <<< "${output}" || {
+  echo "FAIL: the Portal does not run as its custom service account" >&2
+  exit 1
+}
+[ "$(admission_admin_count "${output}" system:serviceaccount:cetirun-system:custom-portal)" -eq 1 ] || {
+  echo "FAIL: admission does not list the custom Portal service account exactly once" >&2
+  exit 1
+}
+[ "$(admission_admin_count "${output}" "${portal_account}")" -eq 0 ] || {
+  echo "FAIL: admission lists the default Portal service account instead of the custom one" >&2
+  exit 1
+}
+
+echo "==> helm template platform (mismatched Portal service account, expect failure)"
+if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  "${portal_coordination_args[@]}" \
+  --set-string cetirun-portal.serviceAccount.name=custom-portal 2>&1); then
+  echo "FAIL: platform made a service account other than the Portal's an administrator" >&2
+  exit 1
+fi
+grep -Fq 'portalServiceAccount is cetirun-portal, but the Portal runs as cetirun-portal.serviceAccount.name custom-portal: set both to the same name' <<< "${output}" || {
+  echo "FAIL: platform did not reject a Portal service account that differs from the Portal's" >&2
   exit 1
 }
 
@@ -273,24 +359,41 @@ grep -Fq 'configuration coordination requires both Operator and Portal' <<< "${o
 }
 
 echo "==> helm template platform (Portal not an admission administrator, expect failure)"
+# As after an upgrade with --reuse-values from a release without the value.
 if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
   "${portal_coordination_args[@]}" \
-  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=someone-else@example.com' 2>&1); then
+  --set-string cetirun-operator.sandboxAdmission.portalServiceAccount= 2>&1); then
   echo "FAIL: platform rendered enforced admission that refuses the Portal's writes" >&2
   exit 1
 fi
-grep -Fq 'sandboxAdmission.adminUsers must include system:serviceaccount:cetirun-system:cetirun-portal' <<< "${output}" || {
+grep -Fq "sandboxAdmission.adminUsers must include ${portal_account}, or set cetirun-operator.sandboxAdmission.portalServiceAccount to cetirun-portal" <<< "${output}" || {
   echo "FAIL: platform did not name the Portal service account the admission webhook must accept" >&2
   exit 1
 }
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
   "${portal_coordination_args[@]}" \
-  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=someone-else@example.com' \
-  --set-string 'cetirun-operator.sandboxAdmission.adminGroups[0]=system:serviceaccounts:cetirun-system')
-grep -q 'name: cetirun-sandbox-admission' <<< "${output}" || {
-  echo "FAIL: an administrator group that holds the Portal service account was refused" >&2
+  --set-string cetirun-operator.sandboxAdmission.portalServiceAccount= \
+  --set-string "cetirun-operator.sandboxAdmission.adminUsers[1]=${portal_account}")
+[ "$(admission_config "${output}")" = "${default_admission}" ] || {
+  echo "FAIL: listing the Portal service account instead of setting portalServiceAccount changed the admission configuration" >&2
   exit 1
 }
+
+# The admission server refuses to start with a blanket group, so the chart
+# refuses one too; it cannot stand in for the Portal's service account.
+for group in system:serviceaccounts:cetirun-system system:serviceaccounts; do
+  echo "==> helm template platform (administrator group ${group}, expect failure)"
+  if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+    "${portal_coordination_args[@]}" \
+    --set-string "cetirun-operator.sandboxAdmission.adminGroups[0]=${group}" 2>&1); then
+    echo "FAIL: platform rendered the blanket administrator group ${group}" >&2
+    exit 1
+  fi
+  grep -Fq 'sandboxAdmission.adminGroups cannot use system:authenticated, system:unauthenticated or the system:serviceaccounts groups' <<< "${output}" || {
+    echo "FAIL: platform did not reject the blanket administrator group ${group}" >&2
+    exit 1
+  }
+done
 
 echo "==> helm template platform (portal only)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" --set cetirun-operator.enabled=false)
@@ -317,6 +420,23 @@ grep -q 'namespace: portal-ns' <<< "${output}" || {
 }
 grep -A1 'name: AI_GATEWAY_ENABLED' <<< "${output}" | grep -q 'value: "true"' || {
   echo "FAIL: the operator must use a separately installed AI Gateway" >&2
+  exit 1
+}
+
+echo "==> helm template platform (admission with the Portal outside the operator namespace)"
+# The Portal's service account is in the release namespace, where the Portal runs.
+output=$(helm template platform "${chart_dir}" -f "${chart_dir}/values.yaml" --namespace portal-ns \
+  --set istio.enabled=true \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+  --set-string cetirun-portal.istio.host=portal.example.invalid \
+  --set cetirun-ai-gateway.enabled=false \
+  "${admission_args[@]}" "${portal_coordination_args[@]}")
+[ "$(admission_admin_count "${output}" system:serviceaccount:portal-ns:cetirun-portal)" -eq 1 ] || {
+  echo "FAIL: admission does not list the Portal service account in the release namespace" >&2
+  exit 1
+}
+[ "$(admission_admin_count "${output}" "${portal_account}")" -eq 0 ] || {
+  echo "FAIL: admission lists a Portal service account in the operator namespace" >&2
   exit 1
 }
 

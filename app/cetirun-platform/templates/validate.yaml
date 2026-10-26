@@ -98,11 +98,24 @@
 {{- /* The Portal writes Agents, Teams, Sandboxes and AgentPolicies with its own
        service account, which the Sandbox admission webhook accepts for a policy-bound
        Agent only as an administrator. Without it, Portal writes to such Agents were
-       refused, for example saving the GitHub Copilot models after a sign-in. */}}
-{{- if and $portal.enabled $operator.enabled $operatorAdmission.enabled $operatorAdmission.enforce }}
-{{- $portalAccount := printf "system:serviceaccount:%s:%s" .Release.Namespace (($portal.serviceAccount | default dict).name | default "cetirun-portal") }}
-{{- $adminGroups := $operatorAdmission.adminGroups | default list }}
-{{- if not (or (has $portalAccount ($operatorAdmission.adminUsers | default list)) (has (printf "system:serviceaccounts:%s" .Release.Namespace) $adminGroups) (has "system:serviceaccounts" $adminGroups)) }}
-{{- fail (printf "cetirun-operator.sandboxAdmission.adminUsers must include %s: the Portal writes Agents, Teams, Sandboxes and AgentPolicies with its service account, and the Sandbox admission webhook refuses its writes to policy-bound Agents otherwise" $portalAccount) }}
+       refused, for example saving the GitHub Copilot models after a sign-in. The
+       Operator chart adds the service account named in
+       sandboxAdmission.portalServiceAccount to the administrators, so it must be the
+       Portal's, and a release without the Portal must not name one. An upgrade with
+       --reuse-values from an older release does not apply this chart's default, so
+       the value is empty there. */}}
+{{- if and $operator.enabled $operatorAdmission.enabled }}
+{{- $portalServiceAccount := get $operatorAdmission "portalServiceAccount" }}
+{{- if $portal.enabled }}
+{{- $portalName := ($portal.serviceAccount | default dict).name | default "cetirun-portal" }}
+{{- $portalAccount := printf "system:serviceaccount:%s:%s" .Release.Namespace $portalName }}
+{{- if and $portalServiceAccount (ne $portalServiceAccount $portalName) }}
+{{- fail (printf "cetirun-operator.sandboxAdmission.portalServiceAccount is %s, but the Portal runs as cetirun-portal.serviceAccount.name %s: set both to the same name" $portalServiceAccount $portalName) }}
+{{- end }}
+{{- if and (not $portalServiceAccount) $operatorAdmission.enforce (not (has $portalAccount ($operatorAdmission.adminUsers | default list))) }}
+{{- fail (printf "cetirun-operator.sandboxAdmission.adminUsers must include %s, or set cetirun-operator.sandboxAdmission.portalServiceAccount to %s: the Portal writes Agents, Teams, Sandboxes and AgentPolicies with its service account, and the Sandbox admission webhook refuses its writes to policy-bound Agents otherwise" $portalAccount $portalName) }}
+{{- end }}
+{{- else if $portalServiceAccount }}
+{{- fail "clear cetirun-operator.sandboxAdmission.portalServiceAccount when the bundled Portal is disabled; list a separately installed Portal's ServiceAccount in cetirun-operator.sandboxAdmission.adminUsers" }}
 {{- end }}
 {{- end }}

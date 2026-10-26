@@ -55,6 +55,14 @@ cetirun-operator:
   # Without a url, the operator uses cetirun-ai-gateway in its namespace.
   aiGateway:
     enabled: true
+  sandboxAdmission:
+    # The Portal writes Agents, Teams, Sandboxes and AgentPolicies with its
+    # ServiceAccount, which the Sandbox admission webhook accepts for
+    # policy-bound Agents only as an administrator. When admission is enabled,
+    # the operator chart adds it to the administrators. Keep this equal to
+    # cetirun-portal.serviceAccount.name, and clear it when the Portal is
+    # disabled.
+    portalServiceAccount: cetirun-portal
 
 cetirun-portal:
   enabled: true

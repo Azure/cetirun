@@ -108,6 +108,19 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(message, result.stderr)
 
+    @staticmethod
+    def admission_environment(deployment):
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        return next(item for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_ADMISSION")
+
+    def platform_admission_config(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deployment = next(
+            document for document in yaml.safe_load_all(result.stdout)
+            if document and document["kind"] == "Deployment" and document["metadata"]["name"] == NAME
+        )
+        return json.loads(self.admission_environment(deployment)["value"])
+
     def test_default_and_disabled_render_only_existing_operator_resources(self):
         default = self.render(kube_version="1.29.0")
         self.assertEqual(set(default), {
@@ -239,6 +252,70 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             ):
                 with self.subTest(mode=name):
                     self.assertEqual(self.render(admission, chart=chart), self.render(admission))
+
+    def test_omitted_portal_service_account_preserves_rendering(self):
+        # Upgrades with --reuse-values from an older release carry no value.
+        with tempfile.TemporaryDirectory(prefix="admission-reused-values-") as directory:
+            chart = Path(directory) / "chart"
+            shutil.copytree(CHART, chart)
+            defaults = yaml.safe_load((chart / "values.yaml").read_text())
+            defaults["sandboxAdmission"].pop("portalServiceAccount")
+            (chart / "values.yaml").write_text(yaml.safe_dump(defaults))
+            for name, admission in (
+                ("disabled", None),
+                ("serving", self.server_values()),
+                ("enforced", self.enforced_values(podsEnabled=True, validationMode="strict")),
+            ):
+                with self.subTest(mode=name):
+                    self.assertEqual(self.render(admission, chart=chart), self.render(admission))
+        # A null value removes the key as well.
+        self.assertEqual(
+            self.render(self.server_values(portalServiceAccount=None)), self.render(self.server_values()),
+        )
+
+    def test_platform_without_the_portal_service_account_value_requires_a_listed_portal(self):
+        # An upgrade with --reuse-values from an older release does not apply the
+        # platform's default, so the value is empty or, as here, absent: nothing
+        # is added, enforced admission still needs the Portal's service account
+        # listed, and a listed one stays listed once.
+        namespace = "synthetic-release-namespace"
+        portal = f"system:serviceaccount:{namespace}:cetirun-portal"
+        with tempfile.TemporaryDirectory(prefix="platform-reused-values-") as directory:
+            base = Path(directory)
+            for relative in (
+                "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
+                "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
+            ):
+                shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
+            for relative, keys in (
+                ("cetirun-platform", ("cetirun-operator", "sandboxAdmission")),
+                ("cetirun-operator/chart", ("sandboxAdmission",)),
+            ):
+                defaults = yaml.safe_load((base / relative / "values.yaml").read_text())
+                section = defaults
+                for key in keys:
+                    section = section[key]
+                section.pop("portalServiceAccount")
+                (base / relative / "values.yaml").write_text(yaml.safe_dump(defaults))
+            chart = base / "cetirun-platform"
+            subprocess.run(
+                ["helm", "dependency", "build", "--skip-refresh", str(chart)],
+                cwd=ROOT, env=OFFLINE_ENV, text=True, capture_output=True, check=True, timeout=30,
+            )
+            values = {
+                "istio": {"enabled": True},
+                "cetirun-portal": {"istio": {"host": "portal.example.com"}, "aiGateway": {"catalogNamespace": namespace}},
+            }
+            operator = {"namespace": namespace, "domainSuffix": "platform.example.com"}
+            listed = self.helm(chart=chart, values={**values, "cetirun-operator": {
+                **operator, "sandboxAdmission": self.enforced_values(adminUsers=["admin@example.com", portal]),
+            }})
+            self.assertEqual(self.platform_admission_config(listed)["adminUsers"], ["admin@example.com", portal])
+            unlisted = self.helm(chart=chart, values={**values, "cetirun-operator": {
+                **operator, "sandboxAdmission": self.enforced_values(),
+            }})
+            self.assertNotEqual(unlisted.returncode, 0, unlisted.stdout)
+            self.assertIn(f"cetirun-operator.sandboxAdmission.adminUsers must include {portal}", unlisted.stderr)
 
     def test_kubernetes_sources_share_platform_config_and_grant_only_policy_writes(self):
         admission = self.enforced_values(podsEnabled=True)
@@ -535,13 +612,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         }
         operator = {
             "enabled": True, "namespace": namespace, "domainSuffix": "platform.example.com",
-            "sandboxSources": sources,
-            # The platform chart requires the Portal's service account as an
-            # admission administrator whenever both run with enforced admission.
-            "sandboxAdmission": self.enforced_values(
-                podsEnabled=True,
-                adminUsers=["admin@example.com", f"system:serviceaccount:{namespace}:cetirun-portal"],
-            ),
+            "sandboxSources": sources, "sandboxAdmission": self.enforced_values(podsEnabled=True),
         }
         portal = {
             "istio": {"host": "portal.example.com"},
@@ -565,6 +636,11 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                             "name: SANDBOX_RUNTIME_DEFAULTS_FROM_CONTROLLER" in result.stdout,
                             controller_defaults,
                         )
+                        # The platform chart adds the Portal's service account to
+                        # the admission administrators, once and after the others.
+                        self.assertEqual(self.platform_admission_config(result)["adminUsers"], [
+                            "admin@example.com", f"system:serviceaccount:{namespace}:cetirun-portal",
+                        ])
         disabled = self.helm(chart=chart, values={
             **values,
             "cetirun-operator": {"enabled": False},
@@ -1002,6 +1078,55 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 self.assertEqual(config["adminUsers"], users)
                 self.assertEqual(config["adminGroups"], groups)
 
+    def test_portal_service_account_is_added_once_after_configured_administrators(self):
+        portal = "system:serviceaccount:synthetic-release-namespace:cetirun-portal"
+        for admission, values, expected in (
+            (self.server_values(), {}, ["admin@example.com", portal]),
+            (self.enforced_values(podsEnabled=True), {}, ["admin@example.com", portal]),
+            (self.server_values(adminUsers=[], adminGroups=["sandbox-admins"]), {}, [portal]),
+            # The Portal runs in the release namespace, which can differ from the operator's.
+            (self.server_values(), {"namespace": "synthetic-platform"}, ["admin@example.com", portal]),
+            (self.server_values(adminUsers=[portal, "admin@example.com"]), {}, [portal, "admin@example.com"]),
+            (self.server_values(adminUsers=["admin@example.com", portal]), {}, ["admin@example.com", portal]),
+        ):
+            with self.subTest(users=admission["adminUsers"], values=values, enforce=admission.get("enforce", False)):
+                baseline = self.render(admission, values=values)
+                configured = self.render({**admission, "portalServiceAccount": "cetirun-portal"}, values=values)
+                previous_env = self.admission_environment(baseline[("Deployment", NAME)])
+                env = self.admission_environment(configured[("Deployment", NAME)])
+                config, previous = json.loads(env["value"]), json.loads(previous_env["value"])
+                self.assertEqual(config.pop("adminUsers"), expected)
+                self.assertEqual(previous.pop("adminUsers"), admission["adminUsers"])
+                self.assertEqual(config, previous)
+                if expected == admission["adminUsers"]:
+                    # Releases that already list it keep the same configuration,
+                    # so an upgrade does not roll the admission server.
+                    self.assertEqual(env["value"], previous_env["value"])
+                env["value"] = previous_env["value"]
+                self.assertEqual(configured, baseline)
+        # The platform chart sets it while admission stays disabled by default.
+        self.assertEqual(self.render({"portalServiceAccount": "cetirun-portal"}), self.render())
+
+    def test_portal_service_account_requires_a_service_account_name(self):
+        for invalid in ("Portal", "bad/name", "bad_name", "-portal", "portal.", " cetirun-portal", "x" * 254):
+            with self.subTest(invalid=invalid):
+                self.assert_rejected(
+                    self.server_values(portalServiceAccount=invalid),
+                    "sandboxAdmission.portalServiceAccount must be a valid ServiceAccount name",
+                )
+        for invalid in (42, True, [], {}):
+            with self.subTest(invalid=invalid):
+                self.assert_rejected(
+                    self.server_values(portalServiceAccount=invalid),
+                    "sandboxAdmission.portalServiceAccount must be a string",
+                )
+        # It does not replace the administrator that operations without a Portal
+        # page, such as reauthorization, need.
+        self.assert_rejected(
+            self.server_values(adminUsers=[], adminGroups=[], portalServiceAccount="cetirun-portal"),
+            "at least one adminUsers or adminGroups entry",
+        )
+
     def test_enforcing_webhooks_match_only_configuration_operations(self):
         documents = self.render(self.enforced_values())
         for kind, path in (
@@ -1339,6 +1464,13 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             for identities in ([""], [" "], [" admin@example.com"], [12], "admin@example.com", {}):
                 with self.subTest(field=field, identities=identities):
                     self.assert_rejected(self.server_values(**{field: identities}), f"sandboxAdmission.{field}")
+        # The admission server refuses to start with a blanket group.
+        for group in (
+            "system:authenticated", "system:unauthenticated",
+            "system:serviceaccounts", "system:serviceaccounts:cetirun-system",
+        ):
+            with self.subTest(blanket_group=group):
+                self.assert_rejected(self.server_values(adminGroups=[group]), "sandboxAdmission.adminGroups cannot use")
         self.assert_rejected(
             self.server_values(), "must not use the operator controller service account",
             values={"serviceAccount": {"name": NAME}},
@@ -1394,6 +1526,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             (None, {}),
             (self.server_values(), {}),
             (self.enforced_values(), {}),
+            (self.enforced_values(portalServiceAccount="cetirun-portal"), {}),
             (self.enforced_values(podsEnabled=True), {"sandboxSources": {
                 "enabled": True, "platformConfigMapName": "sandbox-platform",
             }}),

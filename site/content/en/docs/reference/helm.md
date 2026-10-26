@@ -344,6 +344,7 @@ runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 | `cetirun-operator.istioGateway`, `cetirun-portal.istio.gateway` | Matching Gateway resource in `namespace/name` form |
 | `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` | Namespace containing the gateway workload allowed to reach agents |
 | `cetirun-portal.istio.gatewayNamespace`, `gatewayServiceAccount` | Gateway workload identity used by portal access controls |
+| `cetirun-operator.sandboxAdmission.portalServiceAccount` | `cetirun-portal` in the platform (the operator chart defaults to empty); with Sandbox admission enabled, adds the Portal's service account in the release namespace to the admission administrators, which the Portal's writes to policy-bound Agents need. Keep it equal to `cetirun-portal.serviceAccount.name`; clear it when the Portal is disabled. See the [platform chart README]({{< repo "app/cetirun-platform/README.md" >}}) |
 
 The chart does not own managed Istio, the independent CetiRun Istio release,
 certificates, credentials, agent instances, or retained agent data. Setting
