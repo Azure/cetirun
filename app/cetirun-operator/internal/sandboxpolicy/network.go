@@ -6,6 +6,7 @@ package sandboxpolicy
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -134,8 +135,23 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	normalizePeer := func(peer *Peer) error {
 		if len(validation.IsDNS1123Subdomain(peer.Name)) != 0 || peer.UID == "" ||
 			len(validation.IsValidLabelValue(string(peer.UID))) != 0 ||
-			(peer.Namespace != "" && len(validation.IsDNS1123Label(peer.Namespace)) != 0) || len(peer.IPs) == 0 {
-			return fmt.Errorf("%w: peers require names, immutable UIDs, valid namespaces and resolved IPs", ErrUnavailable)
+			(peer.Namespace != "" && len(validation.IsDNS1123Label(peer.Namespace)) != 0) {
+			return fmt.Errorf("%w: peers require names, immutable UIDs and valid namespaces", ErrUnavailable)
+		}
+		if len(peer.PodSelector) != 0 {
+			if peer.Namespace == "" || len(peer.IPs) != 0 {
+				return fmt.Errorf("%w: selector-bound ingress requires a namespace and must not pin Pod IPs", ErrUnsupportedControl)
+			}
+			for key, value := range peer.PodSelector {
+				if len(validation.IsQualifiedName(key)) != 0 || len(validation.IsValidLabelValue(value)) != 0 ||
+					key == "io.kubernetes.pod.namespace" {
+					return fmt.Errorf("%w: ingress Pod selectors require valid Pod labels, not namespace identity overrides", ErrUnsupportedControl)
+				}
+			}
+			return nil
+		}
+		if len(peer.IPs) == 0 {
+			return fmt.Errorf("%w: IP-bound peers require resolved IPs", ErrUnavailable)
 		}
 		for i, raw := range peer.IPs {
 			address, err := normalizeIP(raw)
@@ -149,6 +165,9 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	}
 	dnsIPs := map[string]bool{}
 	for i := range topology.DNS {
+		if len(topology.DNS[i].PodSelector) != 0 {
+			return platform, fmt.Errorf("%w: Pod selectors are supported only for native ingress", ErrUnsupportedControl)
+		}
 		if err := normalizePeer(&topology.DNS[i]); err != nil {
 			return platform, err
 		}
@@ -177,9 +196,41 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	if err != nil {
 		return platform, err
 	}
-	for _, destinations := range []*[]Destination{&topology.Gateway, &topology.Ingress, &topology.KubernetesAPI} {
+	proxyExclusions := append(slices.Clone(mandatoryCIDRs), topology.ServiceCIDRs...)
+	proxyExclusions = append(proxyExclusions, topology.NodeCIDRs...)
+	proxyExclusions = append(proxyExclusions, topology.ManagementCIDRs...)
+	proxyExclusions = append(proxyExclusions, topology.MetadataCIDRs...)
+	for _, group := range []struct {
+		destinations *[]Destination
+		ingress      bool
+	}{
+		{&topology.Gateway, false}, {&topology.Ingress, true}, {&topology.KubernetesAPI, false},
+	} {
+		destinations := group.destinations
 		for i := range *destinations {
 			dest := &(*destinations)[i]
+			if len(dest.Peer.PodSelector) != 0 {
+				if !group.ingress || capabilities.Profile != sandbox.ProfileNativeSingleStart {
+					return platform, fmt.Errorf("%w: Pod selectors are supported only for native single-start ingress", ErrUnsupportedControl)
+				}
+				if len(dest.TrustedProxyCIDRs) == 0 {
+					return platform, fmt.Errorf("%w: selector-bound ingress requires explicit trusted proxy Pod CIDRs", ErrUnavailable)
+				}
+				for j, raw := range dest.TrustedProxyCIDRs {
+					prefix, err := parsePrefix(raw, capabilities)
+					if err != nil {
+						return platform, err
+					}
+					if err := ValidateProxyTrust(prefix.String()); err != nil ||
+						!containedByAny(prefix, topology.PodCIDRs) || overlapsAny(prefix, proxyExclusions) {
+						return platform, fmt.Errorf("%w: trusted proxy CIDRs must be bounded Pod networks excluding services, nodes, management and metadata", ErrUnsupportedControl)
+					}
+					dest.TrustedProxyCIDRs[j] = prefix.String()
+				}
+				dest.TrustedProxyCIDRs = sortedUnique(dest.TrustedProxyCIDRs)
+			} else if len(dest.TrustedProxyCIDRs) != 0 {
+				return platform, fmt.Errorf("%w: proxy CIDRs require a selector-bound native ingress peer", ErrUnsupportedControl)
+			}
 			if err := normalizePeer(&dest.Peer); err != nil {
 				return platform, err
 			}
@@ -196,6 +247,7 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			}
 			current := merged[string(peerKey)]
 			current.Peer = destination.Peer
+			current.TrustedProxyCIDRs = sortedUnique(append(current.TrustedProxyCIDRs, destination.TrustedProxyCIDRs...))
 			current.Ports = append(current.Ports, destination.Ports...)
 			current.Ports, err = canonicalObjects(current.Ports)
 			if err != nil {
@@ -210,6 +262,11 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		*destinations, err = canonicalObjects(*destinations)
 		if err != nil {
 			return platform, err
+		}
+	}
+	for _, peer := range topology.Peers {
+		if len(peer.PodSelector) != 0 {
+			return platform, fmt.Errorf("%w: Pod selectors are supported only in ingress destinations", ErrUnsupportedControl)
 		}
 	}
 	allPeers := slices.Clone(topology.Peers)
@@ -496,11 +553,15 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 				return plan, fmt.Errorf("%w: authenticated ingress requires protected managed Gateway identities", ErrUnsupportedControl)
 			}
 			if input.NativeExecution {
-				for _, ip := range destination.Peer.IPs {
-					if !netip.MustParseAddr(ip).IsGlobalUnicast() {
-						return plan, fmt.Errorf("%w: native proxy trust requires unicast ingress peer IPs", ErrUnsupportedControl)
+				if len(destination.Peer.PodSelector) != 0 {
+					plan.TrustedProxyIPs = append(plan.TrustedProxyIPs, destination.TrustedProxyCIDRs...)
+				} else {
+					for _, ip := range destination.Peer.IPs {
+						if !netip.MustParseAddr(ip).IsGlobalUnicast() {
+							return plan, fmt.Errorf("%w: native proxy trust requires unicast ingress peer IPs", ErrUnsupportedControl)
+						}
+						plan.TrustedProxyIPs = append(plan.TrustedProxyIPs, ip)
 					}
-					plan.TrustedProxyIPs = append(plan.TrustedProxyIPs, ip)
 				}
 			}
 			ingressPeers = append(ingressPeers, destination.Peer)
@@ -562,6 +623,22 @@ func parsePrefix(raw string, capabilities sandbox.Capabilities) (netip.Prefix, e
 		return netip.Prefix{}, fmt.Errorf("%w: a CIDR IP family is not qualified", ErrUnsupportedControl)
 	}
 	return prefix.Masked(), nil
+}
+
+// ValidateProxyTrust checks the compiler/render boundary. CIDR membership in the
+// registered Pod networks and the matching ingress selector are checked earlier.
+func ValidateProxyTrust(value string) error {
+	if address, err := netip.ParseAddr(value); err == nil {
+		if !address.Is4In6() && address.Zone() == "" && address.String() == value && address.IsGlobalUnicast() {
+			return nil
+		}
+	} else if prefix, err := netip.ParsePrefix(value); err == nil {
+		if !prefix.Addr().Is4In6() && prefix.String() == value && prefix == prefix.Masked() &&
+			prefix.Addr().IsGlobalUnicast() && !overlapsAny(prefix, mandatoryCIDRs) {
+			return nil
+		}
+	}
+	return fmt.Errorf("proxy trust requires a canonical unicast IP or bounded unicast CIDR")
 }
 
 func supportedFamily(address netip.Addr, capabilities sandbox.Capabilities) bool {
@@ -716,13 +793,25 @@ func deniedPorts(allowed []api.AgentPolicyPort) []PortRule {
 }
 
 func peerSelector(peer Peer) metav1.LabelSelector {
-	return metav1.LabelSelector{MatchLabels: map[string]string{
-		"k8s:" + PeerUIDLabel:             string(peer.UID),
+	selected := metav1.LabelSelector{MatchLabels: map[string]string{
 		"k8s:io.kubernetes.pod.namespace": peer.Namespace,
 	}}
+	if len(peer.PodSelector) == 0 {
+		selected.MatchLabels["k8s:"+PeerUIDLabel] = string(peer.UID)
+	} else {
+		for key, value := range peer.PodSelector {
+			selected.MatchLabels["k8s:"+key] = value
+		}
+	}
+	return selected
 }
 
 func excludingPeers(peers []Peer) ([]metav1.LabelSelector, error) {
+	for _, peer := range peers {
+		if len(peer.PodSelector) != 0 {
+			return excludingSelectedPeers(peers)
+		}
+	}
 	var uids []string
 	var selectors []metav1.LabelSelector
 	for _, peer := range peers {
@@ -744,6 +833,57 @@ func excludingPeers(peers []Peer) ([]metav1.LabelSelector, error) {
 		{Key: "k8s:" + PeerUIDLabel, Operator: metav1.LabelSelectorOpNotIn, Values: sortedUnique(uids)},
 	}})
 	return canonicalObjects(selectors)
+}
+
+func excludingSelectedPeers(peers []Peer) ([]metav1.LabelSelector, error) {
+	selectors := []metav1.LabelSelector{{MatchExpressions: []metav1.LabelSelectorRequirement{{
+		Key: "k8s:io.kubernetes.pod.namespace", Operator: metav1.LabelSelectorOpExists,
+	}}}}
+	remaining := MaxNetworkPartitionWork
+	for _, peer := range peers {
+		selected := peerSelector(peer)
+		var next []metav1.LabelSelector
+		budget := networkRuleBudget{}
+		for _, previous := range selectors {
+			// NOT (peer A OR peer B) requires a mismatch with every peer,
+			// including its namespace. Bound distribution before allocating.
+			for _, key := range slices.Sorted(maps.Keys(selected.MatchLabels)) {
+				if err := consumeBudget(&remaining, 1+len(previous.MatchExpressions), "peer selector expansion"); err != nil {
+					return nil, err
+				}
+				candidate := *previous.DeepCopy()
+				merged := false
+				for i := range candidate.MatchExpressions {
+					expression := &candidate.MatchExpressions[i]
+					if expression.Key == key && expression.Operator == metav1.LabelSelectorOpNotIn {
+						expression.Values = sortedUnique(append(expression.Values, selected.MatchLabels[key]))
+						merged = true
+						break
+					}
+				}
+				if !merged {
+					candidate.MatchExpressions = append(candidate.MatchExpressions, metav1.LabelSelectorRequirement{
+						Key: key, Operator: metav1.LabelSelectorOpNotIn, Values: []string{selected.MatchLabels[key]},
+					})
+				}
+				var err error
+				candidate.MatchExpressions, err = canonicalObjects(candidate.MatchExpressions)
+				if err != nil {
+					return nil, err
+				}
+				if err := budget.take(networkRuleEntries(nil, []metav1.LabelSelector{candidate}, nil, nil)); err != nil {
+					return nil, err
+				}
+				next = append(next, candidate)
+			}
+		}
+		var err error
+		selectors, err = canonicalObjects(next)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return selectors, nil
 }
 
 func managedPeerPorts(peer Peer, grants []addressGrant, blocks []netip.Prefix, blockedPorts []api.AgentPolicyPort) ([]api.AgentPolicyPort, error) {

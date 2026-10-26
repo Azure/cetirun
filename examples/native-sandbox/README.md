@@ -32,9 +32,10 @@ limits, baseline network controls, storage and selected ingress mode still need
 their actual deployment checks; do not enable this profile to bypass them.
 
 Native OpenClaw runs without a same-Pod Istio proxy. Its proxy trust is therefore
-derived from the registered ingress peer IPs, not the legacy `127.0.0.6` sidecar
-address. The controller passes only those exact addresses through its protected
-render plan. Do not use a wildcard proxy range or a per-Agent Helm override.
+derived from the registered ingress peers, not the legacy `127.0.0.6` sidecar
+address. Exact peer IPs remain the default; managed gateways can opt into
+[rollout-stable ingress](#rollout-stable-managed-ingress) below. Do not use a
+wildcard proxy range or a per-Agent Helm override.
 
 The packaged native OpenClaw init containers use `/usr/bin/tini -g --` to
 supervise the existing HOME, doctor and credential-retirement commands.
@@ -99,6 +100,76 @@ An administrator creates the reusable configuration through supported APIs.
 The Agent creator uses an authorized owner context; do not supply internal
 authorization records, lifecycle finalizers or manually edited status.
 Do not pre-create the Agent namespace or substitute unowned HOME/Secret objects.
+
+## Rollout-stable managed ingress
+
+For an AKS-managed Istio gateway, register the stable labels already supplied by
+the gateway Deployment instead of manually labelling its individual Pods.
+The native single-start profile accepts the following **one-entry fragment**
+under `platforms.kata.topology.ingress` in the administrator's `platform.json`:
+
+```json
+[
+  {
+    "peer": {
+      "name": "aks-istio-ingressgateway-external",
+      "namespace": "aks-istio-ingress",
+      "uid": "example-ingress-deployment-uid",
+      "podSelector": {
+        "istio": "aks-istio-ingressgateway-external"
+      }
+    },
+    "trustedProxyCIDRs": ["10.244.0.0/16"],
+    "ports": [{"port": 18789, "protocol": "TCP"}]
+  }
+]
+```
+
+Replace the synthetic UID, namespace, labels, Pod CIDRs and workload ports with
+the approved target inventory. Use a stable gateway identity, such as its
+Deployment UID, not a Pod UID. The registration declares that identity; it does
+not discover or independently verify the Deployment. For native Hermes, register
+its API port (`8642`) and Dashboard port (`9119`) instead of the OpenClaw port
+above; see [Create, connect and use](#create-connect-and-use).
+
+This mode requires matching Operator and runtime chart support, and:
+
+- At least one valid Pod label, with all labels matched within the exact
+  registered namespace. Do not include `peer.ips`: selection and proxy trust
+  must not depend on the current Pods. The `peer-uid` Pod label is not required
+  for this ingress entry. DNS, AI Gateway and other peers retain their existing
+  IP/peer-UID contract.
+- Explicit `trustedProxyCIDRs` contained in the registered `topology.podCIDRs`.
+  The compiler rejects wildcard ranges and ranges overlapping Service, Node,
+  management, metadata, loopback or link-local networks. Register the actual
+  gateway source Pod networks, including each required IP family. Host-networked
+  gateways or paths that SNAT to Node addresses are not supported by this mode.
+- A platform-controlled namespace and labels, an authenticating gateway that
+  still enforces owner access, and forwarded-client headers overwritten or
+  safely rebuilt by that gateway. Tenants must not be able to create or relabel
+  Pods in the selected gateway namespace.
+
+Cilium still admits only the selected gateway Pods on the registered workload
+ports and explicitly denies other sources and ports. Trusting the bounded Pod
+CIDRs in OpenClaw does **not** admit arbitrary Pods from those networks. Gateway
+Pod replacement within these networks needs no relabelling, registration update
+or native Agent restart. OpenClaw's token and device authentication remain
+enabled; the legacy `openclaw.portalSignIn` mode is not enabled for native
+execution by this change.
+
+This is an opt-in registration change, not an automatic migration of running
+Agents. Existing lifetimes retain their recorded configuration. Arrange the
+normal lifecycle transition before adopting a changed platform registration;
+do not edit their expectations, authorization or start markers. Exact-IP
+registrations remain supported, but their protected labels and proxy IP list
+must still be maintained whenever the gateway Pods change.
+
+Deployment preflight and offline rendering do not qualify gateway rollouts.
+With separate authorization for the target, verify owner UI access before and
+after a gateway Pod replacement, confirm the native Agent Pod and registration
+are unchanged, and check that unauthenticated, non-owner and non-gateway access
+remain denied. Record any source-IP translation or network enforcement failure
+rather than widening proxy trust.
 
 ## Create, connect and use
 

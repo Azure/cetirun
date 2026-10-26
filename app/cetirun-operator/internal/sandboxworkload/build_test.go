@@ -52,9 +52,28 @@ func TestNativeProxyTrustRequiresBoundedOpenClawIngress(t *testing.T) {
 	if !slices.Equal(bundle.Identity().Controls.TrustedProxyIPs, []string{"192.0.2.10", "2001:db8::10"}) {
 		t.Fatal("bundle aliases caller proxy trust")
 	}
+	input = fixture()
+	input.Controls.TrustedProxyIPs = []string{"10.244.0.0/16", "fd00:244::/64"}
+	cidrBundle, err := w.Build(input)
+	if err != nil {
+		t.Fatal("compiler-selected bounded proxy CIDRs were rejected:", err)
+	}
+	cidrValues, err := cidrBundle.Apply(values)
+	if err != nil || !equality.Semantic.DeepEqual(cidrValues[w.ValuesKey].(map[string]any)["trustedProxyIPs"], []any{"10.244.0.0/16", "fd00:244::/64"}) {
+		t.Fatal("protected proxy CIDRs were lost or broadened:", err)
+	}
+	input.Controls.TrustedProxyIPs[0] = "10.244.1.0/24"
+	if !slices.Equal(cidrBundle.Identity().Controls.TrustedProxyIPs, []string{"10.244.0.0/16", "fd00:244::/64"}) {
+		t.Fatal("bundle aliases caller proxy CIDRs")
+	}
 	for name, mutate := range map[string]func(*w.Input){
 		"missing proxies":   func(i *w.Input) { i.Controls.TrustedProxyIPs = nil },
 		"CIDR":              func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"0.0.0.0/0"} },
+		"IPv6 root CIDR":    func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"::/0"} },
+		"loopback CIDR":     func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"127.0.0.0/8"} },
+		"link-local CIDR":   func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"fe80::/64"} },
+		"multicast CIDR":    func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"224.0.0.0/4"} },
+		"host bits in CIDR": func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"10.244.0.1/16"} },
 		"unspecified":       func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"::"} },
 		"loopback":          func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"127.0.0.6"} },
 		"noncanonical":      func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"2001:0db8::10"} },
