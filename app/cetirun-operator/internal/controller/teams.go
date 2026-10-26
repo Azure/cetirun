@@ -580,6 +580,9 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 	if instance.Spec.RestartRequestID != "" {
 		config = append(config, "restart-request/v1", instance.Spec.RestartRequestID)
 	}
+	if request := instance.Spec.PlannedMigration; request != nil {
+		config = append(config, "planned-migration/v1", request.RequestID, request.Target.Name, string(request.Target.UID))
+	}
 	return operatorConfigHash(
 		r.DomainSuffix, gwSecretHash, r.SkillsStorageAccount,
 		hashCetiRunHelmValues(r.CetiRunHelmValues), r.ChartRegistry,

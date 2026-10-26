@@ -125,6 +125,11 @@ webhooks:
         apiVersions: ["v1"]
         resources: ["pods", "pods/ephemeralcontainers", "pods/resize"]
         scope: Namespaced
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods/binding", "bindings"]
+        scope: Namespaced
       - operations: ["CONNECT"]
         apiGroups: [""]
         apiVersions: ["v1"]

@@ -221,6 +221,120 @@ finalizer. This cleanup remains available when new starts are disabled and
 retries terminating journals during foreground deletion without adopting foreign
 ownership or discarding grant history.
 
+### Planned healthy-source migration (separate opt-in)
+
+`sandboxSources.plannedMigration: true` enables a platform-administrator
+Kubernetes API for cold moves of common-executor OpenClaw/Hermes Agents.
+It requires `nativeExecution`, which selects common reconciliation. The default is off;
+the false setting is omitted from controller configuration for reader-first
+rollout. Upgrade the CRDs, all Operator and admission replicas, and Portal
+readers before enabling new requests. Do not roll readers or schemas back while
+migration records remain. Disabling new requests retains accepted operations
+and their cleanup; it does not remove an existing destination pin.
+
+This first scope requires one bound filesystem CSI `ReadWriteOncePod` HOME,
+with no other PVC mounts, a CSI driver that requires attachment, and a healthy
+source on a different Node. It preserves Agent, namespace, StatefulSet, HOME
+PVC/PV, chart pin, Gateway key and spending identities. It does not support
+Custom or retained single-start lifetimes, shared-volume migration,
+cross-cluster moves, forced deletion/detach, or unavailable-source recovery.
+Use an explicitly authorized environment and qualify the actual runtime/CSI
+artifact set before enabling this feature.
+
+Set `spec.plannedMigration` to a fresh `requestID` and a `target` containing the
+destination Node's current `name` and `uid`. IDs use the retained-restart
+16-128 character format. Submit with Agent UID/resourceVersion preconditions.
+The same ID cannot select a different destination; an accepted request cannot
+be replaced until completed. A rejected, unaccepted request can be corrected.
+An uncaptured request rejected by the activation gate still rechecks source
+authorization; leaving that request present cannot retain revoked access.
+After a recorded migration, keep the destination rather than removing the field.
+Portal has no migration action in this increment and rejects new owner restarts
+while a migration is pending.
+
+The controller persists `status.plannedMigration` before side effects:
+
+1. `Protecting` captures exact source/storage/Node identities and protects the
+   source Pod and VolumeAttachment with separate finalizers. Once both are
+   protected, failure to write the stop checkpoint does not skip independent
+   authorization checks or shutdown of an unauthorized source. A transient dependency failure retains the source
+   observations and continues shutdown from `Stopping`,
+   rather than requiring readiness that its own hold cleared. Destination start
+   still requires current authorization through common reconciliation; no
+   desired generation is reported as applied merely to pass a migration check.
+   An accepted checkpoint is handled before bootstrap-receipt lookups can enter
+   an independent hold. During `Protecting`, failed source reads or protection
+   writes delay scale-down even when suspension is requested; retries must
+   retain both observations rather than destroy an unprotected source. Those
+   retries still recheck current authorization. Suspension, withdrawn access,
+   changed projections or unavailable authorization independently block the
+   existing Gateway key, withdraw ingress and apply an all-traffic deny to the
+   exact owned Cilium policy while incomplete protection prevents scale-down.
+   Its Agent/namespace selector and the captured source/storage identities are
+   unchanged; ordinary reconciliation restores the policy before destination use.
+   Network write/read-back failures remain explicit and retryable, not evidence
+   of successful dataplane isolation. The temporary block retains key/spend
+   identity without applying a new grant or claiming an administrator's block.
+   Access failures are returned with the protection failure for retry; preserving
+   source observations does not permit continued use of an obsolete grant.
+2. `Stopping` blocks the existing key, withdraws routing and stops main/auxiliary
+   workloads. `SourceTerminated` requires terminal Pod status and a completed
+   status for every named container, while the original source Node/boot and CSI
+   identity remain healthy. A missing Pod is not a termination acknowledgement.
+3. `Detached` requires the original, retained VolumeAttachment to be deleting
+   and to have released the CSI attacher finalizer observed during capture.
+   The attacher removes that finalizer after successful detach, before updating
+   `attached` and clearing `detachError`; those later status writes may be lost
+   without retry. The retained finalizer transition is therefore the completion
+   evidence, even when status is stale. The attachment UID, volume, driver and
+   source Node must still match. Only after recording `Detached` is the migration's
+   attachment finalizer removed. A missing attachment or `attached: false` with
+   the CSI finalizer still present does not establish detach. Ordinary deletion
+   uses the same evidence to release the captured protection. See the upstream
+   [external-attacher completion ordering](https://github.com/kubernetes-csi/external-attacher/blob/e19b215493af4f130a8a82ef5911b5f052edd81c/pkg/controller/util.go#L82).
+4. `Starting` follows removal of source Pods/attachments and release of any
+   configuration reservation. The destination must satisfy the bound PV
+   topology, workload/RuntimeClass scheduling and supported Equal/Exists
+   tolerations. Required node-name affinity intersects existing constraints;
+   it never replaces them or sets `spec.nodeName` directly.
+5. `Completed` requires the current Ready replacement Pod on the selected Node
+   and an attached destination VolumeAttachment for the original HOME.
+
+Both Pod binding APIs re-read the destination Node UID and provider identity.
+Same-name replacement Nodes are rejected. Node health checks require a Ready
+condition and its UID-owned lease renewed within the lease duration, capped at
+60 seconds; lease timestamps more than five seconds ahead are rejected. Source
+boot/CSI identity changes or uncertain observations block progress rather than
+selecting another destination. These API observations are **not physical writer
+fencing** and do not qualify failed-node recovery.
+
+Suspension keeps the checkpoint and prevents destination start; resume continues
+the same request. If suspension arrives before the first checkpoint, a still-ready
+source is captured and protected before stopping. A rejected migration preflight
+does not block independently requested suspension; an unaccepted request remains
+available for administrator correction or withdrawal rather than being silently
+cleared. If an authorization outage holds the source before capture, ordinary
+reconciliation can restore its currently authorized running projection after
+the dependency recovers. The unaccepted destination is not rendered or applied;
+any previous completed destination pin remains in force. Both binding APIs allow
+that source recovery, and capture is retried only after readiness returns.
+Current authorization, suspension and the migration opt-in still apply, and a
+newly persisted checkpoint invalidates an older recovery apply.
+Pending migration/shutdown work reports `Pending`, not completed
+suspension: setting zero replicas alone does not acknowledge source termination.
+Deletion never creates a replacement and releases only the
+captured protections after their acknowledgements. Do not remove finalizers or
+edit status to bypass a wait. Source protection writes, acknowledgements and
+replacement apply remain retryable after conflicts or lost responses.
+
+The Operator retains `get` on Nodes/CSINodes/CSIDrivers and `get/list/patch` on
+VolumeAttachments for observation and finalizer cleanup even when new requests
+are disabled. Admission retains read-only Node access and validates only the
+checkpoint-authorized Pod finalizer delta; it does not mutate lifecycle state.
+Offline tests exercise synthetic kubelet/CSI observations and isolated API
+servers, not a live AKS driver, model, storage durability or physical fencing.
+See the [lifecycle guide](../../site/content/en/docs/guides/lifecycle.md#planned-node-migration).
+
 ### Retained single-start profile and capability registration
 
 The following single-start lifecycle notes describe retained version-1 records;

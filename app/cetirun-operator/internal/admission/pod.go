@@ -124,6 +124,11 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if request.Operation == admissionv1.Delete || request.SubResource == "status" {
 		return admission.Allowed("Pod deletion and status remain independent of policy admission")
 	}
+	if request.Resource.Group == "" && request.Resource.Version == "v1" && request.Operation == admissionv1.Create &&
+		((request.Resource.Resource == "pods" && request.SubResource == "binding") ||
+			(request.Resource.Resource == "bindings" && request.SubResource == "")) {
+		return h.validateMigrationBinding(ctx, request)
+	}
 	if request.Resource.Group == "" && request.Resource.Resource == "pods" && request.Resource.Version == "v1" &&
 		request.Operation == admissionv1.Connect && slices.Contains([]string{"exec", "attach", "portforward"}, request.SubResource) {
 		// CONNECT carries an options object, not a Pod. It must not depend on
@@ -144,6 +149,9 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	}
 	if podGarbageCollectorFinalizerUpdate(request, &pod) {
 		return admission.Allowed("garbage collector Pod finalization remains independent of policy admission")
+	}
+	if changed, add := migrationFinalizerChange(request, &pod); changed {
+		return h.validateMigrationFinalizer(ctx, request, &pod, add)
 	}
 	releaseFinalizer := nativePodFinalizerRemoval(request, &pod)
 	if pod.Annotations[sandboxworkload.ReconciledAnnotation] == "true" {

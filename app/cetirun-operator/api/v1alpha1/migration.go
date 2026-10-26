@@ -32,8 +32,6 @@ type MigrationObject struct {
 	UID types.UID `json:"uid"`
 }
 
-// PlannedMigrationRequest is a passive rendering/checkpoint value. Agent API
-// fields and controller activation are delivered by the integration layer.
 type PlannedMigrationRequest struct {
 	// Reusing the current ID only observes that request.
 	// +kubebuilder:validation:MinLength=16
@@ -94,4 +92,18 @@ func (s *PlannedMigrationStatus) SourceTerminated() bool {
 
 func (s *PlannedMigrationStatus) CanStart() bool {
 	return s != nil && (s.Phase == MigrationStarting || s.Phase == MigrationCompleted)
+}
+
+func (a *Agent) MigrationNeedsCapture() bool {
+	request, status := a.Spec.PlannedMigration, a.Status.PlannedMigration
+	return request != nil && (status == nil ||
+		(status.Phase == MigrationCompleted && status.PlannedMigrationRequest != *request))
+}
+
+func (a *Agent) MigrationPending() bool {
+	request, status := a.Spec.PlannedMigration, a.Status.PlannedMigration
+	if request == nil {
+		return status != nil
+	}
+	return status == nil || status.PlannedMigrationRequest != *request || status.Phase != MigrationCompleted
 }
