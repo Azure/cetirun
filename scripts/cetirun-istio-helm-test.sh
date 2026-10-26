@@ -59,7 +59,7 @@ grep -Fq 'local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico"}' <<
   echo "FAIL: health and readiness exemptions must be exact paths" >&2
   exit 1
 }
-grep -Fq 'local EXEMPT_PATH_PREFIXES = {"/oauth2", "/api", "/internal", "/assets", "/instances", "/admin"}' <<< "${output}" || {
+grep -Fq 'local EXEMPT_PATH_PREFIXES = {"/oauth2", "/api", "/internal", "/assets", "/instances", "/admin", "/connections"}' <<< "${output}" || {
   echo "FAIL: Portal subtree exemptions are missing" >&2
   exit 1
 }

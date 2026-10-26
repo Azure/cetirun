@@ -64,6 +64,11 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             "/readyz/live": False,
             "/healthz-demo/term/": False,
             "/readyz-demo/term/": False,
+            "/connections": True,
+            "/connections/": True,
+            "/connections-demo/term/": False,
+            "/connectionsdemo": False,
+            "/ui/connections/": False,
             "/admin": True,
             "/admin/users": True,
             "/admin-tools/term/": False,
@@ -73,6 +78,27 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         for path, expected in cases.items():
             with self.subTest(path=path):
                 self.assertEqual(is_exempt_path(path), expected)
+
+    def test_portal_spa_routes_are_exempt_and_reserved(self):
+        # A new Portal page must not be interpreted as an Agent name after
+        # sign-in, or be shadowed by an Agent created with the same bare name.
+        root = TEMPLATE.parents[4]
+        app = (root / "app/cetirun-portal/web/src/App.tsx").read_text()
+        handler = (root / "app/cetirun-portal/internal/handler/instance.go").read_text()
+        reserved_block = re.search(
+            r"var reservedInstanceNames = map\[string\]struct\{\}\{(.*?)\n\}",
+            handler,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(reserved_block)
+        reserved = set(re.findall(r'"([^"/]+)":', reserved_block.group(1)))
+        prefixes = self._lua_string_list("EXEMPT_PATH_PREFIXES")
+        routes = set(re.findall(r'path="/([^/":]+)', app))
+        self.assertIn("connections", routes)
+        for route in routes:
+            with self.subTest(route=route):
+                self.assertIn("/" + route, prefixes)
+                self.assertIn(route, reserved)
 
     def test_portal_sign_in_cookies_never_reach_agents(self):
         # OAuth2 Proxy names a CSRF cookie per sign-in when
