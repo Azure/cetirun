@@ -62,10 +62,6 @@ sandboxSources:
   platformConfigMapName: sandbox-platform
   homeClaimName: home
   skillsClaimName: skills
-  helpers:
-    doctor: false
-    logger: false
-    desktop: false
 aiGateway:
   enabled: true
 sandboxAdmission:
@@ -73,6 +69,11 @@ sandboxAdmission:
   enforce: true
   podsEnabled: true
 ```
+
+The legacy `sandboxSources.helpers` flags do not control reconciled (`v2`)
+native lifetimes. Those use the runtime chart's helper settings: OpenClaw
+doctor runs on each Pod initialization by default, even if
+`sandboxSources.helpers.doctor` is `false`.
 
 This is an **overlay**, not complete installation configuration. Supply the
 target's admission TLS/administrator/coordination settings, domain, registry,
@@ -100,6 +101,23 @@ An administrator creates the reusable configuration through supported APIs.
 The Agent creator uses an authorized owner context; do not supply internal
 authorization records, lifecycle finalizers or manually edited status.
 Do not pre-create the Agent namespace or substitute unowned HOME/Secret objects.
+
+## Helper memory
+
+The Portal's new-Sandbox form and [configuration.yaml](configuration.yaml)
+recommend `spec.resources.helpers.limits.memory: 2Gi`, with the memory request
+remaining `128Mi`. OpenClaw 2026.9.6's doctor was observed to be OOMKilled at the
+previous `512Mi` limit; `2Gi` allowed initialization to complete. This is a
+starting recommendation, not a measured minimum or a guarantee for every runtime
+and workload. All init containers, including `doctor`, `retire-copilot-sign-in`
+and `retire-direct-model-auth`, and any Agent sidecars share the Sandbox's
+per-helper resource settings. Include them and RuntimeClass overhead when
+planning the aggregate Pod resource budget.
+
+Existing Sandboxes retain their stored limits. To raise them, use the supported
+[coordinated configuration update](../../app/cetirun-operator/README.md#coordinated-configuration-updates)
+flow; changing the Portal default does not resize existing Sandboxes or bypass
+lifecycle and admission checks.
 
 ## Rollout-stable managed ingress
 

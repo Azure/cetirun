@@ -17,6 +17,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/utils/ptr"
@@ -74,6 +75,9 @@ func TestNativeSandboxExampleUsesSupportedContract(t *testing.T) {
 	}
 	if _, errs := sandbox.NormalizeSandbox(box.Spec); len(errs) != 0 {
 		t.Fatal(errs.ToAggregate())
+	}
+	if memory := box.Spec.Resources.Helpers.Limits.Memory(); memory.Cmp(resource.MustParse("2Gi")) < 0 {
+		t.Fatalf("native example helper memory limit = %s, want at least 2Gi for OpenClaw initialization", memory.String())
 	}
 	if _, errs := sandbox.NormalizeAgentPolicy(policy.Spec); len(errs) != 0 {
 		t.Fatal(errs.ToAggregate())
