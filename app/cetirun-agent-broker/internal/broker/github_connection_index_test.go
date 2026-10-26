@@ -5,6 +5,7 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -332,6 +333,22 @@ func TestGitHubInstallationEndpointFinishesVerifiedPendingSelectionWithoutRefres
 		t.Fatal("endpoint refreshed or revalidated an already verified pending selection")
 		return nil, nil
 	})}}
+	// Reopening the wizard must rediscover the locked choice before it can
+	// retry POST. Neither listing nor completing it needs a token refresh.
+	listRequest := httptest.NewRequest(http.MethodGet, "/v1/connections/"+id+"/github/installations", nil)
+	setPortalRequestHeaders(listRequest, owner, "")
+	listResponse := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(listResponse, listRequest)
+	var choices struct {
+		Installations []struct {
+			ID           int64             `json:"id"`
+			AccountLogin string            `json:"accountLogin"`
+			Permissions  map[string]string `json:"permissions"`
+		} `json:"installations"`
+	}
+	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &choices) != nil || len(choices.Installations) != 1 || choices.Installations[0].ID != 17 || choices.Installations[0].AccountLogin != "example-org" || len(choices.Installations[0].Permissions) != 0 {
+		t.Fatalf("pending installation was not available for retry: %d %s", listResponse.Code, listResponse.Body.String())
+	}
 	request := httptest.NewRequest(http.MethodPost, "/v1/connections/"+id+"/github/installation", strings.NewReader(`{"installationId":17}`))
 	setPortalRequestHeaders(request, owner, "")
 	response := httptest.NewRecorder()

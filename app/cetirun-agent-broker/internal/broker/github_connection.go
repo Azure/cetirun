@@ -180,6 +180,13 @@ func (s *Server) githubInstallations(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, 503, "dependency_unavailable", "GitHub App is unavailable", correlationID(r))
 		return
 	}
+	if pending := record.PendingInstallation; pending != nil && pending.AppSlug == s.cfg.GitHubAppSlug && record.Connection.Status == "installation_required" {
+		// Keep an interrupted, already verified choice visible after a page
+		// reload, even when its user token has since expired. Selecting it
+		// resumes the fenced write; this metadata grants no repository access.
+		writeJSON(w, 200, map[string]any{"installations": []any{map[string]any{"id": pending.InstallationID, "accountLogin": pending.AccountLogin, "accountType": "", "permissions": map[string]string{}}}, "installUrl": "https://github.com/apps/" + s.cfg.GitHubAppSlug + "/installations/new"})
+		return
+	}
 	credential, err := s.githubUserCredential(r.Context(), record)
 	if err != nil {
 		writeGitHubUserCredentialError(w, r, err)

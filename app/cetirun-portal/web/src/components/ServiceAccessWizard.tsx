@@ -150,7 +150,7 @@ export function ServiceAccessWizard({ instance, connections, editing, canManage,
           {installations.isLoading && <Spinner size="tiny" label="Loading GitHub organizations..." />}
           {installations.error && <Text role="alert" block>Could not load GitHub access. Try refreshing, or sign in again.</Text>}
           <RadioGroup aria-label="GitHub account or organization" value={selectedInstallation?.toString() ?? ""} onChange={(_, data) => setInstallationChoice(Number(data.value))}>
-            {installed.map((item) => <Radio key={item.id} value={String(item.id)} disabled={disabled} label={`${item.accountLogin} (${item.accountType === "Organization" ? "Organization" : "Personal account"})`} />)}
+            {installed.map((item) => <Radio key={item.id} value={String(item.id)} disabled={disabled} label={`${item.accountLogin} (${item.accountType === "Organization" ? "Organization" : item.accountType === "User" ? "Personal account" : "GitHub account"})`} />)}
           </RadioGroup>
           {!installations.isLoading && !installations.isError && !installed.length && <Text block>No GitHub access is available yet. Set up the App for your repositories. Your organization may require administrator approval.</Text>}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>

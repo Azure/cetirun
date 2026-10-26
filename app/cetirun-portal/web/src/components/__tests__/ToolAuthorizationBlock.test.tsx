@@ -156,14 +156,14 @@ describe("Agent service access", () => {
     expect(screen.getByLabelText("Code permission")).toHaveValue(""); expect(screen.getByLabelText("Issues permission")).toHaveValue("write");
   });
 
-  it("completes unfinished setup with a single-select organization before granting access", async () => {
+  it.each(["Organization", ""])("completes unfinished setup or a pending selection (%s) before granting access", async (accountType) => {
     const unfinished = { ...app, status: "installation_required", github: { userLogin: "octocat", appSlug: "example-app" } } as Connection;
     const canonical = { ...app, id: "canonical-app" };
     api.listConnections.mockResolvedValueOnce([unfinished]).mockResolvedValue([canonical]);
-    api.listGitHubInstallations.mockResolvedValue({ installations: [{ id: 7, accountLogin: "example-org", accountType: "Organization", permissions: { contents: "write" } }], installUrl: "https://github.com/apps/example-app/installations/new" });
+    api.listGitHubInstallations.mockResolvedValue({ installations: [{ id: 7, accountLogin: "example-org", accountType, permissions: { contents: "write" } }], installUrl: "https://github.com/apps/example-app/installations/new" });
     api.selectGitHubInstallation.mockResolvedValue(canonical);
     const user = userEvent.setup(); const view = renderUI(); await open(user); await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(await screen.findByRole("radio", { name: "example-org (Organization)" })).toBeChecked();
+    expect(await screen.findByRole("radio", { name: `example-org (${accountType ? "Organization" : "GitHub account"})` })).toBeChecked();
     expect(api.selectGitHubInstallation).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("checkbox", { name: "example-org/allowed", exact: true });
