@@ -75,8 +75,9 @@ model name adds or removes a group; when its catalog refresh sees that, the
 Operator updates the keys of Agents with shared models, and re-projects only
 the policy-bound Agents whose AgentPolicy allows that name. A name a policy
 does not allow changes nothing for its Agents; before, any new name re-projected
-every policy-bound Agent, which stops a running native Sandbox Agent for good
-(measured on a Kubernetes 1.37 cluster).
+every policy-bound Agent, which held a running native Sandbox Agent with a
+single-start record until it was recreated (measured on a Kubernetes 1.37
+cluster).
 
 The Operator trusts a group only while every deployment carrying it is
 configured in this chart rather than added through the console, has a unique
@@ -93,9 +94,14 @@ the model until the Operator granted the new one. Upgrading changes every
 group once. Upgrade this chart together with the Operator, as the platform
 chart does: the Operator trusts only groups of the current form. It updates
 the keys of Agents with shared models when its catalog refresh sees the new
-groups, and re-projects policy-bound Agents once. Native Sandbox Agents are
-single-start, so they stay held after that re-projection until they are
-recreated.
+groups, and re-projects policy-bound Agents once. How a running native Sandbox
+Agent takes that re-projection depends on the record it was started with: one
+started by the Operator's common executor restarts once, while one that still
+has a single-start record stays held until it is recreated. Measured on a
+Kubernetes 1.37 cluster: an OpenClaw Agent started before the common executor
+stayed held after the upgrade, and Agents started by it, OpenClaw and Hermes,
+restarted once for each re-projection, Hermes in about two to three minutes,
+OpenClaw in about eight to ten.
 
 This behavior is opt-in. Standalone Gateways retain their existing model list
 and custom deployment IDs unchanged when `operatorIntegration` is false. The
