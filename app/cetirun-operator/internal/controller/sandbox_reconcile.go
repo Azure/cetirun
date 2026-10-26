@@ -618,7 +618,7 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 			return fmt.Errorf("common Sandbox source reservation waits for acknowledged controller shutdown")
 		}
 	}
-	quiescence := &KubernetesNativeQuiescence{APIReader: r.customReader()}
+	quiescence := &KubernetesNativeQuiescence{APIReader: r.customReader(), Reconciled: true}
 	if err := quiescence.CheckQuiesced(ctx, agent, SandboxPrerequisites{
 		AgentUID: agent.UID, AgentGeneration: agent.Generation, NamespaceUID: expected.Namespace.UID, Home: expected.Home,
 	}); err != nil {

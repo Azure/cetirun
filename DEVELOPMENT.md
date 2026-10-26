@@ -235,6 +235,19 @@ Operator tests cover source/CSI acknowledgement ordering, repeated moves,
 partial/lost writes, suspension and deletion using synthetic observations.
 These checks do not run kubelets or CSI controllers and are not AKS validation.
 
+The common-executor RWO HOME contract has an isolated API-server regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxRWOHomeAPIServer$' -count=1
+```
+
+It exercises served Agent authorization, common chart rendering, current Pod
+admission and HOME access-mode immutability. Normal controller tests cover both
+RWO and RWOP retained restarts, coordinated shutdown/resume and repeated
+healthy-source migration with synthetic Pod/CSI observations. These are offline
+contracts, not runtime, file-retention, model-spend or CSI qualification.
+
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.

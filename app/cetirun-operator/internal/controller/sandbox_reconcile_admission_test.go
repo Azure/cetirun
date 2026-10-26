@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
@@ -177,61 +178,69 @@ func TestReconciledSandboxOptionalCoordinationCoversCurrentPods(t *testing.T) {
 
 func TestReconciledSandboxAdmitsCurrentMainAndAuxiliaryPods(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
-		t.Run(kind, func(t *testing.T) {
-			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true)
-			f.reconcileOK(t)
-			expected := reconciledExpectationForTest(t, f)
-			handler, err := admissionhandler.NewPodHandler(f.kube, admissionhandler.PodConfig{StateNamespace: f.r.OperatorNamespace})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, workload := range expected.Workloads {
-				pod := reconciledPodForTest(t, f, workload)
-				if response := handler.Validate(context.Background(), reconciledPodRequest(t, pod)); !response.Allowed {
-					t.Fatalf("%s current %s Pod was rejected: %v", kind, workload.Kind, response.Result)
+		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
+			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, withNativeHomeAccessMode(t, mode))
+				f.reconcileOK(t)
+				expected := reconciledExpectationForTest(t, f)
+				handler, err := admissionhandler.NewPodHandler(f.kube, admissionhandler.PodConfig{StateNamespace: f.r.OperatorNamespace})
+				if err != nil {
+					t.Fatal(err)
 				}
-				for name, mutate := range map[string]func(*corev1.Pod){
-					"privilege": func(p *corev1.Pod) { p.Spec.Containers[0].SecurityContext.Privileged = ptr.To(true) },
-					"image":     func(p *corev1.Pod) { p.Spec.Containers[0].Image = "registry.example.com/unapproved:example" },
-					"owner":     func(p *corev1.Pod) { p.OwnerReferences[0].UID = "another-controller" },
-					"dispatch":  func(p *corev1.Pod) { delete(p.Annotations, w.ReconciledAnnotation) },
-					"home": func(p *corev1.Pod) {
-						p.Spec.Volumes = append(p.Spec.Volumes, corev1.Volume{Name: "unexpected", VolumeSource: corev1.VolumeSource{
-							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "unapproved-home"},
-						}})
-					},
-				} {
-					t.Run(workload.Kind+"/"+name, func(t *testing.T) {
-						changed := pod.DeepCopy()
-						mutate(changed)
-						if handler.Validate(context.Background(), reconciledPodRequest(t, changed)).Allowed {
-							t.Fatal("current-template admission accepted an unapproved Pod change")
+				for _, workload := range expected.Workloads {
+					pod := reconciledPodForTest(t, f, workload)
+					if response := handler.Validate(context.Background(), reconciledPodRequest(t, pod)); !response.Allowed {
+						t.Fatalf("%s current %s Pod was rejected: %v", kind, workload.Kind, response.Result)
+					}
+					for name, mutate := range map[string]func(*corev1.Pod){
+						"privilege": func(p *corev1.Pod) { p.Spec.Containers[0].SecurityContext.Privileged = ptr.To(true) },
+						"image":     func(p *corev1.Pod) { p.Spec.Containers[0].Image = "registry.example.com/unapproved:example" },
+						"owner":     func(p *corev1.Pod) { p.OwnerReferences[0].UID = "another-controller" },
+						"dispatch":  func(p *corev1.Pod) { delete(p.Annotations, w.ReconciledAnnotation) },
+						"extra HOME writer": func(p *corev1.Pod) {
+							p.Name = workload.Identity.Name + "-1"
+							p.Labels["statefulset.kubernetes.io/pod-name"] = p.Name
+							p.Labels["apps.kubernetes.io/pod-index"] = "1"
+							p.Spec.Hostname = p.Name
+						},
+						"home": func(p *corev1.Pod) {
+							p.Spec.Volumes = append(p.Spec.Volumes, corev1.Volume{Name: "unexpected", VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "unapproved-home"},
+							}})
+						},
+					} {
+						t.Run(workload.Kind+"/"+name, func(t *testing.T) {
+							changed := pod.DeepCopy()
+							mutate(changed)
+							if handler.Validate(context.Background(), reconciledPodRequest(t, changed)).Allowed {
+								t.Fatal("current-template admission accepted an unapproved Pod change")
+							}
+						})
+					}
+					var config corev1.ConfigMap
+					for _, control := range expected.Controls {
+						if control.GetKind() == "ConfigMap" {
+							if err := f.kube.Get(context.Background(), client.ObjectKeyFromObject(&control), &config); err != nil {
+								t.Fatal(err)
+							}
+							break
 						}
-					})
-				}
-				var config corev1.ConfigMap
-				for _, control := range expected.Controls {
-					if control.GetKind() == "ConfigMap" {
-						if err := f.kube.Get(context.Background(), client.ObjectKeyFromObject(&control), &config); err != nil {
-							t.Fatal(err)
-						}
-						break
+					}
+					before := config.DeepCopy()
+					config.Data["unapproved"] = "changed"
+					if err := f.kube.Update(context.Background(), &config); err != nil {
+						t.Fatal(err)
+					}
+					response := handler.Validate(context.Background(), reconciledPodRequest(t, pod))
+					if response.Allowed || !strings.Contains(response.Result.Message, "ControlMismatch") {
+						t.Fatal("an unchanged Pod was admitted against changed chart configuration")
+					}
+					config.Data = before.Data
+					if err := f.kube.Update(context.Background(), &config); err != nil {
+						t.Fatal(err)
 					}
 				}
-				before := config.DeepCopy()
-				config.Data["unapproved"] = "changed"
-				if err := f.kube.Update(context.Background(), &config); err != nil {
-					t.Fatal(err)
-				}
-				response := handler.Validate(context.Background(), reconciledPodRequest(t, pod))
-				if response.Allowed || !strings.Contains(response.Result.Message, "ControlMismatch") {
-					t.Fatal("an unchanged Pod was admitted against changed chart configuration")
-				}
-				config.Data = before.Data
-				if err := f.kube.Update(context.Background(), &config); err != nil {
-					t.Fatal(err)
-				}
-			}
-		})
+			})
+		}
 	}
 }

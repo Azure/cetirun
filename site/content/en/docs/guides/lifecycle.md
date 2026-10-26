@@ -183,12 +183,19 @@ storage-failover qualification.
 ## Planned node migration
 
 Platform administrators can opt in to planned cold migration for common-executor
-OpenClaw/Hermes Agents with one filesystem CSI/RWOP HOME. This is a Kubernetes
+OpenClaw/Hermes Agents with one filesystem CSI HOME using `ReadWriteOncePod`
+(RWOP) or `ReadWriteOnce` (RWO), explicitly supported by the Kata platform
+registration. This is a Kubernetes
 API, not a Portal migration button. The deployment must enable
 `sandboxSources.plannedMigration` after all readers have upgraded. Qualify the
 actual AKS, runtime and CSI artifacts in an authorized test environment first.
 Custom, retained single-start, additional PVCs, unavailable sources and
 cross-cluster moves are outside this initial scope.
+
+Both HOME modes use the same restart, retained stop/resume and migration
+checkpoints. RWO is not a single-Pod lock: current workload admission and
+acknowledged source shutdown and detach remain mandatory. Existing HOME claims
+are not converted in place, and retained single-start lifetimes remain RWOP-only.
 
 Read the current Agent UID/resourceVersion and target Node UID from the
 authorized context. The following values are illustrative and must be replaced:
