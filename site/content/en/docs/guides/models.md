@@ -207,8 +207,9 @@ key like any other.
 An instance governed by an Agent Policy can also carry request limits on its
 key: parallel requests, requests per minute, tokens per minute, and per-model
 limits. The Policy sets them for every Agent of its Teams, each on its own key.
-The operator applies a change to the existing key; like any change to the
-Policy, it also restarts the Agents running under the Policy once. A request
+The operator applies limit-only changes to the existing key without stopping or
+restarting running Agents. Budget and model access changes still use the normal
+policy reprojection fence. A request
 over a limit receives HTTP 429 with a `retry-after` header. A tokens per minute
 limit counts the tokens of finished requests; see the
 [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)

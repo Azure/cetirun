@@ -378,10 +378,23 @@ when they differ. Removing a field clears it on the key. Other key settings and
 metadata are kept. The limits are not part of the Gateway policy revision, so
 changing them does not start the reprojection fence that a model or budget
 change starts, and the operator keeps each Agent's key. Sandbox execution,
-however, takes the whole AgentPolicy as an input of the Agents it runs: a
-limits change, like any other change to the policy, restarts the policy's
-running Agents once. Keys of legacy Agents without a policy are not changed;
-Gateway administrators manage their limits.
+including coordinated configuration reservations, also excludes
+`modelAccess.rateLimits` from its execution inputs. Adding, editing, or removing
+only these limits, including `perModel`, does not stop or restart running
+native Agents. While policy status catches up to the new generation, the
+operator reassesses the current policy against the same trusted platform
+inventory and grants used by the policy controller instead of stopping an Agent
+solely for that observation delay. Unavailable or invalid policy evidence still
+holds execution. Budgets, model authorization, and other execution controls
+retain their normal fencing and coordination checks; the exact coordinated
+write still includes the limits. Keys of legacy Agents without a policy are
+not changed; Gateway administrators manage their limits.
+
+Persisted execution evidence is not rewritten by this change. Older single-start
+lifetimes or coordination reservations whose saved policy digest includes
+`modelAccess.rateLimits`, even an empty object, remain fail-closed on an input
+mismatch and require the existing stop/recreate procedure. Upgrade the operator and admission readers
+before editing limits; do not manually alter their saved digests.
 
 The total limits count every request on the key, including the Agent's GitHub
 Copilot models. A per-model limit applies to the model name a request uses after

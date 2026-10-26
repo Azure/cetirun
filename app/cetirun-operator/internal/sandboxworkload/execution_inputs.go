@@ -112,7 +112,8 @@ func EffectiveSource(source SourceReference) bool {
 	return false
 }
 
-// ExecutionObjectDigest excludes observation metadata, not desired controls.
+// ExecutionObjectDigest excludes observation metadata and Gateway-only rate
+// limits, not execution controls.
 // API reads must separately validate the requested key and immutable UID.
 func ExecutionObjectDigest(object client.Object) (string, error) {
 	if object == nil || object.GetUID() == "" || object.GetResourceVersion() == "" || !object.GetDeletionTimestamp().IsZero() {
@@ -186,6 +187,7 @@ func canonicalPolicyExecutionBody(body map[string]any) error {
 			unstructured.RemoveNestedField(body, "spec", "kubernetesAccess", field)
 		}
 	}
+	unstructured.RemoveNestedField(body, "spec", "modelAccess", "rateLimits")
 	return nil
 }
 
