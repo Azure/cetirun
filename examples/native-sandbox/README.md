@@ -1,7 +1,7 @@
 # Native Sandbox first run
 
 This example exercises one OpenClaw Agent with a Kata Sandbox and a
-shared AI Gateway model. It is an explicitly enabled, single-start profile,
+shared AI Gateway model. New Agents use the explicitly enabled common executor,
 not a production failover or complete AgentPolicy conformance test.
 
 ## Prepare one authorized target
@@ -118,6 +118,23 @@ Existing Sandboxes retain their stored limits. To raise them, use the supported
 [coordinated configuration update](../../app/cetirun-operator/README.md#coordinated-configuration-updates)
 flow; changing the Portal default does not resize existing Sandboxes or bypass
 lifecycle and admission checks.
+
+## HOME access mode
+
+This example and Portal default to `ReadWriteOncePod` (RWOP). New common-executor
+Kata lifetimes also support `ReadWriteOnce` (RWO): select it in
+`Sandbox.spec.storage.home.accessMode` and explicitly register it in
+`registrations.kata.Capabilities.homeAccessModes`. Do not change an existing
+HOME claim's mode or remove its ownership records to convert a running Agent.
+Retained single-start lifetimes remain RWOP-only.
+
+Both modes use the same retained restart, stop/resume and separately enabled
+healthy-source migration flow. RWO permits multiple mounts on one node; it
+does not replace private HOME ownership, single-replica workload admission or
+acknowledged source termination and CSI detach before migration.
+The local platform probe tests RWOP contention, not RWO lifecycle behavior.
+Qualify the selected Kata/CSI combination separately before declaring RWO
+support; an RWOP probe result alone does not justify adding it to the registration.
 
 ## Rollout-stable managed ingress
 

@@ -185,13 +185,13 @@ sandboxAdmission:
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
-  # -- Opt in to common OpenClaw/Hermes reconciliation with Kata/RWOP constraints.
+  # -- Opt in to common OpenClaw/Hermes reconciliation with registered Kata RWO/RWOP HOME.
   # Requires owned bootstrap, enforced admission and the AI Gateway.
   # Existing receipts retain their recorded mode and owned resources.
   # Neither Kubernetes updates nor observed shutdown are physical fencing.
   # Disabling starts retains recorded cleanup and Pod finalization RBAC.
   nativeExecution: false
-  # -- Allow new healthy-source moves of common-executor Agents with one CSI/RWOP HOME.
+  # -- Allow new healthy-source moves of common-executor Agents with one filesystem CSI RWO/RWOP HOME.
   # Upgrade CRDs, Operator, admission and Portal readers before enabling.
   # Existing checkpoints remain readable and cleanup permissions are retained when disabled.
   plannedMigration: false

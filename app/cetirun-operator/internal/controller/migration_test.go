@@ -314,109 +314,115 @@ func finishMigration(t *testing.T, f *nativeSandboxFixture) {
 func TestPlannedMigrationRetainsHOMEAcrossRepeatedMoves(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, coordinated := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/coordination=%t", kind, coordinated), func(t *testing.T) {
-				f := newMigrationFixture(t, kind, coordinated)
-				initial := reconciledExpectationForTest(t, f)
-				key := f.current(t).Status.AIGateway.KeyID
-				completeMigration(t, f, "migration-00000001", "node-b")
-				completeMigration(t, f, "migration-00000002", "node-a")
-				current := reconciledExpectationForTest(t, f)
-				if current.Home != initial.Home || current.Namespace != initial.Namespace || current.Agent != initial.Agent ||
-					f.current(t).Status.AIGateway.KeyID != key || len(f.gateway.generated) != 1 {
-					t.Fatal("migration replaced a retained identity")
-				}
-				for _, item := range f.gateway.keys {
-					if item.Blocked || ptr.Deref(item.Spend, 0) != 3.25 {
-						t.Fatal("migration reset spend or failed to release its own block")
+			for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
+				t.Run(fmt.Sprintf("%s/coordination=%t/%s", kind, coordinated, mode), func(t *testing.T) {
+					f := newMigrationFixture(t, kind, coordinated, withNativeHomeAccessMode(t, mode))
+					assertNativeHomeAccessMode(t, f, mode)
+					initial := reconciledExpectationForTest(t, f)
+					key := f.current(t).Status.AIGateway.KeyID
+					completeMigration(t, f, "migration-00000001", "node-b")
+					completeMigration(t, f, "migration-00000002", "node-a")
+					current := reconciledExpectationForTest(t, f)
+					if current.Home != initial.Home || current.Namespace != initial.Namespace || current.Agent != initial.Agent ||
+						f.current(t).Status.AIGateway.KeyID != key || len(f.gateway.generated) != 1 {
+						t.Fatal("migration replaced a retained identity")
 					}
-				}
-			})
+					for _, item := range f.gateway.keys {
+						if item.Blocked || ptr.Deref(item.Spend, 0) != 3.25 {
+							t.Fatal("migration reset spend or failed to release its own block")
+						}
+					}
+					assertNativeHomeAccessMode(t, f, mode)
+				})
+			}
 		}
 	}
 }
 
 func TestPlannedMigrationWaitsForPositiveSourceEvidence(t *testing.T) {
 	for _, fault := range []string{"lease", "node identity", "pod missing", "container running", "detach missing", "detach error"} {
-		t.Run(fault, func(t *testing.T) {
-			f := newMigrationFixture(t, "openclaw", false)
-			ctx := context.Background()
-			requestMigration(t, f, "migration-00000001", "node-b")
-			f.reconcileOK(t)
-			f.reconcileOK(t)
-			state := f.current(t).Status.PlannedMigration
-			stages := f.installer.stages
-			switch fault {
-			case "lease":
-				lease := &coordinationv1.Lease{}
-				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: corev1.NamespaceNodeLease, Name: state.Source.Name}, lease); err != nil {
-					t.Fatal(err)
-				}
-				lease.Spec.RenewTime = &metav1.MicroTime{Time: time.Now().Add(-time.Hour)}
-				if err := f.kube.Update(ctx, lease); err != nil {
-					t.Fatal(err)
-				}
-			case "node identity":
-				node := &corev1.Node{}
-				if err := f.kube.Get(ctx, client.ObjectKey{Name: state.Source.Name}, node); err != nil {
-					t.Fatal(err)
-				}
-				node.Status.NodeInfo.BootID = "replacement-boot"
-				if err := f.kube.Status().Update(ctx, node); err != nil {
-					t.Fatal(err)
-				}
-			case "pod missing":
-				pod := &corev1.Pod{}
-				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: state.SourcePod.Name}, pod); err != nil {
-					t.Fatal(err)
-				}
-				pod.Finalizers = nil
-				if err := f.kube.Update(ctx, pod); err != nil {
-					t.Fatal(err)
-				}
-				if err := f.kube.Delete(ctx, pod); err != nil {
-					t.Fatal(err)
-				}
-			case "container running":
-				acknowledgeMigrationSource(t, f)
-				pod := &corev1.Pod{}
-				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: state.SourcePod.Name}, pod); err != nil {
-					t.Fatal(err)
-				}
-				pod.Status.ContainerStatuses[0].State = corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}}
-				if err := f.kube.Status().Update(ctx, pod); err != nil {
-					t.Fatal(err)
-				}
-			default:
-				acknowledgeMigrationSource(t, f)
+		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
+			t.Run(fmt.Sprintf("%s/%s", fault, mode), func(t *testing.T) {
+				f := newMigrationFixture(t, "openclaw", false, withNativeHomeAccessMode(t, mode))
+				ctx := context.Background()
+				requestMigration(t, f, "migration-00000001", "node-b")
 				f.reconcileOK(t)
 				f.reconcileOK(t)
-				attachment := &storagev1.VolumeAttachment{}
-				if err := f.kube.Get(ctx, client.ObjectKey{Name: state.Attachment.Name}, attachment); err != nil {
-					t.Fatal(err)
+				state := f.current(t).Status.PlannedMigration
+				stages := f.installer.stages
+				switch fault {
+				case "lease":
+					lease := &coordinationv1.Lease{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: corev1.NamespaceNodeLease, Name: state.Source.Name}, lease); err != nil {
+						t.Fatal(err)
+					}
+					lease.Spec.RenewTime = &metav1.MicroTime{Time: time.Now().Add(-time.Hour)}
+					if err := f.kube.Update(ctx, lease); err != nil {
+						t.Fatal(err)
+					}
+				case "node identity":
+					node := &corev1.Node{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Name: state.Source.Name}, node); err != nil {
+						t.Fatal(err)
+					}
+					node.Status.NodeInfo.BootID = "replacement-boot"
+					if err := f.kube.Status().Update(ctx, node); err != nil {
+						t.Fatal(err)
+					}
+				case "pod missing":
+					pod := &corev1.Pod{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: state.SourcePod.Name}, pod); err != nil {
+						t.Fatal(err)
+					}
+					pod.Finalizers = nil
+					if err := f.kube.Update(ctx, pod); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.kube.Delete(ctx, pod); err != nil {
+						t.Fatal(err)
+					}
+				case "container running":
+					acknowledgeMigrationSource(t, f)
+					pod := &corev1.Pod{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: state.SourcePod.Name}, pod); err != nil {
+						t.Fatal(err)
+					}
+					pod.Status.ContainerStatuses[0].State = corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}}
+					if err := f.kube.Status().Update(ctx, pod); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					acknowledgeMigrationSource(t, f)
+					f.reconcileOK(t)
+					f.reconcileOK(t)
+					attachment := &storagev1.VolumeAttachment{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Name: state.Attachment.Name}, attachment); err != nil {
+						t.Fatal(err)
+					}
+					if fault == "detach missing" {
+						attachment.Finalizers = nil
+						if err := f.kube.Update(ctx, attachment); err != nil {
+							t.Fatal(err)
+						}
+						if err := f.kube.Delete(ctx, attachment); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						attachment.Status.DetachError = &storagev1.VolumeError{Message: "synthetic detach rejection"}
+						if err := f.kube.Status().Update(ctx, attachment); err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
-				if fault == "detach missing" {
-					attachment.Finalizers = nil
-					if err := f.kube.Update(ctx, attachment); err != nil {
-						t.Fatal(err)
-					}
-					if err := f.kube.Delete(ctx, attachment); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					attachment.Status.DetachError = &storagev1.VolumeError{Message: "synthetic detach rejection"}
-					if err := f.kube.Status().Update(ctx, attachment); err != nil {
-						t.Fatal(err)
-					}
+				_, err := f.reconcile()
+				if fault != "container running" && err == nil {
+					t.Fatal("unknown source evidence was not surfaced")
 				}
-			}
-			_, err := f.reconcile()
-			if fault != "container running" && err == nil {
-				t.Fatal("unknown source evidence was not surfaced")
-			}
-			if f.current(t).Status.PlannedMigration.CanStart() || f.installer.stages != stages || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
-				t.Fatal("uncertain source state permitted a replacement")
-			}
-		})
+				if f.current(t).Status.PlannedMigration.CanStart() || f.installer.stages != stages || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+					t.Fatal("uncertain source state permitted a replacement")
+				}
+			})
+		}
 	}
 }
 

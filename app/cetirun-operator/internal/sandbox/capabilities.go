@@ -87,8 +87,19 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 	if !capabilities.HostResourceLimits {
 		errs = append(errs, field.Required(root.Child("hostResourceLimits"), "native runtime resource limits must be supported"))
 	}
-	if !slices.Equal(capabilities.HomeAccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}) {
-		errs = append(errs, field.Invalid(root.Child("homeAccessModes"), capabilities.HomeAccessModes, "native single-start requires only ReadWriteOncePod HOME"))
+	if len(capabilities.HomeAccessModes) == 0 {
+		errs = append(errs, field.Required(root.Child("homeAccessModes"), "native HOME requires an explicitly supported access mode"))
+	}
+	for i, mode := range capabilities.HomeAccessModes {
+		path := root.Child("homeAccessModes").Index(i)
+		switch mode {
+		case corev1.ReadWriteOncePod, corev1.ReadWriteOnce:
+			if slices.Contains(capabilities.HomeAccessModes[:i], mode) {
+				errs = append(errs, field.Duplicate(path, mode))
+			}
+		default:
+			errs = append(errs, field.NotSupported(path, mode, []string{string(corev1.ReadWriteOncePod), string(corev1.ReadWriteOnce)}))
+		}
 	}
 	for _, control := range []struct {
 		name     string
@@ -207,8 +218,8 @@ func CheckCompatibility(sandbox cetirunv1alpha1.SandboxSpec, policy cetirunv1alp
 		errs = append(errs, field.Required(root.Child("hostResourceLimits"), "mandatory control is not qualified"))
 	}
 	if capabilities.Profile == ProfileNativeSingleStart {
-		if sandbox.Type != cetirunv1alpha1.SandboxKata || sandbox.Storage.Home.AccessMode != corev1.ReadWriteOncePod {
-			errs = append(errs, field.Forbidden(field.NewPath("spec"), "native single-start requires Kata and ReadWriteOncePod HOME"))
+		if sandbox.Type != cetirunv1alpha1.SandboxKata {
+			errs = append(errs, field.Forbidden(field.NewPath("spec", "type"), "native execution requires Kata"))
 		}
 		errs = append(errs, CheckNativePolicy(policy)...)
 	}

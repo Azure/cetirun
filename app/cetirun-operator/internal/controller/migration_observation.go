@@ -196,9 +196,10 @@ func (r *AgentReconciler) migrationHome(ctx context.Context, agent *api.Agent, s
 		return nil, err
 	}
 	if !sandboxBuiltinOwned(home, agent) || !home.DeletionTimestamp.IsZero() || home.Status.Phase != corev1.ClaimBound ||
-		home.Spec.VolumeName != state.Volume.Name || !slices.Equal(home.Spec.AccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}) ||
+		home.Spec.VolumeName != state.Volume.Name || len(home.Spec.AccessModes) != 1 ||
+		(home.Spec.AccessModes[0] != corev1.ReadWriteOncePod && home.Spec.AccessModes[0] != corev1.ReadWriteOnce) ||
 		ptr.Deref(home.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != corev1.PersistentVolumeFilesystem {
-		return nil, fmt.Errorf("migration requires the same bound owned filesystem RWOP HOME")
+		return nil, fmt.Errorf("migration requires the same bound owned filesystem RWO or RWOP HOME")
 	}
 	volume := &corev1.PersistentVolume{}
 	if err := r.migrationGet(ctx, "", state.Volume, volume); err != nil {

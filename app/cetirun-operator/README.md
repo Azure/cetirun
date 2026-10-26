@@ -113,6 +113,15 @@ Persisted lifetime mode and owned namespace/HOME identities still govern recover
 and cleanup. Configuration changes do not migrate or adopt existing resources,
 and missing ownership evidence still holds execution.
 
+Kata HOME supports `ReadWriteOncePod` (RWOP) and `ReadWriteOnce` (RWO) when the
+selected mode is explicitly listed in the platform's `homeAccessModes`.
+Both use the same common-executor restart, retained suspension/resume and
+cleanup paths. Coordination still waits for observed workload shutdown and
+every namespace Pod to terminate before releasing a source reservation.
+RWO is not a shared HOME grant or a single-Pod storage lock; private ownership,
+one main StatefulSet replica and current Pod admission remain required.
+Changing a Sandbox does not convert an existing HOME claim's access mode.
+
 Shared-only, Copilot-only and mixed model configurations use the existing
 Gateway and per-Agent Copilot proxy. The proxy is a separate Deployment, not a
 sidecar: it cannot mount HOME or consume the Agent's runtime/model credentials.
@@ -232,7 +241,7 @@ readers before enabling new requests. Do not roll readers or schemas back while
 migration records remain. Disabling new requests retains accepted operations
 and their cleanup; it does not remove an existing destination pin.
 
-This first scope requires one bound filesystem CSI `ReadWriteOncePod` HOME,
+This scope requires one bound filesystem CSI `ReadWriteOncePod` or `ReadWriteOnce` HOME,
 with no other PVC mounts, a CSI driver that requires attachment, and a healthy
 source on a different Node. It preserves Agent, namespace, StatefulSet, HOME
 PVC/PV, chart pin, Gateway key and spending identities. It does not support
@@ -364,8 +373,11 @@ registration uses `registrations.kata.Capabilities.profile: "native-single-start
 in `platform.json`, with `platforms.kata.adapter` set to
 `{"name":"cilium","revision":"<probed-version>","qualified":false,"available":true}`.
 This generic Cilium identifier does not assert Azure CNI or Azure topology.
-The profile requires actual Kata resource limits, only `ReadWriteOncePod` HOME,
-and the existing guest-external network, deny-precedence, node-traffic and DNS
+The profile requires actual Kata resource limits and an explicit, nonempty
+`homeAccessModes` list containing only `ReadWriteOncePod` and/or `ReadWriteOnce`.
+New common-executor lifetimes can use either registered mode; retained
+single-start lifetimes still require `ReadWriteOncePod`. Both retain
+the existing guest-external network, deny-precedence, node-traffic and DNS
 IP restrictions. Declare `hostResourceLimits`, `guestExternalNetwork`,
 `denyPrecedence`, `nodeTraffic` and `dnsIPRestrictions` only after establishing
 those controls. TCP and UDP, the actual IP families, revisioned complete

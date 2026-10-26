@@ -164,6 +164,47 @@ func nativeCapabilities() Capabilities {
 	return capabilities
 }
 
+func TestNativeHomeAccessModes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		requested  corev1.PersistentVolumeAccessMode
+		registered []corev1.PersistentVolumeAccessMode
+		allowed    bool
+	}{
+		{"RWOP", corev1.ReadWriteOncePod, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}, true},
+		{"RWO", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, true},
+		{"both with RWOP", corev1.ReadWriteOncePod, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteOncePod}, true},
+		{"both with RWO", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce}, true},
+		{"RWO not registered", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}, false},
+		{"RWOP not registered", corev1.ReadWriteOncePod, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, false},
+		{"no registered modes", corev1.ReadWriteOnce, nil, false},
+		{"shared mode", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteMany}, false},
+		{"duplicate mode", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteOnce}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := resolverFixture()
+			box := input.Resources.Sandboxes["standard"].Spec
+			box.Storage.Home.AccessMode = tc.requested
+			capabilities := nativeCapabilities()
+			capabilities.HomeAccessModes = tc.registered
+			policy := compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{})
+			errs := CheckCompatibility(box, policy, capabilities)
+			if (len(errs) == 0) != tc.allowed {
+				t.Fatalf("HOME mode %s with registration %v: %v", tc.requested, tc.registered, errs)
+			}
+			if tc.allowed {
+				if err := CheckExecutionProfile(capabilities, false); err == nil {
+					t.Fatal("native HOME support authorized the held execution path")
+				}
+				box.Type = cetirunv1alpha1.SandboxGVisor
+				if len(CheckCompatibility(box, policy, capabilities)) == 0 {
+					t.Fatal("native HOME support authorized another runtime")
+				}
+			}
+		})
+	}
+}
+
 func TestNativeNetworkCompatibility(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
