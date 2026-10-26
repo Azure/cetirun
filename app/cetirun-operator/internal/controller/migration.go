@@ -13,12 +13,14 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,10 +87,99 @@ func (r *AgentReconciler) reconcileMigrationSourceAccess(ctx context.Context, ag
 	if err == nil {
 		_, err = r.resolveSandboxInputs(ctx, agent, false, true)
 	}
-	if err != nil && r.AIGateway.configured() {
-		err = errors.Join(err, r.beginAIGatewayPolicyReprojection(ctx, agent))
+	if err != nil {
+		err = errors.Join(err, r.isolateMigrationSourceAccess(ctx, agent))
 	}
 	return err
+}
+
+func (r *AgentReconciler) isolateMigrationSourceAccess(ctx context.Context, agent *api.Agent) error {
+	if err := r.checkMigrationIntent(ctx, agent); err != nil {
+		return err
+	}
+	var keyErr error
+	if r.AIGateway.configured() {
+		keyErr = r.beginAIGatewayPolicyReprojection(ctx, agent)
+	} else if aiGatewayKeyWasIssued(agent) {
+		keyErr = fmt.Errorf("migration source isolation requires the recorded Gateway")
+	}
+	routeErr := r.withdrawKubernetesSandboxRoute(ctx, agent)
+	var networkErr error
+	if state := agent.Status.PlannedMigration; state != nil && state.Phase == api.MigrationProtecting {
+		networkErr = r.isolateProtectingMigrationNetwork(ctx, agent)
+	}
+	agent.Status.AccessURL = ""
+	return errors.Join(keyErr, routeErr, networkErr)
+}
+
+// Deny traffic without deleting an incompletely protected source. The ordinary
+// reconciler restores the owned policy only after migration can start again.
+func (r *AgentReconciler) isolateProtectingMigrationNetwork(ctx context.Context, agent *api.Agent) error {
+	state := agent.Status.PlannedMigration
+	namespace := &corev1.Namespace{}
+	if err := r.migrationGet(ctx, "", state.Namespace, namespace); err != nil {
+		return err
+	}
+	if namespace.Name != instanceNamespace(agent.Name) || !sandboxBuiltinOwned(namespace, agent) {
+		return fmt.Errorf("migration network namespace ownership changed")
+	}
+	record := &corev1.ConfigMap{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{
+		Namespace: r.OperatorNamespace, Name: w.PodExpectationName(namespace.Name, namespace.UID),
+	}, record); err != nil {
+		return err
+	}
+	expected, err := w.ReadReconcileExpectation(record)
+	if err != nil {
+		return err
+	}
+	if expected.Agent.Name != agent.Name || expected.Agent.UID != agent.UID ||
+		expected.Namespace.Name != state.Namespace.Name || expected.Namespace.UID != state.Namespace.UID {
+		return fmt.Errorf("migration network expectation belongs to another lifetime")
+	}
+	for _, control := range expected.Controls {
+		if control.GetAPIVersion() != "cilium.io/v2" || control.GetKind() != "CiliumNetworkPolicy" {
+			continue
+		}
+		current := &unstructured.Unstructured{}
+		current.SetGroupVersionKind(control.GroupVersionKind())
+		if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(&control), current); err != nil {
+			return err
+		}
+		selector, found, err := unstructured.NestedMap(current.Object, "spec", "endpointSelector")
+		recorded, recordedFound, recordedErr := unstructured.NestedMap(control.Object, "spec", "endpointSelector")
+		if err != nil || recordedErr != nil || !found || !recordedFound ||
+			!equality.Semantic.DeepEqual(selector, recorded) || current.GetNamespace() != namespace.Name ||
+			current.GetUID() == "" || current.GetResourceVersion() == "" ||
+			!sandboxBuiltinOwned(current, agent) || !current.GetDeletionTimestamp().IsZero() {
+			return fmt.Errorf("migration network policy ownership or selector changed")
+		}
+		before := current.DeepCopy()
+		for field, direction := range map[string]string{"ingressDeny": "fromEntities", "egressDeny": "toEntities"} {
+			if err := unstructured.SetNestedSlice(current.Object, []any{map[string]any{direction: []any{"all"}}}, "spec", field); err != nil {
+				return err
+			}
+		}
+		if !equality.Semantic.DeepEqual(before.Object["spec"], current.Object["spec"]) {
+			if err := r.checkMigrationIntent(ctx, agent); err != nil {
+				return err
+			}
+			if err := r.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+				return fmt.Errorf("isolate migration source network: %w", err)
+			}
+		}
+		observed := &unstructured.Unstructured{}
+		observed.SetGroupVersionKind(current.GroupVersionKind())
+		if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(current), observed); err != nil {
+			return err
+		}
+		if observed.GetUID() != current.GetUID() || !observed.GetDeletionTimestamp().IsZero() || !sandboxBuiltinOwned(observed, agent) ||
+			!equality.Semantic.DeepEqual(observed.Object["spec"], current.Object["spec"]) {
+			return fmt.Errorf("migration source network isolation was not retained")
+		}
+		return nil
+	}
+	return fmt.Errorf("migration source has no recorded Cilium policy")
 }
 
 func (r *AgentReconciler) migrationFinalizer(ctx context.Context, agent *api.Agent, object client.Object, name string, add bool) error {
@@ -127,7 +218,11 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 	block := func(err error) (bool, ctrl.Result, error) {
 		if state != nil && state.Phase == api.MigrationProtecting {
 			// Preserve source observations without retaining an obsolete grant.
-			err = errors.Join(err, r.reconcileMigrationSourceAccess(ctx, agent))
+			if agent.Spec.Suspended {
+				err = errors.Join(err, r.isolateMigrationSourceAccess(ctx, agent))
+			} else {
+				err = errors.Join(err, r.reconcileMigrationSourceAccess(ctx, agent))
+			}
 		} else if agent.Spec.Suspended || (state != nil && state.Phase != api.MigrationCompleted) {
 			err = errors.Join(err, r.stopReconciledSandboxForMigration(ctx, agent))
 		}
@@ -138,7 +233,8 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 	}
 	if agent.MigrationNeedsCapture() {
 		if !reconciled || r.SandboxPreparation == nil || !r.SandboxPreparation.PlannedMigration {
-			return block(fmt.Errorf("new migrations require explicitly enabled common Sandbox execution"))
+			return block(errors.Join(fmt.Errorf("new migrations require explicitly enabled common Sandbox execution"),
+				r.authorizeMigrationSource(ctx, agent)))
 		}
 		// Before capture, ordinary authorization and reconciliation must be
 		// able to restore a source held by an earlier dependency outage.
@@ -222,11 +318,9 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 		if agent.Spec.Suspended {
 			return false, wait, errors.Join(checkpointErr, r.stopReconciledSandboxForMigration(ctx, agent))
 		}
-		if checkpointErr != nil {
-			return false, wait, checkpointErr
-		}
-		if err := r.authorizeMigrationSource(ctx, agent); err != nil {
-			return block(err)
+		authorizationErr := r.authorizeMigrationSource(ctx, agent)
+		if checkpointErr != nil || authorizationErr != nil {
+			return false, wait, errors.Join(checkpointErr, authorizationErr)
 		}
 		return false, wait, nil
 	case api.MigrationStopping:

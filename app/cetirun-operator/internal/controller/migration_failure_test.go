@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -15,12 +16,14 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -85,6 +88,251 @@ func TestPlannedMigrationRejectsPreflightWithoutStopping(t *testing.T) {
 			if f.current(t).Status.PlannedMigration != nil || f.installer.stages != stages ||
 				ptr.Deref(f.workload(t).Spec.Replicas, 0) != 1 {
 				t.Fatal("failed migration preflight changed the source lifetime")
+			}
+		})
+	}
+}
+
+func TestPlannedMigrationDisabledStillRechecksAuthorization(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newMigrationFixture(t, kind, false)
+			ctx := context.Background()
+			f.r.SandboxPreparation.PlannedMigration = false
+			requestMigration(t, f, "migration-00000001", "node-b")
+			request := *f.current(t).Spec.PlannedMigration
+			stages := f.installer.stages
+			if _, err := f.reconcile(); err == nil || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 1 {
+				t.Fatal("disabled migration must reject without stopping an authorized source:", err)
+			}
+			policy := &api.AgentPolicy{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Name: f.current(t).Status.Policy.EffectivePolicyRef.Name}, policy); err != nil {
+				t.Fatal(err)
+			}
+			setCondition(&policy.Status.Conditions, api.ConditionAgentPolicyAccepted, metav1.ConditionFalse,
+				"Denied", "synthetic policy revocation")
+			if err := f.kube.Status().Update(ctx, policy); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if _, err := f.reconcile(); err == nil {
+					t.Fatal("disabled request or source denial was hidden")
+				}
+				agent := f.current(t)
+				if agent.Status.PlannedMigration != nil || *agent.Spec.PlannedMigration != request ||
+					f.installer.stages != stages || ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+					t.Fatal("rejected migration prevented source revocation or changed the request")
+				}
+				for _, key := range f.gateway.keys {
+					if !key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+						t.Fatal("a disabled migration left revoked model access usable")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPlannedMigrationProtectingIsolatesCurrentAccess(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, control := range []string{"suspended", "blocked CIDR", "blocked port"} {
+			t.Run(kind+"/"+control, func(t *testing.T) {
+				f := newMigrationFixture(t, kind, false, func(r *AgentReconciler, c client.Client) {
+					if control != "blocked port" {
+						return
+					}
+					config := &corev1.ConfigMap{}
+					ctx := context.Background()
+					if err := c.Get(ctx, client.ObjectKey{Namespace: r.OperatorNamespace, Name: "sandbox-platform"}, config); err != nil {
+						t.Fatal(err)
+					}
+					var platform SandboxPlatformConfiguration
+					if err := json.Unmarshal([]byte(config.Data[SandboxPlatformConfigurationKey]), &platform); err != nil {
+						t.Fatal(err)
+					}
+					registration := platform.Registrations[api.SandboxKata]
+					registration.Capabilities.BlockedPorts = true
+					platform.Registrations[api.SandboxKata] = registration
+					raw, err := json.Marshal(platform)
+					if err != nil {
+						t.Fatal(err)
+					}
+					config.Data[SandboxPlatformConfigurationKey] = string(raw)
+					if err := c.Update(ctx, config); err != nil {
+						t.Fatal(err)
+					}
+				})
+				ctx := context.Background()
+				requestMigration(t, f, "migration-00000001", "node-b")
+				f.reconcileOK(t)
+				state := f.current(t).Status.PlannedMigration.DeepCopy()
+				expected := reconciledExpectationForTest(t, f)
+				agent := f.current(t)
+				if control == "suspended" {
+					agent.Spec.Suspended = true
+					agent.Generation++
+					if err := f.kube.Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					policy := &api.AgentPolicy{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Name: agent.Status.Policy.EffectivePolicyRef.Name}, policy); err != nil {
+						t.Fatal(err)
+					}
+					if control == "blocked CIDR" {
+						policy.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+					} else {
+						policy.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 8443, Protocol: corev1.ProtocolTCP}}
+					}
+					if err := f.kube.Update(ctx, policy); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.r.resolvePolicy(ctx, f.current(t)); err != nil {
+						t.Fatal("tightened network policy must remain a supported configuration:", err)
+					}
+				}
+				protectionErr := errors.New("synthetic attachment protection failure")
+				f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						if _, attachment := object.(*storagev1.VolumeAttachment); attachment {
+							return protectionErr
+						}
+						return c.Patch(ctx, object, patch, opts...)
+					},
+				})
+				for range 2 {
+					if _, err := f.reconcile(); !errors.Is(err, protectionErr) {
+						t.Fatal("source protection failure was hidden:", err)
+					}
+					if !reflect.DeepEqual(f.current(t).Status.PlannedMigration, state) ||
+						ptr.Deref(f.workload(t).Spec.Replicas, -1) != 1 {
+						t.Fatal("isolation must preserve the unprotected source observations")
+					}
+					for _, key := range f.gateway.keys {
+						if !key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+							t.Error("model access was not independently revoked")
+						}
+					}
+					route := &istiov1beta1.VirtualService{}
+					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: virtualServiceName(agent.Name)}, route); !apierrors.IsNotFound(err) {
+						t.Error("the source route remained usable:", err)
+					}
+					found := false
+					for _, recorded := range expected.Controls {
+						if recorded.GetKind() != "CiliumNetworkPolicy" {
+							continue
+						}
+						found = true
+						actual := &unstructured.Unstructured{}
+						actual.SetGroupVersionKind(recorded.GroupVersionKind())
+						if err := f.kube.Get(ctx, client.ObjectKeyFromObject(&recorded), actual); err != nil {
+							t.Fatal(err)
+						}
+						for field, direction := range map[string]string{"ingressDeny": "fromEntities", "egressDeny": "toEntities"} {
+							rules, _, err := unstructured.NestedSlice(actual.Object, "spec", field)
+							want := []any{map[string]any{direction: []any{"all"}}}
+							if err != nil || !reflect.DeepEqual(rules, want) {
+								t.Errorf("source %s is not an all-traffic deny: %v", field, err)
+							}
+						}
+						before, _, _ := unstructured.NestedMap(recorded.Object, "spec", "endpointSelector")
+						after, _, _ := unstructured.NestedMap(actual.Object, "spec", "endpointSelector")
+						if !reflect.DeepEqual(before, after) {
+							t.Fatal("isolation changed the Agent/namespace selector")
+						}
+					}
+					if !found {
+						t.Fatal("fixture has no independently observed network policy")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPlannedMigrationIsolationFailuresStayIndependent(t *testing.T) {
+	for _, fault := range []string{"foreign owner", "changed selector", "network patch", "network readback", "Gateway read"} {
+		t.Run(fault, func(t *testing.T) {
+			f := newMigrationFixture(t, "openclaw", false)
+			ctx := context.Background()
+			requestMigration(t, f, "migration-00000001", "node-b")
+			f.reconcileOK(t)
+			agent := f.current(t)
+			state := agent.Status.PlannedMigration.DeepCopy()
+			expected := reconciledExpectationForTest(t, f)
+			var network *unstructured.Unstructured
+			for _, object := range expected.Controls {
+				if object.GetKind() == "CiliumNetworkPolicy" {
+					network = object.DeepCopy()
+				}
+			}
+			if network == nil {
+				t.Fatal("fixture has no network control")
+			}
+			if err := f.kube.Get(ctx, client.ObjectKeyFromObject(network), network); err != nil {
+				t.Fatal(err)
+			}
+			switch fault {
+			case "foreign owner":
+				owners := network.GetOwnerReferences()
+				owners[0].UID = "foreign-agent"
+				network.SetOwnerReferences(owners)
+			case "changed selector":
+				if err := unstructured.SetNestedMap(network.Object, map[string]any{}, "spec", "endpointSelector"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.kube.Update(ctx, network); err != nil {
+				t.Fatal(err)
+			}
+			before := network.DeepCopy()
+			injected := errors.New("synthetic isolation dependency failure")
+			patched := false
+			f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if object.GetObjectKind().GroupVersionKind().Kind == "CiliumNetworkPolicy" {
+						if fault == "network patch" {
+							return injected
+						}
+						patched = true
+					}
+					return c.Patch(ctx, object, patch, opts...)
+				},
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					if fault == "network readback" && patched && object.GetObjectKind().GroupVersionKind().Kind == "CiliumNetworkPolicy" {
+						return injected
+					}
+					return c.Get(ctx, key, object, opts...)
+				},
+			})
+			f.r.APIReader = f.r.Client
+			if fault == "Gateway read" {
+				f.gateway.getErr = injected
+			}
+			if err := f.r.isolateMigrationSourceAccess(ctx, agent); err == nil ||
+				((fault == "network patch" || fault == "network readback" || fault == "Gateway read") && !errors.Is(err, injected)) {
+				t.Fatal("independent isolation failure was hidden:", err)
+			}
+			if err := f.kube.Get(ctx, client.ObjectKeyFromObject(network), network); err != nil {
+				t.Fatal(err)
+			}
+			if fault == "foreign owner" || fault == "changed selector" || fault == "network patch" {
+				if patched || !reflect.DeepEqual(before.Object["spec"], network.Object["spec"]) {
+					t.Fatal("isolation adopted or changed an unconfirmed policy")
+				}
+			} else {
+				rules, _, err := unstructured.NestedSlice(network.Object, "spec", "egressDeny")
+				if err != nil || !reflect.DeepEqual(rules, []any{map[string]any{"toEntities": []any{"all"}}}) {
+					t.Fatal("Gateway/readback failure skipped the network isolation attempt")
+				}
+			}
+			route := &istiov1beta1.VirtualService{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: state.Namespace.Name, Name: virtualServiceName(agent.Name)}, route); !apierrors.IsNotFound(err) {
+				t.Fatal("an independent failure skipped route withdrawal:", err)
+			}
+			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 1 ||
+				!reflect.DeepEqual(f.current(t).Status.PlannedMigration, state) {
+				t.Fatal("failed isolation destroyed or advanced the unprotected source")
 			}
 		})
 	}
@@ -842,16 +1090,16 @@ func TestPlannedMigrationProtectionCheckpointPrecedesAuthorizationHold(t *testin
 					return c.SubResource(sub).Patch(ctx, object, patch, opts...)
 				},
 			})
-			if _, err := f.reconcile(); !errors.Is(err, lost) || errors.Is(err, unavailable) {
-				t.Fatal("authorization hold ran before the stop checkpoint was acknowledged:", err)
+			if _, err := f.reconcile(); !errors.Is(err, lost) || !errors.Is(err, unavailable) {
+				t.Fatal("checkpoint failure skipped independent source authorization:", err)
 			}
 			wantPhase := api.MigrationProtecting
 			if committed {
 				wantPhase = api.MigrationStopping
 			}
 			migrationPhase(t, f, wantPhase)
-			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 1 {
-				t.Fatal("an unacknowledged stop checkpoint stopped the source")
+			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+				t.Fatal("a failed checkpoint left the protected unauthorized source running")
 			}
 			failCheckpoint = false
 			_, err := f.reconcile()
