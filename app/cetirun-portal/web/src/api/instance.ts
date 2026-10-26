@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest, StatusResponse } from "../types/instance";
+import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest, SetInstanceSuspendedRequest, StatusResponse } from "../types/instance";
 import { apiFetch, PortalError } from "./fetch";
 
 export type InstanceResponse = Instance;
@@ -119,14 +119,29 @@ export async function upgradeInstanceByName(name: string, version: InstanceVersi
 }
 
 export async function restartInstanceByName(name: string, request: RestartInstanceRequest): Promise<Instance> {
-  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/restart`, {
+  return requestInstanceAction(name, "restart", request, request.requestId);
+}
+
+export async function setInstanceSuspendedByName(name: string, request: SetInstanceSuspendedRequest): Promise<Instance> {
+  const instance = await requestInstanceAction(name, request.suspended ? "suspend" : "resume", request);
+  if (!instance || instance.uid !== request.uid || typeof instance.resourceVersion !== "string" || !instance.resourceVersion ||
+    instance.suspended !== request.suspended || !Number.isSafeInteger(instance.generation) || (instance.generation ?? 0) < 1) {
+    throw new Error("The Agent response could not be confirmed. Check its current state or retry the same request.");
+  }
+  return instance;
+}
+
+async function requestInstanceAction(
+  name: string, action: "restart" | "suspend" | "resume", version: InstanceVersion, requestId?: string,
+): Promise<Instance> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/${action}`, {
     method: "POST",
-    headers: { "Idempotency-Key": request.requestId },
-    body: JSON.stringify({ uid: request.uid, resourceVersion: request.resourceVersion }),
+    ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
+    body: JSON.stringify({ uid: version.uid, resourceVersion: version.resourceVersion }),
   });
   if (!response.ok) {
     const body: unknown = await response.json();
-    let message = "Failed to request Agent restart";
+    let message = `Failed to request Agent ${action}`;
     let code: string | undefined;
     if (body !== null && typeof body === "object" && "error" in body &&
       body.error !== null && typeof body.error === "object") {
@@ -144,6 +159,16 @@ export function isRestartRequestRejected(error: unknown): boolean {
   // Exact retries return the stored request before checking resourceVersion.
   // Other errors, such as suspension, can follow an earlier accepted attempt.
   return error instanceof PortalError && error.status === 409 && error.code === "instance_changed";
+}
+
+export function isSuspensionRequestRejected(error: unknown): boolean {
+  if (!(error instanceof PortalError)) return false;
+  return (error.status === 409 && ["instance_changed", "instance_deleting", "suspension_unavailable", "suspension_home_required"].includes(error.code ?? "")) ||
+    (error.status === 503 && error.code === "suspension_home_unverified") ||
+    (error.status === 403 && ["forbidden", "invalid_origin", "admission_rejected"].includes(error.code ?? "")) ||
+    (error.status === 400 && ["invalid_body", "invalid_agent", "invalid_name"].includes(error.code ?? "")) ||
+    (error.status === 428 && error.code === "version_required") ||
+    (error.status === 404 && error.code === "instance_not_found");
 }
 
 export async function getInstanceStatusByName(name: string): Promise<StatusResponse> {

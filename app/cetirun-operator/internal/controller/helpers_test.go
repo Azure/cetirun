@@ -4,17 +4,25 @@
 package controller
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/engine"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/yaml"
 
 	istioapiv1beta1 "istio.io/api/networking/v1beta1"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
 
 // TestOperatorConfigHash_Uniqueness verifies that different config combinations produce different hashes.
@@ -1374,6 +1382,209 @@ func TestBuildHelmValues_SuspendedSetsReplicaCountZero(t *testing.T) {
 	}
 	if rc != 0 {
 		t.Errorf("replicaCount = %v, want 0", rc)
+	}
+}
+
+func TestBuildHelmValues_SuspendedHomeRetention(t *testing.T) {
+	for _, agentType := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes} {
+		for _, source := range []struct {
+			name, chart, deployment, instance, active string
+		}{
+			{"chart-default", "Delete", "", "", "Delete"},
+			{"deployment", "Retain", "Delete", "", "Delete"},
+			{"instance-delete", "Retain", "Retain", "Delete", "Delete"},
+			{"instance-retain", "Retain", "Delete", "Retain", "Retain"},
+		} {
+			for _, storage := range []struct {
+				name, existingClaim string
+				claimTemplate       bool
+			}{
+				{name: "claim-template", claimTemplate: true},
+				{name: "separate-claim"},
+				{name: "existing-claim", existingClaim: "existing-home", claimTemplate: true},
+			} {
+				t.Run(string(agentType)+"/"+source.name+"/"+storage.name, func(t *testing.T) {
+					instance := newTestInstance("retained", "Retained Agent", "", "gateway-token")
+					instance.Spec.Agent.Type = agentType
+					instance.Spec.Model = "gpt-5.4"
+					persistence := map[string]any{
+						"useStatefulSetVolumeClaim": storage.claimTemplate,
+						"existingClaim":             storage.existingClaim,
+					}
+					if source.instance != "" {
+						persistence["retainPolicy"] = source.instance
+						instance.Spec.Helm.Values["replicaCount"] = runtime.RawExtension{Raw: []byte("1")}
+					}
+					raw, err := json.Marshal(persistence)
+					if err != nil {
+						t.Fatal(err)
+					}
+					instance.Spec.Helm.Values["persistence"] = runtime.RawExtension{Raw: raw}
+					before := instance.DeepCopy()
+					deployment := map[string]any{"replicaCount": 1}
+					if source.deployment != "" {
+						deployment["persistence"] = map[string]any{"retainPolicy": source.deployment}
+					}
+					deploymentBefore, err := json.Marshal(deployment)
+					if err != nil {
+						t.Fatal(err)
+					}
+					chrt, err := loader.Load("../../../cetirun-chart")
+					if err != nil {
+						t.Fatal(err)
+					}
+					chrt.Values["persistence"].(map[string]any)["retainPolicy"] = source.chart
+					var home []corev1.PersistentVolumeClaim
+					var separateHome string
+					for _, state := range []struct {
+						name      string
+						suspended bool
+					}{{"active", false}, {"suspended", true}, {"resumed", false}} {
+						instance.Spec.Suspended = state.suspended
+						values, err := buildHelmValues(instance, nil, "example.com", "", deployment, "")
+						if err != nil {
+							t.Fatal(err)
+						}
+						prepared, err := helm.PrepareChart(chrt, values)
+						if err != nil {
+							t.Fatal(err)
+						}
+						caps := chartutil.DefaultCapabilities.Copy()
+						caps.KubeVersion = chartutil.KubeVersion{Version: "v1.37.0", Major: "1", Minor: "37"}
+						renderValues, err := chartutil.ToRenderValues(chrt, prepared.Values, chartutil.ReleaseOptions{
+							Name: instance.Name, Namespace: instanceNamespace(instance.Name), IsUpgrade: true, Revision: 2,
+						}, caps)
+						if err != nil {
+							t.Fatal(err)
+						}
+						rendered, err := engine.Render(chrt, renderValues)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var workload appsv1.StatefulSet
+						if err := yaml.Unmarshal([]byte(rendered[chrt.Name()+"/templates/statefulset.yaml"]), &workload); err != nil {
+							t.Fatal(err)
+						}
+						wantReplicas := int32(1)
+						wantRetention := appsv1.PersistentVolumeClaimRetentionPolicyType(source.active)
+						if state.suspended {
+							wantReplicas = 0
+							wantRetention = appsv1.RetainPersistentVolumeClaimRetentionPolicyType
+						}
+						if workload.Spec.Replicas == nil {
+							t.Fatalf("%s: missing replica count", state.name)
+						}
+						if *workload.Spec.Replicas != wantReplicas {
+							t.Errorf("%s: replicas = %d, want %d", state.name, *workload.Spec.Replicas, wantReplicas)
+						}
+						retention := workload.Spec.PersistentVolumeClaimRetentionPolicy
+						if storage.claimTemplate && storage.existingClaim == "" {
+							if retention == nil || retention.WhenScaled != wantRetention || retention.WhenDeleted != wantRetention {
+								t.Errorf("%s: HOME retention = %+v, want %s", state.name, retention, wantRetention)
+							}
+							if len(workload.Spec.VolumeClaimTemplates) != 1 {
+								t.Fatalf("%s: expected exactly one HOME claim template", state.name)
+							}
+						} else if retention != nil || len(workload.Spec.VolumeClaimTemplates) != 0 {
+							t.Fatalf("%s: created a replacement for a separately managed HOME", state.name)
+						}
+						pvc := rendered[chrt.Name()+"/templates/pvc.yaml"]
+						if state.name == "active" {
+							home = workload.Spec.VolumeClaimTemplates
+							separateHome = pvc
+						} else if !reflect.DeepEqual(workload.Spec.VolumeClaimTemplates, home) || pvc != separateHome {
+							t.Errorf("%s: HOME claim changed across suspension", state.name)
+						}
+					}
+					deploymentAfter, err := json.Marshal(deployment)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(instance.Spec, before.Spec) || string(deploymentAfter) != string(deploymentBefore) ||
+						chrt.Values["persistence"].(map[string]any)["retainPolicy"] != source.chart {
+						t.Fatal("suspension changed the stored Agent, deployment or chart retention preference")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestBuildHelmValues_SuspendedRejectsInvalidPersistence(t *testing.T) {
+	for _, raw := range []string{`null`, `"invalid"`, `{"retainPolicy":"invalid"}`, `{"retainPolicy":null}`, `{"retainPolicy":false}`,
+		`{"enabled":false}`, `{"enabled":false,"existingClaim":""}`} {
+		t.Run(raw, func(t *testing.T) {
+			instance := newTestInstance("retained", "Retained Agent", "", "gateway-token")
+			instance.Spec.Suspended = true
+			instance.Spec.Helm.Values["persistence"] = runtime.RawExtension{Raw: []byte(raw)}
+			if _, err := buildHelmValues(instance, nil, "example.com", "", nil, ""); err == nil {
+				t.Fatal("suspension must not hide invalid persistence values")
+			}
+		})
+	}
+}
+
+func TestSuspendedHomeChecksEffectiveChartDefaults(t *testing.T) {
+	for _, kind := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes} {
+		for _, claim := range []string{"", "existing-home"} {
+			t.Run(string(kind)+"/"+claim, func(t *testing.T) {
+				instance := newTestInstance("retained", "Retained Agent", "", "gateway-token")
+				instance.Spec.Agent.Type, instance.Spec.Suspended, instance.Spec.Model = kind, true, "gpt-5.4"
+				chrt, err := loader.Load("../../../cetirun-chart")
+				if err != nil {
+					t.Fatal(err)
+				}
+				persistence := chrt.Values["persistence"].(map[string]any)
+				persistence["enabled"], persistence["existingClaim"] = false, claim
+				values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				prepared, err := helm.PrepareChart(chrt, values)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := validateSuspendedHome(prepared.Values); (err != nil) != (claim == "") {
+					t.Fatalf("effective persistent HOME check for claim %q: %v", claim, err)
+				}
+			})
+		}
+	}
+}
+
+func TestConfigHashIncludesSuspendedHomeRetention(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		agentType   cetirunv1alpha1.AgentType
+		sandbox     string
+		invalidates bool
+	}{
+		{name: "openclaw", agentType: cetirunv1alpha1.AgentTypeOpenClaw, invalidates: true},
+		{name: "hermes", agentType: cetirunv1alpha1.AgentTypeHermes, invalidates: true},
+		{name: "custom", agentType: cetirunv1alpha1.AgentTypeCustom},
+		{name: "sandbox", agentType: cetirunv1alpha1.AgentTypeOpenClaw, sandbox: "standard"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reconciler := &AgentReconciler{}
+			instance := newTestInstance("retained", "Retained Agent", "", "gateway-token")
+			instance.Spec.Agent.Type = tc.agentType
+			instance.Spec.SandboxRef = tc.sandbox
+			active := reconciler.configHash(instance, nil, "secret", "")
+			instance.Spec.Suspended = true
+			suspended := reconciler.configHash(instance, nil, "secret", "")
+			if (suspended != active) != tc.invalidates {
+				t.Fatalf("suspended retention cache invalidation = %v, want %v", suspended != active, tc.invalidates)
+			}
+			instance.Status.Phase = cetirunv1alpha1.PhaseSuspended
+			instance.Status.ObservedOperatorHash = suspended
+			if current := reconciler.configHash(instance, nil, "secret", ""); current != suspended {
+				t.Fatal("recording suspension must not invalidate the settled cache again")
+			}
+			instance.Spec.Suspended = false
+			if resumed := reconciler.configHash(instance, nil, "secret", ""); resumed != active {
+				t.Fatal("resume must preserve the existing active configuration hash")
+			}
+		})
 	}
 }
 

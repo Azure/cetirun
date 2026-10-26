@@ -250,6 +250,14 @@ func writeManagementError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "instance_changed", kube.ErrInstanceChanged.Error())
 	case errors.Is(err, kube.ErrInstanceDeleting):
 		writeError(w, http.StatusConflict, "instance_deleting", err.Error())
+	case errors.Is(err, kube.ErrInstanceVersionRequired):
+		writeError(w, http.StatusPreconditionRequired, "version_required", err.Error())
+	case errors.Is(err, kube.ErrSuspensionUnsupported):
+		writeError(w, http.StatusConflict, "suspension_unavailable", err.Error())
+	case errors.Is(err, kube.ErrSuspensionHomeRequired):
+		writeError(w, http.StatusConflict, "suspension_home_required", kube.ErrSuspensionHomeRequired.Error())
+	case errors.Is(err, kube.ErrSuspensionHomeUnverified):
+		writeError(w, http.StatusServiceUnavailable, "suspension_home_unverified", kube.ErrSuspensionHomeUnverified.Error())
 	case errors.Is(err, kube.ErrInvalidRestartRequest):
 		writeError(w, http.StatusBadRequest, "invalid_restart_request", err.Error())
 	case errors.Is(err, kube.ErrInstanceSuspended), errors.Is(err, kube.ErrRestartUnsupported), errors.Is(err, kube.ErrRestartNotReady), errors.Is(err, kube.ErrMigrationPending):

@@ -207,7 +207,7 @@ go -C app/cetirun-portal vet ./internal/...
 Report that reduced scope; it does not validate the frontend or the complete
 portal binary. Do not treat a placeholder embed directory as a frontend build.
 
-The retained-restart API also has an isolated API-server test. With the pinned
+The retained lifecycle APIs also have an isolated API-server test. With the pinned
 Kubernetes 1.37 binaries described below already installed, run:
 
 ```bash
@@ -215,7 +215,8 @@ KUBEBUILDER_ASSETS=/path/to/local/envtest \
   go -C app/cetirun-portal test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1
 ```
 
-It verifies persisted request identity, conditional updates, and CRD validation.
+It verifies persisted restart identity, conditional suspend/resume intent,
+duplicate requests, stale UID/version rejection, and CRD validation.
 It starts its own API server and etcd, never an existing cluster; it does not
 run Pods, contact a model provider, or qualify storage/failure recovery.
 Operator CI also runs this test using its existing pinned admission-test tools.

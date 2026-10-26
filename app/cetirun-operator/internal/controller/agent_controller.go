@@ -894,6 +894,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
+	if instance.Spec.Suspended {
+		if err := validateSuspendedHome(prepared.Values); err != nil {
+			return r.rejectAgentConfig(ctx, instance, err)
+		}
+	}
 	if sandboxRequested(instance, team) && !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) {
 		policyErr := fmt.Errorf("Agent chart %q does not support mandatory AI Gateway routing", instance.Spec.Helm.Version)
 		if err := r.recordPolicy(ctx, instance, nil, policyErr); err != nil {
