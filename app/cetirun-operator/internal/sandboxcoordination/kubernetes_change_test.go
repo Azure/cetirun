@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -1251,8 +1252,8 @@ func TestConfigurationEmptyMetadataAndMetadataOnlyGeneration(t *testing.T) {
 	ticket := changingConfiguration(t, store, before, after)
 	admitted := after.DeepCopyObject().(client.Object)
 	admitted.SetGeneration(before.GetGeneration() + 1)
-	if err := store.AuthorizeConfigurationUpdate(ctx, before, admitted); !errors.Is(err, ErrConflict) {
-		t.Fatal("metadata-only request was permitted to increment generation:", err)
+	if err := store.AuthorizeConfigurationUpdate(ctx, before, admitted); err != nil {
+		t.Fatal("exact admission increment was rejected for an effective metadata-only update:", err)
 	}
 	if err := store.AuthorizeConfigurationUpdate(ctx, before, after); err != nil {
 		t.Fatal(err)
@@ -1263,6 +1264,130 @@ func TestConfigurationEmptyMetadataAndMetadataOnlyGeneration(t *testing.T) {
 	}
 	if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
 		t.Fatal("empty metadata could not round trip:", err)
+	}
+}
+
+func TestConfigurationMetadataAdmissionGenerationBounds(t *testing.T) {
+	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
+		for _, tc := range []struct {
+			name          string
+			before, after int64
+			allowed       bool
+		}{
+			{"unchanged", 1, 1, true},
+			{"increment", 1, 2, true},
+			{"zero increment", 0, 1, true},
+			{"regression", 1, 0, false},
+			{"jump", 1, 3, false},
+			{"maximum unchanged", math.MaxInt64, math.MaxInt64, true},
+			{"maximum regression", math.MaxInt64, math.MaxInt64 - 1, false},
+			{"overflow", math.MaxInt64, math.MinInt64, false},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				store, storage, before, _ := configurationFixture(t, kind)
+				before.SetGeneration(tc.before)
+				if err := storage.Update(ctx, before); err != nil {
+					t.Fatal(err)
+				}
+				after := before.DeepCopyObject().(client.Object)
+				after.SetLabels(map[string]string{"example.com/change": "metadata"})
+				ticket := changingConfiguration(t, store, before, after)
+				admitted := after.DeepCopyObject().(client.Object)
+				admitted.SetGeneration(tc.after)
+				store.Client = nil
+				if err := store.AuthorizeConfigurationUpdate(ctx, before, admitted); (err == nil) != tc.allowed {
+					t.Fatalf("admission generation %d -> %d: allowed=%t err=%v", tc.before, tc.after, tc.allowed, err)
+				}
+				if tc.after != tc.before {
+					if _, err := NewKubernetesChangeAdapter(storage, storage, before, admitted); err == nil {
+						t.Fatal("file/adapter inputs were allowed to alter server generation")
+					}
+				}
+				if tc.allowed {
+					admitted.SetLabels(map[string]string{"example.com/change": "not-reserved"})
+					if err := store.AuthorizeConfigurationUpdate(ctx, before, admitted); !errors.Is(err, ErrConflict) {
+						t.Fatal("generation normalization authorized an unreserved mutation:", err)
+					}
+				}
+				if err := store.CheckChange(ctx, ticket); err != nil {
+					t.Fatal("admission changed the reservation:", err)
+				}
+			})
+		}
+	}
+}
+
+func TestConfigurationMetadataRequestRetainsAuthoritativeSpec(t *testing.T) {
+	for _, editSpec := range []bool{false, true} {
+		name := "metadata-only"
+		if editSpec {
+			name = "actual-spec-edit"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store, storage, before, _ := configurationFixture(t, "AgentPolicy")
+			after := before.DeepCopyObject().(*api.AgentPolicy)
+			after.Labels = map[string]string{"example.com/change": "metadata"}
+			after.Annotations = map[string]string{"example.com/description": "updated"}
+			after.Finalizers = []string{"example.com/retain"}
+			after.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(),
+				Kind: "Team", Name: "owner", UID: "owner-uid"}}
+			if editSpec {
+				after.Spec.ModelAccess.Copilot.Allowed = true
+			}
+			reader := interceptor.NewClient(storage, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, key, object, opts...); err != nil {
+						return err
+					}
+					if raw, ok := object.(*unstructured.Unstructured); ok && raw.GetKind() == "AgentPolicy" {
+						unstructured.RemoveNestedField(raw.Object, "spec", "agentIdentity")
+					}
+					return nil
+				},
+			})
+			var submitted client.Object
+			writer := interceptor.NewClient(storage, interceptor.Funcs{
+				Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+					submitted = object.DeepCopyObject().(client.Object)
+					return c.Update(ctx, object, opts...)
+				},
+			})
+			store.APIReader = reader
+			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := configurationAdapter(t, writer, reader, before, after)
+			if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
+				t.Fatal(err)
+			}
+			if submitted == nil || submitted.GetUID() != before.GetUID() ||
+				submitted.GetResourceVersion() != before.GetResourceVersion() || submitted.GetGeneration() != before.GetGeneration() ||
+				!reflect.DeepEqual(submitted.GetLabels(), after.Labels) ||
+				!reflect.DeepEqual(submitted.GetAnnotations(), after.Annotations) ||
+				!reflect.DeepEqual(submitted.GetFinalizers(), after.Finalizers) ||
+				!reflect.DeepEqual(submitted.GetOwnerReferences(), after.OwnerReferences) {
+				t.Fatal("wire preservation changed reserved metadata or original conditional-write identities")
+			}
+			encoded, err := json.Marshal(submitted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := &unstructured.Unstructured{}
+			if err := raw.UnmarshalJSON(encoded); err != nil {
+				t.Fatal(err)
+			}
+			if editSpec {
+				value, found, err := unstructured.NestedBool(raw.Object, "spec", "modelAccess", "copilot", "allowed")
+				if err != nil || !found || !value {
+					t.Fatal("wire preservation discarded an actual requested spec edit:", err)
+				}
+			} else if _, found, err := unstructured.NestedFieldNoCopy(raw.Object, "spec", "agentIdentity"); err != nil || found {
+				t.Fatal("metadata-only update materialized an omitted zero-value object:", err)
+			}
+		})
 	}
 }
 
