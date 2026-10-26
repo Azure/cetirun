@@ -30,8 +30,17 @@ function renderPage(path: string) {
   return client;
 }
 
-it("creates complete Sandbox resources and storage without claiming readiness", async () => {
+it.each([
+  { name: "default", helperMemoryLimit: "2Gi" },
+  { name: "custom", helperMemoryLimit: "3Gi" },
+])("creates complete Sandbox resources with $name helper memory without claiming readiness", async ({ helperMemoryLimit }) => {
   const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
+  const helperMemory = screen.getByRole("textbox", { name: "Helper memory limit" });
+  expect(helperMemory).toHaveValue("2Gi");
+  if (helperMemoryLimit !== "2Gi") {
+    await user.clear(helperMemory);
+    await user.type(helperMemory, helperMemoryLimit);
+  }
   await user.type(screen.getByRole("textbox", { name: "Name" }), "example");
   await user.selectOptions(screen.getByRole("combobox", { name: "Runtime" }), "gvisor");
   await user.type(screen.getByRole("textbox", { name: "HOME StorageClass" }), "example-csi");
@@ -40,7 +49,10 @@ it("creates complete Sandbox resources and storage without claiming readiness", 
   const request = vi.mocked(api.createSandbox).mock.calls[0][0];
   expect(request).toMatchObject({ name: "example", type: "gvisor", storage: box.storage });
   expect(request.resources.agent.requests).toHaveProperty("ephemeral-storage");
-  expect(request.resources.helpers.limits).toHaveProperty("memory");
+  expect(request.resources.helpers).toEqual({
+    requests: { cpu: "100m", memory: "128Mi", "ephemeral-storage": "128Mi" },
+    limits: { cpu: "500m", memory: helperMemoryLimit, "ephemeral-storage": "1Gi" },
+  });
   expect(request).not.toHaveProperty("ready");
 });
 
@@ -50,6 +62,7 @@ it("edits a Sandbox named new using its exact version and displays rejection det
   const user = userEvent.setup(); renderPage("/admin/sandboxes/new/edit");
   expect(await screen.findByRole("textbox", { name: "Name" })).toBeDisabled();
   await waitFor(() => expect(screen.getByRole("textbox", { name: "HOME StorageClass" })).toHaveValue("example-csi"));
+  expect(screen.getByRole("textbox", { name: "Helper memory limit" })).toHaveValue("1Gi");
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText(/request must not exceed/)).toBeInTheDocument();
   expect(api.updateSandbox).toHaveBeenCalledExactlyOnceWith("new", expect.objectContaining({ uid: "sandbox-uid", resourceVersion: "7", resources: box.resources, storage: box.storage }));

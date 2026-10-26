@@ -213,7 +213,8 @@ sandboxSources:
   # Must match sandboxAdmission.placementConfigMapName. Records the existing
   # reservation after zero-replica staging; does not enroll Nodes or grant execution.
   placementConfigMapName: ""
-  # -- Approved native helpers; arbitrary injected containers remain unsupported.
+  # -- Approved helpers for legacy held preparation only.
+  # Reconciled (v2) lifetimes use runtime chart helper settings instead.
   helpers:
     doctor: false
     logger: false
