@@ -12,6 +12,8 @@ export const permissionKeys = Object.keys(permissionLabels) as (keyof GitHubPerm
 export const permissionLabel = (value?: "read" | "write") => value === "write" ? "Read and write" : value === "read" ? "Read" : "No access";
 export const accessMethodLabel = (connection: Connection) => connection.mode === "installation" ? "Selected repositories" : connection.mode === "agent" ? "Agent identity" : "Personal account";
 export const connectionTitle = (connection: Connection) => connection.mode === "installation" ? connection.github?.accountLogin || connection.github?.userLogin || "Setup incomplete" : connection.accountDisplay || "Setup incomplete";
+/** Historical duplicate records remain available for existing Agent bindings and safe cleanup. */
+export const isHistoricalDuplicate = (connection: Connection) => Boolean(connection.canonicalConnectionId && connection.canonicalConnectionId !== connection.id);
 export function connectionStatusColor(connection?: Connection): "success" | "warning" | "danger" {
   if (connection?.status === "connected") return "success";
   if (connection && ["interaction_required", "connecting", "pending", "installation_required"].includes(connection.status)) return "warning";

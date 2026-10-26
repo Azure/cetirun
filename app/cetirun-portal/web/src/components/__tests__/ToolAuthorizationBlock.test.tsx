@@ -158,15 +158,17 @@ describe("Agent service access", () => {
 
   it("completes unfinished setup with a single-select organization before granting access", async () => {
     const unfinished = { ...app, status: "installation_required", github: { userLogin: "octocat", appSlug: "example-app" } } as Connection;
-    api.listConnections.mockResolvedValue([unfinished]);
+    const canonical = { ...app, id: "canonical-app" };
+    api.listConnections.mockResolvedValueOnce([unfinished]).mockResolvedValue([canonical]);
     api.listGitHubInstallations.mockResolvedValue({ installations: [{ id: 7, accountLogin: "example-org", accountType: "Organization", permissions: { contents: "write" } }], installUrl: "https://github.com/apps/example-app/installations/new" });
-    api.selectGitHubInstallation.mockResolvedValue(app);
-    const user = userEvent.setup(); renderUI(); await open(user); await user.click(screen.getByRole("button", { name: "Continue" }));
+    api.selectGitHubInstallation.mockResolvedValue(canonical);
+    const user = userEvent.setup(); const view = renderUI(); await open(user); await user.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("radio", { name: "example-org (Organization)" })).toBeChecked();
     expect(api.selectGitHubInstallation).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("checkbox", { name: "example-org/allowed", exact: true });
     expect(api.selectGitHubInstallation).toHaveBeenCalledWith(app.id, 7);
+    await waitFor(() => expect(view.client.getQueryData<Connection[]>(["tool-connections"])).toEqual([canonical]));
     expect(api.createConnectionBinding).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(api.createConnectionBinding).not.toHaveBeenCalled();
@@ -230,6 +232,14 @@ describe("Agent service access", () => {
     api.listConnections.mockResolvedValue([personal, { ...personal, id: "alias", canonicalConnectionId: personal.id }]);
     const user = userEvent.setup(); renderUI(); await open(user, "GitHub", "personal");
     expect(screen.getAllByRole("radio", { name: "octocat" })).toHaveLength(1);
+  });
+
+  it("does not offer a canonical App connection already used through a historical alias", async () => {
+    const alias = { ...app, id: "legacy-app", canonicalConnectionId: app.id };
+    api.listConnections.mockResolvedValue([app, alias]);
+    api.listConnectionBindings.mockResolvedValue({ bindings: [{ ...appBinding, connectionId: alias.id }], readOnly: false });
+    const user = userEvent.setup(); renderUI(); await open(user);
+    expect(screen.queryByRole("radio", { name: /example-org.*octocat/ })).toBeNull();
   });
 
   it("fails closed on load failure and recovers through retry", async () => {

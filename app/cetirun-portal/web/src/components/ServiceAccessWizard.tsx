@@ -10,7 +10,7 @@ import { useConnectionBindings, useToolIdentity } from "../hooks/useToolAuthoriz
 import { useConnectionSignIn } from "../hooks/useConnectionSignIn";
 import { GitHubAccessFields, GitHubPermissionSummary, useSelectedRepositories, validGitHubAccess } from "./GitHubAccessFields";
 import { AzureAccessInstructions, HowAccessWorks } from "./ServiceAccessDetails";
-import { accessMethodLabel, connectionTitle, providerDisabledReasons, providerLabels, providerOrder, serviceLabels } from "./serviceAccess";
+import { accessMethodLabel, connectionTitle, isHistoricalDuplicate, providerDisabledReasons, providerLabels, providerOrder, serviceLabels } from "./serviceAccess";
 
 type Step = "service" | "account" | "access" | "review";
 const defaultGitHubAccess = (): GitHubBinding => ({ repositoryIds: [], permissions: { contents: "read" } });
@@ -45,17 +45,29 @@ export function ServiceAccessWizard({ instance, connections, editing, canManage,
     setError(""); setConnection(next); setServices(next.services); setGitHub(defaultGitHubAccess()); setInstallationChoice(undefined);
     setStep(next.mode === "installation" && !next.github?.installationId ? "account" : "access");
   };
+  const selectedRepos = useSelectedRepositories(connection?.mode === "installation" ? connection : undefined, github);
+  const active = new Set(api.bindings.data?.bindings.filter((binding) => binding.enabled).map((binding) => binding.connectionId));
+  const connectionByID = new Map(connections.map((item) => [item.id, item]));
+  const canonicalID = (id: string) => connectionByID.get(id)?.canonicalConnectionId || id;
+  const activeCanonicalIDs = new Set([...active].map(canonicalID));
+  const isActiveConnection = (id: string) => activeCanonicalIDs.has(canonicalID(id));
   const selectInstallation = useMutation({ mutationFn: (id: number) => selectGitHubInstallation(connection!.id, id), onSuccess: (updated) => {
-    client.setQueryData<Connection[]>(["tool-connections"], (current) => (current ?? []).map((item) => item.id === updated.id ? updated : item));
+    const sourceID = connection!.id;
+    client.setQueryData<Connection[]>(["tool-connections"], (current) => {
+      const withoutConsumedSource = (current ?? []).filter((item) => item.id !== sourceID);
+      const existing = withoutConsumedSource.findIndex((item) => item.id === updated.id);
+      if (existing < 0) return [...withoutConsumedSource, updated];
+      return withoutConsumedSource.map((item, index) => index === existing ? updated : item);
+    });
+    void client.invalidateQueries({ queryKey: ["tool-connections"] });
     choose(updated);
+    if (!original && isActiveConnection(updated.id)) setError("This agent already has access through this connection. Close this dialog and edit that access.");
   } });
   const busy = api.create.isPending || api.update.isPending || identity.isPending || selectInstallation.isPending;
   const disabled = busy || !canManage;
-  const selectedRepos = useSelectedRepositories(connection?.mode === "installation" ? connection : undefined, github);
-  const active = new Set(api.bindings.data?.bindings.filter((binding) => binding.enabled).map((binding) => binding.connectionId));
   const candidates = connections.filter((item) => item.provider === provider && item.mode === mode &&
     (item.status === "connected" || item.status === "interaction_required" || item.status === "installation_required") &&
-    (!item.canonicalConnectionId || item.canonicalConnectionId === item.id) && !active.has(item.id) &&
+    !isHistoricalDuplicate(item) && !isActiveConnection(item.id) &&
     (mode !== "agent" || item.identity?.instanceUid === instance.uid));
   const selectedId = choice ?? (candidates.length === 1 ? candidates[0].id : undefined);
   const selectedAccount = candidates.find((item) => item.id === selectedId);
@@ -64,7 +76,7 @@ export function ServiceAccessWizard({ instance, connections, editing, canManage,
   const appUnavailable = provider === "github" && mode === "installation" && (app.isLoading || app.isError || !app.data?.enabled);
   const liveConnection = connections.find((item) => item.id === connection?.id);
   const grantValid = !!connection && liveConnection?.status === "connected" && !providerDisabledReasons[connection.provider] &&
-    (original || !active.has(connection.id)) && !appUnavailable &&
+    (original || !isActiveConnection(connection.id)) && !appUnavailable &&
     (connection.mode === "installation" ? validGitHubAccess(github) && !!selectedRepos.data && !selectedRepos.isFetching && !selectedRepos.isError && selectedRepos.data.every((item) => item.repository?.admin) : services.length > 0);
 
   useEffect(() => { body.current?.querySelector<HTMLElement>("[data-step-heading]")?.focus(); }, [step, provider, mode, needsInstallation]);

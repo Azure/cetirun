@@ -360,6 +360,9 @@ func (k *kubeClient) completeGitHubInstallationAccount(ctx context.Context, owne
 			return "", errConflict
 		}
 		github := record.Connection.GitHub
+		if record.PendingInstallation != nil {
+			return "", errConflict
+		}
 		if tx.TargetConnectionID != "" && (github == nil || github.InstallationID < 0 || (github.InstallationID == 0 && github.AccountLogin != "") || (github.InstallationID > 0 && github.AccountLogin == "")) {
 			return "", errConflict
 		}
@@ -403,10 +406,26 @@ func (k *kubeClient) completeGitHubInstallationAccount(ctx context.Context, owne
 func (k *kubeClient) projectCanonicalConnections(ctx context.Context, connections []Connection) error {
 	for i := range connections {
 		c := &connections[i]
-		if connectionMode(*c) != modeDelegated || c.AccountID == "" {
+		if c.AccountID == "" {
 			continue
 		}
-		id, err := k.canonicalAccount(ctx, c.Owner, c.Provider, c.AccountID)
+		var id string
+		var err error
+		switch connectionMode(*c) {
+		case modeDelegated:
+			id, err = k.canonicalAccount(ctx, c.Owner, c.Provider, c.AccountID)
+		case modeInstallation:
+			if !sameGitHubInstallation(*c, *c) {
+				continue
+			}
+			id, err = k.canonicalGitHubInstallation(ctx, *c)
+			// A removal can win after listConnections took its snapshot.
+			if errors.Is(err, errConflict) || errors.Is(err, errNotFound) {
+				continue
+			}
+		default:
+			continue
+		}
 		if err != nil {
 			return err
 		}

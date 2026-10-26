@@ -71,6 +71,8 @@ describe("ConnectedServicesPage", () => {
     expect(screen.getByText("Selected repositories")).toBeInTheDocument();
     expect(screen.getByText("GitHub actions run as cetirun[bot]")).toBeInTheDocument();
     expect(screen.getByText("legacy-octocat")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Historical duplicate connections" })).toBeInTheDocument();
+    expect(screen.getByText("This older personal account connection is retained for existing Agent access and cleanup. New Agent access uses the current connection.")).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "agent-a" })).toHaveAttribute("href", "/instances/agent-a/overview#service-access");
   });
 

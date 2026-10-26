@@ -92,12 +92,15 @@ type connectionTransaction struct {
 }
 
 type connectionRecord struct {
-	References   map[string]bindingReservation `json:"references,omitempty"`
-	Connection   Connection                    `json:"connection"`
-	Credential   *providerCredential           `json:"credential,omitempty"`
-	RefreshLease *credentialRefreshLease       `json:"refreshLease,omitempty"`
-	Transaction  *connectionTransaction        `json:"transaction,omitempty"`
-	Deleted      bool                          `json:"deleted"`
+	// A verified installation selection is locked before claiming its account
+	// index. The connection remains unbindable until canonicalization completes.
+	PendingInstallation *agenttools.GitHubInstallation `json:"pendingInstallation,omitempty"`
+	References          map[string]bindingReservation  `json:"references,omitempty"`
+	Connection          Connection                     `json:"connection"`
+	Credential          *providerCredential            `json:"credential,omitempty"`
+	RefreshLease        *credentialRefreshLease        `json:"refreshLease,omitempty"`
+	Transaction         *connectionTransaction         `json:"transaction,omitempty"`
+	Deleted             bool                           `json:"deleted"`
 	// Display snapshots come from the trusted Agent resource. They are never
 	// used to resolve ownership or authorize calls; instance UID remains binding.
 	InstanceName      string `json:"instanceName,omitempty"`

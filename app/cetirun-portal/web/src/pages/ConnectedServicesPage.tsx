@@ -33,6 +33,7 @@ import {
   connectionStatusColor,
   connectionStatusLabel,
   connectionTitle,
+  isHistoricalDuplicate,
   providerDisabledReasons,
   providerLabels,
   providerOrder,
@@ -47,7 +48,7 @@ function agentLink(name: string, uid: string) {
   return <Link key={uid} to={`/instances/${encodeURIComponent(name)}/overview#service-access`}>{name}</Link>;
 }
 
-function ConnectionCard({ connection }: { connection: Connection }) {
+function ConnectionCard({ connection, historicalDuplicate = false }: { connection: Connection; historicalDuplicate?: boolean }) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
@@ -89,13 +90,18 @@ function ConnectionCard({ connection }: { connection: Connection }) {
           <Text weight="semibold" size={400} block>{connectionTitle(connection)}</Text>
           <Text size={200} block>{accessMethodLabel(connection)}</Text>
         </div>
-        <Badge appearance="filled" color={connectionStatusColor(connection)}>{connectionStatusLabel(connection)}</Badge>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {historicalDuplicate && <Badge appearance="tint">Historical duplicate</Badge>}
+          <Badge appearance="filled" color={connectionStatusColor(connection)}>{connectionStatusLabel(connection)}</Badge>
+        </div>
       </div>
 
       {connection.mode === "installation" ? <>
         <Text size={200} block style={{ marginTop: 12 }}>Signed in as {connection.github?.userLogin || "Not reported"}</Text>
         <Text size={200} block>GitHub actions run as {connection.accountDisplay || "the GitHub App bot"}</Text>
       </> : <Text size={200} block style={{ marginTop: 12 }}>Signed in as {connection.accountDisplay || "Not reported"}</Text>}
+
+      {historicalDuplicate && <Text size={200} block style={{ marginTop: 12 }}>This older {accessMethodLabel(connection).toLowerCase()} connection is retained for existing Agent access and cleanup. New Agent access uses the current connection.</Text>}
 
       {disabled && <MessageBar intent="warning" style={{ marginTop: 12 }}>{providerLabels[connection.provider]}: {providerDisabledReasons[connection.provider]}</MessageBar>}
       {signin.message && <Text role="status" block style={{ marginTop: 12 }}>{signin.message}</Text>}
@@ -136,11 +142,20 @@ function ConnectionCard({ connection }: { connection: Connection }) {
 
 function ProviderGroup({ provider, connections }: { provider: ConnectionProvider; connections: Connection[] }) {
   if (!connections.length) return null;
+  const current = connections.filter((connection) => !isHistoricalDuplicate(connection));
+  const historicalDuplicates = connections.filter(isHistoricalDuplicate);
   return <section aria-labelledby={`${provider}-connections`} style={{ marginTop: 28 }}>
     <Text id={`${provider}-connections`} as="h2" size={500} weight="semibold">{providerLabels[provider]}</Text>
-    <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", marginTop: 12 }}>
-      {connections.map((connection) => <ConnectionCard key={connection.id} connection={connection} />)}
-    </div>
+    {!!current.length && <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", marginTop: 12 }}>
+      {current.map((connection) => <ConnectionCard key={connection.id} connection={connection} />)}
+    </div>}
+    {!!historicalDuplicates.length && <section aria-label="Historical duplicate connections" style={{ marginTop: current.length ? 20 : 12 }}>
+      <Text as="h3" size={300} weight="semibold">Historical duplicate connections</Text>
+      <Text size={200} block style={{ marginTop: 4 }}>These records are kept for existing Agent bindings. Review usage before removing an unused connection.</Text>
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", marginTop: 12 }}>
+        {historicalDuplicates.map((connection) => <ConnectionCard key={connection.id} connection={connection} historicalDuplicate />)}
+      </div>
+    </section>}
   </section>;
 }
 

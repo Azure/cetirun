@@ -19,6 +19,7 @@ export function HowAccessWorks({ connection }: { connection: Connection }) {
 export function TechnicalDetails({ connection }: { connection: Connection }) {
   return <details style={{ marginTop: 12 }}><summary>Technical details</summary>
     <Text size={200} block>Connection: {connection.id}</Text>
+    {connection.canonicalConnectionId && connection.canonicalConnectionId !== connection.id && <Text size={200} block>Canonical connection: {connection.canonicalConnectionId}</Text>}
     {connection.mode === "installation" ? <>
       <Text size={200} block>GitHub App: {connection.github?.appSlug || "Not reported"}</Text>
       <Text size={200} block>Installation: {connection.github?.installationId || "Not selected"}</Text>

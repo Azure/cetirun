@@ -54,6 +54,11 @@ func (s *Server) githubUserCredential(ctx context.Context, record *connectionRec
 		if credential.NonExpiring || credential.ExpiresAt.IsZero() || credential.RefreshToken == "" {
 			return providerCredential{}, errors.New("GitHub App user authorization is invalid")
 		}
+		// Selection may transfer this authorization to the canonical account.
+		// Do not rotate its refresh token while that transfer is in progress.
+		if latest.PendingInstallation != nil {
+			return providerCredential{}, errors.New("GitHub installation selection is in progress")
+		}
 		if time.Until(credential.ExpiresAt) >= 2*time.Minute {
 			return credential, nil
 		}
@@ -126,6 +131,15 @@ func (s *Server) githubUserCredential(ctx context.Context, record *connectionRec
 func (s *Server) markGitHubAppInteractionRequired(ctx context.Context, record *connectionRecord) {
 	for attempt := 0; attempt < 3; attempt++ {
 		latest, version, err := s.store.getConnection(ctx, record.Connection.ID)
+		if err == nil && latest.Deleted && latest.PendingInstallation != nil && latest.Connection.CanonicalConnectionID != "" && record.Credential != nil {
+			// An in-flight provider request can finish after its temporary
+			// connection was consumed. Invalidate only that exact credential.
+			target, _, readErr := s.store.getConnection(ctx, latest.Connection.CanonicalConnectionID)
+			if readErr == nil && sameGitHubInstallation(installationIdentity(latest), target.Connection) {
+				_ = s.store.invalidateGitHubSelectionCredential(ctx, target.Connection, record.Credential.AccessToken, s.currentTime().UTC())
+			}
+			return
+		}
 		if err != nil || latest.Deleted || connectionMode(latest.Connection) != modeInstallation || latest.Credential == nil || record.Credential == nil || latest.Credential.AccessToken != record.Credential.AccessToken {
 			return
 		}
@@ -268,6 +282,23 @@ func (s *Server) githubInstallationSelect(w http.ResponseWriter, r *http.Request
 		writeAPIError(w, 400, "invalid_request", "Installation ID is required", correlationID(r))
 		return
 	}
+	completed, err := s.store.completedGitHubSelection(r.Context(), owner, r.PathValue("id"), input.InstallationID)
+	if errors.Is(err, errConflict) {
+		writeAPIError(w, 409, "conflict", "GitHub installation cannot be changed; create a new connection", correlationID(r))
+		return
+	}
+	if errors.Is(err, errNotFound) {
+		writeAPIError(w, 404, "not_found", "GitHub App connection not found", correlationID(r))
+		return
+	}
+	if err != nil {
+		writeAPIError(w, 503, "dependency_unavailable", "Connection storage is unavailable", correlationID(r))
+		return
+	}
+	if completed != nil {
+		writeJSON(w, 200, projectedConnection(completed.Connection))
+		return
+	}
 	record, _, err := s.githubConnectionForOwner(r.Context(), owner, r.PathValue("id"))
 	if errors.Is(err, errNotFound) {
 		writeAPIError(w, 404, "not_found", "GitHub App connection not found", correlationID(r))
@@ -281,47 +312,50 @@ func (s *Server) githubInstallationSelect(w http.ResponseWriter, r *http.Request
 		writeAPIError(w, 409, "conflict", "GitHub installation cannot be changed; create a new connection", correlationID(r))
 		return
 	}
-	credential, err := s.githubUserCredential(r.Context(), record)
-	if err != nil {
-		writeGitHubUserCredentialError(w, r, err)
-		return
-	}
-	provider := s.providers
-	if provider == nil {
-		provider = newProviderClient(s.cfg)
-	}
-	installation, err := provider.githubInstallation(r.Context(), credential.AccessToken, input.InstallationID)
-	if err != nil {
-		if errors.Is(err, errGitHubUserUnauthorized) {
-			s.markGitHubAppInteractionRequired(r.Context(), record)
-			writeAPIError(w, 401, "interaction_required", "GitHub sign-in must be refreshed", correlationID(r))
+	selection := record.PendingInstallation
+	if selection != nil {
+		// Finish the exact selection already verified before an interrupted
+		// write. Bindings and execution still recheck live GitHub authority.
+		if selection.InstallationID != input.InstallationID || selection.AppSlug != s.cfg.GitHubAppSlug {
+			writeAPIError(w, 409, "conflict", "Installation selection is already in progress", correlationID(r))
 			return
 		}
-		writeAPIError(w, 403, "forbidden", "GitHub installation is not available", correlationID(r))
-		return
-	}
-	for attempt := 0; attempt < 4; attempt++ {
-		current, version, err := s.githubConnectionForOwner(r.Context(), owner, r.PathValue("id"))
+	} else {
+		credential, err := s.githubUserCredential(r.Context(), record)
 		if err != nil {
-			break
+			writeGitHubUserCredentialError(w, r, err)
+			return
 		}
-		if current.Connection.GitHub.InstallationID != 0 {
-			break
+		provider := s.providers
+		if provider == nil {
+			provider = newProviderClient(s.cfg)
 		}
-		current.Connection.GitHub = &agenttools.GitHubInstallation{InstallationID: installation.ID, AppSlug: s.cfg.GitHubAppSlug, AccountLogin: installation.Account.Login, UserLogin: current.Connection.GitHub.UserLogin}
-		current.Connection.Status, current.Connection.Revision, current.Connection.UpdatedAt = "connected", current.Connection.Revision+1, s.currentTime().UTC()
-		if err := s.store.putConnection(r.Context(), current, version); errors.Is(err, errConflict) {
-			continue
-		} else if err != nil {
-			break
+		installation, err := provider.githubInstallation(r.Context(), credential.AccessToken, input.InstallationID)
+		if err != nil {
+			if errors.Is(err, errGitHubUserUnauthorized) {
+				s.markGitHubAppInteractionRequired(r.Context(), record)
+				writeAPIError(w, 401, "interaction_required", "GitHub sign-in must be refreshed", correlationID(r))
+				return
+			}
+			writeAPIError(w, 403, "forbidden", "GitHub installation is not available", correlationID(r))
+			return
 		}
-		auditTarget(r, current.Connection.ID, "", "")
-		auditMutation(r)
-		auditCommit(r)
-		writeJSON(w, 200, projectedConnection(current.Connection))
+		selection = &agenttools.GitHubInstallation{InstallationID: installation.ID, AppSlug: s.cfg.GitHubAppSlug, AccountLogin: installation.Account.Login}
+	}
+	selected, err := s.store.selectGitHubInstallation(r.Context(), owner, record.Connection.ID, *selection, s.currentTime().UTC())
+	if errors.Is(err, errConflict) || errors.Is(err, errNotFound) {
+		writeAPIError(w, 409, "conflict", "Connection changed; reload before selecting an installation", correlationID(r))
 		return
 	}
-	writeAPIError(w, 409, "conflict", "Connection changed; reload before selecting an installation", correlationID(r))
+	if err != nil {
+		writeAPIError(w, 503, "dependency_unavailable", "Connection storage is unavailable", correlationID(r))
+		return
+	}
+	auditTarget(r, selected.Connection.ID, "", "")
+	auditMutation(r)
+	auditCommit(r)
+	selected.Connection.CanonicalConnectionID = selected.Connection.ID
+	writeJSON(w, 200, projectedConnection(selected.Connection))
 }
 
 func githubPermissionsAllowed(available, requested map[string]string) bool {
