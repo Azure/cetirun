@@ -289,13 +289,6 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		return nil, err
 	}
 
-	// Scale to zero when the instance is suspended (access restriction).
-	// PVCs are preserved by the StatefulSet's whenScaled: Retain policy.
-	// Placed after cetirunHelmValues merge so suspension cannot be overridden.
-	if instance.Spec.Suspended {
-		values["replicaCount"] = 0
-	}
-
 	// When Tailscale is enabled, turn on tailscale serve by default so that the
 	// gateway is accessible via HTTPS on the tailnet. Gateway token and device
 	// authentication still apply.
@@ -380,6 +373,19 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 			return nil, err
 		}
 		values[k] = deepMerge(values[k], v)
+	}
+	if spec.Suspended {
+		persistence, ok := values["persistence"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("helm values persistence must be an object")
+		}
+		if retention, present := persistence["retainPolicy"]; present && retention != "Retain" && retention != "Delete" {
+			return nil, fmt.Errorf("helm values persistence.retainPolicy must be Retain or Delete")
+		}
+		// A retained stop must win over every override, without changing the
+		// stored retention preference that will apply again after resume.
+		values["replicaCount"] = 0
+		values["persistence"] = deepMerge(persistence, map[string]interface{}{"retainPolicy": "Retain"})
 	}
 	// Deployment-level chart defaults cannot select a different integration.
 	values["agentType"] = string(agentType)

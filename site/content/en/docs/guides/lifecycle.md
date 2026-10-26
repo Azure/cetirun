@@ -93,10 +93,14 @@ kubectl patch agents.cetirun.microsoft.com alice --type=merge \
 
 Verify `Suspended`, the StatefulSet's actual zero replicas, no remaining
 workload pods, and removal of the VirtualService. The suspension branch does
-not wait for pod termination. The value builder requests zero before merging
-instance overrides; inspect the effective Helm configuration and keep
-autoscaling disabled for this lifecycle. `Suspended` alone is not proof that
-all access paths have stopped.
+not wait for pod termination. For ordinary OpenClaw and Hermes Agents, the
+controller enforces zero replicas and `persistence.retainPolicy: Retain` after
+all Helm overrides, so a configured `Delete` policy cannot remove HOME during
+scale-down. Stored Agent, deployment and chart preferences remain unchanged;
+resume reapplies the configured retention policy. Older suspended-state cache
+entries are invalidated so an Operator upgrade does not skip this retention
+repair. Keep autoscaling disabled for this lifecycle. `Suspended` alone is not
+proof that all access paths have stopped.
 
 The runtime chart permits only `replicaCount: 0` or `1`. Its HPA validation
 requires `minReplicas=maxReplicas=1`, so it cannot scale an agent horizontally
