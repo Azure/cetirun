@@ -123,6 +123,13 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			Kind: "Deployment", Identity: w.ObjectIdentity{Name: deployment.Name},
 			Replicas: ptr.Deref(deployment.Spec.Replicas, 1), Template: deployment.Spec.Template,
 		}
+		// RuntimeClass admission injects PodFixed overhead into the terminal Pod.
+		// Persist that exact value for the already validated terminal only, so the
+		// final-Pod check accepts the Kubernetes-owned mutation without granting
+		// the same allowance to auxiliary Deployments.
+		if terminal {
+			workload.Overhead = p.sandboxBundle.Overhead()
+		}
 	case "v1/Service":
 		var service corev1.Service
 		if err := decodeObject(object.Object, &service); err != nil {

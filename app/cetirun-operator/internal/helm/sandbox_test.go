@@ -18,6 +18,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -141,10 +142,45 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 				expected.Terminal.TargetWorkload != input.WorkloadName || expected.Terminal.Container != "cetirun" {
 				t.Fatalf("Custom terminal did not retain its protected common expectation: %#v, %v", expected.Terminal, err)
 			}
-			if slices.IndexFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
+			terminalIndex := slices.IndexFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
 				return workload.Kind == "Deployment" && workload.Identity.Name == input.Terminal.ServiceAccountName
-			}) < 0 {
+			})
+			if terminalIndex < 0 {
 				t.Fatal("Custom terminal Deployment is absent from the common workload inventory")
+			}
+			terminalWorkload := expected.Workloads[terminalIndex]
+			if terminalWorkload.Template.Spec.Overhead != nil {
+				t.Fatal("terminal chart template must leave RuntimeClass overhead for Kubernetes admission")
+			}
+			if !equality.Semantic.DeepEqual(terminalWorkload.Overhead, bundle.Overhead()) {
+				t.Fatalf("terminal expectation overhead = %#v, want RuntimeClass overhead %#v", terminalWorkload.Overhead, bundle.Overhead())
+			}
+			terminalPod := &corev1.Pod{
+				ObjectMeta: *terminalWorkload.Template.ObjectMeta.DeepCopy(),
+				Spec:       *terminalWorkload.Template.Spec.DeepCopy(),
+			}
+			terminalPod.Name, terminalPod.Namespace = terminalWorkload.Identity.Name+"-hash", input.Namespace.Name
+			terminalOwner := metav1.OwnerReference{
+				APIVersion: "apps/v1", Kind: "ReplicaSet", Name: terminalWorkload.Identity.Name + "-hash", UID: "terminal-replicaset-uid",
+				Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
+			}
+			terminalPod.OwnerReferences = []metav1.OwnerReference{terminalOwner}
+			terminalPod.Labels["pod-template-hash"] = "hash"
+			// The RuntimeClass admission plugin, not the chart template, supplies
+			// this value to the final Pod before the reconciled admission check.
+			terminalPod.Spec.Overhead = bundle.Overhead()
+			if err := w.ValidateRenderedPod(terminalPod, terminalWorkload, terminalOwner, "hash"); err != nil {
+				t.Fatalf("RuntimeClass-injected terminal overhead was rejected: %v", err)
+			}
+			missingOverhead := terminalPod.DeepCopy()
+			missingOverhead.Spec.Overhead = nil
+			if err := w.ValidateRenderedPod(missingOverhead, terminalWorkload, terminalOwner, "hash"); err == nil {
+				t.Fatal("terminal Pod without its RuntimeClass overhead was accepted")
+			}
+			tamperedOverhead := terminalPod.DeepCopy()
+			tamperedOverhead.Spec.Overhead[corev1.ResourceCPU] = resource.MustParse("101m")
+			if err := w.ValidateRenderedPod(tamperedOverhead, terminalWorkload, terminalOwner, "hash"); err == nil {
+				t.Fatal("terminal Pod with tampered RuntimeClass overhead was accepted")
 			}
 			bindings := map[string]rbacv1.RoleBinding{}
 			for _, object := range expected.Controls {
