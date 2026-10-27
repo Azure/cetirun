@@ -563,3 +563,28 @@ func TestReconciledSandboxPreflightRejectsStaleAuthority(t *testing.T) {
 		t.Fatal("preflight authority failure reached Helm or submission:", err)
 	}
 }
+
+func TestReconciledSandboxApplyGuardFailureDoesNotWrite(t *testing.T) {
+	bundle, values := reconciledSandboxInputs(t)
+	base, err := PrepareChart(testChart(t), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("synthetic final apply authority read failure")
+	checked, submitted := false, false
+	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
+		func(context.Context) error { checked = true; return nil },
+		func(context.Context) error { submitted = true; return injected })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, kube, store := sandboxActionConfig()
+	err = (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
+		func(string) (*action.Configuration, error) { return cfg, nil })
+	if !errors.Is(err, injected) || !checked || !submitted {
+		t.Fatal("fixture did not reach the guarded Helm renderer:", err)
+	}
+	if len(kube.writes) != 0 || store.writes != 0 {
+		t.Fatalf("failed final guard allowed Helm writes: workloadWrites=%d releaseWrites=%d", len(kube.writes), store.writes)
+	}
+}

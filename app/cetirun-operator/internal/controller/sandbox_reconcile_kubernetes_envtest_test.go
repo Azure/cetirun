@@ -33,6 +33,15 @@ import (
 
 func newKubernetesAccessAPIHarness(t *testing.T, kind string) *nativeStartAPIHarness {
 	t.Helper()
+	h := newUnreconciledKubernetesAccessAPIHarness(t, kind)
+	for range 6 {
+		h.reconcileOK(t)
+	}
+	return h
+}
+
+func newUnreconciledKubernetesAccessAPIHarness(t *testing.T, kind string) *nativeStartAPIHarness {
+	t.Helper()
 	h := newNativeStartAPIHarnessForAgent(t, true, true, corev1.ReadWriteOnce, kind)
 	configureReconciledKubernetesAccess(t, h.r, h.admin, h.agent.Name, "policy-example")
 	configuration := &corev1.ConfigMap{}
@@ -81,9 +90,6 @@ func newKubernetesAccessAPIHarness(t *testing.T, kind string) *nativeStartAPIHar
 	installer := &nativeSandboxInstaller{kube: h.kube, chart: h.localHelm.chart}
 	h.installer = installer
 	h.r.HelmClient = &sharedSandboxInstaller{nativeSandboxInstaller: installer}
-	for range 6 {
-		h.reconcileOK(t)
-	}
 	return h
 }
 

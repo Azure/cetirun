@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"reflect"
@@ -32,11 +33,12 @@ import (
 )
 
 const (
-	sandboxApplyStateAnnotation = "sandbox.cetirun.microsoft.com/apply-state"
-	sandboxApplyInitializing    = "initializing"
-	sandboxApplyPending         = "pending"
-	sandboxApplySubmitted       = "submitted"
-	sandboxApplyCancelled       = "cancelled"
+	sandboxApplyStateAnnotation   = "sandbox.cetirun.microsoft.com/apply-state"
+	sandboxApplyAttemptAnnotation = "sandbox.cetirun.microsoft.com/apply-attempt"
+	sandboxApplyInitializing      = "initializing"
+	sandboxApplyPending           = "pending"
+	sandboxApplySubmitted         = "submitted"
+	sandboxApplyCancelled         = "cancelled"
 )
 
 func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
@@ -261,15 +263,27 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if err := guard(ctx); err != nil {
 			return err
 		}
-		if published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending {
-			submitted := published.DeepCopy()
+		unsubmitted := published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending
+		claimed := published.DeepCopy()
+		// Fence competing renderers before the final authority read. A first
+		// attempt remains pending, and therefore cancellable, until that read passes.
+		metav1.SetMetaDataAnnotation(&claimed.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
+		if err := r.Patch(ctx, claimed, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("claim Sandbox apply attempt: %w", err)
+		}
+		published = claimed
+		if err := guard(ctx); err != nil {
+			return err
+		}
+		if unsubmitted {
+			submitted := claimed.DeepCopy()
 			submitted.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
-			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
 				return fmt.Errorf("record Sandbox apply submission: %w", err)
 			}
 			published = submitted
 		}
-		return guard(ctx)
+		return nil
 	}
 	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, applyGuard)
 	if err != nil {
@@ -413,6 +427,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		case "":
 		default:
 			return nil, fmt.Errorf("Sandbox apply checkpoint is invalid")
+		}
+		if attempt := current.Annotations[sandboxApplyAttemptAnnotation]; attempt != "" {
+			metav1.SetMetaDataAnnotation(&desired.ObjectMeta, sandboxApplyAttemptAnnotation, attempt)
 		}
 		if !reflect.DeepEqual(current.Data, desired.Data) || !reflect.DeepEqual(current.Annotations, desired.Annotations) {
 			base := current.DeepCopy()
