@@ -59,6 +59,9 @@ Recovery uses the SAME original --before file, or the recorded --operation-id
 when its journal entry has deletion recovery metadata. A terminating original
 UID or its absence establishes acceptance, not completion of finalizers/dependent
 cleanup. Explicit delete then releases the change reservation without resubmission.
+A live original UID at a newer resourceVersion instead proves the conditional
+Delete was superseded without applying. Its distinct deletion-superseded status
+also permits explicit release, never replay of the old Delete.
 No resources are created. No readiness, finalizer or admission overrides exist.
 
 Each input is exactly one strict YAML/JSON cetirun.microsoft.com/v1alpha1 Team,
@@ -70,7 +73,8 @@ Schema defaults are applied to private copies before reserving and submitting
 the write; explicit values and list order are preserved. No-op updates,
 including changes that only omit defaults, are rejected before reservation.
 
-Unknown, failed and never-submitted changing operations remain reserved.
+Unchanged UID/resourceVersion pairs, failed reads and otherwise unknown changing
+outcomes remain reserved.
 After any uncertain result, run --action observe (updates) or observe-delete
 (deletions) with the SAME inputs. A deletion with recorded recovery metadata
 may instead use its --operation-id. Do not refresh their UID/resourceVersion,
@@ -232,12 +236,13 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 	}
 	result.Operation, result.Phase = ticket.Change.ID, ticket.Change.Phase
 	result.Source = ticket.Change.Before
+	observed := &observedChangeAdapter{ChangeAdapter: adapter}
 	if observing {
 		if ticket.Change.Phase == sandboxcoordination.Reserved {
 			result.Status = "reserved"
 			return printStatus(stdout, stderr, result, 0)
 		}
-		_, err = adapter.ObserveChange(ctx, ticket)
+		_, err = observed.ObserveChange(ctx, ticket)
 		if err == nil {
 			err = store.CheckChange(ctx, ticket)
 		}
@@ -246,11 +251,17 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 			result.Status = "deletion-accepted-reservation-retained"
 		}
 	} else {
-		ticket, err = store.ReconcileChange(ctx, ticket, adapter)
+		ticket, err = store.ReconcileChange(ctx, ticket, observed)
 		result.Operation, result.Phase = ticket.Change.ID, ticket.Change.Phase
 		result.Status = "completed"
 		if deleting {
 			result.Status = "deletion-accepted"
+		}
+	}
+	if deleting && observed.outcome != nil && observed.outcome.Superseded {
+		result.Status = "deletion-superseded"
+		if observing {
+			result.Status += "-reservation-retained"
 		}
 	}
 	if err != nil {
@@ -259,6 +270,19 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 		return printStatus(stdout, stderr, result, 1)
 	}
 	return printStatus(stdout, stderr, result, 0)
+}
+
+type observedChangeAdapter struct {
+	sandboxcoordination.ChangeAdapter
+	outcome *sandboxcoordination.ChangeOutcome
+}
+
+func (adapter *observedChangeAdapter) ObserveChange(ctx context.Context, ticket sandboxcoordination.ChangeTicket) (*sandboxcoordination.ChangeOutcome, error) {
+	outcome, err := adapter.ChangeAdapter.ObserveChange(ctx, ticket)
+	if err == nil {
+		adapter.outcome = outcome
+	}
+	return outcome, err
 }
 
 func observationHint(action string) string {

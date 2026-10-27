@@ -80,6 +80,50 @@ func (store Store) ReadConfigurationDeletionOperation(ctx context.Context, opera
 	return ChangeTicket{}, fmt.Errorf("%w: configuration deletion operation is not recorded", ErrUnavailable)
 }
 
+// RecoverConfigurationDeletion observes an earlier deletion of this source.
+// It never submits a Delete. A superseded precondition permits a new request;
+// an unchanged unsubmitted reservation remains available to its exact caller.
+func (s Store) RecoverConfigurationDeletion(ctx context.Context, current client.Object) (bool, error) {
+	image, err := newConfigurationImage(current)
+	if err != nil {
+		return false, err
+	}
+	ticket, found, err := s.matchConfigurationTicket(ctx, image.reference, func(change Change) bool {
+		return change.DeletionContentDigest != ""
+	})
+	if err != nil || !found {
+		return false, err
+	}
+	if err := s.CheckChange(ctx, ticket); err != nil {
+		return false, err
+	}
+	if ticket.Change.Phase == Reserved && ticket.Change.Before == image.reference {
+		if err := (&configurationChange{before: image}).checkBefore(ctx, s.APIReader); err == nil {
+			return false, nil
+		}
+	}
+	adapter, err := NewKubernetesDeletionRecoveryAdapter(s.APIReader, ticket)
+	if err != nil {
+		return false, err
+	}
+	if ticket.Change.Phase == Reserved {
+		if _, err := adapter.ObserveChange(ctx, ticket); err != nil {
+			return false, err
+		}
+		// Advance only after metadata proves the old conditional write cannot
+		// affect a live object. Competing submission intent remains CAS-fenced.
+		ticket, err = s.BeginChange(ctx, ticket)
+		if err != nil {
+			return false, err
+		}
+	}
+	outcome, err := s.observeAndReleaseChange(ctx, ticket, adapter)
+	if err != nil {
+		return false, fmt.Errorf("%w: recorded configuration deletion requires recovery: %w", ErrUnavailable, err)
+	}
+	return outcome.Applied && ticket.Change.Before.UID == image.reference.UID, nil
+}
+
 // AuthorizeConfigurationDeletion is read-only and supplements ordinary deletion
 // authorization. The API must enforce these exact UID/resourceVersion conditions.
 func (s Store) AuthorizeConfigurationDeletion(ctx context.Context, before client.Object, options metav1.DeleteOptions) error {
@@ -133,8 +177,8 @@ func NewKubernetesDeleteAdapter(writer client.Client, reader client.Reader, befo
 
 func NewKubernetesDeletionRecoveryAdapter(reader client.Reader, ticket ChangeTicket) (*KubernetesDeleteAdapter, error) {
 	if reader == nil || !literal(string(ticket.AuthorityUID), 128) || !literal(ticket.Change.ID, 128) ||
-		ticket.Change.Phase != Changing {
-		return nil, fmt.Errorf("%w: an authoritative reader and Changing deletion ticket are required", ErrUnavailable)
+		(ticket.Change.Phase != Changing && ticket.Change.Phase != Reserved) {
+		return nil, fmt.Errorf("%w: an authoritative reader and recorded deletion ticket are required", ErrUnavailable)
 	}
 	if err := validateConfigurationDeletion(ticket.Change); err != nil {
 		return nil, err
@@ -180,8 +224,8 @@ func (a *KubernetesDeleteAdapter) Submit(ctx context.Context, ticket ChangeTicke
 	return nil
 }
 
-// ObserveChange confirms removal of the enrolled UID or an irreversible
-// terminating transition on that UID. It never removes finalizers or resubmits.
+// ObserveChange confirms deletion acceptance or an irreversibly superseded
+// resourceVersion precondition. It never removes finalizers or resubmits.
 func (a *KubernetesDeleteAdapter) ObserveChange(ctx context.Context, ticket ChangeTicket) (*ChangeOutcome, error) {
 	ticket = ticket.DeepCopy()
 	if err := a.validate(ctx, ticket); err != nil {
@@ -212,6 +256,11 @@ func (a *KubernetesDeleteAdapter) ObserveChange(ctx context.Context, ticket Chan
 		// Release the change reservation so ordinary finalizer cleanup can
 		// finish. This is deletion acceptance, not proof of physical cleanup.
 		outcome.After = current
+	} else if metadata.DeletionTimestamp.IsZero() && current.ResourceVersion != before.ResourceVersion {
+		outcome.Applied = false
+		outcome.Aborted = true
+		outcome.Superseded = true
+		outcome.After = current
 	} else {
 		return nil, fmt.Errorf("%w: configuration deletion outcome remains unknown", ErrUnavailable)
 	}
@@ -229,7 +278,8 @@ func (a *KubernetesDeleteAdapter) validate(ctx context.Context, ticket ChangeTic
 		return fmt.Errorf("%w: a configured Kubernetes deletion adapter is required", ErrUnavailable)
 	}
 	if !literal(string(ticket.AuthorityUID), 128) || !literal(ticket.Change.ID, 128) ||
-		ticket.Change.Phase != Changing || !a.deletion.matches(ticket.Change) {
+		(ticket.Change.Phase != Changing && (ticket.Change.Phase != Reserved || a.writer != nil)) ||
+		!a.deletion.matches(ticket.Change) {
 		return ErrConflict
 	}
 	return nil

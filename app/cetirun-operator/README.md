@@ -763,6 +763,13 @@ with the same `--before` or `--operation-id` then finishes the same recorded
 operation without resubmission. This proves neither physical cleanup nor
 completion of finalizers or dependent cleanup.
 The CLI reports `deletion-accepted`, not resource or dependent cleanup completion.
+If the original UID is still live at a newer resourceVersion, the old conditional
+Delete can no longer apply. Observation reports
+`deletion-superseded-reservation-retained`; explicit recovery reports
+`deletion-superseded` and releases only the old reservation, without a Delete.
+Portal deletion with a freshly read UID/resourceVersion observes and clears
+such an older reservation before authorizing the new conditional request.
+An unchanged uncertain request is never replayed or declared superseded.
 Release after the terminating transition allows normal finalizer cleanup to
 finish. Missing authority remains an error, never permission to delete.
 Deletion observation reads authoritative metadata only, so a replacement's
