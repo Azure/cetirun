@@ -127,7 +127,7 @@ export function Header() {
                 fontWeight: isActive ? 600 : 400,
               })}
             >
-              Connected services
+              Connections
             </NavLink>
           )}
           {me?.isAdmin && (

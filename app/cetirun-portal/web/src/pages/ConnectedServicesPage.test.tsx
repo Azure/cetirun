@@ -47,7 +47,7 @@ describe("ConnectedServicesPage", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("fails closed when service access is disabled", () => {
+  it("fails closed when agent identities are disabled", () => {
     features.data = { agentToolsEnabled: false };
     renderPage();
     expect(screen.getByText("403 Forbidden")).toBeInTheDocument();

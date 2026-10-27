@@ -18,7 +18,7 @@ const azure: Connection = { ...personal, id: "azure", mode: "agent", provider: "
 const google: Connection = { ...personal, id: "google", provider: "google", accountDisplay: "user@example.com", services: ["google_gmail", "google_calendar"] };
 const binding: ConnectionBinding = { id: "binding-1", instanceUid: instance.uid, connectionId: personal.id, services: ["github"], enabled: true, revision: 7 };
 const appBinding: ConnectionBinding = { ...binding, connectionId: app.id, github: { repositoryIds: [1], permissions: { contents: "read" } } };
-const empty = "No services have access to this agent yet. Add a service to choose its permissions.";
+const empty = "No identities configured yet. Add an identity to choose how this agent accesses external services.";
 type User = ReturnType<typeof userEvent.setup>;
 function renderUI() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -26,7 +26,7 @@ function renderUI() {
   return { ...view, client };
 }
 async function open(user: User, provider = "GitHub", method?: "personal") {
-  await user.click(await screen.findByRole("button", { name: "Add service" }));
+  await user.click(await screen.findByRole("button", { name: "Add identity" }));
   await user.click(screen.getByRole("button", { name: provider, exact: true }));
   if (method) {
     await user.click(screen.getByText("Other access methods"));
@@ -42,7 +42,7 @@ async function remove(user: User) {
   await user.click(await screen.findByRole("menuitem", { name: "Remove access" }));
 }
 
-describe("Agent service access", () => {
+describe("Agent identities", () => {
   beforeEach(() => {
     vi.spyOn(document.body, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1024, 768));
     vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(function (this: HTMLElement) { return this.parentElement; });
@@ -59,21 +59,21 @@ describe("Agent service access", () => {
   it("starts with services, with one GitHub option and no account or method decisions", async () => {
     const user = userEvent.setup(); renderUI(); await screen.findByText(empty);
     expect(screen.queryByText("octocat")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Add service" }));
+    await user.click(screen.getByRole("button", { name: "Add identity" }));
     expect(screen.getAllByRole("button", { name: "GitHub", exact: true })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Microsoft 365" })).toBeDisabled();
     expect(screen.queryByText("Personal account")).toBeNull();
     expect(api.startConnection).not.toHaveBeenCalled();
   });
 
-  it("scrolls and focuses Service access when arriving from Connected services", async () => {
+  it("scrolls and focuses Identities when arriving from Connections", async () => {
     const previousUrl = window.location.href;
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
     window.history.replaceState(null, "", "#service-access");
     try {
       renderUI();
       await screen.findByText(empty);
-      const region = screen.getByRole("region", { name: "Service access", exact: true });
+      const region = screen.getByRole("region", { name: "Identities", exact: true });
       await waitFor(() => expect(region).toHaveFocus());
       expect(scroll).toHaveBeenCalledWith({ block: "start" });
     } finally {
@@ -203,7 +203,7 @@ describe("Agent service access", () => {
     api.listConnections.mockResolvedValue([]); api.listConnectionBindings.mockResolvedValue({ bindings: [binding], readOnly: true });
     const user = userEvent.setup(); renderUI(); await remove(user);
     expect(api.deleteConnectionBinding).toHaveBeenCalledWith("agent-a", binding.id, 7);
-    expect(screen.getByRole("button", { name: "Add service" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add identity" })).toBeDisabled();
   });
 
   it("reuses this Agent's Azure identity and never offers another Agent's identity", async () => {
@@ -245,9 +245,9 @@ describe("Agent service access", () => {
   it("fails closed on load failure and recovers through retry", async () => {
     api.listConnectionBindings.mockRejectedValueOnce(new Error("Unavailable"));
     const user = userEvent.setup(); renderUI(); await screen.findByRole("alert");
-    expect(screen.getByRole("button", { name: "Add service" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add identity" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Retry" })); await screen.findByText(empty);
-    expect(screen.getByRole("button", { name: "Add service" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Add identity" })).toBeEnabled();
   });
 
   it("does not initiate OAuth when the popup is blocked", async () => {
@@ -262,7 +262,7 @@ describe("Agent service access", () => {
     const user = userEvent.setup(); renderUI(); await open(user); await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(api.createConnectionBinding).not.toHaveBeenCalled(); expect(api.updateConnectionBinding).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Add service" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add identity" })).toHaveFocus());
   });
 
   it("isolates drafts and caches when the same Agent name gets a new UID", async () => {
@@ -273,7 +273,7 @@ describe("Agent service access", () => {
     api.listConnectionBindings.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     view.rerender(<QueryClientProvider client={view.client}><ToolAuthorizationBlock instance={{ ...instance, uid: "new-uid" }} /></QueryClientProvider>);
     expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.queryByRole("article")).toBeNull();
-    expect(screen.getByRole("button", { name: "Add service" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add identity" })).toBeDisabled();
     await waitFor(() => expect(api.listConnectionBindings).toHaveBeenCalledTimes(callsBeforeReplacement + 1)); finish({ bindings: [], readOnly: false }); await screen.findByText(empty);
   });
 

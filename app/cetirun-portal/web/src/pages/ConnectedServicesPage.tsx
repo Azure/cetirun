@@ -163,16 +163,16 @@ export function ConnectedServicesPage() {
   const features = useFeatures();
   const enabled = features.data?.agentToolsEnabled === true;
   const { connections } = useToolConnections(enabled);
-  if (features.isLoading) return <div style={{ flex: 1, padding: 24 }}><Spinner label="Loading Connected services..." /></div>;
-  if (!enabled) return <ForbiddenPage message="Connected services are not enabled." />;
+  if (features.isLoading) return <div style={{ flex: 1, padding: 24 }}><Spinner label="Loading connections..." /></div>;
+  if (!enabled) return <ForbiddenPage message="Connections are not enabled." />;
 
   const usableConnections = (connections.data ?? []).filter((connection) => connection.mode === "delegated" || connection.mode === "installation");
   return <main style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 24 }}>
-    <Title1>Connected services</Title1>
-    <Text block style={{ marginTop: 8 }}>Manage existing service authorizations. To give an Agent access, open that Agent and configure Service access.</Text>
-    {connections.isLoading && <Spinner label="Loading connected services..." style={{ marginTop: 24 }} />}
-    {connections.error && <MessageBar intent="error" style={{ marginTop: 24 }}>Could not load connected services: {connections.error.message}<Button appearance="transparent" onClick={() => void connections.refetch()}>Retry</Button></MessageBar>}
-    {!connections.isLoading && !connections.error && !usableConnections.length && <MessageBar intent="info" style={{ marginTop: 24 }}>No connected services yet. <Link to="/">View agents</Link> to connect a service from an Agent.</MessageBar>}
+    <Title1>Connections</Title1>
+    <Text block style={{ marginTop: 8 }}>Manage external accounts and authorizations for your agents. To add a connection or give an agent access, open that agent and configure Identities.</Text>
+    {connections.isLoading && <Spinner label="Loading connections..." style={{ marginTop: 24 }} />}
+    {connections.error && <MessageBar intent="error" style={{ marginTop: 24 }}>Could not load connections: {connections.error.message}<Button appearance="transparent" onClick={() => void connections.refetch()}>Retry</Button></MessageBar>}
+    {!connections.isLoading && !connections.error && !usableConnections.length && <MessageBar intent="info" style={{ marginTop: 24 }}>No connections yet. <Link to="/">View agents</Link> and select Add identity to connect an external account.</MessageBar>}
     {!connections.isLoading && !connections.error && providerOrder.map((provider) => <ProviderGroup key={provider} provider={provider} connections={usableConnections.filter((connection) => connection.provider === provider)} />)}
   </main>;
 }

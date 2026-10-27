@@ -9,7 +9,7 @@ export function HowAccessWorks({ connection }: { connection: Connection }) {
   return <details style={{ marginTop: 16 }}><summary>How access works</summary>
     {connection.mode === "installation" ? <>
       <Text block>Signed in as {connection.github?.userLogin}. GitHub actions run as {connection.accountDisplay || "the GitHub App bot"}.</Text>
-      <Text block>Each agent receives only the repositories and permissions selected in its Service access settings. Basic repository metadata is included.</Text>
+      <Text block>Each agent receives only the repositories and permissions selected in its Identities settings. Basic repository metadata is included.</Text>
       <Text block>The platform holds the App credentials and encrypted user authorization. Its operators can access the repositories granted to the App in GitHub. Install the App only on repositories you trust the platform to access.</Text>
     </> : connection.mode === "agent" ? <Text block>Resource owners grant this agent access through Azure RBAC. Connecting the identity does not verify access to Azure resources.</Text>
       : <Text block>Access depends on this personal account and the permissions authorized with the provider.{connection.provider === "github" && " CetiRun cannot restrict this method to selected repositories."}</Text>}

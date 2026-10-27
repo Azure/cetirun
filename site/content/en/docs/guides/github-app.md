@@ -66,7 +66,7 @@ key has been verified, then revoke the previous key in GitHub.
 
 ## Give an Agent access
 
-1. Open the Agent's **Service access**, choose **Add service**, then choose
+1. Open the Agent's **Identities**, choose **Add identity**, then choose
    **GitHub**. The default flow is **Selected repositories**, which uses the
    shared GitHub App. The personal-account flow is under **Other access
    methods → Personal account** and cannot be narrowed to selected repositories.
@@ -95,7 +95,7 @@ not grant access to organization repositories.
 Use **Manage access** to change repositories or permissions, then select
 **Save access**. The Agent's **Remove access** menu item removes only that
 Agent's association. Saved authorizations can be shared by multiple Agents;
-removing access from one Agent does not affect the others. **Connected services**
+removing access from one Agent does not affect the others. **Connections**
 can remove a connection only after no Agent uses it. Removing it does not
 uninstall the App or change its GitHub permissions; manage or uninstall the App
 separately in GitHub settings.

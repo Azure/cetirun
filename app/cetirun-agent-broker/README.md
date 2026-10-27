@@ -150,7 +150,7 @@ Personal OAuth connections, different users and different installations remain
 separate. A temporary sign-in record is consumed only after reuse succeeds;
 retrying its selection returns the completed result. Historical duplicates keep
 their IDs and bindings, and `canonicalConnectionId` identifies the connection
-offered for new access. Connected services labels these historical duplicates
+offered for new access. Connections labels these historical duplicates
 and retains their usage and removal controls. Removing an unused duplicate does
 not revoke the provider authorization or uninstall the App.
 

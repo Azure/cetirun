@@ -125,7 +125,7 @@ export function ServiceAccessWizard({ instance, connections, editing, canManage,
     if (original) api.update.mutate({ id: original.binding.id, input: { ...input, revision: original.binding.revision } }, callbacks);
     else api.create.mutate(input, callbacks);
   };
-  const title = step === "service" ? "Add service" : step === "account" ? `${providerLabels[provider!]} account` : step === "access" ? (mode === "installation" ? "Repositories & permissions" : "Access settings") : "Review access";
+  const title = step === "service" ? "Add identity" : step === "account" ? `${providerLabels[provider!]} account` : step === "access" ? (mode === "installation" ? "Repositories & permissions" : "Access settings") : "Review access";
   const nextAccountDisabled = disabled || signin.pending || appUnavailable || (needsInstallation ? installations.isError || installations.isFetching || !installed.some((item) => item.id === selectedInstallation) : !selectedAccount && !(provider === "azure" && mode === "agent"));
 
   return <Dialog open onOpenChange={(_, data) => { if (!data.open) close(); }}><DialogSurface style={{ width: "min(680px, calc(100vw - 32px))", maxWidth: 680 }}><DialogBody ref={body}>

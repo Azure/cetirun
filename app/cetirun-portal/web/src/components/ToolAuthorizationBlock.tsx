@@ -45,13 +45,13 @@ function AgentServiceAccess({ instance }: { instance: Instance }) {
     setAdding(false); setEditing(undefined);
     requestAnimationFrame(() => wizardTrigger.current?.focus());
   };
-  return <section ref={section} id="service-access" tabIndex={-1} aria-label="Service access" style={{ marginTop: 16, padding: 20, borderRadius: tokens.borderRadiusLarge, border: `1px solid ${tokens.colorNeutralStroke1}`, overflowWrap: "anywhere" }}>
+  return <section ref={section} id="service-access" tabIndex={-1} aria-label="Identities" style={{ marginTop: 16, padding: 20, borderRadius: tokens.borderRadiusLarge, border: `1px solid ${tokens.colorNeutralStroke1}`, overflowWrap: "anywhere" }}>
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-      <Text as="h2" size={400} weight="semibold" style={{ margin: 0 }}>Service access</Text>
-      <Button appearance="primary" disabled={!canManage} onClick={(event) => { wizardTrigger.current = event.currentTarget; setAdding(true); }}>Add service</Button>
+      <Text as="h2" size={400} weight="semibold" style={{ margin: 0 }}>Identities</Text>
+      <Button appearance="primary" disabled={!canManage} onClick={(event) => { wizardTrigger.current = event.currentTarget; setAdding(true); }}>Add identity</Button>
     </div>
-    <Text size={200} block style={{ marginTop: 8 }}>Choose the services and resources this agent can access.</Text>
-    {loading && <Spinner size="tiny" label="Loading service access..." />}
+    <Text size={200} block style={{ marginTop: 8 }}>Manage the identities and permissions this agent uses to access external services.</Text>
+    {loading && <Spinner size="tiny" label="Loading identities..." />}
     {error && <div role="alert"><Text block>{error.message}</Text><Button onClick={retry}>Retry</Button></div>}
     {signin.message && <Text role="status" block>{signin.message}</Text>}
     {groups.map((provider) => {
@@ -70,6 +70,7 @@ function AgentServiceAccess({ instance }: { instance: Instance }) {
             {connection && <Badge appearance="outline">{accessMethodLabel(connection)}</Badge>}
             <Badge appearance="tint" color={connectionStatusColor(connection)}>{connection ? connectionStatusLabel(connection) : "Unavailable"}</Badge>
           </div>
+          {connection?.mode === "installation" && <Text size={200} block>Acts as {connection.accountDisplay || "the GitHub App bot"}</Text>}
           {binding.github ? <GitHubPermissionSummary value={binding.github} /> : <Text size={200} block>{binding.services.map((id) => serviceLabels[id] ?? id).join(" · ")}</Text>}
           {connection?.provider === "github" && connection.mode === "delegated" && <Text size={200} block>Uses personal account permissions. No per-repository restrictions in CetiRun.</Text>}
           {connection && providerDisabledReasons[connection.provider] && <Text size={200} block>{providerDisabledReasons[connection.provider]}</Text>}
@@ -84,7 +85,7 @@ function AgentServiceAccess({ instance }: { instance: Instance }) {
         </article>)}
       </section>;
     })}
-    {!bindings.length && !loading && !error && <Text block style={{ marginTop: 20 }}>No services have access to this agent yet. Add a service to choose its permissions.</Text>}
+    {!bindings.length && !loading && !error && <Text block style={{ marginTop: 20 }}>No identities configured yet. Add an identity to choose how this agent accesses external services.</Text>}
     {(adding || (editing && bindings.some((item) => item.id === editing.binding.id))) && <ServiceAccessWizard instance={instance} connections={connections} editing={editing} canManage={canManage} onClose={closeWizard} />}
   </section>;
 }

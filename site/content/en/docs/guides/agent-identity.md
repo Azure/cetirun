@@ -20,7 +20,7 @@ connections; Google uses personal connections.
 ## Independent Azure access
 
 1. Enable Agent Identity on a supported instance and wait for it to be Ready.
-2. In **Service access**, select **Add service → Azure**. Continue with the
+2. In **Identities**, select **Add identity → Azure**. Continue with the
    default **Agent identity** method, choose the service, review the access,
    and select **Allow access**. An existing identity is reused. The
    Broker derives tenant, principal, client and immutable Agent UID from trusted
@@ -68,7 +68,7 @@ callback. Configure the Broker chart's
 `client-secret` in the Broker namespace. GitHub App installations, private keys
 and bot identities are not used.
 
-1. Select **Service access → Add service → GitHub**, expand **Other access
+1. Select **Identities → Add identity → GitHub**, expand **Other access
    methods**, choose **Personal account**, then select **Sign in to GitHub**. You can also
    select an existing authorized account.
 2. Complete sign-in in the popup. The wizard resumes with the verified account.
@@ -85,7 +85,7 @@ GitHub tokens may lack provider expiry; internal credential issuance still has
 a short finite validity. Removing Agent access stops future CetiRun issuance but does
 not revoke external OAuth consent. Revoke that separately in GitHub Settings →
 Applications → Authorized OAuth Apps. Reauthorize preserves the original account;
-a different account must be added through **Add service**.
+a different account must be added through **Add identity**.
 
 ## Authorize personal Google access
 
@@ -107,7 +107,7 @@ environment administrator registers a Google Web OAuth client once:
 5. Store the client ID/secret in the Broker namespace using `client-id` and
    `client-secret` keys. Configure `providers.google.credentialsSecretName`.
 
-Users select **Service access → Add service → Google → Sign in to Google** and complete
+Users select **Identities → Add identity → Google → Sign in to Google** and complete
 consent in the popup. The wizard resumes with the verified account; select Gmail,
 Calendar or both services, review access, and select **Allow access**.
 An enabled service is not a read-only promise: Google determines whether each
@@ -136,18 +136,18 @@ The Portal currently shows **Not reported** for downstream OBO scopes. It does
 not infer Graph or ARM permissions from the intermediate sign-in token or
 configured scope requests. The provider still evaluates every API request.
 
-## Manage service access and connections
+## Manage identities and connections
 
-The Agent page lists only its active associations in **Service access**. Its
+The Agent page lists only its active associations in **Identities**. Its
 **Remove access** menu item removes only that Agent's association; other Agents
 and the saved authorization are unaffected. **Manage access** appears for
 editable access and requires at least one service; select **Save access** to
 apply changes. **Sign in again** appears when sign-in is required. Results
 refresh automatically; loading failures offer **Retry**.
 
-Use **Connected services** in the Portal header to view existing personal
+Use **Connections** in the Portal header to view existing personal
 authorizations and GitHub App connections, their reported details, and the
-Agents using them. It does not create new authorizations: use **Add service**
+Agents using them. It does not create new authorizations: use **Add identity**
 from an Agent for that. Signing in again does not clear working credentials.
 **Remove connection** is available only when no Agent uses the authorization;
 the server also checks usage and rejects concurrent association/removal races.
@@ -156,8 +156,8 @@ not revoke the provider's OAuth consent or uninstall a GitHub App.
 
 Repeated sign-in to the same verified provider account reuses its canonical
 Connection. Existing duplicate records retain their IDs and associations and
-remain visible as separate authorizations in **Connected services**. **Add
-service** offers one canonical choice. Unused duplicates can be removed
+remain visible as separate authorizations in **Connections**. **Add
+identity** offers one canonical choice. Unused duplicates can be removed
 individually. Historical disabled associations remain inactive until the user
 explicitly gives that Agent access again.
 

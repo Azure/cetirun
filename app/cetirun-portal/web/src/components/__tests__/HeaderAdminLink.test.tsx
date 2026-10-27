@@ -104,20 +104,20 @@ describe("Header admin link", () => {
   });
 });
 
-describe("Header connected services feature", () => {
+describe("Header connections feature", () => {
   function setup() {
     mockTheme();
     vi.spyOn(MeContext, "useMe").mockReturnValue({ me: undefined, isLoading: false, error: null });
     return render(<Header />, { wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter> });
   }
-  it.each([undefined, false])("hides Connected services when agentToolsEnabled is %s", (enabled) => {
+  it.each([undefined, false])("hides Connections when agentToolsEnabled is %s", (enabled) => {
     features.data = enabled === undefined ? undefined : { agentToolsEnabled: enabled };
     setup();
-    expect(screen.queryByRole("link", { name: "Connected services" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Connections" })).not.toBeInTheDocument();
   });
-  it("links to the full Connected services page only when enabled", () => {
+  it("links to the full Connections page only when enabled", () => {
     features.data = { agentToolsEnabled: true };
     setup();
-    expect(screen.getByRole("link", { name: "Connected services" })).toHaveAttribute("href", "/connections");
+    expect(screen.getByRole("link", { name: "Connections" })).toHaveAttribute("href", "/connections");
   });
 });
