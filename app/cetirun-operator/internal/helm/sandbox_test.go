@@ -4,6 +4,7 @@
 package helm
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -21,10 +22,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 )
 
 func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
+	// Exercise production preflight without allowing access to a cluster.
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
 	for _, tc := range []struct {
 		name  string
 		port  *int32
@@ -162,6 +167,32 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 					binding.Subjects[0] != (rbacv1.Subject{Kind: "ServiceAccount", Name: account, Namespace: input.Namespace.Name}) {
 					t.Fatalf("Custom terminal RoleBinding %q differs from its isolated contract: %#v", name, binding)
 				}
+			}
+			guardCalled := false
+			apply, err := prepared.ReconcileSandbox(values, bundle, func(context.Context) error {
+				guardCalled = true
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := (&Client{}).InstallOrUpgrade(input.Namespace.Name, input.ReleaseName, apply); !errors.Is(err, rest.ErrNotInCluster) || !guardCalled {
+				t.Fatalf("governed Custom did not reach the Kubernetes client after Sandbox authorization: %v (guard=%v)", err, guardCalled)
+			}
+			stale := errors.New("synthetic Custom authority changed")
+			apply.sandboxGuard = func(context.Context) error { return stale }
+			if err := (&Client{}).InstallOrUpgrade(input.Namespace.Name, input.ReleaseName, apply); !errors.Is(err, stale) {
+				t.Fatalf("Custom apply bypassed current Sandbox authority: %v", err)
+			}
+			apply.sandboxGuard = func(context.Context) error { return nil }
+			apply.Values["replicaCount"] = 2
+			if err := (&Client{}).InstallOrUpgrade(input.Namespace.Name, input.ReleaseName, apply); err == nil || errors.Is(err, rest.ErrNotInCluster) {
+				t.Fatalf("mutated Custom plan reached the Kubernetes client: %v", err)
+			}
+			forged := &PreparedRelease{Agent: prepared.Agent, Values: prepared.Values, chart: prepared.chart}
+			delete(forged.Values, w.ValuesKey)
+			if err := (&Client{}).InstallOrUpgrade(input.Namespace.Name, input.ReleaseName, forged); err == nil || errors.Is(err, rest.ErrNotInCluster) {
+				t.Fatalf("Custom without Sandbox authority reached the Kubernetes client: %v", err)
 			}
 		})
 	}

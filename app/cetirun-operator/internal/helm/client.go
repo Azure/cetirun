@@ -240,11 +240,12 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 		return sandboxworkload.ErrExecutionHeld
 	}
 	if prepared.sandboxReconcile != nil {
+		// The common Sandbox contract also authorizes Custom. It does not
+		// carry the separate bindings consumed by the legacy Custom validator.
 		if err := prepared.AuthorizeSandboxApply(context.Background()); err != nil {
 			return err
 		}
-	}
-	if err := prepared.ValidateCustom(namespace, releaseName); err != nil {
+	} else if err := prepared.ValidateCustom(namespace, releaseName); err != nil {
 		return err
 	}
 	if prepared.custom && !prepared.apiValidated {
