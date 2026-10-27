@@ -271,7 +271,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 		return guard(ctx)
 	}
-	result, err := prepared.ReconcileSandbox(values, bundle, applyGuard)
+	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, applyGuard)
 	if err != nil {
 		return nil, err
 	}

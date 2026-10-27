@@ -221,6 +221,11 @@ Cancellation races with submission
 through a conditional state update. Submitted, uncertain or older unmarked
 checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
+Helm configuration and history reads recheck current authority without marking
+submission. The post-renderer records submission before resource writes, so a
+first-install history read failure can cancel a still-pending expectation and
+recover through normal retry or deletion. It cannot reset a previously submitted
+or uncertain checkpoint merely because the workload is absent.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.

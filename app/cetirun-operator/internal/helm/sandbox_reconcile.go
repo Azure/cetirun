@@ -150,6 +150,15 @@ func (r reconciledSandboxRenderer) Run(_ *bytes.Buffer) (*bytes.Buffer, error) {
 	return bytes.NewBuffer(bytes.Clone(r.prepared.manifest)), nil
 }
 
+// CheckSandboxApply validates authority before Helm's read-only preparation
+// without declaring that an apply has been submitted.
+func (p *PreparedRelease) CheckSandboxApply(ctx context.Context) error {
+	if p == nil || p.sandboxReconcile == nil || p.sandboxPreflight == nil || p.sealedInput != p.inputDigest() {
+		return fmt.Errorf("Sandbox preflight requires unchanged current render and controller authority")
+	}
+	return p.sandboxPreflight(ctx)
+}
+
 // AuthorizeSandboxApply rechecks authority and records submission intent before
 // an installer may write workloads. A failed or uncertain apply remains submitted.
 func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
