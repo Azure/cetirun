@@ -4,6 +4,66 @@ description: "Check instance health, request a retained restart, update, suspend
 weight: 40
 ---
 
+## Manage agents as an administrator
+
+In Portal, open **Admin → All agents**. Search by Agent name or owner, or
+filter by Team, Agent type, and phase. Select an Agent name or **View details**
+to open its management page. Access requires membership in the Portal's
+configured administrator allowlist; Team membership alone does not grant it.
+
+The **Overview** tab shows ownership, configuration, integration states, and
+the desired and observed configuration generations. **Status** shows Conditions
+and Pod health; **Events** shows Agent and namespace events. An unavailable
+diagnostic source is reported separately from an empty result. Registry
+authentication being configured means a credential reference exists; it does
+not establish that an image can be pulled.
+
+This page does not expose credentials or grant access to the owner's chat,
+terminal, or native Agent workspace. Arbitrary Helm values and annotations
+are not included. The ordinary owner APIs retain their ownership checks,
+including when the caller is an administrator.
+
+Choose **Edit** to open the configuration dialog and change the display name,
+image, model override, or supported integration settings. Save and Cancel
+remain below the scrollable fields. Port editing is available only for Custom
+Agents, matching the creation form. OpenClaw and Hermes ports are managed by
+the platform runtime and displayed read-only. Web UI applies only to Custom
+Agents with a port; Teams applies only to OpenClaw and Hermes. Clearing the model selects
+the platform's default resolution. Agent type, runtime username, resource name,
+owner, Team, Sandbox binding, and Chart version are read-only here. A pinned
+image cannot be cleared. Image changes preserve any existing private registry
+credential reference; administrators cannot replace credentials through this
+page. Platform type restrictions and admission still apply.
+
+Saving sends only the changed fields. A saved configuration may still be
+waiting for the Operator to apply it; review Conditions and observed generation
+before considering the Agent ready. Background refresh does not overwrite an
+editing draft. If another operation changes the Agent, a version conflict
+preserves the draft: reload and review the current configuration before saving
+again. The Portal does not automatically retry a conflicting write.
+
+Choose **Delete**, review the owner and Team, and enter the complete Agent name
+to confirm. Deletion can remove persistent data, including PVC objects during
+namespace cleanup. There is no recycle bin or data-retention option in this
+workflow. The page shows **Deleting** after the request is accepted and continues
+to show status and events. It returns to the list when the Agent resource
+disappears. This does not prove that all external resources or storage have
+finished cleanup. A stuck deletion requires investigation; the page cannot
+remove finalizers or force cleanup. See [deletion behavior](#delete-only-with-a-recovery-plan).
+
+The administrative API uses `/api/v1/admin/instances` for listing and
+`/api/v1/admin/instances/{name}` for `GET`, `PATCH`, and `DELETE`.
+`GET /api/v1/admin/instances/{name}/status` returns diagnostics and any
+per-source errors. Both mutation bodies require the `uid` and `resourceVersion`
+returned by the current detail response. Missing versions return `428`; changed
+or replaced Agents return `409`; accepted deletion returns `202`. `PATCH`
+accepts only `displayName`, `model`, `teamsEnabled`, and the nested `agent.image`,
+`agent.port`, and `agent.webUI` fields, alongside those version fields.
+`agent.port` and `agent.webUI` are accepted only for Custom Agents; sending
+either field for a built-in Agent returns `400`, including attempts to clear it.
+Administrative mutation logs record the actor, target, changed field names, and
+HTTP result without recording configuration values or request bodies.
+
 ## Inspect before changing
 
 Replace `alice` and `cetirun-alice` with your instance name and its reported

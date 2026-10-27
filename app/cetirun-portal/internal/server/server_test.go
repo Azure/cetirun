@@ -146,3 +146,36 @@ func TestConnectionRoutesAreOptInAndAuthenticated(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminAgentManagementRoutesRequireAuthenticatedAdministrator(t *testing.T) {
+	mux := New(fstest.MapFS{}, &handler.InstanceHandler{}, &handler.HealthHandler{},
+		&handler.FeaturesHandler{}, &handler.ConfigHandler{}, &handler.MeHandler{},
+		&handler.AdminTeamHandler{}, &handler.AdminInstanceHandler{}, &handler.AdminPolicyHandler{},
+		auth.Middleware(auth.NewAdminSet([]string{"administrator"})), auth.RequireAdmin())
+
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/v1/admin/instances/foreign-agent"},
+		{http.MethodGet, "/api/v1/admin/instances/foreign-agent/status"},
+		{http.MethodPatch, "/api/v1/admin/instances/foreign-agent"},
+		{http.MethodDelete, "/api/v1/admin/instances/foreign-agent"},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			unauthenticated := httptest.NewRecorder()
+			mux.ServeHTTP(unauthenticated, httptest.NewRequest(route.method, route.path, nil))
+			if unauthenticated.Code != http.StatusUnauthorized {
+				t.Fatalf("unauthenticated status=%d want=%d", unauthenticated.Code, http.StatusUnauthorized)
+			}
+
+			nonAdminRequest := httptest.NewRequest(route.method, route.path, nil)
+			nonAdminRequest.Header.Set("X-Auth-Request-Email", "owner@example.com")
+			nonAdmin := httptest.NewRecorder()
+			mux.ServeHTTP(nonAdmin, nonAdminRequest)
+			if nonAdmin.Code != http.StatusForbidden {
+				t.Fatalf("non-admin status=%d want=%d body=%s", nonAdmin.Code, http.StatusForbidden, nonAdmin.Body.String())
+			}
+		})
+	}
+}

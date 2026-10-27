@@ -110,6 +110,10 @@ func New(
 	adminMux.HandleFunc("PUT /api/v1/admin/policies/{name}", adminPolicyHandler.UpdatePolicy)
 	adminMux.HandleFunc("DELETE /api/v1/admin/policies/{name}", adminPolicyHandler.DeletePolicy)
 	adminMux.HandleFunc("GET /api/v1/admin/instances", adminInstanceHandler.ListAllInstances)
+	adminMux.HandleFunc("GET /api/v1/admin/instances/{name}", adminInstanceHandler.GetInstance)
+	adminMux.HandleFunc("GET /api/v1/admin/instances/{name}/status", adminInstanceHandler.GetInstanceStatus)
+	adminMux.HandleFunc("PATCH /api/v1/admin/instances/{name}", adminInstanceHandler.UpdateInstance)
+	adminMux.HandleFunc("DELETE /api/v1/admin/instances/{name}", adminInstanceHandler.DeleteInstance)
 	api.Handle("/api/v1/admin/", requireAdmin(adminMux))
 
 	mux.Handle("/api/", authMiddleware(api))

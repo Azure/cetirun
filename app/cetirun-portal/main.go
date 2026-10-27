@@ -117,7 +117,7 @@ func main() {
 	configHandler := &handler.ConfigHandler{NoticeBanner: cfg.NoticeBanner}
 	meHandler := &handler.MeHandler{ChatIdentityRealm: cfg.ChatIdentityRealm}
 	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
-	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient}
+	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient, Config: cfg}
 	adminPolicyHandler := &handler.AdminPolicyHandler{Kube: kubeClient}
 	var toolConnectionsHandler *handler.ToolConnectionsHandler
 	if cfg.AgentToolsEnabled {
