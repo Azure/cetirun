@@ -71,9 +71,9 @@ function ConnectionCard({ connection, historicalDuplicate = false }: { connectio
   const disabled = Boolean(providerDisabledReasons[connection.provider]);
   const setupIncomplete = ["connecting", "pending", "installation_required"].includes(connection.status);
   const canRemove = usage.data?.canRemove === true && !usage.isError && !usage.isFetching;
-  // Non-expiring personal GitHub tokens can be revoked while still marked connected.
+  // Revoked GitHub tokens and partial Google consent can still be marked connected.
   const canReauthorize = connection.status === "interaction_required"
-    || (connection.provider === "github" && connection.mode === "delegated" && connection.status === "connected");
+    || ((connection.provider === "github" || connection.provider === "google") && connection.mode === "delegated" && connection.status === "connected");
   const usageSummary = usage.isLoading
     ? "Checking Agent usage..."
     : usage.isError

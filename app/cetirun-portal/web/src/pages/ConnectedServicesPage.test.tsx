@@ -30,6 +30,15 @@ const personalGitHub: Connection = {
   mode: "delegated",
 };
 
+const personalGoogle: Connection = {
+  ...personalGitHub,
+  id: "google-personal",
+  provider: "google",
+  accountDisplay: "person@example.com",
+  services: ["google_calendar", "google_gmail"],
+  scopes: ["openid", "email", "https://www.googleapis.com/auth/calendar"],
+};
+
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={client}><MemoryRouter><ConnectedServicesPage /></MemoryRouter></QueryClientProvider>);
@@ -90,16 +99,22 @@ describe("ConnectedServicesPage", () => {
   });
 
   it.each([
-    ["connected", personalGitHub],
-    ["historical duplicate", { ...personalGitHub, id: "legacy-github", canonicalConnectionId: personalGitHub.id }],
-    ["sign-in required", { ...personalGitHub, status: "interaction_required" as const }],
-  ])("reauthorizes a %s personal GitHub connection without removing Agent access", async (_, connection) => {
+    ["connected personal GitHub", personalGitHub],
+    ["historical duplicate GitHub", { ...personalGitHub, id: "legacy-github", canonicalConnectionId: personalGitHub.id }],
+    ["sign-in required GitHub", { ...personalGitHub, status: "interaction_required" as const }],
+    ["connected Google with partial consent", personalGoogle],
+    ["historical duplicate Google", { ...personalGoogle, id: "legacy-google", canonicalConnectionId: personalGoogle.id }],
+    ["sign-in required Google", { ...personalGoogle, status: "interaction_required" as const }],
+  ])("reauthorizes a %s connection without removing Agent access", async (_, connection) => {
     const user = userEvent.setup();
+    const authorizationUrl = connection.provider === "google"
+      ? "https://accounts.google.com/o/oauth2/v2/auth"
+      : "https://github.com/login/oauth/authorize";
     const popup = { closed: false, close: vi.fn(), location: { replace: vi.fn() } };
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     api.listConnections.mockResolvedValue([connection]);
     api.getConnectionUsage.mockResolvedValue({ connectionId: connection.id, agents: [{ instanceUid: "agent-uid", instanceName: "agent-a", instanceNamespace: "default" }], canRemove: false });
-    api.reconnectConnection.mockResolvedValue({ authorizationId: "reauthorization", authorizationUrl: "https://github.com/login/oauth/authorize", expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    api.reconnectConnection.mockResolvedValue({ authorizationId: "reauthorization", authorizationUrl, expiresAt: new Date(Date.now() + 60_000).toISOString() });
     api.getConnectionAuthorization.mockResolvedValue({ authorizationId: "reauthorization", status: "complete", connectionId: connection.id });
     renderPage();
 
@@ -107,7 +122,7 @@ describe("ConnectedServicesPage", () => {
     expect(await screen.findByRole("link", { name: "agent-a" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove connection" })).toBeDisabled();
     await user.click(signin);
-    await waitFor(() => expect(popup.location.replace).toHaveBeenCalledWith("https://github.com/login/oauth/authorize"));
+    await waitFor(() => expect(popup.location.replace).toHaveBeenCalledWith(authorizationUrl));
     expect(api.reconnectConnection).toHaveBeenCalledExactlyOnceWith(connection.id);
     expect(signin).toBeDisabled();
 
