@@ -51,6 +51,9 @@ var laterAdditions = map[string][]string{
 // RestorePreProxyContract reconstructs the three chart assets changed by the
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
+	if startup, ok := chrt.Values["startupProbe"].(map[string]any); ok {
+		startup["failureThreshold"] = 30
+	}
 	if gateway, ok := chrt.Values["aiGateway"].(map[string]any); ok {
 		if proxy, ok := gateway["copilotProxy"].(map[string]any); ok {
 			delete(proxy, "replicaCount")
@@ -92,6 +95,12 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			{"{{- if $contextSkills }}\n{{- $plugins :=", "{{- if and (not .Values.sandboxWorkload) (dig \"enabled\" false (.Values.memoryContext | default dict)) }}\n{{- $plugins :="},
 		},
 		"values.schema.json": {
+			{`"type": ["integer", "null"],
+                    "minimum": 1,
+                    "default": null,
+                    "description": "Null selects 60 for common-executor OpenClaw Sandboxes, otherwise 30; explicit positive integers are preserved"`,
+				`"type": "integer",
+                    "default": 30`},
 			{"                        \"replicaCount\": {\"type\": [\"integer\", \"null\"], \"minimum\": 0, \"maximum\": 1, \"default\": null},\n", ""},
 			{`"executionHeld": {"type": "boolean"},
                 "reconciled": {"const": true}`, `"executionHeld": {"const": true}`},

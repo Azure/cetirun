@@ -517,7 +517,8 @@ startupProbe:
   initialDelaySeconds: 10
   periodSeconds: 10
   timeoutSeconds: 5
-  failureThreshold: 30
+  # -- Null selects 60 for common-executor OpenClaw Sandboxes, otherwise 30. An explicit positive integer is preserved.
+  failureThreshold: null
   successThreshold: 1
 
 # -- ttyd web terminal configuration

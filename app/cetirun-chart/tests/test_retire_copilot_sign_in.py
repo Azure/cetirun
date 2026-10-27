@@ -63,6 +63,8 @@ if os.path.realpath(os.environ.get("OPENCLAW_CONFIG_PATH") or agent_config) == o
 if state.get("fail") and argv[:len(state["fail"])] == state["fail"]:
     fail("disk I/O error")
 if argv[:3] == ["models", "auth", "list"]:
+    if state.get("fail_readback") and sum(call[:3] == ["models", "auth", "list"] for call in state["calls"]) > 1:
+        fail("synthetic readback failure", "sk-dummy")
     if state.get("refuse"):
         fail("Auth profile store requires legacy credential migration; run openclaw doctor --fix.",
              "[auth-profiles/persistence] code=AUTH_PROFILE_MIGRATION_REQUIRED")
@@ -298,6 +300,21 @@ def test_native_retires_direct_profiles_on_every_start(home):
     assert ["models", "auth", "logout", "openai:later", "--agent", "main", "--yes"] in cli(home)["calls"]
 
 
+def test_native_empty_auth_store_is_checked_once_per_start(home):
+    database = home["state"] / "state/openclaw.sqlite"
+    database.write_bytes(b"SQLite\x00previously removed synthetic profiles")
+    for _ in range(2):
+        set_cli(home, calls=[])
+        result = run(home, NATIVE_SCRIPT)
+        assert result.returncode == 0, result.stderr
+        calls = cli(home)["calls"]
+        assert [call for call in calls if call[:3] == ["models", "auth", "list"]] == [
+            ["models", "auth", "list", "--agent", "main", "--json"],
+        ]
+        assert ["doctor", "--state-sqlite", "compact"] in calls
+        assert cli(home)["profiles"] == {}
+
+
 @pytest.mark.parametrize("command", [
     ["models", "auth", "list"],
     ["models", "auth", "logout"],
@@ -322,6 +339,16 @@ def test_native_auth_checks_successful_logout_actually_removed_the_profiles(home
     result = run(home, NATIVE_SCRIPT)
     assert result.returncode != 0
     assert "model auth profiles remain" in result.stderr
+
+
+def test_native_logout_readback_failure_still_blocks_start(home):
+    signed_in_home(home)
+    set_cli(home, fail_readback=True)
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode != 0
+    assert cli(home)["profiles"] == {}
+    assert "could not list model auth profiles" in result.stderr
+    assert "sk-dummy" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("contents", ["not-json", "[]", '{"profiles": []}'])

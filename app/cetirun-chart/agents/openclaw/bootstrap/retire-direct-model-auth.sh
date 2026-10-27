@@ -73,9 +73,12 @@ for directory in "$state"/agents/*; do
   done
 done
 
-list_profiles
-jq -e '.profiles | length == 0' "$output" >/dev/null 2>&1 ||
-  fail "model auth profiles remain"
+# An empty initial list already verified the store; only logout needs readback.
+if [ -n "$profiles" ]; then
+  list_profiles
+  jq -e '.profiles | length == 0' "$output" >/dev/null 2>&1 ||
+    fail "model auth profiles remain"
+fi
 
 # Repeat compaction on restart, including after an earlier partial failure.
 if [ -n "$profiles" ] || [ -f "$state/state/openclaw.sqlite" ]; then

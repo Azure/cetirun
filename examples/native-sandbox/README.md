@@ -119,6 +119,22 @@ Existing Sandboxes retain their stored limits. To raise them, use the supported
 flow; changing the Portal default does not resize existing Sandboxes or bypass
 lifecycle and admission checks.
 
+## Default startup window
+
+With the matching runtime chart, common-executor OpenClaw uses 60 failed startup
+probes at 10-second intervals by default. This avoids prematurely restarting a
+gateway still initializing on Kata; startup, readiness and liveness checks all
+remain enabled. `startupProbe.failureThreshold: null` selects this default,
+while an explicit positive value is preserved. Retained single-start OpenClaw,
+Hermes and ordinary non-Sandbox paths keep their previous default of 30.
+
+Probe time begins after initialization, not when a restart or resume is requested.
+Doctor and credential retirement still run; retirement checks saved auth on each
+start, verifies any logout and compacts the databases. Test the complete operation
+on the selected storage and helper resources within the originally declared
+bound, including independent HOME and model witnesses. The larger probe window
+and offline regressions do not establish default-profile Kata acceptance.
+
 ## HOME access mode
 
 This example and Portal default to `ReadWriteOncePod` (RWOP). New common-executor
