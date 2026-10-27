@@ -473,7 +473,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         for documents in (baseline, configured):
             self.assertEqual([
                 rule for rule in documents[role]["rules"]
-                if "networking.istio.io" in rule["apiGroups"] and "destinationrules" in rule["resources"]
+                if any(group == "networking.istio.io" for group in rule["apiGroups"]) and "destinationrules" in rule["resources"]
             ], [{
                 "apiGroups": ["networking.istio.io"],
                 "resources": ["virtualservices", "sidecars", "destinationrules"],
@@ -1102,7 +1102,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             self.assertNotIn("*", rule["apiGroups"])
         self.assertEqual([
             rule for rule in documents[("ClusterRole", NAME)]["rules"]
-            if "networking.istio.io" in rule["apiGroups"]
+            if any(group == "networking.istio.io" for group in rule["apiGroups"])
         ], [{
             "apiGroups": ["networking.istio.io"],
             "resources": ["gateways", "destinationrules"], "verbs": ["get"],

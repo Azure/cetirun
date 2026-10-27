@@ -108,6 +108,7 @@ def main():
             pass
         for scenario in ("missing-client", "wrong-client-uri", "wrong-server-san", "plaintext"):
             ctx = ssl.create_default_context(cafile="/work/tls/ca.crt")
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_3
             if scenario != "missing-client":
                 name = "wrong" if scenario == "wrong-client-uri" else "client"
                 ctx.load_cert_chain(f"/work/tls/{name}.crt", f"/work/tls/{name}.key")
