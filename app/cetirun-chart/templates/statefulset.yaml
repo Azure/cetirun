@@ -1,5 +1,12 @@
 {{- if ne (include "cetirun.agent.type" .) "custom" }}
 {{- $emptySkills := eq ((.Values.sandboxWorkload | default dict).skillsMode | default "") "empty" }}
+{{- $startupFailureThreshold := .Values.startupProbe.failureThreshold }}
+{{- if eq $startupFailureThreshold nil }}
+{{- $startupFailureThreshold = 30 }}
+{{- if and (eq (include "cetirun.agent.type" .) "openclaw") ((.Values.sandboxWorkload | default dict).reconciled | default false) }}
+{{- $startupFailureThreshold = 60 }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -194,7 +201,7 @@ spec:
             initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.startupProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
-            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+            failureThreshold: {{ $startupFailureThreshold }}
             successThreshold: {{ .Values.startupProbe.successThreshold }}
           {{- end }}
           resources:

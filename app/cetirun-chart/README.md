@@ -148,8 +148,21 @@ existing Node runtime to request `/startupz`, `/readyz` and `/healthz` over
 ConfigMap mount at `/etc/cetirun/health-probe.cjs`; no new image is needed.
 It accepts HTTP 200-399 without following redirects, sends no model credentials,
 and exits nonzero on HTTP errors, connection failures or its bounded deadline.
-Probe timing, thresholds and enablement settings are preserved. Legacy OpenClaw
-and held Hermes renders retain their existing HTTP probes.
+Explicit probe timing, thresholds and enablement settings are preserved.
+With `startupProbe.failureThreshold: null` (the default), common-executor
+OpenClaw Sandboxes allow 60 failed startup probes at the existing 10-second
+interval, rather than restarting a still-initializing gateway after 30 failures.
+Other built-in paths, including retained single-start OpenClaw and Hermes, keep
+30 failures. An explicit positive integer, including `30`, overrides either
+default. Liveness/readiness checks and their timings remain unchanged.
+Legacy OpenClaw and held Hermes renders retain their existing HTTP probes.
+
+The startup probe starts after init containers finish; it is not a deadline for
+doctor or credential retirement and does not extend a lifecycle operation's
+acceptance bound. Qualify the complete startup and retained operations on the
+target runtime/storage, not just the probe window. Existing pinned charts and
+explicit overrides are not changed by this default; use the normal retained
+update flow to adopt the new chart.
 
 These exec probes require no host/remote-node ingress exception or network
 compiler change. They report Kubernetes container health only, not
@@ -167,6 +180,9 @@ configuration, unsupported named-agent stores, unresolved profile removal,
 compaction errors and linked auth paths fail initialization instead of starting
 with a different credential source. Named-agent configurations are outside this
 single-agent MVP. Legacy bootstrap behavior is unchanged.
+Retirement still reads the auth store on every start and compacts existing
+databases. An initially empty store needs no second expensive CLI read; whenever
+logout removes a profile, successful empty-store readback remains mandatory.
 
 The Gateway deployment must enable `operatorIntegration` and configure shared
 models in its chart so the Operator can bind AgentPolicy grants to the
