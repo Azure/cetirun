@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +10,7 @@ import type { Connection } from "../api/toolAuthorization";
 import { ConnectedServicesPage } from "./ConnectedServicesPage";
 
 const features = vi.hoisted(() => ({ data: { agentToolsEnabled: true } as { agentToolsEnabled: boolean } | undefined, isLoading: false }));
-const api = vi.hoisted(() => ({ listConnections: vi.fn(), getConnectionUsage: vi.fn(), deleteConnection: vi.fn() }));
+const api = vi.hoisted(() => ({ listConnections: vi.fn(), getConnectionUsage: vi.fn(), deleteConnection: vi.fn(), reconnectConnection: vi.fn(), getConnectionAuthorization: vi.fn() }));
 
 vi.mock("../hooks/useFeatures", () => ({ useFeatures: () => features }));
 vi.mock("../api/toolAuthorization", async (importOriginal) => ({
@@ -44,6 +44,8 @@ describe("ConnectedServicesPage", () => {
     api.listConnections.mockReset().mockResolvedValue([personalGitHub]);
     api.getConnectionUsage.mockReset().mockResolvedValue({ connectionId: personalGitHub.id, agents: [], canRemove: true });
     api.deleteConnection.mockReset().mockResolvedValue(undefined);
+    api.reconnectConnection.mockReset();
+    api.getConnectionAuthorization.mockReset();
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -85,6 +87,37 @@ describe("ConnectedServicesPage", () => {
     expect(api.deleteConnection).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Remove connection permanently" }));
     await waitFor(() => expect(api.deleteConnection).toHaveBeenCalledWith(personalGitHub.id));
+  });
+
+  it.each([
+    ["connected", personalGitHub],
+    ["historical duplicate", { ...personalGitHub, id: "legacy-github", canonicalConnectionId: personalGitHub.id }],
+    ["sign-in required", { ...personalGitHub, status: "interaction_required" as const }],
+  ])("reauthorizes a %s personal GitHub connection without removing Agent access", async (_, connection) => {
+    const user = userEvent.setup();
+    const popup = { closed: false, close: vi.fn(), location: { replace: vi.fn() } };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    api.listConnections.mockResolvedValue([connection]);
+    api.getConnectionUsage.mockResolvedValue({ connectionId: connection.id, agents: [{ instanceUid: "agent-uid", instanceName: "agent-a", instanceNamespace: "default" }], canRemove: false });
+    api.reconnectConnection.mockResolvedValue({ authorizationId: "reauthorization", authorizationUrl: "https://github.com/login/oauth/authorize", expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    api.getConnectionAuthorization.mockResolvedValue({ authorizationId: "reauthorization", status: "complete", connectionId: connection.id });
+    renderPage();
+
+    const signin = await screen.findByRole("button", { name: "Sign in again" });
+    expect(await screen.findByRole("link", { name: "agent-a" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove connection" })).toBeDisabled();
+    await user.click(signin);
+    await waitFor(() => expect(popup.location.replace).toHaveBeenCalledWith("https://github.com/login/oauth/authorize"));
+    expect(api.reconnectConnection).toHaveBeenCalledExactlyOnceWith(connection.id);
+    expect(signin).toBeDisabled();
+
+    api.listConnections.mockResolvedValue([{ ...connection, status: "connected", revision: 2 }]);
+    act(() => window.dispatchEvent(new MessageEvent("message", { origin: window.location.origin, source: popup as unknown as Window, data: { type: "cetirun-connection", authorizationId: "reauthorization" } })));
+    await waitFor(() => expect(popup.close).toHaveBeenCalled());
+    expect(api.getConnectionAuthorization).toHaveBeenCalledWith("reauthorization", expect.any(AbortSignal));
+    expect(api.listConnections).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("link", { name: "agent-a" })).toBeInTheDocument();
+    expect(api.deleteConnection).not.toHaveBeenCalled();
   });
 
   it("blocks removal when usage cannot be checked", async () => {
