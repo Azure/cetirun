@@ -2170,6 +2170,9 @@ must name an existing, platform-approved PriorityClass; the chart does not
 automatically assign system-critical priority. Spread constraints do not
 guarantee distinct hosts when only one eligible topology domain exists, so
 verify actual placement on at least two eligible hosts for availability.
+Spreading is scoped to each `pod-template-hash`: old ReplicaSets must not
+make a replacement revision appear balanced before their Pods disappear.
+Deployment preflight still checks the actual current serving endpoints.
 The disruption budget permits voluntary disruptions only while at least
 `replicaCount - 1` replicas remain available.
 A native 10-second preStop sleep allows endpoint changes to propagate before
