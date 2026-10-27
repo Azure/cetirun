@@ -212,14 +212,16 @@ Kubernetes 1.37 binaries described below already installed, run:
 
 ```bash
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
-  go -C app/cetirun-portal test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1
+  go -C app/cetirun-portal test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1
 ```
 
 It verifies persisted restart identity, conditional suspend/resume intent,
-duplicate requests, stale UID/version rejection, and CRD validation.
+duplicate requests, stale UID/version rejection, and CRD validation. The Sandbox
+case compares omitted/null runtime defaults and full resource/storage fields
+through the Portal and the served Kubernetes API, including conditional updates.
 It starts its own API server and etcd, never an existing cluster; it does not
 run Pods, contact a model provider, or qualify storage/failure recovery.
-Operator CI also runs this test using its existing pinned admission-test tools.
+Operator CI also runs these tests using its existing pinned admission-test tools.
 
 Planned migration has a focused Operator API-server regression using the same
 local assets:

@@ -7,7 +7,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Text, Title2 } from "@fluentui/react-components";
 import { createSandbox, getSandbox, updateSandbox, type SandboxSpec, type SandboxUpsertRequest } from "../../api/adminSandbox";
 
-const emptyForm: SandboxUpsertRequest = {
+type SandboxForm = SandboxUpsertRequest & SandboxSpec;
+
+const emptyForm: SandboxForm = {
   name: "", type: "kata",
   resources: {
     agent: { requests: { cpu: "500m", memory: "1Gi", "ephemeral-storage": "1Gi" }, limits: { cpu: "2", memory: "4Gi", "ephemeral-storage": "8Gi" } },
@@ -21,7 +23,7 @@ export function SandboxEditPage() {
   const isCreate = !name;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [form, setForm] = useState<SandboxUpsertRequest>(emptyForm);
+  const [form, setForm] = useState<SandboxForm>(emptyForm);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const { data: existing, isLoading, error } = useQuery({ queryKey: ["admin", "sandbox", name], queryFn: () => getSandbox(name!), enabled: !isCreate });
   useEffect(() => {
