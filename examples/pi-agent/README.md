@@ -38,11 +38,9 @@ platform requirements beyond this example.
 | [http.mjs](http.mjs) | Shared HTTP I/O and server lifecycle helpers. |
 | [Dockerfile](Dockerfile) | Install pinned dependencies and tools, expose `pi-tui`, and run the HTTP entrypoint as a non-root user. |
 
-In image-owned mode, the auth listener is private to the Pod at `127.0.0.1:9099`; never expose it
-through a Service or ingress. From an approved operations channel inside the
-Agent container, `node /opt/cetirun-pi/copilot-auth.mjs --help` describes its CLI.
-Credentials stay in `$HOME/.pi/agent/auth.json` and are not returned by the API
-or copied from another Agent. Do not disable exec restrictions to reach it.
+The image also contains standalone authentication helpers. CetiRun deployments
+use the Gateway runtime and Portal sign-in; the platform does not configure or
+expose the standalone listener.
 
 ## Build the image
 
@@ -86,8 +84,8 @@ ServiceAccount, restricted exec access, routing and storage. Keep the existing
 gateway configuration; `ttyd.gatewayServiceAccount` must match its identity.
 
 An administrator enables Custom provisioning and approves the exact image.
-Add the same digest to `gatewayImages` to use the platform AI Gateway. This
-selects model access for that image without migrating other approved images.
+All approved images use the platform AI Gateway. Select a Team whose Policy
+allows Custom and the requested models, and a compatible Sandbox.
 The Operator provisions the Agent's Virtual Key and private Gateway access;
 the image receives `OPENAI_BASE_URL` and a Secret-backed `OPENAI_API_KEY`.
 Merge these settings into the platform values:
@@ -96,16 +94,23 @@ Merge these settings into the platform values:
 cetirun-operator:
   customRuntime:
     enabled: true
-    agentManagedModel: false
     approvedImages:
       - mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent@sha256:<published-digest>
-    gatewayImages:
-      - mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent@sha256:<published-digest>
-    storageClass: default
-    storageSize: 100Gi
-    accessMode: ReadWriteOnce
-    fsGroup: 1024
+  cetirun:
+    helmValues:
+      ttyd:
+        enabled: true
+        image:
+          repository: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-terminal
+          digest: sha256:<published-terminal-digest>
 ```
+
+The common Sandbox terminal requires a platform-pinned image digest. It runs
+in a separate workload, with access to the Kubernetes API for the approved
+Agent shell protocol. It does not mount HOME or model credentials. Agent
+values can disable it with `ttyd.enabled: false`; they cannot change its image,
+target, or permissions. Its default port is 7681 and session lifetime is
+1800 seconds.
 
 Gateway mode keeps its key in memory, ignores native `auth.json`, and disables
 the image's local login listener. Pi discovers models through the Gateway using
@@ -121,16 +126,10 @@ separate proxy using a chart marked `cetirun.microsoft.com/custom-copilot: v1`.
 Its token and proxy key never reach the Agent container or HOME. Ready with an
 empty model list means model access is still pending, not successful inference.
 
-To retain the earlier image-owned mode, set `agentManagedModel: true` and omit
-that image from `gatewayImages`. Missing or failed Gateway configuration never
-selects native login automatically. Partial Gateway environment variables fail
-startup. Use a new, qualified image/instance for migration; existing private
-native credentials are not copied, imported or removed by this example.
-
-The Operator prepares the namespace, canonical context and HOME claim template
-in one Chart installation. The StatefulSet creates the PVC and Pod; a
-pre-existing PVC or UID is not required. The default context includes
-`cetirun-memory`, alongside approved platform and Team shared skills.
+Direct provider authentication is not supported on the platform. Missing or
+partial Gateway bindings hold execution instead of selecting local login.
+The common Sandbox executor provisions and retains HOME using the selected
+Sandbox's storage configuration, and projects approved context and Skills.
 
 On AKS, `default` uses Azure Disk with `WaitForFirstConsumer`: scheduling the
 Pod triggers binding. Ready requires both a Bound HOME and a ready workload.
@@ -147,6 +146,10 @@ metadata:
   name: pi-agent
 spec:
   team: example-team # An existing, approved Team.
+  sandboxRef: standard
+  modelAccess:
+    sharedModels: true
+    githubCopilot: false
   user:
     alias: example-user
     displayName: Example User
@@ -193,14 +196,11 @@ trying `zsh`, `bash`, then `sh`. This image does not install or start ttyd.
 The browser uses `/<instance>/term/`; the terminal Service defaults to port 7681,
 separate from the Agent's HTTP port.
 
-In Gateway mode, model login stays in Portal Overview. In image-owned mode,
-approve Pi's Copilot model-policy updates before using
-`/login github-copilot`, then select a model with `/model`. Complete the GitHub
-device flow with your own approved account. Terminal access does not log you in
-to Copilot; the image-owned mode has no Portal model-login action.
+Model login stays in Portal Overview. Select an authorized Gateway model with
+`/model`. Terminal access does not log you in to Copilot; CetiRun provisions
+the Gateway credential and model authorization for this Agent.
 
-Pi works in `$HOME/workspace`. Native sessions, and image-owned credentials when
-that mode is selected, stay in the private HOME PVC under `.pi/agent`;
+Pi works in `$HOME/workspace`. Native sessions stay in the private HOME PVC under `.pi/agent`;
 context and skills come from read-only
 `.agents`. Pi saves a new native session after its first assistant response,
 so an empty or shell-only session is not a persistence test. Pod replacement

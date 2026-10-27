@@ -115,7 +115,7 @@ class ApiDocumentationTests(unittest.TestCase):
         text = (SITE / "content/en/docs/reference/crds.md").read_text()
         self.assertNotIn("It rejects Custom, registry references", text)
         for contract in (
-            "`CustomBindingsPending`",
+            "common Sandbox contract",
             "`customRuntime`",
             "non-default usernames",
             "Portal-managed source Secret",

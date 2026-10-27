@@ -111,6 +111,7 @@ func TestSandboxOptInDoesNotRunLegacyHelm(t *testing.T) {
 		name   string
 		mutate func(*cetirunv1alpha1.Agent, *cetirunv1alpha1.Team)
 	}{
+		{"unconfigured legacy Team", func(_ *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) {}},
 		{"selected Sandbox", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) { a.Spec.SandboxRef = "standard" }},
 		{"governed Team", func(_ *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) {
 			team.Spec.AgentPolicyRef = "normal"
@@ -153,9 +154,12 @@ func TestSandboxOptInDoesNotRunLegacyHelm(t *testing.T) {
 				t.Fatal(err)
 			}
 			condition := findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady)
-			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "UnsupportedControl" ||
+			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "PolicyDenied" ||
 				condition.ObservedGeneration != agent.Generation {
-				t.Fatalf("expected explicit unsupported, unready state: %+v", condition)
+				t.Fatalf("expected explicit policy-denied, unready state: %+v", condition)
+			}
+			if actual.Status.Policy == nil || actual.Status.Policy.Phase != "Denied" {
+				t.Fatal("an ungoverned assignment must have an explicit policy denial")
 			}
 			if actual.Status.Phase != cetirunv1alpha1.PhaseFailed || actual.Status.AccessURL != "" ||
 				findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionReady) == nil ||
@@ -341,38 +345,34 @@ func TestSandboxHoldRetainsHomeForAlreadyScaledWorkload(t *testing.T) {
 	}
 }
 
-func TestSandboxNormalDefaultPreservesLegacyReconciliation(t *testing.T) {
-	agent := newCR("alice-work", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
-	scheme := testScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(agent).
-		WithObjects(agent, instanceNamespace(agent.Name), gatewayTokenSecret(agent.Name), statefulSet(agent.Name, 0)).Build()
-	helm := &fakeHelmClient{useHarness: true}
-	reconciler := &controller.AgentReconciler{
-		Client: client, Scheme: scheme, HelmClient: helm, EventRecorder: record.NewFakeRecorder(10),
-		OperatorNamespace: "cetirun-system", OperatorSAName: "cetirun-operator-controller-manager",
-		ChartVersion: "0.1.28", DomainSuffix: "example.com", DefaultModel: "test-model",
-	}
-	key := types.NamespacedName{Name: agent.Name}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Get(context.Background(), key, agent); err != nil {
-		t.Fatal(err)
-	}
-	if agent.Spec.Agent.Image == nil || agent.Spec.Agent.Port == nil || helm.installCalled {
-		t.Fatal("unbound built-in must pin its Harness defaults before deployment")
-	}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
-		t.Fatal(err)
-	}
-	if !helm.installCalled {
-		t.Fatal("default class alone should not hold a legacy unbound Agent")
-	}
-	if err := client.Get(context.Background(), key, agent); err != nil {
-		t.Fatal(err)
-	}
-	if agent.Status.Sandbox != nil || findCondition(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady) != nil {
-		t.Fatal("legacy reconciliation fabricated Sandbox enforcement status")
+func TestSandboxNormalDefaultHoldsEveryUngovernedHarness(t *testing.T) {
+	for _, harness := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom} {
+		t.Run(string(harness), func(t *testing.T) {
+			agent := newCR("alice-work", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
+			agent.Spec.Agent.Type = harness
+			c := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(agent).Build()
+			helm := &fakeHelmClient{useHarness: true}
+			reconciler := &controller.AgentReconciler{Client: c, Scheme: testScheme(), HelmClient: helm, EventRecorder: record.NewFakeRecorder(20)}
+			key := types.NamespacedName{Name: agent.Name}
+			for range 2 {
+				if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if helm.installCalled || helm.prepareCalls != 0 {
+				t.Fatal("ungoverned Agent reached the legacy renderer")
+			}
+			if err := c.Get(context.Background(), key, agent); err != nil {
+				t.Fatal(err)
+			}
+			if agent.Status.Phase == cetirunv1alpha1.PhaseReady || agent.Status.AccessURL != "" {
+				t.Fatalf("ungoverned Agent advertised readiness: %+v", agent.Status)
+			}
+			condition := findCondition(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady)
+			if condition == nil || condition.Status != metav1.ConditionFalse {
+				t.Fatal("missing explicit governance hold")
+			}
+		})
 	}
 }
 
@@ -411,7 +411,7 @@ func TestSandboxHoldCustomRuntimePreservesOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			condition := findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady)
-			wantReason := "UnsupportedControl"
+			wantReason := "PolicyDenied"
 			wantReplicas := int32(0)
 			if foreign {
 				wantReason = "PolicyApplyFailed"
@@ -489,7 +489,7 @@ func TestSandboxHoldRecoversCustomCompletionWithoutReapplying(t *testing.T) {
 	}
 }
 
-func TestSandboxUngovernedCustomSuspensionDoesNotRequireTeam(t *testing.T) {
+func TestSandboxUngovernedCustomSuspensionRemainsHeldWithoutTeam(t *testing.T) {
 	agent, _, objects := customFixture("sandbox-suspended", nil)
 	agent.Spec.Team = "unavailable-team"
 	agent.Spec.Suspended = true
@@ -503,9 +503,9 @@ func TestSandboxUngovernedCustomSuspensionDoesNotRequireTeam(t *testing.T) {
 	if err := client.Get(context.Background(), key, agent); err != nil {
 		t.Fatal(err)
 	}
-	if agent.Status.Phase != cetirunv1alpha1.PhaseSuspended || helm.prepareCalls != 0 || helm.installCalled ||
-		findCondition(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady) != nil {
-		t.Fatal("policy lookup blocked or changed ordinary Custom suspension")
+	if !agent.Spec.Suspended || agent.Status.Phase == cetirunv1alpha1.PhaseReady || helm.prepareCalls != 0 || helm.installCalled ||
+		findCondition(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady) == nil {
+		t.Fatal("ungoverned Custom suspension must remain held without executing a legacy path")
 	}
 }
 

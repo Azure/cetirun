@@ -74,6 +74,16 @@ func TestTerminalReadRoleBootstrapDoesNotGrantExec(t *testing.T) {
 		!reflect.DeepEqual(reader.Rules[0].Verbs, []string{"get"}) {
 		t.Fatal("Agent reader is not instance-scoped")
 	}
+	readerBinding := &rbacv1.ClusterRoleBinding{}
+	if err := p.reconciler.Get(ctx, types.NamespacedName{Name: terminalpolicy.AgentReaderName(string(agent.UID))}, readerBinding); err != nil {
+		t.Fatal(err)
+	}
+	wantSubject := rbacv1.Subject{Kind: "ServiceAccount", Namespace: instanceNamespace(agent.Name), Name: terminalpolicy.WorkloadName(instanceServiceName(agent.Name))}
+	wantRole := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: reader.Name}
+	if !hasAgentOwner(readerBinding, agent) || readerBinding.Annotations[customAgentUID] != string(agent.UID) ||
+		!reflect.DeepEqual(readerBinding.Subjects, []rbacv1.Subject{wantSubject}) || readerBinding.RoleRef != wantRole {
+		t.Fatalf("Agent reader binding does not match the terminal ServiceAccount: %#v", readerBinding)
+	}
 	bindings := &rbacv1.RoleBindingList{}
 	if err := p.reconciler.List(ctx, bindings, client.InNamespace(instanceNamespace(agent.Name))); err != nil {
 		t.Fatal(err)

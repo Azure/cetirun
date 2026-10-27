@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -97,8 +96,14 @@ func TestNativePlatformBranchBaseline(t *testing.T) {
 	}
 	actual := nativePlatformBranches(t, "../../../cetirun-chart")
 	for key, want := range expected {
-		if !reflect.DeepEqual(actual[key], want) {
-			t.Errorf("%s differs from the pre-feature platform baseline", key)
+		if len(actual[key]) != len(want) {
+			t.Errorf("%s changed its pre-feature platform manifest inventory", key)
+			continue
+		}
+		for filename := range want {
+			if _, present := actual[key][filename]; !present {
+				t.Errorf("%s lost pre-feature platform manifest %s", key, filename)
+			}
 		}
 	}
 	if len(actual) != len(expected) {

@@ -48,7 +48,19 @@ func validateObjects(input Input) error {
 	}
 	owner := []metav1.OwnerReference{AgentOwner(input.AgentName, c.Binding.AgentUID)}
 	objects := map[string]bool{}
-	network, serviceAccounts := 0, 0
+	network, terminalNetwork, serviceAccounts := 0, 0, 0
+	mainSelector := metav1.LabelSelector{MatchLabels: map[string]string{
+		"k8s:" + sandboxpolicy.AgentUIDLabel: string(c.Binding.AgentUID), "k8s:io.kubernetes.pod.namespace": input.Namespace.Name,
+	}}
+	terminalSelector := metav1.LabelSelector{MatchLabels: map[string]string{
+		"k8s:cetirun.microsoft.com/terminal": "true",
+		"k8s:" + sandboxpolicy.AgentUIDLabel: string(c.Binding.AgentUID), "k8s:io.kubernetes.pod.namespace": input.Namespace.Name,
+	}}
+	if input.Terminal != nil {
+		mainSelector.MatchExpressions = []metav1.LabelSelectorRequirement{{
+			Key: "k8s:cetirun.microsoft.com/terminal", Operator: metav1.LabelSelectorOpDoesNotExist,
+		}}
+	}
 	for _, object := range c.Objects {
 		kind := object.GetAPIVersion() + "/" + object.GetKind()
 		key := kind + "/" + object.GetNamespace() + "/" + object.GetName()
@@ -69,13 +81,17 @@ func validateObjects(input Input) error {
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &policy, true); err != nil {
 				return fmt.Errorf("invalid compiler network resource: %w", err)
 			}
-			if policy.Namespace != input.Namespace.Name ||
-				!equality.Semantic.DeepEqual(policy.Spec.EndpointSelector, metav1.LabelSelector{MatchLabels: map[string]string{
-					"k8s:" + sandboxpolicy.AgentUIDLabel: string(c.Binding.AgentUID), "k8s:io.kubernetes.pod.namespace": input.Namespace.Name,
-				}}) {
+			if policy.Namespace != input.Namespace.Name {
 				return fmt.Errorf("compiler network scope must select only the bound workload")
 			}
-			network++
+			switch {
+			case equality.Semantic.DeepEqual(policy.Spec.EndpointSelector, mainSelector):
+				network++
+			case input.Terminal != nil && equality.Semantic.DeepEqual(policy.Spec.EndpointSelector, terminalSelector):
+				terminalNetwork++
+			default:
+				return fmt.Errorf("compiler network scope must select only the bound workload")
+			}
 		case "v1/ServiceAccount":
 			var account corev1.ServiceAccount
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &account, true); err != nil {
@@ -114,7 +130,8 @@ func validateObjects(input Input) error {
 		}
 		objects[key] = true
 	}
-	if network != 1 || (dedicated && serviceAccounts != 1) {
+	if network != 1 || (input.Terminal != nil && terminalNetwork != 1) || (input.Terminal == nil && terminalNetwork != 0) ||
+		(dedicated && serviceAccounts != 1) {
 		return fmt.Errorf("compiler resource inventory is incomplete or duplicated")
 	}
 	for _, present := range grants {

@@ -20,6 +20,30 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// executionTeamSharedSpec preserves the on-disk JSON shape used by existing
+// execution receipts. Team selection is intentionally cleared before hashing;
+// these omitempty tags prevent the now-required API fields from changing the
+// fingerprint of a running lifetime that was created before the schema change.
+type executionTeamSharedSpec struct {
+	AgentPolicyRef    string                `json:"agentPolicyRef,omitempty"`
+	SandboxRefs       []string              `json:"sandboxRefs,omitempty"`
+	DefaultSandboxRef string                `json:"defaultSandboxRef,omitempty"`
+	MemberContext     api.TeamContextSpec   `json:"memberContext,omitempty"`
+	Defaults          api.TeamDefaultsSpec  `json:"defaults,omitempty"`
+	Skills            []string              `json:"skills,omitempty"`
+	SkillStorage      *api.SkillStorageSpec `json:"skillStorage,omitempty"`
+	ModelRouters      []api.TeamModelRouter `json:"modelRouters,omitempty"`
+}
+
+func executionTeamSharedSpecFrom(spec *api.TeamSpec) executionTeamSharedSpec {
+	return executionTeamSharedSpec{
+		AgentPolicyRef: spec.AgentPolicyRef, SandboxRefs: spec.SandboxRefs,
+		DefaultSandboxRef: spec.DefaultSandboxRef, MemberContext: spec.MemberContext,
+		Defaults: spec.Defaults, Skills: spec.Skills, SkillStorage: spec.SkillStorage,
+		ModelRouters: spec.ModelRouters,
+	}
+}
+
 // TeamInputs retains shared runtime inputs separately from Sandbox selection.
 // It contains digests and reference names, never rendered configuration.
 type TeamInputs struct {
@@ -69,9 +93,9 @@ func ExecutionTeamInputs(team *api.Team) (TeamInputs, error) {
 	spec.Skills = slices.Clone(spec.Skills)
 	slices.Sort(spec.Skills)
 	shared, err := inputDigest(struct {
-		Spec     *api.TeamSpec
+		Spec     executionTeamSharedSpec
 		Metadata executionMetadata
-	}{spec, effectiveMetadata(team)})
+	}{executionTeamSharedSpecFrom(spec), effectiveMetadata(team)})
 	if err != nil {
 		return TeamInputs{}, err
 	}

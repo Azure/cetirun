@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -30,8 +32,14 @@ func Build(input Input) (*Bundle, error) {
 	if binding.AgentUID == "" || binding.TeamUID == "" || binding.SandboxUID == "" || binding.AgentPolicyUID == "" {
 		return nil, fmt.Errorf("the resolved UID binding is incomplete")
 	}
-	if input.AgentType != "openclaw" && input.AgentType != "hermes" {
+	if input.AgentType != "openclaw" && input.AgentType != "hermes" && input.AgentType != "custom" {
 		return nil, fmt.Errorf("policy-bound %q rendering is unsupported; legacy fallback is forbidden", input.AgentType)
+	}
+	if err := validateCustomAgent(input); err != nil {
+		return nil, err
+	}
+	if err := validateTerminal(input); err != nil {
+		return nil, err
 	}
 	if request := input.PlannedMigration; request != nil && (!input.Reconciled ||
 		!api.ValidRestartRequestID(request.RequestID) || request.Target.UID == "" ||
@@ -89,9 +97,9 @@ func Build(input Input) (*Bundle, error) {
 			return nil, fmt.Errorf("invalid authorized Secret name")
 		}
 	}
-	if key := input.GatewayKey; key != nil && ((input.AgentType != "openclaw" && !input.Reconciled) || key.UID == "" ||
+	if key := input.GatewayKey; key != nil && (key.UID == "" ||
 		len(validation.IsDNS1123Subdomain(key.Name)) != 0 || !slices.Contains(input.AuthorizedSecrets, key.Name)) {
-		return nil, fmt.Errorf("native Gateway rendering requires an authorized OpenClaw key identity")
+		return nil, fmt.Errorf("Sandbox Gateway rendering requires an authorized key identity")
 	}
 	if secret := input.ImagePullSecret; secret != nil && (!input.Reconciled || secret.UID == "" ||
 		len(validation.IsDNS1123Subdomain(secret.Name)) != 0 || slices.Contains(input.AuthorizedSecrets, secret.Name)) {
@@ -121,12 +129,60 @@ func Build(input Input) (*Bundle, error) {
 	if input.Helpers.Doctor {
 		spec.InitContainers = append(spec.InitContainers, corev1.Container{Resources: b.helperResources()})
 	}
-	if input.GatewayKey != nil {
+	if input.GatewayKey != nil && input.AgentType == "openclaw" {
 		spec.InitContainers = append(spec.InitContainers,
 			corev1.Container{Resources: b.helperResources()}, corev1.Container{Resources: b.helperResources()})
 	}
 	b.accounting = AccountResources(spec, b.Overhead())
 	return b, nil
+}
+
+var customUsername = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+var terminalImage = regexp.MustCompile(`^[^[:space:]@]+@sha256:[a-f0-9]{64}$`)
+
+func validateCustomAgent(input Input) error {
+	if input.AgentType != "custom" {
+		if input.CustomAgent != nil || input.GatewayAPIBase != "" {
+			return fmt.Errorf("only Custom workloads may set a portable runtime identity")
+		}
+		return nil
+	}
+	custom := input.CustomAgent
+	if custom == nil || custom.Image == "" || !customUsername.MatchString(custom.Username) ||
+		custom.Home != path.Join("/home", custom.Username) || custom.Username == "root" ||
+		(custom.Port != nil && (*custom.Port < 1 || *custom.Port > 65535)) ||
+		(custom.WebUI && custom.Port == nil) {
+		return fmt.Errorf("Custom Sandbox rendering requires a Harness-validated image, user, HOME and port mode")
+	}
+	if input.GatewayKey == nil || input.GatewayAPIBase == "" {
+		return fmt.Errorf("Custom Sandbox rendering requires a typed AI Gateway key and endpoint")
+	}
+	return nil
+}
+
+func validateTerminal(input Input) error {
+	terminal := input.Terminal
+	if terminal == nil {
+		return nil
+	}
+	if input.AgentType != "custom" || !input.Reconciled || !terminalImage.MatchString(terminal.Image) ||
+		terminal.Port < 1024 || terminal.Port > 65535 || terminal.SessionSeconds < 60 || terminal.SessionSeconds > 3600 ||
+		len(validation.IsDNS1123Label(terminal.ServiceAccountName)) != 0 ||
+		terminal.ServiceAccountName != terminalpolicy.WorkloadName(input.WorkloadName) {
+		return fmt.Errorf("Custom terminal requires a reconciled platform image, port, session and service account")
+	}
+	return nil
+}
+
+func homePath(input Input) string {
+	if input.CustomAgent != nil {
+		return input.CustomAgent.Home
+	}
+	return HomePath
+}
+
+func skillsPath(input Input) string {
+	return path.Join(homePath(input), ".aks/skills")
 }
 
 func validateHome(input Input) error {
@@ -210,7 +266,7 @@ func validateControls(input Input) error {
 			mount.MountPropagation != nil || !path.IsAbs(mount.MountPath) || path.Clean(mount.MountPath) != mount.MountPath {
 			return fmt.Errorf("identity mounts must be distinct, read-only projections")
 		}
-		for _, reserved := range append([]string{HomePath, "/tmp", "/etc/cetirun", "/etc/cetirun-secrets"}, paths...) {
+		for _, reserved := range append([]string{homePath(input), "/tmp", "/etc/cetirun", "/etc/cetirun-secrets"}, paths...) {
 			if overlappingPaths(mount.MountPath, reserved) {
 				return fmt.Errorf("identity mount overlaps a protected path")
 			}

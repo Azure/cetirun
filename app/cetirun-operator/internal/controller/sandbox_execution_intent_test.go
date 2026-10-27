@@ -409,7 +409,8 @@ func TestSandboxExecutionEffectiveInputsIgnoreObservationMetadata(t *testing.T) 
 				}
 				f.reconciler.SandboxPreparation.Prerequisites = &controller.KubernetesSandboxPrerequisites{
 					APIReader: f.client, HomeClaimName: f.fixture.Input.Home.Name, SkillsClaimName: f.fixture.Input.Skills.Name,
-					ChartVersion: f.source.inputs.ChartVersion, Helpers: f.source.inputs.Helpers, Now: func() time.Time { return f.now },
+					OperatorNamespace: f.reconciler.OperatorNamespace,
+					ChartVersion:      f.source.inputs.ChartVersion, Helpers: f.source.inputs.Helpers, Now: func() time.Time { return f.now },
 					WriterExclusion: &testSandboxWriterExclusion{},
 				}
 			})

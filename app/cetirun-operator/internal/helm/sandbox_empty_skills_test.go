@@ -17,6 +17,7 @@ func TestSandboxSDKStagesEmptySkillsWithoutClaimIdentity(t *testing.T) {
 	input := testfixture.New("openclaw").Input
 	input.Skills, input.SkillsMode = nil, w.SkillsModeEmpty
 	input.Helpers.Desktop = false
+	input.SingleStart = true
 	input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
 	input.AuthorizedSecrets = append(input.AuthorizedSecrets, input.GatewayKey.Name)
 	bundle, err := w.Build(input)

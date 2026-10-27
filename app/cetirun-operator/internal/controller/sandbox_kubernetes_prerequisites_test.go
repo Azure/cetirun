@@ -288,7 +288,6 @@ func TestKubernetesSandboxPrerequisitesRejectsInvalidConfigurationAndIntent(t *t
 	for name, mutate := range map[string]func(*api.Agent){
 		"not held":               func(a *api.Agent) { a.Finalizers = nil },
 		"suspended":              func(a *api.Agent) { a.Spec.Suspended = true },
-		"Custom":                 func(a *api.Agent) { a.Spec.Agent.Type = api.AgentTypeCustom },
 		"tailscale":              func(a *api.Agent) { a.Spec.Tailscale = &api.TailscaleSpec{} },
 		"teams":                  func(a *api.Agent) { a.Spec.MSTeams = &api.MSTeamsSpec{} },
 		"identity":               func(a *api.Agent) { a.Spec.AgentIdentity = &api.AgentIdentitySpec{Enabled: true} },
@@ -817,19 +816,45 @@ func TestKubernetesSandboxPrerequisitesWriterExclusion(t *testing.T) {
 
 func installKubernetesPrerequisites(t *testing.T, f *preparationFixture, fence controller.SandboxWriterExclusionSource) *controller.KubernetesSandboxPrerequisites {
 	t.Helper()
+	ctx := context.Background()
+	namespace := &corev1.Namespace{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), namespace); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := namespace.Annotations["cetirun.microsoft.com/sandbox-bootstrap"]
+	if bootstrap == "" {
+		t.Fatal("preparation fixture is missing its bootstrap receipt identity")
+	}
+	markBootstrapOwned := func(object client.Object) {
+		object.SetOwnerReferences([]metav1.OwnerReference{sandboxworkload.AgentOwner(f.fixture.Agent.Name, f.fixture.Agent.UID)})
+		object.SetFinalizers([]string{sandbox.BootstrapFinalizer})
+		object.SetAnnotations(map[string]string{
+			sandboxworkload.AgentUIDAnnotation:        string(f.fixture.Agent.UID),
+			sandboxworkload.AgentNameAnnotation:       f.fixture.Agent.Name,
+			"cetirun.microsoft.com/sandbox-bootstrap": bootstrap,
+		})
+	}
 	secret := &corev1.Secret{}
-	if err := f.client.Get(context.Background(), client.ObjectKey{
+	if err := f.client.Get(ctx, client.ObjectKey{
 		Namespace: f.fixture.Namespace.Name, Name: f.fixture.Agent.Spec.GatewayTokenSecretRef,
 	}, secret); err != nil {
 		t.Fatal(err)
 	}
-	secret.OwnerReferences = []metav1.OwnerReference{sandboxworkload.AgentOwner(f.fixture.Agent.Name, f.fixture.Agent.UID)}
-	if err := f.client.Update(context.Background(), secret); err != nil {
+	markBootstrapOwned(secret)
+	if err := f.client.Update(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Input.Home), home); err != nil {
+		t.Fatal(err)
+	}
+	markBootstrapOwned(home)
+	if err := f.client.Update(ctx, home); err != nil {
 		t.Fatal(err)
 	}
 	source := &controller.KubernetesSandboxPrerequisites{
 		APIReader: f.client, HomeClaimName: f.source.inputs.Home.Name, SkillsClaimName: f.source.inputs.Skills.Name,
-		ChartVersion: f.source.inputs.ChartVersion, Helpers: f.source.inputs.Helpers,
+		OperatorNamespace: f.reconciler.OperatorNamespace, ChartVersion: f.source.inputs.ChartVersion, Helpers: f.source.inputs.Helpers,
 		Now: func() time.Time { return f.now }, WriterExclusion: fence,
 	}
 	f.reconciler.SandboxPreparation.Prerequisites = source
@@ -852,12 +877,14 @@ func TestKubernetesSandboxPrerequisitesUnavailableFenceDoesNotPersistPreparation
 					!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || agent.Status.AccessURL != "" {
 					t.Fatal("unavailable fencing rendered a workload, persisted a cleanup obligation or released the hold")
 				}
-				var state corev1.ConfigMapList
-				if err := f.client.List(ctx, &state, client.InNamespace(f.reconciler.OperatorNamespace)); err != nil {
-					t.Fatal(err)
-				}
-				if len(state.Items) != 0 {
-					t.Fatal("unavailable fencing persisted a preparation receipt, journal or expectation")
+				for _, name := range []string{
+					sandboxworkload.PreparationReceiptName(agent.UID),
+					sandboxpolicy.GrantJournalName(agent.UID),
+					sandboxworkload.PodExpectationName(f.fixture.Namespace.Name, f.fixture.Namespace.UID),
+				} {
+					if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.reconciler.OperatorNamespace, Name: name}, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+						t.Fatalf("unavailable fencing persisted state %q: %v", name, err)
+					}
 				}
 				if disableSources {
 					f.reconciler.SandboxPreparation = nil

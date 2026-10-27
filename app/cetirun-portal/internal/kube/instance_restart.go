@@ -30,6 +30,9 @@ func restartStateError(instance *api.Agent) error {
 	if instance.Spec.Suspended {
 		return ErrInstanceSuspended
 	}
+	if instance.TeamChangePending() {
+		return ErrTeamChangePending
+	}
 	if instance.MigrationPending() {
 		return ErrMigrationPending
 	}

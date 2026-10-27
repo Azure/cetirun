@@ -425,7 +425,7 @@ class NativeGatewayChartTests(unittest.TestCase):
         values["replicaCount"] = 1
         render(RUNTIME_CHART, values, error="Sandbox render plans must retain the execution hold")
 
-    def test_legacy_gateway_keeps_its_existing_model_and_init_behavior(self):
+    def test_standalone_gateway_replaces_direct_model_providers(self):
         values = native_values()
         values["sandboxWorkload"] = None
         values["sidecarScope"]["enabled"] = True
@@ -439,7 +439,8 @@ class NativeGatewayChartTests(unittest.TestCase):
             for item in pod["initContainers"] for variable in item.get("env", [])
         ))
         config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
-        self.assertIn("other", config["models"]["providers"])
+        self.assertEqual(list(config["models"]["providers"]), ["openai"])
+        self.assertEqual(config["auth"], {"profiles": {}})
         self.assertEqual(config["gateway"]["trustedProxies"], ["127.0.0.6"])
         self.assertNotIn("health-probe.cjs", object_of_kind(objects, "ConfigMap")["data"])
         for kind, path in (

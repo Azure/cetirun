@@ -46,14 +46,17 @@ func (c providerTestClient) Create(ctx context.Context, obj client.Object, opts 
 func providerFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	t.Helper()
 	image := "registry.example.com/pi@sha256:" + strings.Repeat("a", 64)
-	cfg := CustomRuntimeConfig{Enabled: true, AgentManagedModel: true, ApprovedImages: []string{image},
-		StorageClass: "test-storage", StorageSize: "20Gi", AccessMode: "ReadWriteMany", FSGroup: 1024,
-		Context: map[string]string{"AGENTS.md": "approved context", "skills/cetirun-memory/SKILL.md": "approved memory"}}
+	cfg := CustomRuntimeConfig{Enabled: true, ApprovedImages: []string{image}}
 	data, _ := json.Marshal(cfg)
 	parsed, err := ParseCustomRuntimeConfig(string(data))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Legacy-provider tests still exercise the durable ownership code. The
+	// runtime configuration no longer accepts these fields: the Sandbox owns
+	// storage and context in production.
+	parsed.StorageClass, parsed.StorageSize, parsed.AccessMode, parsed.FSGroup = "test-storage", "20Gi", "ReadWriteMany", 1024
+	parsed.Context = map[string]string{"AGENTS.md": "approved context", "skills/cetirun-memory/SKILL.md": "approved memory"}
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{api.AddToScheme, corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme} {
 		if err := add(scheme); err != nil {
@@ -89,15 +92,8 @@ func readyProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !b.AgentManagedModel || b.Model.Name != "" || b.Network.GatewayPort != 0 {
-		t.Fatal("provider invented platform model access")
-	}
-	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || !bound {
-		t.Fatal(err)
-	}
-	secrets := &corev1.SecretList{}
-	if err := p.reconciler.List(ctx, secrets); err != nil || len(secrets.Items) != 0 {
-		t.Fatal("image-owned auth created a model Secret")
+	if b.AgentManagedModel || b.Model.Name != "" || b.Network.GatewayPort != 0 {
+		t.Fatal("Custom provider did not require the platform Gateway path")
 	}
 	return p, instance
 }
@@ -154,7 +150,7 @@ func pendingHomeProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	if defaults.Enabled || defaults.StorageClass != "default" || defaults.StorageSize != "100Gi" || defaults.AccessMode != "ReadWriteOnce" {
 		t.Fatalf("unexpected Custom HOME defaults: %+v", defaults)
 	}
-	defaults.Enabled, defaults.AgentManagedModel, defaults.ApprovedImages = true, true, p.config.ApprovedImages
+	defaults.Enabled, defaults.ApprovedImages = true, p.config.ApprovedImages
 	p = NewKubernetesCustomBindings(p.reconciler, defaults)
 	ctx := context.Background()
 	if _, err := p.Resolve(ctx, instance, nil); err == nil || !strings.Contains(err.Error(), "ownership recorded") {
@@ -164,51 +160,6 @@ func pendingHomeProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 		t.Fatal(err)
 	}
 	return p, instance
-}
-
-func TestKubernetesCustomHomeIsCreatedByChart(t *testing.T) {
-	p, instance := pendingHomeProvider(t)
-	ctx := context.Background()
-	b, err := p.Resolve(ctx, instance, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || bound {
-		t.Fatalf("owned pending HOME should allow a consumer, but not report bound: %v %v", bound, err)
-	}
-	claims := &corev1.PersistentVolumeClaimList{}
-	if err := p.reconciler.List(ctx, claims); err != nil || len(claims.Items) != 0 {
-		t.Fatal("operator pre-created a HOME PVC")
-	}
-	if b.Home.Claim == nil ||
-		b.Home.Claim.StorageClass != "default" || b.Home.Claim.StorageSize != "100Gi" || b.Home.Claim.AccessMode != "ReadWriteOnce" {
-		t.Fatalf("unexpected HOME plan: %+v", b.Home)
-	}
-	home := simulateChartHome(t, p, instance, b, false)
-	if ready, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || ready {
-		t.Fatalf("pending HOME was rejected or marked ready: %v %v", ready, err)
-	}
-	home.Spec.VolumeName = "synthetic-disk"
-	if err := p.reconciler.Update(ctx, home); err != nil {
-		t.Fatal(err)
-	}
-	home.Status.Phase = corev1.ClaimBound
-	if err := p.reconciler.Status().Update(ctx, home); err != nil {
-		t.Fatal(err)
-	}
-	bound, err := p.Resolve(ctx, instance, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(bound.Home, b.Home) || bound.Context.ObjectReference != b.Context.ObjectReference {
-		t.Fatal("CSI binding replaced HOME or context")
-	}
-	if ready, err := p.reconciler.validateCustomObjects(ctx, instance, bound); err != nil || !ready {
-		t.Fatalf("bound HOME was not ready: %v %v", ready, err)
-	}
-	if ready, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || !ready {
-		t.Fatal("PVC binding should not invalidate the name-based plan")
-	}
 }
 
 func TestKubernetesCustomRejectsDifferentStorageProfile(t *testing.T) {
@@ -239,47 +190,6 @@ func TestKubernetesCustomRejectsDifferentStorageProfile(t *testing.T) {
 	}
 	if err := p.reconciler.Get(ctx, client.ObjectKeyFromObject(home), home); !apierrors.IsNotFound(err) {
 		t.Fatal("rejected storage profile created a replacement PVC")
-	}
-}
-
-func TestCustomHomeRejectsForeignOrChangedStorage(t *testing.T) {
-	for _, name := range []string{"wrong class", "foreign annotation", "owner reference", "lost", "deleting"} {
-		t.Run(name, func(t *testing.T) {
-			p, instance := pendingHomeProvider(t)
-			ctx := context.Background()
-			b, err := p.Resolve(ctx, instance, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			home := simulateChartHome(t, p, instance, b, false)
-			switch name {
-			case "wrong class":
-				home.Spec.StorageClassName = ptr.To("missing")
-			case "foreign annotation":
-				home.Annotations[customAgentUID] = "another-agent"
-			case "owner reference":
-				home.OwnerReferences = []metav1.OwnerReference{{Kind: "Agent", UID: "another-agent"}}
-			case "lost":
-				home.Status.Phase = corev1.ClaimLost
-			case "deleting":
-				home.Finalizers = []string{"test/retain"}
-			}
-			if name == "lost" {
-				if err := p.reconciler.Status().Update(ctx, home); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := p.reconciler.Update(ctx, home); err != nil {
-				t.Fatal(err)
-			}
-			if name == "deleting" {
-				if err := p.reconciler.Delete(ctx, home); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := p.reconciler.validateCustomObjects(ctx, instance, b); err == nil {
-				t.Fatal("unverified HOME was approved")
-			}
-		})
 	}
 }
 
@@ -338,36 +248,6 @@ func TestKubernetesCustomLeavesMissingChartHomeToStatefulSet(t *testing.T) {
 	_ = p.reconciler.List(ctx, claims)
 	if len(claims.Items) != 0 {
 		t.Fatal("recovery allocated a replacement claim")
-	}
-}
-
-func TestKubernetesCustomHomeIgnoresPVCUID(t *testing.T) {
-	p, instance := readyProvider(t)
-	ctx := context.Background()
-	first, err := p.Resolve(ctx, instance, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	home := &corev1.PersistentVolumeClaim{}
-	if err := p.reconciler.Get(ctx, types.NamespacedName{Namespace: first.Namespace.Name, Name: first.Home.Name}, home); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.reconciler.Delete(ctx, home); err != nil {
-		t.Fatal(err)
-	}
-	home.UID, home.ResourceVersion = "replacement-home", ""
-	if err := p.reconciler.Create(ctx, home); err != nil {
-		t.Fatal(err)
-	}
-	second, err := p.Resolve(ctx, instance, nil)
-	if err != nil {
-		t.Fatalf("same-name PVC was rejected by its new UID: %v", err)
-	}
-	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, first); err != nil || !bound {
-		t.Fatalf("PVC UID is still enforced: %v", err)
-	}
-	if !reflect.DeepEqual(second.Home, first.Home) {
-		t.Fatal("PVC UID or resourceVersion changed the HOME binding")
 	}
 }
 
@@ -527,22 +407,49 @@ func TestKubernetesCustomImageUpgradeRetainsHome(t *testing.T) {
 }
 
 func TestCustomRuntimeConfigRequiresExplicitApproval(t *testing.T) {
-	p, _ := providerFixture(t)
-	for _, edit := range []func(*CustomRuntimeConfig){
-		func(c *CustomRuntimeConfig) { c.AgentManagedModel = false },
-		func(c *CustomRuntimeConfig) { c.ApprovedImages = []string{"registry.example.com/pi:latest"} },
-		func(c *CustomRuntimeConfig) { c.FSGroup = 0 },
-		func(c *CustomRuntimeConfig) { c.StorageSize = "0" },
-		func(c *CustomRuntimeConfig) { c.AccessMode = "ReadOnlyMany" },
-		func(c *CustomRuntimeConfig) { c.Context["../private"] = "bad" },
+	image := "registry.example.com/pi@sha256:" + strings.Repeat("a", 64)
+	valid := map[string]any{"enabled": true, "approvedImages": []string{image}}
+	data, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseCustomRuntimeConfig(string(data)); err != nil {
+		t.Fatalf("valid immutable image approval was rejected: %v", err)
+	}
+	for _, invalid := range []map[string]any{
+		{"enabled": true},
+		{"enabled": true, "approvedImages": []string{"registry.example.com/pi:latest"}},
+		{"enabled": true, "approvedImages": []string{image}, "agentManagedModel": true},
+		{"enabled": true, "approvedImages": []string{image}, "gatewayImages": []string{image}},
+		{"enabled": true, "approvedImages": []string{image}, "storageClass": "legacy"},
 	} {
-		data, _ := json.Marshal(p.config)
-		var cfg CustomRuntimeConfig
-		_ = json.Unmarshal(data, &cfg)
-		edit(&cfg)
-		data, _ = json.Marshal(cfg)
-		if _, err := ParseCustomRuntimeConfig(string(data)); err == nil {
-			t.Fatal("invalid provisioning configuration accepted")
+		data, err := json.Marshal(invalid)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if _, err := ParseCustomRuntimeConfig(string(data)); err == nil {
+			t.Fatalf("unsupported Custom runtime configuration was accepted: %s", data)
+		}
+	}
+}
+
+func TestDisabledCustomRuntimeCannotAuthorizeRetainedImages(t *testing.T) {
+	image := "registry.example.com/custom@sha256:" + strings.Repeat("a", 64)
+	raw, _ := json.Marshal(CustomRuntimeConfig{Enabled: false, ApprovedImages: []string{image}})
+	config, err := ParseCustomRuntimeConfig(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.ExecutionImages()) != 0 {
+		t.Fatal("disabled runtime retained execution authority")
+	}
+	if _, err := ParseCustomRuntimeConfig(`{"enabled":false,"approvedImages":["registry.example.com/custom:latest"]}`); err == nil {
+		t.Fatal("disabled configuration bypassed immutable image validation")
+	}
+	config.Enabled = true
+	allowed := config.ExecutionImages()
+	allowed[0] = "changed"
+	if config.ApprovedImages[0] != image {
+		t.Fatal("execution allowlist aliases configuration")
 	}
 }

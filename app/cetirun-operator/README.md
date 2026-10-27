@@ -1,9 +1,10 @@
 # CetiRun operator
 
 The operator reconciles `Agent`, `Team`, `Sandbox`, and `AgentPolicy` resources
-in `cetirun.microsoft.com/v1alpha1`. Policy assignment and AI Gateway
-projection are active control-plane contracts; native Sandbox execution remains
-held at zero replicas until a separately delivered execution adapter is enabled.
+in `cetirun.microsoft.com/v1alpha1`. Every supported Harness uses Policy
+assignment, AI Gateway projection, and the common Sandbox executor. Execution
+remains held until the configured platform prerequisites and authorization
+checks succeed.
 
 - [Custom-resource reference](../../site/content/en/docs/reference/crds.md)
 - [Agent Harness contract](../../site/content/en/docs/reference/agent-harness.md)
@@ -24,11 +25,10 @@ held at zero replicas until a separately delivered execution adapter is enabled.
 An Agent is a long-lived user-owned environment; a Team
 supplies shared configuration, not access to private agent data.
 
-Agents can retain the legacy deployment path without creating a Sandbox or
-AgentPolicy. Omit `sandboxRef` and use either no Team or a Team with no policy
-or Sandbox fields.
-Existing chart, runtime, Gateway, ownership, and admission requirements still
-apply; compatibility is not a bypass for requested policy.
+Every Agent requires a Team, an AgentPolicy, a permitted Sandbox, and the
+platform AI Gateway. OpenClaw, Hermes, and approved Custom images use the
+common Sandbox executor. Missing governance bindings hold execution; there
+is no ungoverned runtime fallback or platform direct-provider mode.
 
 A policy-bound Agent names one Team and one Team-permitted Sandbox. The Team's
 single `agentPolicyRef` selects its policy; it does not derive from the human
@@ -928,36 +928,37 @@ controller's held dispatch. Hermes and helper-route support are not included in
 this first native access slice. Offline tests exercise API behavior with
 synthetic runtime evidence, not a running proxy or an end-to-end model request.
 
-### Current activation boundary
+### Required governance and Team changes
 
-Legacy Agents and Teams remain supported while Sandbox execution is opt-in.
-The CRD makes Agent `team`/`sandboxRef` and Team policy/Sandbox fields optional.
-Without policy intent, the controller continues the existing built-in or Custom
-runtime path, including provisioning, suspension, readiness, and deletion.
-Legacy Gateway model sources default on unless explicitly disabled. New legacy
-keys receive the deployment default budget; later administrator budget changes,
-spend, reset periods, and emergency blocks are preserved. Legacy shared catalog
-entries and current per-deployment shared-model groups remain usable.
+Agent creation requires `team`, a Team-permitted `sandboxRef`, explicit model
+access, and a valid AI Gateway binding. Teams require `agentPolicyRef`,
+`sandboxRefs`, and `defaultSandboxRef`. The Gateway owns all platform model
+routing and per-Agent keys. Team provider defaults and direct model credentials
+are rejected. Custom images must be approved and compatible with the common
+Sandbox HOME, security, and Gateway contract.
 
-Setting any Team policy/Sandbox field opts that Team into the full binding
-contract: one policy, permitted Sandboxes, and a creation default. Partial
-configuration is not a legacy fallback. Policy-bound Agents must explicitly
-request model sources. They require a permitted Sandbox and current
-authorization, and Custom remains unsupported in that policy contract.
-Portal creation accepts legacy Teams without a default Sandbox. With the
-Gateway disabled, it also accepts no Team, as before. With the Gateway enabled,
-it still requires an existing Team and supported model routing. Portal support
-for managing policy configuration is delivered separately. Admission continues
-to default governed creation and protect exact Team/Sandbox/policy UIDs.
-Later governed assignment or budget changes require an authorized administrator
-and a suspended Agent.
+Owners can request a Team change using the existing Team selection rules.
+Platform administrators can request it for another owner without gaining
+access to that owner's conversations or Connections. The Portal submits a
+separate asynchronous Team-change operation with an idempotency key and the
+observed Agent UID/resource version. A running Agent need not be paused first:
+the controller validates the destination, stops execution, reauthorizes the
+binding, updates the Gateway and managed context, and resumes if the owner's
+suspension intent permits it. A failure before stopping leaves the source
+running; a failure after fencing keeps execution held for recovery.
 
-This compatibility path does not clear existing hold/preparation finalizers,
-authorization records, or recorded policy/Sandbox status. Such lifetimes remain
-governed even after spec fields are removed. If an earlier mandatory-policy
-version has already held an old Agent, review its state and data-retention needs
-before recovery; do not strip authority markers or delete its namespace as an
-upgrade shortcut. Legacy mode does not claim AgentPolicy enforcement.
+The Agent UID, owner, HOME, Gateway key, spend, and budget reset schedule are
+retained. The current Sandbox is preferred when the target Team permits it.
+A different Sandbox must match the existing HOME's StorageClass, access mode,
+capacity, and volume mode; this operation does not migrate storage. Pause and
+deletion take precedence over a Team change. Other configuration and lifecycle
+operations cannot overlap it. User files and historical sessions remain in
+HOME; only platform-managed Team context and shared Skills are refreshed.
+
+Existing ungoverned resources require an explicit operator decision before an
+upgrade: suspend and retain their HOME, or bind them to approved governance.
+Do not remove authorization/fencing records or delete personal storage as an
+upgrade shortcut.
 
 An administrative Team is a separate Team with its own context and skills; it
 does not create a privileged policy lane for other Teams. A person's permission
@@ -965,8 +966,7 @@ to manage Teams or AgentPolicies is a control-plane authorization distinct from
 workload authorization. The latter comes only from the Agent's selected Team,
 that Team's `agentPolicyRef`, and the Agent's explicit requests. Existing
 policy-enabled resources require controlled stop and cleanup before a changed
-binding can be explicitly reauthorized. No lossless rolling migration between
-policies is supported.
+binding can be explicitly reauthorized. Team changes involve a bounded interruption; they are not rolling migrations.
 
 The pre-release `normalAgentPolicyRef`, `adminAgentPolicyRef` and `policyClass`
 fields are removed from the API and CRD schemas. New resources use only the

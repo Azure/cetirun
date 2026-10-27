@@ -98,17 +98,11 @@ connectionsMCP:
   serviceAccount: cetirun-connections-mcp
   caSecretName: ""
 
-# -- Platform AI Gateway access. The CetiRun operator sets these values for
-# Agents whose model traffic goes through the Gateway; they are not user
-# settings. When enabled, the Agent reads its key from the Secret below instead
-# of MODEL_API_KEY: OpenClaw's openai provider through OPENAI_API_KEY, Hermes
-# through aiGateway.hermes.keyEnv. Egress to the Gateway pods in
-# networkPolicy.gatewayNamespace on networkPolicy.gatewayPort is allowed.
-# Protected OpenClaw renders use compiler-owned network controls without an
-# Istio Sidecar. Their model and ingress-auth configuration is platform-owned
-# on each start; legacy initialization behavior is unchanged.
+# -- Required platform AI Gateway access, supplied by the Operator.
+# Every Harness uses an Agent-scoped virtual key; upstream credentials stay
+# in the Gateway. Policy-owned network controls enforce the allowed egress.
 aiGateway:
-  enabled: false
+  enabled: true
   # -- Secret in the release namespace holding this Agent's virtual key
   keySecretName: ""
   # -- Key within that Secret
@@ -434,7 +428,7 @@ hermes:
       external_dirs:
         - /home/vibe/.aks/skills
   # -- Environment variables written into ~/.hermes/.env (API server config only).
-  # Model auth is handled by `hermes model` (OAuth device flow), not env vars.
+  # Model authorization and credentials are supplied by the platform AI Gateway.
   env:
     API_SERVER_ENABLED: "true"
     API_SERVER_HOST: "0.0.0.0"
@@ -481,15 +475,15 @@ secrets:
   # -- Tailscale auth key (from https://login.tailscale.com/admin/settings/keys)
   # Recommended: Reusable + Ephemeral. Setting this enables Tailscale (no separate toggle).
   tailscaleAuthKey: ""
-  # -- Model provider: github_copilot, openai, or anthropic
-  provider: "github_copilot"
+  # -- Gateway wire protocol; upstream providers are configured in the Gateway.
+  provider: "openai"
   # -- Model name. The operator supplies this from spec.model or its deployment default.
   model: ""
-  # -- Auth mode for openai/anthropic providers (e.g. api_key). Omitted when empty.
+  # -- Gateway authentication mode.
   authMode: ""
-  # -- API key for openai/anthropic providers (not needed for github_copilot)
+  # -- Removed direct credential setting; must remain empty.
   apiKey: ""
-  # -- Custom API base URL (optional, uses provider default if empty)
+  # -- Operator-selected AI Gateway URL.
   apiBase: ""
   # -- Gateway authentication token
   openclawGatewayToken: ""

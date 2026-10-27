@@ -58,6 +58,7 @@ func configureBootstrapSkillsCatalog(t *testing.T, f *preparationCase, catalogNa
 	f.reconciler.SandboxPreparation = preparation
 	f.reconciler.OperatorSAName = "cetirun-operator"
 	f.reconciler.ChartRegistry = "registry.example.com"
+	f.reconcileConfiguration(t)
 }
 
 // The API server, identities, admission and resource lifecycle here are real.
@@ -68,8 +69,11 @@ func TestSandboxBootstrap(t *testing.T) {
 		t.Run(agentType, func(t *testing.T) {
 			f := h.newCaseWithPrerequisites(t, agentType, false)
 			configureBootstrap(t, f)
+			// First persist bootstrap ownership; the next reconcile can project
+			// the Gateway key into that exact namespace before preparing work.
+			f.reconcile(t)
 			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); !apierrors.IsNotFound(err) {
-				t.Fatal("bootstrap should wait for published skills:", err)
+				t.Fatalf("bootstrap should wait for published skills: %v; status=%+v", err, f.agent(t).Status)
 			}
 			namespace := &corev1.Namespace{}
 			h.get(t, client.ObjectKey{Name: f.fixture.Namespace.Name}, namespace)
@@ -223,6 +227,7 @@ func TestSandboxBootstrapForegroundDeletionRetainsDependents(t *testing.T) {
 		t.Run(agentType, func(t *testing.T) {
 			f := h.newCaseWithPrerequisites(t, agentType, false)
 			configureBootstrap(t, f)
+			f.reconcile(t) // Persist namespace ownership before Gateway key projection.
 			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); !apierrors.IsNotFound(err) {
 				t.Fatal(err)
 			}

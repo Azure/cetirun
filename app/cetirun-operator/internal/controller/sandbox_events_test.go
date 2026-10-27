@@ -437,7 +437,7 @@ func TestSandboxEventsMissingReferencesAndOpaqueValues(t *testing.T) {
 			agent.Status.AccessURL = "https://agent.example.com/synthetic-private-endpoint"
 			agent.Status.Sandbox = &api.SandboxStatus{
 				TeamUID: "synthetic-historical-team", SandboxUID: "synthetic-historical-sandbox",
-				AgentPolicyUID: "synthetic-historical-policy",
+				AgentPolicyUID:  "synthetic-historical-policy",
 				AppliedRevision: "sk-dummy " + strings.Repeat("synthetic-opaque-revision", 200),
 			}
 			ctx, capture := captureSandboxEvents(t)
@@ -580,7 +580,7 @@ func TestSandboxEventsProductionHoldAndPreparation(t *testing.T) {
 		}
 	}
 	if len(capture.events) != 1 || capture.events[0].Event != "sandbox.enforcement.failed" ||
-		capture.events[0].Reason != "UnsupportedControl" {
+		capture.events[0].Reason != "PolicyDenied" {
 		t.Fatalf("production hold did not emit one committed failure: %+v", capture.events)
 	}
 	for _, prepared := range []bool{false, true, true} {

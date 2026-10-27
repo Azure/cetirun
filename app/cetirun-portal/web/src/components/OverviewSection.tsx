@@ -36,18 +36,17 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useDeleteInstanceByName, useUpdateInstanceByName, useUpgradeInstanceByName, useInstanceStatusByNameQuery } from "../hooks/useInstance";
 import { useFeatures } from "../hooks/useFeatures";
-import { GITHUB_COPILOT_PROVIDER, useEffectiveTeamProvider } from "../hooks/useTeams";
 import { downloadTeamsApp } from "../api/instance";
 import type { Instance, InstanceVersion, UpdateInstanceRequest } from "../types/instance";
 import { agentTypeLabel, agentUIUrl, phaseBadgeColor } from "../utils/instance";
 import { StatusTab } from "./StatusTab";
 import { CopilotAuthBlock } from "./CopilotAuthBlock";
-import { CopilotModelPicker } from "./CopilotModelPicker";
 import { ToolAuthorizationBlock } from "./ToolAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
 import { AIGatewayBlock } from "./AIGatewayBlock";
 import { RestartAgentButton } from "./RestartAgentButton";
 import { SuspendAgentButton } from "./SuspendAgentButton";
+import { TeamChangeDialog } from "./TeamChangeDialog";
 
 const dialogListStyle: React.CSSProperties = {
   margin: "4px 0 0 0",
@@ -151,12 +150,12 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const [teamsCountdown, setTeamsCountdown] = useState(10);
   const teamsCountdownTimer = useRef<ReturnType<typeof setInterval>>(undefined);
   const [teamsInstructionsOpen, setTeamsInstructionsOpen] = useState(false);
+  const [teamChangeOpen, setTeamChangeOpen] = useState(false);
 
   const [editDisplayName, setEditDisplayName] = useState("");
   const [editTeam, setEditTeam] = useState(instance.team);
   const [editGatewayToken, setEditGatewayToken] = useState("");
   const [editTailscaleAuthKey, setEditTailscaleAuthKey] = useState("");
-  const [editModel, setEditModel] = useState(instance.model ?? "");
   const [disableTailscale, setDisableTailscale] = useState(false);
   const [editTeamsEnabled, setEditTeamsEnabled] = useState(false);
   const [editSnapshot, setEditSnapshot] = useState<Instance | null>(null);
@@ -164,11 +163,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const [editPort, setEditPort] = useState("");
   const [editWebUI, setEditWebUI] = useState(false);
   const [editValidationError, setEditValidationError] = useState("");
-  const effectiveEditProvider = useEffectiveTeamProvider(editTeam);
-  // An Agent routed through the AI Gateway picks its default model from its
-  // Gateway models instead.
   const gatewayRouted = !!instance.aiGateway?.routed;
-  const editUsesGitHubCopilot = effectiveEditProvider === GITHUB_COPILOT_PROVIDER && !gatewayRouted;
+  const teamChangePending = instance.teamChangePending === true;
 
   useEffect(() => {
     return () => {
@@ -244,15 +240,10 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     setEditTeam(instance.team);
     setEditGatewayToken("");
     setEditTailscaleAuthKey("");
-    setEditModel(instance.model ?? "");
     setDisableTailscale(false);
     setEditTeamsEnabled(instance.teamsEnabled ?? false);
     setEditOpen(true);
   };
-
-  useEffect(() => {
-    if (!editUsesGitHubCopilot) setEditModel("");
-  }, [editUsesGitHubCopilot]);
 
   const handleEditSave = () => {
     const original = editSnapshot ?? instance;
@@ -278,7 +269,6 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     if (image !== (original.agent.image ?? "")) agent.image = image;
     if (Object.keys(agent).length) req.agent = agent;
     if (editDisplayName.trim() !== original.displayName) req.displayName = editDisplayName.trim();
-    if (nativeIntegrations && editUsesGitHubCopilot && editModel.trim() !== (original.model ?? "")) req.model = editModel.trim();
     if (nativeIntegrations) {
       if (editGatewayToken) req.gatewayToken = editGatewayToken;
       if (disableTailscale) { req.tailscaleAuthKey = ""; } else if (editTailscaleAuthKey) { req.tailscaleAuthKey = editTailscaleAuthKey; }
@@ -369,17 +359,21 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       {instance.phase !== "Deleting" && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
           {instance.upgradeAvailable && (
-            <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate(instance)} disabled={upgradeMutation.isPending}>
+            <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate(instance)} disabled={teamChangePending || upgradeMutation.isPending}>
               {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}
             </Button>
           )}
-          <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
-          {(instance.restartAvailable || instance.restartRequestId) && <RestartAgentButton key={instance.uid} instance={instance} />}
+          <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={teamChangePending || updateMutation.isPending}>Edit Agent</Button>
+          <Button appearance="secondary" onClick={() => setTeamChangeOpen(true)}>{teamChangePending ? "View Team Change" : "Change Team"}</Button>
+          {(instance.restartAvailable || instance.restartRequestId || teamChangePending) && <RestartAgentButton key={instance.uid} instance={instance} teamChangePending={teamChangePending} />}
           <Button appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
             {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
           </Button>
         </div>
       )}
+
+      <TeamChangeDialog instanceName={instance.instanceName} open={teamChangeOpen} onOpenChange={setTeamChangeOpen} />
+      {teamChangePending && <Text role="status">Team change is in progress. Configuration changes, upgrades and restarts are unavailable; suspension and deletion remain available.</Text>}
 
       {upgradeMutation.isError && (
         <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>
@@ -419,7 +413,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                 <Field label="Display Name" hint="Leave blank to display the Agent name.">
                   <Input value={editDisplayName} onChange={(_, data) => setEditDisplayName(data.value)} />
                 </Field>
-                <Field label="Team" hint="Team reassignment is an administrator operation on a suspended Agent.">
+                <Field label="Team" hint="Use Change Team to move this Agent. The operation safely stops and restores a running Agent when needed.">
                   <Input value={editTeam || "(none)"} readOnly />
                 </Field>
                 <Field label="Agent Type"><Input value={agentTypeLabel(instance.agent.type)} readOnly /></Field>
@@ -433,7 +427,6 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                 <Field label={editWebUI ? "Web UI Port" : "HTTP Port (optional)"} required={editWebUI} hint={portHint}>
                   <Input type="number" min={1} max={65535} step={1} value={editPort} onChange={(_, data) => setEditPort(data.value)} />
                 </Field>
-                {nativeIntegrations && editUsesGitHubCopilot && <CopilotModelPicker instance={instance} value={editModel} onChange={setEditModel} allowDefault />}
                 {nativeIntegrations && <Field label="Gateway Token">
                   <Input type="password" autoComplete="off" value={editGatewayToken} onChange={(_, data) => setEditGatewayToken(data.value)} placeholder="Leave empty to keep unchanged" />
                 </Field>}
@@ -451,7 +444,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                 {nativeIntegrations && <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px", borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorNeutralBackground1Hover }}>
                   <Info20Regular style={{ color: tokens.colorBrandForeground1, flexShrink: 0, marginTop: 2 }} />
                   <Text size={200}>
-                    Updating the model, Gateway Token{features?.tailscaleEnabled ? " or Tailscale Auth Key" : ""} will restart the gateway. The access link may be temporarily unavailable during this process.
+                    Updating the Gateway Token{features?.tailscaleEnabled ? " or Tailscale Auth Key" : ""} will restart the gateway. The access link may be temporarily unavailable during this process.
                   </Text>
                 </div>}
                 {editValidationError && <Text style={{ color: tokens.colorStatusDangerForeground1 }}>{editValidationError}</Text>}

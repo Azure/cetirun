@@ -10,10 +10,11 @@ import unittest
 from test_native_gateway_chart import RUNTIME_CHART, native_values, object_of_kind, render
 
 
-def legacy_values(**extra):
+def standalone_values(**extra):
     values = {
         "agentType": "openclaw",
-        "secrets": {"openclawGatewayToken": "example-token", "model": "example-model"},
+        "aiGateway": {"enabled": True, "keySecretName": "synthetic-model-key"},
+        "secrets": {"apiBase": "http://gateway.example.com/v1", "openclawGatewayToken": "example-token", "model": "example-model"},
     }
     for key, value in extra.items():
         values[key] = {**values.get(key, {}), **value}
@@ -32,13 +33,13 @@ def rendered(values):
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class OpenClawPortalSignInTests(unittest.TestCase):
     def test_off_by_default_keeps_the_gateway_token(self):
-        config, env = rendered(legacy_values())
+        config, env = rendered(standalone_values())
         self.assertNotIn("auth", config["gateway"])
         self.assertIn("OPENCLAW_GATEWAY_TOKEN", env)
         self.assertNotIn("OPENCLAW_GATEWAY_PASSWORD", env)
 
     def test_on_trusts_the_sidecar_for_the_owner_and_turns_the_token_into_a_password(self):
-        config, env = rendered(legacy_values(openclaw={"portalSignIn": {"enabled": True}}))
+        config, env = rendered(standalone_values(openclaw={"portalSignIn": {"enabled": True}}))
         self.assertEqual(config["gateway"]["auth"], {
             "mode": "trusted-proxy",
             "trustedProxy": {"userHeader": "x-auth-request-email", "allowLoopback": True,
@@ -50,7 +51,7 @@ class OpenClawPortalSignInTests(unittest.TestCase):
         self.assertEqual(env["OPENCLAW_GATEWAY_PASSWORD"]["valueFrom"]["secretKeyRef"]["key"], "OPENCLAW_GATEWAY_TOKEN")
 
     def test_tailscale_keeps_the_token(self):
-        values = legacy_values(openclaw={"portalSignIn": {"enabled": True}})
+        values = standalone_values(openclaw={"portalSignIn": {"enabled": True}})
         values["secrets"]["tailscaleAuthKey"] = "tskey-example"
         config, env = rendered(values)
         self.assertNotIn("auth", config["gateway"])
@@ -64,7 +65,7 @@ class OpenClawPortalSignInTests(unittest.TestCase):
         self.assertIn("OPENCLAW_GATEWAY_TOKEN", env)
 
     def test_without_the_sidecar_address_the_chart_refuses(self):
-        values = legacy_values(openclaw={"portalSignIn": {"enabled": True},
+        values = standalone_values(openclaw={"portalSignIn": {"enabled": True},
                                          "config": {"gateway": {"trustedProxies": ["192.0.2.1"]}}})
         render(RUNTIME_CHART, values, error="127.0.0.6")
 

@@ -190,16 +190,16 @@ Validate Azure Workload Identity prerequisites
 {{- define "cetirun.validateAIGateway" -}}
 {{- $gateway := .Values.aiGateway | default dict -}}
 {{- $proxy := $gateway.copilotProxy | default dict -}}
-{{- if and $proxy.enabled (not $gateway.enabled) -}}
-{{- fail "aiGateway.copilotProxy.enabled requires aiGateway.enabled" -}}
+{{- if not $gateway.enabled -}}
+{{- fail "AI Gateway is required for every Agent; direct model access is no longer supported" -}}
+{{- end -}}
+{{- if .Values.secrets.apiKey -}}
+{{- fail "secrets.apiKey is no longer supported; configure model credentials in the AI Gateway" -}}
+{{- end -}}
+{{- if ne (.Values.secrets.provider | default "openai") "openai" -}}
+{{- fail "secrets.provider must be openai for the platform AI Gateway" -}}
 {{- end -}}
 {{- if $gateway.enabled -}}
-{{- if not (has (include "cetirun.agent.type" .) (list "openclaw" "hermes")) -}}
-{{- fail "aiGateway.enabled is supported only for OpenClaw and Hermes" -}}
-{{- end -}}
-{{- if ne (.Values.secrets.provider | default "github_copilot") "openai" -}}
-{{- fail "aiGateway.enabled requires secrets.provider=openai" -}}
-{{- end -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" (.Values.aiGateway.keySecretName | default "")) -}}
 {{- fail "aiGateway.keySecretName must name a Secret in the release namespace" -}}
 {{- end -}}

@@ -10,12 +10,12 @@ import (
 // TeamSpec defines team-wide configuration applied to every member instance.
 type TeamSpec struct {
 	// AgentPolicyRef names the policy applied to every Agent in this Team.
-	// A Team without any policy or Sandbox fields retains legacy execution.
+	// Every Team must declare an execution policy and permitted Sandboxes.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	AgentPolicyRef string `json:"agentPolicyRef,omitempty"`
+	// +required
+	AgentPolicyRef string `json:"agentPolicyRef"`
 
 	// SandboxRefs lists the Sandboxes permitted for this Team.
 	// +kubebuilder:validation:MinItems=1
@@ -23,22 +23,22 @@ type TeamSpec struct {
 	// +kubebuilder:validation:items:MaxLength=253
 	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +listType=set
-	// +optional
-	SandboxRefs []string `json:"sandboxRefs,omitempty"`
+	// +required
+	SandboxRefs []string `json:"sandboxRefs"`
 
 	// DefaultSandboxRef selects a listed Sandbox for newly created Agents.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	DefaultSandboxRef string `json:"defaultSandboxRef,omitempty"`
+	// +required
+	DefaultSandboxRef string `json:"defaultSandboxRef"`
 
 	// MemberContext defines the team context injected into USER.md for every member instance.
 	// +optional
 	MemberContext TeamContextSpec `json:"memberContext,omitempty"`
 
-	// Defaults sets the default AI provider for all team members.
-	// Per-instance Helm values overrides take precedence when set.
+	// Defaults retains the removed provider field solely to reject old configuration.
+	// Model routing is always managed by the platform AI Gateway.
 	// +optional
 	Defaults TeamDefaultsSpec `json:"defaults,omitempty"`
 
@@ -113,9 +113,10 @@ type TeamContextSpec struct {
 	Description []string `json:"description,omitempty"`
 }
 
-// TeamDefaultsSpec sets the default AI provider for team members.
+// TeamDefaultsSpec rejects the removed direct-provider setting.
 type TeamDefaultsSpec struct {
-	// Provider is the default AI provider (e.g. "github_copilot", "anthropic", "openai").
+	// Provider is no longer supported; configure upstream providers in the AI Gateway.
+	// +kubebuilder:validation:MaxLength=0
 	// +optional
 	Provider string `json:"provider,omitempty"`
 }
@@ -147,11 +148,11 @@ const ConditionTeamAccepted = "Accepted"
 // +kubebuilder:resource:path=teams,scope=Cluster,shortName=crt,singular=team
 // +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.memberContext.role`
-// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.defaults.provider`
+// +kubebuilder:printcolumn:name="Policy",type=string,JSONPath=`.spec.agentPolicyRef`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // Team is a cluster-scoped resource that defines team-wide configuration
-// (user context, AI provider defaults, and skills) applied to every Agent that
+// (user context, policy, Sandbox selection, and skills) applied to every Agent that
 // references this team via spec.team.
 type Team struct {
 	metav1.TypeMeta   `json:",inline"`

@@ -21,8 +21,8 @@ spec:
     - jsonPath: .spec.memberContext.role
       name: Role
       type: string
-    - jsonPath: .spec.defaults.provider
-      name: Provider
+    - jsonPath: .spec.agentPolicyRef
+      name: Policy
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -32,7 +32,7 @@ spec:
       openAPIV3Schema:
         description: |-
           Team is a cluster-scoped resource that defines team-wide configuration
-          (user context, AI provider defaults, and skills) applied to every Agent that
+          (user context, policy, Sandbox selection, and skills) applied to every Agent that
           references this team via spec.team.
         properties:
           apiVersion:
@@ -59,7 +59,7 @@ spec:
               agentPolicyRef:
                 description: |-
                   AgentPolicyRef names the policy applied to every Agent in this Team.
-                  A Team without any policy or Sandbox fields retains legacy execution.
+                  Every Team must declare an execution policy and permitted Sandboxes.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -73,12 +73,13 @@ spec:
                 type: string
               defaults:
                 description: |-
-                  Defaults sets the default AI provider for all team members.
-                  Per-instance Helm values overrides take precedence when set.
+                  Defaults retains the removed provider field solely to reject old configuration.
+                  Model routing is always managed by the platform AI Gateway.
                 properties:
                   provider:
-                    description: Provider is the default AI provider (e.g. "github_copilot",
-                      "anthropic", "openai").
+                    description: Provider is no longer supported; configure upstream
+                      providers in the AI Gateway.
+                    maxLength: 0
                     type: string
                 type: object
               memberContext:
@@ -254,6 +255,10 @@ spec:
                 maxItems: 20
                 type: array
                 x-kubernetes-list-type: set
+            required:
+            - agentPolicyRef
+            - defaultSandboxRef
+            - sandboxRefs
             type: object
           status:
             description: TeamStatus defines the observed state of Team.

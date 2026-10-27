@@ -52,7 +52,9 @@ vi.mock("../../hooks/useTeams", async (importOriginal) => {
 
 function renderWithQuery(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  const result = render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  fireEvent.change(screen.getByRole("combobox", { name: /Team/ }), { target: { value: "platform" } });
+  return result;
 }
 
 describe("CreateForm", () => {
@@ -83,7 +85,7 @@ describe("CreateForm", () => {
     expect(screen.queryByLabelText("Model (optional)")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mockMutate).toHaveBeenCalledOnce();
-    expect(JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]))).toEqual({ agent: { type: "custom", image, username: "vibe" } });
+    expect(JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]))).toEqual({ team: "platform", agent: { type: "custom", image, username: "vibe" } });
   });
 
   it("validates the Custom HTTP port before submitting", async () => {
@@ -165,7 +167,7 @@ describe("CreateForm", () => {
     renderWithQuery(<CreateForm />);
 
     expect(screen.getByText("Display Name (optional)")).toBeInTheDocument();
-    expect(screen.getByText("Team (optional)")).toBeInTheDocument();
+    expect(screen.getByText("Team")).toBeInTheDocument();
     expect(screen.getByText("Gateway Token (optional)")).toBeInTheDocument();
     expect(screen.getByText("Tailscale Auth Key (optional)")).toBeInTheDocument();
     expect(screen.getByText("Create Agent")).toBeInTheDocument();
@@ -185,7 +187,7 @@ describe("CreateForm", () => {
       instanceName: "my-instance",
       agent: { type: "hermes" },
       displayName: undefined,
-      team: undefined,
+      team: "platform",
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
       teamsEnabled: undefined,
@@ -269,7 +271,7 @@ describe("CreateForm", () => {
       instanceName: undefined,
       agent: { type: "openclaw" },
       displayName: undefined,
-      team: undefined,
+      team: "platform",
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
       teamsEnabled: undefined,
@@ -290,16 +292,16 @@ describe("CreateForm", () => {
       instanceName: undefined,
       agent: { type: "openclaw" },
       displayName: undefined,
-      team: undefined,
+      team: "platform",
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
       teamsEnabled: undefined,
     });
   });
 
-  it("submit button is enabled even without team selected", () => {
+  it("requires a team before enabling submit", () => {
     renderWithQuery(<CreateForm />);
-    expect(screen.getByText("Create Agent")).not.toBeDisabled();
+    expect(screen.getByText("Create Agent")).toBeEnabled();
   });
 
   it("explains automatic Memory defaults without sending policy settings", async () => {
@@ -311,15 +313,10 @@ describe("CreateForm", () => {
     expect(mockMutate.mock.calls[0][0]).not.toHaveProperty("memory");
   });
 
-  it("only shows Copilot model selection for the effective Copilot provider", async () => {
+  it("does not use a deprecated Team provider to choose models", async () => {
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
-
-    expect(screen.getByText("GitHub Copilot model")).toBeInTheDocument();
     await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "security");
-    await waitFor(() => expect(screen.queryByText("GitHub Copilot model")).not.toBeInTheDocument());
-
-    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
-    await waitFor(() => expect(screen.getByText("GitHub Copilot model")).toBeInTheDocument());
+    expect(screen.queryByText("GitHub Copilot model")).not.toBeInTheDocument();
   });
 });

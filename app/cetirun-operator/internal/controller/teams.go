@@ -5,7 +5,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -599,31 +598,8 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 // usesDeploymentDefaultModel reports whether buildHelmValues will render the
 // operator's default model. Keep the provider precedence in sync with that
 // function: operator Helm values, then the team, then instance Helm values.
-func (r *AgentReconciler) usesDeploymentDefaultModel(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) bool {
-	if strings.TrimSpace(instance.Spec.Model) != "" {
-		return false
-	}
-	provider := "github_copilot"
-	applyProvider := func(value interface{}) {
-		secrets, ok := value.(map[string]interface{})
-		if !ok {
-			return
-		}
-		if configured, ok := secrets["provider"].(string); ok && strings.TrimSpace(configured) != "" {
-			provider = strings.TrimSpace(configured)
-		}
-	}
-	applyProvider(r.CetiRunHelmValues["secrets"])
-	if team != nil && strings.TrimSpace(team.Spec.Defaults.Provider) != "" {
-		provider = strings.TrimSpace(team.Spec.Defaults.Provider)
-	}
-	if raw, ok := instance.Spec.Helm.Values["secrets"]; ok && raw.Raw != nil {
-		var values map[string]interface{}
-		if err := json.Unmarshal(raw.Raw, &values); err == nil {
-			applyProvider(values)
-		}
-	}
-	return provider == "github_copilot"
+func (r *AgentReconciler) usesDeploymentDefaultModel(instance *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) bool {
+	return strings.TrimSpace(instance.Spec.Model) == ""
 }
 
 // getAzureCredential returns a DefaultAzureCredential for Azure API calls.

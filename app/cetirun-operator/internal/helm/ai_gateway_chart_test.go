@@ -187,35 +187,11 @@ func TestAIGatewayChartWiring(t *testing.T) {
 	}
 }
 
-func TestAIGatewayChartDisabledKeepsProviderKey(t *testing.T) {
-	rendered, err := renderAIGateway(t, sampleInput("openclaw", "openai", false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := openAIKeyEnv(t, rendered)
-	if env == nil || env.ValueFrom.SecretKeyRef.Key != "MODEL_API_KEY" || env.ValueFrom.SecretKeyRef.Name != "test-secret" {
-		t.Fatalf("disabled Gateway must keep MODEL_API_KEY from the existing Secret, got %+v", env)
-	}
-	if strings.Contains(rendered["cetirun/templates/networkpolicy.yaml"], "cetirun-ai-gateway") ||
-		strings.Contains(rendered["cetirun/templates/sidecar.yaml"], "cetirun-system/*") {
-		t.Fatal("disabled Gateway must not open egress")
-	}
-	// An openai provider with its own endpoint keeps its saved model list.
-	if value, ok := initGatewayMarker(t, rendered); ok {
-		t.Fatalf("init must not treat the model list as the Gateway's, got CETIRUN_AI_GATEWAY=%q", value)
-	}
-	// ...and its owner's choice of credentials.
-	if provider := openClawProvider(t, rendered); provider["apiKey"] != nil || provider["auth"] != nil {
-		t.Fatalf("a provider with its own endpoint must not be bound, got %v", provider)
-	}
-	// ...and OpenClaw's own choice of utility model, which that provider serves.
-	if defaults := openClawAgentDefaults(t, rendered); defaults["utilityModel"] != nil {
-		t.Fatalf("a provider with its own endpoint must keep OpenClaw's utility model, got %v", defaults["utilityModel"])
-	}
-	for _, container := range openClawInitContainers(t, rendered) {
-		if container.Name == "retire-copilot-sign-in" {
-			t.Fatal("without the Gateway the in-agent sign-in is the Agent's own and stays")
-		}
+func TestAIGatewayChartRejectsDisabledGateway(t *testing.T) {
+	input := aiGatewayInput("openclaw", "openai")
+	delete(input, "aiGateway")
+	if _, err := renderAIGateway(t, input); err == nil {
+		t.Fatal("runtime accepted a direct model path without the Gateway")
 	}
 }
 
@@ -272,7 +248,7 @@ func TestAIGatewayChartRejectsUnsupportedWiring(t *testing.T) {
 		mutate func(map[string]any)
 		want   string
 	}{
-		"copilot provider": {func(in map[string]any) { in["secrets"].(map[string]any)["provider"] = "github_copilot" }, "secrets.provider=openai"},
+		"copilot provider": {func(in map[string]any) { in["secrets"].(map[string]any)["provider"] = "github_copilot" }, "provider"},
 		"missing Secret":   {func(in map[string]any) { in["aiGateway"].(map[string]any)["keySecretName"] = "" }, "keySecretName"},
 		"no NetworkPolicy": {func(in map[string]any) { in["networkPolicy"].(map[string]any)["enabled"] = false }, "networkPolicy.enabled"},
 		"reserved extraEnv": {func(in map[string]any) {
@@ -447,9 +423,8 @@ func TestAIGatewayChartRestartsTheProxyForANewSignIn(t *testing.T) {
 	}
 }
 
-// The in-agent model sign-in helper is served exactly where the harness
-// exposes its port: Hermes keeps it, and OpenClaw in a chart with the
-// per-Agent Copilot proxy carries none, whether or not it uses the Gateway.
+// Every managed harness uses the Gateway, so none exposes an in-agent model
+// sign-in helper.
 func TestPreparedReleaseServesSignInHelper(t *testing.T) {
 	chrt, err := loader.Load("../../../cetirun-chart")
 	if err != nil {
@@ -460,10 +435,8 @@ func TestPreparedReleaseServesSignInHelper(t *testing.T) {
 		input map[string]any
 		want  bool
 	}{
-		{name: "Hermes", input: sampleInput("hermes", "github_copilot", false), want: true},
-		{name: "Hermes through the Gateway", input: aiGatewayInput("hermes", "openai"), want: false},
-		{name: "OpenClaw without the Gateway", input: sampleInput("openclaw", "github_copilot", false), want: false},
-		{name: "OpenClaw through the Gateway", input: aiGatewayInput("openclaw", "openai"), want: false},
+		{name: "Hermes", input: aiGatewayInput("hermes", "openai"), want: false},
+		{name: "OpenClaw", input: aiGatewayInput("openclaw", "openai"), want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prepared, err := PrepareChart(chrt, tc.input)
@@ -603,26 +576,11 @@ func TestAIGatewayChartWiresHermes(t *testing.T) {
 	}
 }
 
-// Without the Gateway, Hermes keeps its provider, the sign-in helper and its
-// script.
-func TestAIGatewayChartLeavesHermesWithoutTheGatewayAlone(t *testing.T) {
-	got := renderHermes(t, sampleInput("hermes", "openai", false))
-	if _, ok := got.config["providers"]; ok {
-		t.Fatalf("no Gateway provider without the Gateway: %v", got.config["providers"])
-	}
-	if model := normalizeYAML(t, got.config["model"]); !reflect.DeepEqual(model, map[string]any{"default": "test-model", "provider": "openai"}) {
-		t.Fatalf("model %v", model)
-	}
-	if envVar(got.main, "CETIRUN_AI_GATEWAY") != nil || envVar(got.init, "CETIRUN_AI_GATEWAY") != nil ||
-		envVar(got.main, "CETIRUN_GATEWAY_API_KEY") != nil {
-		t.Fatal("no Gateway variables without the Gateway")
-	}
-	helperPort := false
-	for _, port := range got.main.Ports {
-		helperPort = helperPort || port.Name == "cetirun-auth"
-	}
-	if !helperPort || !strings.Contains(got.service, "18790") || got.configFiles["hermes-auth.sh"] == "" {
-		t.Fatal("Hermes without the Gateway keeps its sign-in helper")
+func TestAIGatewayChartRejectsDirectHermesProvider(t *testing.T) {
+	input := aiGatewayInput("hermes", "openai")
+	delete(input, "aiGateway")
+	if _, err := renderAIGateway(t, input); err == nil {
+		t.Fatal("Hermes accepted a direct provider without the Gateway")
 	}
 }
 

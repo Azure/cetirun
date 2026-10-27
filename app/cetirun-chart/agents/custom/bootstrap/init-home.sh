@@ -22,11 +22,9 @@ agent_check_requirements() {
     init_error "ImageAgentsPathInvalid"
     return 1
   fi
-  [ -r "${CETIRUN_CONTEXT_DIR:-/etc/cetirun-context}/AGENTS.md" ] &&
-    [ -r "${CETIRUN_CONTEXT_DIR:-/etc/cetirun-context}/skills/cetirun-memory/SKILL.md" ] || {
-      init_error "ContextBindingPending"
-      return 1
-    }
+  # Common Sandbox preparation supplies the managed context view when enabled.
+  # The HOME initializer never provisions a separate Custom context or model.
+
 }
 
 agent_prepare_home() {

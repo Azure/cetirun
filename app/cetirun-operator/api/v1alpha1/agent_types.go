@@ -44,19 +44,19 @@ type AgentSpec struct {
 	// +kubebuilder:validation:Required
 	User UserSpec `json:"user"`
 
-	// Team is the name of the Team this instance belongs to.
-	// The operator merges team defaults (user context, AI model, skills) into
-	// the instance configuration. Per-instance fields take precedence.
-	// +optional
-	Team string `json:"team,omitempty"`
+	// Team is the name of the Team this Agent belongs to. Every Agent is
+	// authorized by its Team policy and uses its Team's common Sandbox.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Team string `json:"team"`
 
-	// SandboxRef opts into Sandbox execution and selects a Sandbox permitted
-	// by the Team. Legacy Agents omit it and use the existing runtime path.
+	// SandboxRef selects a Sandbox permitted by the Team.
+	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	SandboxRef string `json:"sandboxRef,omitempty"`
+	SandboxRef string `json:"sandboxRef"`
 
 	// Model is the Agent's preferred default model as exposed by the platform
 	// AI Gateway, such as a shared model or a GitHub Copilot model;
@@ -130,6 +130,13 @@ type AgentSpec struct {
 	// OpenClaw/Hermes Agent. It does not authorize force deletion or failover.
 	// +optional
 	PlannedMigration *PlannedMigrationRequest `json:"plannedMigration,omitempty"`
+
+	// TeamChangeRequest asks the controller to move this Agent to another Team.
+	// It is an operation request, not the effective runtime binding: the
+	// controller validates and fences the running workload before it changes
+	// Team, Sandbox, model, or authorization metadata.
+	// +optional
+	TeamChangeRequest *TeamChangeRequest `json:"teamChangeRequest,omitempty"`
 }
 
 // TailscaleSpec configures the Tailscale mesh VPN sidecar.
@@ -168,21 +175,14 @@ type ModelAccessSpec struct {
 	MonthlyBudgetUSD string `json:"monthlyBudgetUSD,omitempty"`
 }
 
-// SharedModelsEnabled preserves legacy defaults only without a Sandbox selection.
-// Policy resolution requires a Sandbox selection before evaluating these requests.
+// SharedModelsEnabled reports an explicit request for shared AI Gateway models.
 func (s AgentSpec) SharedModelsEnabled() bool {
-	if s.ModelAccess != nil && s.ModelAccess.SharedModels != nil {
-		return *s.ModelAccess.SharedModels
-	}
-	return s.SandboxRef == ""
+	return s.ModelAccess != nil && s.ModelAccess.SharedModels != nil && *s.ModelAccess.SharedModels
 }
 
-// GitHubCopilotEnabled preserves legacy defaults only without a Sandbox selection.
+// GitHubCopilotEnabled reports an explicit request for a GitHub Copilot proxy.
 func (s AgentSpec) GitHubCopilotEnabled() bool {
-	if s.ModelAccess != nil && s.ModelAccess.GitHubCopilot != nil {
-		return *s.ModelAccess.GitHubCopilot
-	}
-	return s.SandboxRef == ""
+	return s.ModelAccess != nil && s.ModelAccess.GitHubCopilot != nil && *s.ModelAccess.GitHubCopilot
 }
 
 // UserSpec identifies the user this instance is provisioned for.
@@ -270,6 +270,11 @@ type AgentStatus struct {
 	// retries. Only the controller writes these checkpoints.
 	// +optional
 	PlannedMigration *PlannedMigrationStatus `json:"plannedMigration,omitempty"`
+
+	// TeamChange preserves the controller-owned checkpoints of the current or
+	// most recently completed Team change. It contains no credentials.
+	// +optional
+	TeamChange *TeamChangeStatus `json:"teamChange,omitempty"`
 
 	// ObservedOperatorHash is a hash of the operator-level configuration (e.g. ChartVersion, DomainSuffix)
 	// that was in effect during the last successful reconciliation. A change in this hash

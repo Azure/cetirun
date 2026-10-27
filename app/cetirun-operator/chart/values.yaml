@@ -261,10 +261,8 @@ agentIdentity:
 # off stops creating keys, not revoking them. Set neither to stop calling the
 # Gateway, for example once it has been removed.
 aiGateway:
-  # -- OpenClaw and Hermes Agents take their models from the platform AI
-  # Gateway. The platform chart requires it; turning it off leaves OpenClaw
-  # Agents without models, while Hermes Agents fall back to their own provider
-  # and sign-in.
+  # -- Every Agent harness takes its models from the platform AI Gateway.
+  # Required for both standalone Operator and platform deployments.
   enabled: true
   # -- In-cluster Gateway URL: http://<service>.<namespace>.svc.cluster.local:<port>.
   # Empty means the Gateway named cetirun-ai-gateway in the operator namespace,
@@ -302,36 +300,11 @@ aiGateway:
 # Deprecated: use cetirun.helmValues.skills.storageAccount instead.
 skillsStorageAccount: ""
 
-# -- Opt-in provisioning for approved Custom images. Qualify each image's
-# UID/GID against this HOME storage and select its model-access mode explicitly.
+# -- Approved Custom images use the same Team, Policy, Sandbox and Gateway
+# execution path as native Harnesses. Images must use immutable digests.
 customRuntime:
   enabled: false
-  agentManagedModel: false
   approvedImages: []
-  # -- Subset of approvedImages qualified to use the platform AI Gateway.
-  # Other approved images retain explicit image-owned authentication.
-  gatewayImages: []
-  storageClass: default
-  storageSize: 100Gi
-  accessMode: ReadWriteOnce
-  fsGroup: 1024
-  context:
-    AGENTS.md: |
-      # CetiRun agent context
-      Work within the owner's requested scope. Approved skills are available
-      under $HOME/.agents/skills. Read a relevant SKILL.md before using it.
-      This context and the skills view are read-only. Preserve user files.
-      Use cetirun-memory for durable notes in private HOME. Do not put credentials
-      or private session content into shared skills.
-    skills/cetirun-memory/SKILL.md: |
-      ---
-      name: cetirun-memory
-      description: Preserve useful owner-approved notes in the instance's private HOME.
-      ---
-      Store durable notes under $HOME/memory. Read relevant existing notes before
-      extending them. Preserve unrelated notes and distinguish facts from assumptions.
-      Do not store passwords, tokens or authentication responses. Never write memory
-      into the read-only skills directory or shared storage.
 
 # -- Azure configuration for Teams auto-provisioning.
 # Only required when instances use msteams.enabled=true.

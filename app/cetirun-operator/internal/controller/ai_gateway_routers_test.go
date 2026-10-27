@@ -388,43 +388,6 @@ func TestPolicyBoundAgentGetsAllowedRouter(t *testing.T) {
 	}
 }
 
-func TestLegacyAgentGetsTheTeamsRouters(t *testing.T) {
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: testLegacyRouterTeam, Generation: 1}, Spec: api.TeamSpec{
-		ModelRouters: []api.TeamModelRouter{testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne)},
-	}}
-	agent := aiGatewayTestAgent(testLegacyRouterTeam)
-	agent.Spec.SandboxRef = ""
-	agent.Status.Policy = nil
-	agent.Spec.ModelAccess = modelAccess(true, false)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
-	addSmallSharedModel(gateway)
-
-	// Before registration the router is not granted, and the Agent says why.
-	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
-		t.Fatal(err)
-	}
-	gatewayName := modelRouterGatewayName(testLegacyRouterTeam, testRouterName)
-	if router := agent.Status.AIGateway.ModelRouters; len(router) != 1 || router[0].Granted || router[0].Reason != "the router is not registered in the AI Gateway yet" {
-		t.Fatalf("routers = %+v", router)
-	}
-	reconcileRouters(t, r, kube, testLegacyRouterTeam)
-	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(lastKeyModels(gateway), gatewayName) || !agent.Status.AIGateway.ModelRouters[0].Granted {
-		t.Fatalf("key %v routers %+v", lastKeyModels(gateway), agent.Status.AIGateway.ModelRouters)
-	}
-
-	// The owner turns shared models off: a router of shared models goes too.
-	agent.Spec.ModelAccess = modelAccess(false, true)
-	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
-		t.Fatal(err)
-	}
-	if slices.Contains(lastKeyModels(gateway), gatewayName) || agent.Status.AIGateway.ModelRouters[0].Reason != "the router uses shared models, which this Agent has turned off" {
-		t.Fatalf("key %v routers %+v", lastKeyModels(gateway), agent.Status.AIGateway.ModelRouters)
-	}
-}
-
 func TestCopilotTierRouterFollowsTheOwnersSignIn(t *testing.T) {
 	team := routerTeam(testRouter(testRouterName, "copilot/gpt-5.5", testSharedModelOne, "copilot/claude-sonnet-4.5"))
 	agent := aiGatewayTestAgent(testAIGatewayTeam)

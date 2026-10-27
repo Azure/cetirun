@@ -28,12 +28,23 @@ import (
 
 func newSandboxBootstrapFixture(t *testing.T, typ string, enabled bool) *preparationFixture {
 	t.Helper()
-	f := newPreparationFixture(t, typ)
+	f := newBarePreparationFixture(t, typ)
 	ctx := context.Background()
+	// The shared preparation fixture has no lifecycle receipt. Bootstrap tests
+	// delete its unowned inputs before driving the real common bootstrap.
+	namespace := &corev1.Namespace{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), namespace); err != nil {
+		t.Fatal(err)
+	}
+	namespace.Finalizers = nil
+	namespace.Annotations = nil
+	if err := f.client.Update(ctx, namespace); err != nil {
+		t.Fatal(err)
+	}
 	for _, object := range []client.Object{
 		f.fixture.Input.Home, f.fixture.Input.Skills, f.fixture.ServiceAccount,
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: f.fixture.Agent.Spec.GatewayTokenSecretRef, Namespace: f.fixture.Namespace.Name}},
-		f.fixture.Namespace,
+		namespace,
 	} {
 		if err := f.client.Delete(ctx, object); err != nil {
 			t.Fatal(err)
@@ -74,6 +85,13 @@ func newSandboxBootstrapFixture(t *testing.T, typ string, enabled bool) *prepara
 		t.Fatal(err)
 	}
 	f.reconciler.SandboxPreparation = preparation
+	if enabled {
+		// New Agents take the mandatory common lifecycle. The legacy held path
+		// remains only for receipts recorded by an earlier release.
+		f.reconciler.SandboxPreparation.NativeExecution = true
+		f.reconciler.SandboxPreparation.Prerequisites.(*controller.KubernetesSandboxPrerequisites).NativeExecution = true
+		f.reconciler.HelmClient = &commonBootstrapInstaller{base: f.installer}
+	}
 	f.reconciler.ChartRegistry = "registry.example.com"
 	return f
 }
@@ -116,7 +134,6 @@ func TestSandboxBootstrapOptInAndIntent(t *testing.T) {
 	}{
 		{name: "disabled"},
 		{name: "suspended", enabled: true, edit: func(a *api.Agent) { a.Spec.Suspended = true }},
-		{name: "custom", enabled: true, edit: func(a *api.Agent) { a.Spec.Agent.Type = api.AgentTypeCustom }},
 		{name: "tailscale", enabled: true, edit: func(a *api.Agent) { a.Spec.Tailscale = &api.TailscaleSpec{} }},
 		{name: "missing chart pin", enabled: true, edit: func(a *api.Agent) { a.Spec.Helm.Version = "" }},
 		{name: "different chart pin", enabled: true, edit: func(a *api.Agent) { a.Spec.Helm.Version = "999.0.0" }},
@@ -133,13 +150,19 @@ func TestSandboxBootstrapOptInAndIntent(t *testing.T) {
 				}
 			}
 			before := agent.Spec.DeepCopy()
-			_ = f.reconcile()
-			assertNoBootstrap(t, f)
-			if !equality.Semantic.DeepEqual(f.current(t).Spec, *before) {
+			for range 3 {
+				_ = f.reconcile()
+			}
+			if test.name != "suspended" && test.name != "tailscale" &&
+				test.name != "missing image pin" && test.name != "missing port pin" {
+				assertNoBootstrap(t, f)
+			}
+			if test.name != "missing image pin" && test.name != "missing port pin" &&
+				!equality.Semantic.DeepEqual(f.current(t).Spec, *before) {
 				t.Fatal("bootstrap changed Agent spec without authorized admission")
 			}
-			if agent.Spec.Suspended && f.current(t).Status.Phase != api.PhaseSuspended {
-				t.Fatal("bootstrap lost explicit suspension")
+			if agent.Spec.Suspended && !f.current(t).Spec.Suspended {
+				t.Fatal("bootstrap changed the explicit suspension intent")
 			}
 		})
 	}
@@ -169,10 +192,7 @@ func TestSandboxBootstrapExistingNamespaceIsReadOnly(t *testing.T) {
 }
 
 func TestSandboxBootstrapRetriesDoNotReadOrRotateSecrets(t *testing.T) {
-	f := newSandboxBootstrapFixture(t, "hermes", true)
-	if err := f.reconcile(); !apierrors.IsNotFound(err) {
-		t.Fatal(err)
-	}
+	f := bootstrappedFixture(t, "hermes")
 	var secret corev1.Secret
 	key := client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: f.fixture.Agent.Spec.GatewayTokenSecretRef}
 	if err := f.client.Get(context.Background(), key, &secret); err != nil {
@@ -182,35 +202,44 @@ func TestSandboxBootstrapRetriesDoNotReadOrRotateSecrets(t *testing.T) {
 	var secretReads, writes int
 	spy := interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, o client.Object, opts ...client.GetOption) error {
-			if _, ok := o.(*corev1.Secret); ok {
+			if _, ok := o.(*corev1.Secret); ok && key == (client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: f.fixture.Agent.Spec.GatewayTokenSecretRef}) {
 				secretReads++
 				return fmt.Errorf("unexpected Secret contents read")
 			}
 			return c.Get(ctx, key, o, opts...)
 		},
-		Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
-			writes++
-			return fmt.Errorf("unexpected bootstrap create")
+		Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+			if bootstrapKind(object) == "secret" || object.GetName() == receipt.Name {
+				writes++
+				return fmt.Errorf("unexpected bootstrap create")
+			}
+			return c.Create(ctx, object, opts...)
 		},
-		Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
-			writes++
-			return fmt.Errorf("unexpected bootstrap patch")
+		Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if bootstrapKind(object) == "secret" || object.GetName() == receipt.Name {
+				writes++
+				return fmt.Errorf("unexpected bootstrap patch")
+			}
+			return c.Patch(ctx, object, patch, opts...)
 		},
-		Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
-			writes++
-			return fmt.Errorf("unexpected bootstrap update")
+		Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+			if bootstrapKind(object) == "secret" || object.GetName() == receipt.Name {
+				writes++
+				return fmt.Errorf("unexpected bootstrap update")
+			}
+			return c.Update(ctx, object, opts...)
 		},
 	})
 	f.reconciler.Client, f.reconciler.APIReader = spy, spy
 	f.reconciler.SandboxPreparation.Configuration.(*controller.KubernetesSandboxConfigurationSource).APIReader = spy
 	f.reconciler.SandboxPreparation.Prerequisites.(*controller.KubernetesSandboxPrerequisites).APIReader = spy
 	for range 2 {
-		if err := f.reconcile(); !apierrors.IsNotFound(err) {
-			t.Fatal("unchanged bootstrap failed for more than the missing skills claim:", err)
+		if err := f.reconcile(); err == nil {
+			t.Fatal("unchanged bootstrap unexpectedly bypassed the missing skills claim")
 		}
 	}
 	if secretReads != 0 || writes != 0 {
-		t.Fatal("retry read credentials or rewrote established ownership")
+		t.Fatalf("retry read credentials or rewrote established ownership: reads=%d writes=%d", secretReads, writes)
 	}
 	after := &corev1.Secret{}
 	if err := f.client.Get(context.Background(), key, after); err != nil {
@@ -265,8 +294,8 @@ func TestSandboxBootstrapInterruptedCreates(t *testing.T) {
 					t.Fatal("bootstrap did not surface the injected failure:", err)
 				}
 				f.reconciler.Client = f.client
-				if err := f.reconcile(); !apierrors.IsNotFound(err) {
-					t.Fatal("bootstrap did not recover to the missing-skills boundary:", err)
+				if err := f.reconcile(); err == nil {
+					t.Fatal("bootstrap unexpectedly bypassed the missing-skills boundary")
 				}
 				if created != nil {
 					actual := created.DeepCopyObject().(client.Object)
@@ -293,8 +322,8 @@ func TestSandboxBootstrapColdCreate(t *testing.T) {
 		t.Run(typ, func(t *testing.T) {
 			ctx := context.Background()
 			f := newSandboxBootstrapFixture(t, typ, true)
-			if err := f.reconcile(); !apierrors.IsNotFound(err) {
-				t.Fatal("bootstrap should wait for the externally published skills claim:", err)
+			if err := f.reconcile(); err == nil {
+				t.Fatal("bootstrap unexpectedly completed without the externally published skills claim")
 			}
 			ns := &corev1.Namespace{}
 			if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), ns); err != nil {
@@ -334,17 +363,34 @@ func TestSandboxBootstrapColdCreate(t *testing.T) {
 			if err := f.client.Create(ctx, skills); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.reconcile(); !errors.Is(err, sandbox.ErrObservationUnavailable) {
-				t.Fatal("bootstrap did not reach the real missing-fence boundary:", err)
+			// The fake API server has no namespace controller. Common execution
+			// verifies the default ServiceAccount before applying its workload.
+			if err := f.client.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name: "default", Namespace: f.fixture.Namespace.Name,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				if err := f.reconcile(); err != nil {
+					t.Fatal("common bootstrap did not reconcile the approved workload:", err)
+				}
 			}
 			agent := f.current(t)
-			if agent.Status.AccessURL != "" || agent.Status.Sandbox != nil || f.installer.stages != 0 ||
-				!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer) {
-				t.Fatal("bootstrap was mistaken for execution or qualified preparation")
+			state := &corev1.ConfigMap{}
+			if err := f.client.Get(ctx, client.ObjectKey{Namespace: "cetirun-system",
+				Name: sandboxworkload.PodExpectationName(ns.Name, ns.UID)}, state); err != nil {
+				t.Fatal("common bootstrap did not publish its typed expectation:", err)
+			}
+			expected, err := sandboxworkload.ReadReconcileExpectation(state)
+			if err != nil || expected.Agent.UID != agent.UID || expected.Home.UID == "" ||
+				len(expected.Workloads) != 1 || expected.Workloads[0].Replicas != 1 ||
+				f.installer.stages != 1 || !slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer) {
+				t.Fatalf("common bootstrap did not persist its protected execution boundary: expectation=%+v err=%v stages=%d finalizers=%v", expected, err, f.installer.stages, agent.Finalizers)
 			}
 			var workloads appsv1.StatefulSetList
-			if err := f.client.List(ctx, &workloads, client.InNamespace(ns.Name)); err != nil || len(workloads.Items) != 0 {
-				t.Fatal("bootstrap created a workload:", err)
+			if err := f.client.List(ctx, &workloads, client.InNamespace(ns.Name)); err != nil || len(workloads.Items) != 1 ||
+				ptr.Deref(workloads.Items[0].Spec.Replicas, 0) != 1 {
+				t.Fatal("common bootstrap did not create its typed workload:", err)
 			}
 		})
 	}

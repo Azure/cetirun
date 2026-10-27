@@ -131,8 +131,12 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 		return empty, fmt.Errorf("Sandbox Agent chart version differs from the configured approved version")
 	}
 	namespaceName := instanceNamespace(agent.Name)
+	// The application runtime Secret is distinct from the controller-owned AI
+	// Gateway key: it can carry non-model harness authentication, while model
+	// traffic always uses the separately projected Gateway key.
+	runtimeSecretName := sandboxRuntimeSecretName(agent)
 	if len(validation.IsDNS1123Label(namespaceName)) != 0 ||
-		len(validation.IsDNS1123Subdomain(agent.Spec.GatewayTokenSecretRef)) != 0 {
+		len(validation.IsDNS1123Subdomain(runtimeSecretName)) != 0 {
 		return empty, fmt.Errorf("Sandbox prerequisites require a valid derived namespace and explicit runtime Secret name")
 	}
 
@@ -217,7 +221,7 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 		return empty, fmt.Errorf("Sandbox skills require a distinct current filesystem PVC without foreign ownership")
 	}
 	secret := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}}
-	if err := source.readPrerequisite(ctx, client.ObjectKey{Namespace: namespace.Name, Name: agent.Spec.GatewayTokenSecretRef}, secret); err != nil {
+	if err := source.readPrerequisite(ctx, client.ObjectKey{Namespace: namespace.Name, Name: runtimeSecretName}, secret); err != nil {
 		return empty, err
 	}
 	if !sandboxBuiltinOwned(secret, agent) || !sandboxPrerequisiteOwnersMatch(secret, agent, nil) {
@@ -331,7 +335,7 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 		return empty, err
 	}
 	return SandboxPrerequisites{
-		AgentUID: agent.UID, AgentGeneration: agent.Generation, Revision: revision, ObservedAt: observedAt,
+		AgentUID: agent.UID, AgentGeneration: agentSource.Generation, Revision: revision, ObservedAt: observedAt,
 		NamespaceUID: namespace.UID,
 		Home:         sandboxworkload.ObjectIdentity{Name: home.Name, UID: home.UID},
 		Skills:       skillsID, SkillsMode: mode,

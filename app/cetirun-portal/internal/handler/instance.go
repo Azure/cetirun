@@ -89,8 +89,7 @@ type CreateInstanceRequest struct {
 	Model                string                    `json:"model,omitempty"`
 	TeamsEnabled         bool                      `json:"teamsEnabled,omitempty"`
 	AgentIdentityEnabled bool                      `json:"agentIdentityEnabled,omitempty"`
-	// ModelAccess applies to OpenClaw and Hermes Agents when the AI Gateway
-	// is enabled.
+	// ModelAccess selects Policy-permitted Gateway sources for every harness.
 	ModelAccess *ModelAccessRequest `json:"modelAccess,omitempty"`
 }
 
@@ -105,6 +104,7 @@ type InstanceResponse struct {
 	Generation                  int64                       `json:"generation"`
 	ObservedGeneration          int64                       `json:"observedGeneration"`
 	Suspended                   bool                        `json:"suspended"`
+	TeamChangePending           bool                        `json:"teamChangePending"`
 	SuspendAvailable            bool                        `json:"suspendAvailable"`
 	SuspensionUnavailableReason string                      `json:"suspensionUnavailableReason,omitempty"`
 	ResumeAvailable             bool                        `json:"resumeAvailable"`
@@ -150,9 +150,8 @@ type ConditionStatus struct {
 
 // TeamSummary is the JSON response element for GET /api/v1/teams.
 type TeamSummary struct {
-	Name     string `json:"name"`
-	Role     string `json:"role"`
-	Provider string `json:"provider"`
+	Name string `json:"name"`
+	Role string `json:"role"`
 }
 
 // ErrorResponse is the standard error envelope.
@@ -738,6 +737,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		Generation:               instance.Generation,
 		ObservedGeneration:       instance.Status.ObservedGeneration,
 		Suspended:                instance.Spec.Suspended,
+		TeamChangePending:        instance.TeamChangePending(),
 		SuspendAvailable:         kube.CanSuspendInstance(instance),
 		ResumeAvailable:          kube.CanResumeInstance(instance),
 		RestartAvailable:         kube.CanRestartInstance(instance),
@@ -1115,9 +1115,8 @@ func (h *InstanceHandler) ListTeams(w http.ResponseWriter, r *http.Request) {
 	result := make([]TeamSummary, len(teams))
 	for i, t := range teams {
 		result[i] = TeamSummary{
-			Name:     t.Name,
-			Role:     t.Spec.MemberContext.Role,
-			Provider: t.Spec.Defaults.Provider,
+			Name: t.Name,
+			Role: t.Spec.MemberContext.Role,
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

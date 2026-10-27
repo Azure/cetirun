@@ -174,6 +174,11 @@ func (h *Handler) defaultAgent(ctx context.Context, request admission.Request) a
 }
 
 func (h *Handler) validateAgent(ctx context.Context, request admission.Request, agent, old *api.Agent) admission.Response {
+	if h.controllerTeamChangeCommit(request, agent, old) {
+		if err := h.validateControllerTeamChangeTransition(ctx, agent, old); err != nil {
+			return admission.Denied(err.Error())
+		}
+	}
 	if response, handled := h.reconciledHoldRelease(ctx, request, agent, old); handled {
 		return response
 	}
@@ -195,6 +200,9 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 				return admission.Denied("controller lifecycle markers cannot be supplied during Agent creation")
 			}
 		}
+	}
+	if err := h.validateTeamChangeRequest(request, agent, old); err != nil {
+		return admission.Denied(err.Error())
 	}
 	if err := h.protectedAuthorization(request, agent, old); err != nil {
 		return admission.Denied(err.Error())
@@ -243,7 +251,8 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	}
 	controllerDefaults := h.config.NativeExecution && request.UserInfo.Username == h.config.ControllerUsername &&
 		authenticated(request.UserInfo) && controllerRuntimeDefaults(agent, old)
-	if !h.config.administrator(request.UserInfo) && !controllerDefaults {
+	controllerTeamChange := h.controllerTeamChangeCommit(request, agent, old)
+	if !h.config.administrator(request.UserInfo) && !controllerDefaults && !controllerTeamChange {
 		if err := h.memberAuthority(request, agent); err != nil {
 			return admission.Denied(err.Error())
 		}

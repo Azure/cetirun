@@ -29,7 +29,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -93,6 +92,7 @@ type fakeAIGateway struct {
 	// prices; the tests about prices turn it on.
 	blockUnpriced bool
 	blockErr      error
+	setBlockErr   error
 	aliasUpdates  []map[string]string
 	aliasErr      error
 	routeUpdates  [][]string
@@ -196,6 +196,9 @@ func (f *fakeAIGateway) UpdateKeyBudget(_ context.Context, token string, budget 
 }
 
 func (f *fakeAIGateway) SetKeyBlocked(_ context.Context, token string, blocked bool) error {
+	if f.setBlockErr != nil {
+		return f.setBlockErr
+	}
 	key, ok := f.keys[token]
 	if !ok {
 		return &aigateway.APIError{StatusCode: 404, Message: "not found"}
@@ -1401,47 +1404,6 @@ func TestAIGatewayMaxModelsMatchesTheAgentChart(t *testing.T) {
 	}
 }
 
-// More shared models than the chart accepts must not block the Agent.
-func legacyReconcileInstallsAnAgentWithMoreSharedModelsThanTheChartAccepts(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	manySharedModels(gateway, 300)
-	allowed := make([]string, 0, 300)
-	for i := 0; i < 300; i++ {
-		allowed = append(allowed, fmt.Sprintf("model-%03d", i))
-	}
-	allowTestPolicyModels(t, kube, allowed...)
-	chart := &chartHelm{}
-	r.HelmClient = chart
-	recorder := record.NewFakeRecorder(100)
-	r.EventRecorder = recorder
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	for i := 0; i < 3 && chart.installs == 0; i++ {
-		if _, err := r.Reconcile(context.Background(), req); err != nil {
-			t.Fatalf("reconcile %d: %v", i, err)
-		}
-	}
-	current := &cetirunv1alpha1.Agent{}
-	if err := kube.Get(context.Background(), req.NamespacedName, current); err != nil {
-		t.Fatal(err)
-	}
-	if chart.installs == 0 {
-		t.Fatalf("the Agent was never installed: %+v", current.Status.Conditions)
-	}
-	if models := chart.lastValues["aiGateway"].(map[string]any)["models"].([]any); len(models) != aiGatewayMaxModels {
-		t.Fatalf("%d models configured, want %d", len(models), aiGatewayMaxModels)
-	}
-	limited := false
-	for len(recorder.Events) > 0 {
-		if event := <-recorder.Events; strings.Contains(event, "AIGatewayModelsLimited") && strings.Contains(event, "45 shared models") {
-			limited = true
-		}
-	}
-	if !limited {
-		t.Fatal("the Agent must report the shared models left out")
-	}
-}
-
 func TestAIGatewayClientReadsMasterKeySecret(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, _ := aiGatewayTestReconciler(t, agent)
@@ -1723,6 +1685,88 @@ func TestPolicyReprojectionRecoversWhenBlockReceiptWriteFails(t *testing.T) {
 	}
 	if gateway.keys[token].Blocked {
 		t.Fatal("recovered policy-reprojection block remained permanent")
+	}
+}
+
+func restartedAIGatewayTestReconciler(previous *AgentReconciler) *AgentReconciler {
+	return &AgentReconciler{
+		Client: previous.Client, APIReader: previous.APIReader, Scheme: previous.Scheme,
+		EventRecorder: previous.EventRecorder, OperatorNamespace: previous.OperatorNamespace,
+		ChartVersion: previous.ChartVersion, DomainSuffix: previous.DomainSuffix,
+		DefaultModel: previous.DefaultModel, AIGateway: previous.AIGateway,
+		aiGatewayClientFactory: previous.aiGatewayClientFactory,
+	}
+}
+
+func TestTeamChangeGatewayFenceSurvivesConsecutiveReconcilesAndRestart(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.beginAIGatewayPolicyReprojection(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.TeamChange = &cetirunv1alpha1.TeamChangeStatus{Phase: cetirunv1alpha1.TeamChangeApplying}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+
+	for pass := 0; pass < 2; pass++ {
+		current := &cetirunv1alpha1.Agent{}
+		if err := kube.Get(ctx, client.ObjectKeyFromObject(agent), current); err != nil {
+			t.Fatal(err)
+		}
+		if pass == 1 {
+			// Build a fresh reconciler to model an operator restart after the
+			// first target projection wrote its status receipt. Do not copy the
+			// live reconciler: it owns synchronization primitives and caches.
+			r = restartedAIGatewayTestReconciler(r)
+		}
+		if err := r.reconcileAIGateway(ctx, current, true); err != nil {
+			t.Fatalf("Team change fence reconcile %d: %v", pass, err)
+		}
+		if current.Status.AIGateway == nil || current.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection ||
+			!current.Status.AIGateway.Blocked || !gateway.keys[aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))].Blocked {
+			t.Fatalf("Team change fence was not retained on pass %d: %+v", pass, current.Status.AIGateway)
+		}
+		condition := meta.FindStatusCondition(current.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady)
+		if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != aiGatewayReasonPolicyReprojection {
+			t.Fatalf("Team change fence condition was cleared on pass %d: %+v", pass, condition)
+		}
+		if err := r.updateStatus(ctx, current); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current := &cetirunv1alpha1.Agent{}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(agent), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.TeamChange.Phase = cetirunv1alpha1.TeamChangeStarting
+	if err := r.updateStatus(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	// A failed target readback must retain the Applying fence even though the
+	// transition has advanced; only a successful Starting projection may
+	// unblock the key.
+	gateway.getErr = errors.New("synthetic target readback failure")
+	if err := r.reconcileAIGateway(ctx, current, true); err == nil {
+		t.Fatal("Starting accepted an unavailable target Gateway")
+	}
+	if !gateway.keys[aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))].Blocked {
+		t.Fatal("failed Starting projection unblocked the key")
+	}
+	gateway.getErr = nil
+	if err := r.reconcileAIGateway(ctx, current, true); err != nil {
+		t.Fatalf("Starting did not release a verified target key: %v", err)
+	}
+	if current.Status.AIGateway.Reason != "" || current.Status.AIGateway.Blocked ||
+		gateway.keys[aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))].Blocked {
+		t.Fatalf("verified Starting projection retained its temporary block: %+v", current.Status.AIGateway)
 	}
 }
 
@@ -2139,48 +2183,6 @@ func hasSignInHelperRoute(agent *cetirunv1alpha1.Agent) bool {
 	return false
 }
 
-// With the Gateway disabled, an OpenClaw chart that carries no in-agent
-// sign-in helper must not get a route to one, and the Agent must report why
-// it has no model sign-in.
-func legacyReconcileWithoutTheGatewayRoutesToNoMissingSignInHelper(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	r.AIGateway.Enabled = false
-	chart := &chartHelm{}
-	r.HelmClient = chart
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	for i := 0; i < 3 && chart.installs == 0; i++ {
-		if _, err := r.Reconcile(context.Background(), req); err != nil {
-			t.Fatalf("reconcile %d: %v", i, err)
-		}
-	}
-	if chart.installs == 0 {
-		t.Fatal("the Agent was never installed")
-	}
-	if len(gateway.generated) != 0 {
-		t.Fatal("a disabled Gateway issues no key")
-	}
-	for _, port := range chart.lastValues["runtime"].(map[string]any)["ports"].([]any) {
-		if port.(map[string]any)["name"] == "cetirun-auth" {
-			t.Fatal("this OpenClaw chart carries no in-agent sign-in helper")
-		}
-	}
-	current := &cetirunv1alpha1.Agent{}
-	if err := kube.Get(context.Background(), req.NamespacedName, current); err != nil {
-		t.Fatal(err)
-	}
-	if current.Status.SignInHelper == nil || *current.Status.SignInHelper {
-		t.Fatalf("recorded sign-in helper %v, want false", current.Status.SignInHelper)
-	}
-	if hasSignInHelperRoute(current) {
-		t.Fatal("the VirtualService must not route to a helper the workload does not serve")
-	}
-	condition := meta.FindStatusCondition(current.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady)
-	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != aiGatewayReasonDisabled {
-		t.Fatalf("the Agent must report that its models need the Gateway, got %+v", condition)
-	}
-}
-
 // The route follows what the operator recorded at the last render; an Agent
 // not yet recorded keeps the route it had, which ran wherever the Gateway
 // did not replace the helper.
@@ -2202,96 +2204,6 @@ func TestSignInHelperRouteFollowsTheRecordedWorkload(t *testing.T) {
 	agent.Status.SignInHelper = &with
 	if !hasSignInHelperRoute(agent) {
 		t.Fatal("a workload serving the helper keeps its route")
-	}
-}
-
-func legacyReconcileRoutesAgentWithProxyAndRevokesOnDelete(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	chart := &chartHelm{}
-	r.HelmClient = chart
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	for i := 0; i < 3 && chart.installs == 0; i++ {
-		if _, err := r.Reconcile(context.Background(), req); err != nil {
-			t.Fatalf("reconcile %d: %v", i, err)
-		}
-	}
-	if chart.installs == 0 {
-		t.Fatal("the Agent was never installed")
-	}
-	if len(gateway.generated) != 1 {
-		t.Fatalf("generated %d keys, want 1", len(gateway.generated))
-	}
-	secrets := chart.lastValues["secrets"].(map[string]any)
-	if secrets["provider"] != "openai" || secrets["apiBase"] != testAIGatewayURL+"/v1" || secrets["model"] != testSharedModelOne {
-		t.Fatalf("installed values are not routed through the Gateway: %v", secrets)
-	}
-	gatewayValues := chart.lastValues["aiGateway"].(map[string]any)
-	if gatewayValues["enabled"] != true || gatewayValues["copilotProxy"].(map[string]any)["enabled"] != true {
-		t.Fatalf("chart wiring for the key and proxy is off: %v", gatewayValues)
-	}
-	runtimeValues := chart.lastValues["runtime"].(map[string]any)
-	for _, port := range runtimeValues["ports"].([]any) {
-		if port.(map[string]any)["name"] == "cetirun-auth" {
-			t.Fatal("an Agent on the Gateway carries no in-agent sign-in helper port")
-		}
-	}
-	config := runtimeValues["configFiles"].(map[string]any)["openclaw.json"].(string)
-	if !strings.Contains(config, `"openai/`+testSharedModelOne+`"`) || !strings.Contains(config, `"contextWindow": 1000000`) {
-		t.Fatalf("the native configuration lacks the Gateway models:\n%s", config)
-	}
-	current := &cetirunv1alpha1.Agent{}
-	if err := kube.Get(context.Background(), req.NamespacedName, current); err != nil {
-		t.Fatal(err)
-	}
-	if current.Status.AIGateway == nil || !current.Status.AIGateway.Routed || current.Status.AIGateway.Phase != cetirunv1alpha1.AIGatewayPhaseReady {
-		t.Fatalf("persisted status %+v", current.Status.AIGateway)
-	}
-	if current.Status.SignInHelper == nil || *current.Status.SignInHelper {
-		t.Fatalf("an Agent on the Gateway serves no in-agent sign-in helper, recorded %v", current.Status.SignInHelper)
-	}
-	vs := buildVirtualService(current, "example.com", "")
-	for _, route := range vs.Spec.Http {
-		for _, match := range route.Match {
-			if prefix := match.GetUri().GetPrefix(); strings.Contains(prefix, "cetirun-auth") {
-				t.Fatalf("an Agent on the Gateway must not route to an in-agent helper: %s", prefix)
-			}
-		}
-	}
-
-	if err := kube.Delete(context.Background(), current); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Reconcile(context.Background(), req); err != nil {
-		t.Fatal(err)
-	}
-	if len(gateway.keys) != 0 || !slices.Contains(gateway.deletedAliases, aiGatewayKeyAlias(agent)) {
-		t.Fatalf("the key was not revoked on delete: keys=%d aliases=%v", len(gateway.keys), gateway.deletedAliases)
-	}
-	if chart.uninstalls != 1 {
-		t.Fatal("the release was not uninstalled after revocation")
-	}
-	if err := kube.Get(context.Background(), req.NamespacedName, current); !apierrors.IsNotFound(err) {
-		t.Fatalf("the Agent was not released after revocation: %v", err)
-	}
-}
-
-func legacyReconcileDoesNotStartRoutedAgentWithoutKey(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	gateway.getErr = errors.New("synthetic outage")
-	chart := &chartHelm{}
-	r.HelmClient = chart
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	var result ctrl.Result
-	for i := 0; i < 3; i++ {
-		var err error
-		if result, err = r.Reconcile(context.Background(), req); err != nil {
-			t.Fatalf("reconcile %d: %v", i, err)
-		}
-	}
-	if chart.installs != 0 || result.RequeueAfter != 30*time.Second {
-		t.Fatalf("a routed Agent must wait for its key: installs=%d result=%+v", chart.installs, result)
 	}
 }
 
@@ -2366,7 +2278,7 @@ func TestLostCopilotRouteMakesTheFullReconcileDue(t *testing.T) {
 // earlier Gateway charts, and new model names. A configuration edit that
 // keeps every name changes no group and makes nothing due.
 func TestChangedModelBindingsUpdateTheKeyBeforeTheVerification(t *testing.T) {
-	r, agent, gateway := legacyGatewayFixture(t)
+	r, agent, gateway := governedGatewayFixture(t)
 	ctx := context.Background()
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		t.Fatal(err)
@@ -2389,7 +2301,7 @@ func TestChangedModelBindingsUpdateTheKeyBeforeTheVerification(t *testing.T) {
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		t.Fatal(err)
 	}
-	want := sortedCopy([]string{aiGatewaySharedAccessGroup, testManagedGroup})
+	want := sortedCopy([]string{testManagedGroup, copilotGroup()})
 	if !slices.Equal(gateway.keys[token].Models, want) || len(gateway.generated) != 1 ||
 		!slices.Equal(agent.Status.AIGateway.AccessGroups, want) {
 		t.Fatalf("the same key did not get the current groups: key=%v status=%v generated=%d",
@@ -2419,6 +2331,7 @@ func TestChangedModelBindingsUpdateTheKeyBeforeTheVerification(t *testing.T) {
 	}
 
 	// A new shared model name reaches the key before the verification too.
+	allowTestPolicyModels(t, r.Client, "new-shared")
 	added := aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("new-shared")
 	gateway.shared = append(gateway.shared, aigateway.Deployment{
 		ID: managedTestDeploymentID("new-shared", 1), ModelName: "new-shared",
@@ -2442,214 +2355,6 @@ func TestChangedModelBindingsUpdateTheKeyBeforeTheVerification(t *testing.T) {
 	}
 }
 
-// The whole path of a lost route: the catalog refresh shows it gone, and the
-// Agent's next reconcile adds it back although its verification is not due.
-func legacyReconcileRestoresLostCopilotRoutesBeforeTheVerification(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	r.HelmClient = &chartHelm{}
-	ctx := context.Background()
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	current := func() *cetirunv1alpha1.Agent {
-		t.Helper()
-		got := &cetirunv1alpha1.Agent{}
-		if err := kube.Get(ctx, req.NamespacedName, got); err != nil {
-			t.Fatal(err)
-		}
-		return got
-	}
-	reconcile := func(times int) {
-		t.Helper()
-		for i := 0; i < times; i++ {
-			if _, err := r.Reconcile(ctx, req); err != nil {
-				t.Fatalf("reconcile: %v", err)
-			}
-		}
-	}
-	reconcile(3)
-	signedIn := current()
-	signIn(t, kube, signedIn, testCopilotModels)
-	if err := kube.Update(ctx, signedIn); err != nil {
-		t.Fatal(err)
-	}
-	if err := kube.Create(ctx, readyProxy(1)); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(3)
-	routes := len(gateway.models)
-	if routes == 0 {
-		t.Fatalf("no Copilot routes registered: %+v", current().Status.AIGateway.Copilot)
-	}
-	// Only a Ready Agent qualifies for the lightweight pass; the fake Helm
-	// client starts no Pods, so mark it Ready as the workload would.
-	ready := current()
-	ready.Status.Phase = cetirunv1alpha1.PhaseReady
-	if err := kube.Status().Update(ctx, ready); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(1)
-	verified := current().Status.AIGateway.LastVerifiedTime
-
-	// The Gateway loses the routes, and the catalog refresh sees it.
-	gateway.models = map[string]aigateway.ModelRequest{}
-	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
-	reconcile(1)
-	if len(gateway.models) != routes {
-		t.Fatalf("the reconcile restored %d of %d routes", len(gateway.models), routes)
-	}
-	if after := current().Status.AIGateway.LastVerifiedTime; !after.Equal(verified) {
-		t.Fatalf("restoring the routes is not a verification, yet its time moved: %v -> %v", verified, after)
-	}
-}
-
-// A lost proxy key Secret gets a new key, which the Gateway's routes carry at
-// once. The running proxy read the old key when it started, so the Agent's
-// chart must restart it.
-func legacyReconcileRestartsTheCopilotProxyWithANewMasterKey(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	chart := &chartHelm{}
-	r.HelmClient = chart
-	ctx := context.Background()
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	current := func() *cetirunv1alpha1.Agent {
-		t.Helper()
-		got := &cetirunv1alpha1.Agent{}
-		if err := kube.Get(ctx, req.NamespacedName, got); err != nil {
-			t.Fatal(err)
-		}
-		return got
-	}
-	reconcile := func(times int) {
-		t.Helper()
-		for i := 0; i < times; i++ {
-			if _, err := r.Reconcile(ctx, req); err != nil {
-				t.Fatalf("reconcile: %v", err)
-			}
-		}
-	}
-	proxyKeyID := func() any {
-		t.Helper()
-		return chart.lastValues["aiGateway"].(map[string]any)["copilotProxy"].(map[string]any)[aiGatewayChartProxyKeyValue]
-	}
-	reconcile(3)
-	signedIn := current()
-	signIn(t, kube, signedIn, testCopilotModels)
-	if err := kube.Update(ctx, signedIn); err != nil {
-		t.Fatal(err)
-	}
-	if err := kube.Create(ctx, readyProxy(1)); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(3)
-	before := current().Status.AIGateway.Copilot.ProxyKeyID
-	if before == "" || proxyKeyID() != before || len(gateway.models) == 0 {
-		t.Fatalf("the chart must get the key ID once the routes exist: status %q values %v routes %d", before, proxyKeyID(), len(gateway.models))
-	}
-	installs := chart.installs
-
-	// The proxy's key Secret is lost; the next verification finds it.
-	if err := kube.Delete(ctx, readSecret(t, kube, aiGatewayProxySecretName)); err != nil {
-		t.Fatal(err)
-	}
-	due := current()
-	stale := metav1.NewTime(time.Now().Add(-2 * aiGatewayVerificationInterval))
-	due.Status.AIGateway.LastVerifiedTime = &stale
-	if err := kube.Status().Update(ctx, due); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(1)
-	after := current().Status.AIGateway.Copilot.ProxyKeyID
-	if after == "" || after == before {
-		t.Fatalf("a new key must get a new ID: %q -> %q", before, after)
-	}
-	if chart.installs == installs || proxyKeyID() != after {
-		t.Fatalf("the proxy must be restarted with the new key: installs %d -> %d, values carry %v", installs, chart.installs, proxyKeyID())
-	}
-	key := string(readSecret(t, kube, aiGatewayProxySecretName).Data[aiGatewayProxySecretField])
-	if aigateway.Token(key)[:aiGatewayKeyIDLength] != after {
-		t.Fatal("the ID must identify the key in the Secret")
-	}
-	for id, route := range gateway.models {
-		if route.APIKey != key {
-			t.Fatalf("route %s still carries the old key", id)
-		}
-	}
-}
-
-// Signing in again may switch to another GitHub account, with the same model
-// list. The proxy keeps the Copilot token it exchanged until that token
-// expires, without reading the new GitHub token, so the chart restarts it
-// for every new sign-in the Agent takes the models of.
-func legacyReconcileRestartsTheCopilotProxyForANewSignIn(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	chart := &chartHelm{}
-	r.HelmClient = chart
-	ctx := context.Background()
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	reconcile := func(times int) {
-		t.Helper()
-		for i := 0; i < times; i++ {
-			if _, err := r.Reconcile(ctx, req); err != nil {
-				t.Fatalf("reconcile: %v", err)
-			}
-		}
-	}
-	signInAs := func(generation, at string) {
-		t.Helper()
-		secret := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName)
-		secret.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_" + generation)}
-		secret.Annotations = map[string]string{
-			cetirunv1alpha1.AnnotationCopilotSignInGeneration: generation,
-			cetirunv1alpha1.AnnotationCopilotSignInCompleted:  generation,
-			cetirunv1alpha1.AnnotationCopilotTokenStoredAt:    time.Now().UTC().Format(time.RFC3339),
-		}
-		if err := kube.Update(ctx, secret); err != nil {
-			t.Fatal(err)
-		}
-		current := &cetirunv1alpha1.Agent{}
-		if err := kube.Get(ctx, req.NamespacedName, current); err != nil {
-			t.Fatal(err)
-		}
-		if current.Annotations == nil {
-			current.Annotations = map[string]string{}
-		}
-		current.Annotations[cetirunv1alpha1.AnnotationCopilotModels] = testCopilotModels
-		current.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
-		current.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] = at
-		if err := kube.Update(ctx, current); err != nil {
-			t.Fatal(err)
-		}
-	}
-	signInValue := func() any {
-		t.Helper()
-		return chart.lastValues["aiGateway"].(map[string]any)["copilotProxy"].(map[string]any)[aiGatewayChartSignInValue]
-	}
-	reconcile(3)
-	if err := kube.Create(ctx, readyProxy(1)); err != nil {
-		t.Fatal(err)
-	}
-	signInAs("0a1b2c", "2026-10-07T08:00:00Z")
-	reconcile(3)
-	routes := gateway.modelNames()
-	if len(routes) == 0 || signInValue() != "0a1b2c" {
-		t.Fatalf("the chart must get the sign-in's generation: values %v, routes %v", signInValue(), routes)
-	}
-	installs := chart.installs
-
-	// Another account, with the same models: the routes stay, the proxy is
-	// restarted.
-	signInAs("3d4e5f", "2026-10-07T08:30:00Z")
-	reconcile(2)
-	if chart.installs == installs || signInValue() != "3d4e5f" {
-		t.Fatalf("the proxy must be restarted for the new sign-in: installs %d -> %d, values carry %v", installs, chart.installs, signInValue())
-	}
-	if !slices.Equal(gateway.modelNames(), routes) {
-		t.Fatalf("the same models keep their routes: %v -> %v", routes, gateway.modelNames())
-	}
-}
-
 func TestApplyCopilotSignInGenerationOnlyForTheProxy(t *testing.T) {
 	for name, tc := range map[string]struct {
 		generation string
@@ -2670,66 +2375,6 @@ func TestApplyCopilotSignInGenerationOnlyForTheProxy(t *testing.T) {
 				t.Fatalf("signInGeneration %v, want %v", proxy[aiGatewayChartSignInValue], tc.want)
 			}
 		})
-	}
-}
-
-// New limits for a shared model reach the Agent's configuration although the
-// model keeps its name.
-func legacyReconcileRollsTheAgentWhenASharedModelsLimitsChange(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	chart := &chartHelm{}
-	r.HelmClient = chart
-	ctx := context.Background()
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	reconcile := func(times int) {
-		t.Helper()
-		for i := 0; i < times; i++ {
-			if _, err := r.Reconcile(ctx, req); err != nil {
-				t.Fatalf("reconcile: %v", err)
-			}
-		}
-	}
-	contextWindow := func() int64 {
-		t.Helper()
-		for _, item := range chart.lastValues["aiGateway"].(map[string]any)["models"].([]any) {
-			if model := item.(map[string]any); model["id"] == testSharedModelOne {
-				// Helm's coalescing may turn the number into a float.
-				switch value := model["contextWindow"].(type) {
-				case int64:
-					return value
-				case float64:
-					return int64(value)
-				}
-				t.Fatalf("context window %v (%T)", model["contextWindow"], model["contextWindow"])
-			}
-		}
-		t.Fatal("the shared model is not configured")
-		return 0
-	}
-	reconcile(3)
-	// Only a Ready Agent qualifies for the lightweight pass; the fake Helm
-	// client starts no Pods, so mark it Ready as the workload would.
-	ready := &cetirunv1alpha1.Agent{}
-	if err := kube.Get(ctx, req.NamespacedName, ready); err != nil {
-		t.Fatal(err)
-	}
-	ready.Status.Phase = cetirunv1alpha1.PhaseReady
-	if err := kube.Status().Update(ctx, ready); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(1)
-	if got := contextWindow(); got != 1000000 {
-		t.Fatalf("context window %d, want the catalog's", got)
-	}
-	installs := chart.installs
-
-	// An administrator lowers the model's context window in the Gateway.
-	gateway.shared[0].MaxInputTokens = 400000
-	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
-	reconcile(1)
-	if chart.installs == installs || contextWindow() != 400000 {
-		t.Fatalf("the new limit must reach the Agent: installs %d -> %d, context window %d", installs, chart.installs, contextWindow())
 	}
 }
 
@@ -3428,8 +3073,8 @@ func TestAIGatewayCatalogPublishesTheAgentTypesTheDefaultChartRoutes(t *testing.
 		strip []string
 		want  []cetirunv1alpha1.AgentType
 	}{
-		"current chart":   {want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}},
-		"OpenClaw only":   {strip: []string{"aiGateway", "hermes"}, want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}},
+		"current chart":   {want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom}},
+		"without Hermes":  {strip: []string{"aiGateway", "hermes"}, want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeCustom}},
 		"before Gateway":  {strip: []string{"aiGateway"}, want: []cetirunv1alpha1.AgentType{}},
 		"without a proxy": {strip: []string{"aiGateway", "copilotProxy"}, want: []cetirunv1alpha1.AgentType{}},
 	} {
@@ -3496,7 +3141,7 @@ func TestAIGatewayCatalogKeepsItsAgentTypesWhileTheChartCannotBeRead(t *testing.
 	}
 	r.HelmClient = &inspectingHelm{values: helm.NewChartValues(chrt)}
 	r.publishAIGatewayCatalog(context.Background(), 0)
-	if got := publishedRouting(t, kube); got == nil || !slices.Equal(got.AgentTypes, both) {
+	if got := publishedRouting(t, kube); got == nil || !slices.Equal(got.AgentTypes, append(both, cetirunv1alpha1.AgentTypeCustom)) {
 		t.Fatalf("the chart's agent types must be published once it can be read, got %+v", got)
 	}
 }

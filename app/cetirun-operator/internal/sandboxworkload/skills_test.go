@@ -96,7 +96,10 @@ func TestSkillsModePreservesDefaultSerializedShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, err := bundle.Apply(map[string]any{"secrets": map[string]any{"existingSecret": "runtime-secret"}})
+	values, err := bundle.Apply(map[string]any{
+		"secrets":   map[string]any{"existingSecret": "runtime-secret"},
+		"aiGateway": map[string]any{"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -45,7 +45,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   fi
 done < "$HERMES_HOME/.env"
 
-# CETIRUN_AUTH_KEY is the bearer key for the in-pod cetirun-auth helper. The
+# CETIRUN_AUTH_KEY signs Hermes Dashboard sessions. The
 # chart injects it as a container env var; if it's missing (e.g. an old chart
 # rolling forward to a newer image), fall back to API_SERVER_KEY so the
 # helper service still has a key to compare against.
@@ -88,22 +88,10 @@ stderr_logfile_maxbytes=0
 
 EOF
 
-# On the platform AI Gateway, the owner signs in to GitHub Copilot through the
-# Portal, and the chart serves no in-agent sign-in helper.
-if [ "${CETIRUN_AI_GATEWAY:-}" != "true" ]; then
-  cat >> /tmp/supervisord.conf << 'AUTH_EOF'
-
-[program:cetirun-auth]
-command=/usr/local/lib/hermes-agent/venv/bin/python /usr/local/share/cetirun/cetirun-auth-service.py
-priority=20
-autorestart=true
-startretries=5
-environment=HERMES_HOME="%(ENV_HERMES_HOME)s",CETIRUN_AGENT_TYPE="hermes",CETIRUN_AUTH_KEY="%(ENV_CETIRUN_AUTH_KEY)s",API_SERVER_KEY="%(ENV_API_SERVER_KEY)s"
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-AUTH_EOF
+# Model authentication is owned by the platform AI Gateway.
+if [ "${CETIRUN_AI_GATEWAY:-}" != true ]; then
+  echo "AI Gateway is required" >&2
+  exit 1
 fi
 
 if [ "${HERMES_DASHBOARD_ENABLED:-true}" = "true" ]; then

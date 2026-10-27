@@ -5,10 +5,12 @@ package sandboxadmission
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -131,6 +134,12 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	}
 	if request.Resource.Group == "" && request.Resource.Resource == "pods" && request.Resource.Version == "v1" &&
 		request.Operation == admissionv1.Connect && slices.Contains([]string{"exec", "attach", "portforward"}, request.SubResource) {
+		if request.SubResource == "exec" {
+			if !terminalConnectPreflight(request) {
+				return rejectPod(ctx, request, podDenied("ConnectForbidden", "interactive access to protected Pods is not supported"))
+			}
+			return h.validateTerminalConnect(ctx, request)
+		}
 		// CONNECT carries an options object, not a Pod. It must not depend on
 		// workload expectations or inherit a controller/administrator exemption.
 		return rejectPod(ctx, request, podDenied("ConnectForbidden", "interactive access to protected Pods is not supported"))
@@ -249,6 +258,23 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	return admission.Allowed("final Pod matches current controller-owned expectations")
 }
 
+// terminalConnectPreflight makes untrusted CONNECT requests fail closed
+// without consulting cluster state. The terminal service account name is a
+// deterministic function of the target StatefulSet name, so a caller cannot
+// use an API read to discover or probe another Sandbox's terminal identity.
+// It only rejects: current controller-owned expectation validation remains
+// mandatory in validateTerminalConnect.
+func terminalConnectPreflight(request admission.Request) bool {
+	workload, matched := strings.CutSuffix(request.Name, "-0")
+	if request.Namespace == "" || !matched || workload == "" ||
+		(request.RequestSubResource != "" && request.RequestSubResource != "exec") ||
+		request.UserInfo.Username != "system:serviceaccount:"+request.Namespace+":"+terminalpolicy.WorkloadName(workload) {
+		return false
+	}
+	var options corev1.PodExecOptions
+	return json.Unmarshal(request.Object.Raw, &options) == nil && options.Container == "cetirun" && terminalCommandPermitted(options)
+}
+
 func (h *PodHandler) validateNativeReservation(ctx context.Context, expected sandboxworkload.Expectation) *podFailure {
 	if !expected.SinglePod || h.coordination == nil {
 		return nil
@@ -262,6 +288,146 @@ func (h *PodHandler) validateNativeReservation(ctx context.Context, expected san
 			return podDenied("NativeReservationRequired", "native Sandbox requires its current non-stopping source reservation")
 		}
 		return podReadFailure("NativeReservation", err)
+	}
+	return nil
+}
+
+// validateTerminalConnect admits only the isolated terminal workload's exact
+// shell probes and interactive shell. It reuses the reconciled expectation and
+// reservation checks because a stale terminal must never bridge a Team change,
+// hold, deletion, or replacement workload.
+func (h *PodHandler) validateTerminalConnect(ctx context.Context, request admission.Request) admission.Response {
+	ctx, cancel := context.WithTimeout(ctx, h.config.RequestTimeout)
+	defer cancel()
+	deny := func(reason, message string) admission.Response {
+		return rejectPod(ctx, request, podDenied(reason, message))
+	}
+	expected, state, handled, failure := h.reconciledExpectation(ctx, request.Namespace)
+	if failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
+	if !handled || expected.Terminal == nil {
+		return deny("TerminalUnavailable", "terminal access is unavailable for this Sandbox")
+	}
+	terminal := expected.Terminal
+	if terminal.ServiceAccountName != terminalpolicy.WorkloadName(terminal.TargetWorkload) ||
+		request.UserInfo.Username != "system:serviceaccount:"+request.Namespace+":"+terminal.ServiceAccountName ||
+		request.Name != terminal.TargetWorkload+"-0" {
+		return deny("TerminalIdentityUnauthorized", "terminal caller or target differs from the current Sandbox plan")
+	}
+	var options corev1.PodExecOptions
+	if err := json.Unmarshal(request.Object.Raw, &options); err != nil || options.Container != terminal.Container ||
+		!terminalCommandPermitted(options) {
+		return deny("TerminalCommandUnauthorized", "terminal exec command differs from the approved shell protocol")
+	}
+	agent, binding, err := sandboxbinding.Read(ctx, h.reader, client.ObjectKey{Name: expected.Agent.Name})
+	if err != nil || agent.UID != expected.Agent.UID || agent.Generation != expected.AgentGeneration || binding != expected.Binding ||
+		agent.Spec.Suspended || !agent.DeletionTimestamp.IsZero() || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
+		return deny("BindingUnauthorized", "terminal binding or lifecycle state is not current")
+	}
+	if failure := h.validateReconciledSources(ctx, expected); failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
+	checkReservation := func() *podFailure {
+		if h.coordination == nil {
+			return nil
+		}
+		intent, err := sandboxcoordination.ReconciledIntentFor(expected)
+		if err != nil {
+			return podDenied("NativeReservationRequired", "terminal requires the current Sandbox reservation")
+		}
+		if err := h.coordination.AuthorizeNativeStart(ctx, intent); err != nil {
+			if errors.Is(err, sandboxcoordination.ErrConflict) {
+				return podDenied("NativeReservationRequired", "terminal requires the current non-stopping Sandbox reservation")
+			}
+			return podReadFailure("NativeReservation", err)
+		}
+		return nil
+	}
+	if failure := checkReservation(); failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
+	if failure := h.validateTerminalAuthority(ctx, expected, agent); failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
+	confirmed := &corev1.ConfigMap{}
+	if err := h.reader.Get(ctx, client.ObjectKeyFromObject(state), confirmed); err != nil {
+		return rejectPod(ctx, request, podReadFailure("Expectation", err))
+	}
+	if confirmed.UID != state.UID || confirmed.ResourceVersion != state.ResourceVersion {
+		return deny("ExpectationChanged", "terminal expectation changed during authorization")
+	}
+	if failure := h.validateReconciledSources(ctx, expected); failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
+	if ctx.Err() != nil {
+		return rejectPod(ctx, request, podReadFailure("Expectation", ctx.Err()))
+	}
+	// A stop can fence this reservation while the workload and source reads
+	// above are in flight. Confirm it again before admitting a new session.
+	if failure := checkReservation(); failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
+	return admission.Allowed("terminal exec matches the current common Sandbox expectation")
+}
+
+func terminalCommandPermitted(options corev1.PodExecOptions) bool {
+	if !options.Stdout {
+		return false
+	}
+	for _, candidate := range terminalpolicy.ShellCandidates() {
+		if slices.Equal(options.Command, candidate.Probe) {
+			return !options.Stdin && !options.TTY
+		}
+		command, err := terminalpolicy.ShellCommand(candidate.Name)
+		if err == nil && slices.Equal(options.Command, command) {
+			return options.Stdin && options.TTY
+		}
+	}
+	return false
+}
+
+func (h *PodHandler) validateTerminalAuthority(ctx context.Context, expected sandboxworkload.ReconcileExpectation, agent *api.Agent) *podFailure {
+	terminal := expected.Terminal
+	if terminal == nil {
+		return podDenied("TerminalUnavailable", "terminal access is unavailable")
+	}
+	serviceAccount := &corev1.ServiceAccount{}
+	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: terminal.ServiceAccountName}, serviceAccount); err != nil {
+		return podReadFailure("TerminalServiceAccount", err)
+	}
+	owner := sandboxworkload.AgentOwner(agent.Name, agent.UID)
+	if !serviceAccount.DeletionTimestamp.IsZero() || ptr.Deref(serviceAccount.AutomountServiceAccountToken, true) ||
+		!equality.Semantic.DeepEqual(serviceAccount.OwnerReferences, []metav1.OwnerReference{owner}) {
+		return podDenied("TerminalServiceAccountMismatch", "terminal service account differs from the current Sandbox plan")
+	}
+	main := &appsv1.StatefulSet{}
+	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: terminal.TargetWorkload}, main); err != nil {
+		return podReadFailure("TerminalTarget", err)
+	}
+	index := slices.IndexFunc(expected.Workloads, func(workload sandboxworkload.RenderedWorkload) bool {
+		return workload.Kind == "StatefulSet" && workload.Identity.Name == terminal.TargetWorkload
+	})
+	if index < 0 || expected.Workloads[index].Identity.UID == "" || main.UID != expected.Workloads[index].Identity.UID ||
+		ptr.Deref(main.Spec.Replicas, 0) != 1 || main.Status.ObservedGeneration < main.Generation ||
+		main.Status.ReadyReplicas < 1 || !equality.Semantic.DeepEqual(main.OwnerReferences, []metav1.OwnerReference{owner}) ||
+		!sandboxworkload.SamePodTemplate(main.Spec.Template, expected.Workloads[index].Template) {
+		return podDenied("TerminalTargetUnavailable", "terminal target is not the current ready Sandbox workload")
+	}
+	pod := &corev1.Pod{}
+	podName := terminal.TargetWorkload + "-0"
+	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: podName}, pod); err != nil {
+		return podReadFailure("TerminalTargetPod", err)
+	}
+	containerReady := slices.ContainsFunc(pod.Status.ContainerStatuses, func(status corev1.ContainerStatus) bool {
+		return status.Name == terminal.Container && status.Ready
+	})
+	if pod.UID == "" || !pod.DeletionTimestamp.IsZero() || pod.Status.Phase != corev1.PodRunning || !containerReady ||
+		!equality.Semantic.DeepEqual(pod.OwnerReferences, []metav1.OwnerReference{{
+			APIVersion: "apps/v1", Kind: "StatefulSet", Name: main.Name, UID: main.UID,
+			Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
+		}}) {
+		return podDenied("TerminalTargetUnavailable", "terminal target Pod is not the current ready workload Pod")
 	}
 	return nil
 }

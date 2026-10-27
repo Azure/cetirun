@@ -16,6 +16,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 )
 
@@ -161,13 +162,13 @@ func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) 
 	if input[sandboxworkload.ValuesKey] != nil {
 		return nil, fmt.Errorf("sandboxWorkload is reserved for the protected Sandbox renderer")
 	}
+	if input["runtime"] != nil {
+		return nil, fmt.Errorf("runtime is reserved for the platform")
+	}
 	return prepareRuntimeChart(chrt, input, validateRender)
 }
 
 func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender bool) (*PreparedRelease, error) {
-	if input["runtime"] != nil {
-		return nil, fmt.Errorf("runtime is reserved for the platform")
-	}
 	var request AgentRequest
 	requestJSON, err := json.Marshal(input["agentRequest"])
 	if err != nil {
@@ -179,13 +180,22 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	if request.PullSecretName != "" && chrt.Metadata.Annotations["cetirun.microsoft.com/registry-credentials"] != "v1" {
 		return nil, fmt.Errorf("the selected chart does not support managed registry credentials; upgrade the pinned chart first")
 	}
+	if !declaresValuePath(chrt.Values, []string{"aiGateway"}) {
+		return nil, fmt.Errorf("the selected chart does not support the required AI Gateway contract; upgrade the pinned chart first")
+	}
 	harness, err := builtin.NewRegistry().Lookup(request.Type)
 	if err != nil {
 		return nil, err
 	}
 	descriptor := harness.Describe()
 	if descriptor.Type == "custom" {
-		return prepareCustomChart(chrt, input, request, validateRender)
+		if input[sandboxworkload.ValuesKey] != nil {
+			return prepareSandboxCustomChart(chrt, input)
+		}
+		// Custom Agents are compiled through the common Sandbox contract.  The
+		// former CustomBindings renderer carried an independent model binding and
+		// could therefore bypass the Team-selected Gateway.
+		return nil, fmt.Errorf("Custom requires common Sandbox execution")
 	}
 	if memory, configured, err := resolveMemory(input, chrt, "/home/vibe"); err != nil {
 		return nil, err
@@ -335,6 +345,9 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	}
 	runtimeValues["contractVersion"] = "v1"
 	if request.PullSecretName != "" {
+		// The Agent pull credential is part of the Agent runtime contract. Keep it
+		// out of chart-global values so auxiliary workloads, such as the Copilot
+		// proxy, cannot inherit an Agent-scoped credential.
 		runtimeValues["imagePullSecrets"] = []any{map[string]any{"name": request.PullSecretName}}
 	}
 	values["runtime"] = runtimeValues
@@ -347,6 +360,40 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		ChartVersion: chrt.Metadata.Version,
 		chart:        chrt,
 	}, nil
+}
+
+// prepareSandboxCustomChart accepts only the compiler-owned Custom runtime
+// contribution injected by a Sandbox bundle. The legacy Custom path requires
+// typed CustomBindings and may create independent platform objects; neither is
+// part of the common Sandbox contract.
+func prepareSandboxCustomChart(chrt *chart.Chart, input map[string]any) (*PreparedRelease, error) {
+	values, err := prepareRuntimeValues(chrt, input)
+	if err != nil {
+		return nil, err
+	}
+	protected := object(values[sandboxworkload.ValuesKey])
+	runtime := object(values["runtime"])
+	identity := object(runtime["agent"])
+	request := agents.Request{
+		Type:     "custom",
+		Image:    text(identity["image"]),
+		Username: text(identity["username"]),
+		WebUI:    identity["webUI"] == true,
+	}
+	if raw, present := identity["port"]; present && raw != nil {
+		port := number(raw)
+		request.Port = ptr.To(port)
+	}
+	agent, err := agents.ResolveCustom(request)
+	if err != nil {
+		return nil, err
+	}
+	if values["agentType"] != "custom" || protected["reconciled"] != true ||
+		text(identity["home"]) != agent.HomeDir || text(object(runtime["model"])["apiBase"]) == "" ||
+		text(object(runtime["model"])["keySecretName"]) == "" || text(object(runtime["model"])["keySecretKey"]) == "" {
+		return nil, fmt.Errorf("Custom requires a complete reconciled Sandbox runtime contribution")
+	}
+	return &PreparedRelease{Values: values, Agent: agent, ChartVersion: chrt.Metadata.Version, chart: chrt}, nil
 }
 
 func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registry string) (agents.Profile, error) {
@@ -392,7 +439,7 @@ func prepareRuntimeValues(chrt *chart.Chart, input map[string]any) (map[string]a
 		return nil, fmt.Errorf("coalesce runtime inputs: %w", err)
 	}
 	if err := chartutil.ValidateAgainstSchema(chrt, coalesced); err != nil {
-		return nil, fmt.Errorf("runtime inputs do not match the selected chart schema")
+		return nil, fmt.Errorf("runtime inputs do not match the selected chart schema: %w", err)
 	}
 	delete(coalesced, "agentRequest")
 

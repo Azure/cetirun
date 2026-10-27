@@ -14,7 +14,7 @@ the GitHub Copilot sign-in made inside the agent before the Gateway is
 removed: its token in .env and Hermes' cache of the token it exchanged. A
 token in the generated file, from the instance Secret, is not merged into .env
 on the Gateway, so the sign-in does not come back.
-Without the Gateway, the provider CetiRun added for it is removed.
+The Gateway is required; direct provider selection is not supported.
 """
 
 from __future__ import annotations
@@ -124,22 +124,8 @@ def apply_gateway(config: dict[str, Any], desired: dict[str, Any]) -> dict[str, 
     provider = (desired.get("providers") or {}).get(GATEWAY_PROVIDER)
     if not isinstance(provider, dict) or not isinstance(desired.get("model"), dict):
         raise ValueError("generated Gateway configuration is incomplete")
-    providers = config.get("providers")
-    if not isinstance(providers, dict):
-        providers = {}
-    providers[GATEWAY_PROVIDER] = copy.deepcopy(provider)
-    config["providers"] = providers
+    config["providers"] = {GATEWAY_PROVIDER: copy.deepcopy(provider)}
     config["model"] = copy.deepcopy(desired["model"])
-    return config
-
-
-def remove_gateway(config: dict[str, Any]) -> dict[str, Any]:
-    """Remove the Gateway provider CetiRun added, once the Agent is off it."""
-    providers = config.get("providers")
-    if isinstance(providers, dict) and GATEWAY_PROVIDER in providers:
-        del providers[GATEWAY_PROVIDER]
-        if not providers:
-            del config["providers"]
     return config
 
 
@@ -171,11 +157,11 @@ def main() -> int:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--env", type=Path)
     parser.add_argument("--check", action="store_true")
-    parser.add_argument("--gateway-key-env", help="on the AI Gateway: the variable carrying the Agent's key")
+    parser.add_argument("--gateway-key-env", default="CETIRUN_GATEWAY_API_KEY", help="the variable carrying the Agent's Gateway key")
     args = parser.parse_args()
     if not args.check and (args.config is None or args.env is None):
         parser.error("--config and --env are required unless --check is used")
-    if args.gateway_key_env is not None and not ENV_NAME.fullmatch(args.gateway_key_env):
+    if not ENV_NAME.fullmatch(args.gateway_key_env):
         parser.error("--gateway-key-env must name an environment variable")
     try:
         root = args.home.absolute()
@@ -195,30 +181,24 @@ def main() -> int:
         generated_env = read_env(args.env)
         desired_config = merge(existing_config, generated)
         reconcile_memory_lists(existing_config, generated, desired_config)
-        on_gateway = args.gateway_key_env is not None
-        retire = False
-        if on_gateway:
-            desired_config = apply_gateway(desired_config, generated)
-            # The owner signs in to GitHub Copilot through the Portal. The
-            # generated environment, which carries a token from the instance
-            # Secret, brings none into .env, so the sign-in removed once
-            # cannot come back at this or a later start.
-            generated_env.pop(COPILOT_TOKEN_ENV, None)
-            retire = copilot_sign_in_pending(root)
-            if retire:
-                existing_env.pop(COPILOT_TOKEN_ENV, None)
-        else:
-            desired_config = remove_gateway(desired_config)
+        desired_config = apply_gateway(desired_config, generated)
+        # The owner signs in to GitHub Copilot through the Portal. The
+        # generated environment, which carries a token from the instance
+        # Secret, brings none into .env, so the sign-in removed once
+        # cannot come back at this or a later start.
+        generated_env.pop(COPILOT_TOKEN_ENV, None)
+        retire = copilot_sign_in_pending(root)
+        if retire:
+            existing_env.pop(COPILOT_TOKEN_ENV, None)
         for key, value in generated_env.items():
             if value or key not in existing_env:
                 existing_env[key] = value
-        if on_gateway:
-            # Hermes loads .env over its environment, where the chart puts the
-            # Agent's key: no assignment of the key's variable may remain,
-            # neither a saved one nor one the chart generates, as it does for
-            # OPENAI_API_KEY.
-            for name in (args.gateway_key_env, *RESERVED_ENV):
-                existing_env.pop(name, None)
+        # Hermes loads .env over its environment, where the chart puts the
+        # Agent's key: no assignment of the key's variable may remain,
+        # neither a saved one nor one the chart generates, as it does for
+        # OPENAI_API_KEY.
+        for name in (args.gateway_key_env, *RESERVED_ENV):
+            existing_env.pop(name, None)
         config_text = yaml.safe_dump(desired_config, sort_keys=False)
         env_text = "".join(f"{key}={value}\n" for key, value in existing_env.items())
         replace_file(config_path, config_text)

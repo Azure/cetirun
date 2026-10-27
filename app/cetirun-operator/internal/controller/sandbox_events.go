@@ -93,7 +93,7 @@ func sandboxAgentTransition(agent *api.Agent, history *api.SandboxStatus) sandbo
 		case "EnforcementLost":
 			event.event = "sandbox.enforcement.lost"
 		case "EnforcementPending", "RuntimeUnavailable", "UnsupportedControl", "ReferenceMissing",
-			"UnauthorizedBinding", "PolicyConflict", "PolicyApplyFailed":
+			"UnauthorizedBinding", "PolicyConflict", "PolicyApplyFailed", "PolicyDenied":
 			event.event = "sandbox.enforcement.failed"
 		default:
 			// Preparation and intentional lifecycle holds are not enforcement failures.

@@ -41,15 +41,13 @@ func TestSandboxEventsPreparationRoleFailures(t *testing.T) {
 				if err != nil || len(bindings) != 2 {
 					t.Fatalf("missing prepared workload and source-read grants: %+v %v", bindings, err)
 				}
-				wantReason, wantStatus, wantError := "UnauthorizedBinding", metav1.ConditionFalse, sandboxpolicy.ErrUnapprovedGrant
+				wantReason, wantStatus, wantError := "PolicyDenied", metav1.ConditionFalse, error(nil)
 				switch failure {
 				case "deleted", "UID changed":
 					if err := f.client.Delete(ctx, role); err != nil {
 						t.Fatal(err)
 					}
-					if failure == "deleted" {
-						wantReason = "ReferenceMissing"
-					} else {
+					if failure == "UID changed" {
 						role.UID, role.ResourceVersion = "synthetic-replacement-role", ""
 						if err := f.client.Create(ctx, role); err != nil {
 							t.Fatal(err)
@@ -73,19 +71,24 @@ func TestSandboxEventsPreparationRoleFailures(t *testing.T) {
 				}
 				for range 3 {
 					result, err := f.reconciler.Reconcile(ctx, request)
-					if !errors.Is(err, wantError) || result.RequeueAfter != 0 {
-						t.Fatalf("approval failure was hidden or converted to a clean hold: %+v %v", result, err)
+					if wantError == nil {
+						if err != nil || result.RequeueAfter == 0 {
+							t.Fatalf("definitive approval drift did not converge to a policy-denied hold: %+v %v", result, err)
+						}
+					} else if !errors.Is(err, wantError) {
+						t.Fatalf("approval observation failure was hidden or converted to a clean hold: %+v %v", result, err)
 					}
 				}
 				agent = f.current(t)
 				condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
+				executionHeld := f.expectation(t).ExecutionHeld
 				if condition == nil || condition.Status != wantStatus || condition.Reason != wantReason ||
 					condition.ObservedGeneration != agent.Generation || agent.Status.Sandbox != nil ||
 					agent.Status.AccessURL != "" || f.installer.stages != stages ||
 					!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionReady) ||
 					!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionAgentConfigReady) ||
-					!f.expectation(t).ExecutionHeld {
-					t.Fatalf("failed preparation was not accurately classified and held: %+v", agent.Status)
+					!executionHeld {
+					t.Fatalf("failed preparation was not accurately classified and held: executionHeld=%t stages=%d before=%d status=%+v", executionHeld, f.installer.stages, stages, agent.Status)
 				}
 				if len(capture.events) != 1 {
 					t.Fatalf("expected one committed preparation failure across retries, got %d", len(capture.events))

@@ -295,7 +295,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			}
 		}
 		for name, edit := range map[string]func(*api.Agent){
-			"team":  func(a *api.Agent) { a.Spec.Team = "caller-team" },
+			"team": func(a *api.Agent) { a.Spec.Team = "caller-team" },
 			"record": func(a *api.Agent) {
 				a.Annotations = map[string]string{sandboxbinding.AuthorizationAnnotation: fixtureAuthorization(t, f)}
 			},
@@ -445,8 +445,15 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			t.Fatal("new creation did not use the new Team default")
 		}
 		agent.Spec.SandboxRef = ""
-		if err := admin.Update(ctx, agent); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "existing Agents are never re-defaulted") {
-			t.Fatalf("served admission did not protect the existing Sandbox binding: %v", err)
+		if err := admin.Update(ctx, agent); err == nil {
+			t.Fatal("served admission allowed removal of the existing Sandbox binding")
+		}
+		stored := &api.Agent{}
+		if err := admin.Get(ctx, client.ObjectKeyFromObject(agent), stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored.Spec.SandboxRef != f.box.Name {
+			t.Fatalf("rejected update changed the existing Sandbox binding: %q", stored.Spec.SandboxRef)
 		}
 	})
 	t.Run("missing references recover without clearing protected authority or the execution hold", func(t *testing.T) {

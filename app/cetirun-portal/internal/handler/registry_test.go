@@ -34,7 +34,7 @@ const registryCreateBody = `{"agent":{"type":"hermes","image":"registry.example.
 func registryHandler(t *testing.T, failSave *bool) (*InstanceHandler, client.Client) {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(newScheme()).WithStatusSubresource(&api.Agent{}).
-		WithObjects(gatewayTeam("aks")).
+		WithObjects(gatewayTeam("aks"), gatewayPolicy(), catalogConfigMap("gpt-6", "gpt-6-astra")).
 		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			if review, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
 				review.Status.Denied = true
@@ -48,7 +48,7 @@ func registryHandler(t *testing.T, failSave *bool) (*InstanceHandler, client.Cli
 			}
 			return c.Create(ctx, obj, opts...)
 		}}).Build()
-	return &InstanceHandler{Kube: kube.NewClient(c), Config: config.Config{MaxInstancesPerUser: 1, PortalOrigin: "https://portal.example.com"}}, c
+	return &InstanceHandler{Kube: kube.NewClient(c), Config: config.Config{MaxInstancesPerUser: 1, PortalOrigin: "https://portal.example.com", AIGatewayEnabled: true, AIGatewayCatalogNamespace: "cetirun-system", SandboxControllerDefaults: true}}, c
 }
 
 func registryRequest(method, body string, instance *api.Agent) *http.Request {
@@ -468,9 +468,7 @@ func TestRegistryRetryKeepsRetainedChartWhenDefaultRoutingChanges(t *testing.T) 
 			h.Config.AIGatewayEnabled = true
 			h.Config.AIGatewayCatalogNamespace = "cetirun-system"
 			catalog := catalogConfigMap("gpt-6-mini")
-			if err := storage.Create(ctx, catalog); err != nil {
-				t.Fatal(err)
-			}
+			replaceTestCatalog(t, storage, catalog)
 			original := createdPartialRegistryForPolicy(t, h)
 			// The Operator pins the chart accepted at creation, independently of
 			// a later default-chart change or transient catalog-routing read.

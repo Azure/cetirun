@@ -228,6 +228,40 @@ func TestNativeProxyTrustUsesOnlyCanonicalIngressIPs(t *testing.T) {
 	}
 }
 
+func TestHeldIngressProxyTrustPreservesExecutionProfileAndRevision(t *testing.T) {
+	input := compilerFixture()
+	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
+	before := mustCompile(t, input)
+	input.IngressProxyTrust = true
+	projected := mustCompile(t, input)
+	if !slices.Equal(projected.Network.TrustedProxyIPs, []string{"10.96.1.60"}) {
+		t.Fatal("held Harness proxy trust must use only the approved ingress peer")
+	}
+	if projected.Revision != before.Revision || !reflect.DeepEqual(projected.Resources, before.Resources) {
+		t.Fatal("proxy projection changed the retained policy revision or network grants")
+	}
+	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressDisabled
+	if disabled := mustCompile(t, input); len(disabled.Network.TrustedProxyIPs) != 0 {
+		t.Fatal("disabled ingress must not project proxy trust")
+	}
+	native := nativeCompilerFixture()
+	native.NativeExecution, native.IngressProxyTrust = false, true
+	if _, err := Compile(native); !errors.Is(err, ErrUnsupportedControl) {
+		t.Fatal("proxy trust must not enable a native-only execution profile:", err)
+	}
+	for _, address := range []string{"0.0.0.0/0", "127.0.0.1", "169.254.1.1", "proxy.example.com"} {
+		t.Run(address, func(t *testing.T) {
+			input := compilerFixture()
+			input.IngressProxyTrust = true
+			input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
+			input.Platform.Topology.Ingress[0].Peer.IPs = []string{address}
+			if _, err := Compile(input); err == nil {
+				t.Fatal("held proxy projection accepted an invalid or broad ingress peer")
+			}
+		})
+	}
+}
+
 func adminFixture() CompileInput {
 	input := compilerFixture()
 	input.Resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
@@ -698,6 +732,10 @@ func syntheticSelectorMatches(selector metav1.LabelSelector, values map[string]s
 			if !exists {
 				return false
 			}
+		case metav1.LabelSelectorOpDoesNotExist:
+			if exists {
+				return false
+			}
 		case metav1.LabelSelectorOpNotIn:
 			if exists && slices.Contains(expression.Values, actual) {
 				return false
@@ -707,4 +745,108 @@ func syntheticSelectorMatches(selector metav1.LabelSelector, values map[string]s
 		}
 	}
 	return true
+}
+
+func TestCompileCustomIngressBindsWebUIAndChatCallers(t *testing.T) {
+	input := compilerFixture()
+	input.CustomIngress = &CustomIngress{
+		Port: 8088, WebUI: true,
+		ChatCallers: []IngressCaller{{Namespace: "portal-system", PodLabels: map[string]string{"app": "portal"}}},
+	}
+	plan := mustCompile(t, input)
+	gateway := map[string]string{
+		"k8s:io.kubernetes.pod.namespace": "platform",
+		"k8s:" + PeerUIDLabel:             "example-ingress-uid",
+	}
+	caller := map[string]string{
+		"k8s:io.kubernetes.pod.namespace": "portal-system",
+		"k8s:app":                         "portal",
+	}
+	if !syntheticIngressAllowed(plan.Network.Policy.Spec, gateway, "", 8088, corev1.ProtocolTCP) {
+		t.Fatal("authenticated Gateway cannot reach the Custom Web UI port")
+	}
+	if !syntheticIngressAllowed(plan.Network.Policy.Spec, caller, "", 8088, corev1.ProtocolTCP) {
+		t.Fatal("exact Chat caller cannot reach the Custom HTTP port")
+	}
+	if syntheticIngressAllowed(plan.Network.Policy.Spec, caller, "", 8089, corev1.ProtocolTCP) ||
+		syntheticIngressAllowed(plan.Network.Policy.Spec, map[string]string{"k8s:io.kubernetes.pod.namespace": "portal-system", "k8s:app": "other"}, "", 8088, corev1.ProtocolTCP) {
+		t.Fatal("Custom ingress widened its caller or port")
+	}
+	without := compilerFixture()
+	if plan.Revision == mustCompile(t, without).Revision {
+		t.Fatal("Custom ingress did not affect the control revision")
+	}
+
+	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressDisabled
+	disabled := mustCompile(t, input)
+	if len(disabled.Network.Policy.Spec.Ingress) != 0 || syntheticIngressAllowed(disabled.Network.Policy.Spec, caller, "", 8088, corev1.ProtocolTCP) {
+		t.Fatal("disabled ingress retained a Custom exposure")
+	}
+
+	invalid := compilerFixture()
+	invalid.CustomIngress = &CustomIngress{Port: 8088, ChatCallers: []IngressCaller{{Namespace: "portal-system"}}}
+	if _, err := Compile(invalid); !errors.Is(err, ErrUnsupportedControl) {
+		t.Fatalf("unselected Custom Chat caller accepted: %v", err)
+	}
+}
+
+func TestCompileTerminalIngressUsesIsolatedSelectorAndPeers(t *testing.T) {
+	input := compilerFixture()
+	input.TerminalIngress = &TerminalIngress{Port: 7681}
+	plan := mustCompile(t, input)
+	terminal := plan.Network.TerminalPolicy
+	if terminal == nil || len(plan.Resources) != 2 {
+		t.Fatal("terminal policy was not rendered as an independent control")
+	}
+	labels := terminal.Spec.EndpointSelector.MatchLabels
+	if labels["k8s:cetirun.microsoft.com/terminal"] != "true" ||
+		labels["k8s:"+AgentUIDLabel] != "example-agent-uid" ||
+		labels["k8s:io.kubernetes.pod.namespace"] != "cetirun-example-agent" {
+		t.Fatalf("terminal policy selected the wrong workload: %#v", labels)
+	}
+	if len(plan.Network.Policy.Spec.EndpointSelector.MatchExpressions) != 1 ||
+		plan.Network.Policy.Spec.EndpointSelector.MatchExpressions[0].Key != "k8s:cetirun.microsoft.com/terminal" ||
+		plan.Network.Policy.Spec.EndpointSelector.MatchExpressions[0].Operator != metav1.LabelSelectorOpDoesNotExist {
+		t.Fatalf("main policy overlaps the terminal selector: %#v", plan.Network.Policy.Spec.EndpointSelector)
+	}
+	if syntheticSelectorMatches(plan.Network.Policy.Spec.EndpointSelector, map[string]string{
+		"k8s:" + AgentUIDLabel: "example-agent-uid", "k8s:io.kubernetes.pod.namespace": "cetirun-example-agent",
+		"k8s:cetirun.microsoft.com/terminal": "true",
+	}) || !syntheticSelectorMatches(terminal.Spec.EndpointSelector, map[string]string{
+		"k8s:" + AgentUIDLabel: "example-agent-uid", "k8s:io.kubernetes.pod.namespace": "cetirun-example-agent",
+		"k8s:cetirun.microsoft.com/terminal": "true",
+	}) {
+		t.Fatal("terminal and main endpoint selectors are not disjoint")
+	}
+	if len(terminal.Spec.Ingress) != 1 || len(terminal.Spec.Ingress[0].FromEndpoints) != 1 ||
+		!syntheticSelectorMatches(terminal.Spec.Ingress[0].FromEndpoints[0], map[string]string{
+			"k8s:" + PeerUIDLabel: "example-ingress-uid", "k8s:io.kubernetes.pod.namespace": "platform",
+		}) ||
+		!syntheticPortsMatch(terminal.Spec.Ingress[0].ToPorts, 7681, corev1.ProtocolTCP) ||
+		syntheticPortsMatch(terminal.Spec.Ingress[0].ToPorts, 7682, corev1.ProtocolTCP) {
+		t.Fatalf("terminal ingress did not bind the trusted Gateway and fixed port: %#v", terminal.Spec.Ingress)
+	}
+	dns := input.Platform.Topology.DNS[0]
+	if !syntheticEgressAllowed(terminal.Spec, "10.96.0.10", &dns, 53, corev1.ProtocolUDP) ||
+		!syntheticEgressAllowed(terminal.Spec, "203.0.113.10", nil, 6443, corev1.ProtocolTCP) ||
+		syntheticEgressAllowed(terminal.Spec, "198.51.100.10", nil, 443, corev1.ProtocolTCP) {
+		t.Fatal("terminal egress exceeded DNS and Kubernetes API authority")
+	}
+	without := compilerFixture()
+	if plan.Revision == mustCompile(t, without).Revision {
+		t.Fatal("terminal exposure did not affect the control revision")
+	}
+	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressDisabled
+	if got := mustCompile(t, input).Network.TerminalPolicy.Spec.Ingress; len(got) != 0 {
+		t.Fatalf("disabled ingress retained a terminal exposure: %#v", got)
+	}
+}
+
+func TestCompileTerminalIngressRequiresResolvedKubernetesAPI(t *testing.T) {
+	input := compilerFixture()
+	input.TerminalIngress = &TerminalIngress{Port: 7681}
+	input.Platform.Topology.KubernetesAPI = nil
+	if _, err := Compile(input); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("terminal without resolved Kubernetes API compiled: %v", err)
+	}
 }

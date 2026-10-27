@@ -152,55 +152,6 @@ func TestRetainedRestartApplyRechecksCurrentIntent(t *testing.T) {
 	}
 }
 
-func TestRetainedRestartInvalidatesOlderOperatorCache(t *testing.T) {
-	for _, phase := range []string{api.PhaseReady, api.PhaseProvisioning} {
-		t.Run(phase, func(t *testing.T) {
-			ctx := context.Background()
-			f := newDeployedAgent(t)
-			agent := f.agent(t)
-			oldHash, keyID := agent.Status.ObservedOperatorHash, agent.Status.AIGateway.KeyID
-			agent.Spec.RestartRequestID = "request-00000001"
-			agent.Generation++
-			if err := f.r.Update(ctx, agent); err != nil {
-				t.Fatal(err)
-			}
-			agent = f.agent(t)
-			// An older controller acknowledges the generation without rendering
-			// the new field, leaving its pre-restart applied hash unchanged.
-			agent.Status.Phase = phase
-			agent.Status.ObservedGeneration = agent.Generation
-			agent.Status.ObservedOperatorHash = oldHash
-			if err := f.r.Status().Update(ctx, agent); err != nil {
-				t.Fatal(err)
-			}
-			installs := f.chart.installs
-			if _, err := f.r.Reconcile(ctx, f.req); err != nil {
-				t.Fatal(err)
-			}
-			if f.chart.installs != installs+1 {
-				t.Fatal("older observedGeneration consumed a restart without a new Helm apply")
-			}
-			annotations, ok := f.chart.lastValues["podAnnotations"].(map[string]any)
-			if !ok || annotations[api.AnnotationRestartRequestID] != agent.Spec.RestartRequestID {
-				t.Fatal("recovered apply did not contain the requested restart marker")
-			}
-			current := f.agent(t)
-			if current.Status.ObservedOperatorHash == oldHash || current.Status.ObservedRestartRequestID != "" ||
-				current.Status.Phase != api.PhaseProvisioning || current.Status.AIGateway.KeyID != keyID {
-				t.Fatal("recovery lost pending observation or changed the Gateway identity")
-			}
-			for range 2 {
-				if _, err := f.r.Reconcile(ctx, f.req); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if f.chart.installs != installs+1 {
-				t.Fatal("waiting for the replacement Pod repeated the same restart apply")
-			}
-		})
-	}
-}
-
 func TestRetainedRestartHashChangesOnlyWithRequestedIntent(t *testing.T) {
 	r := &AgentReconciler{DomainSuffix: "example.com"}
 	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes} {

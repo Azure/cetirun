@@ -18,6 +18,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 )
 
@@ -154,6 +156,119 @@ func TestBundleRejectsUnboundOrIncompatibleInputs(t *testing.T) {
 	}
 }
 
+func TestCustomUsesTheCommonSandboxGatewayRuntimeContract(t *testing.T) {
+	fixture := testfixture.New("openclaw")
+	input := fixture.Input
+	input.AgentType, input.Reconciled = "custom", true
+	input.Helpers.Doctor = false
+	input.Resolution.AgentPolicy.Harnesses.Allowed = append(input.Resolution.AgentPolicy.Harnesses.Allowed, api.AgentTypeCustom)
+	input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
+	input.AuthorizedSecrets = append(input.AuthorizedSecrets, input.GatewayKey.Name)
+	input.GatewayAPIBase = "https://gateway.example.test/v1"
+	input.CustomAgent = &w.CustomAgent{
+		Image: "registry.example.test/worker@sha256:" + strings.Repeat("a", 64), Username: "worker", Home: "/home/worker",
+		Port: ptr.To[int32](8080),
+		Environment: []w.CustomEnvironment{
+			{Name: "HOME", Value: "/home/worker"},
+			{Name: "OPENAI_BASE_URL", Value: input.GatewayAPIBase},
+			{Name: "OPENAI_API_KEY", CredentialSlot: "model"},
+			{Name: "PORT", Value: "8080"},
+		},
+		Ports: []w.CustomPort{{Name: "http", Number: 8080}},
+		HTTP:  &w.CustomHTTP{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"},
+	}
+	bundle, err := w.Build(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := bundle.Apply(map[string]any{
+		"secrets":   map[string]any{"existingSecret": "runtime-secret"},
+		"aiGateway": map[string]any{"enabled": true, "keySecretName": input.GatewayKey.Name, "keySecretKey": "api-key"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, ok := values["runtime"].(map[string]any)
+	if !ok || runtime["model"].(map[string]any)["keySecretName"] != input.GatewayKey.Name ||
+		runtime["agent"].(map[string]any)["home"] != "/home/worker" || len(runtime["ports"].([]any)) != 1 {
+		t.Fatalf("Custom runtime did not retain the common Gateway and Harness contract: %#v", runtime)
+	}
+	for name, mutate := range map[string]func(*w.Input){
+		"no gateway":       func(i *w.Input) { i.GatewayKey = nil },
+		"unverified home":  func(i *w.Input) { i.CustomAgent.Home = "/home/other" },
+		"invalid web mode": func(i *w.Input) { i.CustomAgent.WebUI, i.CustomAgent.Port = true, nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := input
+			custom := *input.CustomAgent
+			custom.Environment = slices.Clone(input.CustomAgent.Environment)
+			custom.Ports = slices.Clone(input.CustomAgent.Ports)
+			if input.CustomAgent.HTTP != nil {
+				http := *input.CustomAgent.HTTP
+				custom.HTTP = &http
+			}
+			candidate.CustomAgent = &custom
+			mutate(&candidate)
+			if _, err := w.Build(candidate); err == nil {
+				t.Fatal("invalid Custom common Sandbox input was accepted")
+			}
+		})
+	}
+	terminalInput := input
+	terminalInput.Terminal = &w.Terminal{
+		Image: "registry.example.test/cetirun-terminal@sha256:" + strings.Repeat("b", 64),
+		Port:  7681, SessionSeconds: 1800, ServiceAccountName: "example-terminal",
+	}
+	// A terminal has its own, isolated compiler policy while the primary policy
+	// explicitly excludes terminal Pods. Build validates both scopes.
+	mainPolicy := sandboxpolicy.CiliumNetworkPolicy{}
+	if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(terminalInput.Controls.Objects[0].Object, &mainPolicy); err != nil {
+		t.Fatal(err)
+	}
+	mainPolicy.Spec.EndpointSelector.MatchExpressions = []metav1.LabelSelectorRequirement{{
+		Key: "k8s:cetirun.microsoft.com/terminal", Operator: metav1.LabelSelectorOpDoesNotExist,
+	}}
+	terminalPolicy := mainPolicy
+	terminalPolicy.Name = "sandbox-terminal-example"
+	terminalPolicy.Spec.EndpointSelector = metav1.LabelSelector{MatchLabels: map[string]string{
+		"k8s:cetirun.microsoft.com/terminal": "true",
+		"k8s:" + sandboxpolicy.AgentUIDLabel: string(terminalInput.Controls.Binding.AgentUID),
+		"k8s:io.kubernetes.pod.namespace":    terminalInput.Namespace.Name,
+	}}
+	mainObject, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(&mainPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalObject, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(&terminalPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalInput.Controls.Objects = []unstructured.Unstructured{{Object: mainObject}, {Object: terminalObject}}
+	if _, err := w.Build(terminalInput); err != nil {
+		t.Fatal("valid Custom terminal was rejected:", err)
+	}
+	for name, mutate := range map[string]func(*w.Input){
+		"not reconciled":          func(i *w.Input) { i.Reconciled = false },
+		"mutable image":           func(i *w.Input) { i.Terminal.Image = "registry.example.test/cetirun-terminal:latest" },
+		"privileged port":         func(i *w.Input) { i.Terminal.Port = 443 },
+		"long session":            func(i *w.Input) { i.Terminal.SessionSeconds = 3601 },
+		"invalid service account": func(i *w.Input) { i.Terminal.ServiceAccountName = "Terminal" },
+		"wrong terminal service account": func(i *w.Input) {
+			i.Terminal.ServiceAccountName = "other-terminal"
+		},
+	} {
+		t.Run("terminal "+name, func(t *testing.T) {
+			candidate := terminalInput
+			terminal := *terminalInput.Terminal
+			candidate.Terminal = &terminal
+			mutate(&candidate)
+			if _, err := w.Build(candidate); err == nil {
+				t.Fatal("invalid Custom terminal was accepted")
+			}
+		})
+	}
+}
+
 func TestBundleRejectsUnexpectedCompilerResources(t *testing.T) {
 	for _, kind := range []struct{ apiVersion, kind string }{
 		{"rbac.authorization.k8s.io/v1", "Role"},
@@ -210,6 +325,7 @@ func TestProtectedBundleIsLastAndImmutable(t *testing.T) {
 		}
 		values := map[string]any{
 			"secrets":          map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "chosen-model"},
+			"aiGateway":        map[string]any{"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key"},
 			"runtimeClassName": "unsafe", "replicaCount": 9,
 			"resources": map[string]any{}, "securityContext": map[string]any{"privileged": true},
 			"sidecarScope":  map[string]any{"enabled": true, "additionalEgressHosts": []any{"*/*"}},

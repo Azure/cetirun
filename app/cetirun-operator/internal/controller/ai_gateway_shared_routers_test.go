@@ -10,9 +10,6 @@ import (
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -282,94 +279,15 @@ func TestGatewayRouterChangeReachesKeysInPlace(t *testing.T) {
 	}
 }
 
-// An Agent without a policy may use every shared model, so it gets every
-// router of the Gateway but a misconfigured one. Its routers follow a change
-// without the key verification, and without a configuration change unless
-// its models change.
-func TestLegacyAgentGetsEveryGatewayRouterButAMisconfiguredOne(t *testing.T) {
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: testLegacyRouterTeam, Generation: 1}}
-	agent := aiGatewayTestAgent(testLegacyRouterTeam)
-	agent.Spec.SandboxRef = ""
-	agent.Status.Policy = nil
-	agent.Spec.ModelAccess = modelAccess(true, false)
-	agent.Spec.Model = "auto-broken"
-	r, _, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
-	addSmallSharedModel(gateway)
-	unknown := gatewayRouter("auto-unknown", tierModel("SIMPLE", testSmallModel))
-	unknown.Router.Unverifiable = "it runs routing plugins, code the operator cannot check"
-	gateway.shared = append(gateway.shared, wideSharedModel(), unknown,
-		gatewayRouter(testGatewayRouter, tierModel("SIMPLE", testSmallModel), tierModel("MEDIUM", testWideModel)),
-		gatewayRouter("auto-broken", tierModel("SIMPLE", "missing-model")))
-	ctx := context.Background()
-	reconcile := func() {
-		t.Helper()
-		if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	reconcile()
-	status := agent.Status.AIGateway
-	wantGroups := sortedCopy([]string{aiGatewaySharedAccessGroup, testManagedGroup, testSmallGroup, testWideGroup,
-		gatewayRouterGroup(testGatewayRouter), gatewayRouterGroup("auto-unknown")})
-	if !slices.Equal(status.AccessGroups, wantGroups) || !slices.Equal(lastKeyModels(gateway), wantGroups) {
-		t.Fatalf("groups %v key %v, want %v", status.AccessGroups, lastKeyModels(gateway), wantGroups)
-	}
-	if !slices.Contains(status.Models, testGatewayRouter) || !slices.Contains(status.Models, "auto-unknown") ||
-		slices.Contains(status.Models, "auto-broken") || status.DefaultModel == "auto-broken" {
-		t.Fatalf("models %v default %q", status.Models, status.DefaultModel)
-	}
-	if status.ModelRouters != nil {
-		t.Fatalf("an Agent without a policy reports no router of the Gateway: %+v", status.ModelRouters)
-	}
-	if r.aiGatewayReconcileDue(agent, time.Now()) {
-		t.Fatal("nothing is due right after a verification")
-	}
-	revision := r.aiGatewayRevision(agent)
-
-	// A tier change the Agent may follow changes nothing for it.
-	setRouter(t, gateway, testGatewayRouter, aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", testSmallModel), tierModel("MEDIUM", testSharedModelOne)}})
-	if !r.refreshAIGatewayCatalogWithin(ctx, gateway, 0) {
-		t.Fatal("a router change is a catalog change")
-	}
-	if r.aiGatewayReconcileDue(agent, time.Now()) || r.aiGatewayRevision(agent) != revision {
-		t.Fatal("a router change that keeps the Agent's routers must neither reconcile nor reconfigure it")
-	}
-
-	// A tier the Gateway does not serve: the next reconcile of the Agent is
-	// the full one, without a configuration change, and withdraws the router.
-	setRouter(t, gateway, testGatewayRouter, aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", "missing-model")}})
-	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
-	if !r.aiGatewayReconcileDue(agent, time.Now()) || r.aiGatewayRevision(agent) != revision {
-		t.Fatal("a withdrawn router must make the full reconcile due, without a configuration change")
-	}
-	reconcile()
-	if slices.Contains(lastKeyModels(gateway), gatewayRouterGroup(testGatewayRouter)) || slices.Contains(agent.Status.AIGateway.Models, testGatewayRouter) {
-		t.Fatalf("key %v models %v", lastKeyModels(gateway), agent.Status.AIGateway.Models)
-	}
-	if r.aiGatewayReconcileDue(agent, time.Now()) {
-		t.Fatal("nothing is due once the key follows the routers")
-	}
-
-	// The administrator fixes the router: it comes back the same way.
-	setRouter(t, gateway, testGatewayRouter, aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", testSmallModel)}})
-	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
-	if !r.aiGatewayReconcileDue(agent, time.Now()) {
-		t.Fatal("a router the Agent may use again must make the full reconcile due")
-	}
-	reconcile()
-	if !slices.Contains(lastKeyModels(gateway), gatewayRouterGroup(testGatewayRouter)) || !slices.Contains(agent.Status.AIGateway.Models, testGatewayRouter) {
-		t.Fatalf("key %v models %v", lastKeyModels(gateway), agent.Status.AIGateway.Models)
-	}
-}
-
 // Without a model the Agent or the deployment names, the default is a model:
 // a router of the Gateway listed first by name does not become the default.
 func TestADefaultModelIsNotAGatewayRouterUnlessNothingElseIsOffered(t *testing.T) {
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: testLegacyRouterTeam, Generation: 1}}
+	team := aiGatewayTestTeam(testLegacyRouterTeam)
 	agent := aiGatewayTestAgent(testLegacyRouterTeam)
-	agent.Spec.SandboxRef, agent.Status.Policy, agent.Spec.Model = "", nil, ""
+	agent.Spec.Model = ""
 	agent.Spec.ModelAccess = modelAccess(true, false)
-	r, _, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	allowTestPolicyModels(t, kube, testSmallModel, "a-router")
 	r.AIGateway.DefaultModel = ""
 	addSmallSharedModel(gateway)
 	// "a-router" sorts before every model name.
@@ -579,52 +497,6 @@ func TestGatewayRouterMayClassifyWithAModelThatAnswersNoConversation(t *testing.
 				t.Fatalf("refusal = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-// An Agent without a policy gets a router that classifies with a decision
-// model, and its key the decision model's group, but neither its models, its
-// default model nor the published catalog list the decision model, even when
-// the Agent asks for it.
-func TestLegacyAgentIsNotConfiguredWithADecisionModel(t *testing.T) {
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: testLegacyRouterTeam, Generation: 1}}
-	agent := aiGatewayTestAgent(testLegacyRouterTeam)
-	agent.Spec.SandboxRef = ""
-	agent.Spec.Model = testDecisionModel
-	agent.Status.Policy = nil
-	agent.Spec.ModelAccess = modelAccess(true, false)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
-	addSmallSharedModel(gateway)
-	gateway.shared = append(gateway.shared, decisionModel(),
-		gatewayRouter(testGatewayRouter, tierModel("SIMPLE", testSmallModel),
-			aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: testDecisionModel}))
-	ctx := context.Background()
-	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
-		t.Fatal(err)
-	}
-	status := agent.Status.AIGateway
-	if slices.Contains(status.Models, testDecisionModel) || status.DefaultModel == testDecisionModel || status.DefaultModel == "" {
-		t.Fatalf("models %v default %q", status.Models, status.DefaultModel)
-	}
-	if !slices.Contains(status.Models, testGatewayRouter) || !slices.Contains(lastKeyModels(gateway), gatewayRouterGroup(testGatewayRouter)) {
-		t.Fatalf("the router must be granted: models %v key %v", status.Models, lastKeyModels(gateway))
-	}
-	if !slices.Contains(lastKeyModels(gateway), testDecisionGroup) {
-		t.Fatalf("the key keeps every shared model's group: %v", lastKeyModels(gateway))
-	}
-	entries, _, _ := r.aiGatewayModelEntries(agent)
-	for _, entry := range entries {
-		if entry.ID == testDecisionModel {
-			t.Fatalf("entries %+v", entries)
-		}
-	}
-	r.publishAIGatewayCatalog(ctx, 0)
-	configMap := &corev1.ConfigMap{}
-	if err := kube.Get(ctx, types.NamespacedName{Namespace: "cetirun-system", Name: api.AIGatewayCatalogConfigMap}, configMap); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(configMap.Data[api.AIGatewayCatalogKey], testDecisionModel) {
-		t.Fatalf("the published catalog lists the decision model: %s", configMap.Data[api.AIGatewayCatalogKey])
 	}
 }
 

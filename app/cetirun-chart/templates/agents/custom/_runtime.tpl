@@ -7,8 +7,7 @@ Licensed under the MIT License.
 {{ .Files.Get "agents/custom/bootstrap/init-home.sh" | indent 4 }}
 {{- end }}
 
-{{- define "cetirun.agent.custom.validateDesktopBrowserConfig" -}}
-{{- end }}
+{{- define "cetirun.agent.custom.validateDesktopBrowserConfig" -}}{{- end }}
 
 {{- define "cetirun.agent.custom.servicePorts" -}}
 {{- range .Values.runtime.ports }}
@@ -19,33 +18,22 @@ Licensed under the MIT License.
 {{- end }}
 {{- end }}
 
-{{- define "cetirun.agent.custom.networkPolicyIngressPorts" -}}
-{{/* Agent HTTP callers are bound separately; the gateway exposes only platform services. */}}
-{{- end }}
+{{- define "cetirun.agent.custom.networkPolicyIngressPorts" -}}{{- end }}
 
 {{- define "cetirun.custom.validate" -}}
-{{- if not .Values.runtime -}}{{- fail "Custom requires a platform-prepared runtime plan" -}}{{- end -}}
-{{- $r := .Values.runtime -}}
-{{- if or (ne $r.contractVersion "v1") (ne $r.agent.type "custom") -}}{{- fail "Invalid Custom runtime contract" -}}{{- end -}}
-{{- if or (not $r.agent.image) (not $r.agent.home) (not $r.bindings.home.name) (not $r.bindings.home.claim) (not $r.bindings.context.name) (and (not $r.bindings.agentManagedModel) (not $r.bindings.model.name)) (not $r.planHash) -}}
-{{- fail "Custom requires image, model, HOME and context bindings" -}}
+{{- $r := .Values.runtime | default dict -}}
+{{- if not (and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled) -}}
+{{- fail "Custom requires the common reconciled Sandbox execution plan" -}}
 {{- end -}}
-{{- if ne $r.bindings.namespace.name .Release.Namespace -}}{{- fail "Custom binding namespace mismatch" -}}{{- end -}}
-{{- if or .Values.agentIdentity.enabled $r.bindings.agentIdentity -}}{{- fail "Custom does not support Agent Identity" -}}{{- end -}}
-{{- if .Values.connectionsMCP.enabled -}}{{- fail "Custom does not support CetiRun Connections MCP" -}}{{- end -}}
-{{- if or .Values.extraEnv .Values.extraEnvFrom .Values.initContainers .Values.sidecars .Values.extraVolumes .Values.extraVolumeMounts .Values.imagePullSecrets -}}
-{{- fail "Custom does not accept raw environment, container, volume or pull-Secret overrides" -}}
+{{- if or (not $r.agent) (not $r.model) $r.bindings $r.planHash -}}
+{{- fail "Custom requires common Sandbox model and Harness inputs; legacy runtime plans are unsupported" -}}
 {{- end -}}
-{{- end }}
-
-{{- define "cetirun.custom.securityContext" }}
-runAsNonRoot: true
-allowPrivilegeEscalation: false
-readOnlyRootFilesystem: true
-capabilities:
-  drop: ["ALL"]
-seccompProfile:
-  type: RuntimeDefault
+{{- if or (ne $r.agent.type "custom") (not $r.agent.image) (not $r.agent.home) (not $r.model.apiBase) (not $r.model.keySecretName) -}}
+{{- fail "Custom requires an approved image, HOME and AI Gateway binding" -}}
+{{- end -}}
+{{- if or .Values.agentIdentity.enabled .Values.connectionsMCP.enabled -}}
+{{- fail "Custom does not support Agent Identity or CetiRun Connections MCP" -}}
+{{- end -}}
 {{- end }}
 
 {{- define "cetirun.custom.peer" }}
@@ -60,35 +48,33 @@ podSelector:
 {{- define "cetirun.custom.runtime" -}}
 {{- include "cetirun.custom.validate" . -}}
 {{- $r := .Values.runtime -}}
-{{- $b := $r.bindings -}}
-{{- $name := include "cetirun.fullname" . -}}
+{{- $s := .Values.sandboxWorkload -}}
+{{- $emptySkills := eq ($s.skillsMode | default "") "empty" -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ $name }}
+  name: {{ include "cetirun.fullname" . }}
   ownerReferences:
-    - apiVersion: cetirun.microsoft.com/v1alpha1
-      kind: Agent
-      name: {{ $b.agentName | quote }}
-      uid: {{ $b.agentUID | quote }}
-      controller: true
-      blockOwnerDeletion: true
+    {{- toYaml $s.ownerReferences | nindent 4 }}
   labels:
     {{- include "cetirun.labels" . | nindent 4 }}
   annotations:
-    cetirun.microsoft.com/agent-uid: {{ $b.agentUID | quote }}
-    cetirun.microsoft.com/custom-plan-hash: {{ $r.workloadHash | quote }}
+    {{- toYaml .Values.podAnnotations | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  serviceName: {{ $name }}
+  serviceName: {{ include "cetirun.fullname" . }}
   updateStrategy:
-    type: OnDelete
+    type: RollingUpdate
   selector:
     matchLabels:
       {{- include "cetirun.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- include "cetirun.platform.podMetadata" . | nindent 6 }}
+      {{- with $s.podFinalizers }}
+      finalizers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       {{- include "cetirun.platform.podSettings" . | nindent 6 }}
       initContainers:
@@ -98,7 +84,9 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "/etc/cetirun/custom-init-home.sh"]
           securityContext:
-            {{- include "cetirun.custom.securityContext" . | nindent 12 }}
+            {{- toYaml $s.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml $s.helperResources | nindent 12 }}
           env:
             - name: SOURCE_HOME
               value: {{ $r.agent.home | quote }}
@@ -108,8 +96,6 @@ spec:
               value: {{ $r.agent.image | quote }}
             - name: CETIRUN_INIT_COMMON
               value: /etc/cetirun/init-home-common.sh
-            - name: CETIRUN_CONTEXT_DIR
-              value: /etc/cetirun-context
             {{- include "cetirun.context.initEnv" . | nindent 12 }}
           volumeMounts:
             - name: data
@@ -117,32 +103,45 @@ spec:
             - name: config
               mountPath: /etc/cetirun
               readOnly: true
-            - name: context
-              mountPath: /etc/cetirun-context
-              readOnly: true
             - name: tmp
               mountPath: /tmp
             {{- include "cetirun.context.initMounts" . | nindent 12 }}
+        {{- with .Values.initContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: {{ $r.agent.image | quote }}
           imagePullPolicy: IfNotPresent
           securityContext:
-            {{- include "cetirun.custom.securityContext" . | nindent 12 }}
+            {{- toYaml .Values.securityContext | nindent 12 }}
           env:
-            {{- range $r.environment }}
-            - name: {{ .name }}
-              {{- if .credentialSlot }}
-              {{- if ne .credentialSlot "model" }}{{- fail "Unknown Custom credential slot" }}{{- end }}
+            - name: HOME
+              value: {{ $r.agent.home | quote }}
+            - name: OPENAI_BASE_URL
+              value: {{ $r.model.apiBase | quote }}
+            - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ $b.model.name | quote }}
-                  key: {{ $b.model.key | quote }}
-              {{- else }}
-              value: {{ .value | quote }}
-              {{- end }}
+                  name: {{ $r.model.keySecretName | quote }}
+                  key: {{ $r.model.keySecretKey | quote }}
+            {{- if $r.agent.port }}
+            - name: PORT
+              value: {{ $r.agent.port | quote }}
+            {{- end }}
+            {{- if $r.agent.webUI }}
+            - name: CETIRUN_WEB_BASE_PATH
+              value: {{ required "Custom Web UI requires its platform base path" $r.agent.webBasePath | quote }}
+            - name: CETIRUN_WEB_INSTANCE
+              value: {{ required "Custom Web UI requires its Agent UID" $r.agent.webInstance | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
             {{- include "cetirun.memory.env" . | nindent 12 }}
+            {{- with $s.identityEnvironment }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- if $r.ports }}
           ports:
             {{- range $r.ports }}
@@ -169,65 +168,54 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ $r.agent.home | quote }}
-            {{- if include "cetirun.context.enabled" . }}
-            {{- include "cetirun.context.mount" . | nindent 12 }}
-            {{- else }}
-            - name: context
-              mountPath: {{ printf "%s/.agents" $r.agent.home | quote }}
-              readOnly: true
-            {{- end }}
             - name: tmp
               mountPath: /tmp
+            - name: config
+              mountPath: /etc/cetirun
+              readOnly: true
+            {{- with $s.identityMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if $emptySkills }}
+            - name: empty-skills
+              mountPath: {{ .Values.skills.mountPath | quote }}
+              readOnly: true
+            {{- else if .Values.skills.shared }}
+            - name: shared-skills
+              mountPath: {{ .Values.skills.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
             {{- include "cetirun.memory.mounts" . | nindent 12 }}
-        {{- if .Values.desktop.enabled }}
-        {{- include "cetirun.platform.desktop" . | nindent 8 }}
+        {{- with .Values.sidecars }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       volumes:
-        - name: context
-          configMap:
-            name: {{ $b.context.name | quote }}
-            defaultMode: 0444
-            items:
-              {{- range $key, $path := $b.context.files }}
-              - key: {{ $key | quote }}
-                path: {{ $path | quote }}
-              {{- end }}
         - name: config
           configMap:
             name: {{ include "cetirun.configMapName" . }}
             defaultMode: 0444
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | quote }}
         {{- include "cetirun.platform.temporaryVolumes" . | nindent 8 }}
-        {{- if .Values.skills.shared }}
+        {{- if $emptySkills }}
+        - name: empty-skills
+          emptyDir:
+            sizeLimit: {{ $s.scratchSizeLimit | quote }}
+        {{- else if .Values.skills.shared }}
         - name: shared-skills
           persistentVolumeClaim:
-            claimName: {{ include "cetirun.sharedSkillsPVCName" . }}
+            claimName: {{ .Values.skills.existingClaim | quote }}
             readOnly: true
         {{- end }}
-        {{- include "cetirun.context.volume" . | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- include "cetirun.memory.volumes" . | nindent 8 }}
-  {{- if semverCompare ">=1.25-0" .Capabilities.KubeVersion.Version }}
-  persistentVolumeClaimRetentionPolicy:
-    whenDeleted: Retain
-    whenScaled: Retain
-  {{- end }}
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-        labels:
-          {{- include "cetirun.selectorLabels" . | nindent 10 }}
-        annotations:
-          cetirun.microsoft.com/agent-uid: {{ $b.agentUID | quote }}
-      spec:
-        accessModes:
-          - {{ $b.home.claim.accessMode }}
-        storageClassName: {{ $b.home.claim.storageClass | quote }}
-        resources:
-          requests:
-            storage: {{ $b.home.claim.storageSize | quote }}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: {{ $name }}
-automountServiceAccountToken: false
+        {{- with $s.identityVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 {{- end }}

@@ -20,6 +20,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 )
@@ -268,7 +269,7 @@ func TestDesiredSandboxRevisionDoesNotCopyHistoricalEvidenceWithoutCompiler(t *t
 	}
 }
 
-func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
+func TestPolicyDenialBlocksKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	ctx := context.Background()
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Status.Phase = api.PhaseReady
@@ -300,6 +301,7 @@ func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	if len(gateway.keys) != 1 {
 		t.Fatal("test setup did not create the governed virtual key")
 	}
+	token := aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))
 
 	team := &api.Team{}
 	if err := kube.Get(ctx, types.NamespacedName{Name: testAIGatewayTeam}, team); err != nil {
@@ -314,8 +316,8 @@ func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	if err != nil || result.RequeueAfter == 0 {
 		t.Fatalf("denied Agent must enter a retrying hold: result=%+v err=%v", result, err)
 	}
-	if len(gateway.keys) != 0 || len(gateway.deletedTokens) != 1 {
-		t.Fatalf("denial did not revoke the virtual key: keys=%d deleted=%v", len(gateway.keys), gateway.deletedTokens)
+	if gateway.keys[token] == nil || !gateway.keys[token].Blocked || len(gateway.deletedTokens) != 0 || len(gateway.deletedAliases) != 0 {
+		t.Fatalf("denial did not retain and block the virtual key: key=%+v tokens=%v aliases=%v", gateway.keys[token], gateway.deletedTokens, gateway.deletedAliases)
 	}
 	stopped := &appsv1.StatefulSet{}
 	if err := kube.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: workload.Name}, stopped); err != nil || !ptr.Equal(stopped.Spec.Replicas, ptr.To[int32](0)) {
@@ -331,11 +333,79 @@ func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	if current.Status.Policy == nil || current.Status.Policy.Phase != "Denied" {
 		t.Fatalf("denial status was not persisted: %+v", current.Status.Policy)
 	}
+	if current.Status.AIGateway == nil || !current.Status.AIGateway.Blocked || current.Status.AIGateway.Routed ||
+		current.Status.AIGateway.Reason != aiGatewayReasonPolicyDenied {
+		t.Fatalf("Gateway policy-denial block was not persisted: %+v", current.Status.AIGateway)
+	}
+	condition := findStatusCondition(current.Status.Conditions, api.ConditionSandboxReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != aiGatewayReasonPolicyDenied {
+		t.Fatalf("policy denial did not produce an explicit Sandbox fence: %+v", condition)
+	}
+}
+
+func TestPolicyDenialBlockFailureStillStopsOwnedBuiltinWorkload(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Status.Phase = api.PhaseReady
+	namespace := aiGatewayNamespace()
+	owner := metav1.OwnerReference{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID}
+	replicas := int32(1)
+	workload := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name: instanceServiceName(agent.Name), Namespace: namespace.Name, UID: types.UID("workload-uid"),
+		OwnerReferences: []metav1.OwnerReference{owner},
+		Annotations: map[string]string{
+			customAgentUID:                   string(agent.UID),
+			"meta.helm.sh/release-name":      helmReleaseName(agent.Name),
+			"meta.helm.sh/release-namespace": namespace.Name,
+		},
+	}, Spec: appsv1.StatefulSetSpec{Replicas: &replicas}}
+	route := &istiov1beta1.VirtualService{ObjectMeta: metav1.ObjectMeta{
+		Name: virtualServiceName(agent.Name), Namespace: namespace.Name, UID: types.UID("route-uid"),
+		OwnerReferences: []metav1.OwnerReference{owner},
+		Annotations: map[string]string{
+			customAgentUID:                   string(agent.UID),
+			"meta.helm.sh/release-name":      helmReleaseName(agent.Name),
+			"meta.helm.sh/release-namespace": namespace.Name,
+		},
+	}}
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, namespace, workload, route)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("synthetic Gateway block failure")
+	gateway.setBlockErr = injected
+	// An incomplete preparation configuration would fail immediately if the
+	// denial path tried to prepare a replacement workload. It must only fence
+	// the existing workload while authorization is denied.
+	r.SandboxPreparation = &SandboxPreparation{}
+
+	if _, err := r.holdPolicyDenied(ctx, agent); !errors.Is(err, injected) {
+		t.Fatalf("Gateway block failure was not returned: %v", err)
+	}
+	stopped := &appsv1.StatefulSet{}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(workload), stopped); err != nil || !ptr.Equal(stopped.Spec.Replicas, ptr.To[int32](0)) {
+		t.Fatalf("Gateway block failure skipped workload shutdown: replicas=%v err=%v", stopped.Spec.Replicas, err)
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(route), &istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Gateway block failure skipped route removal: %v", err)
+	}
+	current := &api.Agent{}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(agent), current); err != nil {
+		t.Fatal(err)
+	}
+	condition := findStatusCondition(current.Status.Conditions, api.ConditionSandboxReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != aiGatewayReasonPolicyDenied {
+		t.Fatalf("Gateway block failure did not leave the Agent in the policy-denied fence: %+v", condition)
+	}
 }
 
 func TestPolicyDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.T) {
 	ctx := context.Background()
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Finalizers = []string{sandbox.BootstrapFinalizer}
 	agent.Status.Phase = api.PhaseReady
 	namespace := aiGatewayNamespace()
 	owner := metav1.OwnerReference{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID}
@@ -344,11 +414,15 @@ func TestPolicyDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.T) {
 		Name: instanceServiceName(agent.Name), Namespace: namespace.Name, UID: types.UID("workload-uid"), OwnerReferences: []metav1.OwnerReference{owner},
 		Annotations: map[string]string{customAgentUID: string(agent.UID), "meta.helm.sh/release-name": helmReleaseName(agent.Name), "meta.helm.sh/release-namespace": namespace.Name},
 	}, Spec: appsv1.StatefulSetSpec{Replicas: &replicas}}
+	auxiliary := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: "sandbox-auxiliary", Namespace: namespace.Name, UID: types.UID("auxiliary-uid"), OwnerReferences: []metav1.OwnerReference{owner},
+		Annotations: map[string]string{customAgentUID: string(agent.UID), "meta.helm.sh/release-name": helmReleaseName(agent.Name), "meta.helm.sh/release-namespace": namespace.Name},
+	}, Spec: appsv1.DeploymentSpec{Replicas: &replicas}}
 	route := &istiov1beta1.VirtualService{ObjectMeta: metav1.ObjectMeta{
 		Name: virtualServiceName(agent.Name), Namespace: namespace.Name, UID: types.UID("route-uid"), OwnerReferences: []metav1.OwnerReference{owner},
 		Annotations: map[string]string{customAgentUID: string(agent.UID), "meta.helm.sh/release-name": helmReleaseName(agent.Name), "meta.helm.sh/release-namespace": namespace.Name},
 	}}
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, namespace, workload, route)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, namespace, workload, auxiliary, route)
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		t.Fatal(err)
 	}
@@ -367,13 +441,16 @@ func TestPolicyDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.T) {
 			if _, ok := object.(*api.Team); ok && dependencyDown {
 				return errors.New("synthetic Team API outage")
 			}
+			if dependencyDown && key == r.sandboxBootstrapKey(agent) {
+				return errors.New("synthetic bootstrap receipt API outage")
+			}
 			return c.Get(ctx, key, object, options...)
 		},
 	})
 	r.APIReader = r.Client
 	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}})
-	if err != nil || result.RequeueAfter == 0 {
-		t.Fatalf("dependency outage must enter a retrying hold: result=%+v err=%v", result, err)
+	if err == nil {
+		t.Fatalf("dependency outage must retain its retryable error: result=%+v err=%v", result, err)
 	}
 	if gateway.keys[token] == nil || !gateway.keys[token].Blocked || len(gateway.deletedTokens) != 0 || len(gateway.deletedAliases) != 0 {
 		t.Fatalf("dependency outage deleted or failed to block the existing key: key=%+v tokens=%v aliases=%v", gateway.keys[token], gateway.deletedTokens, gateway.deletedAliases)
@@ -384,6 +461,14 @@ func TestPolicyDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.T) {
 	}
 	if current.Status.Policy == nil || current.Status.Policy.Phase != "Pending" {
 		t.Fatalf("dependency outage was reported as a denial: %+v", current.Status.Policy)
+	}
+	condition := findStatusCondition(current.Status.Conditions, api.ConditionSandboxReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "PolicyApplyFailed" {
+		t.Fatalf("bootstrap receipt outage did not record the incomplete common shutdown: %+v", condition)
+	}
+	currentAuxiliary := &appsv1.Deployment{}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(auxiliary), currentAuxiliary); err != nil || ptr.Deref(currentAuxiliary.Spec.Replicas, -1) != 0 {
+		t.Fatalf("bootstrap receipt outage did not stop the common auxiliary: deployment=%+v err=%v", currentAuxiliary, err)
 	}
 
 	dependencyDown = false
@@ -502,8 +587,8 @@ func TestPolicyStaleConfigurationObservationPreservesKeyUntilAccepted(t *testing
 				}
 			}
 			r.APIReader = r.Client
-			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}); err != nil {
-				t.Fatalf("stale %s observation did not enter a controlled hold: %v", kind, err)
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}); err == nil {
+				t.Fatalf("stale %s observation was incorrectly treated as a clean hold", kind)
 			}
 			if gateway.keys[token] == nil || !gateway.keys[token].Blocked || len(gateway.deletedTokens) != 0 || len(gateway.deletedAliases) != 0 {
 				t.Fatalf("stale %s observation deleted or failed to block the key: key=%+v tokens=%v aliases=%v", kind, gateway.keys[token], gateway.deletedTokens, gateway.deletedAliases)
@@ -748,5 +833,77 @@ func TestManagedGatewayGroupPollutionBlocksAnExistingGrant(t *testing.T) {
 	}
 	if gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != "" || agent.Status.AIGateway.KeyID != token[:aiGatewayKeyIDLength] {
 		t.Fatalf("the verified grant did not restore the same key: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
+}
+
+func TestPolicyDenialBlocksAndRestoresTheSameGatewayGrant(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+
+	secret := readKeySecret(t, kube)
+	token := aigateway.Token(string(secret.Data[aiGatewayKeySecretField]))
+	keyID := agent.Status.AIGateway.KeyID
+	spend := 3.25
+	budget := *gateway.keys[token].MaxBudget
+	gateway.keys[token].Spend = &spend
+	generated := len(gateway.generated)
+
+	if _, err := r.holdPolicyDenied(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	key := gateway.keys[token]
+	if key == nil || !key.Blocked || key.Spend == nil || *key.Spend != spend || key.MaxBudget == nil || *key.MaxBudget != budget {
+		t.Fatalf("policy denial did not preserve and block the original grant: %+v", key)
+	}
+	if len(gateway.deletedTokens) != 0 || len(gateway.deletedAliases) != 0 {
+		t.Fatalf("policy denial revoked the retained grant: tokens=%v aliases=%v", gateway.deletedTokens, gateway.deletedAliases)
+	}
+	if agent.Status.AIGateway == nil || !agent.Status.AIGateway.Blocked || agent.Status.AIGateway.Routed ||
+		agent.Status.AIGateway.Reason != aiGatewayReasonPolicyDenied {
+		t.Fatalf("policy denial did not record its durable Gateway block: %+v", agent.Status.AIGateway)
+	}
+	if got := readKeySecret(t, kube); string(got.Data[aiGatewayKeySecretField]) != string(secret.Data[aiGatewayKeySecretField]) {
+		t.Fatal("policy denial replaced the retained key Secret")
+	}
+
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatalf("authorized policy recovery did not restore the retained grant: %v", err)
+	}
+	key = gateway.keys[token]
+	if len(gateway.generated) != generated || key == nil || key.Blocked || key.Spend == nil || *key.Spend != spend ||
+		agent.Status.AIGateway.KeyID != keyID || agent.Status.AIGateway.Reason != "" || agent.Status.AIGateway.Blocked {
+		t.Fatalf("policy recovery did not reuse and restore the original grant: generated=%d key=%+v status=%+v", len(gateway.generated), key, agent.Status.AIGateway)
+	}
+}
+
+func TestPolicyDenialDoesNotClaimOrClearAnAdministratorGatewayBlock(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))
+	gateway.keys[token].Blocked = true
+	agent.Status.AIGateway.Reason = ""
+
+	if err := r.beginAIGatewayPolicyDenial(ctx, agent); err == nil {
+		t.Fatal("policy denial claimed an administrator Gateway block")
+	}
+	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason == aiGatewayReasonPolicyDenied {
+		t.Fatalf("policy denial crossed the administrator block ownership boundary: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err == nil || !gateway.keys[token].Blocked {
+		t.Fatalf("authorized reconcile cleared an administrator Gateway block: err=%v key=%+v", err, gateway.keys[token])
 	}
 }

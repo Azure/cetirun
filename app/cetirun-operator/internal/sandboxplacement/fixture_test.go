@@ -69,7 +69,10 @@ func newFixture(t *testing.T) *placementFixture {
 	prepared, err := helm.PrepareSandboxChart(chart, map[string]any{
 		"agentType": "hermes", "agentRequest": map[string]any{"type": "hermes"},
 		"image":   map[string]any{"repository": "registry.example.com/agent/runtime", "tag": "1.0"},
-		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
+		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model", "apiBase": "http://gateway.platform.svc.cluster.local/v1"},
+		"aiGateway": map[string]any{
+			"enabled": true, "keySecretName": f.agent.Input.GatewayKey.Name, "keySecretKey": "api-key",
+		},
 	}, nil, bundle)
 	if err != nil {
 		t.Fatal(err)

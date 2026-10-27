@@ -13,8 +13,8 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
-// ModelAccessRequest selects the model sources of a new OpenClaw or Hermes
-// Agent when the platform AI Gateway is enabled. Omitted switches use the
+// ModelAccessRequest selects model sources of a new Agent through the required
+// platform AI Gateway. Omitted switches use the
 // sources currently available to the selected Team.
 type ModelAccessRequest struct {
 	SharedModels  *bool `json:"sharedModels,omitempty"`
@@ -84,6 +84,7 @@ type AIGatewayCatalogResponse struct {
 var agentTypeNames = map[cetirunv1alpha1.AgentType]string{
 	cetirunv1alpha1.AgentTypeOpenClaw: "OpenClaw",
 	cetirunv1alpha1.AgentTypeHermes:   "Hermes",
+	cetirunv1alpha1.AgentTypeCustom:   "Custom",
 }
 
 func isAIGatewayPlaceholder(model string) bool {
@@ -194,8 +195,8 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 	if req.AgentIdentityEnabled && !options.AgentIdentity.Allowed {
 		return reject(http.StatusForbidden, "policy_identity_not_allowed", "Agent Identity is not available to this owner under the selected Team's Policy and deployment settings")
 	}
-	if !options.AIGatewayEnabled || agentType == cetirunv1alpha1.AgentTypeCustom {
-		return options.Team, options.sandboxRef, nil, true
+	if !options.AIGatewayEnabled {
+		return reject(http.StatusConflict, "gateway_required", "The AI Gateway is required for Agent creation in this deployment")
 	}
 	catalog := options.Gateway
 	if !catalog.Known {

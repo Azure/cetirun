@@ -63,6 +63,7 @@ type Config struct {
 	// AIGatewayCatalogNamespace is the operator namespace, where the operator
 	// publishes the shared models.
 	AIGatewayCatalogNamespace string
+	SandboxStateNamespace     string
 	// ConfigurationCoordination pins the authority shared with strict Sandbox
 	// admission for protected Team, Sandbox and AgentPolicy mutations.
 	ConfigurationCoordinationNamespace string
@@ -103,6 +104,7 @@ func Load() Config {
 		RegistryCredentialNamespace:        envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),
 		AIGatewayEnabled:                   os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",
 		AIGatewayCatalogNamespace:          envOrDefault("AI_GATEWAY_CATALOG_NAMESPACE", "cetirun-system"),
+		SandboxStateNamespace:              envOrDefault("SANDBOX_STATE_NAMESPACE", "cetirun-system"),
 		ConfigurationCoordinationNamespace: envOrDefault("CONFIGURATION_COORDINATION_NAMESPACE", ""),
 		ConfigurationCoordinationName:      envOrDefault("CONFIGURATION_COORDINATION_NAME", ""),
 		ConfigurationCoordinationUID:       envOrDefault("CONFIGURATION_COORDINATION_UID", ""),

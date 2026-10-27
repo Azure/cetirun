@@ -13,6 +13,7 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func TestCopilotModelMatchingNormalizesNamesAndRejectsSnapshots(t *testing.T) {
@@ -217,15 +218,16 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 
 func ptrFloat(value float64) *float64 { return &value }
 
-func TestReconcileAIGatewayCopilotFollowsSharedModelsOfALegacyAgent(t *testing.T) {
-	r, agent, gateway := legacyGatewayFixture(t)
+func TestReconcileAIGatewayCopilotFollowsGrantedSharedModels(t *testing.T) {
+	r, agent, gateway := governedGatewayFixture(t)
 	r.AIGateway.CopilotProxyImage = testProxyImage
 	ctx := context.Background()
 	if err := r.Create(ctx, readyProxy(1)); err != nil {
 		t.Fatal(err)
 	}
+	allowTestPolicyModels(t, r.Client, "gpt-x")
 	base := slices.Clone(gateway.shared)
-	shared := aigateway.Deployment{ID: "legacy-gpt", ModelName: "gpt-x", AccessGroups: []string{aiGatewaySharedAccessGroup},
+	shared := aigateway.Deployment{ID: managedTestDeploymentID("gpt-x", 1), ModelName: "gpt-x", AccessGroups: []string{aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("gpt-x")}, DatabaseSourceKnown: true,
 		BaseModel: "gpt-5.5", Routing: aigateway.Routing{Weight: ptrFloat(3)}}
 	gateway.shared = append(gateway.shared, shared)
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
@@ -237,13 +239,21 @@ func TestReconcileAIGatewayCopilotFollowsSharedModelsOfALegacyAgent(t *testing.T
 	}
 	route := routesByModel(gateway)["gpt-5.5"]
 	if route.ModelName != "gpt-x" || route.Routing.String() != "weight=3" || route.NoCooldown {
-		t.Fatalf("a legacy Agent's Copilot model joins every shared model of the same real model: %+v", route)
+		t.Fatalf("a governed Agent's Copilot model joins its granted shared model of the same real model: %+v", route)
 	}
 	if slices.Contains(agent.Status.AIGateway.Models, "gpt-5.5") || !slices.Contains(agent.Status.AIGateway.Models, "gpt-x") {
 		t.Fatalf("the Agent lists the model once: %v", agent.Status.AIGateway.Models)
 	}
 
-	// The shared model goes: the route takes the Copilot model's own name.
+	// Withdraw the policy grant when the shared model leaves the catalog.
+	policy := &cetirunv1alpha1.AgentPolicy{}
+	if err := r.Get(ctx, client.ObjectKey{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.ModelAccess.SharedModels.Allowed = []string{testSharedModelOne}
+	if err := r.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
 	gateway.shared = slices.Clone(base)
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		t.Fatal(err)
@@ -260,6 +270,7 @@ func TestReconcileAIGatewayCopilotFollowsSharedModelsOfALegacyAgent(t *testing.T
 	// With shared models off the Agent is granted none, so a model the shared
 	// deployments also serve keeps its own name.
 	gateway.shared = append(slices.Clone(base), shared)
+	allowTestPolicyModels(t, r.Client, "gpt-x")
 	agent.Spec.ModelAccess = modelAccess(false, true)
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		t.Fatal(err)
@@ -281,10 +292,11 @@ func TestReconcileAIGatewayCopilotFollowsSharedModelsOfALegacyAgent(t *testing.T
 func TestPlaceCopilotModelsPicksTheFirstGrantedSharedName(t *testing.T) {
 	r, _, _ := aiGatewayTestReconciler(t)
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	agent.Spec.SandboxRef, agent.Spec.ModelAccess, agent.Status.Policy = "", nil, nil
+	agent.Spec.ModelAccess = modelAccess(true, true)
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{AccessGroups: []string{aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("a-gpt"), aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("b-gpt")}}
 	deployments := []aigateway.Deployment{
-		{ID: "b", ModelName: "b-gpt", AccessGroups: []string{aiGatewaySharedAccessGroup}, BaseModel: "gpt-5.5"},
-		{ID: "a", ModelName: "a-gpt", AccessGroups: []string{aiGatewaySharedAccessGroup}, BaseModel: "openai/gpt-5.5"},
+		{ID: managedTestDeploymentID("b-gpt", 1), ModelName: "b-gpt", AccessGroups: []string{aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("b-gpt")}, DatabaseSourceKnown: true, BaseModel: "gpt-5.5"},
+		{ID: managedTestDeploymentID("a-gpt", 1), ModelName: "a-gpt", AccessGroups: []string{aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("a-gpt")}, DatabaseSourceKnown: true, BaseModel: "openai/gpt-5.5"},
 	}
 	models := []cetirunv1alpha1.CopilotModel{{ID: "gpt-5.5"}}
 	if _, _, ok := r.placeCopilotModels(agent, models, nil); ok {
@@ -387,7 +399,7 @@ func TestAIGatewayModelEntriesWithoutCatalogKeepCopilotModelsApart(t *testing.T)
 // A key an earlier version gave copilot/<ID> aliases loses them on the next
 // reconcile, without a new key; an administrator's alias stays.
 func TestEarlierCopilotKeyAliasesAreRemoved(t *testing.T) {
-	r, agent, gateway := legacyGatewayFixture(t)
+	r, agent, gateway := governedGatewayFixture(t)
 	r.AIGateway.CopilotProxyImage = testProxyImage
 	ctx := context.Background()
 	if err := r.Create(ctx, readyProxy(1)); err != nil {

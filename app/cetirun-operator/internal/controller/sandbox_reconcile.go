@@ -22,6 +22,7 @@ import (
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -40,7 +41,7 @@ const (
 )
 
 func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
-	if !sandboxRequested(agent, nil) || agent.Spec.Agent.Type == api.AgentTypeCustom ||
+	if !sandboxRequested(agent, nil) ||
 		r.SandboxPreparation == nil || !r.SandboxPreparation.NativeExecution ||
 		controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
 		return false, nil
@@ -99,6 +100,18 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err := r.sandboxPreparationInput(ctx, attempt); err != nil {
 		return nil, err
 	}
+	// Suspending an Agent only reconciles the already-owned workloads to zero.
+	// It must not create or update terminal access RBAC because the generation
+	// guard intentionally rejects suspended Agents.
+	if attempt.input.Terminal != nil && !attempt.agent.Spec.Suspended {
+		if err := r.ensureTerminalReadRoles(ctx, attempt.agent); err != nil {
+			return nil, fmt.Errorf("ensure common Custom terminal RBAC: %w", err)
+		}
+	}
+	// resolveSandboxInputs reads the current, UID-pinned Agent after Gateway
+	// reconciliation. Use that snapshot for every protected render input;
+	// the reconciler's argument can predate the first status projection.
+	agent = attempt.agent
 	if agent.Spec.Agent.RegistrySecretRef != nil {
 		name, err := registryauth.PullSecretName(agent.UID)
 		if err != nil {
@@ -120,12 +133,49 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		attempt.input.ImagePullSecret = &w.ObjectIdentity{Name: secret.Name, UID: secret.UID}
 		attempt.sources = append(attempt.sources, sandboxSource(secret, "v1", "Secret"))
 	}
-	_, user, err := r.sandboxHelmValues(agent, attempt.team)
+	// Rebuild platform values from the uncached Agent read above. The initial
+	// chart capability probe can precede the first Gateway status projection;
+	// execution values must instead include the current, verified key and model
+	// projection captured by sandboxPreparationInput.
+	platformValues, user, err := r.sandboxHelmValues(agent, attempt.team)
 	if err != nil {
 		return nil, err
 	}
+	// The caller observes the controller-owned runtime Secret after credential
+	// reconciliation and supplies its resource version solely to trigger a
+	// workload rollout. Do not merge the caller's broader Helm values here:
+	// common Sandbox rendering owns the typed runtime contract and validates
+	// Agent values separately below.
+	if callerAnnotations, ok := values["podAnnotations"].(map[string]any); ok {
+		if secretVersion, ok := callerAnnotations[gatewaySecretResourceVersionAnnotation].(string); ok && secretVersion != "" {
+			platformValues["podAnnotations"] = deepMerge(platformValues["podAnnotations"], map[string]any{
+				gatewaySecretResourceVersionAnnotation: secretVersion,
+			})
+		}
+	}
+	if agent.Spec.Suspended {
+		// A common reconciled render normally starts its workload. Suspension is
+		// the controller-owned exception and must stay at zero through the same
+		// typed renderer used for resume.
+		platformValues["replicaCount"] = 0
+	}
+	platformValues["memoryOptions"] = r.memoryOptions()
 	if err := w.ValidateReconciledUserValues(user, attempt.input.AuthorizedSecrets); err != nil {
 		return nil, err
+	}
+	// ReconcileSandbox accepts one values map after its first protected render.
+	// Keep the already validated per-Agent values when rebuilding that render;
+	// otherwise a Custom ttyd choice could disappear after its capability probe.
+	effectiveValues := platformValues
+	if len(user) != 0 {
+		effectiveValues = deepMerge(platformValues, user).(map[string]any)
+	}
+	if agent.Spec.Suspended && attempt.input.Terminal != nil {
+		// The terminal is a distinct Deployment. Do not let a normal common
+		// render bring it back after the suspension path has scaled it down.
+		// This controller-owned override is only used for the zero-replica
+		// suspension render; the original requested value is used on resume.
+		effectiveValues["ttyd"] = map[string]any{"enabled": false}
 	}
 	configuration, ok := r.SandboxPreparation.Configuration.(*sandboxplatform.KubernetesSource)
 	if !ok {
@@ -146,6 +196,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		NativeExecution: true, Resolution: *attempt.resolution, AgentName: agent.Name,
 		Namespace: attempt.input.Namespace.Name, Platform: platform,
+		CustomIngress: r.sandboxCustomIngress(attempt), TerminalIngress: r.sandboxTerminalIngress(attempt),
 	})
 	if err != nil {
 		return nil, err
@@ -157,6 +208,23 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	bundle, err := w.Build(attempt.input)
 	if err != nil {
 		return nil, err
+	}
+	if prepared == nil {
+		prepared, err = r.SandboxPreparation.Installer.PrepareSandbox(
+			attempt.input.Namespace.Name, platformValues, user, agent.Spec.Helm.Version, bundle,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartResponsesValue) {
+		r.applyCopilotResponsesModels(platformValues, agent)
+	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartProxyKeyValue) {
+		applyCopilotProxyKeyID(platformValues, agent)
+	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartSignInValue) {
+		applyCopilotSignInGeneration(platformValues, agent)
 	}
 	sources := selectedSandboxExecutionSources(attempt.sources, attempt.resolution.Binding)
 	agentSource, err := w.AgentSourceReference(agent)
@@ -217,7 +285,8 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if err != nil {
 			return err
 		}
-		if current.UID != agent.UID || current.Generation != agent.Generation || binding != attempt.resolution.Binding ||
+		currentAgentSource, err := w.AgentSourceReference(current)
+		if err != nil || current.UID != agent.UID || currentAgentSource != agentSource || binding != attempt.resolution.Binding ||
 			current.Spec.Suspended != agent.Spec.Suspended || !current.DeletionTimestamp.IsZero() {
 			return fmt.Errorf("Sandbox intent changed before resource reconciliation")
 		}
@@ -255,7 +324,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 		return guard(ctx)
 	}
-	result, err := prepared.ReconcileSandbox(values, bundle, applyGuard)
+	result, err := prepared.ReconcileSandbox(effectiveValues, bundle, applyGuard)
 	if err != nil {
 		return nil, err
 	}
@@ -301,8 +370,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 			if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
 				return nil, err
 			}
-			defaultAccount := source.Kind == "ServiceAccount" && source.Name == "default"
-			if (!defaultAccount && !sandboxBuiltinOwned(object, agent)) || !object.DeletionTimestamp.IsZero() {
+			if (!sandboxPlatformPodSource(source, expected.Namespace.Name) && !sandboxBuiltinOwned(object, agent)) || !object.DeletionTimestamp.IsZero() {
 				return nil, fmt.Errorf("Sandbox component source is not owned by the current Agent")
 			}
 			source = sandboxSource(object, "v1", source.Kind)
@@ -450,6 +518,49 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	return result, guard(ctx)
 }
 
+// sandboxPlatformPodSource identifies inputs Kubernetes creates for every
+// namespace. They are not owned by an Agent, but are safe only at their fixed,
+// platform-defined identity. All other pod inputs must be Agent-owned.
+func sandboxPlatformPodSource(source w.SourceReference, namespace string) bool {
+	return (source.Kind == "ServiceAccount" && source.Name == "default") ||
+		(source.Kind == "ConfigMap" && source.Name == "kube-root-ca.crt" && source.Namespace == namespace)
+}
+
+// readReconciledSandboxExpectation reads the durable contract emitted by the
+// common executor. It is intentionally separate from the retained native
+// single-start expectation reader, whose envelope has a different shape.
+func (r *AgentReconciler) readReconciledSandboxExpectation(ctx context.Context, agent *api.Agent) (*corev1.ConfigMap, w.ReconcileExpectation, error) {
+	var empty w.ReconcileExpectation
+	namespace := &corev1.Namespace{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		return nil, empty, err
+	}
+	if !sandboxBuiltinOwned(namespace, agent) || !namespace.DeletionTimestamp.IsZero() {
+		return nil, empty, fmt.Errorf("common Sandbox namespace is not current and owned")
+	}
+	state := &corev1.ConfigMap{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{
+		Namespace: r.OperatorNamespace, Name: w.PodExpectationName(namespace.Name, namespace.UID),
+	}, state); err != nil {
+		return nil, empty, err
+	}
+	if state.Annotations[w.AgentUIDAnnotation] != string(agent.UID) ||
+		!equality.Semantic.DeepEqual(state.OwnerReferences, []metav1.OwnerReference{w.AgentOwner(agent.Name, agent.UID)}) {
+		return nil, empty, fmt.Errorf("common Sandbox expectation ownership changed")
+	}
+	expected, err := w.ReadReconcileExpectation(state)
+	if err != nil {
+		return nil, empty, err
+	}
+	if expected.Agent != (w.ObjectIdentity{Name: agent.Name, UID: agent.UID}) ||
+		expected.AgentGeneration != agent.Generation ||
+		expected.Namespace != (w.ObjectIdentity{Name: namespace.Name, UID: namespace.UID}) ||
+		expected.Binding.AgentUID != agent.UID {
+		return nil, empty, fmt.Errorf("common Sandbox expectation differs from the current Agent")
+	}
+	return state, expected, nil
+}
+
 func (r *AgentReconciler) observeReconciledSandbox(ctx context.Context, agent *api.Agent, prepared *helm.PreparedRelease) error {
 	expected, err := prepared.ReconcileExpectation()
 	if err != nil {
@@ -462,8 +573,9 @@ func (r *AgentReconciler) observeReconciledSandbox(ctx context.Context, agent *a
 		return err
 	}
 	current, err := w.ReadReconcileExpectation(state)
-	if err != nil || current.Agent != expected.Agent || current.PlanHash != expected.PlanHash ||
-		current.Revision != expected.Revision || current.AgentGeneration != agent.Generation {
+	agentSource, sourceErr := w.AgentSourceReference(agent)
+	if err != nil || sourceErr != nil || current.Agent != expected.Agent || current.PlanHash != expected.PlanHash ||
+		current.Revision != expected.Revision || current.AgentGeneration != agentSource.Generation {
 		return fmt.Errorf("Sandbox desired expectation changed during reconciliation")
 	}
 	for _, desired := range current.Controls {
@@ -619,8 +731,12 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 		}
 	}
 	quiescence := &KubernetesNativeQuiescence{APIReader: r.customReader(), Reconciled: true}
+	// Cleanup has already verified the persisted expectation against the
+	// reservation. A terminating Agent is deliberately ineligible for a new
+	// authorization snapshot, so do not re-read its current execution intent.
+	// The stored generation belongs to the exact lifetime being stopped.
 	if err := quiescence.CheckQuiesced(ctx, agent, SandboxPrerequisites{
-		AgentUID: agent.UID, AgentGeneration: agent.Generation, NamespaceUID: expected.Namespace.UID, Home: expected.Home,
+		AgentUID: agent.UID, AgentGeneration: expected.AgentGeneration, NamespaceUID: expected.Namespace.UID, Home: expected.Home,
 	}); err != nil {
 		return err
 	}
@@ -635,7 +751,14 @@ func (r *AgentReconciler) stopReconciledAuxiliaries(ctx context.Context, agent *
 	var failures []error
 	for index := range deployments.Items {
 		object := &deployments.Items[index]
-		if !sandboxBuiltinOwned(object, agent) {
+		// The common Custom terminal has the same Agent owner and UID label as
+		// the protected workload, but deliberately does not carry the legacy
+		// Helm annotations accepted by sandboxBuiltinOwned.
+		owned := sandboxBuiltinOwned(object, agent)
+		if !owned && agent.Spec.Agent.Type == api.AgentTypeCustom {
+			owned = commonCustomTerminalOwned(object, agent)
+		}
+		if !owned {
 			failures = append(failures, fmt.Errorf("Sandbox auxiliary workload ownership is unconfirmed"))
 			continue
 		}
@@ -691,7 +814,7 @@ func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.
 		failures = append(failures, r.stopReconciledAuxiliaries(ctx, agent))
 	}
 	agent.Status.Phase, agent.Status.AccessURL = api.PhasePending, ""
-	for _, kind := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionIngressReady} {
+	for _, kind := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionIngressReady, api.ConditionAgentConfigReady} {
 		setCondition(&agent.Status.Conditions, kind, metav1.ConditionFalse,
 			"SandboxHeld", "Current Sandbox authorization or prerequisites are unavailable")
 	}

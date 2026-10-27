@@ -55,7 +55,15 @@ func Compile(input CompileInput) (*Plan, error) {
 	if err := supportedPolicy(resolution.AgentPolicy, resolution.Capabilities); err != nil {
 		return nil, err
 	}
-	input.Resolution, input.Platform = resolution, platform
+	customIngress, err := canonicalCustomIngress(input.CustomIngress)
+	if err != nil {
+		return nil, err
+	}
+	terminalIngress, err := canonicalTerminalIngress(input.TerminalIngress)
+	if err != nil {
+		return nil, err
+	}
+	input.Resolution, input.Platform, input.CustomIngress, input.TerminalIngress = resolution, platform, customIngress, terminalIngress
 	identity, grants, approval, err := compileIdentity(input)
 	if err != nil {
 		return nil, err
@@ -77,23 +85,25 @@ func Compile(input CompileInput) (*Plan, error) {
 	revisionNetwork := network
 	revisionNetwork.TrustedProxyIPs = nil
 	plan.Revision, err = digest(struct {
-		Version      string
-		Binding      sandbox.Binding
-		AgentName    string
-		Namespace    string
-		Sandbox      api.SandboxSpec
-		Policy       sandbox.PolicyProjection
-		Capabilities sandbox.Capabilities
-		Adapter      AdapterRegistration
-		Topology     Topology
-		Grants       []ApprovedGrant
-		Approval     *ApprovedIdentity
-		Identity     IdentityPlan
-		Network      NetworkPlan
+		Version         string
+		Binding         sandbox.Binding
+		AgentName       string
+		Namespace       string
+		Sandbox         api.SandboxSpec
+		Policy          sandbox.PolicyProjection
+		Capabilities    sandbox.Capabilities
+		Adapter         AdapterRegistration
+		Topology        Topology
+		Grants          []ApprovedGrant
+		Approval        *ApprovedIdentity
+		Identity        IdentityPlan
+		Network         NetworkPlan
+		CustomIngress   *CustomIngress   `json:"customIngress,omitempty"`
+		TerminalIngress *TerminalIngress `json:"terminalIngress,omitempty"`
 	}{
 		"sandbox-controls-v1", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
-		platform.Topology, grants, approval, identity, revisionNetwork,
+		platform.Topology, grants, approval, identity, revisionNetwork, input.CustomIngress, input.TerminalIngress,
 	})
 	if err != nil {
 		return nil, err
@@ -107,6 +117,17 @@ func Compile(input CompileInput) (*Plan, error) {
 		return nil, err
 	}
 	plan.Resources = append(plan.Resources, resource)
+	if plan.Network.TerminalPolicy != nil {
+		plan.Network.TerminalPolicy.Annotations[RevisionAnnotation] = plan.Revision
+		if err := validateNetworkPolicySize(*plan.Network.TerminalPolicy); err != nil {
+			return nil, err
+		}
+		resource, err = manifest(*plan.Network.TerminalPolicy)
+		if err != nil {
+			return nil, err
+		}
+		plan.Resources = append(plan.Resources, resource)
+	}
 	if plan.Identity.ServiceAccount != nil {
 		plan.Identity.ServiceAccount.Annotations[RevisionAnnotation] = plan.Revision
 		resource, err = manifest(plan.Identity.ServiceAccount)

@@ -294,9 +294,7 @@ spec:
                 pattern: ^[A-Za-z0-9_-]+$
                 type: string
               sandboxRef:
-                description: |-
-                  SandboxRef opts into Sandbox execution and selects a Sandbox permitted
-                  by the Team. Legacy Agents omit it and use the existing runtime path.
+                description: SandboxRef selects a Sandbox permitted by the Team.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -358,10 +356,76 @@ spec:
                 type: object
               team:
                 description: |-
-                  Team is the name of the Team this instance belongs to.
-                  The operator merges team defaults (user context, AI model, skills) into
-                  the instance configuration. Per-instance fields take precedence.
+                  Team is the name of the Team this Agent belongs to. Every Agent is
+                  authorized by its Team policy and uses its Team's common Sandbox.
+                maxLength: 253
+                minLength: 1
                 type: string
+              teamChangeRequest:
+                description: |-
+                  TeamChangeRequest asks the controller to move this Agent to another Team.
+                  It is an operation request, not the effective runtime binding: the
+                  controller validates and fences the running workload before it changes
+                  Team, Sandbox, model, or authorization metadata.
+                properties:
+                  expectedResourceVersion:
+                    minLength: 1
+                    type: string
+                  expectedUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    minLength: 1
+                    type: string
+                  model:
+                    maxLength: 256
+                    type: string
+                  modelAccess:
+                    description: |-
+                      Team changes select model sources only. MonthlyBudgetUSD must be omitted;
+                      any existing per-Agent budget override remains unchanged.
+                    properties:
+                      githubCopilot:
+                        description: |-
+                          GitHubCopilot requests a GitHub Copilot proxy for the owner's account.
+                          The effective policy must also allow it.
+                        type: boolean
+                      monthlyBudgetUSD:
+                        description: |-
+                          MonthlyBudgetUSD optionally lowers or raises this Agent's native Gateway
+                          budget within the effective AgentPolicy maximum. Omission selects the
+                          policy default.
+                        pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                        type: string
+                      sharedModels:
+                        description: |-
+                          SharedModels requests the models administrators share through the AI
+                          Gateway.
+                        type: boolean
+                    type: object
+                    x-kubernetes-validations:
+                    - message: a Team change request cannot set monthlyBudgetUSD
+                      rule: '!has(self.monthlyBudgetUSD)'
+                  requestID:
+                    maxLength: 128
+                    minLength: 16
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  targetSandbox:
+                    maxLength: 253
+                    type: string
+                  targetTeam:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                required:
+                - expectedResourceVersion
+                - expectedUID
+                - requestID
+                - targetTeam
+                type: object
               user:
                 description: User information for this instance.
                 properties:
@@ -389,6 +453,8 @@ spec:
                 type: object
             required:
             - agent
+            - sandboxRef
+            - team
             - user
             type: object
             x-kubernetes-validations:
@@ -1304,6 +1370,193 @@ spec:
                   Unset until the operator records it; the helper is then assumed unless
                   the Agent is routed through the Gateway.
                 type: boolean
+              teamChange:
+                description: |-
+                  TeamChange preserves the controller-owned checkpoints of the current or
+                  most recently completed Team change. It contains no credentials.
+                properties:
+                  executionRevision:
+                    description: |-
+                      ExecutionRevision identifies the target policy projection verified before
+                      the source was stopped.
+                    type: string
+                  expectedResourceVersion:
+                    minLength: 1
+                    type: string
+                  expectedUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    minLength: 1
+                    type: string
+                  failureMessage:
+                    type: string
+                  failureReason:
+                    type: string
+                  fenced:
+                    description: |-
+                      Fenced is persisted before any key, ingress, or workload stop side
+                      effect. It distinguishes a preflight failure from a failed stop.
+                    type: boolean
+                  model:
+                    maxLength: 256
+                    type: string
+                  modelAccess:
+                    description: |-
+                      Team changes select model sources only. MonthlyBudgetUSD must be omitted;
+                      any existing per-Agent budget override remains unchanged.
+                    properties:
+                      githubCopilot:
+                        description: |-
+                          GitHubCopilot requests a GitHub Copilot proxy for the owner's account.
+                          The effective policy must also allow it.
+                        type: boolean
+                      monthlyBudgetUSD:
+                        description: |-
+                          MonthlyBudgetUSD optionally lowers or raises this Agent's native Gateway
+                          budget within the effective AgentPolicy maximum. Omission selects the
+                          policy default.
+                        pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                        type: string
+                      sharedModels:
+                        description: |-
+                          SharedModels requests the models administrators share through the AI
+                          Gateway.
+                        type: boolean
+                    type: object
+                    x-kubernetes-validations:
+                    - message: a Team change request cannot set monthlyBudgetUSD
+                      rule: '!has(self.monthlyBudgetUSD)'
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  originalRequest:
+                    description: |-
+                      OriginalRequest is the caller-authored operation payload. TargetSandbox
+                      above is retained for the controller's resolved selection, so it cannot
+                      establish whether a later request with the same ID is an exact retry.
+                    properties:
+                      expectedResourceVersion:
+                        minLength: 1
+                        type: string
+                      expectedUID:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        minLength: 1
+                        type: string
+                      model:
+                        maxLength: 256
+                        type: string
+                      modelAccess:
+                        description: |-
+                          Team changes select model sources only. MonthlyBudgetUSD must be omitted;
+                          any existing per-Agent budget override remains unchanged.
+                        properties:
+                          githubCopilot:
+                            description: |-
+                              GitHubCopilot requests a GitHub Copilot proxy for the owner's account.
+                              The effective policy must also allow it.
+                            type: boolean
+                          monthlyBudgetUSD:
+                            description: |-
+                              MonthlyBudgetUSD optionally lowers or raises this Agent's native Gateway
+                              budget within the effective AgentPolicy maximum. Omission selects the
+                              policy default.
+                            pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                            type: string
+                          sharedModels:
+                            description: |-
+                              SharedModels requests the models administrators share through the AI
+                              Gateway.
+                            type: boolean
+                        type: object
+                        x-kubernetes-validations:
+                        - message: a Team change request cannot set monthlyBudgetUSD
+                          rule: '!has(self.monthlyBudgetUSD)'
+                      requestID:
+                        maxLength: 128
+                        minLength: 16
+                        pattern: ^[A-Za-z0-9_-]+$
+                        type: string
+                      targetSandbox:
+                        maxLength: 253
+                        type: string
+                      targetTeam:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                    required:
+                    - expectedResourceVersion
+                    - expectedUID
+                    - requestID
+                    - targetTeam
+                    type: object
+                  phase:
+                    enum:
+                    - Validating
+                    - Stopping
+                    - Committing
+                    - Applying
+                    - Starting
+                    - Completed
+                    - Failed
+                    type: string
+                  requestID:
+                    maxLength: 128
+                    minLength: 16
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  sourceGeneration:
+                    format: int64
+                    type: integer
+                  sourceSandbox:
+                    type: string
+                  sourceTeam:
+                    type: string
+                  stopped:
+                    type: boolean
+                  targetPolicyUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    type: string
+                  targetSandbox:
+                    maxLength: 253
+                    type: string
+                  targetSandboxUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    type: string
+                  targetTeam:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  targetTeamUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    type: string
+                  transitionID:
+                    description: |-
+                      TransitionID identifies the durable coordination record that fences the
+                      old native reservation and pins the target execution until it starts.
+                    type: string
+                required:
+                - expectedResourceVersion
+                - expectedUID
+                - phase
+                - requestID
+                - targetTeam
+                type: object
             type: object
         required:
         - spec

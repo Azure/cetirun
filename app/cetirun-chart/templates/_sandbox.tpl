@@ -22,9 +22,6 @@ Licensed under the MIT License.
 {{- if or (ne $s.contractVersion "v1") (and (not $reconciled) (or (ne $s.executionHeld true) (ne (int .Values.replicaCount) 0))) (and $reconciled (or $s.executionHeld (gt (int .Values.replicaCount) 1) (lt (int .Values.replicaCount) 0))) -}}
 {{- fail "Sandbox render plans must retain the execution hold" -}}
 {{- end -}}
-{{- if eq (include "cetirun.agent.type" .) "custom" -}}
-{{- fail "governed Custom rendering is unsupported" -}}
-{{- end -}}
 {{- if or (ne (index .Values.podAnnotations "sidecar.istio.io/inject") "false") .Values.sidecarScope.enabled (not .Values.networkPolicy.enabled) (gt (len .Values.sidecarScope.additionalEgressHosts) 0) -}}
 {{- fail "Sandbox network controls are protected" -}}
 {{- end -}}
@@ -37,12 +34,18 @@ Licensed under the MIT License.
 {{- fail "Sandbox requires a runtime and separately owned existing HOME/skills claims" -}}
 {{- end -}}
 {{- if $emptySkills -}}
-{{- if or (and (not $reconciled) (ne (include "cetirun.agent.type" .) "openclaw")) (not .Values.aiGateway.enabled) .Values.skills.shared .Values.skills.existingClaim .Values.skills.npm .Values.skills.clawHub (ne .Values.skills.mountPath "/home/vibe/.aks/skills") (and (not $reconciled) (ne (toJson ($s.podFinalizers | default list)) (toJson (list "cetirun.microsoft.com/native-pod-lifetime")))) -}}
+{{- if or (and (not $reconciled) (ne (include "cetirun.agent.type" .) "openclaw")) (not .Values.aiGateway.enabled) .Values.skills.shared .Values.skills.existingClaim .Values.skills.npm .Values.skills.clawHub (ne .Values.skills.mountPath (printf "%s/.aks/skills" (include "cetirun.context.home" .))) (and (not $reconciled) (ne (toJson ($s.podFinalizers | default list)) (toJson (list "cetirun.microsoft.com/native-pod-lifetime")))) -}}
 {{- fail "Sandbox empty skills require native OpenClaw Gateway lifetime protection, no shared claim or packages, and the fixed skills path" -}}
 {{- end -}}
 {{- end -}}
 {{- if or .Values.azureWorkloadIdentity.enabled .Values.agentIdentity.enabled .Values.connectionsMCP.enabled (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
 {{- fail "Sandbox identities must use compiler-owned explicit projections" -}}
+{{- end -}}
+{{- $terminal := $s.terminal | default dict -}}
+{{- if $terminal.enabled -}}
+{{- if or (ne (include "cetirun.agent.type" .) "custom") (not $reconciled) (not $terminal.image) (lt (int $terminal.port) 1024) (gt (int $terminal.port) 65535) (lt (int $terminal.sessionSeconds) 60) (gt (int $terminal.sessionSeconds) 3600) (not $terminal.serviceAccountName) -}}
+{{- fail "Sandbox terminal requires a reconciled Custom platform terminal plan" -}}
+{{- end -}}
 {{- end -}}
 {{- if or (and (not $reconciled) (or .Values.initContainers .Values.sidecars .Values.extraVolumes .Values.extraVolumeMounts .Values.extraEnvFrom)) .Values.skills.npm .Values.autoscaling.enabled .Values.ingress.enabled .Values.execRestriction.enabled -}}
 {{- fail "Sandbox protected extension paths are not supported" -}}

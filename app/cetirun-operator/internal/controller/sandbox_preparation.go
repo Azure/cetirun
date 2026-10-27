@@ -84,7 +84,7 @@ type sandboxPreparationAttempt struct {
 }
 
 func sandboxPreparationSupported(agent *api.Agent) bool {
-	return (agent.Spec.Agent.Type == api.AgentTypeOpenClaw || agent.Spec.Agent.Type == api.AgentTypeHermes) &&
+	return (agent.Spec.Agent.Type == api.AgentTypeOpenClaw || agent.Spec.Agent.Type == api.AgentTypeHermes || agent.Spec.Agent.Type == api.AgentTypeCustom) &&
 		agent.Spec.Tailscale == nil && agent.Spec.MSTeams == nil && !agentIdentityRequested(agent)
 }
 
@@ -134,8 +134,8 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 		r.APIReader == nil || r.OperatorNamespace == "" || config.AdmissionServiceAccount == "" {
 		return fmt.Errorf("%w: Sandbox preparation requires explicit trusted sources, installer, uncached reader and state identities", sandboxpolicy.ErrUnavailable)
 	}
-	if requested.Spec.Agent.Type != api.AgentTypeOpenClaw && requested.Spec.Agent.Type != api.AgentTypeHermes {
-		return fmt.Errorf("%w: only native OpenClaw and Hermes preparation is supported", sandboxpolicy.ErrUnsupportedControl)
+	if requested.Spec.Agent.Type != api.AgentTypeOpenClaw && requested.Spec.Agent.Type != api.AgentTypeHermes && requested.Spec.Agent.Type != api.AgentTypeCustom {
+		return fmt.Errorf("%w: unsupported harness has no Sandbox preparation adapter", sandboxpolicy.ErrUnsupportedControl)
 	}
 	if requested.Spec.Tailscale != nil || requested.Spec.MSTeams != nil || agentIdentityRequested(requested) {
 		return fmt.Errorf("%w: native cloud and sidecar integrations require separate Sandbox lifecycle support", sandboxpolicy.ErrUnsupportedControl)
@@ -171,9 +171,12 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 		}
 	}
 	// Bootstrap first: the Gateway must validate the recorded namespace UID
-	// before projecting its key. Only the opt-in native path renders that key.
+	// before projecting its key. Every Sandbox workload consumes that key.
+	if !r.AIGateway.Enabled {
+		return fmt.Errorf("%w: Sandbox execution requires the AI Gateway", sandboxpolicy.ErrUnsupportedControl)
+	}
 	if requested.Status.Policy != nil && requested.Status.Policy.EffectivePolicyRef != nil &&
-		(!config.NativeExecution || !sandboxGatewayProjectionReady(attempt.agent)) {
+		!sandboxGatewayProjectionReady(attempt.agent) {
 		return fmt.Errorf("%w: typed AI Gateway Sandbox projection is unavailable; execution remains held", sandboxpolicy.ErrUnsupportedControl)
 	}
 	prerequisites, err := config.Prerequisites.Resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
@@ -204,9 +207,11 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 		return err
 	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		NativeExecution: config.NativeExecution,
-		Resolution:      *attempt.resolution, AgentName: attempt.agent.Name,
+		NativeExecution:   config.NativeExecution,
+		IngressProxyTrust: attempt.input.AgentType == "openclaw" && attempt.input.GatewayKey != nil,
+		Resolution:        *attempt.resolution, AgentName: attempt.agent.Name,
 		Namespace: attempt.input.Namespace.Name, Platform: platform,
+		CustomIngress: r.sandboxCustomIngress(attempt), TerminalIngress: r.sandboxTerminalIngress(attempt),
 	})
 	if err != nil {
 		return err
@@ -307,7 +312,7 @@ func (r *AgentReconciler) resolveSandboxInputs(ctx context.Context, requested *a
 	if err != nil {
 		return nil, err
 	}
-	if agent.UID != requested.UID || agent.Generation != requested.Generation ||
+	if agent.UID != requested.UID || !sameSandboxInputSource(agent, requested) ||
 		(!reconciled && (agent.Spec.Suspended || controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) != held)) ||
 		!agent.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("Sandbox Agent identity, generation or hold changed")
@@ -364,6 +369,27 @@ func (r *AgentReconciler) resolveSandboxInputs(ctx context.Context, requested *a
 	return &sandboxPreparationAttempt{reconciled: reconciled, agent: agent, team: team, resolution: resolution, configuration: snapshot, sources: sources}, nil
 }
 
+// sameSandboxInputSource preserves the request-normalized execution identity
+// while ignoring controller-owned lifecycle finalizers. A hold may be added
+// between the caller's read and this authoritative read; it is checked by the
+// explicit held-state condition at the call site and is not a configuration
+// change.
+func sameSandboxInputSource(left, right *api.Agent) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	left = left.DeepCopy()
+	right = right.DeepCopy()
+	for _, finalizer := range []string{sandbox.HoldFinalizer, sandbox.PreparationFinalizer, sandbox.BootstrapFinalizer} {
+		controllerutil.RemoveFinalizer(left, finalizer)
+		controllerutil.RemoveFinalizer(right, finalizer)
+	}
+	leftSource, leftErr := sandboxworkload.AgentSourceReference(left)
+	rightSource, rightErr := sandboxworkload.AgentSourceReference(right)
+
+	return leftErr == nil && rightErr == nil && leftSource == rightSource
+}
+
 func (a *sandboxPreparationAttempt) selectedPolicy() *api.AgentPolicy {
 	name := a.team.Spec.AgentPolicyRef
 	return &api.AgentPolicy{
@@ -399,8 +425,7 @@ func (r *AgentReconciler) sandboxPreparationGuard(attempt *sandboxPreparationAtt
 		if err != nil {
 			return err
 		}
-		if agent.UID != attempt.agent.UID || agent.Generation != attempt.agent.Generation ||
-			!equality.Semantic.DeepEqual(agent.Spec, attempt.agent.Spec) || binding != attempt.resolution.Binding ||
+		if agent.UID != attempt.agent.UID || binding != attempt.resolution.Binding ||
 			agent.Spec.Suspended || !controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) ||
 			!controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
 			return fmt.Errorf("Sandbox preparation intent changed")
@@ -488,16 +513,61 @@ func sandboxPreparationDigest(value any) (string, error) {
 }
 
 func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (map[string]any, map[string]any, error) {
-	copy := agent.DeepCopy()
-	copy.Spec.Helm.Values = nil
-	platform, err := buildHelmValues(copy, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
-	if err != nil {
-		return nil, nil, err
-	}
-	if r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution {
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		// Common Custom execution has a typed Harness contribution and a
+		// controller-owned runtime Secret. Reuse the platform Custom defaults,
+		// but keep Agent Helm values separate until the reconciled Bundle checks
+		// them. The legacy Custom path rejects GatewayTokenSecretRef because it
+		// owns a different binding protocol; common reconciliation instead owns
+		// a fixed runtime Secret outside the Agent spec.
+		base := agent.DeepCopy()
+		base.Spec.Helm.Values = nil
+		base.Spec.GatewayTokenSecretRef = ""
+		platform, err := r.customOverrides(base, team)
+		if err != nil {
+			return nil, nil, err
+		}
 		if err := r.applyAIGatewayValues(platform, agent); err != nil {
 			return nil, nil, fmt.Errorf("apply typed AI Gateway Sandbox projection: %w", err)
 		}
+		platform["secrets"] = deepMerge(platform["secrets"], map[string]any{
+			"existingSecret": sandboxRuntimeSecretName(agent),
+		})
+		platform["agentType"] = "custom"
+		platform["agentRequest"] = runtimeRequest(agent, "")
+		platform["agentRequest"].(map[string]any)["releaseName"] = helmReleaseName(agent.Name)
+		user := map[string]any{}
+		for name, raw := range agent.Spec.Helm.Values {
+			var value any
+			if err := json.Unmarshal(raw.Raw, &value); err != nil {
+				return nil, nil, fmt.Errorf("invalid Sandbox Helm override %q", name)
+			}
+			user[name] = value
+		}
+		return platform, user, nil
+	}
+	copy := agent.DeepCopy()
+	copy.Spec.Helm.Values = nil
+	// The operator's ttyd stanza is the typed platform input for the isolated
+	// Custom terminal. Built-in common Sandboxes have no Terminal contract, so
+	// passing that shared stanza through would incorrectly request a terminal
+	// that the protected bundle must reject. Keep the existing built-in chart
+	// behavior outside common Sandbox execution unchanged.
+	operatorValues := r.CetiRunHelmValues
+	if _, configured := operatorValues["ttyd"]; configured {
+		operatorValues = make(map[string]interface{}, len(r.CetiRunHelmValues)-1)
+		for name, value := range r.CetiRunHelmValues {
+			if name != "ttyd" {
+				operatorValues[name] = value
+			}
+		}
+	}
+	platform, err := buildHelmValues(copy, team, r.DomainSuffix, r.SkillsStorageAccount, operatorValues, r.ChartRegistry, r.DefaultModel)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := r.applyAIGatewayValues(platform, agent); err != nil {
+		return nil, nil, fmt.Errorf("apply typed AI Gateway Sandbox projection: %w", err)
 	}
 	user := map[string]any{}
 	for name, raw := range agent.Spec.Helm.Values {
@@ -515,7 +585,9 @@ func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected
 	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(expected), agent); err != nil {
 		return err
 	}
-	if agent.UID != expected.UID || agent.Generation != expected.Generation || !agent.DeletionTimestamp.IsZero() {
+	expectedSource, expectedErr := sandboxworkload.AgentSourceReference(expected)
+	agentSource, agentErr := sandboxworkload.AgentSourceReference(agent)
+	if expectedErr != nil || agentErr != nil || agent.UID != expected.UID || agentSource.Generation != expectedSource.Generation || !agent.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("Sandbox Agent changed before preparation status")
 	}
 	base := agent.DeepCopy()

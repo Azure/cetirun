@@ -28,6 +28,7 @@ import (
 	sandboxadmission "github.com/Azure/CetiRun/app/cetirun-operator/internal/admission"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -55,6 +56,7 @@ import (
 	kubeyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -296,6 +298,7 @@ type preparationHarness struct {
 	scheme       *runtime.Scheme
 	chart        *chart.Chart
 	webhookCalls atomic.Int64
+	gateway      *preparationGateway
 }
 
 func newPreparationHarness(t *testing.T, placementConfigMapName ...string) *preparationHarness {
@@ -325,7 +328,7 @@ func newPreparationHarness(t *testing.T, placementConfigMapName ...string) *prep
 			t.Error(err)
 		}
 	})
-	h := &preparationHarness{scheme: runtime.NewScheme()}
+	h := &preparationHarness{scheme: runtime.NewScheme(), gateway: &preparationGateway{}}
 	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, api.AddToScheme, istiov1beta1.AddToScheme} {
 		if err := add(h.scheme); err != nil {
 			t.Fatal(err)
@@ -348,6 +351,7 @@ func newPreparationHarness(t *testing.T, placementConfigMapName ...string) *prep
 	h.ctx, cancel = context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
 	h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: preparationStateNamespace}})
+	h.create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "synthetic-gateway-master", Namespace: preparationStateNamespace}, Data: map[string][]byte{"master-key": []byte("synthetic-master-key")}})
 	h.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 		Name: preparationAdmissionAccount, Namespace: preparationStateNamespace,
 	}})
@@ -483,6 +487,7 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Agent.Name, fixture.Agent.Spec.User.Alias = name, name
 	fixture.Agent.Annotations = nil
 	fixture.Agent.Spec.Model = "example-model"
+	fixture.Agent.Spec.ModelAccess = &api.ModelAccessSpec{SharedModels: ptr.To(true), GitHubCopilot: ptr.To(false)}
 	fixture.Agent.Spec.Helm.Version = h.chart.Metadata.Version
 	if !provision {
 		fixture.Agent.Spec.Agent.Image = ptr.To("registry.example.com/" + agentType + "-gateway:" + h.chart.Metadata.AppVersion)
@@ -496,6 +501,7 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Policy.Name = name + "-normal"
 	fixture.Policy.Spec.Security.ReadOnlyRootFilesystem = nil
 	fixture.Policy.Spec.SandboxSelection.AllowMultiple = true
+	fixture.Policy.Spec.ModelAccess = api.AgentPolicyModelAccess{SharedModels: api.AgentPolicySharedModelsAccess{Allowed: []string{"example-model"}}, GatewayBudget: &api.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "10", MaxMonthlyUSD: "100"}}
 	h.create(t, fixture.Sandbox)
 	h.create(t, fixture.Policy)
 	f.spare = fixture.Sandbox.DeepCopy()
@@ -508,7 +514,6 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Team.Spec = api.TeamSpec{
 		SandboxRefs: []string{fixture.Sandbox.Name, f.spare.Name}, DefaultSandboxRef: fixture.Sandbox.Name,
 		AgentPolicyRef: fixture.Policy.Name,
-		Defaults:       api.TeamDefaultsSpec{Provider: "github_copilot"},
 	}
 	h.create(t, fixture.Team)
 	fixture.Agent.Spec.Team, fixture.Agent.Spec.SandboxRef = fixture.Team.Name, fixture.Sandbox.Name
@@ -563,6 +568,9 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	if provision {
 		h.create(t, secret)
 	}
+	if provision {
+		f.seedBootstrapReceipt(t, secret)
+	}
 	fixture.Input.RuntimeClass.Name = name + "-kata"
 	h.create(t, fixture.Input.RuntimeClass)
 	storage := &storagev1.StorageClass{
@@ -614,6 +622,7 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 			t.Fatal("held staging started before durable ownership, grant inventory and finalizer persistence")
 		}
 	}
+	f.reconcileConfiguration(t)
 	return f
 }
 
@@ -758,10 +767,55 @@ func (f *preparationCase) restart() {
 	f.reconciler = &controller.AgentReconciler{
 		Client: f.h.client, APIReader: f.h.client, Scheme: f.h.scheme,
 		OperatorNamespace: preparationStateNamespace, DomainSuffix: "example.com", DefaultModel: "example-model",
+		EventRecorder:       record.NewFakeRecorder(1000),
+		AIGateway:           controller.AIGatewayConfig{Enabled: true, URL: "http://gateway.platform.svc.cluster.local:8443", MasterKeySecretName: "synthetic-gateway-master", MasterKeySecretKey: "master-key"},
+		AIGatewayHTTPClient: &http.Client{Transport: f.h.gateway},
 		SandboxPreparation: &controller.SandboxPreparation{
 			Configuration: f.source, Prerequisites: f.source, Installer: f.installer,
 			AdmissionServiceAccount: preparationAdmissionAccount,
 		},
+	}
+}
+
+// The API-only fixture explicitly supplies the same ownership evidence that
+// bootstrap persists in production. Real namespace/receipt UIDs are used so
+// credential projection still exercises the namespace identity checks.
+func (f *preparationCase) seedBootstrapReceipt(t *testing.T, secret *corev1.Secret) {
+	t.Helper()
+	agent, namespace, home := f.fixture.Agent, f.fixture.Namespace, f.fixture.Input.Home
+	sum := sha256.Sum256([]byte(agent.UID))
+	raw, err := json.Marshal(map[string]any{
+		"version": "v1", "agentName": agent.Name, "agentUID": agent.UID, "agentType": agent.Spec.Agent.Type,
+		"namespace": namespace.Name, "chartVersion": f.h.chart.Metadata.Version,
+		"home": runtimebindings.HomeClaim{StorageClass: ptr.Deref(home.Spec.StorageClassName, ""), StorageSize: home.Spec.Resources.Requests.Storage().String(), AccessMode: string(home.Spec.AccessModes[0])},
+		"objects": []map[string]any{
+			{"kind": "Namespace", "name": namespace.Name, "uid": namespace.UID},
+			{"kind": "Role", "name": "cetirun-operator-ns-role"},
+			{"kind": "RoleBinding", "name": "cetirun-operator-ns-rolebinding"},
+			{"kind": "PersistentVolumeClaim", "name": home.Name, "uid": home.UID},
+			{"kind": "Secret", "name": secret.Name, "uid": secret.UID},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: fmt.Sprintf("sandbox-bootstrap-%x", sum[:20]), Namespace: preparationStateNamespace,
+		OwnerReferences: []metav1.OwnerReference{w.AgentOwner(agent.Name, agent.UID)},
+		Annotations:     map[string]string{w.AgentUIDAnnotation: string(agent.UID)},
+	}, Data: map[string]string{"bootstrap.json": string(raw)}}
+	f.h.create(t, receipt)
+	namespace.Annotations["cetirun.microsoft.com/sandbox-bootstrap"] = string(receipt.UID)
+	namespace.Labels["app.kubernetes.io/name"] = "cetirun"
+	namespace.Labels["app.kubernetes.io/instance"] = agent.Spec.User.Alias
+	namespace.Labels["app.kubernetes.io/managed-by"] = "cetirun-operator"
+	namespace.Finalizers = append(namespace.Finalizers, sandbox.BootstrapFinalizer)
+	f.h.update(t, namespace)
+	for _, object := range []client.Object{home, secret} {
+		object.SetAnnotations(map[string]string{w.AgentUIDAnnotation: string(agent.UID), w.AgentNameAnnotation: agent.Name, "cetirun.microsoft.com/sandbox-bootstrap": string(receipt.UID)})
+		object.SetOwnerReferences([]metav1.OwnerReference{w.AgentOwner(agent.Name, agent.UID)})
+		object.SetFinalizers(append(object.GetFinalizers(), sandbox.BootstrapFinalizer))
+		f.h.update(t, object)
 	}
 }
 
@@ -807,6 +861,11 @@ func (f *preparationCase) reconcileConfiguration(t *testing.T) {
 			t.Fatalf("AgentPolicy %s must persist current-generation Accepted: %+v", current.Name, current.Status)
 		}
 	}
+	teamController := &controller.TeamReconciler{Client: f.h.client, APIReader: f.h.client}
+	if _, err := teamController.Reconcile(f.h.ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.fixture.Team)}); err != nil {
+		t.Fatalf("reconcile Team assignment: %v", err)
+	}
+	f.h.get(t, client.ObjectKeyFromObject(f.fixture.Team), f.fixture.Team)
 	agent := f.agent(t)
 	if apimeta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionSandboxReady) ||
 		agent.Status.Sandbox != nil || agent.Status.AccessURL != "" || f.installer.stageCalls != 0 {
@@ -823,6 +882,8 @@ func (f *preparationCase) reconcile(t *testing.T) {
 			t.Logf("persisted Pod template API defaults: restartPolicy=%q schedulerName=%q terminationGracePeriodSeconds=%d deprecatedServiceAccount=%q",
 				spec.RestartPolicy, spec.SchedulerName, ptr.Deref(spec.TerminationGracePeriodSeconds, -1), spec.DeprecatedServiceAccount)
 		}
+		current := f.agent(t)
+		t.Logf("held projection: generation=%d policy=%+v gateway=%+v conditions=%+v", current.Generation, current.Status.Policy, current.Status.AIGateway, current.Status.Conditions)
 		t.Fatalf("reconcile held native Sandbox: %v", err)
 	}
 }
@@ -1070,7 +1131,7 @@ func (f *preparationCase) assertSourceAccess(t *testing.T, granted bool) {
 		f.h.get(t, key, binding)
 		want := []rbacv1.PolicyRule{
 			{APIGroups: []string{""}, Resources: []string{"configmaps"}, ResourceNames: []string{f.workloadName() + "-config"}, Verbs: []string{"get"}},
-			{APIGroups: []string{""}, Resources: []string{"secrets"}, ResourceNames: []string{f.fixture.Agent.Spec.GatewayTokenSecretRef}, Verbs: []string{"get"}},
+			{APIGroups: []string{""}, Resources: []string{"secrets"}, ResourceNames: []string{"ai-gateway-virtual-key", f.fixture.Agent.Spec.GatewayTokenSecretRef}, Verbs: []string{"get"}},
 		}
 		if !equality.Semantic.DeepEqual(role.Rules, want) ||
 			binding.RoleRef != (rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: role.Name}) ||
@@ -1081,7 +1142,7 @@ func (f *preparationCase) assertSourceAccess(t *testing.T, granted bool) {
 		}
 	}
 	for _, resource := range []struct{ kind, name string }{
-		{"secrets", f.fixture.Agent.Spec.GatewayTokenSecretRef}, {"configmaps", f.workloadName() + "-config"},
+		{"secrets", "ai-gateway-virtual-key"}, {"secrets", f.fixture.Agent.Spec.GatewayTokenSecretRef}, {"configmaps", f.workloadName() + "-config"},
 	} {
 		for _, check := range []struct {
 			namespace, verb, name string

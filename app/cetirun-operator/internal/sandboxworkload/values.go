@@ -70,6 +70,15 @@ func ValidateUserValues(values map[string]any, authorizedSecrets []string) error
 					}
 				}
 			}
+		case "ttyd":
+			settings, ok := value.(map[string]any)
+			if !ok || len(settings) != 1 {
+				return fmt.Errorf("ttyd only permits an enabled setting")
+			}
+			_, ok = settings["enabled"].(bool)
+			if !ok {
+				return fmt.Errorf("ttyd.enabled must be a boolean")
+			}
 		default:
 			return fmt.Errorf("Sandbox Helm value %q is protected or unsupported", key)
 		}
@@ -80,7 +89,7 @@ func ValidateUserValues(values map[string]any, authorizedSecrets []string) error
 func ValidateReconciledUserValues(values map[string]any, authorizedSecrets []string) error {
 	for name, value := range values {
 		switch name {
-		case "secrets", "extraEnv":
+		case "secrets", "extraEnv", "ttyd":
 			if err := ValidateUserValues(map[string]any{name: value}, authorizedSecrets); err != nil {
 				return err
 			}
@@ -148,6 +157,18 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	} else if gateway["enabled"] == true {
 		return nil, fmt.Errorf("native Gateway requires a typed authorized key projection")
 	}
+	terminalEnabled := b.input.Terminal != nil
+	if requested, present := out["ttyd"]; present {
+		settings, ok := requested.(map[string]any)
+		value, ok := settings["enabled"].(bool)
+		if !ok {
+			return nil, fmt.Errorf("ttyd.enabled must be a boolean")
+		}
+		terminalEnabled = value
+	}
+	if terminalEnabled && b.input.Terminal == nil {
+		return nil, fmt.Errorf("terminal is unavailable for this Sandbox")
+	}
 	if b.input.SkillsMode == SkillsModeEmpty && out["skills"] != nil {
 		skills, ok := out["skills"].(map[string]any)
 		if !ok {
@@ -199,7 +220,7 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 			"size": b.input.Resolution.Sandbox.Storage.Home.Size.String(), "annotations": map[string]any{},
 		},
 		"skills": map[string]any{
-			"shared": b.input.SkillsMode != SkillsModeEmpty, "existingClaim": skillsIdentity(b.input.Skills).Name, "mountPath": SkillsPath,
+			"shared": b.input.SkillsMode != SkillsModeEmpty, "existingClaim": skillsIdentity(b.input.Skills).Name, "mountPath": skillsPath(b.input),
 			"npm": []any{}, "clawHub": []any{},
 		},
 		"doctor":                    map[string]any{"enabled": b.input.Helpers.Doctor},
@@ -215,6 +236,9 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		"topologySpreadConstraints": []any{},
 		"autoscaling":               map[string]any{"enabled": false},
 		"ingress":                   map[string]any{"enabled": false},
+		// The only tenant-controlled terminal input is this boolean. The image,
+		// network destination, identity and command remain platform-owned.
+		"ttyd": map[string]any{"enabled": terminalEnabled},
 		// Protected namespaces use the operator's CONNECT guard instead of
 		// the legacy per-release exec policy and its caller exemption.
 		"execRestriction":     map[string]any{"enabled": false},
@@ -231,8 +255,35 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 			"objects": nonNilList(controls),
 		},
 	}
-	if b.input.GatewayKey != nil {
+	if b.input.SingleStart && b.input.AgentType == "openclaw" {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
+	}
+	if custom := b.input.CustomAgent; custom != nil {
+		port := any(nil)
+		if custom.Port != nil {
+			port = *custom.Port
+		}
+		overlay["runtime"] = map[string]any{
+			"contractVersion": ContractVersion,
+			"agent": map[string]any{
+				"type": "custom", "image": custom.Image, "username": custom.Username,
+				"home": custom.Home, "port": port, "webUI": custom.WebUI,
+				"webBasePath": custom.WebBasePath, "webInstance": custom.WebInstance,
+			},
+			"model": map[string]any{
+				"apiBase": b.input.GatewayAPIBase, "keySecretName": b.input.GatewayKey.Name,
+				"keySecretKey": "api-key",
+			},
+			"environment": customEnvironmentValues(custom.Environment),
+			"ports":       customPortValues(custom.Ports),
+			"http":        customHTTPValues(custom.HTTP),
+		}
+	}
+	if terminal := b.input.Terminal; terminal != nil {
+		overlay[ValuesKey].(map[string]any)["terminal"] = map[string]any{
+			"enabled": terminalEnabled, "image": terminal.Image, "port": terminal.Port,
+			"sessionSeconds": terminal.SessionSeconds, "serviceAccountName": terminal.ServiceAccountName,
+		}
 	}
 	if b.input.Reconciled {
 		overlay["replicaCount"] = 1
@@ -326,6 +377,31 @@ func nonNilList(value any) any {
 		return []any{}
 	}
 	return value
+}
+
+func customEnvironmentValues(values []CustomEnvironment) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, map[string]any{"name": value.Name, "value": value.Value, "credentialSlot": value.CredentialSlot})
+	}
+	return out
+}
+
+func customPortValues(values []CustomPort) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, map[string]any{"name": value.Name, "number": value.Number})
+	}
+	return out
+}
+
+func customHTTPValues(value *CustomHTTP) any {
+	if value == nil {
+		return nil
+	}
+	return map[string]any{"portName": value.PortName, "healthPath": value.HealthPath,
+		"readinessPath": value.ReadinessPath, "startupPath": value.StartupPath,
+		"chatPath": value.ChatPath, "modelsPath": value.ModelsPath}
 }
 
 func textValue(value any) string {

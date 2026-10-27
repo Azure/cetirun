@@ -313,6 +313,11 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 	if errs := CheckCompatibility(box, policy, nativeCapabilities()); len(errs) != 0 {
 		t.Fatal("bounded native baseline rejected:", errs)
 	}
+	customPolicy := policy.DeepCopy()
+	customPolicy.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeCustom}
+	if errs := CheckCompatibility(box, *customPolicy, nativeCapabilities()); len(errs) != 0 {
+		t.Fatal("Custom common Sandbox baseline rejected:", errs)
+	}
 	for name, mutate := range map[string]func(*Capabilities){
 		"unknown profile": func(c *Capabilities) { c.Profile = "other" },
 		"empty profile still requires qualification": func(c *Capabilities) { c.Profile = "" },
@@ -341,9 +346,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		})
 	}
 	for name, mutate := range map[string]func(*cetirunv1alpha1.AgentPolicySpec){
-		"Custom": func(p *cetirunv1alpha1.AgentPolicySpec) {
-			p.Harnesses.Allowed = append(p.Harnesses.Allowed, cetirunv1alpha1.AgentTypeCustom)
-		},
 		"FQDN": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedFQDNs = []string{"blocked.example.com"} },
 		"port": func(p *cetirunv1alpha1.AgentPolicySpec) {
 			p.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest, SetInstanceSuspendedRequest, StatusResponse } from "../types/instance";
+import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest, SetInstanceSuspendedRequest, StatusResponse, TeamChangeOperation, TeamChangeRequest } from "../types/instance";
 import { apiFetch, PortalError } from "./fetch";
 
 export type InstanceResponse = Instance;
@@ -163,7 +163,7 @@ export function isRestartRequestRejected(error: unknown): boolean {
 
 export function isSuspensionRequestRejected(error: unknown): boolean {
   if (!(error instanceof PortalError)) return false;
-  return (error.status === 409 && ["instance_changed", "instance_deleting", "suspension_unavailable", "suspension_home_required"].includes(error.code ?? "")) ||
+  return (error.status === 409 && ["instance_changed", "instance_deleting", "suspension_unavailable", "suspension_home_required", "team_change_pending"].includes(error.code ?? "")) ||
     (error.status === 503 && error.code === "suspension_home_unverified") ||
     (error.status === 403 && ["forbidden", "invalid_origin", "admission_rejected"].includes(error.code ?? "")) ||
     (error.status === 400 && ["invalid_body", "invalid_agent", "invalid_name"].includes(error.code ?? "")) ||
@@ -223,6 +223,28 @@ export async function updateInstanceByName(name: string, req: UpdateInstanceRequ
   if (!response.ok) {
     const err = await response.json();
     throw new Error(err.error?.message || "Failed to update instance");
+  }
+  return response.json();
+}
+
+export async function getTeamChangeByName(name: string): Promise<TeamChangeOperation> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/team-change`);
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error?.message || "Failed to get Team change status");
+  }
+  return response.json();
+}
+
+export async function requestTeamChangeByName(name: string, request: TeamChangeRequest, requestId: string): Promise<TeamChangeOperation> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/team-change`, {
+    method: "POST",
+    headers: { "Idempotency-Key": requestId },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new PortalError(err.error?.message || "Failed to request Team change", response.status, err.error?.code);
   }
   return response.json();
 }

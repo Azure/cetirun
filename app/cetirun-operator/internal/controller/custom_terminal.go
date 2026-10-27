@@ -12,6 +12,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	appsv1 "k8s.io/api/apps/v1"
@@ -67,7 +68,33 @@ func (r *AgentReconciler) ensureTerminalReadRoles(ctx context.Context, instance 
 			return err
 		}
 	}
-	return nil
+	readerMeta := *reader.ObjectMeta.DeepCopy()
+	readerMeta.UID, readerMeta.ResourceVersion = "", ""
+	readerBinding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: readerMeta,
+		Subjects: []rbacv1.Subject{{
+			Kind: "ServiceAccount", Namespace: instanceNamespace(instance.Name),
+			Name: terminalpolicy.WorkloadName(instanceServiceName(instance.Name)),
+		}},
+		RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: reader.Name},
+	}
+	currentBinding := &rbacv1.ClusterRoleBinding{}
+	err := r.customReader().Get(ctx, client.ObjectKeyFromObject(readerBinding), currentBinding)
+	if apierrors.IsNotFound(err) {
+		return r.Create(ctx, readerBinding)
+	}
+	if err != nil {
+		return err
+	}
+	if !hasAgentOwner(currentBinding, instance) || currentBinding.GetAnnotations()[customAgentUID] != string(instance.UID) {
+		return fmt.Errorf("terminal Agent reader binding has foreign ownership")
+	}
+	if equality.Semantic.DeepEqual(currentBinding.Subjects, readerBinding.Subjects) && currentBinding.RoleRef == readerBinding.RoleRef {
+		return nil
+	}
+	before := currentBinding.DeepCopy()
+	currentBinding.Subjects, currentBinding.RoleRef = readerBinding.Subjects, readerBinding.RoleRef
+	return r.Patch(ctx, currentBinding, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 }
 
 // Include both the Service address and backend addresses because CNI policy
@@ -164,7 +191,7 @@ func (r *AgentReconciler) stopCustomTerminal(ctx context.Context, instance *api.
 		}
 		return err
 	}
-	if !hasCustomWorkloadOwner(deployment, instance) || deployment.Annotations[customAgentUID] != string(instance.UID) {
+	if !commonCustomTerminalOwned(deployment, instance) {
 		return fmt.Errorf("Custom terminal owner is not confirmed")
 	}
 	if ptr.Deref(deployment.Spec.Replicas, 0) == 0 {
@@ -184,10 +211,26 @@ func (r *AgentReconciler) customTerminalReady(ctx context.Context, instance *api
 		}
 		return false, err
 	}
-	if !hasAgentOwner(deployment, instance) || deployment.Annotations[customAgentUID] != string(instance.UID) {
+	if !commonCustomTerminalOwned(deployment, instance) {
 		return false, fmt.Errorf("Custom terminal owner is not confirmed")
+	}
+	_, expected, err := r.readReconciledSandboxExpectation(ctx, instance)
+	if err != nil {
+		return false, fmt.Errorf("Custom terminal common Sandbox expectation is not confirmed: %w", err)
+	}
+	if expected.Terminal == nil || expected.Binding.AgentUID != instance.UID {
+		return false, fmt.Errorf("Custom terminal common Sandbox expectation is not confirmed")
 	}
 	return deployment.DeletionTimestamp.IsZero() && ptr.Deref(deployment.Spec.Replicas, 0) == 1 &&
 		deployment.Status.ObservedGeneration >= deployment.Generation &&
 		deployment.Status.AvailableReplicas > 0, nil
+}
+
+// commonCustomTerminalOwned accepts only a Deployment rendered by the typed
+// common Sandbox contract. The terminal chart deliberately uses the Sandbox
+// label rather than the legacy Custom-runtime annotation.
+func commonCustomTerminalOwned(deployment *appsv1.Deployment, instance *api.Agent) bool {
+	return deployment != nil && instance != nil && hasAgentOwner(deployment, instance) &&
+		deployment.Labels[sandboxpolicy.AgentUIDLabel] == string(instance.UID) &&
+		deployment.Labels["cetirun.microsoft.com/terminal"] == "true"
 }

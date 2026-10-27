@@ -563,6 +563,7 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 	create(f.fixture.Input.Skills)
 	create(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "example-config", Namespace: f.fixture.Namespace.Name}})
 	create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "runtime-secret", Namespace: f.fixture.Namespace.Name}})
+	create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-key", Namespace: f.fixture.Namespace.Name}})
 	resources := sandbox.Resources{
 		Sandboxes:     map[string]*api.Sandbox{f.fixture.Sandbox.Name: f.fixture.Sandbox},
 		AgentPolicies: map[string]*api.AgentPolicy{f.fixture.Policy.Name: f.fixture.Policy},
@@ -621,7 +622,12 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 	}
 	prepared, err := helm.PrepareSandboxChart(chrt, map[string]any{
 		"agentType": "hermes", "agentRequest": map[string]any{"type": "hermes"},
-		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
+		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model",
+			"apiBase": "http://gateway.example-platform.svc.cluster.local:4000/v1"},
+		"aiGateway": map[string]any{
+			"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key",
+			"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
+		},
 	}, nil, bundle)
 	if err != nil {
 		t.Fatal(err)

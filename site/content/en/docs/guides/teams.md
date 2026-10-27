@@ -1,6 +1,6 @@
 ---
 title: "Configure a team"
-description: "Apply shared context and provider defaults with Team."
+description: "Apply shared context, policy, Sandbox, and model access with Team."
 weight: 50
 ---
 
@@ -73,8 +73,6 @@ spec:
     role: Engineer
     description:
       - Review changes before applying them.
-  defaults:
-    provider: github_copilot
 ```
 
 An instance references the team with `spec.team: platform`. The team must exist:
@@ -82,10 +80,9 @@ a missing reference produces `TeamNotFound` on the instance. Team resource
 changes enqueue referencing instances and change their configuration hash,
 which can trigger Helm upgrades and pod rollouts.
 
-Hermes refreshes `.hermes/memories/TEAM.md` at initialization. OpenClaw renders
-the context into its initial `USER.md`, but preserves that file after home
-initialization. Changing a team does not continuously rewrite every agent's
-user memory. See [runtime file updates](../../concepts/configuration/#runtime-files-and-updates).
+Hermes refreshes `.hermes/memories/TEAM.md` at initialization. OpenClaw refreshes
+a marked, platform-managed Team block in `USER.md`, preserving personal content
+outside that block. Historical sessions remain in HOME. See [runtime file updates](../../concepts/configuration/#runtime-files-and-updates).
 
 Add `spec.skills` for approved identifiers and `spec.skillStorage` for a
 reviewed shared Blob container. See [configuration and skills](../../concepts/configuration/)
@@ -94,14 +91,25 @@ names. Install and verify each skill's external dependencies separately.
 The shared storage account/container and CSI prerequisites must already exist;
 the team resource does not provision cloud storage.
 
-The team supplies a provider, not a model ID or API credential. Instance Helm
-provider settings take precedence, and OpenAI/Anthropic need an explicit model
-and separately prepared credentials. Effective skill IDs are
-`(team skills ∪ add) − remove`; removal wins, but does not enforce a prohibition
-against separate Helm configuration or user-installed files.
+Every Agent obtains its models through the platform AI Gateway. The Team's
+Agent Policy grants model access; Team provider defaults and direct model
+credentials are not supported. Effective skill IDs are
+`(team skills ∪ add) − remove`, subject to Policy validation.
 
-Applying a team or editing its provider/context triggers reconciliation of
-member instances. Review the affected users before applying a change.
+An owner can change a running Agent's Team from its page. Platform
+administrators can also request a change from the instance list. The operation
+validates the target first, then stops, reauthorizes, and resumes the same
+Agent. No manual pause is required; a short interruption is expected. An
+existing pause remains in effect. The UID, owner, HOME, Gateway key, spend,
+and reset schedule are preserved. A different Sandbox is allowed only when
+its storage contract matches the existing HOME; storage migration is separate.
+A Team change also preserves any per-Agent monthly budget override. Change
+that override through the administrator-only, paused-Agent budget workflow.
+A failed preflight leaves the Agent running. A failure after stopping keeps it
+held for recovery. Other configuration changes wait for this operation.
+
+Editing shared Team context triggers reconciliation of member instances.
+Review the affected users before applying a change.
 Deleting a referenced team is not a cascade-delete or safe detach. Move
 references deliberately before deleting a team; configuration admission
 continues to enforce its consumer and cleanup requirements.
@@ -109,6 +117,25 @@ continues to enforce its consumer and cleanup requirements.
 The Team controller reports whether configuration references are accepted.
 Inspect each member instance's conditions and effective configuration for
 runtime readiness; accepted Team configuration is not runtime enforcement.
+
+## Upgrading existing installations
+
+Before upgrading, inventory Agents without Team/Sandbox bindings and Teams
+without Policy/allowed-Sandbox/default-Sandbox references. Pause ungoverned
+Agents using the existing release and retain their HOME claims. The new
+release holds incomplete configurations; it does not provision through a
+legacy path or automatically choose governance on behalf of an owner.
+
+Configure the required references and authorize each retained Agent before
+resuming it. Remove Team provider defaults and direct model credentials from
+deployment values. Custom runtime configuration accepts `enabled` and
+`approvedImages`; storage and context now come from the common Sandbox path.
+Keep the AI Gateway enabled for the Operator and Portal.
+
+Retain the previous release, values and CRDs as rollback evidence. A Helm
+rollback does not restore CRDs or external Gateway state. Finish or safely
+pause in-progress Team changes before reverting the controller: their durable
+coordination records must be resolved by a controller that understands them.
 
 ## Smart routing
 

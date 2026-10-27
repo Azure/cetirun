@@ -135,10 +135,37 @@ type Platform struct {
 
 type CompileInput struct {
 	NativeExecution bool
-	Resolution      sandbox.Resolution
-	AgentName       string
-	Namespace       string
-	Platform        Platform
+	// IngressProxyTrust derives authenticated proxy addresses from the approved
+	// topology for a held Harness. It does not enable a native execution profile
+	// or release the workload's execution hold.
+	IngressProxyTrust bool
+	Resolution        sandbox.Resolution
+	AgentName         string
+	Namespace         string
+	Platform          Platform
+	// CustomIngress is an operator-derived Custom Harness HTTP contract. It is
+	// deliberately separate from AgentPolicy so callers cannot request a port
+	// or peer through an Agent-owned object.
+	CustomIngress *CustomIngress
+	// TerminalIngress is the controller-derived port of the isolated Custom
+	// terminal. It is separate from CustomIngress because its endpoint selector
+	// and egress authority must not apply to the Agent workload.
+	TerminalIngress *TerminalIngress
+}
+
+type CustomIngress struct {
+	Port        int32           `json:"port"`
+	WebUI       bool            `json:"webUI,omitempty"`
+	ChatCallers []IngressCaller `json:"chatCallers,omitempty"`
+}
+
+type IngressCaller struct {
+	Namespace string            `json:"namespace"`
+	PodLabels map[string]string `json:"podLabels"`
+}
+
+type TerminalIngress struct {
+	Port int32 `json:"port"`
 }
 
 // Plan contains desired resources, never observed status. Render Resources
@@ -160,8 +187,9 @@ type NetworkPlan struct {
 	IngressMode api.AgentPolicyIngressMode `json:"ingressMode"`
 	DNSIPs      []string                   `json:"dnsIPs"`
 	// The existing wire field also carries explicitly registered ingress Pod CIDRs.
-	TrustedProxyIPs []string            `json:"trustedProxyIPs,omitempty"`
-	Policy          CiliumNetworkPolicy `json:"policy"`
+	TrustedProxyIPs []string             `json:"trustedProxyIPs,omitempty"`
+	Policy          CiliumNetworkPolicy  `json:"policy"`
+	TerminalPolicy  *CiliumNetworkPolicy `json:"terminalPolicy,omitempty"`
 }
 
 type IdentityPlan struct {

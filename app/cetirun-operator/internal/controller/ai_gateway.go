@@ -78,6 +78,10 @@ const (
 	// placed before an old policy projection is replaced. It may be cleared
 	// only after the new key grant has been read back successfully.
 	aiGatewayReasonPolicyReprojection = "PolicyReprojection"
+	// aiGatewayReasonPolicyDenied is an operator-owned block placed while the
+	// current Team or policy denies the Agent. It preserves the key record and
+	// its accounting state for a later authorization recovery.
+	aiGatewayReasonPolicyDenied = "PolicyDenied"
 	// aiGatewayReasonDisabled reports an Agent whose chart takes its models
 	// only from the Gateway in a deployment that has not enabled it.
 	aiGatewayReasonDisabled = "AIGatewayDisabled"
@@ -388,12 +392,11 @@ func aiGatewayKeyModels(groups []string) []string {
 	return models
 }
 
-// aiGatewayHarnessSupported reports whether the built-in harness is wired to
-// the Gateway: its configuration takes the Gateway endpoint, key, and model
-// list instead of a provider credential or in-agent Copilot login. The pinned
-// chart must declare the harness-specific paths too (aiGatewayChartSupports).
+// aiGatewayHarnessSupported reports whether a harness is wired to the
+// Gateway. Every supported harness receives the endpoint and key through its
+// protected execution contract; Custom retains only its process adaptation.
 func aiGatewayHarnessSupported(agentType cetirunv1alpha1.AgentType) bool {
-	return agentType == cetirunv1alpha1.AgentTypeOpenClaw || agentType == cetirunv1alpha1.AgentTypeHermes
+	return agentType == cetirunv1alpha1.AgentTypeOpenClaw || agentType == cetirunv1alpha1.AgentTypeHermes || agentType == cetirunv1alpha1.AgentTypeCustom
 }
 
 // aiGatewayChartValue and aiGatewayChartModelsValue are the agent chart
@@ -460,7 +463,7 @@ var digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // traffic on the Gateway. Chart support and a provisioned key are checked
 // separately.
 func (r *AgentReconciler) aiGatewayRequired(instance *cetirunv1alpha1.Agent) bool {
-	return r.AIGateway.Enabled && (aiGatewayHarnessSupported(instance.Spec.Agent.Type) || r.customGatewaySelected(instance))
+	return r.AIGateway.Enabled && aiGatewayHarnessSupported(instance.Spec.Agent.Type)
 }
 
 // aiGatewayCopilotOffered reports whether the deployment gives Agents a
@@ -616,6 +619,12 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	// changed on every pass would re-queue the Agent at once, again and again.
 	verificationDue := aiGatewayVerificationDue(instance, true, time.Now())
 	status := ensureAIGatewayStatus(instance)
+	// Applying keeps the old key blocked while the target grant is projected
+	// and read back. Once the durable transition enters Starting, this same
+	// reconcile has already verified the target grant and may release the
+	// operator-owned block so common Sandbox preparation can consume it.
+	teamChangeBlocked := !instance.Spec.Suspended && instance.Status.TeamChange != nil &&
+		instance.Status.TeamChange.Phase == cetirunv1alpha1.TeamChangeApplying
 	status.KeyAlias = aiGatewayKeyAlias(instance)
 	status.KeySecretName = aiGatewayKeySecretName
 	status.ObservedGeneration = instance.Generation
@@ -797,6 +806,12 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the suspended Agent key is not blocked"))
 		}
 	} else if key.Blocked {
+		// A Team change keeps the old operator-owned block through the target
+		// key projection. The normal Starting reconcile releases it only after
+		// this function has read back the matching target grant.
+		if teamChangeBlocked {
+			goto gatewayBlockVerified
+		}
 		if !aiGatewayOperatorOwnedBlock(status.Reason) {
 			return aiGatewayDegraded(instance, "KeyBlocked", fmt.Errorf("the AI Gateway key is blocked outside a CetiRun suspension or no-entitlement transition"))
 		}
@@ -811,6 +826,8 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			return aiGatewayDegraded(instance, "KeyReadbackMismatch", err)
 		}
 	}
+
+gatewayBlockVerified:
 	// A write-ahead block intent may have refreshed instance.Status and
 	// invalidated a pointer taken before that status patch.
 	status = ensureAIGatewayStatus(instance)
@@ -848,6 +865,12 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
 	if instance.Spec.Suspended {
 		status.Reason = aiGatewayReasonSuspended
+	} else if teamChangeBlocked && key.Blocked {
+		// Keep the receipt on every Applying pass. A restart must
+		// distinguish this operator-owned Team-change fence from an
+		// administrator emergency block until the normal completion reconcile
+		// has actually unblocked the key.
+		status.Reason = aiGatewayReasonPolicyReprojection
 	} else {
 		status.Reason = ""
 	}
@@ -890,13 +913,19 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	if r.aiGatewayRequired(instance) && !chartSupported {
 		message = "AI Gateway virtual key is ready; the Agent's chart version cannot route model traffic through the Gateway"
 	}
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
-		metav1.ConditionTrue, "VirtualKeyReady", message)
+	if teamChangeBlocked && key.Blocked {
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
+			metav1.ConditionFalse, aiGatewayReasonPolicyReprojection, "The target AI Gateway grant is verified but remains blocked until the Team change starts")
+	} else {
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
+			metav1.ConditionTrue, "VirtualKeyReady", message)
+	}
 	return nil
 }
 
 func aiGatewayOperatorOwnedBlock(reason string) bool {
-	return reason == aiGatewayReasonSuspended || reason == aiGatewayReasonNoModels || reason == aiGatewayReasonPolicyReprojection
+	return reason == aiGatewayReasonSuspended || reason == aiGatewayReasonNoModels ||
+		reason == aiGatewayReasonPolicyReprojection || reason == aiGatewayReasonPolicyDenied
 }
 
 // recordAIGatewayBlockIntent durably records why CetiRun is allowed to own a
@@ -916,12 +945,12 @@ func (r *AgentReconciler) recordAIGatewayBlockIntent(ctx context.Context, instan
 	return r.updateStatus(ctx, instance)
 }
 
-// beginAIGatewayPolicyReprojection blocks an active operator-owned key before
-// the Agent controller holds its workload for a changed policy revision. It
-// records distinct ownership for this temporary block, so reconciliation can
-// clear it only after it has read back the replacement grant. A pre-existing
-// block without that ownership remains an administrator emergency block.
-func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+// beginAIGatewayPolicyBlock blocks an active operator-owned key before the
+// Agent controller holds its workload. It records ownership before changing
+// the Gateway, so a later authorized reconciliation can safely clear the
+// block. A pre-existing block without that ownership remains an administrator
+// emergency block.
+func (r *AgentReconciler) beginAIGatewayPolicyBlock(ctx context.Context, instance *cetirunv1alpha1.Agent, reason, intentMessage, blockedMessage string) error {
 	secret, err := r.aiGatewayKeySecret(ctx, instance)
 	if err != nil {
 		return err
@@ -952,22 +981,22 @@ func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, 
 	}
 	status := ensureAIGatewayStatus(instance)
 	if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
-		return fmt.Errorf("the AI Gateway key is already blocked outside an operator policy reprojection")
+		return fmt.Errorf("the AI Gateway key is already blocked outside an operator policy transition")
 	}
 	// Persist ownership before the external side effect. If this write fails,
 	// compute is still held by the caller but the key is left untouched. If a
 	// later receipt write fails after blocking, the next reconcile can safely
 	// resume because this durable intent distinguishes the block from an
 	// administrator emergency block.
-	if status.Reason != aiGatewayReasonPolicyReprojection {
+	if status.Reason != reason {
 		status.Blocked = false
 		status.Routed = false
-		status.Reason = aiGatewayReasonPolicyReprojection
+		status.Reason = reason
 		status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
-			metav1.ConditionFalse, aiGatewayReasonPolicyReprojection, "The old AI Gateway grant will be blocked until the current policy projection is verified")
+			metav1.ConditionFalse, reason, intentMessage)
 		if err := r.updateStatus(ctx, instance); err != nil {
-			return fmt.Errorf("persist AI Gateway policy-reprojection intent: %w", err)
+			return fmt.Errorf("persist AI Gateway policy block intent: %w", err)
 		}
 		status = ensureAIGatewayStatus(instance)
 	}
@@ -980,16 +1009,35 @@ func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, 
 			return err
 		}
 		if key == nil || !key.Blocked {
-			return fmt.Errorf("the AI Gateway key was not blocked for policy reprojection")
+			return fmt.Errorf("the AI Gateway key was not blocked for the policy transition")
 		}
 	}
 	status.Blocked = true
 	status.Routed = false
-	status.Reason = aiGatewayReasonPolicyReprojection
+	status.Reason = reason
 	status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
-		metav1.ConditionFalse, aiGatewayReasonPolicyReprojection, "The old AI Gateway grant is blocked until the current policy projection is verified")
+		metav1.ConditionFalse, reason, blockedMessage)
 	return r.updateStatus(ctx, instance)
+}
+
+// beginAIGatewayPolicyReprojection blocks an active operator-owned key before
+// the Agent controller holds its workload for a changed policy revision. The
+// block is released only after the replacement grant is read back.
+func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+	return r.beginAIGatewayPolicyBlock(ctx, instance, aiGatewayReasonPolicyReprojection,
+		"The old AI Gateway grant will be blocked until the current policy projection is verified",
+		"The old AI Gateway grant is blocked until the current policy projection is verified")
+}
+
+// beginAIGatewayPolicyDenial blocks a key while the current Team or policy
+// denies the Agent. Deleting a key is reserved for Agent deletion, because a
+// later grant must retain its spend, budget reset, alias, and durable block
+// ownership.
+func (r *AgentReconciler) beginAIGatewayPolicyDenial(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+	return r.beginAIGatewayPolicyBlock(ctx, instance, aiGatewayReasonPolicyDenied,
+		"The AI Gateway key will be blocked while the current policy denies the Agent",
+		"The AI Gateway key is blocked while the current policy denies the Agent")
 }
 
 // blockAIGatewayKeyIfPresent revokes an existing operator-owned key without
@@ -1266,6 +1314,26 @@ func servesSignInHelper(instance *cetirunv1alpha1.Agent) bool {
 		return *instance.Status.SignInHelper
 	}
 	return !aiGatewayRoutedStatus(instance)
+}
+
+// applyAIGatewayPreflightValues supplies a syntactically complete, inert
+// Gateway binding while the selected chart is loaded. It is only used before
+// the first Gateway projection; the controller rebuilds the release with
+// applyAIGatewayValues before it can be applied.
+func (r *AgentReconciler) applyAIGatewayPreflightValues(values map[string]any) error {
+	if _, _, err := aiGatewayEndpoint(r.AIGateway.URL); err != nil {
+		return err
+	}
+	const probeModel = "cetirun-preflight"
+	values["secrets"] = deepMerge(values["secrets"], map[string]any{
+		"provider": "openai", "authMode": "api_key", "apiBase": r.AIGateway.URL + "/v1", "apiKey": "", "model": probeModel,
+	})
+	values["aiGateway"] = map[string]any{
+		"enabled": true, "keySecretName": "", "keySecretKey": aiGatewayKeySecretField,
+		"models":       []any{map[string]any{"id": probeModel, "name": probeModel}},
+		"copilotProxy": map[string]any{"enabled": false},
+	}
+	return nil
 }
 
 // applyAIGatewayValues renders the controller-owned model access values. It

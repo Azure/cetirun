@@ -387,7 +387,7 @@ func TestRegistryPermissionErrorsAreRedacted(t *testing.T) {
 	}
 }
 
-func TestMissingRegistrySourceIsHeldBeforeChartResolution(t *testing.T) {
+func TestUngovernedAgentIsHeldBeforeRegistryAndChartResolution(t *testing.T) {
 	r, agent, source := registryFixture(t)
 	ctx := context.Background()
 	agent.Spec.Helm.Version = "0.1.1"
@@ -406,8 +406,8 @@ func TestMissingRegistrySourceIsHeldBeforeChartResolution(t *testing.T) {
 	}
 	_ = r.Get(ctx, client.ObjectKeyFromObject(agent), agent)
 	condition := meta.FindStatusCondition(agent.Status.Conditions, api.ConditionRegistryCredentialsReady)
-	if agent.Status.Policy != nil || condition == nil || condition.Reason != "RegistrySourcePending" || condition.Status != metav1.ConditionFalse {
-		t.Fatalf("legacy Agent did not wait for its registry source: policy=%+v condition=%+v", agent.Status.Policy, condition)
+	if agent.Status.Policy == nil || agent.Status.Policy.Phase != "Denied" || condition != nil {
+		t.Fatalf("missing governance must be rejected before registry or chart processing: policy=%+v condition=%+v", agent.Status.Policy, condition)
 	}
 	workloads := &appsv1.StatefulSetList{}
 	_ = r.List(ctx, workloads)

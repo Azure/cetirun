@@ -645,7 +645,23 @@ func TestNativeSandboxStartFailureRetainsSingleStartBoundary(t *testing.T) {
 
 func TestNativeSandboxSourcesDefaultRemainsHeld(t *testing.T) {
 	f := newNativeSandboxFixture(t, false)
-	f.reconcileOK(t)
+	source, ok := f.r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites)
+	if !ok {
+		t.Fatal("default Sandbox sources did not install Kubernetes prerequisites")
+	}
+	if source.WriterExclusion != nil || source.NativeQuiescence != nil {
+		t.Fatal("default Sandbox sources installed an execution qualification")
+	}
+	if _, err := f.reconcile(); !errors.Is(err, sandbox.ErrObservationUnavailable) {
+		t.Fatal("sources without nativeExecution did not report unavailable writer exclusion:", err)
+	}
+	agent := f.current(t)
+	condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
+	if agent.Status.Policy == nil || agent.Status.Policy.Phase != "Pending" ||
+		condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "ObservationUnavailable" ||
+		!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionAgentConfigReady) {
+		t.Fatalf("sources without nativeExecution did not explicitly hold execution: policy=%+v conditions=%+v", agent.Status.Policy, agent.Status.Conditions)
+	}
 	f.assertNotReady(t)
 	if !slices.Contains(f.current(t).Finalizers, sandbox.HoldFinalizer) || f.installer.stages != 0 {
 		t.Fatal("enabling sources without nativeExecution permitted execution")
@@ -737,6 +753,11 @@ func newUnreconciledSandboxRuntimeFixture(t *testing.T, native bool, skills []st
 ) (*nativeSandboxFixture, testfixture.Fixture) {
 	t.Helper()
 	input := testfixture.New(kind)
+	if kind == "custom" {
+		// Custom schema forbids a caller-provided gatewayTokenSecretRef. The
+		// common runtime bootstrap owns its fixed runtime Secret instead.
+		input.Agent.Spec.GatewayTokenSecretRef = ""
+	}
 	input.Team.Spec.Skills = skills
 	input.Policy.Spec.Skills.Allowed = slices.Clone(skills)
 	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-chart"))

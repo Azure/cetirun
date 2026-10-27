@@ -254,27 +254,11 @@ OpenClaw container env vars (agent-specific only)
       name: {{ include "cetirun.secretName" . }}
       key: PERPLEXITY_API_KEY
       optional: true
-{{- if eq (.Values.secrets.provider | default "github_copilot") "openai" }}
 - name: OPENAI_API_KEY
   valueFrom:
     secretKeyRef:
-      {{- if (.Values.aiGateway | default dict).enabled }}
-      # This Agent's AI Gateway virtual key, managed by the CetiRun operator.
       name: {{ .Values.aiGateway.keySecretName }}
       key: {{ .Values.aiGateway.keySecretKey | default "api-key" }}
-      {{- else }}
-      name: {{ include "cetirun.secretName" . }}
-      key: MODEL_API_KEY
-      optional: true
-      {{- end }}
-{{- else if eq (.Values.secrets.provider | default "github_copilot") "anthropic" }}
-- name: ANTHROPIC_API_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "cetirun.secretName" . }}
-      key: MODEL_API_KEY
-      optional: true
-{{- end }}
 # Gateway token (required). With Portal sign-in, OpenClaw refuses a token and
 # the same secret becomes the password of clients on loopback.
 {{- if eq (include "cetirun.agent.openclaw.portalSignIn" .) "true" }}
@@ -374,6 +358,18 @@ OpenClaw configmap data
     - **What to call them:** {{ .Values.user.displayName | default "" }}
     - **Pronouns:**
     - **Timezone:**
+
+    ## Context
+    {{- if and .Values.user.alias .Values.user.baseDomain }}
+
+    - Has access to this instance at https://{{ .Values.user.alias }}.{{ .Values.user.baseDomain }}
+    {{- end }}
+
+    ---
+
+    _Update this as you learn more about them._
+  team-md: |
+    ## Team context (managed by CetiRun)
     {{- if .Values.user.role }}
     - **Role:** {{ .Values.user.role }}
     {{- end }}
@@ -387,15 +383,6 @@ OpenClaw configmap data
     {{- end }}
     {{- end }}
 
-    ## Context
-    {{- if and .Values.user.alias .Values.user.baseDomain }}
-
-    - Has access to this instance at https://{{ .Values.user.alias }}.{{ .Values.user.baseDomain }}
-    {{- end }}
-
-    ---
-
-    _Update this as you learn more about them._
   init-home.sh: |
 {{ .Files.Get "agents/openclaw/bootstrap/init-home.sh" | indent 4 }}
   {{- if .Values.sandboxWorkload }}

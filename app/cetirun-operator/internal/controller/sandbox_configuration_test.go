@@ -349,6 +349,23 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 	}
 }
 
+func TestLegacyTeamWithoutGovernanceIsNotAccepted(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy-team", UID: "legacy-team-uid", Generation: 1}}
+	kube := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).WithObjects(team).Build()
+	r := &controller.TeamReconciler{Client: kube, APIReader: kube}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), request.NamespacedName, team); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(team.Status.Conditions, api.ConditionTeamAccepted)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "InvalidConfiguration" {
+		t.Fatalf("legacy Team was accepted without governance: %+v", team.Status)
+	}
+}
+
 func TestTeamDependencyReadFailureIsUnknownAndRetryable(t *testing.T) {
 	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid"}}
 	box := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "standard-uid"}}

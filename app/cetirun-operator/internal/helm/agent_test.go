@@ -44,6 +44,10 @@ func sampleInput(typ, provider string, integrations bool) map[string]any {
 			"existingSecret": "test-secret", "provider": provider, "model": "test-model",
 			"apiBase": "https://models.example.com/v1", "authMode": "api-key",
 		},
+		"aiGateway": map[string]any{
+			"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key",
+			"models": []any{map[string]any{"id": "test-model", "name": "Test model"}},
+		},
 	}
 	if integrations {
 		v["skills"] = map[string]any{
@@ -212,7 +216,9 @@ func TestInitRuntimeWiring(t *testing.T) {
 		}
 		want := []string{"memory-assets", "init-home-data", "init-skills"}
 		if typ == "openclaw" {
-			want = []string{"memory-assets", "init-home-data", "doctor", "init-skills"}
+			// The one-shot cleanup removes a pre-Gateway sign-in from an existing
+			// HOME. It is not a provider login path and runs before Skills handoff.
+			want = []string{"memory-assets", "init-home-data", "doctor", "retire-copilot-sign-in", "init-skills"}
 		}
 		if !reflect.DeepEqual(names, want) {
 			t.Fatalf("%s init order: %v", typ, names)
@@ -247,72 +253,96 @@ func TestNativeRenderBaseline(t *testing.T) {
 	}
 	useNativeBaselineVersion(chrt)
 	for _, typ := range []string{"hermes", "openclaw"} {
-		for _, provider := range []string{"github_copilot", "openai", "anthropic"} {
-			for _, enabled := range []bool{false, true} {
-				name := typ + "-" + provider
-				if enabled {
-					name += "-integrations"
-				}
-				t.Run(name, func(t *testing.T) {
-					input := sampleInput(typ, provider, enabled)
-					// The original snapshots predate Memory; its default-on delivery
-					// has dedicated tests and must not rewrite these baselines.
-					input["memoryContext"] = map[string]any{"enabled": false}
-					// Pin the original StorageClass input; defaults are tested separately.
-					input["persistence"] = map[string]any{"storageClass": ""}
-					path := filepath.Join("testdata", "harness", name+".json")
-					if baselineChart != "" {
-						snapshot := renderSnapshot(t, chrt, input)
-						raw, err := json.MarshalIndent(snapshot, "", "  ")
-						if err != nil {
-							t.Fatal(err)
-						}
-						if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-							t.Fatal(err)
-						}
-						if err := os.WriteFile(path, append(raw, '\n'), 0644); err != nil {
-							t.Fatal(err)
-						}
-						return
-					}
-					raw, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatal(err)
-					}
-					var want renderBaseline
-					if err := json.Unmarshal(raw, &want); err != nil {
-						t.Fatal(err)
-					}
-					before, _ := json.Marshal(input)
-					prepared, err := PrepareChart(chrt, input)
-					if err != nil {
-						t.Fatal(err)
-					}
-					after, _ := json.Marshal(input)
-					if string(before) != string(after) {
-						t.Fatal("PrepareChart mutated input")
-					}
-					for mode, values := range map[string]map[string]any{"prepared": prepared.Values, "standalone": input} {
-						got := renderSnapshot(t, chrt, values)
-						if !reflect.DeepEqual(got.Native, want.Native) {
-							t.Errorf("%s native config differs from pre-refactor baseline", mode)
-						}
-						for file, hash := range want.Hashes {
-							if got.Hashes[file] != hash {
-								t.Errorf("%s %s differs from pre-refactor manifest", mode, file)
-							}
-						}
-						if len(got.Hashes) != len(want.Hashes) {
-							t.Errorf("%s manifest inventory changed", mode)
-						}
-					}
-					repeated, err := PrepareChart(chrt, input)
-					if err != nil || !reflect.DeepEqual(prepared.Values, repeated.Values) {
-						t.Fatal("non-deterministic preparation")
-					}
-				})
+		for _, enabled := range []bool{false, true} {
+			name := typ + "-openai"
+			if enabled {
+				name += "-integrations"
 			}
+			t.Run(name, func(t *testing.T) {
+				input := sampleInput(typ, "openai", enabled)
+				// The original snapshots predate Memory; its default-on delivery
+				// has dedicated tests and must not rewrite these baselines.
+				input["memoryContext"] = map[string]any{"enabled": false}
+				// Pin the original StorageClass input; defaults are tested separately.
+				input["persistence"] = map[string]any{"storageClass": ""}
+				path := filepath.Join("testdata", "harness", name+".json")
+				if baselineChart != "" {
+					snapshot := renderSnapshot(t, chrt, input)
+					raw, err := json.MarshalIndent(snapshot, "", "  ")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, append(raw, '\n'), 0644); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var want renderBaseline
+				if err := json.Unmarshal(raw, &want); err != nil {
+					t.Fatal(err)
+				}
+				before, _ := json.Marshal(input)
+				prepared, err := PrepareChart(chrt, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				after, _ := json.Marshal(input)
+				if string(before) != string(after) {
+					t.Fatal("PrepareChart mutated input")
+				}
+				for mode, values := range map[string]map[string]any{"prepared": prepared.Values, "standalone": input} {
+					got := renderSnapshot(t, chrt, values)
+					// The checked-in snapshot remains the pre-Gateway baseline. The
+					// Gateway intentionally rewrites native model configuration and
+					// credential projections, but it must not alter the lifecycle
+					// manifest inventory established by that baseline.
+					if len(got.Hashes) != len(want.Hashes) {
+						t.Errorf("%s manifest inventory changed", mode)
+					}
+					for file := range want.Hashes {
+						if _, present := got.Hashes[file]; !present {
+							t.Errorf("%s lost baseline manifest %s", mode, file)
+						}
+					}
+					if len(want.Native) == 0 || len(got.Native) == 0 {
+						t.Fatal("native configuration is absent from the baseline or managed render")
+					}
+				}
+				repeated, err := PrepareChart(chrt, input)
+				if err != nil || !reflect.DeepEqual(prepared.Values, repeated.Values) {
+					t.Fatal("non-deterministic preparation")
+				}
+			})
 		}
+	}
+}
+
+func TestNativeRenderRejectsDirectProviders(t *testing.T) {
+	for _, typ := range []string{"hermes", "openclaw"} {
+		for _, provider := range []string{"github_copilot", "anthropic"} {
+			t.Run(typ+"/"+provider, func(t *testing.T) {
+				input := sampleInput(typ, provider, false)
+				if _, err := PrepareChart(testChart(t), input); err == nil {
+					t.Fatal("direct provider input was accepted")
+				}
+			})
+		}
+	}
+}
+
+func TestNativeChartRequiresAIGatewayContract(t *testing.T) {
+	chrt := testChart(t)
+	delete(chrt.Values, "aiGateway")
+	if _, err := PrepareChart(chrt, sampleInput("openclaw", "openai", false)); err == nil ||
+		!strings.Contains(err.Error(), "AI Gateway contract") {
+		t.Fatalf("chart without the AI Gateway contract was accepted: %v", err)
 	}
 }
 
@@ -435,7 +465,6 @@ func TestNativeReleaseVersionWiring(t *testing.T) {
 func TestNativePreferencesAndCredentialBoundary(t *testing.T) {
 	for _, typ := range []string{"hermes", "openclaw"} {
 		input := sampleInput(typ, "openai", true)
-		input["secrets"].(map[string]any)["apiKey"] = "secret-test-sentinel"
 		input[typ] = map[string]any{"config": map[string]any{"logging": map[string]any{"level": "debug"}}}
 		prepared, err := PrepareChart(testChart(t), input)
 		if err != nil {
@@ -443,7 +472,7 @@ func TestNativePreferencesAndCredentialBoundary(t *testing.T) {
 		}
 		runtime := prepared.Values["runtime"].(map[string]any)
 		raw, err := json.Marshal(runtime)
-		if err != nil || strings.Contains(string(raw), "secret-test-sentinel") {
+		if err != nil || strings.Contains(string(raw), "direct-model-key") {
 			t.Fatal("credential value reached the runtime contribution")
 		}
 		files := runtime["configFiles"].(map[string]any)
@@ -456,6 +485,11 @@ func TestNativePreferencesAndCredentialBoundary(t *testing.T) {
 				t.Fatal("native preference was lost")
 			}
 		}
+		input["secrets"].(map[string]any)["apiKey"] = "direct-model-key"
+		if _, err := PrepareChart(testChart(t), input); err == nil {
+			t.Fatal("direct model credential was accepted")
+		}
+		delete(input["secrets"].(map[string]any), "apiKey")
 		input[typ] = map[string]any{"config": "invalid"}
 		if _, err := PrepareChart(testChart(t), input); err == nil {
 			t.Fatal("malformed native config was silently discarded")

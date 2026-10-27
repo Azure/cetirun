@@ -14,6 +14,7 @@ export interface AdminInstanceSummary {
   uid: string;
   phase?: string;
   ready: boolean;
+  teamChangePending: boolean;
   createdAt: string;
 }
 

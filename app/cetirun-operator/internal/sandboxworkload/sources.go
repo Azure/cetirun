@@ -46,6 +46,26 @@ func AgentSourceReference(agent *api.Agent) (SourceReference, error) {
 			annotations[key] = value
 		}
 	}
+	// Team-change intent is an operation request. It cannot change the active
+	// execution fingerprint before its controller-owned commit; otherwise a
+	// Portal request would invalidate the running source that must be stopped
+	// safely. Committed Team/Sandbox/model fields remain ordinary inputs.
+	spec := agent.Spec
+	spec.TeamChangeRequest = nil
+	generation := agent.Generation
+	if request := agent.Spec.TeamChangeRequest; request != nil {
+		// A request write increments generation before the controller has an
+		// opportunity to persist its checkpoint. The last observed generation is
+		// the only durable running proof during that short window.
+		if agent.Status.ObservedGeneration > 0 {
+			generation = agent.Status.ObservedGeneration
+		}
+		if state := agent.Status.TeamChange; state != nil && state.RequestID == request.RequestID && state.SourceGeneration > 0 &&
+			(state.Phase == api.TeamChangeValidating || state.Phase == api.TeamChangeStopping ||
+				(state.Phase == api.TeamChangeFailed && !state.Stopped)) {
+			generation = state.SourceGeneration
+		}
+	}
 	intent := struct {
 		Spec         api.AgentSpec
 		Annotations  map[string]string
@@ -53,7 +73,7 @@ func AgentSourceReference(agent *api.Agent) (SourceReference, error) {
 		Prepared     bool
 		Bootstrapped bool `json:",omitempty"`
 	}{
-		Spec: agent.Spec, Annotations: annotations,
+		Spec: spec, Annotations: annotations,
 		Held:         slices.Contains(agent.Finalizers, sandbox.HoldFinalizer),
 		Prepared:     slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer),
 		Bootstrapped: slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer),
@@ -65,6 +85,6 @@ func AgentSourceReference(agent *api.Agent) (SourceReference, error) {
 	digest := sha256.Sum256(raw)
 	return SourceReference{
 		APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID,
-		Generation: agent.Generation, IntentDigest: hex.EncodeToString(digest[:]),
+		Generation: generation, IntentDigest: hex.EncodeToString(digest[:]),
 	}, nil
 }

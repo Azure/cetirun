@@ -62,7 +62,7 @@ func TestSandboxSourcesHeldControllerWiring(t *testing.T) {
 				}
 			}
 			config := controller.SandboxSourcesConfig{
-				Enabled: true, PlatformConfigMapName: "sandbox-platform",
+				Enabled: true, BootstrapOwnedPrerequisites: true, PlatformConfigMapName: "sandbox-platform",
 				HomeClaimName: f.fixture.Input.Home.Name, SkillsClaimName: f.fixture.Input.Skills.Name,
 				AdmissionServiceAccount: "cetirun-sandbox-admission", Helpers: f.fixture.Input.Helpers,
 			}
@@ -74,6 +74,7 @@ func TestSandboxSourcesHeldControllerWiring(t *testing.T) {
 			if err := f.client.Create(ctx, configMap); err != nil {
 				t.Fatal(err)
 			}
+			bootstrap := bootstrapReceipt(t, f)
 			preparation, err := controller.NewKubernetesSandboxPreparation(config, f.client, f.installer,
 				"cetirun-system", f.installer.chart.Metadata.Version)
 			if err != nil {
@@ -131,8 +132,13 @@ func TestSandboxSourcesHeldControllerWiring(t *testing.T) {
 			if err := f.client.List(ctx, &state, client.InNamespace(configMap.Namespace)); err != nil {
 				t.Fatal(err)
 			}
-			if len(state.Items) != 1 || state.Items[0].UID != configMap.UID {
+			if len(state.Items) != 2 {
 				t.Fatal("stock source wiring persisted preparation state without a writer-exclusion adapter")
+			}
+			for _, object := range state.Items {
+				if object.UID != configMap.UID && object.UID != bootstrap.UID {
+					t.Fatal("stock source wiring created state beyond its existing platform and bootstrap records")
+				}
 			}
 			workload := &appsv1.StatefulSet{}
 			if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.fixture.Namespace.Name,

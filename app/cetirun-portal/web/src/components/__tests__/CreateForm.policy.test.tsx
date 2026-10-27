@@ -134,6 +134,7 @@ describe("Policy-controlled Agent creation", () => {
   it("does not offer Identity to Custom when it is otherwise allowed", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(respond(options("restricted", {
       policyName: undefined, allowedAgentTypes: ["custom"], agentIdentity: { allowed: true, required: false },
+      gateway: { known: true, agentTypes: ["custom"], sharedModels: [{ name: "allowed-model" }], githubCopilot: false },
     }))));
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup(); renderForm(); await selectTeam(user);

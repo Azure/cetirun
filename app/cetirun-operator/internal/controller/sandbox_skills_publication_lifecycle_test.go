@@ -28,7 +28,7 @@ func TestSandboxSkillsPublicationRejectsForeignBindings(t *testing.T) {
 	for _, kind := range []string{"claim", "volume"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
-			f, _ := newSkillsPublicationFixture(t, "hermes")
+			f, _ := newSkillsPublicationBootstrapFixture(t, "hermes")
 			var foreign client.Object
 			f.reconciler.Client = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
 				Create: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.CreateOption) error {
@@ -129,7 +129,7 @@ func TestSandboxSkillsPublicationRejectsReplacementAndUnsafeDrift(t *testing.T) 
 }
 
 func TestSandboxSkillsPublicationCatalogChangeDuringCreate(t *testing.T) {
-	f, catalog := newSkillsPublicationFixture(t, "openclaw")
+	f, catalog := newSkillsPublicationBootstrapFixture(t, "openclaw")
 	f.reconciler.Client = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.CreateOption) error {
 			if err := c.Create(ctx, object, options...); err != nil {
@@ -159,7 +159,7 @@ func TestSandboxSkillsPublicationReceiptConfirmationFailures(t *testing.T) {
 	for _, index := range []int{5, 6} {
 		for _, responseLost := range []bool{false, true} {
 			t.Run(fmt.Sprintf("object=%d/response-lost=%t", index, responseLost), func(t *testing.T) {
-				f, _ := newSkillsPublicationFixture(t, "hermes")
+				f, _ := newSkillsPublicationBootstrapFixture(t, "hermes")
 				failure := errors.New("synthetic UID confirmation failure")
 				f.reconciler.Client = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
 					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
@@ -395,11 +395,13 @@ func TestSandboxSkillsPublicationRetriesKeepCredentialAndStorageReadsBounded(t *
 	if err := f.reconcile(); !errors.Is(err, sandbox.ErrObservationUnavailable) {
 		t.Fatal(err)
 	}
-	var secretReads, writes int
+	var runtimeSecretReads, writes int
 	spy := interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
-			if _, ok := object.(*corev1.Secret); ok {
-				secretReads++
+			if _, ok := object.(*corev1.Secret); ok && key == (client.ObjectKey{
+				Namespace: f.fixture.Namespace.Name, Name: f.fixture.Agent.Spec.GatewayTokenSecretRef,
+			}) {
+				runtimeSecretReads++
 				return errors.New("publication attempted to read native or provider credentials")
 			}
 			return c.Get(ctx, key, object, options...)
@@ -426,7 +428,7 @@ func TestSandboxSkillsPublicationRetriesKeepCredentialAndStorageReadsBounded(t *
 			t.Fatal("unchanged publication retry did not remain at the fence boundary:", err)
 		}
 	}
-	if writes != 0 || secretReads != 0 {
+	if writes != 0 || runtimeSecretReads != 0 {
 		t.Fatal("unchanged publication rewrote its objects or read credentials")
 	}
 	tuple, err := source.Resolve(context.Background(), f.current(t), f.fixture.Team)

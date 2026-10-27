@@ -366,8 +366,8 @@ func validateAgentPolicyRequest(req AgentPolicyUpsertRequest) string {
 	}
 	seenHarness := map[cetirunv1alpha1.AgentType]bool{}
 	for _, harness := range req.Harnesses.Allowed {
-		if harness != cetirunv1alpha1.AgentTypeOpenClaw && harness != cetirunv1alpha1.AgentTypeHermes {
-			return "harnesses.allowed may contain only openclaw or hermes"
+		if harness != cetirunv1alpha1.AgentTypeOpenClaw && harness != cetirunv1alpha1.AgentTypeHermes && harness != cetirunv1alpha1.AgentTypeCustom {
+			return "harnesses.allowed may contain only openclaw, hermes or custom"
 		}
 		if seenHarness[harness] {
 			return "harnesses.allowed must not contain duplicate entries"

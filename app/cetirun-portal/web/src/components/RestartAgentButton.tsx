@@ -9,7 +9,7 @@ import { useRestartInstanceByName } from "../hooks/useInstance";
 import { isRestartRequestRejected } from "../api/instance";
 import type { Instance, RestartInstanceRequest } from "../types/instance";
 
-export function RestartAgentButton({ instance }: { instance: Instance }) {
+export function RestartAgentButton({ instance, teamChangePending = false }: { instance: Instance; teamChangePending?: boolean }) {
   const restart = useRestartInstanceByName(instance.instanceName);
   const [open, setOpen] = useState(false);
   const [request, setRequest] = useState<RestartInstanceRequest | null>(null);
@@ -47,9 +47,10 @@ export function RestartAgentButton({ instance }: { instance: Instance }) {
   };
 
   return <>
-    <Button onClick={openDialog} disabled={!instance.restartAvailable || pending || restart.isPending}>
+    <Button onClick={openDialog} disabled={teamChangePending || !instance.restartAvailable || pending || restart.isPending}>
       Restart Agent
     </Button>
+    {teamChangePending && <Text role="status">Team change is in progress; restart is unavailable until it completes.</Text>}
     {pending && <Text role="status">
       Restart requested; waiting for the replacement Pod to become ready. Suspension or deletion takes precedence.
     </Text>}

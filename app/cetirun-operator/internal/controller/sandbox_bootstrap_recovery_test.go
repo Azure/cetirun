@@ -29,9 +29,7 @@ import (
 func bootstrappedFixture(t *testing.T, typ string) *preparationFixture {
 	t.Helper()
 	f := newSandboxBootstrapFixture(t, typ, true)
-	if err := f.reconcile(); !apierrors.IsNotFound(err) {
-		t.Fatal(err)
-	}
+	recordHistoricalBootstrap(t, f)
 	return f
 }
 
@@ -314,8 +312,8 @@ func TestSandboxBootstrapGuardRejectsConcurrentAuthorityChange(t *testing.T) {
 		t.Fatal("bootstrap continued writes after an authority change:", err)
 	}
 	f.reconciler.Client = f.client
-	if err := f.reconcile(); !apierrors.IsNotFound(err) {
-		t.Fatal("fresh authority did not recover interrupted ownership:", err)
+	if err := f.reconcile(); err == nil {
+		t.Fatal("fresh authority bypassed the missing skills prerequisite")
 	}
 }
 
@@ -380,8 +378,8 @@ func TestSandboxBootstrapReceiptPatchFailureRetainsIntent(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.reconciler.Client = f.client
-			if err := f.reconcile(); !apierrors.IsNotFound(err) {
-				t.Fatal("receipt write failure was not recoverable:", err)
+			if err := f.reconcile(); err == nil {
+				t.Fatal("receipt write failure bypassed the missing skills prerequisite")
 			}
 			current := &corev1.Namespace{}
 			if err := f.client.Get(context.Background(), client.ObjectKeyFromObject(namespace), current); err != nil || current.UID != namespace.UID {

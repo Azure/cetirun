@@ -8,12 +8,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
+	customharness "github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/custom"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
@@ -29,17 +33,31 @@ import (
 
 var errSandboxSourceChanged = sandboxplatform.ErrSourceChanged
 
+func sandboxGatewayProjectionReadyForLifecycle(agent *api.Agent) bool {
+	if sandboxGatewayProjectionReady(agent) {
+		return true
+	}
+	return agent != nil && agent.Spec.Suspended && agent.Status.AIGateway != nil && agent.Status.Policy != nil &&
+		agent.Status.AIGateway.Phase == api.AIGatewayPhaseReady && agent.Status.AIGateway.Blocked &&
+		agent.Status.AIGateway.Reason == aiGatewayReasonSuspended &&
+		agent.Status.AIGateway.PolicyRevision == agent.Status.Policy.Enforcement.Gateway.DesiredRevision
+}
+
 func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	inputs := attempt.prerequisites
 	agent := attempt.agent
+	agentSource, err := sandboxworkload.AgentSourceReference(agent)
+	if err != nil {
+		return err
+	}
 	config := r.SandboxPreparation
 	if err := configurationSnapshotTime(inputs.ObservedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
 		return err
 	}
-	if inputs.AgentUID != agent.UID || inputs.AgentGeneration != agent.Generation || inputs.Revision == "" ||
+	if inputs.AgentUID != agent.UID || inputs.AgentGeneration != agentSource.Generation || inputs.Revision == "" ||
 		inputs.ChartVersion == "" || (agent.Spec.Helm.Version != "" && agent.Spec.Helm.Version != inputs.ChartVersion) ||
 		inputs.NamespaceUID == "" || inputs.RuntimeSecret.Name == "" || inputs.RuntimeSecret.UID == "" ||
-		agent.Spec.GatewayTokenSecretRef != inputs.RuntimeSecret.Name {
+		sandboxRuntimeSecretName(agent) != inputs.RuntimeSecret.Name {
 		return fmt.Errorf("Sandbox prerequisites must authorize this Agent generation, chart and runtime Secret")
 	}
 	namespace := &corev1.Namespace{}
@@ -111,12 +129,62 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		return fmt.Errorf("Sandbox StorageClass approval changed")
 	}
 	attempt.input = sandboxworkload.Input{
-		Reconciled: attempt.reconciled,
-		Resolution: attempt.resolution, AgentName: agent.Name, AgentGeneration: agent.Generation,
+		Reconciled:  attempt.reconciled,
+		SingleStart: r.SandboxPreparation.NativeExecution && !attempt.reconciled,
+		Resolution:  attempt.resolution, AgentName: agent.Name, AgentGeneration: agentSource.Generation,
 		AgentType: string(agent.Spec.Agent.Type), WorkloadName: instanceServiceName(agent.Name), ReleaseName: helmReleaseName(agent.Name),
 		Namespace: sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID},
 		Home:      home, Skills: skills, SkillsMode: inputs.SkillsMode, RuntimeClass: runtimeClass,
 		Helpers: inputs.Helpers, AuthorizedSecrets: []string{inputs.RuntimeSecret.Name},
+	}
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		if agent.Spec.Agent.Image == nil {
+			return fmt.Errorf("Custom Sandbox preparation requires an approved image")
+		}
+		if !slices.Contains(r.CustomApprovedImages, *agent.Spec.Agent.Image) {
+			return fmt.Errorf("Custom Sandbox image is not approved by the operator")
+		}
+		request := agents.Request{Type: "custom", Image: *agent.Spec.Agent.Image, Port: agent.Spec.Agent.Port, WebUI: agent.Spec.Agent.WebUI}
+		if agent.Spec.Agent.Username != nil {
+			request.Username = *agent.Spec.Agent.Username
+		}
+		resolved, err := agents.ResolveCustom(request)
+		if err != nil {
+			return fmt.Errorf("resolve Custom Sandbox harness: %w", err)
+		}
+		contribution, err := (customharness.Harness{}).Build(resolved, agents.Bindings{
+			ContextRevision: inputs.Revision,
+			Model:           agents.ModelBinding{BaseURL: r.AIGateway.URL + "/v1", CredentialSlot: "model", Revision: string(inputs.RuntimeSecret.UID)},
+			WebBasePath:     "/ui/" + agent.Name + "/", WebInstance: string(agent.UID),
+		})
+		if err != nil {
+			return fmt.Errorf("build Custom Sandbox harness contribution: %w", err)
+		}
+		attempt.input.CustomAgent = &sandboxworkload.CustomAgent{
+			Image: resolved.Image, Username: resolved.Username, Home: resolved.HomeDir, Port: resolved.Port, WebUI: resolved.WebUI,
+			WebBasePath: "/ui/" + agent.Name + "/", WebInstance: string(agent.UID),
+		}
+		for _, value := range contribution.Environment {
+			attempt.input.CustomAgent.Environment = append(attempt.input.CustomAgent.Environment, sandboxworkload.CustomEnvironment{
+				Name: value.Name, Value: value.Value, CredentialSlot: value.CredentialSlot,
+			})
+		}
+		for _, value := range contribution.Ports {
+			attempt.input.CustomAgent.Ports = append(attempt.input.CustomAgent.Ports, sandboxworkload.CustomPort{Name: value.Name, Number: value.Number})
+		}
+		if contribution.HTTP != nil {
+			attempt.input.CustomAgent.HTTP = &sandboxworkload.CustomHTTP{PortName: contribution.HTTP.PortName,
+				HealthPath: contribution.HTTP.HealthPath, ReadinessPath: contribution.HTTP.ReadinessPath,
+				StartupPath: contribution.HTTP.StartupPath, ChatPath: contribution.HTTP.ChatPath, ModelsPath: contribution.HTTP.ModelsPath}
+		}
+		attempt.input.GatewayAPIBase = r.AIGateway.URL + "/v1"
+		if attempt.reconciled {
+			platform, user, err := r.sandboxHelmValues(agent, attempt.team)
+			if err != nil {
+				return err
+			}
+			attempt.input.Terminal = sandboxTerminalInput(platform, user, attempt.input.WorkloadName)
+		}
 	}
 	if state := agent.Status.PlannedMigration; state.CanStart() {
 		attempt.input.PlannedMigration = &state.PlannedMigrationRequest
@@ -134,30 +202,108 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		sandboxSource(storageClass, "storage.k8s.io/v1", "StorageClass"),
 	)
 	attempt.sources = append(attempt.sources, inputs.PublicationSources...)
-	if config.NativeExecution {
-		suspendedProjection := attempt.reconciled && agent.Spec.Suspended && agent.Status.AIGateway != nil &&
-			agent.Status.Policy != nil && agent.Status.AIGateway.Phase == api.AIGatewayPhaseReady &&
-			agent.Status.AIGateway.Blocked && agent.Status.AIGateway.Reason == aiGatewayReasonSuspended &&
-			agent.Status.AIGateway.PolicyRevision == agent.Status.Policy.Enforcement.Gateway.DesiredRevision
-		if !sandboxGatewayProjectionReady(agent) && !suspendedProjection {
-			return fmt.Errorf("%w: current Gateway projection is required for native execution", sandboxpolicy.ErrUnavailable)
-		}
-		key := &corev1.Secret{}
-		if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: aiGatewayKeySecretName}, key); err != nil {
-			return fmt.Errorf("read Sandbox AI Gateway key projection: %w", err)
-		}
-		if key.UID == "" || key.ResourceVersion == "" || !key.DeletionTimestamp.IsZero() ||
-			!hasAgentOwner(key, agent) || key.Labels[aiGatewayAgentUIDLabel] != string(agent.UID) ||
-			!aigateway.ValidKeyValue(string(key.Data[aiGatewayKeySecretField])) {
-			return fmt.Errorf("Sandbox AI Gateway key projection is not owned and ready")
-		}
-		attempt.input.AuthorizedSecrets = append(attempt.input.AuthorizedSecrets, key.Name)
-		attempt.input.GatewayKey = &sandboxworkload.ObjectIdentity{Name: key.Name, UID: key.UID}
-		attempt.sources = append(attempt.sources, sandboxSource(key, "v1", "Secret"))
+	if !sandboxGatewayProjectionReadyForLifecycle(agent) {
+		return fmt.Errorf("%w: current Gateway projection is required for Sandbox execution", sandboxpolicy.ErrUnavailable)
 	}
+	key := &corev1.Secret{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: aiGatewayKeySecretName}, key); err != nil {
+		return fmt.Errorf("read Sandbox AI Gateway key projection: %w", err)
+	}
+	if key.UID == "" || key.ResourceVersion == "" || !key.DeletionTimestamp.IsZero() ||
+		!hasAgentOwner(key, agent) || key.Labels[aiGatewayAgentUIDLabel] != string(agent.UID) ||
+		!aigateway.ValidKeyValue(string(key.Data[aiGatewayKeySecretField])) {
+		return fmt.Errorf("Sandbox AI Gateway key projection is not owned and ready")
+	}
+	attempt.input.AuthorizedSecrets = append(attempt.input.AuthorizedSecrets, key.Name)
+	attempt.input.GatewayKey = &sandboxworkload.ObjectIdentity{Name: key.Name, UID: key.UID}
+	attempt.sources = append(attempt.sources, sandboxSource(key, "v1", "Secret"))
 	// Recheck captured versions before applying grants/workloads or accepting
 	// read-only reuse; durable bookkeeping can precede those checks.
 	return nil
+}
+
+// sandboxTerminalInput selects only a controller-owned immutable terminal
+// image. Agent values may disable the terminal, but cannot select its image,
+// port, session duration, identity, or target.
+func sandboxTerminalInput(platform, user map[string]any, workload string) *sandboxworkload.Terminal {
+	settings, _ := platform["ttyd"].(map[string]any)
+	if settings["enabled"] == false {
+		return nil
+	}
+	if requested, ok := user["ttyd"].(map[string]any); ok && requested["enabled"] == false {
+		return nil
+	}
+	image, _ := settings["image"].(map[string]any)
+	repository, _ := image["repository"].(string)
+	if registry, ok := platform["global"].(map[string]any); ok {
+		if value, ok := registry["registry"].(string); ok && strings.TrimSuffix(value, "/") != "" {
+			repository = strings.TrimSuffix(value, "/") + "/cetirun-terminal"
+		}
+	}
+	digest, _ := image["digest"].(string)
+	if repository == "" || !strings.HasPrefix(digest, "sha256:") {
+		return nil
+	}
+	// Platform values normally contain only deployment-specific overrides. Keep
+	// the chart's terminal defaults here so a pinned platform image is not
+	// silently disabled just because those defaulted fields were omitted.
+	port, portOK := sandboxTerminalNumber(settings["port"])
+	if _, configured := settings["port"]; !configured {
+		port, portOK = 7681, true
+	}
+	session, sessionOK := sandboxTerminalNumber(settings["sessionSeconds"])
+	if _, configured := settings["sessionSeconds"]; !configured {
+		session, sessionOK = 1800, true
+	}
+	if !portOK || !sessionOK {
+		return nil
+	}
+	return &sandboxworkload.Terminal{
+		Image: repository + "@" + digest, Port: port, SessionSeconds: session,
+		ServiceAccountName: terminalpolicy.WorkloadName(workload),
+	}
+}
+
+func sandboxTerminalNumber(value any) (int32, bool) {
+	switch number := value.(type) {
+	case int:
+		return int32(number), int64(number) == int64(int32(number))
+	case int32:
+		return number, true
+	case int64:
+		return int32(number), number == int64(int32(number))
+	case float64:
+		return int32(number), number == float64(int32(number))
+	default:
+		return 0, false
+	}
+}
+
+func (r *AgentReconciler) sandboxCustomIngress(attempt *sandboxPreparationAttempt) *sandboxpolicy.CustomIngress {
+	custom := attempt.input.CustomAgent
+	if custom == nil || custom.Port == nil || custom.HTTP == nil {
+		return nil
+	}
+	ingress := &sandboxpolicy.CustomIngress{Port: *custom.Port, WebUI: custom.WebUI}
+	if !custom.WebUI && custom.HTTP.ChatPath != "" && r.ChatAccess.Enabled && len(r.ChatAccess.Callers) != 0 {
+		for _, caller := range r.ChatAccess.Callers {
+			ingress.ChatCallers = append(ingress.ChatCallers, sandboxpolicy.IngressCaller{
+				Namespace: caller.Namespace, PodLabels: caller.PodLabels,
+			})
+		}
+	}
+	if !ingress.WebUI && len(ingress.ChatCallers) == 0 {
+		return nil
+	}
+	return ingress
+}
+
+func (r *AgentReconciler) sandboxTerminalIngress(attempt *sandboxPreparationAttempt) *sandboxpolicy.TerminalIngress {
+	terminal := attempt.input.Terminal
+	if terminal == nil {
+		return nil
+	}
+	return &sandboxpolicy.TerminalIngress{Port: terminal.Port}
 }
 
 func sandboxSource(object client.Object, version, kind string) sandboxworkload.SourceReference {

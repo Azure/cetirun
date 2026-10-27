@@ -21,16 +21,17 @@ type AdminInstanceHandler struct {
 
 // AdminInstanceSummary is the row shape for the admin instances list.
 type AdminInstanceSummary struct {
-	Name        string                      `json:"name"`
-	Alias       string                      `json:"alias"`
-	DisplayName string                      `json:"displayName,omitempty"`
-	Email       string                      `json:"email,omitempty"`
-	Team        string                      `json:"team,omitempty"`
-	Agent       cetirunv1alpha1.HarnessSpec `json:"agent"`
-	UID         string                      `json:"uid"`
-	Phase       string                      `json:"phase,omitempty"`
-	Ready       bool                        `json:"ready"`
-	CreatedAt   string                      `json:"createdAt"`
+	Name              string                      `json:"name"`
+	Alias             string                      `json:"alias"`
+	DisplayName       string                      `json:"displayName,omitempty"`
+	Email             string                      `json:"email,omitempty"`
+	Team              string                      `json:"team,omitempty"`
+	Agent             cetirunv1alpha1.HarnessSpec `json:"agent"`
+	UID               string                      `json:"uid"`
+	Phase             string                      `json:"phase,omitempty"`
+	Ready             bool                        `json:"ready"`
+	TeamChangePending bool                        `json:"teamChangePending"`
+	CreatedAt         string                      `json:"createdAt"`
 }
 
 // ListAllInstances handles GET /api/v1/admin/instances.
@@ -45,16 +46,17 @@ func (h *AdminInstanceHandler) ListAllInstances(w http.ResponseWriter, r *http.R
 	for i := range items {
 		ins := &items[i]
 		out = append(out, AdminInstanceSummary{
-			Name:        ins.Name,
-			Alias:       ins.Spec.User.Alias,
-			DisplayName: ins.Spec.User.DisplayName,
-			Email:       ins.Spec.User.Email,
-			Team:        instanceTeam(ins),
-			Agent:       agentconfig.Defaults(ins.Spec.Agent),
-			UID:         string(ins.UID),
-			Phase:       ins.Status.Phase,
-			Ready:       isReady(ins),
-			CreatedAt:   ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+			Name:              ins.Name,
+			Alias:             ins.Spec.User.Alias,
+			DisplayName:       ins.Spec.User.DisplayName,
+			Email:             ins.Spec.User.Email,
+			Team:              instanceTeam(ins),
+			Agent:             agentconfig.Defaults(ins.Spec.Agent),
+			UID:               string(ins.UID),
+			Phase:             ins.Status.Phase,
+			Ready:             isReady(ins),
+			TeamChangePending: ins.TeamChangePending(),
+			CreatedAt:         ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"instances": out})

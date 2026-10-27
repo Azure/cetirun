@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
 	"helm.sh/helm/v3/pkg/release"
@@ -21,7 +20,7 @@ import (
 )
 
 func TestRegistryOnDeleteClearsAPIDefaultThroughHelmThreeWayPatch(t *testing.T) {
-	prepared, err := PrepareChart(testChart(t), sampleInput("hermes", "github_copilot", false))
+	prepared, err := PrepareChart(testChart(t), sampleInput("hermes", "openai", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +64,7 @@ func TestRegistryOnDeleteClearsAPIDefaultThroughHelmThreeWayPatch(t *testing.T) 
 
 func TestNativeNoopUpgradeSkipsHooksOnlyForAppliedIdenticalPlan(t *testing.T) {
 	chrt := testChart(t)
-	prepared, err := PrepareChart(chrt, sampleInput("hermes", "github_copilot", false))
+	prepared, err := PrepareChart(chrt, sampleInput("hermes", "openai", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +87,7 @@ func TestNativeNoopUpgradeSkipsHooksOnlyForAppliedIdenticalPlan(t *testing.T) {
 }
 
 func TestRegistryNormalRolloutClearsLiveOnDeleteOverride(t *testing.T) {
-	prepared, err := PrepareChart(testChart(t), sampleInput("hermes", "github_copilot", false))
+	prepared, err := PrepareChart(testChart(t), sampleInput("hermes", "openai", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +130,7 @@ func TestRegistryBuiltinBindingsAndRolloutClassification(t *testing.T) {
 	for _, typ := range []string{"hermes", "openclaw"} {
 		t.Run(typ, func(t *testing.T) {
 			chart := testChart(t)
-			input := sampleInput(typ, "github_copilot", false)
+			input := sampleInput(typ, "openai", false)
 			first, err := PrepareChart(chart, input)
 			if err != nil {
 				t.Fatal(err)
@@ -164,7 +163,7 @@ func TestRegistryBuiltinBindingsAndRolloutClassification(t *testing.T) {
 				t.Fatal("pull binding changed native Agent checksums")
 			}
 			if !reflect.DeepEqual(secondTemplate.Spec.ImagePullSecrets, []corev1.LocalObjectReference{{Name: "registry-pull-exampleuid"}}) {
-				t.Fatal("missing native pull binding")
+				t.Fatalf("missing native pull binding: runtime=%#v template=%#v", second.Values["runtime"], secondTemplate.Spec.ImagePullSecrets)
 			}
 			input["agentRequest"].(map[string]any)["port"] = 8085
 			third, err := PrepareChart(chart, input)
@@ -204,40 +203,10 @@ func registryRenderedTemplate(t *testing.T, prepared *PreparedRelease) corev1.Po
 	return sts.Spec.Template
 }
 
-func TestRegistryCustomBindingChangesPlanNotWriter(t *testing.T) {
-	input := customInput(nil)
-	first, err := PrepareChart(testChart(t), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindings := input["customBindings"].(runtimebindings.Custom)
-	bindings.PullSecretName = "registry-pull-exampleuid"
-	input["customBindings"] = bindings
-	input["agentRequest"].(map[string]any)["pullSecretName"] = bindings.PullSecretName
-	second, err := PrepareChart(testChart(t), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.WorkloadHash != second.WorkloadHash || first.PlanHash == second.PlanHash {
-		t.Fatal("Custom registry reference did not stay out of the writer hash")
-	}
-	if err := second.ValidateCustom("cetirun-example", "openclaw-example"); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(second.Values)
-	if strings.Contains(string(raw), ".dockerconfigjson") || strings.Contains(string(raw), "synthetic-token") {
-		t.Fatal("secret data entered release values")
-	}
-	input["agentRequest"].(map[string]any)["pullSecretName"] = "foreign-secret"
-	if _, err := PrepareChart(testChart(t), input); err == nil {
-		t.Fatal("unapproved pull reference accepted")
-	}
-}
-
 func TestRegistryRejectsPreFeatureChart(t *testing.T) {
 	chart := testChart(t)
 	delete(chart.Metadata.Annotations, "cetirun.microsoft.com/registry-credentials")
-	input := sampleInput("hermes", "github_copilot", false)
+	input := sampleInput("hermes", "openai", false)
 	input["agentRequest"].(map[string]any)["pullSecretName"] = "registry-pull-example"
 	if _, err := PrepareChart(chart, input); err == nil {
 		t.Fatal("old chart silently ignored managed credentials")

@@ -28,18 +28,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// holdPolicyDenied revokes a virtual key before using the existing
-// Sandbox hold path to remove ingress and scale known workloads down. A revoke
-// error never skips the compute stop: the next reconcile keeps the fail-closed
-// hold and retries revocation.
+// holdPolicyDenied blocks a virtual key before using the existing Sandbox hold
+// path to remove ingress and scale known workloads down. The Agent still owns
+// the key, so its spend, budget-reset time, and alias remain available if a
+// later policy grant authorizes the same Agent again. A block error never
+// skips the compute stop: the next reconcile keeps the fail-closed hold and
+// retries the block.
 func (r *AgentReconciler) holdPolicyDenied(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
-	var revokeErr error
+	var blockErr error
 	if r.AIGateway.configured() {
-		revokeErr = r.revokeAIGatewayKey(ctx, agent)
+		blockErr = r.beginAIGatewayPolicyDenial(ctx, agent)
 	}
-	result, holdErr := r.holdSandbox(ctx, agent)
-	if revokeErr != nil || holdErr != nil {
-		return result, errors.Join(revokeErr, holdErr)
+	result, holdErr := r.fenceSandboxForPolicyDenial(ctx, agent)
+	if blockErr != nil || holdErr != nil {
+		return result, errors.Join(blockErr, holdErr)
 	}
 	return result, nil
 }
@@ -84,15 +86,24 @@ func (r *AgentReconciler) holdPolicyDependencyUnavailable(ctx context.Context, a
 	if r.AIGateway.configured() {
 		blockErr = r.beginAIGatewayPolicyReprojection(ctx, agent)
 	}
-	result, holdErr := r.holdSandbox(ctx, agent)
+	result, holdErr := r.fenceSandboxForPolicyDependencyUnavailable(ctx, agent)
 	return result, errors.Join(blockErr, holdErr)
 }
 
-// reconcilePolicy resolves opted-in Agents and preserves the legacy path for
-// Agents and Teams with no policy intent or recorded governed lifetime. Workload,
-// Gateway, and credential controllers remain the authority for their own
-// applied evidence. Invalid selection is fail-closed before any workload
-// recovery can happen.
+// fenceSandboxForPolicyDependencyUnavailable stops known compute without
+// entering Sandbox preparation. A failed authorization read is neither a
+// policy denial nor evidence that a replacement workload can be prepared.
+func (r *AgentReconciler) fenceSandboxForPolicyDependencyUnavailable(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	return r.holdSandboxWithPolicyFence(ctx, agent, &sandboxPolicyFenceStatus{
+		phase: api.PhasePending, reason: "ObservationUnavailable",
+		message:       "Current trusted platform dependencies are unavailable; Sandbox execution remains held.",
+		sandboxStatus: metav1.ConditionUnknown,
+	})
+}
+
+// reconcilePolicy resolves every Agent. Workload, Gateway, and credential
+// controllers remain the authority for their own applied evidence. Invalid
+// selection is fail-closed before any workload recovery can happen.
 func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent) (policyReconcileResult, error) {
 	required, err := r.agentPolicyRequired(ctx, agent)
 	if err != nil {
@@ -104,7 +115,15 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 	resolution, err := r.resolvePolicy(ctx, agent)
 	if err != nil {
 		result := policyReconcileResult{dependencyUnavailable: isPolicyDependencyError(err)}
-		return result, r.recordPolicy(ctx, agent, nil, err)
+		recordErr := r.recordPolicy(ctx, agent, nil, err)
+		// A definitive policy denial converges to its durable held status. An
+		// unavailable dependency cannot be accepted as denial, so retain the
+		// read error even after recording the Pending observation and let the
+		// caller retry it rather than treating it as a clean hold.
+		if result.dependencyUnavailable {
+			return result, errors.Join(err, recordErr)
+		}
+		return result, recordErr
 	}
 	result := policyReconcileResult{
 		authorized:          true,
@@ -121,23 +140,10 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 }
 
 func (r *AgentReconciler) agentPolicyRequired(ctx context.Context, agent *api.Agent) (bool, error) {
-	if sandboxRequested(agent, nil) {
-		return true, nil
-	}
-	if agent.Spec.Team == "" {
-		return false, nil
-	}
-	reader := configurationReader(r.APIReader, r.Client)
-	team := &api.Team{}
-	if err := reader.Get(ctx, types.NamespacedName{Name: agent.Spec.Team}, team); err != nil {
-		if apierrors.IsNotFound(err) {
-			// The legacy reconcile path reports a missing Team without
-			// inventing a policy binding or granting a runtime fallback.
-			return false, nil
-		}
-		return false, policyDependency("read Team policy selection: %w", err)
-	}
-	return sandboxRequested(agent, team), nil
+	// Team, Policy, Sandbox and Gateway are mandatory platform controls. A
+	// missing Team is a definitive denial in resolvePolicy; an unavailable API
+	// dependency remains distinguishable there so the existing key is fenced.
+	return true, nil
 }
 
 type policyResolution struct {
@@ -231,6 +237,12 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		}
 		return nil, fmt.Errorf("read Team: %w", err)
 	}
+	if team.Spec.Defaults.Provider != "" {
+		// Admission rejects this field in served objects, but fake clients and
+		// direct controller tests bypass schema validation. Never restore a
+		// direct-provider route through either path.
+		return nil, fmt.Errorf("Team defaults.provider is removed; configure upstream providers in the AI Gateway")
+	}
 	if team.Spec.DefaultSandboxRef == "" || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) || !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef) {
 		return nil, fmt.Errorf("Agent Sandbox is not permitted by the current Team")
 	}
@@ -266,12 +278,6 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	}
 	if !slices.Contains(policy.Spec.Harnesses.Allowed, agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q is not allowed by policy", agent.Spec.Agent.Type)
-	}
-	// A Custom workload has a typed Gateway binding, but not the protected
-	// Sandbox preparation/execution adapter required for complete Policy
-	// enforcement. Keep it held until every required domain has an adapter.
-	if agent.Spec.Agent.Type == api.AgentTypeCustom {
-		return nil, fmt.Errorf("Agent harness %q has no typed Sandbox execution adapter", agent.Spec.Agent.Type)
 	}
 	if !aiGatewayHarnessSupported(agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q has no typed AI Gateway enforcement adapter", agent.Spec.Agent.Type)

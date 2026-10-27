@@ -162,7 +162,8 @@ func New(agentType string) Fixture {
 			Namespace:    sandboxworkload.ObjectIdentity{Name: ns.Name, UID: ns.UID},
 			WorkloadName: "example", ReleaseName: "example", RuntimeClass: runtimeClass,
 			Home: home, Skills: skills, Helpers: sandboxworkload.Helpers{Doctor: agentType == "openclaw", Desktop: true, Logger: true},
-			Controls: controls, AuthorizedSecrets: []string{"runtime-secret"},
+			Controls: controls, AuthorizedSecrets: []string{"runtime-secret", "gateway-key"},
+			GatewayKey: &sandboxworkload.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"},
 		},
 		Agent: agent, Team: team, Sandbox: box, Policy: policy, Namespace: ns,
 		ServiceAccount: &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{

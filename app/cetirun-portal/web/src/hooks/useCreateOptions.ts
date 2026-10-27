@@ -10,6 +10,8 @@ import type { AgentPolicyRateLimits } from "../types/rateLimits";
 export interface CreateOptions {
   team: string;
   policyName?: string;
+  allowedSandboxes: string[];
+  defaultSandbox: string;
   allowedAgentTypes: AgentType[];
   aiGatewayEnabled: boolean;
   gateway: AIGatewayCatalog;

@@ -91,7 +91,7 @@ func TestToInstanceResponse(t *testing.T) {
 	instance.Status.Phase = "Pending"
 
 	h := &InstanceHandler{
-		Kube: kube.NewClient(newFakeClient()),
+		Kube: kube.NewClient(newGovernedFakeClient()),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -144,7 +144,7 @@ func TestToInstanceResponseExposesOnlyAgentIdentityLifecycle(t *testing.T) {
 		ClientID: "11111111-1111-1111-1111-111111111111",
 		ObjectID: "22222222-2222-2222-2222-222222222222",
 	}
-	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+	h := &InstanceHandler{Kube: kube.NewClient(newGovernedFakeClient()), Config: governedTestConfig()}
 
 	response, err := h.toInstanceResponse(context.Background(), instance)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestToInstanceResponse_NilLastReconcileTime(t *testing.T) {
 	instance.Status.Phase = "Pending"
 
 	h := &InstanceHandler{
-		Kube: kube.NewClient(newFakeClient()),
+		Kube: kube.NewClient(newGovernedFakeClient()),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -189,7 +189,7 @@ func TestToInstanceResponse_NoConditions(t *testing.T) {
 	instance.Status.Phase = "Pending"
 
 	h := &InstanceHandler{
-		Kube: kube.NewClient(newFakeClient()),
+		Kube: kube.NewClient(newGovernedFakeClient()),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -247,7 +247,7 @@ func TestWriteError_Handler(t *testing.T) {
 
 func TestGetInstance_NotFound(t *testing.T) {
 	h := &InstanceHandler{
-		Kube: kube.NewClient(newFakeClient()),
+		Kube: kube.NewClient(newGovernedFakeClient()),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance", nil)
@@ -265,7 +265,7 @@ func TestGetInstance_Success(t *testing.T) {
 	instance := sampleInstance()
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance", nil)
@@ -291,9 +291,9 @@ func TestGetInstance_Success(t *testing.T) {
 }
 
 func TestCreateInstance_Success(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks"}
@@ -322,7 +322,7 @@ func TestCreateInstance_Success(t *testing.T) {
 }
 
 func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
-	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+	h := &InstanceHandler{Kube: kube.NewClient(newGovernedFakeClient()), Config: governedTestConfig()}
 	body := strings.NewReader(`{"agent":{"type":"openclaw"},"team":"aks"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", body)
 	req = withClaims(req, "alice", "Example User", "alice@example.com")
@@ -341,7 +341,7 @@ func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
 }
 
 func TestCreateInstanceAgentIdentityRequiresEnabledFeature(t *testing.T) {
-	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+	h := &InstanceHandler{Kube: kube.NewClient(newGovernedFakeClient()), Config: governedTestConfig()}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withAgentIdentityClaims(req, "alice", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
 	w := httptest.NewRecorder()
@@ -355,8 +355,8 @@ func TestCreateInstanceAgentIdentityRequiresEnabledFeature(t *testing.T) {
 
 func TestCreateInstanceAgentIdentityRequiresVerifiedOwner(t *testing.T) {
 	h := &InstanceHandler{
-		Kube:   kube.NewClient(newFakeClient()),
-		Config: config.Config{AgentIdentityEnabled: true},
+		Kube:   kube.NewClient(newGovernedFakeClient()),
+		Config: func() config.Config { cfg := governedTestConfig(); cfg.AgentIdentityEnabled = true; return cfg }(),
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withClaims(req, "alice", "Alice Smith", "alice@example.com")
@@ -373,8 +373,8 @@ func TestCreateInstanceAgentIdentityBindsVerifiedOwner(t *testing.T) {
 	const tenantID = "11111111-1111-1111-1111-111111111111"
 	const objectID = "22222222-2222-2222-2222-222222222222"
 	h := &InstanceHandler{
-		Kube:   kube.NewClient(newFakeClient()),
-		Config: config.Config{AgentIdentityEnabled: true},
+		Kube:   kube.NewClient(newGovernedFakeClient()),
+		Config: func() config.Config { cfg := governedTestConfig(); cfg.AgentIdentityEnabled = true; return cfg }(),
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withAgentIdentityClaims(req, "alice", tenantID, objectID)
@@ -401,8 +401,8 @@ func TestCreateInstanceAgentIdentityBindsVerifiedOwner(t *testing.T) {
 }
 
 func TestCreateInstance_ModelRoundTrip(t *testing.T) {
-	fc := newFakeClient()
-	h := &InstanceHandler{Kube: kube.NewClient(fc)}
+	fc := newGovernedFakeClient()
+	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", Model: " gpt-6-astra "}
 	bodyBytes, _ := json.Marshal(body)
@@ -431,7 +431,7 @@ func TestCreateInstance_ModelRoundTrip(t *testing.T) {
 }
 
 func TestCreateInstance_ModelTooLongRejected(t *testing.T) {
-	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+	h := &InstanceHandler{Kube: kube.NewClient(newGovernedFakeClient()), Config: governedTestConfig()}
 	bodyBytes, _ := json.Marshal(CreateInstanceRequest{Agent: &agentconfig.Input{}, Model: strings.Repeat("a", 257)})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
@@ -466,7 +466,7 @@ func TestCreateInstance_NameLength(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+			h := &InstanceHandler{Kube: kube.NewClient(newGovernedFakeClient()), Config: governedTestConfig()}
 			bodyBytes, _ := json.Marshal(CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", InstanceName: tc.suffix})
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
 			req = withClaims(req, tc.alias, "Test User", tc.alias+"@microsoft.com")
@@ -497,8 +497,8 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 	reserved := []string{"oauth2", "api", "internal", "healthz", "readyz", "assets", "portal", "instances", "admin", "ui"}
 	for _, name := range reserved {
 		t.Run(name, func(t *testing.T) {
-			fc := newFakeClient()
-			h := &InstanceHandler{Kube: kube.NewClient(fc)}
+			fc := newGovernedFakeClient()
+			h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 			body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", InstanceName: name}
 			bodyBytes, _ := json.Marshal(body)
@@ -523,8 +523,8 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 	// with no suffix, so instanceName == reserved.
 	for _, name := range reserved {
 		t.Run("bare-"+name, func(t *testing.T) {
-			fc := newFakeClient()
-			h := &InstanceHandler{Kube: kube.NewClient(fc)}
+			fc := newGovernedFakeClient()
+			h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 			body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks"}
 			bodyBytes, _ := json.Marshal(body)
@@ -550,9 +550,9 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 }
 
 func TestCreateLegacyInstanceWithoutTeam(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}}
@@ -564,15 +564,15 @@ func TestCreateLegacyInstanceWithoutTeam(t *testing.T) {
 
 	h.CreateInstance(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
+		t.Errorf("status = %d, want team_required (body=%s)", w.Code, w.Body.String())
 	}
 }
 
 func TestCreateInstance_InvalidBody(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader([]byte("invalid")))
@@ -590,7 +590,7 @@ func TestCreateInstance_AlreadyExists(t *testing.T) {
 	instance := sampleInstance()
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks"}
@@ -608,9 +608,9 @@ func TestCreateInstance_AlreadyExists(t *testing.T) {
 }
 
 func TestCreateInstance_CustomDisplayName(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, DisplayName: "Custom Name", Team: "aks"}
@@ -636,9 +636,9 @@ func TestCreateInstance_CustomDisplayName(t *testing.T) {
 }
 
 func TestCreateInstance_WithGatewayToken(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", GatewayToken: "my-secret-token"}
@@ -673,10 +673,10 @@ func TestCreateInstance_WithGatewayToken(t *testing.T) {
 }
 
 func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
 		Kube:   kube.NewClient(fc),
-		Config: config.Config{TailscaleEnabled: true},
+		Config: func() config.Config { cfg := governedTestConfig(); cfg.TailscaleEnabled = true; return cfg }(),
 	}
 
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", TailscaleAuthKey: "tskey-auth-xxxxx"}
@@ -742,7 +742,7 @@ func TestToInstanceResponse_WithTailscaleAuthKey(t *testing.T) {
 
 	fc := newFakeClient(instance, gwSecret, tsSecret)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -778,7 +778,7 @@ func TestToInstanceResponse_HermesAPIServerKey(t *testing.T) {
 
 	fc := newFakeClient(instance, gwSecret)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -876,7 +876,7 @@ func TestToInstanceResponse_OpenClawCetiRunAuthKey(t *testing.T) {
 
 	fc := newFakeClient(instance, gwSecret)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -907,7 +907,7 @@ func TestToInstanceResponse_TailscaleSecretMissing(t *testing.T) {
 
 	fc := newFakeClient(instance, gwSecret)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -937,7 +937,7 @@ func TestToInstanceResponse_NoTailscale(t *testing.T) {
 
 	fc := newFakeClient(instance, gwSecret)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -961,7 +961,7 @@ func TestDeleteInstance_Success(t *testing.T) {
 	instance := sampleInstance()
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/instance", strings.NewReader(`{"uid":"agent-alice","resourceVersion":"1"}`))
@@ -976,9 +976,9 @@ func TestDeleteInstance_Success(t *testing.T) {
 }
 
 func TestDeleteInstance_NotFound(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/instance", strings.NewReader(`{"uid":"agent-alice","resourceVersion":"1"}`))
@@ -1002,12 +1002,11 @@ func TestUpdateInstance_Success(t *testing.T) {
 	platform.Spec.SandboxRefs, platform.Spec.DefaultSandboxRef = []string{"restricted"}, "restricted"
 	fc := newFakeClient(instance, platform)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1",
 		DisplayName: strPtr("Alice Updated"),
-		Team:        strPtr("platform"),
 	}
 	bodyBytes, _ := json.Marshal(body)
 
@@ -1032,11 +1031,11 @@ func TestUpdateInstance_Success(t *testing.T) {
 		t.Errorf("DisplayName = %q, want %q", resp.DisplayName, "Alice Updated")
 	}
 	stored, err := h.Kube.GetInstance(context.Background(), "alice")
-	if err != nil || stored.Spec.Team != "platform" || stored.Spec.SandboxRef != "restricted" {
+	if err != nil || stored.Spec.Team != "aks" || stored.Spec.SandboxRef != "standard" {
 		t.Fatalf("updated binding = %q/%q, err=%v", stored.Spec.Team, stored.Spec.SandboxRef, err)
 	}
-	if resp.Team != "platform" {
-		t.Errorf("Team = %q, want %q", resp.Team, "platform")
+	if resp.Team != "aks" {
+		t.Errorf("Team = %q, want %q", resp.Team, "aks")
 	}
 }
 
@@ -1044,7 +1043,7 @@ func TestUpdateInstance_ModelRoundTripAndClear(t *testing.T) {
 	instance := sampleInstance()
 	instance.Spec.Model = "gpt-5.4"
 	fc := newFakeClient(instance)
-	h := &InstanceHandler{Kube: kube.NewClient(fc)}
+	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 	for _, model := range []string{"gpt-6-astra", ""} {
 		current, err := h.Kube.GetInstance(context.Background(), "alice")
@@ -1102,7 +1101,7 @@ func TestUpdateInstanceByName_ModelRoundTrip(t *testing.T) {
 	instance := sampleInstance()
 	instance.Name = "alice-work"
 	fc := newFakeClient(instance)
-	h := &InstanceHandler{Kube: kube.NewClient(fc)}
+	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 	bodyBytes, _ := json.Marshal(UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1", Model: strPtr("gpt-6-astra")})
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/instances/alice-work", bytes.NewReader(bodyBytes))
@@ -1124,9 +1123,9 @@ func TestUpdateInstanceByName_ModelRoundTrip(t *testing.T) {
 }
 
 func TestUpdateInstance_NotFound(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1", DisplayName: strPtr("X")}
@@ -1144,9 +1143,9 @@ func TestUpdateInstance_NotFound(t *testing.T) {
 }
 
 func TestUpdateInstance_InvalidBody(t *testing.T) {
-	fc := newFakeClient()
+	fc := newGovernedFakeClient()
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/instance", bytes.NewReader([]byte("invalid")))
@@ -1164,7 +1163,7 @@ func TestUpdateInstance_MemberCannotClearTeam(t *testing.T) {
 	instance := sampleInstance()
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1", Team: strPtr("")}
@@ -1176,7 +1175,7 @@ func TestUpdateInstance_MemberCannotClearTeam(t *testing.T) {
 
 	h.UpdateInstance(w, req)
 
-	if w.Code != http.StatusForbidden || errorCode(t, w) != "team_change_not_allowed" {
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_change_requires_operation" {
 		t.Errorf("status = %d, want %d team_change_not_allowed", w.Code, http.StatusForbidden)
 	}
 }
@@ -1185,7 +1184,7 @@ func TestUpdateInstance_EmptyGatewayTokenRejected(t *testing.T) {
 	instance := sampleInstance()
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1", GatewayToken: strPtr("")}
@@ -1206,7 +1205,7 @@ func TestUpdateInstance_EmptyBodyRejected(t *testing.T) {
 	instance := sampleInstance()
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	bodyBytes, _ := json.Marshal(UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1"})
@@ -1233,7 +1232,7 @@ func TestUpdateInstance_WithGatewayToken(t *testing.T) {
 	instance := sampleInstance()
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1", GatewayToken: strPtr("new-token-val")}
@@ -1263,7 +1262,7 @@ func TestUpdateInstance_EmptyDisplayNameUsesNameFallback(t *testing.T) {
 	instance := sampleInstance()
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1", DisplayName: strPtr("")}
@@ -1289,7 +1288,7 @@ func TestUpdateInstance_WithTailscaleAuthKey(t *testing.T) {
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
 		Kube:   kube.NewClient(fc),
-		Config: config.Config{TailscaleEnabled: true},
+		Config: func() config.Config { cfg := governedTestConfig(); cfg.TailscaleEnabled = true; return cfg }(),
 	}
 
 	body := UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1", TailscaleAuthKey: strPtr("tskey-new")}
@@ -1320,7 +1319,7 @@ func TestUpdateInstance_DisableTailscale(t *testing.T) {
 	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{AuthKeySecretRef: "tailscale-auth"}
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	body := UpdateInstanceRequest{UID: "agent-alice", ResourceVersion: "1", TailscaleAuthKey: strPtr("")}
@@ -1386,7 +1385,7 @@ func TestUpgradeInstance_Success(t *testing.T) {
 	deploy := operatorDeployment("0.1.18")
 	fc := newFakeClient(instance, deploy)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance/upgrade", strings.NewReader(`{"uid":"agent-alice","resourceVersion":"1"}`))
@@ -1421,7 +1420,7 @@ func TestUpgradeInstance_NotFound(t *testing.T) {
 	deploy := operatorDeployment("0.1.18")
 	fc := newFakeClient(deploy)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance/upgrade", strings.NewReader(`{"uid":"agent-alice","resourceVersion":"1"}`))
@@ -1440,7 +1439,7 @@ func TestUpgradeInstance_NoOperator(t *testing.T) {
 	instance.Spec.Helm.Version = "0.1.17"
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance/upgrade", strings.NewReader(`{"uid":"agent-alice","resourceVersion":"1"}`))
@@ -1463,7 +1462,7 @@ func TestToInstanceResponse_UpgradeAvailable(t *testing.T) {
 	deploy := operatorDeployment("0.1.18")
 	fc := newFakeClient(instance, deploy)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -1482,7 +1481,7 @@ func TestToInstanceResponse_UpgradeNotAvailable_SameVersion(t *testing.T) {
 	deploy := operatorDeployment("0.1.18")
 	fc := newFakeClient(instance, deploy)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -1501,7 +1500,7 @@ func TestToInstanceResponse_UpgradeNotAvailable_EmptyVersion(t *testing.T) {
 	deploy := operatorDeployment("0.1.18")
 	fc := newFakeClient(instance, deploy)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	resp, err := h.toInstanceResponse(context.Background(), instance)
@@ -1517,7 +1516,7 @@ func TestToInstanceResponse_UpgradeNotAvailable_EmptyVersion(t *testing.T) {
 
 func TestGetInstanceStatus_NotFound(t *testing.T) {
 	h := &InstanceHandler{
-		Kube: kube.NewClient(newFakeClient()),
+		Kube: kube.NewClient(newGovernedFakeClient()),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance/status", nil)
@@ -1573,7 +1572,7 @@ func TestGetInstanceStatus_Success(t *testing.T) {
 
 	fc := newFakeClient(instance, pod)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance/status", nil)
@@ -1634,7 +1633,7 @@ func TestGetInstanceStatus_EmptySlicesWhenNoData(t *testing.T) {
 
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
-		Kube: kube.NewClient(fc),
+		Kube: kube.NewClient(fc), Config: governedTestConfig(),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance/status", nil)
@@ -1676,7 +1675,7 @@ func TestDownloadTeamsApp_TeamsDisabled(t *testing.T) {
 	instance := sampleInstance()
 	// No MSTeams spec = Teams disabled.
 	fc := newFakeClient(instance)
-	h := &InstanceHandler{Kube: kube.NewClient(fc)}
+	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance/teams-app", nil)
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
@@ -1697,7 +1696,7 @@ func TestDownloadTeamsApp_TeamsNotReady(t *testing.T) {
 		Message: "Working on it",
 	}
 	fc := newFakeClient(instance)
-	h := &InstanceHandler{Kube: kube.NewClient(fc)}
+	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance/teams-app", nil)
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
@@ -1718,7 +1717,7 @@ func TestDownloadTeamsApp_Success(t *testing.T) {
 		AppID: "00000000-0000-0000-0000-000000000003",
 	}
 	fc := newFakeClient(instance)
-	h := &InstanceHandler{Kube: kube.NewClient(fc)}
+	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance/teams-app", nil)
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
@@ -1809,8 +1808,8 @@ func TestDownloadTeamsApp_Success(t *testing.T) {
 }
 
 func TestDownloadTeamsApp_NoInstance(t *testing.T) {
-	fc := newFakeClient()
-	h := &InstanceHandler{Kube: kube.NewClient(fc)}
+	fc := newGovernedFakeClient()
+	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: governedTestConfig()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instance/teams-app", nil)
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
@@ -1905,7 +1904,7 @@ func TestInternalAuth_Deny(t *testing.T) {
 }
 
 func TestInternalAuth_NotFound(t *testing.T) {
-	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+	h := &InstanceHandler{Kube: kube.NewClient(newGovernedFakeClient()), Config: governedTestConfig()}
 	req := httptest.NewRequest(http.MethodGet, "/internal/auth", nil)
 	req.Header.Set("X-Internal-Instance", "nobody")
 	req.Header.Set("X-Internal-Alias", "bob")
@@ -1937,7 +1936,7 @@ func TestToInstanceResponse_TeamsStatusWithoutVersionGate(t *testing.T) {
 				instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
 			}
 
-			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+			h := &InstanceHandler{Kube: kube.NewClient(newGovernedFakeClient()), Config: governedTestConfig()}
 			resp, err := h.toInstanceResponse(context.Background(), instance)
 			if err != nil {
 				t.Fatalf("toInstanceResponse() error = %v", err)

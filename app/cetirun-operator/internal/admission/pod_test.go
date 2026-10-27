@@ -65,18 +65,17 @@ func newPodSkillsFixture(t *testing.T, emptySkills bool) podFixture {
 	fixture := testfixture.New(typ)
 	values := map[string]any{
 		"agentType": typ, "agentRequest": map[string]any{"type": typ},
-		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
+		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model",
+			"apiBase": "http://gateway.example-platform.svc.cluster.local:4000/v1"},
+		"aiGateway": map[string]any{
+			"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key",
+			"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
+		},
 	}
 	if emptySkills {
 		fixture.Input.Skills, fixture.Input.SkillsMode = nil, w.SkillsModeEmpty
+		fixture.Input.SingleStart = true
 		fixture.Input.Helpers.Desktop = false
-		fixture.Input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
-		fixture.Input.AuthorizedSecrets = append(fixture.Input.AuthorizedSecrets, "gateway-key")
-		values["aiGateway"] = map[string]any{
-			"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key",
-			"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
-		}
-		values["secrets"].(map[string]any)["apiBase"] = "http://gateway.example-platform.svc.cluster.local:4000/v1"
 	}
 	bundle, err := w.Build(fixture.Input)
 	if err != nil {
@@ -120,7 +119,7 @@ func newPodSkillsFixture(t *testing.T, emptySkills bool) podFixture {
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "example-config", Namespace: fixture.Namespace.Name, UID: "config-uid", ResourceVersion: "1"}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "runtime-secret", Namespace: fixture.Namespace.Name, UID: "secret-uid", ResourceVersion: "1"}},
 	)
-	if emptySkills {
+	if fixture.Input.GatewayKey != nil {
 		objects = append(objects, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 			Name: "gateway-key", Namespace: fixture.Namespace.Name, UID: "gateway-key-uid", ResourceVersion: "1",
 		}})
@@ -198,6 +197,28 @@ func TestPodAdmissionRequiresPersistedCurrentAuthority(t *testing.T) {
 	}
 	if response := f.handler.Validate(context.Background(), request); response.Allowed {
 		t.Fatal("tenant namespace state substituted for protected controller state")
+	}
+}
+
+func TestTerminalCommandPermitted(t *testing.T) {
+	cases := []struct {
+		name string
+		exec corev1.PodExecOptions
+		want bool
+	}{
+		{"shell", corev1.PodExecOptions{Command: []string{"sh", "-i"}, Stdout: true, Stdin: true, TTY: true}, true},
+		{"probe", corev1.PodExecOptions{Command: []string{"bash", "--version"}, Stdout: true}, true},
+		{"probe with tty", corev1.PodExecOptions{Command: []string{"bash", "--version"}, Stdout: true, TTY: true}, false},
+		{"shell without tty", corev1.PodExecOptions{Command: []string{"zsh", "-i"}, Stdout: true, Stdin: true}, false},
+		{"arbitrary command", corev1.PodExecOptions{Command: []string{"sh", "-c", "id"}, Stdout: true, Stdin: true, TTY: true}, false},
+		{"missing stdout", corev1.PodExecOptions{Command: []string{"sh", "-i"}, Stdin: true, TTY: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := terminalCommandPermitted(tc.exec); got != tc.want {
+				t.Fatalf("terminal command permitted = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -750,6 +771,7 @@ func TestPodConnectHasNoCallerOrStateExemption(t *testing.T) {
 	for _, caller := range []string{"member@example.com", "admin@example.com",
 		"system:serviceaccount:cetirun-system:cetirun-operator-controller-manager",
 		"system:serviceaccount:cetirun-admin:openclaw-admin-cetirun",
+		"system:serviceaccount:protected-example:example-terminal",
 		"system:kube-controller-manager",
 		"system:serviceaccount:kube-system:generic-garbage-collector"} {
 		for _, subresource := range []string{"exec", "attach", "portforward"} {

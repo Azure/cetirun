@@ -14,9 +14,12 @@ import {
   TableCell,
   Badge,
   Text,
+  Button,
 } from "@fluentui/react-components";
 import { listAllInstances, type AdminInstanceSummary } from "../../api/adminInstance";
 import { agentTypeLabel } from "../../utils/instance";
+import { TeamChangeDialog } from "../../components/TeamChangeDialog";
+import { useState } from "react";
 
 function formatAge(createdAt?: string): string {
   if (!createdAt) return "—";
@@ -33,6 +36,7 @@ function formatAge(createdAt?: string): string {
 }
 
 export function InstanceListPage() {
+  const [teamChangeInstance, setTeamChangeInstance] = useState<AdminInstanceSummary | null>(null);
   const { data, isLoading, error } = useQuery<AdminInstanceSummary[], Error>({
     queryKey: ["admin", "instances"],
     queryFn: listAllInstances,
@@ -55,12 +59,13 @@ export function InstanceListPage() {
               <TableHeaderCell>Agent</TableHeaderCell>
               <TableHeaderCell>Phase</TableHeaderCell>
               <TableHeaderCell>Age</TableHeaderCell>
+              <TableHeaderCell>Actions</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>
             {data.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7}>
+                <TableCell colSpan={8}>
                   <Text>No agents.</Text>
                 </TableCell>
               </TableRow>
@@ -82,11 +87,13 @@ export function InstanceListPage() {
                   </Badge>
                 </TableCell>
                 <TableCell>{formatAge(ins.createdAt)}</TableCell>
+                <TableCell><Button appearance="subtle" size="small" onClick={() => setTeamChangeInstance(ins)}>{ins.teamChangePending ? "View Team Change" : "Change Team"}</Button></TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       )}
+      {teamChangeInstance && <TeamChangeDialog instanceName={teamChangeInstance.name} open onOpenChange={(open) => { if (!open) setTeamChangeInstance(null); }} />}
     </div>
   );
 }

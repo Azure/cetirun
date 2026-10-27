@@ -83,7 +83,7 @@ func CanSuspendInstance(instance *api.Agent) bool {
 }
 
 func CanResumeInstance(instance *api.Agent) bool {
-	return canChangeSuspension(instance) && instance.Spec.Suspended
+	return canChangeSuspension(instance) && instance.Spec.Suspended && !instance.TeamChangePending()
 }
 
 func (c *Client) SetInstanceSuspendedByName(ctx context.Context, name string, version InstanceVersion,
@@ -106,6 +106,11 @@ func (c *Client) SetInstanceSuspendedByName(ctx context.Context, name string, ve
 	}
 	if slices.Contains(instance.Finalizers, api.SandboxPreparationFinalizer) {
 		return nil, ErrSuspensionUnsupported
+	}
+	// Suspending takes precedence, but resuming while a Team change is fenced
+	// could restart the source workload before the controller commits the target.
+	if !suspended && instance.TeamChangePending() {
+		return nil, ErrTeamChangePending
 	}
 	// A retry may observe the requested intent after a lost response or status
 	// write. A stale version must never reverse a newer, opposite intent.

@@ -12,11 +12,13 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	strictjson "sigs.k8s.io/json"
 )
@@ -41,6 +43,15 @@ type ReconcileExpectation struct {
 	Sources         []SourceReference           `json:"sources"`
 	SourceDigests   map[string]string           `json:"sourceDigests"`
 	Controls        []unstructured.Unstructured `json:"controls"`
+	Terminal        *TerminalTarget             `json:"terminal,omitempty"`
+}
+
+// TerminalTarget records the only CONNECT target allowed for a platform
+// terminal. It is controller-owned expectation data, never caller input.
+type TerminalTarget struct {
+	ServiceAccountName string `json:"serviceAccountName"`
+	TargetWorkload     string `json:"targetWorkload"`
+	Container          string `json:"container"`
 }
 
 type RenderedWorkload struct {
@@ -140,6 +151,21 @@ func (e ReconcileExpectation) Validate() error {
 	if main == nil {
 		return fmt.Errorf("Sandbox has no retained HOME workload")
 	}
+	if terminal := e.Terminal; terminal != nil {
+		if len(validation.IsDNS1123Label(terminal.ServiceAccountName)) != 0 || terminal.ServiceAccountName != terminalpolicy.WorkloadName(main.Identity.Name) ||
+			terminal.TargetWorkload != main.Identity.Name || terminal.Container != "cetirun" {
+			return fmt.Errorf("Sandbox terminal target is invalid")
+		}
+		found := false
+		for _, workload := range e.Workloads {
+			if workload.Kind == "Deployment" && workload.Identity.Name == terminal.ServiceAccountName && workload.Replicas == 1 {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("Sandbox terminal workload is absent")
+		}
+	}
 	sources := map[string]bool{}
 	required := map[string]bool{}
 	effective := 0
@@ -204,7 +230,7 @@ func (e ReconcileExpectation) Validate() error {
 		}
 		controls[key] = true
 		switch object.GetAPIVersion() + "/" + object.GetKind() {
-		case "v1/ConfigMap", "v1/Service", "v1/ServiceAccount", "networking.k8s.io/v1/NetworkPolicy", "cilium.io/v2/CiliumNetworkPolicy":
+		case "v1/ConfigMap", "v1/Service", "v1/ServiceAccount", "rbac.authorization.k8s.io/v1/RoleBinding", "networking.k8s.io/v1/NetworkPolicy", "cilium.io/v2/CiliumNetworkPolicy":
 		default:
 			return fmt.Errorf("Sandbox control inventory contains an unsupported resource")
 		}
@@ -213,6 +239,20 @@ func (e ReconcileExpectation) Validate() error {
 	for _, kind := range []string{"ServiceAccount", "CiliumNetworkPolicy"} {
 		if !required[kind] {
 			return fmt.Errorf("Sandbox control inventory is missing %s", kind)
+		}
+	}
+	if terminal := e.Terminal; terminal != nil {
+		terminalAccount, terminalReader, terminalExec := false, false, false
+		for _, object := range e.Controls {
+			terminalAccount = terminalAccount || (object.GetAPIVersion() == "v1" && object.GetKind() == "ServiceAccount" &&
+				object.GetName() == terminal.ServiceAccountName)
+			terminalReader = terminalReader || (object.GetAPIVersion() == "rbac.authorization.k8s.io/v1" && object.GetKind() == "RoleBinding" &&
+				object.GetName() == terminal.ServiceAccountName)
+			terminalExec = terminalExec || (object.GetAPIVersion() == "rbac.authorization.k8s.io/v1" && object.GetKind() == "RoleBinding" &&
+				object.GetName() == terminal.ServiceAccountName+"-exec")
+		}
+		if !terminalAccount || !terminalReader || !terminalExec {
+			return fmt.Errorf("Sandbox terminal identity controls are absent")
 		}
 	}
 	for _, workload := range e.Workloads {
@@ -393,5 +433,99 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 			}
 		}
 	}
+	if b.input.AgentType == "custom" {
+		if err := b.validateCustomReconciledTemplate(&spec); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec) error {
+	custom := b.input.CustomAgent
+	if custom == nil || b.input.GatewayKey == nil || len(spec.Containers) == 0 || len(spec.InitContainers) == 0 {
+		return fmt.Errorf("reconciled Custom runtime lacks its approved Harness or AI Gateway identity")
+	}
+	main := spec.Containers[0]
+	var init *corev1.Container
+	for index := range spec.InitContainers {
+		if spec.InitContainers[index].Name == "init-home-data" {
+			init = &spec.InitContainers[index]
+			break
+		}
+	}
+	if init == nil || main.Name != "cetirun" || main.Image != custom.Image || len(main.Command) != 0 || len(main.Args) != 0 ||
+		init.Image != custom.Image ||
+		!slices.Equal(init.Command, []string{"/bin/sh", "/etc/cetirun/custom-init-home.sh"}) || len(init.Args) != 0 {
+		return fmt.Errorf("reconciled Custom runtime rewrites an approved image entrypoint or HOME initializer")
+	}
+	for _, expected := range custom.Environment {
+		matched := false
+		for _, actual := range main.Env {
+			want := corev1.EnvVar{Name: expected.Name, Value: expected.Value}
+			if expected.CredentialSlot != "" {
+				if expected.CredentialSlot != "model" {
+					return fmt.Errorf("reconciled Custom runtime contains an unsupported credential slot")
+				}
+				want.Value = ""
+				want.ValueFrom = &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: b.input.GatewayKey.Name}, Key: "api-key",
+				}}
+			}
+			matched = matched || equality.Semantic.DeepEqual(actual, want)
+		}
+		if !matched {
+			return fmt.Errorf("reconciled Custom runtime is missing a Harness or typed AI Gateway environment value")
+		}
+	}
+	if !slices.Equal(main.Ports, customContainerPorts(custom.Ports)) {
+		return fmt.Errorf("reconciled Custom runtime ports differ from the Harness contract")
+	}
+	if custom.HTTP == nil {
+		if main.StartupProbe != nil || main.ReadinessProbe != nil || main.LivenessProbe != nil {
+			return fmt.Errorf("headless Custom runtime cannot define HTTP probes")
+		}
+	} else if !customHTTPProbesMatch(main, custom.HTTP) {
+		return fmt.Errorf("reconciled Custom runtime probes differ from the Harness contract")
+	}
+	mainMounts := []corev1.VolumeMount{
+		{Name: "data", MountPath: custom.Home}, {Name: "tmp", MountPath: "/tmp"},
+		{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
+		{Name: b.input.SkillsMode.volume(skillsIdentity(b.input.Skills)).Name, MountPath: skillsPath(b.input), ReadOnly: true},
+		{Name: "memory-assets", MountPath: "/opt/cetirun-memory", ReadOnly: true},
+	}
+	mainMounts = append(mainMounts, b.input.Controls.VolumeMounts...)
+	initMounts := []corev1.VolumeMount{
+		{Name: "data", MountPath: "/home-data"}, {Name: "tmp", MountPath: "/tmp"},
+		{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
+	}
+	initMounts = append(initMounts, b.input.Controls.VolumeMounts...)
+	if !equalMounts(main.VolumeMounts, mainMounts) || !equalMounts(init.VolumeMounts, initMounts) {
+		return fmt.Errorf("reconciled Custom runtime mounts differ from the common Sandbox contract")
+	}
+	return nil
+}
+
+func customContainerPorts(ports []CustomPort) []corev1.ContainerPort {
+	result := make([]corev1.ContainerPort, 0, len(ports))
+	for _, port := range ports {
+		result = append(result, corev1.ContainerPort{Name: port.Name, ContainerPort: port.Number, Protocol: corev1.ProtocolTCP})
+	}
+	return result
+}
+
+func customHTTPProbesMatch(container corev1.Container, http *CustomHTTP) bool {
+	return container.LivenessProbe == nil && container.StartupProbe != nil && container.ReadinessProbe != nil &&
+		container.StartupProbe.HTTPGet != nil && container.ReadinessProbe.HTTPGet != nil &&
+		container.StartupProbe.HTTPGet.Path == http.StartupPath && container.ReadinessProbe.HTTPGet.Path == http.HealthPath &&
+		container.StartupProbe.HTTPGet.Port.StrVal == http.PortName && container.ReadinessProbe.HTTPGet.Port.StrVal == http.PortName &&
+		container.StartupProbe.PeriodSeconds == 5 && container.StartupProbe.FailureThreshold == 60 &&
+		container.ReadinessProbe.PeriodSeconds == 10
+}
+
+func equalMounts(actual, expected []corev1.VolumeMount) bool {
+	actual, expected = slices.Clone(actual), slices.Clone(expected)
+	sortMounts(actual)
+	sortMounts(expected)
+	return equality.Semantic.DeepEqual(actual, expected)
 }

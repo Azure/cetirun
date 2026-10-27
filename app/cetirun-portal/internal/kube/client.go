@@ -127,6 +127,7 @@ type Client struct {
 	chartVersionExp             time.Time
 	operatorDomain              string
 	registryCredentialNamespace string
+	sandboxStateNamespace       string
 }
 
 // ConfigurationCoordination serializes writes protected by the optional
@@ -139,7 +140,15 @@ type ConfigurationCoordination interface {
 
 // NewClient creates a new kube Client.
 func NewClient(c client.Client) *Client {
-	return &Client{client: c}
+	return &Client{client: c, sandboxStateNamespace: "cetirun-system"}
+}
+
+// SetSandboxStateNamespace selects the operator-owned namespace containing
+// reconciled Sandbox expectations used to verify private Custom Chat targets.
+func (c *Client) SetSandboxStateNamespace(namespace string) {
+	if namespace != "" {
+		c.sandboxStateNamespace = namespace
+	}
 }
 
 // SetConfigurationCoordination enables coordinated Team, Sandbox and
@@ -458,6 +467,9 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 	if err := validateInstanceUpdate(existing, opts); err != nil {
 		return nil, err
 	}
+	if existing.TeamChangePending() {
+		return nil, ErrTeamChangePending
+	}
 	if opts.ExpectedUID == "" {
 		opts.ExpectedUID = existing.UID
 	}
@@ -496,6 +508,9 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		}
 		if err := validateInstanceUpdate(instance, opts); err != nil {
 			return err
+		}
+		if instance.TeamChangePending() {
+			return ErrTeamChangePending
 		}
 		before := instance.DeepCopy()
 		crChanged := false
@@ -584,6 +599,9 @@ func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string,
 			if err := validateInstanceUpdate(instance, UpdateInstanceOpts{ExpectedUID: versions[0].UID, ExpectedResourceVersion: versions[0].ResourceVersion}); err != nil {
 				return err
 			}
+		}
+		if instance.TeamChangePending() {
+			return ErrTeamChangePending
 		}
 		if instance.Spec.Helm.Version == latestVersion {
 			result = instance

@@ -168,6 +168,11 @@ func (s Store) AuthorizeConfigurationFinalization(ctx context.Context, before, a
 			return ErrConflict
 		}
 	}
+	for _, transition := range state.Transitions {
+		if uses(transition.Source.Intent.Sources, previous.reference) || uses(transition.Target.Sources, previous.reference) {
+			return ErrConflict
+		}
+	}
 	return ctx.Err()
 }
 

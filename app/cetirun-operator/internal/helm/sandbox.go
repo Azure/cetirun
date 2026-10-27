@@ -178,6 +178,16 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 			Home:     sandboxworkload.ObjectIdentity{Name: input.Home.Name, UID: input.Home.UID},
 			Controls: slices.Clone(input.Controls.Objects),
 		}
+		// A platform terminal contract permits rendering, while the protected
+		// values retain the Agent's allowed enabled/disabled choice. Persist a
+		// terminal readiness target only when this render includes that
+		// Deployment; suspension deliberately renders it disabled.
+		terminalValues := object(object(p.Values[sandboxworkload.ValuesKey])["terminal"])
+		if terminal := input.Terminal; terminal != nil && terminalValues["enabled"] == true {
+			p.sandboxReconcile.Terminal = &sandboxworkload.TerminalTarget{
+				ServiceAccountName: terminal.ServiceAccountName, TargetWorkload: input.WorkloadName, Container: "cetirun",
+			}
+		}
 	}
 	values, err := chartutil.ToRenderValues(p.chart, p.Values, chartutil.ReleaseOptions{
 		Name: input.ReleaseName, Namespace: input.Namespace.Name, IsInstall: true, Revision: 1,
@@ -265,7 +275,7 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 				if err := validate(object); err != nil {
 					return err
 				}
-				if input.Reconciled && (object.GetKind() == "ConfigMap" || object.GetKind() == "ServiceAccount" || object.GetKind() == "NetworkPolicy" || object.GetKind() == "Service") {
+				if input.Reconciled && (object.GetKind() == "ConfigMap" || object.GetKind() == "ServiceAccount" || object.GetKind() == "RoleBinding" || object.GetKind() == "NetworkPolicy" || object.GetKind() == "Service") {
 					p.sandboxReconcile.Controls = append(p.sandboxReconcile.Controls, *object.DeepCopy())
 				}
 				native[object.GetKind()] = true

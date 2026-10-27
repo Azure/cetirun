@@ -6,11 +6,15 @@ package sandboxadmission
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/api/equality"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	jsonpatch "gomodules.xyz/jsonpatch/v2"
 	admissionv1 "k8s.io/api/admission/v1"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -97,7 +101,13 @@ func (h *Handler) reauthorizeAgent(ctx context.Context, request admission.Reques
 	if sameAnnotation(agent, old, sandboxbinding.ReauthorizeAnnotation) {
 		return admission.Allowed("updates never re-default or implicitly reauthorize an Agent")
 	}
-	if !h.config.administrator(request.UserInfo) {
+	controllerCommit := h.controllerTeamChangeCommit(request, agent, old)
+	if controllerCommit {
+		if err := h.validateControllerTeamChangeTransition(ctx, agent, old); err != nil {
+			return admission.Denied(err.Error())
+		}
+	}
+	if !h.config.administrator(request.UserInfo) && !controllerCommit {
 		return admission.Denied("explicit reauthorization requires an authorized administrator")
 	}
 	intent, err := reauthorizationIntent(agent, old)
@@ -126,6 +136,21 @@ func (h *Handler) reauthorizeAgent(ctx context.Context, request admission.Reques
 	return admission.Patched("persist explicitly reauthorized UIDs; execution remains held", authorizationPatch(agent, record))
 }
 
+func (h *Handler) validateControllerTeamChangeTransition(ctx context.Context, agent, old *api.Agent) error {
+	if h.coordination == nil || old == nil || old.Status.TeamChange == nil {
+		return fmt.Errorf("controller Team change requires configured coordination")
+	}
+	state := old.Status.TeamChange
+	ticket, found, err := h.coordination.ReadTransition(ctx, old.UID)
+	if err != nil || !found || ticket.Transition.ID != state.TransitionID ||
+		ticket.Transition.RequestID != state.RequestID || ticket.Transition.Phase != sandboxcoordination.Changing ||
+		ticket.Transition.Target.Binding != (sandbox.Binding{AgentUID: old.UID, TeamUID: state.TargetTeamUID, SandboxUID: state.TargetSandboxUID, AgentPolicyUID: state.TargetPolicyUID}) ||
+		ticket.Transition.Source.Intent.Binding.AgentUID != old.UID {
+		return fmt.Errorf("controller Team change transition is not the current stopped target authorization")
+	}
+	return h.coordination.CheckTransition(ctx, ticket)
+}
+
 func (h *Handler) protectedAuthorization(request admission.Request, agent, old *api.Agent) error {
 	if old == nil {
 		if _, supplied := agent.Annotations[sandboxbinding.ReauthorizeAnnotation]; supplied {
@@ -138,7 +163,7 @@ func (h *Handler) protectedAuthorization(request admission.Request, agent, old *
 	if !recordChanged && !requestChanged {
 		return nil
 	}
-	if !h.config.administrator(request.UserInfo) {
+	if !h.config.administrator(request.UserInfo) && !h.controllerTeamChangeCommit(request, agent, old) {
 		return fmt.Errorf("protected authorization metadata may only change through explicit administrator reauthorization")
 	}
 	if !requestChanged {
@@ -146,6 +171,82 @@ func (h *Handler) protectedAuthorization(request admission.Request, agent, old *
 	}
 	_, err := reauthorizationIntent(agent, old)
 	return err
+}
+
+// validateTeamChangeRequest keeps the user-authored request as a narrow
+// operation. The controller is the only writer allowed to commit the selected
+// Team; callers can only add an immutable request against the exact object
+// version they inspected. While the operation is pending, a suspend request is
+// deliberately the sole lifecycle escape hatch (deletion is handled before
+// Agent validation).
+func (h *Handler) validateTeamChangeRequest(request admission.Request, agent, old *api.Agent) error {
+	if old == nil {
+		if agent.Spec.TeamChangeRequest != nil {
+			return fmt.Errorf("Team change requests apply only to existing Agents")
+		}
+		return nil
+	}
+	if change := agent.Spec.TeamChangeRequest; change != nil && change.ModelAccess != nil && change.ModelAccess.MonthlyBudgetUSD != "" {
+		// A Team change only selects model sources. Spend limits remain an
+		// administrator-only, paused-Agent operation on spec.modelAccess.
+		// Check this before the controller exception too, so an old request
+		// that bypassed admission cannot be committed with a new budget.
+		return fmt.Errorf("a Team change request cannot set monthlyBudgetUSD")
+	}
+	if h.controllerTeamChangeCommit(request, agent, old) {
+		return nil
+	}
+	changed := !equality.Semantic.DeepEqual(agent.Spec.TeamChangeRequest, old.Spec.TeamChangeRequest)
+	if old.TeamChangePending() {
+		if suspensionOnlyUpdate(request, agent, old) {
+			return nil
+		}
+		if changed {
+			return fmt.Errorf("an in-progress Team change request is immutable; suspend or delete the Agent to stop it")
+		}
+		if !equality.Semantic.DeepEqual(agent.Spec, old.Spec) {
+			return fmt.Errorf("an in-progress Team change permits no Agent configuration or lifecycle update except suspension")
+		}
+		return nil
+	}
+	if !changed {
+		return nil
+	}
+	if agent.Spec.TeamChangeRequest == nil {
+		// A completed or unfenced failed request may be cleared before a fresh
+		// request. It does not change the execution selection.
+		if !rawChangesOnly(request, []string{"teamChangeRequest"}, []string{"generation", "managedFields"}) {
+			return fmt.Errorf("removing a Team change request cannot modify other Agent configuration")
+		}
+		return nil
+	}
+	if !rawChangesOnly(request, []string{"teamChangeRequest"}, []string{"generation", "managedFields"}) {
+		return fmt.Errorf("a Team change request cannot modify other Agent configuration")
+	}
+	change := agent.Spec.TeamChangeRequest
+	if state := old.Status.TeamChange; state != nil && state.RequestID == change.RequestID {
+		accepted, known := state.OriginalTeamChangeRequest(old.Spec.TeamChangeRequest)
+		if !known || !api.TeamChangeRequestsEqual(accepted, change) {
+			return fmt.Errorf("a Team change request ID cannot change its original payload")
+		}
+		// A response lost after the original request completed may retry with
+		// its old resourceVersion. It is an idempotent observation, not a new
+		// operation, only when every caller-controlled field is identical.
+		return nil
+	}
+	if !api.ValidRestartRequestID(change.RequestID) || change.TargetTeam == "" || change.ExpectedUID == "" ||
+		change.ExpectedUID != old.UID || change.ExpectedResourceVersion == "" || change.ExpectedResourceVersion != old.ResourceVersion {
+		return fmt.Errorf("Team change request must name the current Agent UID, resourceVersion, request ID, and target Team")
+	}
+	if old.Spec.TeamChangeRequest != nil && old.Spec.TeamChangeRequest.RequestID == change.RequestID {
+		return fmt.Errorf("a Team change request ID cannot change its payload")
+	}
+	if !h.config.administrator(request.UserInfo) {
+		if err := h.memberAuthority(request, old); err != nil {
+			return fmt.Errorf("Team change request requires authority over the current Team: %w", err)
+		}
+	}
+	return nil
 }
 
 func (h *Handler) validateAgentAuthorization(request admission.Request, agent, old *api.Agent, team *api.Team, resources sandbox.Resources) admission.Response {
@@ -162,7 +263,7 @@ func (h *Handler) validateAgentAuthorization(request admission.Request, agent, o
 	}
 	reauthorizing := !sameAnnotation(agent, old, sandboxbinding.ReauthorizeAnnotation)
 	if reauthorizing {
-		if !h.config.administrator(request.UserInfo) {
+		if !h.config.administrator(request.UserInfo) && !h.controllerTeamChangeCommit(request, agent, old) {
 			return admission.Denied("explicit reauthorization requires an authorized administrator")
 		}
 		intent, err := reauthorizationIntent(agent, old)
@@ -188,6 +289,72 @@ func (h *Handler) validateAgentAuthorization(request admission.Request, agent, o
 		return admission.Denied("current reference UIDs differ from protected authorization; explicit administrator reauthorization is required")
 	}
 	return admission.Allowed("durable UID authorization is unchanged; Sandbox execution remains held")
+}
+
+// controllerTeamChangeCommit is the controller's deliberately narrow authority
+// to commit a binding after it has persisted a TeamChange checkpoint. It does
+// not grant the controller normal administrator powers: no other fields or
+// operations pass this predicate, and the mutating webhook still constructs
+// the protected UID authorization record from live references.
+func (h *Handler) controllerTeamChangeCommit(request admission.Request, agent, old *api.Agent) bool {
+	if old == nil || request.Operation != admissionv1.Update || !h.config.NativeExecution ||
+		request.UserInfo.Username != h.config.ControllerUsername || !authenticated(request.UserInfo) {
+		return false
+	}
+	state, change := old.Status.TeamChange, old.Spec.TeamChangeRequest
+	if state == nil || change == nil || state.RequestID != change.RequestID ||
+		state.Phase != api.TeamChangeCommitting || !state.Fenced || !state.Stopped || state.TransitionID == "" ||
+		!slices.Contains(old.Finalizers, sandbox.HoldFinalizer) ||
+		change.ExpectedUID != old.UID || state.TargetTeam == "" || state.TargetSandbox == "" ||
+		state.TargetTeamUID == "" || state.TargetSandboxUID == "" || state.TargetPolicyUID == "" {
+		return false
+	}
+	if agent.UID != old.UID || agent.Spec.Team != state.TargetTeam || agent.Spec.SandboxRef != state.TargetSandbox ||
+		agent.Spec.Model != teamChangeModel(old, state) || !equality.Semantic.DeepEqual(agent.Spec.ModelAccess, teamChangeModelAccess(old, state)) ||
+		!equality.Semantic.DeepEqual(agent.Spec.TeamChangeRequest, old.Spec.TeamChangeRequest) ||
+		!equality.Semantic.DeepEqual(agent.Spec.PlannedMigration, old.Spec.PlannedMigration) ||
+		agent.Spec.Suspended != old.Spec.Suspended || !sameControllerTeamChangeMetadata(agent, old) {
+		return false
+	}
+	intent, err := sandboxbinding.ParseReauthorization(agent.Annotations[sandboxbinding.ReauthorizeAnnotation])
+	return err == nil && intent.RequestID == state.RequestID && intent.Binding == (sandbox.Binding{
+		AgentUID: old.UID, TeamUID: state.TargetTeamUID, SandboxUID: state.TargetSandboxUID, AgentPolicyUID: state.TargetPolicyUID,
+	})
+}
+
+func sameControllerTeamChangeMetadata(agent, old *api.Agent) bool {
+	a, b := agent.DeepCopy(), old.DeepCopy()
+	for _, value := range []*api.Agent{a, b} {
+		if value.Annotations != nil {
+			delete(value.Annotations, sandboxbinding.ReauthorizeAnnotation)
+			delete(value.Annotations, sandboxbinding.AuthorizationAnnotation)
+		}
+		value.Spec.Team, value.Spec.SandboxRef = "", ""
+		value.Spec.Model, value.Spec.ModelAccess = "", nil
+	}
+	return equality.Semantic.DeepEqual(a.Spec, b.Spec) &&
+		equality.Semantic.DeepEqual(a.Annotations, b.Annotations) &&
+		equality.Semantic.DeepEqual(a.Labels, b.Labels) &&
+		equality.Semantic.DeepEqual(a.Finalizers, b.Finalizers) &&
+		a.Name == b.Name && a.UID == b.UID
+}
+
+func teamChangeModel(agent *api.Agent, state *api.TeamChangeStatus) string {
+	if state.Model == "" {
+		return agent.Spec.Model
+	}
+	return state.Model
+}
+
+func teamChangeModelAccess(agent *api.Agent, state *api.TeamChangeStatus) *api.ModelAccessSpec {
+	if state.ModelAccess == nil {
+		return agent.Spec.ModelAccess
+	}
+	access := state.ModelAccess.DeepCopy()
+	if agent.Spec.ModelAccess != nil {
+		access.MonthlyBudgetUSD = agent.Spec.ModelAccess.MonthlyBudgetUSD
+	}
+	return access
 }
 
 func reauthorizationIntent(agent, old *api.Agent) (sandboxbinding.Reauthorization, error) {

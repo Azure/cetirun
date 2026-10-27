@@ -76,7 +76,6 @@ export function TeamListPage() {
             <TableRow>
               <TableHeaderCell>Name</TableHeaderCell>
               <TableHeaderCell>Role</TableHeaderCell>
-              <TableHeaderCell>Default Provider</TableHeaderCell>
               <TableHeaderCell>Agent Policy</TableHeaderCell>
               <TableHeaderCell>Default Sandbox</TableHeaderCell>
               <TableHeaderCell>Skills</TableHeaderCell>
@@ -86,7 +85,7 @@ export function TeamListPage() {
           <TableBody>
             {teams.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7}>
+                <TableCell colSpan={6}>
                   <Text>No teams yet.</Text>
                 </TableCell>
               </TableRow>
@@ -95,7 +94,6 @@ export function TeamListPage() {
               <TableRow key={t.name}>
                 <TableCell>{t.name}</TableCell>
                 <TableCell>{t.role || "—"}</TableCell>
-                <TableCell>{t.defaultProvider || "—"}</TableCell>
                 <TableCell>{t.agentPolicyRef || "—"}</TableCell>
                 <TableCell>{t.defaultSandboxRef || "—"}</TableCell>
                 <TableCell>{t.skills?.length ?? 0}</TableCell>

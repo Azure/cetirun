@@ -18,7 +18,10 @@ func (h *Handler) protectedPolicyBudget(request admission.Request, agent, old *a
 		return nil
 	}
 	if monthlyBudgetUSD(old) != monthlyBudgetUSD(agent) {
-		if !h.config.administrator(request.UserInfo) || !old.Spec.Suspended || !agent.Spec.Suspended {
+		if !h.config.administrator(request.UserInfo) {
+			return fmt.Errorf("policy budget changes require an authorized administrator and a suspended Agent")
+		}
+		if !old.Spec.Suspended || !agent.Spec.Suspended {
 			return fmt.Errorf("policy budget changes require an authorized administrator and a suspended Agent")
 		}
 	}

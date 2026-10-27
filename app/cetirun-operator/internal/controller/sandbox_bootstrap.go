@@ -17,6 +17,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -34,7 +35,46 @@ import (
 const (
 	sandboxBootstrapReceiptKey = "bootstrap.json"
 	sandboxBootstrapAnnotation = "cetirun.microsoft.com/sandbox-bootstrap"
+	// commonCustomRuntimeSecretName is controller-owned bootstrap state for the
+	// common Custom path. Custom Agents must not carry a user-selectable
+	// gatewayTokenSecretRef, but typed preparation still needs an owned Secret
+	// identity for its runtime credential slot.
+	commonCustomRuntimeSecretName = "custom-runtime"
 )
+
+func sandboxRuntimeSecretName(agent *api.Agent) string {
+	if agent != nil && agent.Spec.Agent.Type == api.AgentTypeCustom {
+		return commonCustomRuntimeSecretName
+	}
+	return agent.Spec.GatewayTokenSecretRef
+}
+
+// ensureCommonCustomRuntimeAuthentication adds the application authentication
+// key only to the exact runtime Secret recorded by the Custom bootstrap
+// receipt. The uncached read and receipt validation prevent a name-reused or
+// foreign Secret from receiving a controller-generated credential.
+func (r *AgentReconciler) ensureCommonCustomRuntimeAuthentication(ctx context.Context, agent *api.Agent, logger logr.Logger) error {
+	if agent == nil || agent.Spec.Agent.Type != api.AgentTypeCustom {
+		return fmt.Errorf("common Custom runtime authentication requires a Custom Agent")
+	}
+	bootstrap, receipt, err := r.readSandboxBootstrap(ctx, agent)
+	if err != nil {
+		return fmt.Errorf("read Custom bootstrap receipt: %w", err)
+	}
+	if !receipt.Reconciled || len(receipt.Objects) < 5 || receipt.Objects[4].Kind != "Secret" ||
+		receipt.Objects[4].Name != sandboxRuntimeSecretName(agent) || receipt.Objects[4].UID == "" {
+		return fmt.Errorf("Custom bootstrap receipt does not identify a reconciled runtime Secret")
+	}
+	desired := r.sandboxBootstrapObjects(agent, bootstrap, receipt)
+	secret := &corev1.Secret{}
+	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(desired[4]), secret); err != nil {
+		return fmt.Errorf("read Custom runtime Secret: %w", err)
+	}
+	if err := validateSandboxBootstrapObject(secret, desired[4], receipt.Objects[4].UID, false); err != nil {
+		return fmt.Errorf("validate Custom runtime Secret: %w", err)
+	}
+	return r.ensureCetiRunAuthKey(ctx, logger, secret)
+}
 
 type sandboxBootstrapConfig struct {
 	HomeClaimName              string
@@ -83,7 +123,7 @@ func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.A
 		!equality.Semantic.DeepEqual(object.OwnerReferences, owner) ||
 		object.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) ||
 		receipt.AgentName != agent.Name || receipt.AgentUID != agent.UID ||
-		(receipt.AgentType != api.AgentTypeOpenClaw && receipt.AgentType != api.AgentTypeHermes) ||
+		(receipt.AgentType != api.AgentTypeOpenClaw && receipt.AgentType != api.AgentTypeHermes && receipt.AgentType != api.AgentTypeCustom) ||
 		receipt.Namespace != instanceNamespace(agent.Name) || receipt.Namespace == r.OperatorNamespace ||
 		len(validation.IsDNS1123Label(receipt.Namespace)) != 0 || receipt.ChartVersion == "" ||
 		!((receipt.Version == "v1" && receipt.Skills == nil && len(receipt.Objects) == 5) ||
@@ -183,7 +223,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		return fmt.Errorf("Sandbox bootstrap requires explicit approved chart version, native image and port; controller spec defaulting is not authorized")
 	}
 	if len(validation.IsDNS1123Label(instanceNamespace(agent.Name))) != 0 || instanceNamespace(agent.Name) == r.OperatorNamespace ||
-		len(validation.IsDNS1123Subdomain(agent.Spec.GatewayTokenSecretRef)) != 0 ||
+		len(validation.IsDNS1123Subdomain(sandboxRuntimeSecretName(agent))) != 0 ||
 		len(validation.IsDNS1123Subdomain(r.OperatorSAName)) != 0 {
 		return fmt.Errorf("Sandbox bootstrap requires valid isolated namespace, runtime Secret and operator identities")
 	}
@@ -199,7 +239,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 				{Kind: "Namespace", Name: instanceNamespace(agent.Name)},
 				{Kind: "Role", Name: role.Name}, {Kind: "RoleBinding", Name: binding.Name},
 				{Kind: "PersistentVolumeClaim", Name: config.HomeClaimName},
-				{Kind: "Secret", Name: agent.Spec.GatewayTokenSecretRef},
+				{Kind: "Secret", Name: sandboxRuntimeSecretName(agent)},
 			},
 		}
 		if config.SkillsCatalogConfigMapName != "" {
@@ -238,7 +278,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		return fmt.Errorf("Sandbox bootstrap receipt is no longer protected for writes")
 	}
 	if receipt.Home != profile || receipt.Objects[3].Name != config.HomeClaimName ||
-		receipt.Objects[4].Name != agent.Spec.GatewayTokenSecretRef || (!receipt.Reconciled && receipt.ChartVersion != config.ChartVersion) ||
+		receipt.Objects[4].Name != sandboxRuntimeSecretName(agent) || (!receipt.Reconciled && receipt.ChartVersion != config.ChartVersion) ||
 		receipt.AgentType != agent.Spec.Agent.Type || receipt.Reconciled != attempt.reconciled {
 		return fmt.Errorf("%w: changing bootstrap storage, native type, Secret or chart requires an explicit handoff", sandboxworkload.ErrStorageTransitionRequired)
 	}
@@ -294,9 +334,14 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 				return fmt.Errorf("recorded Sandbox bootstrap %s is missing; recovery is required", receipt.Objects[i].Kind)
 			}
 			if receipt.Objects[i].Kind == "Secret" {
-				secret, err := r.newGatewayTokenSecret(agent)
-				if err != nil {
-					return err
+				var secret *corev1.Secret
+				if agent.Spec.Agent.Type == api.AgentTypeCustom {
+					secret = &corev1.Secret{Type: corev1.SecretTypeOpaque, Data: map[string][]byte{}}
+				} else {
+					secret, err = r.newGatewayTokenSecret(agent)
+					if err != nil {
+						return err
+					}
 				}
 				secret.ObjectMeta = *resource.(*metav1.PartialObjectMetadata).ObjectMeta.DeepCopy()
 				current = secret

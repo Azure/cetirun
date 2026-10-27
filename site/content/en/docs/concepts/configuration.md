@@ -11,7 +11,7 @@ The operator builds Helm values in this order:
 1. Controller defaults, including the instance Secret, identity, home volume,
    and AKS Istio namespaces.
 2. Deployment-wide `cetirun.helmValues` / `CETIRUN_HELM_VALUES`.
-3. Referenced `Team` provider, member context, and skills.
+3. Referenced `Team` member context and skills.
 4. Controller-derived integration settings and image repositories.
 5. Per-instance `spec.helm.values`.
 6. Enforced Agent type, OpenClaw native UI base path and Copilot model selection.
@@ -38,15 +38,15 @@ Top-level scalars and arrays from a standalone values file are rejected by API
 admission, even though the controller can merge them internally. See the
 [CRD reference](../../reference/crds/).
 
-For GitHub Copilot, `spec.model` wins; otherwise the deployment’s default model
-is used. Other providers take their model from Helm values. See
+`spec.model` selects an authorized AI Gateway model. The required Team's Policy
+controls the available model sources; provider credentials stay at the Gateway. See
 [model selection](../../guides/models/).
 
 ## Teams
 
 An instance references a `Team` by `spec.team`. Teams can set:
 
-- The default provider.
+- Required Policy and allowed/default Sandbox references.
 - Role and context rendered for the selected runtime.
 - Up to 20 default skill identifiers.
 - A shared Blob storage location for read-only skills.
@@ -70,7 +70,7 @@ every file continuously synchronized:
 | File | Update behavior |
 | --- | --- |
 | OpenClaw `.openclaw/openclaw.json` | Deep-merged from the ConfigMap at initialization |
-| OpenClaw `.openclaw/workspace/USER.md` | Seeded for a new home; an initialized home keeps its existing copy |
+| OpenClaw `.openclaw/workspace/USER.md` | Managed Team block refreshed at initialization; personal content outside the block preserved |
 | Hermes `.hermes/config.yaml` | Deep-merged from the ConfigMap at initialization |
 | Hermes `.hermes/memories/USER.md` | Seeded if missing on first initialization |
 | Hermes `.hermes/memories/TEAM.md` | Synchronized from rendered team context at every initialization; removed when context is empty |
@@ -85,9 +85,9 @@ Configured npm skill installation follows it; Hermes proceeds directly from
 native preparation to the optional npm step. No step performs cross-Agent
 migration or scans old credential stores as part of routine initialization.
 
-A team update can roll member pods, but it does not overwrite an existing
-OpenClaw `USER.md`. Inspect the runtime file to confirm that a context change
-has reached the agent.
+A Team change stops and restarts the runtime to apply the new managed context
+and skills. Personal content outside managed context sections and native
+session history stay on the retained HOME.
 
 Sources: [common initialization]({{< repo "app/cetirun-chart/configs/init-home-common.sh" >}}),
 [OpenClaw initializer]({{< repo "app/cetirun-chart/agents/openclaw/bootstrap/init-home.sh" >}})

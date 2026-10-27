@@ -27,7 +27,9 @@ func TestNativePodObservationPinsUIDAndNodeTopology(t *testing.T) {
 	}
 	prepared, err := helm.PrepareSandboxChart(chart, map[string]any{
 		"agentType": "openclaw", "agentRequest": map[string]any{"type": "openclaw"},
-		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
+		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model", "apiBase": "http://gateway.example.svc.cluster.local:4000/v1"},
+		"aiGateway": map[string]any{"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key",
+			"models": []any{map[string]any{"id": "example-model", "name": "Example"}}},
 	}, nil, bundle)
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +87,9 @@ func TestNativeInitProcessKeepsExactHelperBoundaries(t *testing.T) {
 			}
 			prepared, err := helm.PrepareSandboxChart(chart, map[string]any{
 				"agentType": agentType, "agentRequest": map[string]any{"type": agentType},
-				"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
+				"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model", "apiBase": "http://gateway.example.svc.cluster.local:4000/v1"},
+				"aiGateway": map[string]any{"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key",
+					"models": []any{map[string]any{"id": "example-model", "name": "Example"}}},
 			}, nil, bundle)
 			if err != nil {
 				t.Fatal(err)

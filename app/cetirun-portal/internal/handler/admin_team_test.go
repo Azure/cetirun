@@ -96,9 +96,8 @@ func TestAdminTeam_Create(t *testing.T) {
 	body, _ := json.Marshal(TeamUpsertRequest{
 		Name:           "sre",
 		AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
-		Role:            "SRE",
-		DefaultProvider: "anthropic",
-		Skills:          []string{"npm:@scope/skill"},
+		Role:   "SRE",
+		Skills: []string{"npm:@scope/skill"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -110,8 +109,18 @@ func TestAdminTeam_Create(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Name != "sre" || got.DefaultProvider != "anthropic" {
+	if got.Name != "sre" || got.AgentPolicyRef != "standard-policy" {
 		t.Errorf("unexpected DTO: %+v", got)
+	}
+}
+
+func TestAdminTeam_CreateRejectsLegacyDefaultProvider(t *testing.T) {
+	h := newAdminTeamHandler()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewBufferString(`{"name":"sre","agentPolicyRef":"standard-policy","sandboxRefs":["standard"],"defaultSandboxRef":"standard","defaultProvider":"anthropic"}`))
+	w := httptest.NewRecorder()
+	h.CreateTeam(w, req)
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "invalid_body" {
+		t.Fatalf("legacy provider status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

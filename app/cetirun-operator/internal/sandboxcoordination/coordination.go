@@ -158,6 +158,7 @@ type record struct {
 	Executions         []Execution         `json:"executions"`
 	Changes            []Change            `json:"changes"`
 	NativeReservations []NativeReservation `json:"nativeReservations,omitempty"`
+	Transitions        []Transition        `json:"transitions,omitempty"`
 }
 
 // Store uses one UID-pinned, protected object so acquisition is atomic across
@@ -211,6 +212,13 @@ func (s Store) AcquireExecution(ctx context.Context, intent Intent) (Ticket, err
 	for _, native := range state.NativeReservations {
 		if err := compatibleNativeExecution(native.Intent, intent); err != nil {
 			return Ticket{}, err
+		}
+	}
+	for _, transition := range state.Transitions {
+		for _, reserved := range []NativeIntent{transition.Source.Intent, transition.Target} {
+			if err := compatibleNativeExecution(reserved, intent); err != nil {
+				return Ticket{}, err
+			}
 		}
 	}
 	for _, change := range state.Changes {
@@ -309,6 +317,11 @@ func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desi
 	}
 	for _, native := range state.NativeReservations {
 		if nativeChangeAffects(native.Intent, Change{Before: before, Team: team, UnchangedDigest: unchangedDigest}) {
+			return ChangeTicket{}, ErrConflict
+		}
+	}
+	for _, transition := range state.Transitions {
+		if transitionChangeAffects(transition, Change{Before: before, Team: team, UnchangedDigest: unchangedDigest}) {
 			return ChangeTicket{}, ErrConflict
 		}
 	}
@@ -570,7 +583,7 @@ func encode(object *corev1.ConfigMap, state record) error {
 
 func validateRecord(state record) error {
 	if state.Version != 1 || state.Executions == nil || state.Changes == nil ||
-		len(state.Executions)+len(state.Changes)+len(state.NativeReservations) > MaxEntries {
+		len(state.Executions)+len(state.Changes)+len(state.NativeReservations)+len(state.Transitions) > MaxEntries {
 		return fmt.Errorf("%w: invalid version, inventory or entry bound", ErrUnavailable)
 	}
 	ids := map[string]bool{}
@@ -612,6 +625,9 @@ func validateRecord(state record) error {
 		}
 	}
 	keys := map[string]bool{}
+	if err := validateTransitions(state, ids); err != nil {
+		return err
+	}
 	for _, change := range state.Changes {
 		key := sourceKey(change.Before)
 		if !literal(change.ID, 128) || ids[change.ID] || !validSource(change.Before) ||
@@ -645,6 +661,11 @@ func validateRecord(state record) error {
 		for _, native := range state.NativeReservations {
 			if nativeChangeAffects(native.Intent, change) {
 				return fmt.Errorf("%w: source change overlaps a native reservation", ErrUnavailable)
+			}
+		}
+		for _, transition := range state.Transitions {
+			if transitionChangeAffects(transition, change) {
+				return fmt.Errorf("%w: source change overlaps an Agent transition", ErrUnavailable)
 			}
 		}
 	}

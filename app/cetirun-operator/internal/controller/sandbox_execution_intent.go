@@ -167,9 +167,17 @@ func (r *AgentReconciler) checkSandboxExecutionSources(ctx context.Context, inte
 	if err := r.verifySandboxExecutionSources(ctx, intent, running); err != nil {
 		return nil, err
 	}
-	attempt, err := r.resolveSandboxExecutionInputs(ctx, &api.Agent{ObjectMeta: metav1.ObjectMeta{
-		Name: intent.Agent.Name, UID: intent.Agent.UID, Generation: intent.AgentGeneration,
-	}}, !running)
+	// Resolve from a full authoritative snapshot. A metadata-only placeholder
+	// cannot prove the normalized execution intent during a Team-change request.
+	current := &api.Agent{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: intent.Agent.Name}, current); err != nil {
+		return nil, err
+	}
+	currentSource, err := w.AgentSourceReference(current)
+	if err != nil || current.UID != intent.Agent.UID || currentSource.Generation != intent.AgentGeneration {
+		return nil, fmt.Errorf("%w: execution Agent identity or generation changed", errSandboxSourceChanged)
+	}
+	attempt, err := r.resolveSandboxExecutionInputs(ctx, current, !running)
 	if err != nil {
 		return nil, err
 	}

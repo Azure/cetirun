@@ -5,6 +5,11 @@ package handler
 
 import (
 	"context"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -50,4 +55,30 @@ func newFakeClient(objs ...client.Object) client.Client {
 		}
 		return c.Create(ctx, obj, opts...)
 	}}).Build()
+}
+
+// newGovernedFakeClient provides the complete Team, Policy, Sandbox selection
+// and Gateway catalog that Agent-creation tests need. Tests exercising a
+// missing dependency use newFakeClient and provide their own objects.
+func newGovernedFakeClient(objs ...client.Object) client.Client {
+	objs = append(objs, gatewayPolicy(), catalogConfigMap("gpt-6", "gpt-6-astra"))
+	return newFakeClient(objs...)
+}
+
+func governedTestConfig() config.Config {
+	cfg := gatewayConfig()
+	cfg.SandboxControllerDefaults = true
+	return cfg
+}
+
+func replaceTestCatalog(t *testing.T, c client.Client, catalog *corev1.ConfigMap) {
+	t.Helper()
+	current := &corev1.ConfigMap{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(catalog), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Data = catalog.Data
+	if err := c.Update(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
 }

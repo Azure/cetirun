@@ -158,6 +158,11 @@ func (s Store) AcquireNative(ctx context.Context, intent NativeIntent) (NativeTi
 	if err != nil {
 		return NativeTicket{}, err
 	}
+	for _, transition := range state.Transitions {
+		if err := transitionAllowsNative(transition, intent, true); err != nil {
+			return NativeTicket{}, err
+		}
+	}
 	for index, native := range state.NativeReservations {
 		if native.Intent.Agent.UID == intent.Agent.UID {
 			if native.Phase == Reserved && equality.Semantic.DeepEqual(native.Intent, intent) {
@@ -234,12 +239,19 @@ func (s Store) AuthorizeNativeStart(ctx context.Context, intent NativeIntent) er
 	if err := intent.Validate(); err != nil {
 		return err
 	}
-	ticket, found, err := s.ReadNative(ctx, intent.Agent.UID)
+	_, state, err := s.read(ctx)
 	if err != nil {
 		return err
 	}
-	if !found || ticket.Reservation.Phase != Reserved || !equality.Semantic.DeepEqual(ticket.Reservation.Intent, intent) {
+	if !slices.ContainsFunc(state.NativeReservations, func(n NativeReservation) bool {
+		return n.Phase == Reserved && equality.Semantic.DeepEqual(n.Intent, intent)
+	}) {
 		return fmt.Errorf("%w: current native source reservation is required", ErrConflict)
+	}
+	for _, transition := range state.Transitions {
+		if err := transitionAllowsNative(transition, intent, true); err != nil {
+			return err
+		}
 	}
 	return ctx.Err()
 }

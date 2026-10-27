@@ -6,7 +6,6 @@ import type { AgentPolicyRateLimits } from "./rateLimits";
 export interface TeamSummary {
   name: string;
   role: string;
-  provider: string;
 }
 
 export type AgentType = "openclaw" | "hermes" | "custom";
@@ -45,6 +44,8 @@ export interface Instance extends InstanceVersion {
   generation?: number;
   observedGeneration?: number;
   suspended?: boolean;
+  /** A controller-owned Team change fences configuration and restart operations. */
+  teamChangePending?: boolean;
   suspendAvailable?: boolean;
   suspensionUnavailableReason?: string;
   resumeAvailable?: boolean;
@@ -146,11 +147,41 @@ export interface UpdateInstanceRequest extends InstanceVersion {
     webUI?: boolean | null;
   };
   displayName?: string;
-  team?: string;
   gatewayToken?: string;
   tailscaleAuthKey?: string; // "" = disable tailscale
   model?: string; // "" = use deployment default
   teamsEnabled?: boolean;
+}
+
+export interface TeamChangeRequest extends InstanceVersion {
+  targetTeam: string;
+  targetSandbox?: string;
+  model?: string;
+  modelAccess?: ModelAccess;
+}
+
+export interface TeamChangeStatus extends Omit<TeamChangeRequest, "uid" | "resourceVersion"> {
+  requestID: string;
+  expectedUID: string;
+  expectedResourceVersion: string;
+  phase: "Validating" | "Stopping" | "Committing" | "Applying" | "Starting" | "Completed" | "Failed";
+  sourceTeam?: string;
+  sourceSandbox?: string;
+  fenced?: boolean;
+  stopped?: boolean;
+  failureReason?: string;
+  failureMessage?: string;
+}
+
+export interface TeamChangeOperation {
+  uid: string;
+  resourceVersion: string;
+  team: string;
+  sandbox: string;
+  suspended: boolean;
+  pending: boolean;
+  request?: TeamChangeStatus;
+  status?: TeamChangeStatus;
 }
 
 export interface StatusResponse {

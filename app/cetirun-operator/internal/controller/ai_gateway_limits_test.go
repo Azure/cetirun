@@ -217,28 +217,6 @@ func TestPolicyRateLimitsStayOutOfThePolicyRevisions(t *testing.T) {
 	}
 }
 
-func TestLegacyKeyLimitsAreLeftToTheGatewayAdministrator(t *testing.T) {
-	ctx := context.Background()
-	r, agent, gateway := legacyGatewayFixture(t)
-	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
-		t.Fatal(err)
-	}
-	if len(gateway.generated) != 1 || !gateway.generated[0].Limits.IsZero() {
-		t.Fatalf("a legacy key must be created without policy limits: %+v", gateway.generated)
-	}
-	token := aigateway.Token(gateway.generated[0].Key)
-	administrator := aigateway.KeyLimits{MaxParallelRequests: ptr.To[int64](3), ModelRPM: map[string]int64{"example-model": 5}}
-	gateway.keys[token].Limits = cloneKeyLimits(administrator)
-	for range 2 {
-		if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(gateway.limitUpdates) != 0 || !gateway.keys[token].Limits.Equal(administrator) {
-		t.Fatalf("legacy reconcile changed administrator limits: updates=%+v key=%+v", gateway.limitUpdates, gateway.keys[token].Limits)
-	}
-}
-
 func TestPolicyAIGatewayKeyLimitsRejectsValuesTheCRDRejects(t *testing.T) {
 	for name, limits := range map[string]*api.AgentPolicyRateLimits{
 		"zero parallel":      {MaxParallelRequests: ptr.To[int64](0)},

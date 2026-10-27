@@ -10,8 +10,8 @@ Agent Harness defines configuration for Hermes, OpenClaw and bring-your-own
 > **Availability:** The CRD accepts the configuration below.
 > Hermes and OpenClaw run through the shared Harness interface. Operator pins
 > their image and port from the selected runtime chart before provisioning.
-> Custom has a separate runtime implementation, but the default operator waits
-> for platform bindings; no production binding provider is wired in.
+> Custom uses the same governed Sandbox executor and requires a platform-approved
+> image, Team, Policy, Sandbox, and Gateway authorization.
 > Private images use Portal-managed Registry credentials and the Operator's
 > credential synchronizer. Custom supports non-default usernames; built-in
 > profiles still require `vibe`. Portal self-service is also opt-in;
@@ -76,38 +76,26 @@ files and resource names retain their existing roles.
 
 ## Custom runtime
 
-Custom uses its own Go adapter and chart branch. It does not require a built-in
-profile, native provider, configuration template or preferred model name.
-The main container preserves the image's ENTRYPOINT/CMD. Gateway-backed instances
+Custom uses its own Go adapter and chart branch within the common Sandbox
+executor. It does not require a built-in profile or native provider configuration.
+The main container preserves the image's ENTRYPOINT/CMD. All instances
 receive `HOME`, `OPENAI_BASE_URL`, a Secret-backed `OPENAI_API_KEY`, and `PORT`
 when the Agent declares an HTTP port. Init does not receive the model credential.
 
-The operator consumes an internal `CustomBindingProvider`, supplied by the
-platform capability owners. Its receipts identify the exact Agent UID,
-generation and image, namespace, model Secret, retained HOME PVC, immutable
-context snapshot, network peers and their revisions. The controller checks
-these references against the actual objects. The Kubernetes provider reuses
-the platform Gateway controller to provision each approved Agent's Virtual Key;
-it does not create another Gateway or database, publish skills, or invent a
-storage handoff.
+Custom Agents use the same Team, Policy, Sandbox executor, retained HOME, and
+AI Gateway authorization as the built-in Harnesses. Administrators enable
+`customRuntime` and list qualified image digests in `approvedImages`.
+Images must support the common UID/GID 1024 security contract and the selected
+HOME path. Policy must allow the `custom` Harness and the requested model
+sources. The Sandbox supplies storage and compute limits.
 
-Without the provider, an Agent reports `CustomBindingsPending`. Missing,
-changed or foreign objects report `CustomBindingRejected`. Registry references
-use the separate credential synchronizer; native integrations remain rejected. No placeholder credentials
-or native-secret fallback can start the workload.
+Every approved image receives its Agent's Secret-backed `OPENAI_API_KEY` and
+`OPENAI_BASE_URL` for the platform Gateway. `agentManagedModel`, `gatewayImages`,
+and the independent Custom storage/context configuration are unsupported.
+Missing governance or Gateway evidence holds execution; there is no native
+login fallback. Registry credentials use the separate credential synchronizer.
 
-Administrators can explicitly enable `customRuntime` in the Operator chart for
-qualified image digests. This
-Kubernetes provider prepares the namespace, HOME claim template and canonical
-context, and coordinates Pod replacements, including approved image updates.
-The runtime Chart retains and reuses the same HOME claim. The `gatewayImages`
-setting is a subset of `approvedImages` qualified for platform model access.
-Those images receive only their own Virtual Key and the Gateway API base.
-Other approved images require `agentManagedModel: true` and retain image-owned
-authentication. Enabling the Gateway does not migrate them automatically, and
-missing Gateway bindings never select native login as a fallback.
-
-For Gateway-backed Custom Agents, the existing Portal Overview provides the
+For Custom Agents, the existing Portal Overview provides the
 platform Copilot sign-in. A compatible runtime chart marked
 `cetirun.microsoft.com/custom-copilot: v1` deploys the separate no-database proxy.
 Only Gateway Pods can reach it; OAuth and proxy credentials never enter the
@@ -116,15 +104,14 @@ are authorized by its Virtual Key. The [Pi example]({{< repo "examples/pi-agent/
 supports this path and discovers models through the Gateway. Portal Chat still
 gets its model choices from the Agent, not directly from the Gateway catalog.
 
-The approved context snapshot is mounted read-only at `$HOME/.agents`, including
-`skills/cetirun-memory/SKILL.md` and canonical `AGENTS.md`. A same-named image
-directory cannot make that view writable. Private memory stays elsewhere in
-the instance HOME. The initial snapshot format is an immutable ConfigMap with
-explicit key-to-path mappings; it is not a package installer or skill marketplace.
+The common context view is mounted read-only at `$HOME/.agents`, including
+`skills/cetirun-memory/SKILL.md` and canonical `AGENTS.md` when platform Memory
+is enabled. A same-named image directory cannot make that view writable.
+Private memory stays elsewhere in the instance HOME.
 
 With platform `skills.shared` or Team `skillStorage`, Custom uses the same
 Blob CSI PV/PVC templates as the built-in runtimes. Init reads its claim without
-writing it and combines its skills with the approved ConfigMap in a per-Pod
+writing it and combines its skills with platform context assets in a per-Pod
 temporary volume. The Agent receives only the completed, read-only view at
 `$HOME/.agents`. Shared skills cannot replace canonical skills such as
 `cetirun-memory`, and copying does not alter the user's HOME.
@@ -696,8 +683,10 @@ HOME PVC without reseeding it. A suspended Agent stays stopped until resumed.
 Image changes do not change the pinned runtime Chart version. The image
 provider and owner are responsible for compatibility with existing files,
 native sessions and HOME dependencies; CetiRun does not migrate their formats.
-Team reassignment requires an administrator and a suspended Agent; ordinary
-edits preserve the effective Team and its governance bindings.
+Owners and platform administrators use the durable Team-change operation to
+reassign a running or suspended Agent. It validates the target, stops and
+reauthorizes execution, then resumes an Agent that was running. Ordinary edits
+preserve the effective Team and its governance bindings.
 
 The displayed configuration is the requested configuration. A saved request
 does not establish new runtime readiness.

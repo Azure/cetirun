@@ -81,8 +81,8 @@ spec:
                 properties:
                   allowed:
                     description: |-
-                      Policy has typed Gateway and Sandbox enforcement adapters only for
-                      the built-in harnesses. Custom workloads cannot be granted a policy.
+                      Policy has typed Gateway and Sandbox enforcement adapters for every
+                      supported harness.
                       Keep the enum on each field: a type-level AgentType enum overrides the
                       narrower item enum when controller-gen flattens the schema.
                     items:
@@ -91,6 +91,7 @@ spec:
                       enum:
                       - openclaw
                       - hermes
+                      - custom
                       type: string
                     minItems: 1
                     type: array

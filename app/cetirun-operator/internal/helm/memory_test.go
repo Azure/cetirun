@@ -36,15 +36,12 @@ func TestMemoryOptionsPreserveLegacyCharts(t *testing.T) {
 }
 
 func TestMemoryOptionsResolveSelectedChartAppVersion(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes", "custom"} {
+	for _, typ := range []string{"openclaw", "hermes"} {
 		for _, override := range []string{"", "registry.example.com/override:9.8.7"} {
 			t.Run(typ+"/"+override, func(t *testing.T) {
 				chrt := testChart(t)
 				chrt.Metadata.Version, chrt.Metadata.AppVersion = "3.0.0", "2.0.0"
 				input := sampleInput(typ, "openai", false)
-				if typ == "custom" {
-					input = customInput(8080)
-				}
 				input["memoryOptions"] = MemoryOptions{Enabled: true, Registry: "registry.example.com/staging", Image: override}
 				prepared, err := PrepareChart(chrt, input)
 				if err != nil {
@@ -75,7 +72,7 @@ func TestMemoryOptionsResolveSelectedChartAppVersion(t *testing.T) {
 }
 
 func TestMemoryChartDefaultsAndContext(t *testing.T) {
-	for _, typ := range []string{"hermes", "openclaw", "custom"} {
+	for _, typ := range []string{"hermes", "openclaw"} {
 		for _, shared := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/shared=%v", typ, shared), func(t *testing.T) {
 				chrt := testChart(t)
@@ -83,12 +80,6 @@ func TestMemoryChartDefaultsAndContext(t *testing.T) {
 				image := runtimebindings.DefaultMemoryImage("registry.example.com", "2.3.4")
 				input := sampleInput(typ, "openai", false)
 				input["global"] = map[string]any{"registry": "registry.example.com", "version": "2.3.4"}
-				if typ == "custom" {
-					input, home = customInput(8080), "/home/worker"
-					bindings := input["customBindings"].(runtimebindings.Custom)
-					bindings.Memory = &runtimebindings.Memory{Image: image, Home: home}
-					input["customBindings"] = bindings
-				}
 				if shared {
 					input["skills"] = sharedSkillValues()
 				}
@@ -240,28 +231,6 @@ func TestSharedSkillAliasDoesNotReplaceCommonContext(t *testing.T) {
 	}
 }
 
-func TestCustomMemoryPreparedManifest(t *testing.T) {
-	input := customInput(8080)
-	bindings := input["customBindings"].(runtimebindings.Custom)
-	bindings.Memory = &runtimebindings.Memory{Image: "registry.example.com/memory@sha256:" + strings.Repeat("a", 64), Home: "/home/worker"}
-	input["customBindings"] = bindings
-	prepared, err := PrepareChart(testChart(t), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := prepared.ValidateCustom("cetirun-example", "openclaw-example"); err != nil {
-		t.Fatal(err)
-	}
-	if object(prepared.Values["memoryContext"])["enabled"] != true {
-		t.Fatal("memory not rendered")
-	}
-	bindings.Memory.Image = "registry.example.com/memory:latest"
-	input["customBindings"] = bindings
-	if _, err := PrepareChart(testChart(t), input); err == nil {
-		t.Fatal("mutable asset image accepted")
-	}
-}
-
 func TestSandboxRenderDoesNotInheritOrdinaryMemoryDefaults(t *testing.T) {
 	for _, typ := range []string{"hermes", "openclaw"} {
 		t.Run(typ, func(t *testing.T) {
@@ -294,6 +263,7 @@ func TestSandboxRenderDoesNotInheritOrdinaryMemoryDefaults(t *testing.T) {
 				t.Fatal(err)
 			}
 			expected.ControllerRevision = workload.Status.UpdateRevision
+			expected.SinglePod = len(expected.Template.Finalizers) != 0
 			if err := w.ValidatePod(testfixture.Pod(expected), expected); err != nil {
 				t.Fatal(err)
 			}

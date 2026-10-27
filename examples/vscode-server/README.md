@@ -43,15 +43,8 @@ support. An administrator enables the runtime and approves the image:
 cetirun-operator:
   customRuntime:
     enabled: true
-    agentManagedModel: true
     approvedImages:
       - registry.example.com/cetirun-vscode@sha256:<approved-digest>
-    gatewayImages:
-      - registry.example.com/cetirun-vscode@sha256:<approved-digest>
-    storageClass: <qualified-storage-class>
-    storageSize: 20Gi
-    accessMode: ReadWriteOnce
-    fsGroup: 1024
 ```
 
 Replace the example owner, image digest and chart version in
@@ -66,9 +59,8 @@ The manifest sets `webUI: true` and `port: 8080`, publishing the editor at
 provides its own terminal. The image runs as UID/GID 1024 with `HOME=/home/vibe`;
 let the platform provision its namespace and storage.
 
-Add the image to `gatewayImages` as well as `approvedImages`; this uses the
-per-image Gateway binding even when `agentManagedModel` is `true`. Merge these
-entries into existing lists to preserve other images' configuration.
+Select a Team whose Policy allows Custom and the requested shared models,
+and a compatible Sandbox. All approved images use the platform Gateway.
 The Operator injects `OPENAI_BASE_URL` and the instance's Secret-backed
 `OPENAI_API_KEY`. The manifest enables shared models and disables the optional
 Gateway Copilot upstream.

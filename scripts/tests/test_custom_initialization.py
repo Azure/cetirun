@@ -101,11 +101,12 @@ class CustomInitializationTests(unittest.TestCase):
         self.assertIn("InitToolsMissing: cp", result.stderr)
         self.assertEqual(list(self.target.iterdir()), [])
 
-    def test_missing_context_fails_before_copy(self):
-        (self.context / "AGENTS.md").unlink()
+    def test_missing_managed_context_fails_before_copy(self):
+        assets = self.prepare_memory()
+        (assets / "AGENTS.md").unlink()
         result = self.run_init()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ContextBindingPending", result.stderr)
+        self.assertIn("MemoryAssetsUnavailable", result.stderr)
         self.assertEqual(list(self.target.iterdir()), [])
 
     @unittest.skipIf(os.geteuid() == 0, "requires a non-root test process")

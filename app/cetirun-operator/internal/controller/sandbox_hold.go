@@ -49,9 +49,10 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 }
 
 type sandboxPolicyFenceStatus struct {
-	phase   string
-	reason  string
-	message string
+	phase         string
+	reason        string
+	message       string
+	sandboxStatus metav1.ConditionStatus
 }
 
 // fenceSandboxForPolicyReprojection performs only the fail-closed half of the
@@ -62,6 +63,16 @@ func (r *AgentReconciler) fenceSandboxForPolicyReprojection(ctx context.Context,
 	return r.holdSandboxWithPolicyFence(ctx, agent, &sandboxPolicyFenceStatus{
 		phase: cetirunv1alpha1.PhasePending, reason: aiGatewayReasonPolicyReprojection,
 		message: "Current policy projections are changing; Sandbox execution remains held until replacement enforcement is verified.",
+	})
+}
+
+// fenceSandboxForPolicyDenial stops known compute without entering Sandbox
+// preparation. A definitive policy denial has no replacement projection to
+// prepare; it remains held until a later policy resolution authorizes it.
+func (r *AgentReconciler) fenceSandboxForPolicyDenial(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
+	return r.holdSandboxWithPolicyFence(ctx, agent, &sandboxPolicyFenceStatus{
+		phase: cetirunv1alpha1.PhaseFailed, reason: aiGatewayReasonPolicyDenied,
+		message: "The current Team or policy denies this Agent; Sandbox execution remains held until authorization is restored.",
 	})
 }
 
@@ -91,7 +102,22 @@ func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent 
 		}
 	}
 
-	if agent.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+	recorded, recordedErr := r.recordedReconciledSandbox(ctx, agent)
+	if recordedErr != nil {
+		failures = append(failures, recordedErr)
+	}
+	// A Bootstrap finalizer is durable evidence of the common lifecycle even
+	// when its receipt cannot currently be read. Fail closed through the common
+	// stop path rather than falling back to legacy Custom shutdown.
+	reconciledUncertain := recordedErr != nil && controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer)
+	if recorded || reconciledUncertain {
+		// Common Custom workloads are ordinary protected StatefulSets. They
+		// have no legacy Custom ownership receipt, terminal, route or completion
+		// path, so stop them through the same retained-home Sandbox lifecycle.
+		if err := r.stopSandboxBuiltin(ctx, agent); err != nil {
+			failures = append(failures, err)
+		}
+	} else if agent.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		r.customPlans.Delete(agent.Name)
 		if err := r.stopCustomWorkload(ctx, agent); err != nil {
 			failures = append(failures, fmt.Errorf("stop sandbox-held Custom workload: %w", err))
@@ -108,9 +134,7 @@ func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent 
 	} else if err := r.stopSandboxBuiltin(ctx, agent); err != nil {
 		failures = append(failures, err)
 	}
-	if recorded, err := r.recordedReconciledSandbox(ctx, agent); err != nil {
-		failures = append(failures, err)
-	} else if recorded {
+	if recorded || reconciledUncertain {
 		failures = append(failures, r.stopReconciledAuxiliaries(ctx, agent))
 	}
 	if prepare {
@@ -149,17 +173,23 @@ func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent 
 		message = "Sandbox execution remains disabled, but workload shutdown, route removal or prior apply completion failed; retrying."
 	}
 	agent.Status.AccessURL = ""
-	conditions := []string{cetirunv1alpha1.ConditionSandboxReady, cetirunv1alpha1.ConditionReady}
-	if controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
-		conditions = append(conditions, cetirunv1alpha1.ConditionAgentConfigReady)
-	}
+	// Common bootstrap can publish configuration readiness before historical
+	// preparation records its finalizer. A hold invalidates that observation
+	// regardless of which provisioning path produced it.
+	conditions := []string{cetirunv1alpha1.ConditionSandboxReady, cetirunv1alpha1.ConditionReady,
+		cetirunv1alpha1.ConditionAgentConfigReady}
 	if agent.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		conditions = append(conditions, cetirunv1alpha1.ConditionIngressReady,
 			cetirunv1alpha1.ConditionDesktopConfigured, cetirunv1alpha1.ConditionTerminalConfigured)
 	}
 	for _, conditionType := range conditions {
+		status := metav1.ConditionFalse
+		if conditionType == cetirunv1alpha1.ConditionSandboxReady && policyFence != nil &&
+			policyFence.sandboxStatus != "" && reason == "ObservationUnavailable" {
+			status = policyFence.sandboxStatus
+		}
 		apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
-			Type: conditionType, Status: metav1.ConditionFalse,
+			Type: conditionType, Status: status,
 			ObservedGeneration: agent.Generation, Reason: reason, Message: message,
 		})
 	}
@@ -271,10 +301,8 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	before := agent.DeepCopy().Status
 	agent.Status.Phase = cetirunv1alpha1.PhaseDeleting
 	agent.Status.AccessURL = ""
-	conditions := []string{cetirunv1alpha1.ConditionReady, cetirunv1alpha1.ConditionSandboxReady}
-	if controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
-		conditions = append(conditions, cetirunv1alpha1.ConditionAgentConfigReady)
-	}
+	conditions := []string{cetirunv1alpha1.ConditionReady, cetirunv1alpha1.ConditionSandboxReady,
+		cetirunv1alpha1.ConditionAgentConfigReady}
 	for _, kind := range conditions {
 		apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
 			Type: kind, Status: metav1.ConditionFalse, ObservedGeneration: agent.Generation,
@@ -289,7 +317,14 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	revokeErr := r.revokeSandboxPreparationGrants(ctx, agent)
 	stopErr := r.stopSandboxBuiltin(ctx, agent)
 	gatewayErr := r.deleteAIGatewayKey(ctx, agent)
-	if err := errors.Join(statusErr, revokeErr, stopErr, gatewayErr); err != nil {
+	var transitionErr error
+	if stopErr == nil {
+		// The common stop path has completed its authoritative quiescence
+		// check. Release a handoff before any deletion finalizer can remove the
+		// Agent object needed by ReleaseStoppedTransition's verification.
+		transitionErr = r.releaseTeamChangeTransitionForDeletion(ctx, agent)
+	}
+	if err := errors.Join(statusErr, revokeErr, stopErr, gatewayErr, transitionErr); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.cleanupRegistryCredentials(ctx, agent, true); err != nil {

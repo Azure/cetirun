@@ -28,7 +28,24 @@ func gatewayConfig() config.Config {
 }
 
 func gatewayTeam(name string) *cetirunv1alpha1.Team {
-	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: cetirunv1alpha1.TeamSpec{
+		AgentPolicyRef: "test-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
+	}}
+}
+
+func gatewayPolicy() *cetirunv1alpha1.AgentPolicy {
+	return &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "test-policy"}, Spec: cetirunv1alpha1.AgentPolicySpec{
+		Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: []cetirunv1alpha1.AgentType{
+			cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom,
+		}},
+		AgentIdentity: cetirunv1alpha1.AgentPolicyAgentIdentity{Allowed: true, CredentialServices: []string{"azure-resource-manager"}},
+		EntraID:       cetirunv1alpha1.AgentPolicyEntraID{Enabled: true},
+		ModelAccess: cetirunv1alpha1.AgentPolicyModelAccess{
+			Copilot:       cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: true},
+			SharedModels:  cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: []string{"gpt-6", "gpt-6-mini", "gpt-6-astra"}},
+			GatewayBudget: &cetirunv1alpha1.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "10", MaxMonthlyUSD: "20"},
+		},
+	}}
 }
 
 // catalogConfigMap publishes the shared models of a deployment that offers
@@ -39,7 +56,7 @@ func catalogConfigMap(models ...string) *corev1.ConfigMap {
 
 func publishedCatalog(copilot bool, models ...string) *corev1.ConfigMap {
 	return routingCatalog(&cetirunv1alpha1.AIGatewayRouting{Chart: testAgentChart,
-		AgentTypes: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}}, copilot, models...)
+		AgentTypes: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom}}, copilot, models...)
 }
 
 const testAgentChart = "oci://registry.example.com/helm/cetirun:1.0.0"
@@ -61,6 +78,16 @@ func routingCatalog(routing *cetirunv1alpha1.AIGatewayRouting, copilot bool, mod
 
 func createAgent(t *testing.T, cfg config.Config, body string, objs ...client.Object) (*httptest.ResponseRecorder, client.Client) {
 	t.Helper()
+	hasPolicy := false
+	for _, obj := range objs {
+		if _, ok := obj.(*cetirunv1alpha1.AgentPolicy); ok {
+			hasPolicy = true
+		}
+	}
+	if !hasPolicy {
+		objs = append(objs, gatewayPolicy())
+	}
+	cfg.SandboxControllerDefaults = true
 	fc := newFakeClient(objs...)
 	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: cfg}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances", strings.NewReader(body))
@@ -88,21 +115,10 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "unknown_team" {
 		t.Fatalf("unknown team: status %d body %s", w.Code, w.Body.String())
 	}
-	// A legacy deployment with the Gateway disabled still permits no Team.
-	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`, gatewayTeam("aks"))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("feature off without team: status %d body %s", w.Code, w.Body.String())
-	}
-	w, fc := createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"},"team":"aks"}`, gatewayTeam("aks"))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("feature off with team: status %d body %s", w.Code, w.Body.String())
-	}
-	created := &cetirunv1alpha1.Agent{}
-	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, created); err != nil {
-		t.Fatal(err)
-	}
-	if created.Spec.Team != "aks" || created.Spec.SandboxRef != "" {
-		t.Fatalf("binding = %q/%q, want aks with no Sandbox binding", created.Spec.Team, created.Spec.SandboxRef)
+	// The removed legacy path cannot create Agents while the Gateway is disabled.
+	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"},"team":"aks"}`, gatewayTeam("aks"))
+	if w.Code != http.StatusConflict || errorCode(t, w) != "gateway_required" {
+		t.Fatalf("feature off: status %d body %s", w.Code, w.Body.String())
 	}
 	// A Custom Agent gets a key too, so it needs a Team as well. It is not
 	// routed, so the model switches do not apply to it.
@@ -113,7 +129,7 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
 		t.Fatalf("custom without team: status %d body %s", w.Code, w.Body.String())
 	}
-	w, fc = createAgent(t, custom, `{`+customAgent+`,"team":"aks","modelAccess":{"githubCopilot":false}}`, gatewayTeam("aks"))
+	w, fc := createAgent(t, custom, `{`+customAgent+`,"team":"aks","modelAccess":{"githubCopilot":false}}`, gatewayTeam("aks"), catalogConfigMap("gpt-6"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("custom with team: status %d body %s", w.Code, w.Body.String())
 	}
@@ -121,8 +137,8 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
 		t.Fatal(err)
 	}
-	if agent.Spec.Team != "aks" || agent.Spec.ModelAccess != nil {
-		t.Fatalf("custom: team %q modelAccess %+v, want aks and unset", agent.Spec.Team, agent.Spec.ModelAccess)
+	if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "standard" || agent.Spec.ModelAccess == nil || *agent.Spec.ModelAccess.GitHubCopilot {
+		t.Fatalf("custom: binding %q/%q modelAccess %+v", agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.ModelAccess)
 	}
 }
 
@@ -215,8 +231,8 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
 				t.Fatal(err)
 			}
-			if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "" {
-				t.Fatalf("binding = %q/%q, want aks with no Sandbox binding", agent.Spec.Team, agent.Spec.SandboxRef)
+			if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "standard" {
+				t.Fatalf("binding = %q/%q, want aks/standard", agent.Spec.Team, agent.Spec.SandboxRef)
 			}
 			switch {
 			case tc.wantAccess == nil && agent.Spec.ModelAccess != nil:
@@ -365,7 +381,7 @@ func TestGetAIGatewayCatalog(t *testing.T) {
 	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil || !resp.Known || resp.GitHubCopilot {
 		t.Fatalf("published without GitHub Copilot: resp %+v err %v", resp, err)
 	}
-	if !slices.Equal(resp.AgentTypes, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}) {
+	if !slices.Equal(resp.AgentTypes, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom}) {
 		t.Fatalf("the published agent types must reach the form, got %v", resp.AgentTypes)
 	}
 	// Missing routing is unknown and must not imply support for a harness.

@@ -36,6 +36,9 @@ Otherwise: repository:tag
 {{- end }}
 
 {{- define "cetirun-operator.sandboxSourcesConfig" -}}
+{{- if not .Values.aiGateway.enabled -}}
+{{- fail "aiGateway.enabled must be true: every Agent uses the platform AI Gateway" -}}
+{{- end -}}
 {{- $sources := .Values.sandboxSources -}}
 {{- if not (kindIs "map" $sources) -}}
 {{- fail "sandboxSources must be an object" -}}

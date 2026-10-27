@@ -70,12 +70,22 @@ type Helpers struct {
 }
 
 type Input struct {
-	Reconciled        bool
-	PlannedMigration  *api.PlannedMigrationRequest `json:",omitempty"`
-	Resolution        *sandbox.Resolution
-	AgentName         string
-	AgentGeneration   int64
-	AgentType         string
+	// SingleStart protects the retained native executor's sole Pod lifetime.
+	// Gateway authorization is independent and is required for all executors.
+	SingleStart      bool
+	Reconciled       bool
+	PlannedMigration *api.PlannedMigrationRequest `json:",omitempty"`
+	Resolution       *sandbox.Resolution
+	AgentName        string
+	AgentGeneration  int64
+	AgentType        string
+	// CustomAgent contains the Harness-validated process identity. Built-in
+	// harnesses keep their fixed profile identity and leave it empty.
+	CustomAgent *CustomAgent
+	// GatewayAPIBase is the protected, in-cluster OpenAI-compatible endpoint.
+	// It is required for Custom because its process adapter consumes standard
+	// OPENAI_BASE_URL/OPENAI_API_KEY variables.
+	GatewayAPIBase    string
 	Namespace         ObjectIdentity
 	WorkloadName      string
 	ReleaseName       string
@@ -88,6 +98,55 @@ type Input struct {
 	AuthorizedSecrets []string
 	GatewayKey        *ObjectIdentity
 	ImagePullSecret   *ObjectIdentity `json:",omitempty"`
+	// Terminal describes the separately isolated, platform-owned Custom
+	// terminal. It never gives that workload HOME, model credentials, or the
+	// Agent's service account.
+	Terminal *Terminal `json:",omitempty"`
+}
+
+// Terminal is selected by the platform and rendered only for a reconciled
+// Custom Sandbox. Image is an immutable image reference.
+type Terminal struct {
+	Image              string `json:"image"`
+	Port               int32  `json:"port"`
+	SessionSeconds     int32  `json:"sessionSeconds"`
+	ServiceAccountName string `json:"serviceAccountName"`
+}
+
+// CustomAgent is the minimum Harness-validated identity required to render a
+// portable Custom workload. It deliberately contains no command or arguments:
+// Kubernetes preserves the approved image ENTRYPOINT/CMD.
+type CustomAgent struct {
+	Image       string              `json:"image"`
+	Username    string              `json:"username"`
+	Home        string              `json:"home"`
+	Port        *int32              `json:"port,omitempty"`
+	WebUI       bool                `json:"webUI,omitempty"`
+	WebBasePath string              `json:"webBasePath,omitempty"`
+	WebInstance string              `json:"webInstance,omitempty"`
+	Environment []CustomEnvironment `json:"environment,omitempty"`
+	Ports       []CustomPort        `json:"ports,omitempty"`
+	HTTP        *CustomHTTP         `json:"http,omitempty"`
+}
+
+type CustomEnvironment struct {
+	Name           string `json:"name"`
+	Value          string `json:"value,omitempty"`
+	CredentialSlot string `json:"credentialSlot,omitempty"`
+}
+
+type CustomPort struct {
+	Name   string `json:"name"`
+	Number int32  `json:"number"`
+}
+
+type CustomHTTP struct {
+	PortName      string `json:"portName"`
+	HealthPath    string `json:"healthPath"`
+	ReadinessPath string `json:"readinessPath"`
+	StartupPath   string `json:"startupPath"`
+	ChatPath      string `json:"chatPath,omitempty"`
+	ModelsPath    string `json:"modelsPath,omitempty"`
 }
 
 // Accounting uses Kubernetes effective init/sidecar accounting. Pod contains

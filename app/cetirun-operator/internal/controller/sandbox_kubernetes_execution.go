@@ -447,6 +447,7 @@ func (r *AgentReconciler) resolveRunningKubernetesSandbox(ctx context.Context, a
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		NativeExecution: r.SandboxPreparation.NativeExecution,
 		Resolution:      *attempt.resolution, AgentName: agent.Name, Namespace: attempt.input.Namespace.Name, Platform: platform,
+		CustomIngress: r.sandboxCustomIngress(attempt), TerminalIngress: r.sandboxTerminalIngress(attempt),
 	})
 	return attempt, err
 }

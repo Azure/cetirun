@@ -128,7 +128,7 @@ func TestCreateRejectsPolicyViolationsWithoutWrites(t *testing.T) {
 		{name: "identity", body: `"agent":{"type":"hermes"},"agentIdentityEnabled":true`, code: "policy_identity_not_allowed"},
 		{name: "skills", body: `"agent":{"type":"hermes"}`, code: "policy_skills_conflict", change: func(_ *InstanceHandler, t *api.Team, _ *api.AgentPolicy) { t.Spec.Skills = []string{"npm:unapproved"} }},
 		{name: "missing budget", body: `"agent":{"type":"hermes"}`, code: "invalid_policy", change: func(_ *InstanceHandler, _ *api.Team, p *api.AgentPolicy) { p.Spec.ModelAccess.GatewayBudget = nil }},
-		{name: "disabled gateway", body: `"agent":{"type":"hermes"}`, code: "policy_gateway_required", change: func(h *InstanceHandler, _ *api.Team, _ *api.AgentPolicy) { h.Config.AIGatewayEnabled = false }},
+		{name: "disabled gateway", body: `"agent":{"type":"hermes"}`, code: "gateway_required", change: func(h *InstanceHandler, _ *api.Team, _ *api.AgentPolicy) { h.Config.AIGatewayEnabled = false }},
 		{name: "empty intersection", body: `"agent":{"type":"openclaw"}`, code: "agent_type_not_allowed", change: func(h *InstanceHandler, _ *api.Team, _ *api.AgentPolicy) {
 			h.Config.AllowedAgentTypes = []string{"openclaw"}
 		}},
@@ -286,9 +286,7 @@ func TestRegistryCreationRetryRechecksPolicy(t *testing.T) {
 	if err := fc.Create(context.Background(), policy); err != nil {
 		t.Fatal(err)
 	}
-	if err := fc.Create(context.Background(), catalogConfigMap("gpt-6-mini")); err != nil {
-		t.Fatal(err)
-	}
+	replaceTestCatalog(t, fc, catalogConfigMap("gpt-6-mini"))
 	h.Config.AIGatewayEnabled = true
 	h.Config.AIGatewayCatalogNamespace = "cetirun-system"
 	failing = false
@@ -337,9 +335,7 @@ func TestRegistryRetryValidatesPersistedSourcesRatherThanNewDefaults(t *testing.
 	if err := fc.Create(context.Background(), policy); err != nil {
 		t.Fatal(err)
 	}
-	if err := fc.Create(context.Background(), catalogConfigMap("gpt-6-mini")); err != nil {
-		t.Fatal(err)
-	}
+	replaceTestCatalog(t, fc, catalogConfigMap("gpt-6-mini"))
 	h.Config.AIGatewayEnabled = true
 	h.Config.AIGatewayCatalogNamespace = "cetirun-system"
 	configured, _ := creationPolicyHandler(team, policy)

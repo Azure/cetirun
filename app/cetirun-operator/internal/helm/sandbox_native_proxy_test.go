@@ -4,7 +4,6 @@
 package helm
 
 import (
-	"bytes"
 	"encoding/json"
 	"reflect"
 	"slices"
@@ -12,10 +11,8 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
-	helmfixture "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm/testfixture"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
-	"helm.sh/helm/v3/pkg/chartutil"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -82,99 +79,15 @@ func TestSandboxNativeProxyTrustRendering(t *testing.T) {
 }
 
 func TestSandboxNativeProxyCIDRRendering(t *testing.T) {
-	for _, preProxy := range []bool{false, true} {
-		t.Run(map[bool]string{false: "current chart", true: "pre-proxy chart"}[preProxy], func(t *testing.T) {
-			chrt := testChart(t)
-			if preProxy {
-				if err := helmfixture.RestorePreProxyContract(chrt); err != nil {
-					t.Fatal(err)
-				}
-			}
-			input, values := nativeProxyRenderInput()
-			input.Controls.TrustedProxyIPs = []string{"10.244.0.0/16", "fd00:244::/64"}
-			bundle, err := w.Build(input)
-			if err != nil {
-				t.Fatal(err)
-			}
-			prepared, err := PrepareSandboxChart(chrt, values, nil, bundle)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var config map[string]any
-			files := object(object(prepared.Values["runtime"])["configFiles"])
-			if err := json.Unmarshal([]byte(text(files["openclaw.json"])), &config); err != nil {
-				t.Fatal(err)
-			}
-			gateway := object(config["gateway"])
-			if !reflect.DeepEqual(gateway["trustedProxies"], []any{"10.244.0.0/16", "fd00:244::/64"}) ||
-				object(gateway["auth"])["mode"] != "token" ||
-				object(gateway["controlUi"])["dangerouslyDisableDeviceAuth"] != false {
-				t.Fatal("registered proxy CIDRs were lost, broadened or changed authentication")
-			}
-			if _, err := prepared.SandboxManifest(); err != nil {
-				t.Fatal("proxy CIDRs did not produce a validated manifest:", err)
-			}
-			input.Controls.TrustedProxyIPs[0] = "10.244.0.0/24"
-			changedBundle, err := w.Build(input)
-			if err != nil {
-				t.Fatal(err)
-			}
-			changed, err := PrepareSandboxChart(chrt, values, nil, changedBundle)
-			if err != nil || prepared.WorkloadHash == changed.WorkloadHash {
-				t.Fatal("proxy CIDRs are not bound into the protected workload:", err)
-			}
-		})
-	}
-}
-
-func TestSandboxNativeProxyTrustWithPreProxyChart(t *testing.T) {
-	chrt := testChart(t)
-	if err := helmfixture.RestorePreProxyContract(chrt); err != nil {
-		t.Fatal(err)
-	}
 	input, values := nativeProxyRenderInput()
+	input.Controls.TrustedProxyIPs = []string{"10.244.0.0/16", "fd00:244::/64"}
 	bundle, err := w.Build(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	originalSchema := slices.Clone(chrt.Schema)
-	originalTemplate := slices.Clone(asset(chrt, "agents/openclaw/config/native.tpl"))
-	originalValues, err := json.Marshal(values)
+	prepared, err := PrepareSandboxChart(testChart(t), values, nil, bundle)
 	if err != nil {
 		t.Fatal(err)
-	}
-	projected, err := bundle.Apply(values)
-	if err != nil {
-		t.Fatal(err)
-	}
-	coalesced, err := chartutil.CoalesceValues(chrt, projected)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := chartutil.ValidateAgainstSchema(chrt, coalesced); err == nil || !strings.Contains(err.Error(), "trustedProxyIPs") {
-		t.Fatal("pre-proxy chart fixture no longer rejects the unknown protected hook:", err)
-	}
-	prepared, err := PrepareSandboxChart(chrt, values, nil, bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prepared.ChartVersion != chrt.Metadata.Version || !bytes.Equal(chrt.Schema, originalSchema) ||
-		!bytes.Equal(asset(chrt, "agents/openclaw/config/native.tpl"), originalTemplate) {
-		t.Fatal("compatibility rendering changed the chart pin, schema or template")
-	}
-	afterValues, err := json.Marshal(values)
-	if err != nil || !bytes.Equal(originalValues, afterValues) {
-		t.Fatal("compatibility rendering mutated caller-owned values:", err)
-	}
-	if _, present := object(prepared.Values[w.ValuesKey])["trustedProxyIPs"]; present {
-		t.Fatal("old chart received an unsupported protected value")
-	}
-	coalesced, err = chartutil.CoalesceValues(chrt, prepared.Values)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := chartutil.ValidateAgainstSchema(chrt, coalesced); err != nil {
-		t.Fatal("compatibility values bypassed the original chart schema:", err)
 	}
 	var config map[string]any
 	files := object(object(prepared.Values["runtime"])["configFiles"])
@@ -182,69 +95,36 @@ func TestSandboxNativeProxyTrustWithPreProxyChart(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateway := object(config["gateway"])
-	if !reflect.DeepEqual(gateway["trustedProxies"], []any{"192.0.2.10", "2001:db8::10"}) ||
+	if !reflect.DeepEqual(gateway["trustedProxies"], []any{"10.244.0.0/16", "fd00:244::/64"}) ||
 		object(gateway["auth"])["mode"] != "token" ||
-		object(gateway["controlUi"])["dangerouslyDisableDeviceAuth"] != false ||
-		object(gateway["controlUi"])["allowInsecureAuth"] != false {
-		t.Fatal("old pinned template discarded exact proxy trust or changed authentication")
+		object(gateway["controlUi"])["dangerouslyDisableDeviceAuth"] != false {
+		t.Fatal("registered proxy CIDRs were lost, broadened or changed authentication")
 	}
 	if _, err := prepared.SandboxManifest(); err != nil {
-		t.Fatal("old chart did not produce a validated, sealed manifest:", err)
+		t.Fatal("proxy CIDRs did not produce a validated manifest:", err)
 	}
-	input.Controls.TrustedProxyIPs[0] = "192.0.2.11"
+	input.Controls.TrustedProxyIPs[0] = "10.244.0.0/24"
 	changedBundle, err := w.Build(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed, err := PrepareSandboxChart(chrt, values, nil, changedBundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prepared.WorkloadHash == changed.WorkloadHash {
-		t.Fatal("old chart proxy trust was not bound into the workload hash")
-	}
-	object(object(object(prepared.Values["openclaw"])["config"])["gateway"])["trustedProxies"] = []any{"0.0.0.0/0"}
-	if _, err := prepared.SandboxManifest(); err == nil {
-		t.Fatal("old chart accepted proxy input mutation after sealing")
+	changed, err := PrepareSandboxChart(testChart(t), values, nil, changedBundle)
+	if err != nil || prepared.WorkloadHash == changed.WorkloadHash {
+		t.Fatal("proxy CIDRs are not bound into the protected workload:", err)
 	}
 }
 
-func TestSandboxPreProxyCompatibilityRetainsSchemaValidation(t *testing.T) {
+func TestSandboxRejectsChartWithoutAIGatewayContract(t *testing.T) {
 	chrt := testChart(t)
-	if err := helmfixture.RestorePreProxyContract(chrt); err != nil {
-		t.Fatal(err)
-	}
-	chrt.Schema = bytes.Replace(chrt.Schema, []byte(`"executionHeld": {"const": true}`), []byte(`"executionHeld": {"const": false}`), 1)
-	input, values := nativeProxyRenderInput()
-	bundle, err := w.Build(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := PrepareSandboxChart(chrt, values, nil, bundle); err == nil || !strings.Contains(err.Error(), "schema") {
-		t.Fatal("compatibility rendering bypassed an unrelated chart schema constraint:", err)
-	}
-}
-
-func TestSandboxPreProxyCompatibilityRejectsModifiedTemplate(t *testing.T) {
-	chrt := testChart(t)
-	if err := helmfixture.RestorePreProxyContract(chrt); err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range chrt.Files {
-		if file.Name == "agents/openclaw/config/native.tpl" {
-			file.Data = bytes.Replace(file.Data, []byte(`{{- $config := deepCopy .Values.openclaw.config }}`),
-				[]byte(`{{- $config := deepCopy .Values.openclaw.config }}
-{{- $_ := set (dig "gateway" (dict) $config) "trustedProxies" (list "127.0.0.6") }}`), 1)
-		}
-	}
+	delete(chrt.Values, "aiGateway")
 	input, values := nativeProxyRenderInput()
 	bundle, err := w.Build(input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := PrepareSandboxChart(chrt, values, nil, bundle); err == nil ||
-		!strings.Contains(err.Error(), "proxy trust differs") {
-		t.Fatal("compatibility rendering accepted a template that discarded the approved proxy list:", err)
+		!strings.Contains(err.Error(), "AI Gateway contract") {
+		t.Fatalf("Sandbox accepted a chart without the AI Gateway contract: %v", err)
 	}
 }
 

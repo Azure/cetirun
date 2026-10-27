@@ -59,6 +59,29 @@ describe("PolicyEditPage", () => {
     vi.mocked(policyAPI.updatePolicy).mockReset();
   });
 
+  it.each([false, true])("preserves or enables Custom when saving a policy (already allowed: %s)", async (alreadyAllowed) => {
+    const policy: policyAPI.AgentPolicyDTO = {
+      ...cachedPolicy,
+      harnesses: { allowed: alreadyAllowed ? ["openclaw", "custom"] : ["openclaw"] },
+    };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(policy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(policy);
+    renderCachedPolicy(policy);
+
+    const custom = screen.getByRole("switch", { name: "Custom" });
+    if (alreadyAllowed) expect(custom).toBeChecked();
+    else {
+      expect(custom).not.toBeChecked();
+      fireEvent.click(custom);
+    }
+    fireEvent.change(screen.getByRole("textbox", { name: "Allowed skills" }), { target: { value: "updated-skill" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledWith("standard", expect.objectContaining({
+      harnesses: { allowed: ["openclaw", "custom"] },
+      skills: { allowed: ["updated-skill"] },
+    })));
+  });
+
   it("shows one-per-line examples for list fields", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(

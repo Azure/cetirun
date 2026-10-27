@@ -124,6 +124,10 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, "invalid_model", "model must be 256 characters or fewer")
 		return
 	}
+	if req.Team != nil {
+		writeError(w, http.StatusBadRequest, "team_change_requires_operation", "Use the Team change operation to change Team or Sandbox")
+		return
+	}
 	if req.TailscaleAuthKey != nil && *req.TailscaleAuthKey != "" && !h.Config.TailscaleEnabled {
 		writeError(w, http.StatusBadRequest, "feature_disabled", "Tailscale feature is not enabled")
 		return
@@ -153,14 +157,6 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		GatewayToken: req.GatewayToken, TailscaleAuthKey: req.TailscaleAuthKey, TeamsEnabled: req.TeamsEnabled,
 		ExpectedUID: types.UID(req.UID), ExpectedResourceVersion: req.ResourceVersion,
 	}
-	if req.Team != nil {
-		team, sandboxRef, ok := h.resolveTeamBinding(w, r, *req.Team)
-		if !ok {
-			return
-		}
-		req.Team = &team
-		opts.Team, opts.SandboxRef = &team, &sandboxRef
-	}
 	if req.Agent != nil {
 		updated, err := req.Agent.Apply(instance.Spec.Agent)
 		if err != nil {
@@ -176,13 +172,7 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		if req.Agent != nil && current.Spec.Agent.RegistrySecretRef != nil && !registryOwner(current, claims) {
 			return &managementError{http.StatusForbidden, "forbidden", "Only the instance owner may change a private image"}
 		}
-		teamChanged := req.Team != nil && *req.Team != instanceTeam(current)
-		if teamChanged {
-			if !claims.IsAdmin || !current.Spec.Suspended {
-				return &managementError{http.StatusForbidden, "team_change_not_allowed", "Changing Team requires an administrator and a suspended Agent"}
-			}
-		}
-		if req.Agent != nil || teamChanged || current.Spec.Agent.Type == api.AgentTypeCustom && req.Model != nil {
+		if req.Agent != nil || current.Spec.Agent.Type == api.AgentTypeCustom && req.Model != nil {
 			agent := agentconfig.Defaults(current.Spec.Agent)
 			if opts.Agent != nil {
 				agent = *opts.Agent
@@ -260,6 +250,10 @@ func writeManagementError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "suspension_home_unverified", kube.ErrSuspensionHomeUnverified.Error())
 	case errors.Is(err, kube.ErrInvalidRestartRequest):
 		writeError(w, http.StatusBadRequest, "invalid_restart_request", err.Error())
+	case errors.Is(err, kube.ErrInvalidTeamChangeRequest):
+		writeError(w, http.StatusBadRequest, "invalid_team_change", err.Error())
+	case errors.Is(err, kube.ErrTeamChangePending):
+		writeError(w, http.StatusConflict, "team_change_pending", err.Error())
 	case errors.Is(err, kube.ErrInstanceSuspended), errors.Is(err, kube.ErrRestartUnsupported), errors.Is(err, kube.ErrRestartNotReady), errors.Is(err, kube.ErrMigrationPending):
 		writeError(w, http.StatusConflict, "restart_unavailable", err.Error())
 	case kube.IsUnsupportedCustomUpdate(err):

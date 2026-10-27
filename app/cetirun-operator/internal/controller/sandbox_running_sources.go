@@ -55,8 +55,12 @@ func (r *AgentReconciler) SandboxRunningStatusInput(ctx context.Context, intent 
 			return empty, err
 		}
 	}
+	agentSource, err := w.AgentSourceReference(attempt.agent)
+	if err != nil {
+		return empty, err
+	}
 	return SandboxStatusInput{
-		AgentGeneration: attempt.agent.Generation, Resolution: attempt.resolution,
+		AgentGeneration: agentSource.Generation, Resolution: attempt.resolution,
 		Plan: attempt.plan, Expected: intent.Expected,
 	}, ctx.Err()
 }

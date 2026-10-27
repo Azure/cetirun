@@ -49,6 +49,7 @@ func TestSandboxBootstrapSkillsPublication(t *testing.T) {
 			}
 			h.create(t, catalog)
 			configureBootstrapSkillsCatalog(t, f, catalog.Name)
+			f.reconcile(t) // Persist namespace ownership before Gateway key projection.
 			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); !errors.Is(err, sandbox.ErrObservationUnavailable) {
 				t.Fatal("catalog bootstrap did not stop at unavailable qualified writer evidence:", err)
 			}

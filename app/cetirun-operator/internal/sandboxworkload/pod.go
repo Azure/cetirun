@@ -20,7 +20,7 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 		return fmt.Errorf("a rendered native Pod template is required")
 	}
 	var finalizers []string
-	if b.input.GatewayKey != nil {
+	if b.input.SingleStart && b.input.AgentType == "openclaw" {
 		finalizers = []string{NativePodFinalizer}
 	}
 	if !slices.Equal(template.Finalizers, finalizers) {
@@ -78,7 +78,7 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 	if b.input.Helpers.Doctor {
 		initNames = append(initNames, "doctor")
 	}
-	if b.input.GatewayKey != nil {
+	if b.input.GatewayKey != nil && b.input.AgentType == "openclaw" {
 		initNames = append(initNames, "retire-copilot-sign-in", "retire-direct-model-auth")
 	}
 	if len(spec.Containers) != len(names) || len(spec.InitContainers) != len(initNames) {
@@ -146,13 +146,13 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 		}
 	}
 	mounts := []corev1.VolumeMount{
-		{Name: "data", MountPath: HomePath}, {Name: "tmp", MountPath: "/tmp"},
+		{Name: "data", MountPath: homePath(b.input)}, {Name: "tmp", MountPath: "/tmp"},
 	}
 	switch container.Name {
 	case "cetirun":
 		mounts = append(mounts,
 			corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
-			corev1.VolumeMount{Name: b.input.SkillsMode.volume(skillsIdentity(b.input.Skills)).Name, MountPath: SkillsPath, ReadOnly: true})
+			corev1.VolumeMount{Name: b.input.SkillsMode.volume(skillsIdentity(b.input.Skills)).Name, MountPath: skillsPath(b.input), ReadOnly: true})
 		mounts = append(mounts, b.input.Controls.VolumeMounts...)
 		for _, expected := range b.input.Controls.Environment {
 			found := false
@@ -187,7 +187,7 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 		}
 		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true})
 	case "logger":
-		mounts[0].MountPath, mounts[0].SubPath, mounts[0].ReadOnly = HomePath+"/."+b.input.AgentType, "."+b.input.AgentType, true
+		mounts[0].MountPath, mounts[0].SubPath, mounts[0].ReadOnly = homePath(b.input)+"/."+b.input.AgentType, "."+b.input.AgentType, true
 		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true})
 		if !slices.Equal(container.Command, []string{"/bin/sh", "/etc/cetirun/session-logger.sh"}) || len(container.Args) != 0 {
 			return fmt.Errorf("unapproved logger helper")

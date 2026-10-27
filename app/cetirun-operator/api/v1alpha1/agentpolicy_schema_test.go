@@ -30,8 +30,8 @@ func TestGeneratedPolicyHarnessSchema(t *testing.T) {
 				{"openclaw", []any{"openclaw"}, true},
 				{"hermes", []any{"hermes"}, true},
 				{"both", []any{"openclaw", "hermes"}, true},
-				{"custom", []any{"custom"}, false},
-				{"mixed custom", []any{"hermes", "custom"}, false},
+				{"custom", []any{"custom"}, true},
+				{"mixed custom", []any{"hermes", "custom"}, true},
 				{"empty", []any{}, false},
 			} {
 				t.Run(test.name, func(t *testing.T) {

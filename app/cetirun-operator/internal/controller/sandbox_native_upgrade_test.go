@@ -19,7 +19,6 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
-	helmfixture "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm/testfixture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -149,11 +148,35 @@ func oldNativeUpgradeFixtureAsRecorded(t *testing.T) (*nativeSandboxFixture, old
 	return &nativeSandboxFixture{r: r, kube: kube, gateway: gateway, installer: installer, agent: agent}, state
 }
 
-func TestNativeUpgradePreparesExistingAgentWithPinnedPreProxyChart(t *testing.T) {
+func TestNativeUpgradeRejectsPinnedChartWithoutAIGatewayContract(t *testing.T) {
 	f := newNativeSandboxFixture(t, true)
-	if err := helmfixture.RestorePreProxyContract(f.installer.chart); err != nil {
-		t.Fatal(err)
+	delete(f.installer.chart.Values, "aiGateway")
+	original := f.current(t)
+	if original.Spec.Helm.Version == "" || original.Annotations[sandboxbinding.AuthorizationAnnotation] == "" || f.installer.stages != 0 {
+		t.Fatal("fixture must be an authorized, pinned Agent awaiting preparation")
 	}
+	receipt := &corev1.ConfigMap{}
+	receiptKey := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: w.PreparationReceiptName(original.UID)}
+	if err := f.kube.Get(context.Background(), receiptKey, receipt); !apierrors.IsNotFound(err) {
+		t.Fatal("pending fixture unexpectedly has reusable preparation:", err)
+	}
+	f.projectGateway(t)
+	if err := f.r.prepareSandboxHeld(context.Background(), f.current(t)); err == nil || !strings.Contains(err.Error(), "AI Gateway contract") {
+		t.Fatalf("pinned chart without the Gateway contract was accepted: %v", err)
+	}
+	current := f.current(t)
+	if !reflect.DeepEqual(current.Spec, original.Spec) || current.UID != original.UID ||
+		current.Annotations[sandboxbinding.AuthorizationAnnotation] != original.Annotations[sandboxbinding.AuthorizationAnnotation] ||
+		f.installer.stages != 0 {
+		t.Fatal("rejected chart changed the pending Agent's pin, intent, authorization or workload")
+	}
+	if err := f.kube.Get(context.Background(), receiptKey, receipt); !apierrors.IsNotFound(err) {
+		t.Fatal("rejected chart retained preparation state:", err)
+	}
+}
+
+func TestNativeUpgradePreparesExistingAgentWithPinnedGatewayChart(t *testing.T) {
+	f := newNativeSandboxFixture(t, true)
 	original := f.current(t)
 	if original.Spec.Helm.Version == "" || original.Annotations[sandboxbinding.AuthorizationAnnotation] == "" || f.installer.stages != 0 {
 		t.Fatal("fixture must be an authorized, pinned Agent awaiting preparation")
@@ -176,11 +199,11 @@ func TestNativeUpgradePreparesExistingAgentWithPinnedPreProxyChart(t *testing.T)
 	}
 	recorded, err := w.DecodePreparationReceipt(receipt, w.ObjectIdentity{Name: original.Name, UID: original.UID})
 	if err != nil || recorded.Prerequisites.ChartVersion != original.Spec.Helm.Version {
-		t.Fatal("preparation did not retain the old chart pin:", err)
+		t.Fatal("preparation did not retain the pinned chart version:", err)
 	}
 	_, expected := f.expectation(t)
 	if !expected.ExecutionHeld || expected.SinglePod || f.installer.stages != 1 {
-		t.Fatal("old pinned chart did not complete guarded held preparation")
+		t.Fatal("pinned Gateway chart did not complete guarded held preparation")
 	}
 	f.assertGatewayProjection(t, expected)
 	f.ready(t)

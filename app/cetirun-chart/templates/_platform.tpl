@@ -47,18 +47,9 @@ Licensed under the MIT License.
 {{- end }}
 
 {{- define "cetirun.platform.podMetadata" -}}
-{{- $bindings := (.Values.runtime | default dict).bindings -}}
 annotations:
-  {{- if $bindings }}
-  {{/* Chart labels must not create an unapplied OnDelete Pod revision. */}}
-  checksum/config: {{ (include (print .Template.BasePath "/configmap.yaml") . | fromYaml).data | toJson | sha256sum }}
-  cetirun.microsoft.com/custom-plan-hash: {{ .Values.runtime.workloadHash | quote }}
-  cetirun.microsoft.com/model-revision: {{ $bindings.model.revision | quote }}
-  cetirun.microsoft.com/context-revision: {{ $bindings.context.revision | quote }}
-  {{- else }}
   checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
   checksum/secret: {{ include (print .Template.BasePath "/secret.yaml") . | sha256sum }}
-  {{- end }}
   {{- with .Values.podAnnotations }}
   {{- toYaml . | nindent 2 }}
   {{- end }}
@@ -67,13 +58,12 @@ labels:
   {{- with .Values.sandboxWorkload }}
   {{- toYaml .podLabels | nindent 2 }}
   {{- end }}
-  {{- if and (not $bindings) .Values.azureWorkloadIdentity.enabled }}
+  {{- if .Values.azureWorkloadIdentity.enabled }}
   azure.workload.identity/use: "true"
   {{- end }}
 {{- end }}
 
 {{- define "cetirun.platform.podSettings" -}}
-{{- $bindings := (.Values.runtime | default dict).bindings -}}
 {{- if .Values.sandboxWorkload }}
 resources:
   {{- toYaml .Values.sandboxWorkload.podResources | nindent 2 }}
@@ -87,36 +77,22 @@ dnsConfig:
 runtimeClassName: {{ . | quote }}
 {{- end }}
 {{ include "cetirun.platform.pullSecrets" . }}
-{{- if $bindings }}
-serviceAccountName: {{ include "cetirun.fullname" . }}
-automountServiceAccountToken: false
-securityContext:
-  runAsNonRoot: true
-  fsGroup: {{ $bindings.home.fsGroup }}
-  fsGroupChangePolicy: OnRootMismatch
-  seccompProfile:
-    type: RuntimeDefault
-{{- else }}
 serviceAccountName: {{ include "cetirun.serviceAccountName" . }}
 automountServiceAccountToken: {{ include "cetirun.automountServiceAccountToken" . }}
 securityContext:
   {{- toYaml .Values.podSecurityContext | nindent 2 }}
-{{- end }}
 {{ include "cetirun.platform.scheduling" . }}
 {{- end }}
 
 {{- define "cetirun.platform.pullSecrets" -}}
-{{- $runtime := .Values.runtime | default dict -}}
-{{- $bindings := $runtime.bindings | default dict -}}
-{{- if $bindings.pullSecretName }}
+{{- $runtime := default (dict) .Values.runtime -}}
+{{- $pullSecrets := .Values.imagePullSecrets -}}
+{{- if hasKey $runtime "imagePullSecrets" -}}
+{{- $pullSecrets = $runtime.imagePullSecrets -}}
+{{- end -}}
+{{- with $pullSecrets }}
 imagePullSecrets:
-  - name: {{ $bindings.pullSecretName | quote }}
-{{- else if $runtime.imagePullSecrets }}
-imagePullSecrets:
-  {{- toYaml $runtime.imagePullSecrets | nindent 2 }}
-{{- else if .Values.imagePullSecrets }}
-imagePullSecrets:
-  {{- toYaml .Values.imagePullSecrets | nindent 2 }}
+  {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end }}
 

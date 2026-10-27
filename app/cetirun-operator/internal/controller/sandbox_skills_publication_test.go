@@ -28,6 +28,19 @@ import (
 
 func newSkillsPublicationFixture(t *testing.T, typ string) (*preparationFixture, *corev1.ConfigMap) {
 	t.Helper()
+	f, catalog := newSkillsPublicationBootstrapFixture(t, typ)
+	// Retained compatibility coverage starts from a real common receipt. This
+	// conversion is deliberately test-only; every newly created Agent follows
+	// the common reconciled lifecycle.
+	recordHistoricalBootstrap(t, f)
+	return f, catalog
+}
+
+// newSkillsPublicationBootstrapFixture is the cold-create fixture for the
+// current common lifecycle. Tests of creation races and invalid input use it
+// directly so their assertions still observe the first write.
+func newSkillsPublicationBootstrapFixture(t *testing.T, typ string) (*preparationFixture, *corev1.ConfigMap) {
+	t.Helper()
 	f := newSandboxBootstrapFixture(t, typ, true)
 	raw, err := json.Marshal(map[string]any{
 		"version": "v1", "teams": map[string]any{f.fixture.Team.Name: map[string]any{
@@ -75,6 +88,14 @@ func TestSandboxNativeEmptySelectionPreservesPublishedSkills(t *testing.T) {
 			source.NativeExecution = true
 			team := &api.Team{}
 			if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), team); err != nil {
+				t.Fatal(err)
+			}
+			// The startup receipt already selected a validated published skills
+			// source. Model the later empty Team selection explicitly so native
+			// resolution proves it retains that immutable publication instead of
+			// treating an empty request as an instruction to discard it.
+			team.Spec.Skills = nil
+			if err := f.client.Update(ctx, team); err != nil {
 				t.Fatal(err)
 			}
 			if len(team.Spec.Skills) != 0 {
@@ -335,7 +356,7 @@ func TestSandboxSkillsCatalogRejectsInvalidPublicationBeforeEffects(t *testing.T
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f, catalog := newSkillsPublicationFixture(t, "hermes")
+			f, catalog := newSkillsPublicationBootstrapFixture(t, "hermes")
 			test.edit(f, catalog)
 			assertCatalogRejectedBeforeEffects(t, f, catalog)
 		})
@@ -356,7 +377,7 @@ func TestSandboxSkillsCatalogRejectsInvalidPublicationBeforeEffects(t *testing.T
 		{"mount options forbidden", `"storageAccount":`, `"mountOptions":["rw"],"storageAccount":`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f, catalog := newSkillsPublicationFixture(t, "openclaw")
+			f, catalog := newSkillsPublicationBootstrapFixture(t, "openclaw")
 			raw := catalog.Data[controller.SandboxSkillsCatalogKey]
 			if !strings.Contains(raw, test.old) {
 				t.Fatal("negative catalog fixture did not exercise its intended field")
@@ -366,13 +387,13 @@ func TestSandboxSkillsCatalogRejectsInvalidPublicationBeforeEffects(t *testing.T
 		})
 	}
 	t.Run("exact byte bound", func(t *testing.T) {
-		f, catalog := newSkillsPublicationFixture(t, "openclaw")
+		f, catalog := newSkillsPublicationBootstrapFixture(t, "openclaw")
 		raw := catalog.Data[controller.SandboxSkillsCatalogKey]
 		catalog.Data[controller.SandboxSkillsCatalogKey] = raw + strings.Repeat(" ", controller.MaxSandboxSkillsCatalogBytes-len(raw))
 		if err := f.client.Update(context.Background(), catalog); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.reconcile(); !errors.Is(err, sandbox.ErrObservationUnavailable) {
+		if err := f.reconcile(); err != nil {
 			t.Fatal("valid catalog at its exact byte bound was rejected:", err)
 		}
 	})
@@ -407,7 +428,7 @@ func TestSandboxSkillsPublicationInterruptedCreates(t *testing.T) {
 	for _, target := range []string{"claim", "volume"} {
 		for _, responseLost := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/response-lost=%t", target, responseLost), func(t *testing.T) {
-				f, catalog := newSkillsPublicationFixture(t, "hermes")
+				f, catalog := newSkillsPublicationBootstrapFixture(t, "hermes")
 				failure := errors.New("synthetic published-skills create failure")
 				var created client.Object
 				f.reconciler.Client = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{

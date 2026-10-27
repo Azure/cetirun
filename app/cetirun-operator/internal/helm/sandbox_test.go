@@ -18,10 +18,196 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 )
 
+func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		port  *int32
+		webUI bool
+	}{
+		{name: "headless"},
+		{name: "chat-http", port: ptr.To[int32](8080)},
+		{name: "web-ui", port: ptr.To[int32](8080), webUI: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := testfixture.New("openclaw")
+			input := fixture.Input
+			input.AgentType, input.Reconciled = "custom", true
+			// The Agent CR name and Helm workload name deliberately differ: the
+			// terminal must pass the Agent name to its client while it targets the
+			// generated StatefulSet name for its CONNECT request.
+			input.AgentName = "custom-agent"
+			for index := range input.Controls.Objects {
+				owners := input.Controls.Objects[index].GetOwnerReferences()
+				owners[0].Name = input.AgentName
+				input.Controls.Objects[index].SetOwnerReferences(owners)
+			}
+			input.Helpers.Doctor = false
+			input.Resolution.AgentPolicy.Harnesses.Allowed = append(input.Resolution.AgentPolicy.Harnesses.Allowed, api.AgentTypeCustom)
+			input.GatewayAPIBase = "http://gateway.example.svc.cluster.local:4000/v1"
+			custom := &w.CustomAgent{
+				Image: "registry.example.test/worker@sha256:" + strings.Repeat("a", 64), Username: "worker", Home: "/home/worker",
+				Port: tc.port, WebUI: tc.webUI,
+				Environment: []w.CustomEnvironment{
+					{Name: "HOME", Value: "/home/worker"},
+					{Name: "OPENAI_BASE_URL", Value: input.GatewayAPIBase},
+					{Name: "OPENAI_API_KEY", CredentialSlot: "model"},
+				},
+			}
+			if tc.port != nil {
+				custom.Environment = append(custom.Environment, w.CustomEnvironment{Name: "PORT", Value: "8080"})
+				custom.Ports = []w.CustomPort{{Name: "http", Number: *tc.port}}
+				custom.HTTP = &w.CustomHTTP{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz"}
+			}
+			if tc.webUI {
+				custom.WebBasePath, custom.WebInstance = "/ui/example/", "agent-uid"
+				custom.Environment = append(custom.Environment,
+					w.CustomEnvironment{Name: "CETIRUN_WEB_BASE_PATH", Value: custom.WebBasePath},
+					w.CustomEnvironment{Name: "CETIRUN_WEB_INSTANCE", Value: custom.WebInstance})
+			} else if custom.HTTP != nil {
+				custom.HTTP.ChatPath, custom.HTTP.ModelsPath = "/v1/chat/completions", "/v1/models"
+			}
+			input.CustomAgent = custom
+			input.Terminal = &w.Terminal{
+				Image: "registry.example.test/cetirun-terminal@sha256:" + strings.Repeat("b", 64),
+				Port:  7681, SessionSeconds: 1800, ServiceAccountName: "example-terminal",
+			}
+			addTerminalNetworkScope(t, &input)
+			bundle, err := w.Build(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			values := sampleInput("custom", "openai", false)
+			values["agentRequest"] = map[string]any{"type": "custom"}
+			values["secrets"] = map[string]any{
+				"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model", "apiBase": input.GatewayAPIBase,
+			}
+			values["aiGateway"] = map[string]any{
+				"enabled": true, "keySecretName": input.GatewayKey.Name, "keySecretKey": "api-key",
+				"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
+			}
+			prepared, err := PrepareSandboxChart(testChart(t), values, nil, bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			template, err := prepared.SandboxTemplate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			main := template.Spec.Containers[0]
+			if main.Image != custom.Image || len(main.Command) != 0 || len(main.Args) != 0 {
+				t.Fatalf("Custom image entrypoint was not preserved: %#v", main)
+			}
+			if !slices.ContainsFunc(main.Env, func(value corev1.EnvVar) bool {
+				return value.Name == "OPENAI_API_KEY" && value.ValueFrom != nil && value.ValueFrom.SecretKeyRef != nil &&
+					value.ValueFrom.SecretKeyRef.Name == input.GatewayKey.Name && value.ValueFrom.SecretKeyRef.Key == "api-key"
+			}) {
+				t.Fatal("Custom runtime did not project the typed AI Gateway key")
+			}
+			if !slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool {
+				return mount.Name == "data" && mount.MountPath == "/home/worker"
+			}) || !slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool {
+				return mount.Name == "shared-skills" && mount.MountPath == "/home/worker/.aks/skills" && mount.ReadOnly
+			}) {
+				t.Fatal("Custom runtime did not use the Harness HOME and common skills path")
+			}
+			if tc.port == nil {
+				if len(main.Ports) != 0 || main.StartupProbe != nil || main.ReadinessProbe != nil || main.LivenessProbe != nil {
+					t.Fatal("headless Custom runtime rendered an HTTP contract")
+				}
+			} else if len(main.Ports) != 1 || main.Ports[0].Name != "http" || main.Ports[0].ContainerPort != *tc.port ||
+				main.StartupProbe == nil || main.ReadinessProbe == nil {
+				t.Fatal("HTTP Custom runtime did not render the Harness port and probes")
+			}
+			if tc.webUI && (!slices.ContainsFunc(main.Env, func(value corev1.EnvVar) bool {
+				return value.Name == "CETIRUN_WEB_BASE_PATH" && value.Value == "/ui/example/"
+			}) || !slices.ContainsFunc(main.Env, func(value corev1.EnvVar) bool {
+				return value.Name == "CETIRUN_WEB_INSTANCE" && value.Value == "agent-uid"
+			})) {
+				t.Fatal("Custom Web UI did not receive its platform routing identity")
+			}
+			expected, err := prepared.ReconcileExpectation()
+			if err != nil || expected.Terminal == nil || expected.Terminal.ServiceAccountName != input.Terminal.ServiceAccountName ||
+				expected.Terminal.TargetWorkload != input.WorkloadName || expected.Terminal.Container != "cetirun" {
+				t.Fatalf("Custom terminal did not retain its protected common expectation: %#v, %v", expected.Terminal, err)
+			}
+			if slices.IndexFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
+				return workload.Kind == "Deployment" && workload.Identity.Name == input.Terminal.ServiceAccountName
+			}) < 0 {
+				t.Fatal("Custom terminal Deployment is absent from the common workload inventory")
+			}
+			bindings := map[string]rbacv1.RoleBinding{}
+			for _, object := range expected.Controls {
+				if object.GetAPIVersion() != "rbac.authorization.k8s.io/v1" || object.GetKind() != "RoleBinding" {
+					continue
+				}
+				var binding rbacv1.RoleBinding
+				if err := decodeObject(object.Object, &binding); err != nil {
+					t.Fatal(err)
+				}
+				bindings[binding.Name] = binding
+			}
+			account := input.Terminal.ServiceAccountName
+			for name, role := range map[string]rbacv1.RoleRef{
+				account:           {APIGroup: rbacv1.GroupName, Kind: "Role", Name: account},
+				account + "-exec": {APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cetirun-terminal-exec"},
+			} {
+				binding, found := bindings[name]
+				if !found || binding.RoleRef != role || len(binding.Subjects) != 1 ||
+					binding.Subjects[0] != (rbacv1.Subject{Kind: "ServiceAccount", Name: account, Namespace: input.Namespace.Name}) {
+					t.Fatalf("Custom terminal RoleBinding %q differs from its isolated contract: %#v", name, binding)
+				}
+			}
+		})
+	}
+}
+
+// addTerminalNetworkScope gives this low-level Bundle fixture the same two
+// disjoint network selectors the compiler emits for a Custom terminal. The
+// production compiler is tested separately; this chart test needs the typed
+// controls solely to verify the rendered common runtime contract.
+func addTerminalNetworkScope(t *testing.T, input *w.Input) {
+	t.Helper()
+	for index := range input.Controls.Objects {
+		object := input.Controls.Objects[index]
+		if object.GetAPIVersion() != "cilium.io/v2" || object.GetKind() != "CiliumNetworkPolicy" {
+			continue
+		}
+		var main sandboxpolicy.CiliumNetworkPolicy
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &main, true); err != nil {
+			t.Fatal(err)
+		}
+		main.Spec.EndpointSelector.MatchExpressions = []metav1.LabelSelectorRequirement{{
+			Key: "k8s:cetirun.microsoft.com/terminal", Operator: metav1.LabelSelectorOpDoesNotExist,
+		}}
+		mainObject, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&main)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input.Controls.Objects[index].Object = mainObject
+
+		terminal := main
+		terminal.ObjectMeta = *main.ObjectMeta.DeepCopy()
+		terminal.Name = "sandbox-terminal-" + input.WorkloadName
+		terminal.Spec.EndpointSelector = metav1.LabelSelector{MatchLabels: map[string]string{
+			"k8s:cetirun.microsoft.com/terminal": "true",
+			"k8s:" + sandboxpolicy.AgentUIDLabel: string(input.Resolution.Binding.AgentUID),
+			"k8s:io.kubernetes.pod.namespace":    input.Namespace.Name,
+		}}
+		terminalObject, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&terminal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input.Controls.Objects = append(input.Controls.Objects, unstructured.Unstructured{Object: terminalObject})
+		return
+	}
+	t.Fatal("fixture did not include its compiler network policy")
+}
 func sandboxRender(t *testing.T, typ string, readOnly, desktop bool) (*PreparedRelease, *w.Bundle, w.Expectation) {
 	t.Helper()
 	fixture := testfixture.New(typ)
@@ -47,6 +233,7 @@ func sandboxRender(t *testing.T, typ string, readOnly, desktop bool) (*PreparedR
 		t.Fatal(err)
 	}
 	expected.ControllerRevision = workload.Status.UpdateRevision
+	expected.SinglePod = len(expected.Template.Finalizers) != 0
 	return prepared, bundle, expected
 }
 
@@ -85,6 +272,7 @@ func TestSandboxNativeProtectedRendering(t *testing.T) {
 				if strings.Contains(string(manifest), `"kind":"ServiceAccount"`) || strings.Contains(string(manifest), `"kind":"NetworkPolicy"`) {
 					t.Fatal("ordinary compiler mode emitted a default identity or legacy network resource")
 				}
+				expected.SinglePod = len(expected.Template.Finalizers) != 0
 				if err := w.ValidatePod(testfixture.Pod(expected), expected); err != nil {
 					t.Fatalf("valid final Pod rejected: %v", err)
 				}
@@ -141,6 +329,7 @@ func TestSandboxDesktopScratchIsolation(t *testing.T) {
 					if !found["tmp"] || found["tmp-desktop"] != desktop {
 						t.Fatalf("unexpected scratch volume inventory: %v", found)
 					}
+					expected.SinglePod = len(expected.Template.Finalizers) != 0
 					if err := w.ValidatePod(testfixture.Pod(expected), expected); err != nil {
 						t.Fatalf("isolated desktop template failed final Pod validation: %v", err)
 					}
@@ -159,7 +348,7 @@ func TestSandboxAllowsModelAndAuthorizedSecretWithoutOverrides(t *testing.T) {
 	input := sampleInput("hermes", "openai", false)
 	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
 	user := map[string]any{
-		"secrets":  map[string]any{"existingSecret": "runtime-secret", "provider": "anthropic", "model": "chosen-model"},
+		"secrets":  map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "chosen-model"},
 		"extraEnv": []any{map[string]any{"name": "EXAMPLE_SETTING", "value": "allowed"}},
 	}
 	prepared, err := PrepareSandboxChart(testChart(t), input, user, bundle)
@@ -167,7 +356,7 @@ func TestSandboxAllowsModelAndAuthorizedSecretWithoutOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if object(prepared.Values["secrets"])["model"] != "chosen-model" ||
-		object(prepared.Values["secrets"])["provider"] != "anthropic" {
+		object(prepared.Values["secrets"])["provider"] != "openai" {
 		t.Fatal("allowed model inputs were overwritten")
 	}
 	for _, malicious := range []map[string]any{
@@ -504,6 +693,7 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			expectation.SinglePod = len(expectation.Template.Finalizers) != 0
 			pod := testfixture.Pod(expectation)
 			if err := w.ValidatePod(pod, expectation); err != nil {
 				t.Fatal(err)

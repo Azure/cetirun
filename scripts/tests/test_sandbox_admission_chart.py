@@ -617,7 +617,8 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         ):
             with self.subTest(change=change, gateway=gateway):
                 self.assert_rejected(
-                    self.enforced_values(podsEnabled=True), "sandboxSources.nativeExecution",
+                    self.enforced_values(podsEnabled=True),
+                    "sandboxSources.nativeExecution" if gateway else "aiGateway.enabled must be true",
                     values={"sandboxSources": {**sources, **change}, "aiGateway": {"enabled": gateway}},
                 )
 

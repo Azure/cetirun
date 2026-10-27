@@ -297,6 +297,7 @@ func main() {
 		MemoryRegistry:                     memoryRegistry(chartRepoURL),
 		ChartRegistry:                      chartRegistry,
 		DefaultModel:                       defaultModel,
+		CustomApprovedImages:               customConfig.ExecutionImages(),
 		RegistryCredentialNamespace:        getEnvOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", registryauth.DefaultNamespace),
 		AzureSubscriptionID:                azureSubscriptionID,
 		AzureResourceGroup:                 azureResourceGroup,
@@ -318,7 +319,7 @@ func main() {
 		AIGateway:                          aiGatewayConfig,
 	}
 	if customConfig.Enabled {
-		agentReconciler.CustomBindings = controller.NewKubernetesCustomBindings(agentReconciler, customConfig)
+		setupLog.Info("Custom harnesses enabled for common Sandbox execution", "approvedImages", len(customConfig.ApprovedImages))
 	}
 	agentReconciler.ChatAccess, err = chataccess.Parse(os.Getenv("CETIRUN_CHAT_ACCESS"))
 	if err != nil {

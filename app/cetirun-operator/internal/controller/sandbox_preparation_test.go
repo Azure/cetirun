@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -41,6 +42,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	kubeyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -180,10 +182,29 @@ type preparationFixture struct {
 	now        time.Time
 }
 
-func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
+// newBarePreparationFixture builds the unowned inputs consumed by the common
+// bootstrap fixture. Callers that exercise the historical held lifecycle must
+// use newPreparationFixture, which records an ownership receipt first.
+func newBarePreparationFixture(t *testing.T, typ string) *preparationFixture {
 	t.Helper()
 	f := testfixture.New(typ)
-	f.Team.Spec.Defaults.Provider = "github_copilot"
+	f.Agent.Finalizers = []string{api.Finalizer}
+	f.Agent.Spec.ModelAccess = &api.ModelAccessSpec{SharedModels: ptr.To(true)}
+	// Keep the fixture on the PVC-backed skills path. Native execution can use
+	// an empty skills mode, but bootstrap tests exercise the externally
+	// published-claim boundary and must request an allowed skill explicitly.
+	f.Team.Spec.Skills = []string{"npm:example-skill"}
+	f.Policy.Spec.Skills.Allowed = []string{"npm:example-skill"}
+	f.Policy.Spec.ModelAccess = api.AgentPolicyModelAccess{
+		SharedModels:  api.AgentPolicySharedModelsAccess{Allowed: []string{"example-model"}},
+		GatewayBudget: &api.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "10", MaxMonthlyUSD: "100"},
+	}
+	f.Team.Status = api.TeamStatus{ObservedGeneration: f.Team.Generation, Conditions: []metav1.Condition{{
+		Type: api.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: f.Team.Generation,
+	}}}
+	f.Policy.Status = api.AgentPolicyStatus{ObservedGeneration: f.Policy.Generation, Conditions: []metav1.Condition{{
+		Type: api.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue, ObservedGeneration: f.Policy.Generation,
+	}}}
 	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-chart"))
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +217,7 @@ func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 		Name: f.Agent.Spec.GatewayTokenSecretRef, Namespace: f.Namespace.Name, UID: "secret-uid", ResourceVersion: "1",
 	}}
+	masterKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-auth", Namespace: state.Name}, Data: map[string][]byte{"master-key": []byte("sk-master")}}
 	sc := &storagev1.StorageClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-csi", UID: "storage-uid", ResourceVersion: "1"}, Provisioner: "csi.example.com",
 	}
@@ -203,7 +225,7 @@ func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&api.Agent{}, &api.Sandbox{}, &api.AgentPolicy{}, &appsv1.StatefulSet{}).
 		WithObjects(f.Agent, f.Team, f.Sandbox, f.Policy, f.Namespace, f.Input.Home, f.Input.Skills,
-			f.Input.RuntimeClass, f.ServiceAccount, secret, sc, state).
+			f.Input.RuntimeClass, f.ServiceAccount, secret, masterKey, sc, state).
 		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
 			creates++
 			if object.GetUID() == "" {
@@ -231,6 +253,11 @@ func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
 	result.reconciler = &controller.AgentReconciler{
 		Client: c, APIReader: c, Scheme: scheme, OperatorNamespace: state.Name,
 		OperatorSAName: "cetirun-operator", DomainSuffix: "example.com", DefaultModel: "example-model",
+		EventRecorder: record.NewFakeRecorder(100),
+		AIGateway: controller.AIGatewayConfig{Enabled: true,
+			URL: "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000", MasterKeySecretName: masterKey.Name,
+			MasterKeySecretKey: "master-key", DefaultBudget: 10},
+		AIGatewayHTTPClient: &http.Client{Transport: &preparationGateway{}},
 		CetiRunHelmValues: map[string]any{"logger": map[string]any{
 			"image": map[string]any{"repository": "example.com/logger"},
 		}},
@@ -241,6 +268,77 @@ func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
 		},
 	}
 	return result
+}
+
+func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
+	t.Helper()
+	f := newSandboxBootstrapFixture(t, typ, true)
+	recordHistoricalBootstrap(t, f)
+
+	ctx := context.Background()
+	// The temporary Kubernetes platform ConfigMap is required only to establish
+	// the common receipt. Historical held tests supply their own snapshot and
+	// may create this source with intentionally changed contents.
+	if err := f.client.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "cetirun-system", Name: "sandbox-platform",
+	}}); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatal(err)
+	}
+	// Skills and the default ServiceAccount are external inputs to the retained
+	// held lifecycle. The common bootstrap intentionally does not own either,
+	// so recreate their synthetic publishers after its receipt has established
+	// the namespace identity.
+	skills := f.fixture.Input.Skills.DeepCopy()
+	skills.UID, skills.ResourceVersion = "", ""
+	skills.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: api.GroupVersion.String(), Kind: "Team", Name: f.fixture.Team.Name, UID: f.fixture.Team.UID,
+	}}
+	if err := f.client.Create(ctx, skills); err != nil {
+		t.Fatal(err)
+	}
+	serviceAccount := f.fixture.ServiceAccount.DeepCopy()
+	serviceAccount.UID, serviceAccount.ResourceVersion = "", ""
+	if err := f.client.Create(ctx, serviceAccount); err != nil {
+		t.Fatal(err)
+	}
+
+	namespace := &corev1.Namespace{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), namespace); err != nil {
+		t.Fatal(err)
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Input.Home), home); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(skills), skills); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(serviceAccount), serviceAccount); err != nil {
+		t.Fatal(err)
+	}
+	secret := &corev1.Secret{}
+	if err := f.client.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: f.fixture.Agent.Spec.GatewayTokenSecretRef}, secret); err != nil {
+		t.Fatal(err)
+	}
+	f.fixture.Namespace, f.fixture.Input.Home, f.fixture.Input.Skills, f.fixture.ServiceAccount = namespace, home, skills, serviceAccount
+	f.fixture.Input.Namespace = sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID}
+	f.source.inputs.NamespaceUID = namespace.UID
+	f.source.inputs.Home = sandboxworkload.ObjectIdentity{Name: home.Name, UID: home.UID}
+	f.source.inputs.Skills = sandboxworkload.ObjectIdentity{Name: skills.Name, UID: skills.UID}
+	f.source.inputs.RuntimeSecret = sandboxworkload.ObjectIdentity{Name: secret.Name, UID: secret.UID}
+
+	// Keep the recorded bootstrap configuration but restore the controllable
+	// sources used by preparation tests. This models an already-recorded Agent
+	// from the earlier held lifecycle; no new Agent can reach this path.
+	preparation := f.reconciler.SandboxPreparation
+	preparation.NativeExecution = false
+	preparation.Configuration = controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+		return f.config, nil
+	})
+	preparation.Prerequisites = f.source
+	preparation.Installer = f.installer
+	preparation.Now = func() time.Time { return f.now }
+	return f
 }
 
 func (f *preparationFixture) reconcile() error {
@@ -303,8 +401,10 @@ func TestSandboxPreparationClearsAccessBeforePrerequisiteCalls(t *testing.T) {
 			t.Fatal("old readiness/access was retained while waiting for platform prerequisites")
 		}
 	}
-	if err := f.reconcile(); err != nil {
-		t.Fatal(err)
+	for range 3 {
+		if err := f.reconcile(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if !called {
 		t.Fatal("prerequisite provider was not exercised")
@@ -324,12 +424,12 @@ func TestSandboxPreparationJournalFailurePrecedesGrantWrites(t *testing.T) {
 	if err := f.reconcile(); err == nil || f.installer.stages != 0 {
 		t.Fatal("journal failure was ignored before staging")
 	}
-	var bindings rbacv1.RoleBindingList
-	if err := f.client.List(context.Background(), &bindings); err != nil {
-		t.Fatal(err)
-	}
-	if len(bindings.Items) != 0 {
-		t.Fatal("a binding was written before write-ahead inventory")
+	// The historical bootstrap owns its operator RoleBinding. This test proves
+	// that the separate source-read grant was not written before its journal.
+	if err := f.client.Get(context.Background(), client.ObjectKey{
+		Namespace: f.fixture.Namespace.Name, Name: "cetirun-sandbox-sources",
+	}, &rbacv1.RoleBinding{}); !apierrors.IsNotFound(err) {
+		t.Fatal("a source-read binding was written before write-ahead inventory:", err)
 	}
 }
 
@@ -407,7 +507,15 @@ func TestSandboxPreparationMissingAndStaleInputsStayHeld(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newPreparationFixture(t, "hermes")
 			test.mutate(t, f)
-			if err := f.reconcile(); err == nil {
+			err := f.reconcile()
+			if test.name == "missing authorization" {
+				if err != nil {
+					t.Fatal("policy denial should converge to a held status:", err)
+				}
+				assertPolicyDeniedPreparation(t, f, 0)
+				return
+			}
+			if err == nil {
 				t.Fatal("unsafe preparation was accepted")
 			}
 			agent := f.current(t)
@@ -416,9 +524,23 @@ func TestSandboxPreparationMissingAndStaleInputsStayHeld(t *testing.T) {
 				!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
 				condition == nil || condition.Status != test.status ||
 				apimeta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionAgentConfigReady) {
-				t.Fatal("invalid inputs produced a prepared or applied result")
+				t.Fatalf("invalid inputs produced a prepared or applied result: stages=%d sandbox=%+v finalizers=%v condition=%+v conditions=%+v",
+					f.installer.stages, agent.Status.Sandbox, agent.Finalizers, condition, agent.Status.Conditions)
 			}
 		})
+	}
+}
+
+func assertPolicyDeniedPreparation(t *testing.T, f *preparationFixture, stages int) {
+	t.Helper()
+	agent := f.current(t)
+	sandboxReady := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
+	configReady := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionAgentConfigReady)
+	if f.installer.stages != stages || agent.Status.Sandbox != nil || agent.Status.Policy == nil ||
+		agent.Status.Policy.Phase != "Denied" || sandboxReady == nil || sandboxReady.Status != metav1.ConditionFalse ||
+		sandboxReady.Reason != "PolicyDenied" || configReady == nil || configReady.Status != metav1.ConditionFalse {
+		t.Fatalf("policy denial did not leave the Agent in the required held state: stages=%d sandbox=%+v policy=%+v sandboxReady=%+v configReady=%+v",
+			f.installer.stages, agent.Status.Sandbox, agent.Status.Policy, sandboxReady, configReady)
 	}
 }
 
@@ -461,7 +583,9 @@ func TestSandboxPreparationRefreshesMetadataWithoutAgentGenerationChange(t *test
 				Client: previous.Client, APIReader: previous.APIReader, Scheme: previous.Scheme,
 				OperatorNamespace: previous.OperatorNamespace, OperatorSAName: previous.OperatorSAName,
 				DomainSuffix: previous.DomainSuffix, CetiRunHelmValues: previous.CetiRunHelmValues, DefaultModel: previous.DefaultModel,
-				SandboxPreparation: previous.SandboxPreparation,
+				ChartRegistry:      previous.ChartRegistry,
+				SandboxPreparation: previous.SandboxPreparation, EventRecorder: previous.EventRecorder,
+				AIGateway: previous.AIGateway, AIGatewayHTTPClient: previous.AIGatewayHTTPClient,
 			}
 			if err := f.reconcile(); err != nil {
 				t.Fatal(err)
@@ -647,9 +771,11 @@ func TestSandboxPreparationAdminGrantsRevokeOnRoleDrift(t *testing.T) {
 	if err := f.client.Update(ctx, role); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.reconcile(); err == nil {
-		t.Fatal("stale live role approval was reused")
+	stages := f.installer.stages
+	if err := f.reconcile(); err != nil {
+		t.Fatal("stale live role approval did not converge to policy denial:", err)
 	}
+	assertPolicyDeniedPreparation(t, f, stages)
 	for _, ref := range bindings {
 		if err := f.client.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, &rbacv1.RoleBinding{}); !apierrors.IsNotFound(err) {
 			t.Fatalf("grant survived role approval drift: %s: %v", ref.Name, err)
@@ -682,9 +808,11 @@ func TestSandboxPreparationMetadataOnlyReauthorization(t *testing.T) {
 	if err := f.client.Create(ctx, replacement); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.reconcile(); err == nil {
-		t.Fatal("same-name policy replacement was silently rebound")
+	stages := f.installer.stages
+	if err := f.reconcile(); err != nil {
+		t.Fatal("same-name policy replacement did not converge to policy denial:", err)
 	}
+	assertPolicyDeniedPreparation(t, f, stages)
 	agent := f.current(t)
 	// Simulate the admission-owned result, not a controller authorization write.
 	authorization, err := sandboxbinding.Snapshot(agent, f.fixture.Team, sandbox.Resources{
