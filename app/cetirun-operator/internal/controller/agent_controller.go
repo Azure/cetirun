@@ -892,6 +892,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		prepared, err = r.HelmClient.Refresh(prepared, helmValues)
 	}
 	if err != nil {
+		if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
+			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+			return result, stderrors.Join(err, holdErr)
+		}
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
 	if instance.Spec.Suspended {

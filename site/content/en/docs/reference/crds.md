@@ -387,7 +387,12 @@ change starts, and the operator keeps each Agent's key. Sandbox execution,
 including coordinated configuration reservations, also excludes
 `modelAccess.rateLimits` from its execution inputs. Adding, editing, or removing
 only these limits, including `perModel`, does not stop or restart running
-native Agents. While policy status catches up to the new generation, the
+native Agents. For common-executor Sandboxes this includes workloads still
+initializing or completing a retained restart: a limits-only update does not
+reapply the workload, temporarily block its key, or release its unchanged
+native reservation. A policy status update during bootstrap is compared against
+the captured execution inputs and immutable UID, not its resource version alone.
+While policy status catches up to the new generation, the
 operator reassesses the current policy against the same trusted platform
 inventory and grants used by the policy controller instead of stopping an Agent
 solely for that observation delay. Unavailable or invalid policy evidence still

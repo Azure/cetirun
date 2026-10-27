@@ -169,6 +169,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if !w.EffectiveSource(source) {
 			continue
 		}
+		if source.APIVersion == api.GroupVersion.String() && source.Kind == "AgentPolicy" &&
+			source.UID == attempt.resolution.Binding.AgentPolicyUID {
+			digests[w.SourceKey(source)] = attempt.policyDigest
+			continue
+		}
 		digest, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, false)
 		if err != nil {
 			return nil, err
@@ -233,7 +238,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 				return err
 			}
 			if digest != digests[w.SourceKey(source)] {
-				return fmt.Errorf("Sandbox input changed before resource reconciliation")
+				return fmt.Errorf("%w: Sandbox input changed before resource reconciliation", errSandboxSourceChanged)
 			}
 		}
 		return nil
