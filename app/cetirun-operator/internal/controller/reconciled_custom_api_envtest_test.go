@@ -13,12 +13,18 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/storage/driver"
+	appsv1 "k8s.io/api/apps/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -93,6 +99,8 @@ func TestReconciledCustomAPIServerCreatesOwnedRuntimeSecretWithoutCallerGatewayR
 		Namespace: instanceNamespace(requested.Name), Name: "default",
 	}})
 	secret := &corev1.Secret{}
+	sources := &rbacv1.Role{}
+	sourceRoleReady := false
 	for attempt := 0; attempt < 4; attempt++ {
 		if _, err := h.reconcile(); err != nil {
 			t.Fatalf("prepare common Custom start through served API: %v", err)
@@ -103,9 +111,17 @@ func TestReconciledCustomAPIServerCreatesOwnedRuntimeSecretWithoutCallerGatewayR
 		}, secret); err != nil {
 			t.Fatalf("read common Custom runtime Secret: %v", err)
 		}
-		if len(secret.Data["CETIRUN_AUTH_KEY"]) != 0 {
-			break
+		if len(secret.Data["CETIRUN_AUTH_KEY"]) == 0 {
+			continue
 		}
+		if err := h.admin.Get(ctx, client.ObjectKey{Namespace: instanceNamespace(current.Name), Name: "cetirun-sandbox-sources"}, sources); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			t.Fatalf("read common Custom source-read Role: %v", err)
+		}
+		sourceRoleReady = true
+		break
 	}
 	current := h.current(t)
 	if !hasAgentOwner(secret, current) {
@@ -114,6 +130,46 @@ func TestReconciledCustomAPIServerCreatesOwnedRuntimeSecretWithoutCallerGatewayR
 	if len(secret.Data["CETIRUN_AUTH_KEY"]) == 0 {
 		t.Fatal("common Custom runtime Secret has no controller-owned Gateway credential")
 	}
+	if !sourceRoleReady || len(sources.Rules) == 0 {
+		t.Fatal("common Custom source-read Role has no rules")
+	}
+	workload := &appsv1.StatefulSet{}
+	if err := h.admin.Get(ctx, client.ObjectKey{Namespace: instanceNamespace(current.Name), Name: instanceServiceName(current.Name)}, workload); err != nil {
+		t.Fatalf("read common Custom workload: %v", err)
+	}
+	if mounted := w.PodSourceReferences(workload.Spec.Template.Spec, workload.Namespace); containsSource(mounted, "Secret", secret.Name) {
+		t.Fatalf("Custom workload mounted its controller-owned runtime Secret: %+v", mounted)
+	}
+	admissionConfig := rest.CopyConfig(h.localHelm.config)
+	admissionConfig.Impersonate = rest.ImpersonationConfig{
+		UserName: "system:serviceaccount:cetirun-system:cetirun-sandbox-admission",
+		Groups:   []string{"system:serviceaccounts", "system:serviceaccounts:cetirun-system", "system:authenticated"},
+	}
+	admissionClient, err := client.New(admissionConfig, client.Options{Scheme: h.admin.Scheme()})
+	if err != nil {
+		t.Fatalf("create sandbox admission ServiceAccount client: %v", err)
+	}
+	h.assertAccess(t, admissionClient, authorizationv1.ResourceAttributes{
+		Resource: "secrets", Verb: "get", Namespace: secret.Namespace, Name: secret.Name,
+	}, true)
+	h.assertAccess(t, admissionClient, authorizationv1.ResourceAttributes{
+		Resource: "secrets", Verb: "get", Namespace: secret.Namespace, Name: "unrelated-secret",
+	}, false)
+	h.assertAccess(t, admissionClient, authorizationv1.ResourceAttributes{
+		Resource: "secrets", Verb: "list", Namespace: secret.Namespace,
+	}, false)
+	h.assertAccess(t, admissionClient, authorizationv1.ResourceAttributes{
+		Resource: "secrets", Verb: "watch", Namespace: secret.Namespace,
+	}, false)
+}
+
+func containsSource(sources []w.SourceReference, kind, name string) bool {
+	for _, source := range sources {
+		if source.Kind == kind && source.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // commonCustomAPILocalHelm adapts the envtest's real Helm storage client to the

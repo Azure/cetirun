@@ -73,6 +73,22 @@ func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt
 		return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox admission source access requires an explicit separate platform ServiceAccount")
 	}
 	names := map[string][]string{}
+	// Admission rechecks every pinned source, including runtime authentication
+	// Secrets that Custom does not mount. Keep those reads explicitly named and
+	// constrained to the approved Secret identities in this Agent namespace.
+	for _, source := range attempt.sources {
+		if source.Kind != "Secret" {
+			continue
+		}
+		approved := slices.Contains(attempt.input.AuthorizedSecrets, source.Name) ||
+			(attempt.input.ImagePullSecret != nil && source.Name == attempt.input.ImagePullSecret.Name &&
+				source.UID == attempt.input.ImagePullSecret.UID)
+		if source.APIVersion != "v1" || source.Namespace != attempt.input.Namespace.Name ||
+			!source.ValidIdentity() || !approved {
+			return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox source-read grant contains an unapproved Secret source")
+		}
+		names["secrets"] = append(names["secrets"], source.Name)
+	}
 	for _, pod := range pods {
 		for _, source := range sandboxworkload.PodSourceReferences(pod, attempt.input.Namespace.Name) {
 			switch source.Kind {
