@@ -55,11 +55,11 @@ assert_sign_in_flags() {
 echo "==> helm template cetirun-istio (standalone portal default)"
 output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}")
 assert_ownership_target "${output}" "cetirun-portal.cetirun-portal.svc.cluster.local"
-grep -Fq 'local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico"}' <<< "${output}" || {
+grep -Fq 'local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico", "/connections", "/connections/"}' <<< "${output}" || {
   echo "FAIL: health and readiness exemptions must be exact paths" >&2
   exit 1
 }
-grep -Fq 'local EXEMPT_PATH_PREFIXES = {"/oauth2", "/api", "/internal", "/assets", "/instances", "/admin", "/connections"}' <<< "${output}" || {
+grep -Fq 'local EXEMPT_PATH_PREFIXES = {"/oauth2", "/api", "/internal", "/assets", "/instances", "/admin"}' <<< "${output}" || {
   echo "FAIL: Portal subtree exemptions are missing" >&2
   exit 1
 }

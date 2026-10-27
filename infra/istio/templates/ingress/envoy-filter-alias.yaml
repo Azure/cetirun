@@ -47,8 +47,8 @@ spec:
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
             inline_code: |
-              local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico"}
-              local EXEMPT_PATH_PREFIXES = {"/oauth2", "/api", "/internal", "/assets", "/instances", "/admin", "/connections"}
+              local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico", "/connections", "/connections/"}
+              local EXEMPT_PATH_PREFIXES = {"/oauth2", "/api", "/internal", "/assets", "/instances", "/admin"}
               local EXEMPT_SUFFIXES = {
               {{- range .Values.authPolicy.webhookBypassPaths }}
                 "{{ . }}",

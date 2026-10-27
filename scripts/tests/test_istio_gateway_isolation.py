@@ -66,6 +66,10 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             "/readyz-demo/term/": False,
             "/connections": True,
             "/connections/": True,
+            "/connections/term/": False,
+            "/connections/desktop/": False,
+            "/connections/cetirun-auth/status": False,
+            "/connections/api/": False,
             "/connections-demo/term/": False,
             "/connectionsdemo": False,
             "/ui/connections/": False,
@@ -92,12 +96,12 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         )
         self.assertIsNotNone(reserved_block)
         reserved = set(re.findall(r'"([^"/]+)":', reserved_block.group(1)))
-        prefixes = self._lua_string_list("EXEMPT_PATH_PREFIXES")
+        exemptions = self._lua_string_list("EXEMPT_PATH_PREFIXES") + self._lua_string_list("EXEMPT_EXACT_PATHS")
         routes = set(re.findall(r'path="/([^/":]+)', app))
         self.assertIn("connections", routes)
         for route in routes:
             with self.subTest(route=route):
-                self.assertIn("/" + route, prefixes)
+                self.assertIn("/" + route, exemptions)
                 self.assertIn(route, reserved)
 
     def test_portal_sign_in_cookies_never_reach_agents(self):
