@@ -158,12 +158,18 @@ func TestNetworkPartitionWorkThresholds(t *testing.T) {
 }
 
 func TestCompileBoundsAdversarialOverlappingIPv6(t *testing.T) {
-	for name, fixture := range map[string]func() CompileInput{"qualified": compilerFixture, "native": nativeCompilerFixture} {
+	for name, fixture := range map[string]func() CompileInput{
+		"qualified": compilerFixture, "native": nativeCompilerFixture, "native SCTP": nativeSCTPCompilerFixture,
+	} {
 		t.Run(name, func(t *testing.T) {
 			input := fixture()
+			protocol := corev1.ProtocolTCP
+			if name == "native SCTP" {
+				protocol = corev1.ProtocolSCTP
+			}
 			for bits := 8; bits <= 128; bits++ {
 				input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs = append(input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs, api.AgentPolicyCIDRRule{
-					CIDR: fmt.Sprintf("fd00::/%d", bits), Ports: []api.AgentPolicyPort{{Port: 443}},
+					CIDR: fmt.Sprintf("fd00::/%d", bits), Ports: []api.AgentPolicyPort{{Port: 443, Protocol: protocol}},
 				})
 			}
 			if err := validateControlInput(input.Resolution.AgentPolicy, input.Platform); err != nil {
@@ -178,12 +184,18 @@ func TestCompileBoundsAdversarialOverlappingIPv6(t *testing.T) {
 }
 
 func TestCompileBoundsExpandedPeerPorts(t *testing.T) {
-	for name, fixture := range map[string]func() CompileInput{"qualified": compilerFixture, "native": nativeCompilerFixture} {
+	for name, fixture := range map[string]func() CompileInput{
+		"qualified": compilerFixture, "native": nativeCompilerFixture, "native SCTP": nativeSCTPCompilerFixture,
+	} {
 		t.Run(name, func(t *testing.T) {
 			input := fixture()
+			protocol := corev1.ProtocolTCP
+			if name == "native SCTP" {
+				protocol = corev1.ProtocolSCTP
+			}
 			var ports []api.AgentPolicyPort
 			for i := 0; i < 400; i++ {
-				ports = append(ports, api.AgentPolicyPort{Port: int32(1000 + 2*i)})
+				ports = append(ports, api.AgentPolicyPort{Port: int32(1000 + 2*i), Protocol: protocol})
 			}
 			input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{{CIDR: "fd00::/8", Ports: ports}}
 			for i := 1; i <= 140; i++ {

@@ -444,8 +444,13 @@ editor. Existing values remain visible and are preserved when other fields are
 saved. FQDN blocking and mTLS lack supported enforcement; Agent Identity lacks
 the credential-service evidence needed for aggregate `PolicyApplied`. Other
 controls also depend on the selected execution profile and platform capabilities.
-For example, native single-start rejects internal CIDR exceptions, SCTP blocked
-ports, Kubernetes access, and Entra ID.
+New common-executor Kata lifetimes support internal CIDR grants and SCTP port
+rules only with the corresponding explicit platform registration. SCTP internal
+grants are limited to direct endpoints, excluding registered Service and
+Kubernetes API destinations. Retained version-1 native single-start lifetimes
+still reject internal grants and SCTP requests. See the
+[native SCTP usage and qualification boundary]({{< repo "examples/native-sandbox/README.md" >}}#governed-sctp-egress);
+an accepted API value does not qualify the actual network path.
 
 The Operator retains the Policy's `Accepted` condition for controller decisions
 and diagnostics; the Portal list and editor do not display this status.

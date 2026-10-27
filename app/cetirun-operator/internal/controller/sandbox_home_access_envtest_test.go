@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,7 +20,14 @@ import (
 
 func newReconciledStartAPIHarness(t *testing.T, homeMode corev1.PersistentVolumeAccessMode, network ...api.AgentPolicyNetwork) *nativeStartAPIHarness {
 	t.Helper()
-	h := newNativeStartAPIHarnessWithHome(t, true, true, homeMode, network...)
+	return newReconciledStartAPIHarnessWithRegistration(t, homeMode, nil, network...)
+}
+
+func newReconciledStartAPIHarnessWithRegistration(t *testing.T, homeMode corev1.PersistentVolumeAccessMode,
+	configure func(*sandbox.Capabilities), network ...api.AgentPolicyNetwork,
+) *nativeStartAPIHarness {
+	t.Helper()
+	h := newNativeStartAPIHarnessWithRegistration(t, true, true, homeMode, configure, network...)
 	// Envtest does not run the ServiceAccount controller.
 	h.kube = interceptor.NewClient(h.kube, interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
