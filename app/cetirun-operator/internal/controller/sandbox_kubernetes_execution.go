@@ -78,6 +78,11 @@ func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 	if len(policy.Network.AllowedInternalCIDRs) != 0 {
 		return fmt.Errorf("%w: internal-network exceptions require the common executor", sandboxpolicy.ErrUnsupportedControl)
 	}
+	if slices.ContainsFunc(policy.Network.BlockedPorts, func(port api.AgentPolicyPort) bool {
+		return port.Protocol == corev1.ProtocolSCTP
+	}) {
+		return fmt.Errorf("%w: SCTP port rules require the common executor", sandboxpolicy.ErrUnsupportedControl)
+	}
 	if errs := sandbox.CheckNativeNetworkPolicy(policy.Network); len(errs) != 0 {
 		return fmt.Errorf("%w: %w", sandboxpolicy.ErrUnsupportedControl, errs.ToAggregate())
 	}

@@ -207,8 +207,9 @@ func TestNativeHomeAccessModes(t *testing.T) {
 
 func TestNativeNetworkCompatibility(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		network cetirunv1alpha1.AgentPolicyNetwork
+		name      string
+		network   cetirunv1alpha1.AgentPolicyNetwork
+		protocols []corev1.Protocol
 	}{
 		{name: "CIDR", network: cetirunv1alpha1.AgentPolicyNetwork{BlockedCIDRs: []string{"198.51.100.0/24"}}},
 		{name: "TCP", network: cetirunv1alpha1.AgentPolicyNetwork{
@@ -227,6 +228,18 @@ func TestNativeNetworkCompatibility(t *testing.T) {
 				{CIDR: "fd00:20::/64", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 8080, Protocol: corev1.ProtocolUDP}}},
 			},
 		}},
+		{name: "registered SCTP", network: cetirunv1alpha1.AgentPolicyNetwork{
+			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 3869, Protocol: corev1.ProtocolSCTP}},
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{
+				{CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 3868, Protocol: corev1.ProtocolSCTP}}},
+				{CIDR: "fd00:20::/64", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 65535, Protocol: corev1.ProtocolSCTP}}},
+			},
+		}, protocols: []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP}},
+		{name: "registered SCTP grant without port blocking", network: cetirunv1alpha1.AgentPolicyNetwork{
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{{
+				CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 3868, Protocol: corev1.ProtocolSCTP}},
+			}},
+		}, protocols: []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := resolverFixture()
@@ -236,6 +249,9 @@ func TestNativeNetworkCompatibility(t *testing.T) {
 			}
 			capabilities := nativeCapabilities()
 			capabilities.BlockedPorts = len(tc.network.BlockedPorts) != 0
+			if tc.protocols != nil {
+				capabilities.Protocols = tc.protocols
+			}
 			if errs := CheckCompatibility(input.Resources.Sandboxes["standard"].Spec, policy, capabilities); len(errs) != 0 {
 				t.Fatalf("supported native network restrictions were rejected: %v", errs.ToAggregate())
 			}
@@ -260,14 +276,14 @@ func TestNativeNetworkCompatibilityRetainsCapabilityChecks(t *testing.T) {
 		{name: "IPv6 not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
 			BlockedCIDRs: []string{"2001:db8::/32"},
 		}, configure: func(c *Capabilities) { c.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol} }},
-		{name: "SCTP declared but unsupported", network: cetirunv1alpha1.AgentPolicyNetwork{
+		{name: "SCTP not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
 			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolSCTP}},
-		}, configure: func(c *Capabilities) { c.Protocols = append(c.Protocols, corev1.ProtocolSCTP) }},
-		{name: "internal SCTP declared but unsupported", network: cetirunv1alpha1.AgentPolicyNetwork{
+		}},
+		{name: "internal SCTP not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
 			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{{
 				CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolSCTP}},
 			}},
-		}, configure: func(c *Capabilities) { c.Protocols = append(c.Protocols, corev1.ProtocolSCTP) }},
+		}},
 		{name: "internal IPv6 not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
 			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{{
 				CIDR: "fd00:20::/64", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443}},
@@ -277,7 +293,9 @@ func TestNativeNetworkCompatibilityRetainsCapabilityChecks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			capabilities := nativeCapabilities()
 			capabilities.BlockedPorts = true
-			tc.configure(&capabilities)
+			if tc.configure != nil {
+				tc.configure(&capabilities)
+			}
 			policy.Network = tc.network
 			if errs := CheckCompatibility(box, policy, capabilities); len(errs) == 0 {
 				t.Fatal("native network control exceeded its declared or supported capabilities")

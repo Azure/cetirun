@@ -102,8 +102,7 @@ func TestCompileNativeNetworkRestrictionsFailClosed(t *testing.T) {
 			i.Resolution.Capabilities.BlockedPorts = false
 			i.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 18080}}
 		}, ErrUnsupportedControl},
-		{"SCTP despite registration", func(i *CompileInput) {
-			i.Resolution.Capabilities.Protocols = append(i.Resolution.Capabilities.Protocols, corev1.ProtocolSCTP)
+		{"unregistered SCTP", func(i *CompileInput) {
 			i.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolSCTP}}
 		}, ErrUnsupportedControl},
 		{"FQDN", func(i *CompileInput) {

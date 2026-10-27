@@ -265,6 +265,24 @@ OpenClaw/Hermes with RWO/RWOP. These are offline checks, not Cilium dataplane
 qualification; use the [internal-egress example](examples/native-sandbox/README.md#scoped-internal-egress)
 for the separate authorized live witnesses.
 
+Registered Kata SCTP rules have a focused served-API regression using the same
+local assets:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxSCTPNetworkAPIServer$' -count=1
+```
+
+It exercises persisted SCTP/default-TCP fields, native Cilium compilation,
+conflicting bindings, malformed requests, active policy reservations, and
+Pod admission after control drift and controller holds after registration drift.
+Compiler tests cover exact protocol/port isolation, deny precedence, dual-family
+rules and unchanged resource budgets. Controller tests cover both built-in
+harnesses and HOME modes. The API server is local; running Pod observations are
+synthetic. These checks do not qualify SCTP traffic, Kata, Cilium, NAT or Services.
+See the [SCTP example](examples/native-sandbox/README.md#governed-sctp-egress)
+for the requested-versus-qualified contract.
+
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.

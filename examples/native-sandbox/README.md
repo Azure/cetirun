@@ -171,9 +171,10 @@ network:
 ```
 
 Replace these ranges with approved internal destinations; they are not deployed
-test endpoints. Omitted protocols default to TCP; SCTP grants are rejected even
-if a broader registration lists SCTP. IPv6 requires the corresponding registered
-address family. Node, management, metadata and mandatory excluded ranges cannot
+test endpoints. Omitted protocols default to TCP; the requested protocol and IP
+family must be explicitly registered. SCTP has the additional
+[direct-endpoint limits](#governed-sctp-egress) below.
+Node, management, metadata and mandatory excluded ranges cannot
 be granted. Explicit CIDR/port denies still win, and TCP/UDP `53` remains limited
 to approved DNS peers even if an internal rule includes that port.
 
@@ -199,6 +200,87 @@ managed-peer identities, DNS/node/metadata isolation and unchanged peer Agents.
 Repeat the witness after grant removal through the supported lifecycle and
 confirm access is denied. Record the exact artifacts and registration; this
 field does not complete the Istio handover or enable FQDN/mTLS controls.
+
+## Governed SCTP egress
+
+New common-executor Kata OpenClaw/Hermes lifetimes can request SCTP in both
+`network.blockedPorts` and `network.allowedInternalCIDRs`. They use the existing
+Cilium compiler and owned CiliumNetworkPolicy, not a new proxy or dataplane.
+Retained version-1 single-start lifetimes still reject SCTP port requests.
+
+The existing administrator-controlled
+`registrations.kata.Capabilities.protocols` list is the protocol opt-in.
+Registration examples and the local platform probe still default to TCP/UDP.
+Neither an API value of `SCTP` nor a successful TCP/UDP probe qualifies SCTP.
+Only after separately authorized qualification of the exact Kata, kernel,
+Cilium and address-family combination, add SCTP to that list. Port denies
+also require `blockedPorts: true`. This **capability fragment** is not evidence
+or a complete platform configuration:
+
+```json
+{
+  "protocols": ["TCP", "UDP", "SCTP"],
+  "blockedPorts": true
+}
+```
+
+Keep the native adapter's `qualified: false`; this increment supplies no
+independent enforcement observation or physical fencing. Do not enable SCTP
+in Cilium or change host/kernel settings as part of an offline check.
+
+This synthetic **policy fragment** grants SCTP `3868` to approved direct
+internal endpoints and denies SCTP `3869` at every destination:
+
+```yaml
+network:
+  allowedInternalCIDRs:
+    - cidr: 10.20.0.0/16
+      ports:
+        - {port: 3868, protocol: SCTP}
+  blockedPorts:
+    - {port: 3869, protocol: SCTP}
+```
+
+The internal grant does not permit TCP/UDP `3868` or other SCTP ports.
+Overlapping grants combine exact protocol/port pairs; explicit CIDR and port
+denies still take precedence. TCP/UDP DNS `53` and the registered Gateway
+ports remain required; blocking those pairs rejects the configuration.
+Blocking SCTP on the same numeric port does not block TCP/UDP. Ports must be
+`1`–`65535`; an omitted protocol still means TCP, not SCTP. IPv6 needs an
+explicit `IPv6` registration and corresponding topology.
+The existing public-egress baseline is unchanged: public addresses remain
+permitted except for exclusions and explicit denies. Protocol registration is
+not a public-egress allow-list.
+
+SCTP internal grants cannot overlap registered Service CIDRs or Kubernetes API
+destinations, in addition to the existing node, management, metadata and
+mandatory exclusions. Use direct endpoints and the existing protected
+namespace/peer-UID registration for managed Pods; do not treat CIDRs as
+Service discovery. All addresses of a peer need identical effective port
+permissions. Cilium's [SCTP limitations](https://docs.cilium.io/en/stable/configuration/sctp/)
+include unsupported pod-to-VIP policies, multihoming, port rewriting, BPF
+masquerading and egress gateway. This feature does not add those capabilities;
+the administrator must qualify the actual direct path, including any NAT.
+
+The existing [compiler budgets](../../app/cetirun-operator/internal/sandboxpolicy/limits.go)
+and 40-entry port groups apply without truncating controls. An unregistered
+protocol, unsupported family, malformed rule, protected destination or excessive
+expansion rejects the request. Admission checks a policy against its selected
+Sandbox/platform; storing an unused AgentPolicy alone is not authorization.
+
+Use the ordinary stop/change/resume lifecycle for policy or registration changes.
+Active policy reservations remain enforced. Administrator changes to platform
+inventory invalidate old Pod authority; they are not an in-place capability
+upgrade for running Pods. The compiler and controller bind both the requested
+rules and registration into the existing revisions and source checks.
+
+The served-API and compiler tests exercise these contracts with synthetic
+inventory. They do not run SCTP traffic through Kata/Cilium or qualify a target.
+On a separately authorized target, verify allowed SCTP, wrong ports and
+TCP/UDP on the same port, overlapping grants, explicit denies, required DNS
+and Gateway access, protected destinations, peer isolation and grant removal.
+Record direct endpoint paths and each registered address family, not merely
+application success. FQDN blocking and ingress mTLS remain unsupported.
 
 ## Rollout-stable managed ingress
 
@@ -342,7 +424,7 @@ before taking further action. Do not retry creation or delete by name.
 The legacy full `scripts/e2e-test.sh` flow is not this profile's acceptance run:
 its suspend/resume and legacy integration checks are outside this profile.
 Reuse its explicit-target/UID ownership principles, not its broader assertions.
-FQDN rules, SCTP port denies, Copilot sidecars,
+FQDN rules, unregistered SCTP port requests, Copilot sidecars,
 identity grants and live reconfiguration are unsupported here and must not be
 silently ignored.
 
