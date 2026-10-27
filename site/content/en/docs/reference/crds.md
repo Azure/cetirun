@@ -285,8 +285,12 @@ scratch size. They use these admin-only endpoints:
 - `GET` and `POST /api/v1/admin/sandboxes`
 - `GET`, `PUT`, and `DELETE /api/v1/admin/sandboxes/{name}`
 
-The Sandbox request contains `name`, `type`, `resources`, and `storage` with
-the same structure as the CRD spec. Updates and deletes also require the `uid`
+The Sandbox request contains `name`, optional `type`, `resources`, and `storage`
+with the same structure as the CRD spec. Omitting `type` or setting it to `null`
+defaults to `kata` on both create and full-spec update, matching Kubernetes
+defaulting. An explicit invalid value, including an empty string, is rejected
+rather than replaced by the default. Resource and storage fields remain required.
+Updates and deletes also require the `uid`
 and `resourceVersion` returned by a read. The response reports `ready` only
 from a condition for the current generation. Saving a Sandbox does not
 install a runtime or establish runtime readiness.
