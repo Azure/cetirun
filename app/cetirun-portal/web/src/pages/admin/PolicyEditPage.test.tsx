@@ -475,6 +475,8 @@ describe("PolicyEditPage", () => {
     expect(screen.getByRole("textbox", { name: "Requests per minute" })).toHaveValue("");
     expect(screen.getByRole("textbox", { name: "Model name 1" })).toHaveValue("example-model");
     expect(screen.getByText(/counts the tokens of each finished request/i)).toBeInTheDocument();
+    expect(screen.getByText(/limits alone.*without restarting running Agents/i)).toBeInTheDocument();
+    expect(screen.queryByText(/restarts the Agents running under it once/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("switch", { name: "Hermes" }));
     fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
     await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalled());

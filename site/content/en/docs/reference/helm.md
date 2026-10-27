@@ -377,11 +377,26 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `azure.*` | Optional Teams provisioning configuration |
 | `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations for configuration admission and sources for held native Sandbox preparation |
 | `sandboxSources.nativeExecution` | `false`; select common OpenClaw/Hermes reconciliation for new lifetimes with owned bootstrap, enforced admission and the AI Gateway |
+| `sandboxSources.plannedMigration` | `false`; permit new administrator-requested healthy-source moves with one CSI/RWOP HOME. Requires `nativeExecution` and upgraded CRD/Operator/admission/Portal readers; existing checkpoints and cleanup permissions remain when disabled |
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; existing operator-namespace ConfigMap containing versioned `platform.json`, shared by configuration admission and the controller |
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing claims stay read-only; bootstrap can create owned HOME only in new namespaces, while published skills stay external |
 | `sandboxSources.skillsCatalogConfigMapName` | Empty; opt in to a separate operator-owned `skills.json` catalog binding exact Team identities to already-published Blob NFS content; requires owned bootstrap |
-| `sandboxSources.helpers` | `doctor`, `logger`, `desktop` default to `false`; approved native helper selection |
+| `sandboxSources.helpers` | `doctor`, `logger`, `desktop` default to `false`; legacy held-preparation helper selection, not reconciled (`v2`) helper enablement |
+
+Reconciled (`v2`) native lifetimes use the runtime chart's helper settings, not
+`sandboxSources.helpers`. The chart defaults both `openclaw.doctor.enabled` and
+its `doctor.enabled` alias to `true`, so OpenClaw runs doctor on each Pod
+initialization even with `sandboxSources.helpers.doctor: false`. Hermes does not
+run doctor.
+
+For these lifetimes, `Sandbox.spec.resources.helpers` supplies the resources of
+every init container and Agent sidecar, including doctor and the credential
+retirement steps. The Portal's new-Sandbox form and the
+[native example]({{< repo "examples/native-sandbox/README.md" >}}#helper-memory)
+recommend a `2Gi` helper memory limit: `512Mi` can OOMKill OpenClaw initialization.
+This is a starting recommendation, not an enforced minimum. Existing Sandboxes
+keep their stored resource settings and require an explicit coordinated update.
 
 Sandbox source wiring requires enabled, enforced configuration and Pod
 admission. The chart uses the same `sandboxSources.platformConfigMapName` and

@@ -207,7 +207,7 @@ go -C app/cetirun-portal vet ./internal/...
 Report that reduced scope; it does not validate the frontend or the complete
 portal binary. Do not treat a placeholder embed directory as a frontend build.
 
-The retained-restart API also has an isolated API-server test. With the pinned
+The retained lifecycle APIs also have an isolated API-server test. With the pinned
 Kubernetes 1.37 binaries described below already installed, run:
 
 ```bash
@@ -215,10 +215,38 @@ KUBEBUILDER_ASSETS=/path/to/local/envtest \
   go -C app/cetirun-portal test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1
 ```
 
-It verifies persisted request identity, conditional updates, and CRD validation.
+It verifies persisted restart identity, conditional suspend/resume intent,
+duplicate requests, stale UID/version rejection, and CRD validation.
 It starts its own API server and etcd, never an existing cluster; it does not
 run Pods, contact a model provider, or qualify storage/failure recovery.
 Operator CI also runs this test using its existing pinned admission-test tools.
+
+Planned migration has a focused Operator API-server regression using the same
+local assets:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/admission -run '^TestPlannedMigrationServedAPIAndBinding$' -count=1
+```
+
+It checks the generated migration schema, durable finalizer authorization and
+both real Pod binding APIs, including same-name replacement Nodes. Normal
+Operator tests cover source/CSI acknowledgement ordering, repeated moves,
+partial/lost writes, suspension and deletion using synthetic observations.
+These checks do not run kubelets or CSI controllers and are not AKS validation.
+
+The common-executor RWO HOME contract has an isolated API-server regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxRWOHomeAPIServer$' -count=1
+```
+
+It exercises served Agent authorization, common chart rendering, current Pod
+admission and HOME access-mode immutability. Normal controller tests cover both
+RWO and RWOP retained restarts, coordinated shutdown/resume and repeated
+healthy-source migration with synthetic Pod/CSI observations. These are offline
+contracts, not runtime, file-retention, model-spend or CSI qualification.
 
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend

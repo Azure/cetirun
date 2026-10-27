@@ -67,6 +67,7 @@ migration. Retention does not protect against a schema downgrade.
 | `helm.values` | Map-shaped top-level entries; see admission notes below |
 | `suspended` | Request zero replicas and removal of the instance VirtualService; false when omitted |
 | `restartRequestID` | Optional retained-restart ID: 16-128 letters, digits, `_` or `-`. Changing it requests a new Pod through normal reconciliation; reusing it does not. Cannot be removed once set or changed while suspended |
+| `plannedMigration` | Opt-in administrator request with `requestID` and destination `target.name`/`target.uid`; common-executor OpenClaw/Hermes and one CSI/RWOP HOME only. An accepted request is immutable until completed; the same ID cannot change its destination |
 | `tailscale.authKeySecretRef` | Required non-empty Secret name when `tailscale` is present; instance-namespace Secret must contain non-empty `TAILSCALE_AUTH_KEY` |
 | `msteams.enabled` | Opt in to Teams provisioning; default false |
 | `msteams.appId` | Optional lowercase UUID client ID; the controller uses it as a fallback after tracked/name-based resolution and app creation |
@@ -140,6 +141,7 @@ check does not prove that an override will reconcile successfully.
 | `namespace`, `helmReleaseName` | Actual managed resource locations |
 | `observedGeneration` | Generation recorded after Helm succeeds, before pod/ingress readiness is established |
 | `observedRestartRequestID` | Restart request observed on the current ready Pod; an accepted request or applied template alone does not set it |
+| `plannedMigration` | Controller-owned source/storage identity and acknowledgement checkpoint; phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, `Completed`. Not a physical-fencing receipt or permission to edit status |
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
@@ -378,10 +380,23 @@ when they differ. Removing a field clears it on the key. Other key settings and
 metadata are kept. The limits are not part of the Gateway policy revision, so
 changing them does not start the reprojection fence that a model or budget
 change starts, and the operator keeps each Agent's key. Sandbox execution,
-however, takes the whole AgentPolicy as an input of the Agents it runs: a
-limits change, like any other change to the policy, restarts the policy's
-running Agents once. Keys of legacy Agents without a policy are not changed;
-Gateway administrators manage their limits.
+including coordinated configuration reservations, also excludes
+`modelAccess.rateLimits` from its execution inputs. Adding, editing, or removing
+only these limits, including `perModel`, does not stop or restart running
+native Agents. While policy status catches up to the new generation, the
+operator reassesses the current policy against the same trusted platform
+inventory and grants used by the policy controller instead of stopping an Agent
+solely for that observation delay. Unavailable or invalid policy evidence still
+holds execution. Budgets, model authorization, and other execution controls
+retain their normal fencing and coordination checks; the exact coordinated
+write still includes the limits. Keys of legacy Agents without a policy are
+not changed; Gateway administrators manage their limits.
+
+Persisted execution evidence is not rewritten by this change. Older single-start
+lifetimes or coordination reservations whose saved policy digest includes
+`modelAccess.rateLimits`, even an empty object, remain fail-closed on an input
+mismatch and require the existing stop/recreate procedure. Upgrade the operator and admission readers
+before editing limits; do not manually alter their saved digests.
 
 The total limits count every request on the key, including the Agent's GitHub
 Copilot models. A per-model limit applies to the model name a request uses after

@@ -17,6 +17,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -61,6 +62,49 @@ func TestSandboxReusesCopilotResourceAssembly(t *testing.T) {
 	if !strings.Contains(string(manifest), `"kind":"Deployment"`) ||
 		!strings.Contains(string(manifest), "copilot-proxy") {
 		t.Fatal("Sandbox discarded the existing Copilot resources")
+	}
+}
+
+func TestReconciledSandboxHelperResources(t *testing.T) {
+	for _, memory := range []string{"512Mi", "2Gi", "3Gi"} {
+		t.Run(memory, func(t *testing.T) {
+			bundle, values := reconciledSandboxInputs(t)
+			input := bundle.Identity()
+			input.Helpers = w.Helpers{}
+			input.Resolution.Sandbox.Resources.Helpers.Limits[corev1.ResourceMemory] = resource.MustParse(memory)
+			bundle, err := w.Build(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := PrepareSandboxChart(testChart(t), values, nil, bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			template, err := prepared.SandboxTemplate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"doctor", "retire-copilot-sign-in", "retire-direct-model-auth"} {
+				if !slices.ContainsFunc(template.Spec.InitContainers, func(container corev1.Container) bool {
+					return container.Name == name
+				}) {
+					t.Errorf("reconciled OpenClaw must retain the chart-default %s init container despite disabled legacy helper selection", name)
+				}
+			}
+			helpers := input.Resolution.Sandbox.Resources.Helpers
+			want := corev1.ResourceRequirements{Requests: helpers.Requests, Limits: helpers.Limits}
+			for _, containers := range [][]corev1.Container{template.Spec.InitContainers, template.Spec.Containers[1:]} {
+				for _, container := range containers {
+					if !equality.Semantic.DeepEqual(container.Resources, want) {
+						t.Errorf("%s resources = %v, want Sandbox helper resources %v", container.Name, container.Resources, want)
+					}
+				}
+			}
+			accounting := w.AccountResources(template.Spec, bundle.Overhead())
+			if template.Spec.Resources == nil || !equality.Semantic.DeepEqual(*template.Spec.Resources, accounting.Pod) {
+				t.Fatal("helper resources are missing from aggregate Pod resource accounting")
+			}
+		})
 	}
 }
 

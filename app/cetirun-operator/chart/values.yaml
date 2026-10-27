@@ -185,12 +185,16 @@ sandboxAdmission:
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
-  # -- Opt in to common OpenClaw/Hermes reconciliation with Kata/RWOP constraints.
+  # -- Opt in to common OpenClaw/Hermes reconciliation with registered Kata RWO/RWOP HOME.
   # Requires owned bootstrap, enforced admission and the AI Gateway.
   # Existing receipts retain their recorded mode and owned resources.
   # Neither Kubernetes updates nor observed shutdown are physical fencing.
   # Disabling starts retains recorded cleanup and Pod finalization RBAC.
   nativeExecution: false
+  # -- Allow new healthy-source moves of common-executor Agents with one filesystem CSI RWO/RWOP HOME.
+  # Upgrade CRDs, Operator, admission and Portal readers before enabling.
+  # Existing checkpoints remain readable and cleanup permissions are retained when disabled.
+  plannedMigration: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
   # Requires chart/image/port pins; the common flow can record them first.
   # Published content stays external.
@@ -213,7 +217,8 @@ sandboxSources:
   # Must match sandboxAdmission.placementConfigMapName. Records the existing
   # reservation after zero-replica staging; does not enroll Nodes or grant execution.
   placementConfigMapName: ""
-  # -- Approved native helpers; arbitrary injected containers remain unsupported.
+  # -- Approved helpers for legacy held preparation only.
+  # Reconciled (v2) lifetimes use runtime chart helper settings instead.
   helpers:
     doctor: false
     logger: false

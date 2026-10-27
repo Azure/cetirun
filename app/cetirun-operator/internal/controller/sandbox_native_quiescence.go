@@ -18,11 +18,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// KubernetesNativeQuiescence is used only by the opt-in, single-start native
-// profile. It observes ordinary Kubernetes shutdown and RWOP storage; it is
-// not a physical writer fence and must not qualify a replacement or failover.
+// KubernetesNativeQuiescence observes ordinary Kubernetes shutdown, not a
+// physical writer fence. Retained single-start lifetimes remain RWOP-only.
 type KubernetesNativeQuiescence struct {
-	APIReader client.Reader
+	APIReader  client.Reader
+	Reconciled bool
 }
 
 func (s *KubernetesNativeQuiescence) CheckQuiesced(ctx context.Context, agent *api.Agent, inputs SandboxPrerequisites) error {
@@ -52,9 +52,10 @@ func (s *KubernetesNativeQuiescence) CheckQuiesced(ctx context.Context, agent *a
 	}
 	if err == nil && (home.UID != inputs.Home.UID ||
 		(!home.DeletionTimestamp.IsZero() && !deleting) ||
-		!equality.Semantic.DeepEqual(home.Spec.AccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}) ||
+		!(equality.Semantic.DeepEqual(home.Spec.AccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}) ||
+			(s.Reconciled && equality.Semantic.DeepEqual(home.Spec.AccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}))) ||
 		home.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID)) {
-		return fmt.Errorf("native Sandbox HOME must be the exact owned ReadWriteOncePod claim")
+		return fmt.Errorf("native Sandbox HOME must be the exact owned claim with a supported access mode")
 	}
 	workload := &appsv1.StatefulSet{}
 	err = s.APIReader.Get(ctx, client.ObjectKey{Namespace: name, Name: instanceServiceName(agent.Name)}, workload)

@@ -575,10 +575,19 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 	if r.MemoryEnabled || r.MemoryImage != "" {
 		config = append(config, "memory-context/v2", r.MemoryImage, r.MemoryRegistry)
 	}
+	// Older suspended-state caches must not skip the retention repair.
+	// Active, Custom and Sandbox workloads keep their existing cache contract.
+	if instance.Spec.Suspended && !sandboxRequested(instance, team) &&
+		(instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeOpenClaw || instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeHermes) {
+		config = append(config, "suspended-home-retention/v1")
+	}
 	// Older controllers can acknowledge a generation without applying its restart.
 	// Bind both the steady-state and Helm-apply caches to the requested intent.
 	if instance.Spec.RestartRequestID != "" {
 		config = append(config, "restart-request/v1", instance.Spec.RestartRequestID)
+	}
+	if request := instance.Spec.PlannedMigration; request != nil {
+		config = append(config, "planned-migration/v1", request.RequestID, request.Target.Name, string(request.Target.UID))
 	}
 	return operatorConfigHash(
 		r.DomainSuffix, gwSecretHash, r.SkillsStorageAccount,

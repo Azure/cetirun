@@ -449,99 +449,120 @@ func TestReconciledSandboxSteadyStateDoesNotRewriteStatus(t *testing.T) {
 }
 
 func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
-	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "hermes", true, true)
-	ctx := context.Background()
-	initial := reconciledExpectationForTest(t, f)
-	keyID := f.current(t).Status.AIGateway.KeyID
-	for _, suspended := range []bool{true, false} {
-		agent := f.current(t)
-		agent.Spec.Suspended = suspended
-		agent.Generation++
-		if err := f.kube.Update(ctx, agent); err != nil {
-			t.Fatal(err)
-		}
-		f.reconcileOK(t)
-		current := f.current(t)
-		expected := reconciledExpectationForTest(t, f)
-		if expected.Home != initial.Home || current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
-			t.Fatal("suspension/reconciliation replaced HOME or reset the Gateway key")
-		}
-		want := int32(1)
-		if suspended {
-			want = 0
-			if current.Status.Phase != api.PhaseSuspended || !current.Status.AIGateway.Blocked {
-				t.Fatal("suspension did not stop access before acknowledging completion")
-			}
-		} else if current.Status.AIGateway.Blocked {
-			t.Fatal("authorized reconciliation did not release its own suspension block")
-		}
-		for _, workload := range expected.Workloads {
-			if workload.Replicas != want {
-				t.Fatal("Agent and auxiliary suspension states differ")
-			}
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
+			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, withNativeHomeAccessMode(t, mode))
+				ctx := context.Background()
+				initial := reconciledExpectationForTest(t, f)
+				keyID := f.current(t).Status.AIGateway.KeyID
+				for _, key := range f.gateway.keys {
+					key.Spend = ptr.To(3.25)
+				}
+				for range 2 {
+					for _, suspended := range []bool{true, false} {
+						agent := f.current(t)
+						agent.Spec.Suspended = suspended
+						agent.Generation++
+						if err := f.kube.Update(ctx, agent); err != nil {
+							t.Fatal(err)
+						}
+						f.reconcileOK(t)
+						current := f.current(t)
+						expected := reconciledExpectationForTest(t, f)
+						if expected.Home != initial.Home || current.Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+							t.Fatal("suspension/reconciliation replaced HOME or reset the Gateway key")
+						}
+						want := int32(1)
+						if suspended {
+							want = 0
+							if current.Status.Phase != api.PhaseSuspended || !current.Status.AIGateway.Blocked {
+								t.Fatal("suspension did not stop access before acknowledging completion")
+							}
+						} else if current.Status.AIGateway.Blocked {
+							t.Fatal("authorized reconciliation did not release its own suspension block")
+						}
+						for _, workload := range expected.Workloads {
+							if workload.Replicas != want {
+								t.Fatal("Agent and auxiliary suspension states differ")
+							}
+						}
+						for _, key := range f.gateway.keys {
+							if ptr.Deref(key.Spend, 0) != 3.25 {
+								t.Fatal("suspension or resume reset retained spending")
+							}
+						}
+						assertNativeHomeAccessMode(t, f, mode)
+					}
+				}
+			})
 		}
 	}
 }
 
 func TestReconciledSandboxRetainedRestartUsesCommonApply(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
-		t.Run(kind, func(t *testing.T) {
-			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false)
-			ctx := context.Background()
-			initial := reconciledExpectationForTest(t, f)
-			keyID := f.current(t).Status.AIGateway.KeyID
-			var previousPod *corev1.Pod
-			for _, requestID := range []string{"request-00000001", "request-00000002"} {
-				agent := f.current(t)
-				agent.Spec.RestartRequestID = requestID
-				agent.Generation++
-				if err := f.kube.Update(ctx, agent); err != nil {
-					t.Fatal(err)
-				}
-				for range 3 {
-					f.reconcileOK(t)
-				}
-				workload := f.workload(t)
-				if workload.Spec.Template.Annotations[api.AnnotationRestartRequestID] != requestID {
-					t.Fatal("common reconciliation did not apply the durable restart request")
-				}
-				if f.current(t).Status.ObservedRestartRequestID == requestID {
-					t.Fatal("template application or the previous Pod completed a restart")
-				}
-				expected := reconciledExpectationForTest(t, f)
-				if expected.Home != initial.Home || expected.Namespace != initial.Namespace ||
-					f.current(t).UID != initial.Agent.UID || f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
-					t.Fatal("restart replaced HOME, namespace, Agent or Gateway spending identity")
-				}
-				// The fixture supplies Kubernetes observations, not a live kubelet.
-				if previousPod != nil {
-					if err := f.kube.Delete(ctx, previousPod); err != nil {
+		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
+			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, withNativeHomeAccessMode(t, mode))
+				assertNativeHomeAccessMode(t, f, mode)
+				ctx := context.Background()
+				initial := reconciledExpectationForTest(t, f)
+				keyID := f.current(t).Status.AIGateway.KeyID
+				var previousPod *corev1.Pod
+				for _, requestID := range []string{"request-00000001", "request-00000002"} {
+					agent := f.current(t)
+					agent.Spec.RestartRequestID = requestID
+					agent.Generation++
+					if err := f.kube.Update(ctx, agent); err != nil {
 						t.Fatal(err)
 					}
+					for range 3 {
+						f.reconcileOK(t)
+					}
+					workload := f.workload(t)
+					if workload.Spec.Template.Annotations[api.AnnotationRestartRequestID] != requestID {
+						t.Fatal("common reconciliation did not apply the durable restart request")
+					}
+					if f.current(t).Status.ObservedRestartRequestID == requestID {
+						t.Fatal("template application or the previous Pod completed a restart")
+					}
+					expected := reconciledExpectationForTest(t, f)
+					if expected.Home != initial.Home || expected.Namespace != initial.Namespace ||
+						f.current(t).UID != initial.Agent.UID || f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+						t.Fatal("restart replaced HOME, namespace, Agent or Gateway spending identity")
+					}
+					// The fixture supplies Kubernetes observations, not a live kubelet.
+					if previousPod != nil {
+						if err := f.kube.Delete(ctx, previousPod); err != nil {
+							t.Fatal(err)
+						}
+					}
+					pod := &corev1.Pod{ObjectMeta: *workload.Spec.Template.ObjectMeta.DeepCopy(), Spec: *workload.Spec.Template.Spec.DeepCopy()}
+					pod.Name, pod.Namespace, pod.UID = workload.Name+"-0", workload.Namespace, types.UID(requestID)
+					pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))}
+					pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+					if err := f.kube.Create(ctx, pod); err != nil {
+						t.Fatal(err)
+					}
+					workload.Status = appsv1.StatefulSetStatus{ObservedGeneration: workload.Generation, ReadyReplicas: 1, UpdatedReplicas: 1}
+					if err := f.kube.Status().Update(ctx, workload); err != nil {
+						t.Fatal(err)
+					}
+					f.reconcileOK(t)
+					if f.current(t).Status.ObservedRestartRequestID != requestID {
+						t.Fatal("current ready Pod did not complete the retained restart")
+					}
+					stages := f.installer.stages
+					f.reconcileOK(t)
+					if f.installer.stages != stages {
+						t.Fatal("an unchanged restart request repeated workload application")
+					}
+					assertNativeHomeAccessMode(t, f, mode)
+					previousPod = pod
 				}
-				pod := &corev1.Pod{ObjectMeta: *workload.Spec.Template.ObjectMeta.DeepCopy(), Spec: *workload.Spec.Template.Spec.DeepCopy()}
-				pod.Name, pod.Namespace, pod.UID = workload.Name+"-0", workload.Namespace, types.UID(requestID)
-				pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))}
-				pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-				if err := f.kube.Create(ctx, pod); err != nil {
-					t.Fatal(err)
-				}
-				workload.Status = appsv1.StatefulSetStatus{ObservedGeneration: workload.Generation, ReadyReplicas: 1, UpdatedReplicas: 1}
-				if err := f.kube.Status().Update(ctx, workload); err != nil {
-					t.Fatal(err)
-				}
-				f.reconcileOK(t)
-				if f.current(t).Status.ObservedRestartRequestID != requestID {
-					t.Fatal("current ready Pod did not complete the retained restart")
-				}
-				stages := f.installer.stages
-				f.reconcileOK(t)
-				if f.installer.stages != stages {
-					t.Fatal("an unchanged restart request repeated workload application")
-				}
-				previousPod = pod
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -900,94 +921,97 @@ func TestReconciledSandboxRuntimeHoldAttemptsCleanupAfterErrors(t *testing.T) {
 func TestReconciledSandboxFinishesStoppingReservationBeforeResume(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, acknowledged := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/acknowledged=%v", kind, acknowledged), func(t *testing.T) {
-				ctx := context.Background()
-				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true,
-					withReconciledCoordination(t))
-				agent := f.current(t)
-				if agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandboxHoldFinalizer) {
-					t.Fatal("fixture must start with current resume intent and no hold marker")
-				}
-				expected := reconciledExpectationForTest(t, f)
-				keyID, stages := agent.Status.AIGateway.KeyID, f.installer.stages
-				store := f.r.SandboxNativeCoordination
-				ticket, found, err := store.ReadNative(ctx, agent.UID)
-				if err != nil || !found {
-					t.Fatal("missing initial source reservation:", err)
-				}
-				if _, err := store.BeginNativeStop(ctx, ticket); err != nil {
-					t.Fatal(err)
-				}
-				for _, desired := range expected.Workloads {
-					key := client.ObjectKey{Namespace: expected.Namespace.Name, Name: desired.Identity.Name}
-					if desired.Kind == "StatefulSet" {
-						workload := &appsv1.StatefulSet{}
-						if err := f.kube.Get(ctx, key, workload); err != nil {
-							t.Fatal(err)
-						}
-						workload.Spec.Replicas = ptr.To[int32](0)
-						if err := f.kube.Update(ctx, workload); err != nil {
-							t.Fatal(err)
-						}
-						workload.Status.ObservedGeneration = workload.Generation
-						workload.Status.Replicas = 0
-						if !acknowledged {
-							workload.Status.Replicas = 1
-						}
-						if err := f.kube.Status().Update(ctx, workload); err != nil {
-							t.Fatal(err)
-						}
-					} else {
-						workload := &appsv1.Deployment{}
-						if err := f.kube.Get(ctx, key, workload); err != nil {
-							t.Fatal(err)
-						}
-						workload.Spec.Replicas = ptr.To[int32](0)
-						if err := f.kube.Update(ctx, workload); err != nil {
-							t.Fatal(err)
-						}
-						workload.Status.ObservedGeneration = workload.Generation
-						workload.Status.Replicas = 0
-						if err := f.kube.Status().Update(ctx, workload); err != nil {
-							t.Fatal(err)
+			for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
+				t.Run(fmt.Sprintf("%s/acknowledged=%v/%s", kind, acknowledged, mode), func(t *testing.T) {
+					ctx := context.Background()
+					f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true,
+						withReconciledCoordination(t), withNativeHomeAccessMode(t, mode))
+					agent := f.current(t)
+					if agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandboxHoldFinalizer) {
+						t.Fatal("fixture must start with current resume intent and no hold marker")
+					}
+					expected := reconciledExpectationForTest(t, f)
+					keyID, stages := agent.Status.AIGateway.KeyID, f.installer.stages
+					store := f.r.SandboxNativeCoordination
+					ticket, found, err := store.ReadNative(ctx, agent.UID)
+					if err != nil || !found {
+						t.Fatal("missing initial source reservation:", err)
+					}
+					if _, err := store.BeginNativeStop(ctx, ticket); err != nil {
+						t.Fatal(err)
+					}
+					for _, desired := range expected.Workloads {
+						key := client.ObjectKey{Namespace: expected.Namespace.Name, Name: desired.Identity.Name}
+						if desired.Kind == "StatefulSet" {
+							workload := &appsv1.StatefulSet{}
+							if err := f.kube.Get(ctx, key, workload); err != nil {
+								t.Fatal(err)
+							}
+							workload.Spec.Replicas = ptr.To[int32](0)
+							if err := f.kube.Update(ctx, workload); err != nil {
+								t.Fatal(err)
+							}
+							workload.Status.ObservedGeneration = workload.Generation
+							workload.Status.Replicas = 0
+							if !acknowledged {
+								workload.Status.Replicas = 1
+							}
+							if err := f.kube.Status().Update(ctx, workload); err != nil {
+								t.Fatal(err)
+							}
+						} else {
+							workload := &appsv1.Deployment{}
+							if err := f.kube.Get(ctx, key, workload); err != nil {
+								t.Fatal(err)
+							}
+							workload.Spec.Replicas = ptr.To[int32](0)
+							if err := f.kube.Update(ctx, workload); err != nil {
+								t.Fatal(err)
+							}
+							workload.Status.ObservedGeneration = workload.Generation
+							workload.Status.Replicas = 0
+							if err := f.kube.Status().Update(ctx, workload); err != nil {
+								t.Fatal(err)
+							}
 						}
 					}
-				}
-				_, reconcileErr := f.reconcile()
-				if !slices.Contains(f.current(t).Finalizers, sandboxHoldFinalizer) || f.installer.stages != stages {
-					t.Fatal("pending stop did not restore the hold before any new workload apply")
-				}
-				current, found, err := store.ReadNative(ctx, agent.UID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !acknowledged {
-					if reconcileErr == nil || !found || current.Reservation.ID != ticket.Reservation.ID ||
-						current.Reservation.Phase != sandboxcoordination.Stopping {
-						t.Fatal("unacknowledged shutdown released or replaced its stopping reservation:", reconcileErr)
+					_, reconcileErr := f.reconcile()
+					if !slices.Contains(f.current(t).Finalizers, sandboxHoldFinalizer) || f.installer.stages != stages {
+						t.Fatal("pending stop did not restore the hold before any new workload apply")
 					}
-					return
-				}
-				if reconcileErr != nil || found {
-					t.Fatal("acknowledged stop did not finish before resume:", reconcileErr)
-				}
-				for range 3 {
-					f.reconcileOK(t)
-				}
-				current, found, err = store.ReadNative(ctx, agent.UID)
-				updated := reconciledExpectationForTest(t, f)
-				if err != nil || !found || current.Reservation.Phase != sandboxcoordination.Reserved ||
-					current.Reservation.ID == ticket.Reservation.ID || updated.Home != expected.Home ||
-					f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 ||
-					slices.Contains(f.current(t).Finalizers, sandboxHoldFinalizer) {
-					t.Fatal("resume did not reacquire current authority while preserving HOME and key identity:", err)
-				}
-				for _, workload := range updated.Workloads {
-					if workload.Replicas != 1 {
-						t.Fatal("resume did not restore the Agent and auxiliary workloads")
+					current, found, err := store.ReadNative(ctx, agent.UID)
+					if err != nil {
+						t.Fatal(err)
 					}
-				}
-			})
+					if !acknowledged {
+						if reconcileErr == nil || !found || current.Reservation.ID != ticket.Reservation.ID ||
+							current.Reservation.Phase != sandboxcoordination.Stopping {
+							t.Fatal("unacknowledged shutdown released or replaced its stopping reservation:", reconcileErr)
+						}
+						return
+					}
+					if reconcileErr != nil || found {
+						t.Fatal("acknowledged stop did not finish before resume:", reconcileErr)
+					}
+					for range 3 {
+						f.reconcileOK(t)
+					}
+					current, found, err = store.ReadNative(ctx, agent.UID)
+					updated := reconciledExpectationForTest(t, f)
+					if err != nil || !found || current.Reservation.Phase != sandboxcoordination.Reserved ||
+						current.Reservation.ID == ticket.Reservation.ID || updated.Home != expected.Home ||
+						f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 ||
+						slices.Contains(f.current(t).Finalizers, sandboxHoldFinalizer) {
+						t.Fatal("resume did not reacquire current authority while preserving HOME and key identity:", err)
+					}
+					for _, workload := range updated.Workloads {
+						if workload.Replicas != 1 {
+							t.Fatal("resume did not restore the Agent and auxiliary workloads")
+						}
+					}
+					assertNativeHomeAccessMode(t, f, mode)
+				})
+			}
 		}
 	}
 }

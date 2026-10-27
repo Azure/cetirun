@@ -7,7 +7,7 @@ ARG AZURELINUX_BASE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:bfd3e44899
 ARG GO_BUILD_IMAGE=go-toolchain
 
 # Keep the default image visible to Dependabot while retaining the build override.
-FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:c1fd7cad39f3f1e669cab9f9905bc0abbc3557c338065f43daa49940f6b99559 AS go-toolchain
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:3607c431963c588d69b3be0c31cea63abd197a324bbeede998dda702597d8368 AS go-toolchain
 ENV GOTOOLCHAIN=local
 
 # ── Install Node.js 24 from official tarball ───────────────────

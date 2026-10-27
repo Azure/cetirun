@@ -118,6 +118,9 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		Home:      home, Skills: skills, SkillsMode: inputs.SkillsMode, RuntimeClass: runtimeClass,
 		Helpers: inputs.Helpers, AuthorizedSecrets: []string{inputs.RuntimeSecret.Name},
 	}
+	if state := agent.Status.PlannedMigration; state.CanStart() {
+		attempt.input.PlannedMigration = &state.PlannedMigrationRequest
+	}
 	attempt.sources = append(attempt.sources,
 		sandboxSource(namespace, "v1", "Namespace"),
 		sandboxSource(home, "v1", "PersistentVolumeClaim"),

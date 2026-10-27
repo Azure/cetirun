@@ -164,11 +164,16 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			addition: `                "trustedProxyIPs": {
                     "type": "array",
                     "uniqueItems": true,
-                    "description": "Exact compiler-selected ingress peer IPs; not tenant proxy trust",
+                    "description": "Compiler-selected ingress IPs or registered Pod CIDRs; not tenant proxy trust",
                     "items": {
                         "type": "string",
                         "minLength": 1,
-                        "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]
+                        "anyOf": [
+                            {"format": "ipv4"},
+                            {"format": "ipv6"},
+                            {"pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$"},
+                            {"pattern": "^[0-9a-fA-F]*:[0-9a-fA-F:]+/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"}
+                        ]
                     }
                 },
 `,
