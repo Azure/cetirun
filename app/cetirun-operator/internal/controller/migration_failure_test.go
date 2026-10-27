@@ -798,7 +798,7 @@ func TestPlannedMigrationPreCaptureHoldRecoversSource(t *testing.T) {
 					for range 2 {
 						result, err := f.reconcile()
 						current := f.current(t)
-						if err != nil || result.RequeueAfter == 0 || current.Status.Policy == nil ||
+						if !isPolicyDependencyError(err) || result.RequeueAfter != 0 || current.Status.Policy == nil ||
 							current.Status.Policy.Phase != "Pending" {
 							t.Fatalf("source dependency outage did not remain a reported retrying hold: result=%+v err=%v", result, err)
 						}
@@ -1016,7 +1016,7 @@ func TestPlannedMigrationProtectingRecoversAuthorizationOutage(t *testing.T) {
 					for range 2 {
 						result, err := f.reconcile()
 						current := f.current(t)
-						if err != nil || result.RequeueAfter == 0 || current.Status.Policy == nil ||
+						if !isPolicyDependencyError(err) || result.RequeueAfter != 0 || current.Status.Policy == nil ||
 							current.Status.Policy.Phase != "Pending" ||
 							isConditionTrue(current.Status.Conditions, api.ConditionPolicyResolved) {
 							t.Fatalf("destination authorization outage was not reported as a retrying hold: result=%+v err=%v", result, err)

@@ -86,8 +86,10 @@ func (r *AgentReconciler) holdPolicyDependencyUnavailable(ctx context.Context, a
 	if r.AIGateway.configured() {
 		blockErr = r.beginAIGatewayPolicyReprojection(ctx, agent)
 	}
-	result, holdErr := r.fenceSandboxForPolicyDependencyUnavailable(ctx, agent)
-	return result, errors.Join(blockErr, holdErr)
+	_, holdErr := r.fenceSandboxForPolicyDependencyUnavailable(ctx, agent)
+	// The caller retains the authoritative dependency error. Return an empty
+	// result consistently because error backoff owns retry scheduling.
+	return ctrl.Result{}, errors.Join(blockErr, holdErr)
 }
 
 // fenceSandboxForPolicyDependencyUnavailable stops known compute without
@@ -428,7 +430,7 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 	}
 	platform, exists := snapshot.Platforms[resolution.Sandbox.Type]
 	if !exists {
-		return "", policyDependency("Sandbox platform configuration for %q is unavailable", resolution.Sandbox.Type)
+		return "", policyDependency("Sandbox platform configuration for %q is unavailable: %w", resolution.Sandbox.Type, sandboxpolicy.ErrUnavailable)
 	}
 	selectedPolicy := resources.AgentPolicies[team.Spec.AgentPolicyRef]
 	if err := sandboxpolicy.VerifyPolicyGrants(ctx, reader, selectedPolicy, platform.Grants); err != nil {
