@@ -136,6 +136,113 @@ The local platform probe tests RWOP contention, not RWO lifecycle behavior.
 Qualify the selected Kata/CSI combination separately before declaring RWO
 support; an RWOP probe result alone does not justify adding it to the registration.
 
+## Kubernetes API access
+
+New common-executor Kata OpenClaw and Hermes Agents support
+`AgentPolicy.spec.kubernetesAccess` with either registered HOME access mode.
+Retained single-start (`v1`) lifetimes still reject Kubernetes access. This is
+Kubernetes ServiceAccount authorization, not Entra ID, Agent Identity, Broker
+or Connections support.
+
+Upgrade **all Operator and admission replicas before enabling** Kubernetes
+access in a shared platform registration. The expectation/journal versions
+remain `v2`/`1`, but older readers reject the new RBAC control kinds, including
+during cleanup, and reject the enabled platform even for nil-access consumers.
+Do not roll back while these declarations or execution records remain.
+Disabling the capability alone is insufficient: use current binaries for normal
+revocation/cleanup and restore old-compatible state, or finish normal consumer
+deletion and verify grant/journal cleanup before downgrading. Never strip
+journals, expectations or finalizers to bypass this requirement.
+
+Only platform administrators manage this policy field and its separate
+approvals. The Portal displays it read-only and preserves it when other fields
+are saved; being a Portal administrator does not authorize changing Kubernetes
+grants. A policy request alone grants nothing. For example, this **policy
+fragment** requests a namespaced binding to an existing ClusterRole:
+
+```yaml
+kubernetesAccess:
+  serviceAccountName: kubernetes-reader
+  roleBindings:
+    - namespace: tools
+      clusterRoleName: agent-pod-reader
+```
+
+Before binding the policy to a Team, the administrator must:
+
+1. Explicitly register `registrations.kata.Capabilities.kubernetesAccess: true`
+   in the protected platform configuration. It remains disabled by default.
+2. Approve each requested role and binding scope in `platforms.kata.grants`.
+   Every entry pins the policy UID, existing ClusterRole UID, resource version,
+   complete rules and a separate approval revision. An empty grant namespace
+   authorizes a ClusterRoleBinding, not a namespaced RoleBinding.
+3. Register the actual Kubernetes API Service and backend IP destinations and
+   ports under `platforms.kata.topology.kubernetesAPI`. Do not substitute a broad
+   internal CIDR grant. Required API destinations cannot overlap blocked
+   ports/CIDRs or protected node, management or metadata ranges.
+4. Set `platforms.kata.kubernetesAudience` to an audience accepted by that API
+   server. `tokenExpirationSeconds` defaults to 600 and must be 600–3600 when
+   specified.
+
+This synthetic **grant fragment** illustrates the case-sensitive platform JSON
+fields. Replace every identity and rule with the approved target's observed
+values; these placeholders are not deployment approvals:
+
+```json
+{
+  "policyUID": "example-policy-uid",
+  "namespace": "tools",
+  "roleRef": {
+    "apiGroup": "rbac.authorization.k8s.io",
+    "kind": "ClusterRole",
+    "name": "agent-pod-reader"
+  },
+  "roleUID": "example-role-uid",
+  "roleResourceVersion": "123",
+  "revision": "review-1",
+  "rules": [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]}]
+}
+```
+
+After the Agent has its API-assigned UID, register its dedicated identity in
+`platforms.kata.identities`, using that exact UID, its `cetirun-<agent>` namespace,
+the requested ServiceAccount name, `kubernetes: true` and an approval revision.
+Startup stays held until this per-Agent approval exists. Do not pre-create or
+adopt a shared ServiceAccount. The operator creates the owned account and
+per-Agent bindings; it never creates, edits or deletes the referenced shared
+ClusterRoles.
+
+Kubernetes also checks the operator's RBAC when it creates bindings. For a role
+whose permissions the operator does not already hold, an administrator must
+separately grant the operator `bind` on **that named ClusterRole**, scoped to
+the intended namespace when possible. This feature adds no blanket `bind`,
+`escalate` or Portal RBAC permission.
+
+Only the main Agent container receives a read-only, rotating projected token
+at `/var/run/secrets/kubernetes.io/serviceaccount`, together with the namespace
+and the namespace's Kubernetes-published `kube-root-ca.crt`. Token automount
+remains off; init containers and helpers do not receive the projection.
+The CA must exist and is pinned as a normal admission input, not replaced with
+an Agent-owned trust bundle.
+
+Current Pod admission requires the exact rendered projection, live owned RBAC
+bindings, confirmed UIDs in the existing grant journal and unchanged role
+UID/version/rules. Policy `Accepted` is configuration acceptance, not proof of
+execution. Check the Agent's current `SandboxReady`, applied revision, aggregate
+`PolicyApplied` and workload readiness. Revoked or changed approvals hold
+compute and withdraw the recorded grants. Suspension and deletion revoke both
+namespaced and cluster-wide bindings without deleting shared roles; resume
+requires current approvals and confirms newly created binding UIDs. A nil
+`kubernetesAccess` removes the token projection and implicit API network exception.
+Use the normal coordinated configuration update after acknowledged shutdown;
+do not edit grant journals or expectations to change access.
+
+The served-API check in [DEVELOPMENT.md](../../DEVELOPMENT.md) exercises these
+contracts without a cluster or running containers. Before registering a target
+as supported, separately authorize live positive/negative API requests, token
+rotation and Cilium dataplane checks using only task-owned synthetic resources.
+Do not print, copy to HOME, or send the projected token to a test witness.
+
 ## Scoped internal egress
 
 New common-executor Kata OpenClaw/Hermes lifetimes can use
@@ -327,7 +434,7 @@ The legacy full `scripts/e2e-test.sh` flow is not this profile's acceptance run:
 its suspend/resume and legacy integration checks are outside this profile.
 Reuse its explicit-target/UID ownership principles, not its broader assertions.
 FQDN rules, SCTP port denies, Copilot sidecars,
-identity grants and live reconfiguration are unsupported here and must not be
+Entra/Agent Identity grants and live reconfiguration are unsupported here and must not be
 silently ignored.
 
 ### Optional CIDR and TCP/UDP denies

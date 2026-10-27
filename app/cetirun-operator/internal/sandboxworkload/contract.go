@@ -71,6 +71,7 @@ type Helpers struct {
 
 type Input struct {
 	Reconciled        bool
+	Suspended         bool                         `json:",omitempty"`
 	PlannedMigration  *api.PlannedMigrationRequest `json:",omitempty"`
 	Resolution        *sandbox.Resolution
 	AgentName         string

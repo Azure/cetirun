@@ -411,8 +411,16 @@ remain required; read-only root and ingress support must match the selected
 policy. The configuration harness allow-list supports `openclaw` and `hermes`;
 the earlier single-start executor itself remains OpenClaw-only.
 `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
-FQDN support, mTLS, Kubernetes access and Entra ID flags must be
-`false`; identity/token grant declarations are unsupported. These are not
+FQDN support, mTLS and Entra ID flags must be `false`. Kubernetes access may be
+explicitly registered for new common-executor lifetimes with exact policy-role
+and per-Agent identity approvals; see the
+[Kubernetes API access example](../../examples/native-sandbox/README.md#kubernetes-api-access).
+Retained single-start lifetimes continue to reject Kubernetes access.
+Upgrade all Operator/admission readers before activating a shared registration.
+Older readers cannot consume or clean up the new RBAC controls; disabling the
+capability alone does not make a rollback safe. Follow the example's cleanup
+and old-compatible-state prerequisites before downgrading.
+These are not
 physical fencing or guest-external runtime-observation guarantees.
 
 `network.blockedCIDRs` uses the registered address families and the existing
@@ -1788,13 +1796,19 @@ Approved Kubernetes API and Entra identities use separate audience-bound token
 projections; Entra-only identity does not implicitly authorize Kubernetes access.
 The compiler does not provision or revoke cloud identities. RBAC revocation
 helpers require authoritative UID/ownership checks and confirmed absence, and
-preserve shared roles/accounts. The held controller uses
+preserve shared roles/accounts. Held and common controllers use
 [`GrantJournalStore`](internal/sandboxpolicy/journal.go) to persist both workload
 and admission-source bindings before writes, record their UIDs, and integrate
 retryable revocation into hold, suspension and deletion paths. Its protected
 ConfigMap survives foreground owner deletion, uses resourceVersion CAS, and is
 bounded to 1,024 references and 512 KiB. Discovering visible bindings is never
-treated as complete cleanup inventory. This does not provide cloud-identity
+treated as complete cleanup inventory. Current common Pod admission additionally
+requires confirmed workload binding UIDs and exact live binding contents. A
+lost apply acknowledgement retains the write-ahead cleanup obligation; it does
+not authorize a Pod from an unconfirmed intent. Common suspension renders zero
+replicas without recreating revoked workload bindings, while preserving the
+requested identity for a subsequently authorized resume.
+This does not provide cloud-identity
 revocation or authorize execution. Recording unchanged canonical inventory uses
 one authoritative read and no write or confirming read; real changes retain the
 write-and-confirm path and never discard an already recorded binding UID.
@@ -1803,14 +1817,15 @@ Each approved grant must carry the live ClusterRole UID, resource version and
 normalized rules; the approval's `Revision` is a separate administrative
 revision, not a substitute for an API observation. Configuration assessment
 calls [`VerifyPolicyGrants`](internal/sandboxpolicy/grants.go) through the
-authoritative reader for only the requesting policy's grants. Held preparation,
-its mutation guards and future workload application boundaries must also verify
-immediately before consuming requested grants,
+authoritative reader for only the requesting policy's grants. Held preparation and common reconciliation, their apply guards and current Pod
+admission also verify immediately before consuming requested grants,
 invalidate changed observations and coordinate revocation on drift. The
 compiler remains a pure transformation and cannot detect a later role edit.
 Explicitly approved wildcard or Secret access is not silently rewritten.
-The operator gains only `get` access to ClusterRoles for this check, not
-role editing, binding or escalation authority.
+The approval check itself needs only `get` access to ClusterRoles. It adds no
+role editing, blanket binding or escalation authority. Kubernetes still requires
+the operator to hold a role's permissions or an administrator-provided `bind`
+permission for that exact ClusterRole before creating its bindings.
 
 The operator registers Sandbox and AgentPolicy configuration reconcilers.
 Sandbox `Ready` describes prerequisites; AgentPolicy `Accepted` describes

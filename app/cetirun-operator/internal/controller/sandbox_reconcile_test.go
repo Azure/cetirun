@@ -74,7 +74,7 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 		if len(object.Object) == 0 {
 			continue
 		}
-		if object.GetNamespace() != namespace {
+		if object.GetNamespace() != namespace && !w.KubernetesBindingResource(*object) {
 			return fmt.Errorf("unexpected rendered namespace")
 		}
 		annotations := object.GetAnnotations()
@@ -110,11 +110,20 @@ func (i *sharedSandboxInstaller) CustomApplied(_, _ string, _ *helm.PreparedRele
 }
 
 func (i *sharedSandboxInstaller) Uninstall(namespace, _ string) error {
-	for _, workload := range []client.Object{
-		&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-example", Namespace: namespace}},
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-example-copilot-proxy", Namespace: namespace}},
-	} {
-		if err := i.kube.Delete(context.Background(), workload); client.IgnoreNotFound(err) != nil {
+	if i.prepared == nil {
+		return nil
+	}
+	expected, err := i.prepared.ReconcileExpectation()
+	if err != nil {
+		return err
+	}
+	for _, workload := range expected.Workloads {
+		object := &unstructured.Unstructured{}
+		object.SetAPIVersion("apps/v1")
+		object.SetKind(workload.Kind)
+		object.SetNamespace(namespace)
+		object.SetName(workload.Identity.Name)
+		if err := i.kube.Delete(context.Background(), object); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}
@@ -1239,7 +1248,12 @@ func TestReconciledSandboxGrantCleanupFailureRetainsFinalizers(t *testing.T) {
 			if !slices.Contains(current.Finalizers, api.Finalizer) || !slices.Contains(current.Finalizers, sandbox.BootstrapFinalizer) {
 				t.Fatal("grant cleanup failure discarded Agent or bootstrap protection")
 			}
-			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+			workload := &appsv1.StatefulSet{}
+			workloadErr := f.kube.Get(ctx, client.ObjectKey{
+				Namespace: instanceNamespace(agent.Name), Name: instanceServiceName(agent.Name),
+			}, workload)
+			if workloadErr != nil && !apierrors.IsNotFound(workloadErr) ||
+				workloadErr == nil && ptr.Deref(workload.Spec.Replicas, -1) != 0 {
 				t.Fatal("grant cleanup failure skipped independent workload shutdown")
 			}
 			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: virtualServiceName(agent.Name)},

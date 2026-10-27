@@ -431,6 +431,14 @@ The summary shows any requested ServiceAccount and namespace or cluster-wide per
 Policy. Platform administrators manage this configuration outside the Portal;
 authorization requires separately approved platform grants. Saving other Policy
 fields preserves the existing Kubernetes access configuration.
+New common-executor Kata OpenClaw/Hermes Agents can use explicitly registered
+Kubernetes access with exact policy-role and per-Agent ServiceAccount approvals.
+The operator projects a bounded, audience-specific token only into the main
+container, pins role UID/version/rules and journals the owned binding UIDs.
+Suspension, grant removal and deletion revoke those bindings; shared ClusterRoles
+are not adopted or deleted. Nil access retains the token-free default identity.
+This does not enable Entra ID or Broker/Connections. See the
+[administrator setup and validation boundaries](https://github.com/Azure/cetirun/tree/main/examples/native-sandbox#kubernetes-api-access).
 
 The Internal network access editor groups each destination CIDR and its complete
 port list into one rule card, matching one `allowedInternalCIDRs` entry. Edit rule
@@ -444,8 +452,9 @@ editor. Existing values remain visible and are preserved when other fields are
 saved. FQDN blocking and mTLS lack supported enforcement; Agent Identity lacks
 the credential-service evidence needed for aggregate `PolicyApplied`. Other
 controls also depend on the selected execution profile and platform capabilities.
-For example, native single-start rejects internal CIDR exceptions, SCTP blocked
-ports, Kubernetes access, and Entra ID.
+For example, retained single-start lifetimes reject internal CIDR exceptions and
+Kubernetes access. New common-executor Kata lifetimes support both with explicit
+platform approvals. Native SCTP blocked ports and Entra ID remain unsupported.
 
 The Operator retains the Policy's `Accepted` condition for controller decisions
 and diagnostics; the Portal list and editor do not display this status.

@@ -205,12 +205,12 @@ func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
 					RoleBindings:       []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "view"}},
 				}
 				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
-				requireResponse(t, f.handler.Validate(ctx, request), false, "native single-start")
+				requireResponse(t, f.handler.Validate(ctx, request), false, "kubernetesAccess")
 				if err := f.client.Update(ctx, candidate); err != nil {
 					t.Fatal(err)
 				}
 				request = requestFor(t, admissionv1.Create, f.agent, nil, "member")
-				requireResponse(t, f.handler.DefaultAgent(ctx, request), false, "native single-start")
+				requireResponse(t, f.handler.DefaultAgent(ctx, request), false, "kubernetesAccess")
 			}
 			// Deleting a recorded Agent must not require fresh native authorization.
 			f.handler.config.NativeExecution = false

@@ -178,6 +178,9 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 			Home:     sandboxworkload.ObjectIdentity{Name: input.Home.Name, UID: input.Home.UID},
 			Controls: slices.Clone(input.Controls.Objects),
 		}
+		if input.Suspended {
+			p.sandboxReconcile.Controls = slices.DeleteFunc(p.sandboxReconcile.Controls, sandboxworkload.KubernetesBindingResource)
+		}
 	}
 	values, err := chartutil.ToRenderValues(p.chart, p.Values, chartutil.ReleaseOptions{
 		Name: input.ReleaseName, Namespace: input.Namespace.Name, IsInstall: true, Revision: 1,
@@ -244,6 +247,11 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 					return fmt.Errorf("rendered compiler resource differs from the approved output")
 				}
 				delete(compiled, key)
+				if input.Suspended && sandboxworkload.KubernetesBindingResource(object) {
+					// Validate the full compiler output, but never recreate
+					// revoked workload grants in a zero-replica suspension.
+					continue
+				}
 			} else {
 				if object.GetNamespace() != input.Namespace.Name {
 					return fmt.Errorf("foreign native Sandbox object")

@@ -238,9 +238,6 @@ func (s GrantJournalStore) RefreshBindingIntents(ctx context.Context, agentName 
 			(requested.UID != "" && requested.UID != old.UID) {
 			return fmt.Errorf("%w: desired binding is not in the grant journal", ErrOwnership)
 		}
-		if old.UID == "" {
-			continue
-		}
 		object, err := readOwnedBinding(ctx, s.APIReader, old)
 		if err != nil {
 			return err
@@ -249,6 +246,9 @@ func (s GrantJournalStore) RefreshBindingIntents(ctx context.Context, agentName 
 			if !object.GetDeletionTimestamp().IsZero() {
 				return fmt.Errorf("%w: desired %s is terminating", ErrRevocationPending, old.Kind)
 			}
+			continue
+		}
+		if old.UID == "" {
 			continue
 		}
 		absent = append(absent, old)

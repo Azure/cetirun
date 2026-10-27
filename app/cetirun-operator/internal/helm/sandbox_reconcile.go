@@ -131,6 +131,9 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 		if workload.Replicas < 0 || workload.Replicas > 1 {
 			return fmt.Errorf("Sandbox workloads require at most one active replica")
 		}
+		if input.Suspended && workload.Replicas != 0 {
+			return fmt.Errorf("suspended Sandbox components must remain at zero replicas")
+		}
 		p.sandboxReconcile.Workloads = append(p.sandboxReconcile.Workloads, *workload)
 	}
 	return nil

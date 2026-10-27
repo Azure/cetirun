@@ -19,6 +19,10 @@ func (s SourceReference) IsAgent() bool {
 	return s.APIVersion == api.GroupVersion.String() && s.Kind == "Agent" && s.Namespace == ""
 }
 
+func (s SourceReference) IsClusterRole() bool {
+	return s.APIVersion == "rbac.authorization.k8s.io/v1" && s.Kind == "ClusterRole" && s.Namespace == ""
+}
+
 func (s SourceReference) ValidIdentity() bool {
 	if s.Name == "" || s.UID == "" {
 		return false

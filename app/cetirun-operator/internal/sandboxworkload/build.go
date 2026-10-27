@@ -33,6 +33,9 @@ func Build(input Input) (*Bundle, error) {
 	if input.AgentType != "openclaw" && input.AgentType != "hermes" {
 		return nil, fmt.Errorf("policy-bound %q rendering is unsupported; legacy fallback is forbidden", input.AgentType)
 	}
+	if input.Suspended && !input.Reconciled {
+		return nil, fmt.Errorf("suspended rendering requires common Sandbox reconciliation")
+	}
 	if request := input.PlannedMigration; request != nil && (!input.Reconciled ||
 		!api.ValidRestartRequestID(request.RequestID) || request.Target.UID == "" ||
 		len(validation.IsDNS1123Subdomain(request.Target.Name)) != 0) {

@@ -50,7 +50,7 @@ func (r *AgentReconciler) executionSourceDigest(ctx context.Context, source w.So
 	}
 	if client.ObjectKeyFromObject(object) != key || object.GetUID() != source.UID ||
 		object.GetResourceVersion() == "" || !object.GetDeletionTimestamp().IsZero() ||
-		(capture && object.GetResourceVersion() != source.ResourceVersion) {
+		((capture || source.IsClusterRole()) && object.GetResourceVersion() != source.ResourceVersion) {
 		return "", fmt.Errorf("%w: effective source identity changed: %s", errSandboxSourceChanged, w.SourceKey(source))
 	}
 	return w.ExecutionSourceDigest(object, box)

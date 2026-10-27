@@ -66,9 +66,14 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
 			return platform, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
 		}
-		if len(platform.Grants) != 0 || len(platform.Identities) != 0 ||
-			platform.KubernetesAudience != "" || platform.TokenExpirationSeconds != 0 {
-			return platform, fmt.Errorf("%w: native single-start does not support identity or token grants", ErrUnsupportedControl)
+		if !capabilities.KubernetesAccess && (len(platform.Grants) != 0 || len(platform.Identities) != 0 ||
+			platform.KubernetesAudience != "" || platform.TokenExpirationSeconds != 0) {
+			return platform, fmt.Errorf("%w: native Kubernetes grants require explicitly registered support", ErrUnsupportedControl)
+		}
+		for _, identity := range platform.Identities {
+			if !identity.Kubernetes || identity.Entra != nil {
+				return platform, fmt.Errorf("%w: native identity registration supports only Kubernetes access", ErrUnsupportedControl)
+			}
 		}
 	} else if adapter.Name != AzureCNIOverlayCilium || !adapter.Qualified || adapter.Revision == "" {
 		return platform, fmt.Errorf("%w: no qualified candidate adapter registration", ErrUnsupportedControl)

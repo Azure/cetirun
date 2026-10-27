@@ -472,7 +472,9 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 		source.Namespace == expected.Namespace.Name && source.Name == expected.Workload.Name && source.UID == expected.Workload.UID
 	// Native startup changes replicas and the StatefulSet controller updates
 	// status. Validate its complete current template/lifecycle in Validate.
-	if object.GetUID() != source.UID || (!workloadSource && !effectiveSource && object.GetResourceVersion() != source.ResourceVersion) || !object.GetDeletionTimestamp().IsZero() {
+	if object.GetUID() != source.UID ||
+		((source.IsClusterRole() || (!workloadSource && !effectiveSource)) && object.GetResourceVersion() != source.ResourceVersion) ||
+		!object.GetDeletionTimestamp().IsZero() {
 		return podDenied("SourceChanged", "a source UID or revision changed, or the source is terminating")
 	}
 	if effectiveSource {

@@ -111,7 +111,7 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		return fmt.Errorf("Sandbox StorageClass approval changed")
 	}
 	attempt.input = sandboxworkload.Input{
-		Reconciled: attempt.reconciled,
+		Reconciled: attempt.reconciled, Suspended: attempt.reconciled && agent.Spec.Suspended,
 		Resolution: attempt.resolution, AgentName: agent.Name, AgentGeneration: agent.Generation,
 		AgentType: string(agent.Spec.Agent.Type), WorkloadName: instanceServiceName(agent.Name), ReleaseName: helmReleaseName(agent.Name),
 		Namespace: sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID},

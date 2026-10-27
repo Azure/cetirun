@@ -263,6 +263,23 @@ OpenClaw/Hermes with RWO/RWOP. These are offline checks, not Cilium dataplane
 qualification; use the [internal-egress example](examples/native-sandbox/README.md#scoped-internal-egress)
 for the separate authorized live witnesses.
 
+Kata Kubernetes access has a focused served-API regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxKubernetesAccessAPIServer$' -count=1
+```
+
+It uses real API RBAC and admission for OpenClaw and Hermes, including
+administrator-approved namespace and cluster-wide grants, token projection
+validation, role-version drift, access withdrawal and journal/finalizer cleanup
+after restart with new starts disabled. Unit tests additionally cover missing
+and foreign approvals, unconfirmed or shared bindings, lost apply
+acknowledgements, suspension/resume and nil-access isolation. All fixtures are
+synthetic; kubelet token rotation, Kubernetes client requests from a running
+Agent and Cilium dataplane enforcement require separately authorized live
+validation. See the [administrator setup](examples/native-sandbox/README.md#kubernetes-api-access).
+
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.

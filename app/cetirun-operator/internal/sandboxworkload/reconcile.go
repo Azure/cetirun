@@ -198,17 +198,23 @@ func (e ReconcileExpectation) Validate() error {
 	controls := map[string]bool{}
 	for _, object := range e.Controls {
 		key := SourceKey(SourceReference{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()})
-		if controls[key] || object.GetName() == "" || object.GetNamespace() != e.Namespace.Name ||
+		kind := object.GetAPIVersion() + "/" + object.GetKind()
+		kubernetesBinding := kind == "rbac.authorization.k8s.io/v1/RoleBinding" || kind == "rbac.authorization.k8s.io/v1/ClusterRoleBinding"
+		if controls[key] || object.GetName() == "" || (!kubernetesBinding && object.GetNamespace() != e.Namespace.Name) ||
 			!equality.Semantic.DeepEqual(object.GetOwnerReferences(), []metav1.OwnerReference{AgentOwner(e.Agent.Name, e.Agent.UID)}) {
 			return fmt.Errorf("Sandbox control inventory has ambiguous or foreign ownership")
 		}
 		controls[key] = true
-		switch object.GetAPIVersion() + "/" + object.GetKind() {
-		case "v1/ConfigMap", "v1/Service", "v1/ServiceAccount", "networking.k8s.io/v1/NetworkPolicy", "cilium.io/v2/CiliumNetworkPolicy":
+		switch kind {
+		case "v1/ConfigMap", "v1/Service", "v1/ServiceAccount", "networking.k8s.io/v1/NetworkPolicy", "cilium.io/v2/CiliumNetworkPolicy",
+			"rbac.authorization.k8s.io/v1/RoleBinding", "rbac.authorization.k8s.io/v1/ClusterRoleBinding":
 		default:
 			return fmt.Errorf("Sandbox control inventory contains an unsupported resource")
 		}
 		required[object.GetKind()] = true
+	}
+	if _, err := e.KubernetesBindings(); err != nil {
+		return err
 	}
 	for _, kind := range []string{"ServiceAccount", "CiliumNetworkPolicy"} {
 		if !required[kind] {
@@ -261,6 +267,23 @@ func ReconciledObjectMatches(actual, desired *unstructured.Unstructured) bool {
 	if actual == nil || desired == nil || actual.GetUID() == "" || !actual.GetDeletionTimestamp().IsZero() ||
 		!equality.Semantic.DeepEqual(actual.GetOwnerReferences(), desired.GetOwnerReferences()) {
 		return false
+	}
+	for key, value := range desired.GetLabels() {
+		if actual.GetLabels()[key] != value {
+			return false
+		}
+	}
+	for key, value := range desired.GetAnnotations() {
+		if actual.GetAnnotations()[key] != value {
+			return false
+		}
+	}
+	if desired.GetAPIVersion() == "v1" && desired.GetKind() == "ServiceAccount" {
+		for _, key := range []string{"secrets", "imagePullSecrets"} {
+			if !reflect.DeepEqual(actual.Object[key], desired.Object[key]) {
+				return false
+			}
+		}
 	}
 	for key, value := range desired.Object {
 		if key == "spec" && desired.GetKind() == "Service" {
@@ -361,6 +384,9 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 	}
 	if err := ValidateReconciledVolumes(spec, []string{b.input.Home.Name, skillsIdentity(b.input.Skills).Name}, b.input.Controls.Volumes,
 		b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit); err != nil {
+		return err
+	}
+	if err := b.validateReconciledIdentity(spec); err != nil {
 		return err
 	}
 	var pullSecrets []corev1.LocalObjectReference
