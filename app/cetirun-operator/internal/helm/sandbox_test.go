@@ -179,6 +179,12 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 			if err := (&Client{}).InstallOrUpgrade(input.Namespace.Name, input.ReleaseName, apply); !errors.Is(err, rest.ErrNotInCluster) || !guardCalled {
 				t.Fatalf("governed Custom did not reach the Kubernetes client after Sandbox authorization: %v (guard=%v)", err, guardCalled)
 			}
+			for _, target := range [][2]string{{"wrong-namespace", input.ReleaseName}, {input.Namespace.Name, "wrong-release"}} {
+				guardCalled = false
+				if err := (&Client{}).InstallOrUpgrade(target[0], target[1], apply); err == nil || errors.Is(err, rest.ErrNotInCluster) || guardCalled {
+					t.Fatalf("mismatched Sandbox apply identity reached authority or Kubernetes: %v", err)
+				}
+			}
 			stale := errors.New("synthetic Custom authority changed")
 			apply.sandboxGuard = func(context.Context) error { return stale }
 			if err := (&Client{}).InstallOrUpgrade(input.Namespace.Name, input.ReleaseName, apply); !errors.Is(err, stale) {
