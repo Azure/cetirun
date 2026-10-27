@@ -221,6 +221,12 @@ func TestNativeNetworkCompatibility(t *testing.T) {
 			BlockedCIDRs: []string{"198.51.100.0/24"},
 			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 8080}},
 		}},
+		{name: "scoped internal TCP and UDP", network: cetirunv1alpha1.AgentPolicyNetwork{
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{
+				{CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443}}},
+				{CIDR: "fd00:20::/64", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 8080, Protocol: corev1.ProtocolUDP}}},
+			},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := resolverFixture()
@@ -257,6 +263,16 @@ func TestNativeNetworkCompatibilityRetainsCapabilityChecks(t *testing.T) {
 		{name: "SCTP declared but unsupported", network: cetirunv1alpha1.AgentPolicyNetwork{
 			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolSCTP}},
 		}, configure: func(c *Capabilities) { c.Protocols = append(c.Protocols, corev1.ProtocolSCTP) }},
+		{name: "internal SCTP declared but unsupported", network: cetirunv1alpha1.AgentPolicyNetwork{
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{{
+				CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolSCTP}},
+			}},
+		}, configure: func(c *Capabilities) { c.Protocols = append(c.Protocols, corev1.ProtocolSCTP) }},
+		{name: "internal IPv6 not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{{
+				CIDR: "fd00:20::/64", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443}},
+			}},
+		}, configure: func(c *Capabilities) { c.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			capabilities := nativeCapabilities()
@@ -313,9 +329,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		"FQDN": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedFQDNs = []string{"blocked.example.com"} },
 		"port": func(p *cetirunv1alpha1.AgentPolicySpec) {
 			p.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}
-		},
-		"internal": func(p *cetirunv1alpha1.AgentPolicySpec) {
-			p.Network.AllowedInternalCIDRs = []cetirunv1alpha1.AgentPolicyCIDRRule{{CIDR: "192.0.2.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443}}}}
 		},
 		"mTLS":  func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.Ingress.RequireMTLS = true },
 		"Entra": func(p *cetirunv1alpha1.AgentPolicySpec) { p.EntraID.Enabled = true },

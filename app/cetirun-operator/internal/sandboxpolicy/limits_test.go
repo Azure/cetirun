@@ -158,40 +158,48 @@ func TestNetworkPartitionWorkThresholds(t *testing.T) {
 }
 
 func TestCompileBoundsAdversarialOverlappingIPv6(t *testing.T) {
-	input := compilerFixture()
-	for bits := 8; bits <= 128; bits++ {
-		input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs = append(input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs, api.AgentPolicyCIDRRule{
-			CIDR: fmt.Sprintf("fd00::/%d", bits), Ports: []api.AgentPolicyPort{{Port: 443}},
+	for name, fixture := range map[string]func() CompileInput{"qualified": compilerFixture, "native": nativeCompilerFixture} {
+		t.Run(name, func(t *testing.T) {
+			input := fixture()
+			for bits := 8; bits <= 128; bits++ {
+				input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs = append(input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs, api.AgentPolicyCIDRRule{
+					CIDR: fmt.Sprintf("fd00::/%d", bits), Ports: []api.AgentPolicyPort{{Port: 443}},
+				})
+			}
+			if err := validateControlInput(input.Resolution.AgentPolicy, input.Platform); err != nil {
+				t.Fatal("adversarial fixture must fit the input budget", err)
+			}
+			plan, err := Compile(input)
+			if plan != nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "network partition work") {
+				t.Fatalf("overlapping IPv6 recursion was not bounded: %v, %v", plan, err)
+			}
 		})
-	}
-	if err := validateControlInput(input.Resolution.AgentPolicy, input.Platform); err != nil {
-		t.Fatal("adversarial fixture must fit the input budget", err)
-	}
-	plan, err := Compile(input)
-	if plan != nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "network partition work") {
-		t.Fatalf("overlapping IPv6 recursion was not bounded: %v, %v", plan, err)
 	}
 }
 
 func TestCompileBoundsExpandedPeerPorts(t *testing.T) {
-	input := compilerFixture()
-	var ports []api.AgentPolicyPort
-	for i := 0; i < 400; i++ {
-		ports = append(ports, api.AgentPolicyPort{Port: int32(1000 + 2*i)})
-	}
-	input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{{CIDR: "fd00::/8", Ports: ports}}
-	for i := 1; i <= 140; i++ {
-		input.Platform.Topology.Peers = append(input.Platform.Topology.Peers, Peer{
-			Name: fmt.Sprintf("peer-%d", i), Namespace: "applications", UID: types.UID(fmt.Sprintf("example-peer-%d", i)),
-			IPs: []string{fmt.Sprintf("fd00::%x", i)},
+	for name, fixture := range map[string]func() CompileInput{"qualified": compilerFixture, "native": nativeCompilerFixture} {
+		t.Run(name, func(t *testing.T) {
+			input := fixture()
+			var ports []api.AgentPolicyPort
+			for i := 0; i < 400; i++ {
+				ports = append(ports, api.AgentPolicyPort{Port: int32(1000 + 2*i)})
+			}
+			input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{{CIDR: "fd00::/8", Ports: ports}}
+			for i := 1; i <= 140; i++ {
+				input.Platform.Topology.Peers = append(input.Platform.Topology.Peers, Peer{
+					Name: fmt.Sprintf("peer-%d", i), Namespace: "applications", UID: types.UID(fmt.Sprintf("example-peer-%d", i)),
+					IPs: []string{fmt.Sprintf("fd00::%x", i)},
+				})
+			}
+			if err := validateControlInput(input.Resolution.AgentPolicy, input.Platform); err != nil {
+				t.Fatal("peer fixture must fit the input budget", err)
+			}
+			plan, err := Compile(input)
+			if plan != nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "expanded network rule entries") {
+				t.Fatalf("peer/port expansion was not bounded: %v, %v", plan, err)
+			}
 		})
-	}
-	if err := validateControlInput(input.Resolution.AgentPolicy, input.Platform); err != nil {
-		t.Fatal("peer fixture must fit the input budget", err)
-	}
-	plan, err := Compile(input)
-	if plan != nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "expanded network rule entries") {
-		t.Fatalf("peer/port expansion was not bounded: %v, %v", plan, err)
 	}
 }
 

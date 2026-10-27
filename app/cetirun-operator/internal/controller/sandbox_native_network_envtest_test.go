@@ -16,6 +16,7 @@ import (
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -155,4 +156,85 @@ func TestNativeSandboxNetworkControlsAPIServer(t *testing.T) {
 		t.Fatal("network policy drift did not hold the existing workload")
 	}
 	h.cleanupAgent(t, pod, state, receipt)
+}
+
+func TestReconciledSandboxInternalNetworkAPIServer(t *testing.T) {
+	network := api.AgentPolicyNetwork{AllowedInternalCIDRs: []api.AgentPolicyCIDRRule{
+		{CIDR: "10.20.0.0/16", Ports: []api.AgentPolicyPort{{Port: 443}}},
+	}}
+	h := newReconciledStartAPIHarness(t, corev1.ReadWriteOnce, network)
+	expected := reconciledExpectationForTest(t, h.nativeSandboxFixture)
+	compiled := reconciledNetworkPolicyForTest(t, h.nativeSandboxFixture)
+	assertReconciledInternalGrant(t, compiled, network.AllowedInternalCIDRs[0].CIDR, true)
+	for _, tc := range []struct {
+		name, cidr, message string
+		protocol            corev1.Protocol
+	}{
+		{"node", "192.168.0.0/16", "internal exceptions", corev1.ProtocolTCP},
+		{"management", "10.1.0.0/16", "internal exceptions", corev1.ProtocolTCP},
+		{"metadata", "169.254.169.254/32", "internal exceptions", corev1.ProtocolTCP},
+		{"public", "203.0.113.0/24", "internal exceptions", corev1.ProtocolTCP},
+		{"sctp", "10.20.0.0/16", "protocol", corev1.ProtocolSCTP},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := &api.AgentPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "internal-denied-" + tc.name},
+				Spec: api.AgentPolicySpec{
+					Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
+					Network: api.AgentPolicyNetwork{AllowedInternalCIDRs: []api.AgentPolicyCIDRRule{
+						{CIDR: tc.cidr, Ports: []api.AgentPolicyPort{{Port: 443, Protocol: tc.protocol}}},
+					}},
+				},
+			}
+			h.create(t, candidate)
+			team := &api.Team{
+				ObjectMeta: metav1.ObjectMeta{Name: candidate.Name},
+				Spec: api.TeamSpec{
+					AgentPolicyRef: candidate.Name, SandboxRefs: []string{h.agent.Spec.SandboxRef},
+					DefaultSandboxRef: h.agent.Spec.SandboxRef,
+				},
+			}
+			if err := h.admin.Create(h.ctx, team); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), tc.message) {
+				t.Fatal("served admission did not reject the conflicting internal grant:", err)
+			}
+		})
+	}
+	team := &api.Team{}
+	if err := h.admin.Get(h.ctx, client.ObjectKey{Name: h.agent.Spec.Team}, team); err != nil {
+		t.Fatal(err)
+	}
+	policy := &api.AgentPolicy{}
+	if err := h.admin.Get(h.ctx, client.ObjectKey{Name: team.Spec.AgentPolicyRef}, policy); err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.Spec.Network.AllowedInternalCIDRs) != 1 ||
+		policy.Spec.Network.AllowedInternalCIDRs[0].Ports[0].Protocol != corev1.ProtocolTCP {
+		t.Fatal("served API lost the grant or its default TCP protocol")
+	}
+	policy.Spec.Network.AllowedInternalCIDRs = nil
+	if err := h.admin.Update(h.ctx, policy); !apierrors.IsForbidden(err) {
+		t.Fatal("active configuration reservation did not protect internal grants:", err)
+	}
+	observed := *h.nativeSandboxFixture
+	observed.kube = h.admin
+	pod := reconciledPodForTest(t, &observed, expected.Workloads[0])
+	pod.Spec.Overhead = nil
+	if err := h.admin.Create(h.ctx, pod, client.DryRunAll); err != nil {
+		t.Fatal("served Pod admission rejected the current internal-network policy:", err)
+	}
+	object := &unstructured.Unstructured{}
+	object.SetAPIVersion("cilium.io/v2")
+	object.SetKind("CiliumNetworkPolicy")
+	if err := h.admin.Get(h.ctx, client.ObjectKey{Namespace: compiled.Namespace, Name: compiled.Name}, object); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedSlice(object.Object, []any{}, "spec", "egressDeny"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.admin.Update(h.ctx, object); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.admin.Create(h.ctx, pod, client.DryRunAll); !apierrors.IsForbidden(err) {
+		t.Fatal("served Pod admission accepted drifted internal-network controls:", err)
+	}
 }

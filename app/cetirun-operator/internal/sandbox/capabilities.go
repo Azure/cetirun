@@ -181,18 +181,23 @@ func CheckNativeNetworkPolicy(network cetirunv1alpha1.AgentPolicyNetwork) field.
 		requested bool
 	}{
 		{root.Child("blockedFQDNs"), len(network.BlockedFQDNs) != 0},
-		{root.Child("allowedInternalCIDRs"), len(network.AllowedInternalCIDRs) != 0},
 		{root.Child("ingress", "requireMTLS"), network.Ingress.RequireMTLS},
 	} {
 		if control.requested {
 			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
 		}
 	}
-	for i, port := range network.BlockedPorts {
-		if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP && port.Protocol != corev1.ProtocolUDP {
-			errs = append(errs, field.NotSupported(root.Child("blockedPorts").Index(i).Child("protocol"),
-				port.Protocol, []string{string(corev1.ProtocolTCP), string(corev1.ProtocolUDP)}))
+	checkPorts := func(path *field.Path, ports []cetirunv1alpha1.AgentPolicyPort) {
+		for i, port := range ports {
+			if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP && port.Protocol != corev1.ProtocolUDP {
+				errs = append(errs, field.NotSupported(path.Index(i).Child("protocol"),
+					port.Protocol, []string{string(corev1.ProtocolTCP), string(corev1.ProtocolUDP)}))
+			}
 		}
+	}
+	checkPorts(root.Child("blockedPorts"), network.BlockedPorts)
+	for i, rule := range network.AllowedInternalCIDRs {
+		checkPorts(root.Child("allowedInternalCIDRs").Index(i).Child("ports"), rule.Ports)
 	}
 	return errs
 }
