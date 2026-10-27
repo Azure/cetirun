@@ -433,9 +433,18 @@ guest-external deny baseline. `network.blockedPorts` additionally requires
 `registrations.kata.Capabilities.blockedPorts: true`; it is never enabled by
 default or inferred from TCP/UDP connectivity. Declare that support only after
 verifying actual deny behavior on the selected Cilium/runtime combination.
-Native port denies support TCP and UDP only; an omitted protocol means TCP.
-SCTP is rejected even if a broader registration lists it. Rules that block
-required DNS/Gateway destinations or ports are rejected, not silently removed.
+Native port requests default to TCP; the example/probe protocol lists remain
+TCP/UDP. New common-executor Kata lifetimes also accept SCTP port denies and
+internal CIDR grants when `registrations.kata.Capabilities.protocols` explicitly
+includes `SCTP`. This existing registration is the opt-in, not a new capability
+flag or an inference from API syntax. Retained version-1 single-start lifetimes
+still reject SCTP port requests. Native SCTP internal grants target direct
+endpoints, not registered Service CIDRs or Kubernetes API destinations; node,
+metadata and management exclusions remain mandatory. See the
+[SCTP usage and qualification boundary](../../examples/native-sandbox/README.md#governed-sctp-egress).
+No Cilium/Kata SCTP dataplane is qualified by offline compilation.
+Rules that block required DNS/Gateway destinations or ports are rejected,
+not silently removed.
 Admission checks these conflicts against current topology when a policy is
 bound to a native Sandbox, when a referenced policy changes, and when an Agent
 is authorized. An unreferenced policy definition alone does not select a
@@ -443,8 +452,10 @@ platform. Capability-only injected registrations cannot authorize native deny
 rules without the matching topology. Configure port support before creating
 consumers; changing platform inventory is not a live capability upgrade.
 Public destinations outside the deny rules retain the existing egress posture.
-These controls do not enable live policy rollout: selected configuration remains
-reserved for the single-start lifetime, and actual source drift still holds it.
+These controls do not enable live policy rollout: use the ordinary
+stop/change/resume lifecycle for reserved policy or platform changes.
+Registration and policy revisions remain inputs to current Pod admission;
+source drift cannot silently authorize the old running workload.
 
 The empty/omitted capabilities profile retains the existing qualified contract,
 including mandatory `enforcementObservation`, `restrictiveFailure` and the

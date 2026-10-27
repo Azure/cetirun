@@ -285,8 +285,12 @@ scratch size. They use these admin-only endpoints:
 - `GET` and `POST /api/v1/admin/sandboxes`
 - `GET`, `PUT`, and `DELETE /api/v1/admin/sandboxes/{name}`
 
-The Sandbox request contains `name`, `type`, `resources`, and `storage` with
-the same structure as the CRD spec. Updates and deletes also require the `uid`
+The Sandbox request contains `name`, optional `type`, `resources`, and `storage`
+with the same structure as the CRD spec. Omitting `type` or setting it to `null`
+defaults to `kata` on both create and full-spec update, matching Kubernetes
+defaulting. An explicit invalid value, including an empty string, is rejected
+rather than replaced by the default. Resource and storage fields remain required.
+Updates and deletes also require the `uid`
 and `resourceVersion` returned by a read. The response reports `ready` only
 from a condition for the current generation. Saving a Sandbox does not
 install a runtime or establish runtime readiness.
@@ -452,9 +456,15 @@ editor. Existing values remain visible and are preserved when other fields are
 saved. FQDN blocking and mTLS lack supported enforcement; Agent Identity lacks
 the credential-service evidence needed for aggregate `PolicyApplied`. Other
 controls also depend on the selected execution profile and platform capabilities.
-For example, retained single-start lifetimes reject internal CIDR exceptions and
-Kubernetes access. New common-executor Kata lifetimes support both with explicit
-platform approvals. Native SCTP blocked ports and Entra ID remain unsupported.
+New common-executor Kata lifetimes support internal CIDR grants, approved
+Kubernetes access and SCTP port rules with the corresponding explicit platform
+registration and approvals. SCTP internal
+grants are limited to direct endpoints, excluding registered Service and
+Kubernetes API destinations. Retained version-1 native single-start lifetimes
+still reject internal grants, Kubernetes access and SCTP requests. Entra ID
+remains unsupported. See the
+[native SCTP usage and qualification boundary]({{< repo "examples/native-sandbox/README.md" >}}#governed-sctp-egress);
+an accepted API value does not qualify the actual network path.
 
 The Operator retains the Policy's `Accepted` condition for controller decisions
 and diagnostics; the Portal list and editor do not display this status.

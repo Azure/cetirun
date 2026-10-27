@@ -382,6 +382,20 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		if err != nil {
 			return plan, err
 		}
+		if capabilities.Profile == sandbox.ProfileNativeSingleStart && slices.ContainsFunc(ports, func(port api.AgentPolicyPort) bool {
+			return port.Protocol == corev1.ProtocolSCTP
+		}) {
+			// Cilium does not support SCTP pod-to-VIP policies. Native SCTP
+			// grants target direct endpoints, never Service or API exceptions.
+			if overlapsAny(prefix, topology.ServiceCIDRs) {
+				return plan, fmt.Errorf("%w: native SCTP internal exceptions cannot include Service VIP ranges", ErrUnsupportedControl)
+			}
+			for _, destination := range topology.KubernetesAPI {
+				if overlapsAny(prefix, peerCIDRs(destination.Peer)) {
+					return plan, fmt.Errorf("%w: native SCTP internal exceptions cannot include Kubernetes API destinations", ErrConflict)
+				}
+			}
+		}
 		grants = append(grants, addressGrant{prefix, ports})
 	}
 	blockedPorts, err := canonicalPortsOptional(policy.Network.BlockedPorts, capabilities)

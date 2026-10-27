@@ -301,6 +301,40 @@ class NativeGatewayChartTests(unittest.TestCase):
             RUNTIME_CHART / "agents/openclaw/bootstrap/health-probe.cjs"
         ).read_text())
 
+    def test_default_startup_window_is_scoped_to_common_openclaw(self):
+        for agent, reconciled, expected in (
+            ("openclaw", True, 60),
+            ("openclaw", False, 30),
+            ("hermes", True, 30),
+            ("hermes", False, 30),
+        ):
+            with self.subTest(agent=agent, reconciled=reconciled):
+                values = native_values()
+                values["agentType"] = agent
+                if reconciled:
+                    values["sandboxWorkload"]["reconciled"] = True
+                    values["sandboxWorkload"]["executionHeld"] = False
+                objects = render(RUNTIME_CHART, values)
+                main = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
+                self.assertEqual(main["startupProbe"]["failureThreshold"], expected)
+                self.assertEqual(main["startupProbe"]["periodSeconds"], 10)
+                self.assertEqual(main["startupProbe"]["timeoutSeconds"], 5)
+                self.assertEqual(main["startupProbe"]["initialDelaySeconds"], 10)
+                self.assertIn("livenessProbe", main)
+                self.assertIn("readinessProbe", main)
+                values["startupProbe"] = {"failureThreshold": 30}
+                explicit = object_of_kind(render(RUNTIME_CHART, values), "StatefulSet")
+                self.assertEqual(explicit["spec"]["template"]["spec"]["containers"][0]["startupProbe"]["failureThreshold"], 30)
+
+    def test_common_openclaw_startup_window_validates_explicit_threshold(self):
+        values = native_values()
+        values["sandboxWorkload"]["reconciled"] = True
+        values["sandboxWorkload"]["executionHeld"] = False
+        for threshold in (0, -1, 0.5, "60", True):
+            with self.subTest(threshold=threshold):
+                values["startupProbe"] = {"failureThreshold": threshold}
+                render(RUNTIME_CHART, values, error="failureThreshold")
+
     def test_disabling_native_probes_does_not_render_a_replacement_probe(self):
         values = native_values()
         for kind in ("livenessProbe", "readinessProbe", "startupProbe"):
@@ -397,6 +431,8 @@ class NativeGatewayChartTests(unittest.TestCase):
         values["sidecarScope"]["enabled"] = True
         objects = render(RUNTIME_CHART, values)
         pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
+        self.assertEqual(pod["containers"][0]["startupProbe"]["failureThreshold"], 30)
+        self.assertEqual(pod["containers"][0]["startupProbe"]["periodSeconds"], 10)
         self.assertNotIn("retire-direct-model-auth", [item["name"] for item in pod["initContainers"]])
         self.assertFalse(any(
             variable["name"] == "CETIRUN_NATIVE_SANDBOX"

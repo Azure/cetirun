@@ -138,8 +138,7 @@ func TestCompileNativeInternalGrantConflicts(t *testing.T) {
 		{name: "metadata", cidr: "169.254.169.254/32", want: ErrConflict},
 		{name: "loopback", cidr: "127.0.0.1/32", want: ErrConflict},
 		{name: "public", cidr: "203.0.113.0/24", want: ErrUnsupportedControl},
-		{name: "SCTP", cidr: "10.20.0.0/16", change: func(i *CompileInput) {
-			i.Resolution.Capabilities.Protocols = append(i.Resolution.Capabilities.Protocols, corev1.ProtocolSCTP)
+		{name: "unregistered SCTP", cidr: "10.20.0.0/16", change: func(i *CompileInput) {
 			i.Resolution.AgentPolicy.Network.AllowedInternalCIDRs[0].Ports[0].Protocol = corev1.ProtocolSCTP
 		}, want: ErrUnsupportedControl},
 		{name: "unqualified IPv6", cidr: "fd00:20::/64", change: func(i *CompileInput) {

@@ -19,7 +19,8 @@ export interface SandboxDTO extends SandboxSpec {
   ready: string;
   deleting: boolean;
 }
-export interface SandboxUpsertRequest extends SandboxSpec {
+export interface SandboxUpsertRequest extends Omit<SandboxSpec, "type"> {
+  type?: SandboxSpec["type"] | null;
   name?: string;
   uid?: string;
   resourceVersion?: string;

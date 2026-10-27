@@ -212,14 +212,16 @@ Kubernetes 1.37 binaries described below already installed, run:
 
 ```bash
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
-  go -C app/cetirun-portal test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1
+  go -C app/cetirun-portal test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1
 ```
 
 It verifies persisted restart identity, conditional suspend/resume intent,
-duplicate requests, stale UID/version rejection, and CRD validation.
+duplicate requests, stale UID/version rejection, and CRD validation. The Sandbox
+case compares omitted/null runtime defaults and full resource/storage fields
+through the Portal and the served Kubernetes API, including conditional updates.
 It starts its own API server and etcd, never an existing cluster; it does not
 run Pods, contact a model provider, or qualify storage/failure recovery.
-Operator CI also runs this test using its existing pinned admission-test tools.
+Operator CI also runs these tests using its existing pinned admission-test tools.
 
 Planned migration has a focused Operator API-server regression using the same
 local assets:
@@ -279,6 +281,24 @@ acknowledgements, suspension/resume and nil-access isolation. All fixtures are
 synthetic; kubelet token rotation, Kubernetes client requests from a running
 Agent and Cilium dataplane enforcement require separately authorized live
 validation. See the [administrator setup](examples/native-sandbox/README.md#kubernetes-api-access).
+
+Registered Kata SCTP rules have a focused served-API regression using the same
+local assets:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxSCTPNetworkAPIServer$' -count=1
+```
+
+It exercises persisted SCTP/default-TCP fields, native Cilium compilation,
+conflicting bindings, malformed requests, active policy reservations, and
+Pod admission after control drift and controller holds after registration drift.
+Compiler tests cover exact protocol/port isolation, deny precedence, dual-family
+rules and unchanged resource budgets. Controller tests cover both built-in
+harnesses and HOME modes. The API server is local; running Pod observations are
+synthetic. These checks do not qualify SCTP traffic, Kata, Cilium, NAT or Services.
+See the [SCTP example](examples/native-sandbox/README.md#governed-sctp-egress)
+for the requested-versus-qualified contract.
 
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend

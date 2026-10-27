@@ -1264,8 +1264,10 @@
                     "default": 5
                 },
                 "failureThreshold": {
-                    "type": "integer",
-                    "default": 30
+                    "type": ["integer", "null"],
+                    "minimum": 1,
+                    "default": null,
+                    "description": "Null selects 60 for common-executor OpenClaw Sandboxes, otherwise 30; explicit positive integers are preserved"
                 },
                 "successThreshold": {
                     "type": "integer",

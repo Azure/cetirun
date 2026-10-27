@@ -109,6 +109,56 @@ func TestReconciledSandboxHelperResources(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxStartupWindowAndOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		user   map[string]any
+		want   int32
+		absent bool
+	}{
+		{name: "default", want: 60},
+		{name: "explicit old threshold", user: map[string]any{"failureThreshold": 30}, want: 30},
+		{name: "explicit threshold", user: map[string]any{"failureThreshold": 7}, want: 7},
+		{name: "reset default", user: map[string]any{"failureThreshold": nil}, want: 60},
+		{name: "disabled", user: map[string]any{"enabled": false}, absent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle, values := reconciledSandboxInputs(t)
+			if tc.user != nil {
+				if err := w.ValidateReconciledUserValues(map[string]any{"startupProbe": tc.user}, bundle.Identity().AuthorizedSecrets); err != nil {
+					t.Fatal(err)
+				}
+				values["startupProbe"] = tc.user
+			}
+			base, err := PrepareChart(testChart(t), values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := base.ReconcileSandbox(values, bundle, func(context.Context) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			template, err := prepared.SandboxTemplate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			main := template.Spec.Containers[0]
+			if (main.StartupProbe == nil) != tc.absent {
+				t.Fatal("startup probe enablement changed")
+			}
+			if main.StartupProbe != nil &&
+				(main.StartupProbe.FailureThreshold != tc.want || main.StartupProbe.PeriodSeconds != 10 ||
+					main.StartupProbe.TimeoutSeconds != 5 || main.StartupProbe.Exec == nil) {
+				t.Fatalf("common startup window or loopback probe differs: %+v", main.StartupProbe)
+			}
+			if main.LivenessProbe == nil || main.ReadinessProbe == nil ||
+				main.LivenessProbe.Exec == nil || main.ReadinessProbe.Exec == nil {
+				t.Fatal("startup defaults disabled runtime health checks")
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxPullSecretIsKubeletOnly(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		t.Run(kind, func(t *testing.T) {

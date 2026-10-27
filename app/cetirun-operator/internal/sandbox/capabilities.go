@@ -168,9 +168,9 @@ func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 	return errs
 }
 
-// CheckNativeNetworkPolicy bounds the native path independently of optional
-// capability declarations. Compatibility and compilation still validate those
-// capabilities, address families and conflicts with required destinations.
+// CheckNativeNetworkPolicy bounds native network controls. Compatibility and
+// compilation still require explicit protocol/capability registration, qualified
+// address families and no conflicts with required destinations.
 func CheckNativeNetworkPolicy(network cetirunv1alpha1.AgentPolicyNetwork) field.ErrorList {
 	root := field.NewPath("spec", "network")
 	var errs field.ErrorList
@@ -187,9 +187,10 @@ func CheckNativeNetworkPolicy(network cetirunv1alpha1.AgentPolicyNetwork) field.
 	}
 	checkPorts := func(path *field.Path, ports []cetirunv1alpha1.AgentPolicyPort) {
 		for i, port := range ports {
-			if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP && port.Protocol != corev1.ProtocolUDP {
+			if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP &&
+				port.Protocol != corev1.ProtocolUDP && port.Protocol != corev1.ProtocolSCTP {
 				errs = append(errs, field.NotSupported(path.Index(i).Child("protocol"),
-					port.Protocol, []string{string(corev1.ProtocolTCP), string(corev1.ProtocolUDP)}))
+					port.Protocol, []string{string(corev1.ProtocolTCP), string(corev1.ProtocolUDP), string(corev1.ProtocolSCTP)}))
 			}
 		}
 	}
