@@ -360,8 +360,14 @@ func (k *kubeClient) completeGitHubInstallationAccount(ctx context.Context, owne
 			return "", errConflict
 		}
 		github := record.Connection.GitHub
-		if record.PendingInstallation != nil {
-			return "", errConflict
+		if pending := record.PendingInstallation; pending != nil {
+			// A provider request started before selection can invalidate this
+			// authorization after its installation choice has been locked. Let
+			// the same user reconnect, retaining the choice and account-index
+			// claim so selection can resume without changing its identity.
+			if record.Connection.Status != "interaction_required" || github == nil || github.InstallationID != 0 || tx.AppSlug == "" || pending.AppSlug != tx.AppSlug || github.AppSlug != tx.AppSlug || pending.InstallationID <= 0 || len(record.References) != 0 || record.RefreshLease != nil {
+				return "", errConflict
+			}
 		}
 		if tx.TargetConnectionID != "" && (github == nil || github.InstallationID < 0 || (github.InstallationID == 0 && github.AccountLogin != "") || (github.InstallationID > 0 && github.AccountLogin == "")) {
 			return "", errConflict
@@ -378,7 +384,7 @@ func (k *kubeClient) completeGitHubInstallationAccount(ctx context.Context, owne
 		if tx.TargetConnectionID == "" {
 			github = &agenttools.GitHubInstallation{UserLogin: display, AppSlug: tx.AppSlug}
 		} else {
-			if github.AppSlug == "" {
+			if tx.AppSlug != "" {
 				github.AppSlug = tx.AppSlug
 			}
 			github.UserLogin = display

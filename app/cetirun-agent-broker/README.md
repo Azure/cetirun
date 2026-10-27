@@ -143,8 +143,9 @@ Per-Agent limits protect normal execution but do not remove trust in platform
 administrators. GitHub sees the App bot; internal audit distinguishes Agents.
 
 Selecting an installation reuses the Connection for the same CetiRun owner,
-verified GitHub user ID, App and installation. A conditional index serializes
-concurrent selections. Healthy existing credentials and Agent grants are
+verified GitHub user ID and stable installation ID. App renames do not create a
+new connection; GitHub verifies which App owns the installation. A conditional
+index serializes concurrent selections. Healthy existing credentials and Agent grants are
 preserved; each Agent still has its own repository and permission selection.
 Personal OAuth connections, different users and different installations remain
 separate. A temporary sign-in record is consumed only after reuse succeeds;

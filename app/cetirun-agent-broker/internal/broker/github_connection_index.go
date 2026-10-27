@@ -17,7 +17,7 @@ func sameGitHubInstallation(a, b Connection) bool {
 	return sameOwner(a.Owner, b.Owner) && a.Provider == "github" && b.Provider == "github" &&
 		connectionMode(a) == modeInstallation && connectionMode(b) == modeInstallation &&
 		a.AccountID != "" && a.AccountID == b.AccountID && a.GitHub != nil && b.GitHub != nil &&
-		a.GitHub.AppSlug != "" && a.GitHub.AppSlug == b.GitHub.AppSlug &&
+		a.GitHub.AppSlug != "" && b.GitHub.AppSlug != "" &&
 		a.GitHub.InstallationID > 0 && a.GitHub.InstallationID == b.GitHub.InstallationID
 }
 
@@ -29,6 +29,8 @@ func installationIdentity(record *connectionRecord) Connection {
 	return c
 }
 
+// GitHub installation IDs identify the installation across App renames. The
+// mutable App slug is display metadata, not part of the canonical identity.
 // Claim before promotion: independently running replicas converge on one ID.
 // An interrupted request leaves an unbindable source that another request can
 // finish. Historical connected records keep their IDs and binding references.
@@ -36,7 +38,7 @@ func (k *kubeClient) canonicalGitHubInstallation(ctx context.Context, c Connecti
 	if !sameGitHubInstallation(c, c) {
 		return "", errConflict
 	}
-	key := accountIndexID(c.Owner, "github-installation", c.AccountID+"\x00"+c.GitHub.AppSlug+"\x00"+strconv.FormatInt(c.GitHub.InstallationID, 10))
+	key := accountIndexID(c.Owner, "github-installation", c.AccountID+"\x00"+strconv.FormatInt(c.GitHub.InstallationID, 10))
 	for attempt := 0; attempt < 8; attempt++ {
 		index, version, err := k.getOAuthRecord(ctx, "account-index", key)
 		if err == nil {
@@ -187,6 +189,20 @@ func (k *kubeClient) selectGitHubInstallation(ctx context.Context, owner Owner, 
 			return nil, errConflict
 		}
 		if healthyAccount(current) {
+			if current.Connection.GitHub.AppSlug != identity.GitHub.AppSlug {
+				// The selection was verified against the configured App ID.
+				// Refresh renamed App metadata without replacing credentials or
+				// changing any Agent's repository and permission selections.
+				current.Connection.GitHub.AppSlug = identity.GitHub.AppSlug
+				current.Connection.AccountDisplay = identity.GitHub.AppSlug + "[bot]"
+				current.Connection.Revision++
+				current.Connection.UpdatedAt = now
+				if err := k.putConnection(ctx, current, version); errors.Is(err, errConflict) {
+					continue
+				} else if err != nil {
+					return nil, err
+				}
+			}
 			selected = current
 			break
 		}
@@ -212,6 +228,7 @@ func (k *kubeClient) selectGitHubInstallation(ctx context.Context, owner Owner, 
 		selection := *identity.GitHub
 		selection.UserLogin = current.Connection.GitHub.UserLogin
 		current.Connection.GitHub = &selection
+		current.Connection.AccountDisplay = selection.AppSlug + "[bot]"
 		current.PendingInstallation = nil
 		current.Connection.Status = "connected"
 		current.Connection.Revision++

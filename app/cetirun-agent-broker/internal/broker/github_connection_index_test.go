@@ -250,7 +250,7 @@ func TestGitHubInstallationIdentityDoesNotMergeAcrossBoundaries(t *testing.T) {
 	base := selectOne(owner, "42", "cetirun", 17)
 	for _, candidate := range []string{
 		selectOne(owner, "43", "cetirun", 17),
-		selectOne(owner, "42", "other-app", 17),
+		selectOne(owner, "42", "other-app", 19),
 		selectOne(owner, "42", "cetirun", 18),
 		selectOne(otherOwner, "42", "cetirun", 17),
 	} {
@@ -545,5 +545,109 @@ func TestGitHubInstallationAliasProjectionKeepsHistoricalBindings(t *testing.T) 
 		if err != nil || binding.Binding.ConnectionID != record.Connection.ID {
 			t.Fatalf("historical binding was changed: %#v %v", binding, err)
 		}
+	}
+}
+
+func TestGitHubInstallationPendingSelectionRecoversAfterConcurrentUnauthorizedResponse(t *testing.T) {
+	for _, existingCanonical := range []bool{false, true} {
+		name := "new connection"
+		if existingCanonical {
+			name = "existing canonical connection"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newAuthorizationFixture(t, "github", "github")
+			owner := f.grant.Owner
+			canonicalID := ""
+			if existingCanonical {
+				canonicalID = createPendingGitHubAppConnection(t, f, owner, "42", "cetirun", "canonical")
+				selectPendingGitHubInstallation(t, f, owner, canonicalID, "cetirun", 17)
+				canonical, version, err := f.server.store.getConnection(context.Background(), canonicalID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				canonical.Connection.Status = "interaction_required"
+				if err := f.server.store.putConnection(context.Background(), canonical, version); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sourceID := createPendingGitHubAppConnection(t, f, owner, "42", "cetirun", "source")
+			inFlight, _, err := f.server.store.getConnection(context.Background(), sourceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, version, err := f.server.store.getConnection(context.Background(), sourceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source.PendingInstallation = &agenttools.GitHubInstallation{InstallationID: 17, AppSlug: "cetirun", AccountLogin: "example-org", UserLogin: "octocat"}
+			if err := f.server.store.putConnection(context.Background(), source, version); err != nil {
+				t.Fatal(err)
+			}
+			if canonicalID == "" {
+				canonicalID = sourceID
+			}
+			claimed, err := f.server.store.canonicalGitHubInstallation(context.Background(), installationIdentity(source))
+			if err != nil || claimed != canonicalID {
+				t.Fatalf("installation claim = %q, want %q: %v", claimed, canonicalID, err)
+			}
+			// A listing request obtained this token before selection started,
+			// then returned unauthorized after the durable index claim.
+			f.server.markGitHubAppInteractionRequired(context.Background(), inFlight)
+			tx := connectionTransaction{Provider: "github", Mode: modeInstallation, AppSlug: "cetirun", TargetConnectionID: sourceID, ExpectedAccountID: "42"}
+			fresh := providerCredential{AccessToken: "reauthorized", RefreshToken: "reauthorized-refresh", ExpiresAt: time.Now().Add(time.Hour)}
+			if _, err := f.server.store.completeGitHubInstallationAccount(context.Background(), owner, tx, fresh, "octocat", "42", time.Now().UTC()); err != nil {
+				t.Fatalf("pending selection could not reauthorize: %v", err)
+			}
+			// A repeated late response for the old credential must not undo the
+			// completed sign-in or discard the installation-index identity.
+			f.server.markGitHubAppInteractionRequired(context.Background(), inFlight)
+			reconnected, _, err := f.server.store.getConnection(context.Background(), sourceID)
+			if err != nil || reconnected.Connection.Status != "installation_required" || reconnected.PendingInstallation == nil || !reflect.DeepEqual(reconnected.PendingInstallation, source.PendingInstallation) || reconnected.Credential.AccessToken != fresh.AccessToken {
+				t.Fatalf("reconnect did not retain the resumable selection: %#v %v", reconnected, err)
+			}
+			selected := selectPendingGitHubInstallation(t, f, owner, sourceID, "cetirun", 17)
+			if selected.Connection.ID != canonicalID || selected.Connection.Status != "connected" || selected.Credential.AccessToken != fresh.AccessToken || selected.PendingInstallation != nil {
+				t.Fatalf("reauthorized selection did not converge: %#v", selected)
+			}
+		})
+	}
+}
+
+func TestGitHubInstallationSelectionReusesLegacyConnectionAfterAppRename(t *testing.T) {
+	f := newAuthorizationFixture(t, "github", "github")
+	owner := f.grant.Owner
+	id := createPendingGitHubAppConnection(t, f, owner, "42", "old-app", "existing")
+	existing, version, err := f.server.store.getConnection(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing.Connection.GitHub = &agenttools.GitHubInstallation{InstallationID: 17, AppSlug: "old-app", AccountLogin: "example-org", UserLogin: "octocat"}
+	existing.Connection.Status = "connected"
+	if err := f.server.store.putConnection(context.Background(), existing, version); err != nil {
+		t.Fatal(err)
+	}
+	// Older releases included the mutable App slug in their index key.
+	legacyKey := accountIndexID(owner, "github-installation", existing.Connection.AccountID+"\x00old-app\x0017")
+	legacyIndex := existing.Connection
+	legacyIndex.ID, legacyIndex.CanonicalConnectionID = legacyKey, id
+	if err := f.server.store.putOAuthRecord(context.Background(), "account-index", &connectionRecord{Connection: legacyIndex}, ""); err != nil {
+		t.Fatal(err)
+	}
+	binding := &bindingRecord{Binding: ConnectionBinding{ID: "existing-binding", InstanceUID: f.agent.Metadata.UID, ConnectionID: id, Owner: owner, Enabled: true, Revision: 1}}
+	if err := f.server.store.putBinding(context.Background(), binding, ""); err != nil {
+		t.Fatal(err)
+	}
+	sourceID := createPendingGitHubAppConnection(t, f, owner, "42", "renamed-app", "new-sign-in")
+	selected := selectPendingGitHubInstallation(t, f, owner, sourceID, "renamed-app", 17)
+	if selected.Connection.ID != id || selected.Connection.GitHub.AppSlug != "renamed-app" || selected.Connection.AccountDisplay != "renamed-app[bot]" || !reflect.DeepEqual(selected.Credential, existing.Credential) {
+		t.Fatalf("App rename did not preserve the existing connection and credentials: %#v", selected)
+	}
+	stored, _, err := f.server.store.getBinding(context.Background(), binding.Binding.ID)
+	if err != nil || !reflect.DeepEqual(stored.Binding, binding.Binding) {
+		t.Fatalf("App rename changed the existing Agent binding: %#v %v", stored, err)
+	}
+	retryID := createPendingGitHubAppConnection(t, f, owner, "42", "renamed-app", "another-sign-in")
+	if retry := selectPendingGitHubInstallation(t, f, owner, retryID, "renamed-app", 17); retry.Connection.ID != id {
+		t.Fatalf("App rename did not establish a stable installation index: %q", retry.Connection.ID)
 	}
 }
