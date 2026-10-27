@@ -109,11 +109,6 @@ func TestCompileNativeNetworkRestrictionsFailClosed(t *testing.T) {
 		{"FQDN", func(i *CompileInput) {
 			i.Resolution.AgentPolicy.Network.BlockedFQDNs = []string{"blocked.example.com"}
 		}, ErrUnsupportedControl},
-		{"internal exception", func(i *CompileInput) {
-			i.Resolution.AgentPolicy.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{
-				{CIDR: "10.20.0.0/16", Ports: []api.AgentPolicyPort{{Port: 443}}},
-			}
-		}, ErrUnsupportedControl},
 		{"missing baseline", func(i *CompileInput) {
 			i.Resolution.Capabilities.DenyPrecedence = false
 		}, ErrUnsupportedControl},

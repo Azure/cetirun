@@ -230,6 +230,31 @@ finalizer. This cleanup remains available when new starts are disabled and
 retries terminating journals during foreground deletion without adopting foreign
 ownership or discarding grant history.
 
+### Scoped internal egress
+
+Common-executor Kata OpenClaw/Hermes lifetimes also support
+`AgentPolicy.spec.network.allowedInternalCIDRs` with explicit TCP/UDP ports
+(omitted protocol means TCP), for either registered HOME mode. They use the
+existing Cilium compiler, owned per-Agent policy and current-source Pod
+admission, not an additional network controller. Grants must stay within private
+or registered internal networks and cannot include node, management, metadata,
+loopback or other mandatory exclusions. Explicit CIDR/port denies and the
+approved-DNS-only restriction retain precedence over grants. Overlapping grants
+combine ports only within their common address range; unspecified ports and
+other managed peers remain denied.
+
+Cilium-managed destinations additionally require the platform's complete
+`topology.peers` inventory, exact namespace and protected peer-UID labels.
+All registered addresses for one peer must have identical effective permissions;
+inconsistent address/port permissions are rejected rather than widening its
+endpoint selector. A CIDR grant does not discover Pods, translate Service ports,
+or grant arbitrary cluster access. These network edits still use the
+configuration-coordination rules above, including acknowledged suspension
+before changing reserved sources. Retained version-1 single-start lifetimes
+continue to reject internal grants. See the
+[internal-egress example](../../examples/native-sandbox/README.md#scoped-internal-egress)
+for the policy shape and separate live validation requirements.
+
 ### Planned healthy-source migration (separate opt-in)
 
 `sandboxSources.plannedMigration: true` enables a platform-administrator

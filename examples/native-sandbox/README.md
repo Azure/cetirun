@@ -136,6 +136,54 @@ The local platform probe tests RWOP contention, not RWO lifecycle behavior.
 Qualify the selected Kata/CSI combination separately before declaring RWO
 support; an RWOP probe result alone does not justify adding it to the registration.
 
+## Scoped internal egress
+
+New common-executor Kata OpenClaw/Hermes lifetimes can use
+`AgentPolicy.spec.network.allowedInternalCIDRs` with either registered HOME mode.
+For example, this synthetic **policy fragment** grants TCP `443` throughout one
+private subnet and adds UDP `8080` only in its overlapping subrange:
+
+```yaml
+network:
+  allowedInternalCIDRs:
+    - cidr: 10.20.0.0/16
+      ports:
+        - {port: 443, protocol: TCP}
+    - cidr: 10.20.1.0/24
+      ports:
+        - {port: 8080, protocol: UDP}
+```
+
+Replace these ranges with approved internal destinations; they are not deployed
+test endpoints. Omitted protocols default to TCP; SCTP grants are rejected even
+if a broader registration lists SCTP. IPv6 requires the corresponding registered
+address family. Node, management, metadata and mandatory excluded ranges cannot
+be granted. Explicit CIDR/port denies still win, and TCP/UDP `53` remains limited
+to approved DNS peers even if an internal rule includes that port.
+
+For Cilium-managed Pods, CIDR matching alone is insufficient: the platform must
+register the exact namespace, protected peer-UID label and addresses in
+`topology.peers`, with a complete managed-peer inventory. All addresses of a
+registered peer must receive the same effective port permissions. This does not
+discover changing Pod IPs or translate a Service's port to its backend port.
+Do not grant node ranges, broaden selectors or alter the Cilium deployment to
+work around an incomplete registration.
+
+When configuration coordination is enabled, suspend all consumers and complete
+their normal shutdown before updating reserved policy or platform sources.
+Resume through the ordinary lifecycle after the coordinated configuration
+change; do not remove reservations or edit status. Retained version-1
+single-start lifetimes still reject internal grants.
+
+Offline compiler, chart and API-server checks do not qualify real traffic.
+On an explicitly authorized target, use owner-authenticated Agent requests and
+independent task-owned witnesses to verify the permitted address/port/protocol,
+wrong ports/protocols, outside ranges, overlapping grants, explicit denies,
+managed-peer identities, DNS/node/metadata isolation and unchanged peer Agents.
+Repeat the witness after grant removal through the supported lifecycle and
+confirm access is denied. Record the exact artifacts and registration; this
+field does not complete the Istio handover or enable FQDN/mTLS controls.
+
 ## Rollout-stable managed ingress
 
 For an AKS-managed Istio gateway, register the stable labels already supplied by
@@ -278,7 +326,7 @@ before taking further action. Do not retry creation or delete by name.
 The legacy full `scripts/e2e-test.sh` flow is not this profile's acceptance run:
 its suspend/resume and legacy integration checks are outside this profile.
 Reuse its explicit-target/UID ownership principles, not its broader assertions.
-FQDN rules, internal-network exceptions, SCTP port denies, Copilot sidecars,
+FQDN rules, SCTP port denies, Copilot sidecars,
 identity grants and live reconfiguration are unsupported here and must not be
 silently ignored.
 

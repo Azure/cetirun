@@ -75,6 +75,9 @@ func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 		policy.EntraID.Enabled || policy.KubernetesAccess != nil || len(agent.Spec.Helm.Values) != 0 {
 		return fmt.Errorf("%w: native execution supports shared Gateway models without sidecars, identity grants or Helm overrides", sandboxpolicy.ErrUnsupportedControl)
 	}
+	if len(policy.Network.AllowedInternalCIDRs) != 0 {
+		return fmt.Errorf("%w: internal-network exceptions require the common executor", sandboxpolicy.ErrUnsupportedControl)
+	}
 	if errs := sandbox.CheckNativeNetworkPolicy(policy.Network); len(errs) != 0 {
 		return fmt.Errorf("%w: %w", sandboxpolicy.ErrUnsupportedControl, errs.ToAggregate())
 	}

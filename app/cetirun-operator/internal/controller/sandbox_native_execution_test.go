@@ -137,7 +137,7 @@ func TestNativeSandboxProfileRejectsUnsupportedOverrides(t *testing.T) {
 			a.resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolSCTP}}
 		}},
 		{"internal CIDR", func(a *sandboxPreparationAttempt) {
-			a.resolution.AgentPolicy.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{{CIDR: "192.0.2.0/24", Ports: []api.AgentPolicyPort{{Port: 443}}}}
+			a.resolution.AgentPolicy.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{{CIDR: "10.20.0.0/16", Ports: []api.AgentPolicyPort{{Port: 443}}}}
 		}},
 		{"custom mTLS", func(a *sandboxPreparationAttempt) { a.resolution.AgentPolicy.Network.Ingress.RequireMTLS = true }},
 	} {

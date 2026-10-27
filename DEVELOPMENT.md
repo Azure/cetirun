@@ -248,6 +248,21 @@ RWO and RWOP retained restarts, coordinated shutdown/resume and repeated
 healthy-source migration with synthetic Pod/CSI observations. These are offline
 contracts, not runtime, file-retention, model-spend or CSI qualification.
 
+Kata internal CIDR grants have a focused served-API regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxInternalNetworkAPIServer$' -count=1
+```
+
+It verifies configuration binding, default TCP ports, owned Cilium policy output,
+protected network conflicts, active source reservations and Pod admission after
+policy drift. Normal compiler/controller tests additionally cover address/port
+boundaries, managed-peer isolation, deny precedence and grant removal for
+OpenClaw/Hermes with RWO/RWOP. These are offline checks, not Cilium dataplane
+qualification; use the [internal-egress example](examples/native-sandbox/README.md#scoped-internal-egress)
+for the separate authorized live witnesses.
+
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.
