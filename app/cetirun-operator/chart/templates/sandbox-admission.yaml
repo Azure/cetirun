@@ -313,15 +313,20 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       topologySpreadConstraints:
+        # Old ReplicaSets must not mask a skewed replacement revision.
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys:
+            - pod-template-hash
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: cetirun-sandbox-admission
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
           whenUnsatisfiable: ScheduleAnyway
+          matchLabelKeys:
+            - pod-template-hash
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: cetirun-sandbox-admission

@@ -867,6 +867,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 for spread in spreads:
                     self.assertEqual(spread["maxSkew"], 1)
                     self.assertEqual(spread["labelSelector"], selector)
+                    self.assertEqual(spread.get("matchLabelKeys"), ["pod-template-hash"])
                     # Without minDomains, a single eligible hostname is not
                     # inherently unsatisfiable: replicas can share that domain.
                     self.assertNotIn("minDomains", spread)
