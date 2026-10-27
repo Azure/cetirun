@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -103,7 +104,10 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 	}
 	resolution, err := r.resolvePolicy(ctx, agent)
 	if err != nil {
-		result := policyReconcileResult{dependencyUnavailable: isPolicyDependencyError(err)}
+		result := policyReconcileResult{
+			dependencyUnavailable: isPolicyDependencyError(err),
+			ingressMTLSPending:    errors.Is(err, ingressmtls.ErrApprovalPending),
+		}
 		return result, r.recordPolicy(ctx, agent, nil, err)
 	}
 	result := policyReconcileResult{
@@ -158,6 +162,7 @@ type policyReconcileResult struct {
 	projectionsVerified   bool
 	reprojectionHold      bool
 	dependencyUnavailable bool
+	ingressMTLSPending    bool
 }
 
 // policyDependencyError distinguishes an unavailable control-plane read
@@ -433,7 +438,8 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		NativeExecution: r.SandboxPreparation.NativeExecution,
-		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name), Platform: platform,
+		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name),
+		ServiceName: instanceServiceName(agent.Name), Platform: platform,
 	})
 	if err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {

@@ -70,7 +70,7 @@ import (
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.istio.io,resources=virtualservices;sidecars,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.istio.io,resources=virtualservices;sidecars;destinationrules,verbs=get;list;watch;create;update;patch;delete
 type AgentReconciler struct {
 	client.Client
 	APIReader                   client.Reader
@@ -184,7 +184,8 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&cetirunv1alpha1.Agent{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&istiov1beta1.VirtualService{}).
-		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.enqueueRegistrySecret)).
+		Owns(&istiov1beta1.DestinationRule{}).
+		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.enqueueAgentSecret)).
 		Watches(
 			&cetirunv1alpha1.Team{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForTeam),
@@ -197,6 +198,9 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&cetirunv1alpha1.AgentPolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForAgentPolicy),
 		)
+	if r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution {
+		builder = builder.WatchesMetadata(&istiov1beta1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.enqueueIngressMTLSSource))
+	}
 	if r.AIGateway.Enabled {
 		if r.aiGatewayEvents == nil {
 			r.aiGatewayEvents = make(chan event.GenericEvent, 1024)
@@ -298,8 +302,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// A transient Team, policy, or Gateway catalog failure cannot prove a
 		// denial. Preserve the key identity and spend record, but block it and
 		// stop compute until fresh authorization evidence is available.
+		bootstrapErr := r.bootstrapPendingIngressMTLS(ctx, instance, policy.ingressMTLSPending)
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-		return result, stderrors.Join(err, holdErr)
+		return result, stderrors.Join(err, bootstrapErr, holdErr)
 	} else if err != nil {
 		// Status persistence is not part of the authorization boundary. If it
 		// fails, revoke access and stop compute before returning the joined
@@ -892,6 +897,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		prepared, err = r.HelmClient.Refresh(prepared, helmValues)
 	}
 	if err != nil {
+		if reconciledSandbox && stderrors.Is(err, errSandboxIngressMTLS) {
+			result, holdErr := r.holdReconciledSandbox(ctx, instance)
+			return result, stderrors.Join(err, holdErr)
+		}
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
 	if instance.Spec.Suspended {
@@ -1151,6 +1160,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	logger.Info("Reconciliation complete", "alias", alias, "accessURL", accessURLPathBased(instance.Name, r.DomainSuffix))
 	requeueAfter := 10 * time.Minute
+	if controls, ok := prepared.Values["sandboxWorkload"].(map[string]any); ok && controls["ingressMTLS"] == true {
+		requeueAfter = 5 * time.Second
+	}
 	if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
 		requeueAfter = teamsRequeueAfter
 	}
@@ -1345,7 +1357,7 @@ func (r *AgentReconciler) operatorNamespaceRBAC(ns string) (*rbacv1.Role, *rbacv
 			},
 			{
 				APIGroups: []string{"networking.istio.io"},
-				Resources: []string{"virtualservices", "sidecars"},
+				Resources: []string{"virtualservices", "sidecars", "destinationrules"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 			},
 			{
@@ -1793,6 +1805,7 @@ func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger lo
 // ensureVirtualService creates or updates the Istio VirtualService for this
 // instance and reports whether it created, updated or left it unchanged.
 func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent, access ...customAccess) (controllerutil.OperationResult, error) {
+	requireMTLS := false
 	reconciled, err := r.usesReconciledSandbox(ctx, instance)
 	if err != nil {
 		return controllerutil.OperationResultNone, err
@@ -1809,11 +1822,18 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 				metav1.ConditionTrue, "IngressDisabled", "Sandbox ingress is disabled")
 			return controllerutil.OperationResultNone, err
 		}
+		requireMTLS = resolution.policy.Spec.Network.Ingress.RequireMTLS
 	}
 	logger := log.FromContext(ctx)
 	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway, access...)
 	if desired == nil {
 		return controllerutil.OperationResultNone, fmt.Errorf("unsupported Agent native access")
+	}
+	if requireMTLS {
+		if err := r.restrictMTLSRoute(ctx, instance, desired); err != nil {
+			withdrawErr := r.withdrawKubernetesSandboxRoute(ctx, instance)
+			return controllerutil.OperationResultNone, stderrors.Join(err, withdrawErr)
+		}
 	}
 	if reconciled {
 		if err := controllerutil.SetControllerReference(instance, desired, r.Scheme); err != nil {

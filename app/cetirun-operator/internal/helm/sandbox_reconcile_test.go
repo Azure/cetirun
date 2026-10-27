@@ -13,6 +13,7 @@ import (
 
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
+	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -495,5 +496,115 @@ func TestReconciledSandboxApplyRequiresCurrentAuthority(t *testing.T) {
 	}
 	if err := (&Client{}).InstallOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared); !errors.Is(err, stale) {
 		t.Fatalf("common apply did not recheck authority before Kubernetes access: %v", err)
+	}
+}
+
+func TestReconciledSandboxHistoryFailureDoesNotSubmit(t *testing.T) {
+	bundle, values := reconciledSandboxInputs(t)
+	base, err := PrepareChart(testChart(t), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submitted, checked := false, false
+	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
+		func(context.Context) error { checked = true; return nil },
+		func(context.Context) error { submitted = true; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, kube, store := sandboxActionConfig()
+	injected := errors.New("synthetic history read outage")
+	store.queryError = injected
+	err = (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
+		func(string) (*action.Configuration, error) { return cfg, nil })
+	if !errors.Is(err, injected) || !strings.Contains(err.Error(), "helm history") {
+		t.Fatal("fixture did not reach the history read:", err)
+	}
+	if !checked || submitted || len(kube.writes) != 0 || store.writes != 0 {
+		t.Fatalf("read-only history failure changed submission state: checked=%t submitted=%t workloadWrites=%d releaseWrites=%d",
+			checked, submitted, len(kube.writes), store.writes)
+	}
+	store.queryError = nil
+	kube.afterWrite = func() {
+		if !submitted {
+			t.Fatal("Helm wrote a resource before the submission checkpoint")
+		}
+	}
+	if err := (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
+		func(string) (*action.Configuration, error) { return cfg, nil }); err != nil {
+		t.Fatal("restored history did not recover the same prepared release:", err)
+	}
+	if !submitted || len(kube.writes) == 0 {
+		t.Fatal("recovered install did not pass the submission boundary")
+	}
+}
+
+func TestReconciledSandboxPreflightRejectsStaleAuthority(t *testing.T) {
+	bundle, values := reconciledSandboxInputs(t)
+	base, err := PrepareChart(testChart(t), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := errors.New("synthetic stale preflight authority")
+	submitted, configured := false, false
+	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
+		func(context.Context) error { return stale },
+		func(context.Context) error { submitted = true; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
+		func(string) (*action.Configuration, error) {
+			configured = true
+			return nil, errors.New("unexpected configuration read")
+		})
+	if !errors.Is(err, stale) || submitted || configured {
+		t.Fatal("preflight authority failure reached Helm or submission:", err)
+	}
+}
+
+func TestReconciledSandboxConfigurationFailureDoesNotSubmit(t *testing.T) {
+	bundle, values := reconciledSandboxInputs(t)
+	base, err := PrepareChart(testChart(t), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked, submitted := false, false
+	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
+		func(context.Context) error { checked = true; return nil },
+		func(context.Context) error { submitted = true; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("synthetic Helm configuration read outage")
+	err = (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
+		func(string) (*action.Configuration, error) { return nil, injected })
+	if !errors.Is(err, injected) || !checked || submitted {
+		t.Fatal("read-only configuration failure submitted a workload:", err)
+	}
+}
+
+func TestReconciledSandboxApplyGuardFailureDoesNotWrite(t *testing.T) {
+	bundle, values := reconciledSandboxInputs(t)
+	base, err := PrepareChart(testChart(t), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("synthetic final apply authority read failure")
+	checked, submitted := false, false
+	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
+		func(context.Context) error { checked = true; return nil },
+		func(context.Context) error { submitted = true; return injected })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, kube, store := sandboxActionConfig()
+	err = (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
+		func(string) (*action.Configuration, error) { return cfg, nil })
+	if !errors.Is(err, injected) || !checked || !submitted {
+		t.Fatal("fixture did not reach the guarded Helm renderer:", err)
+	}
+	if len(kube.writes) != 0 || store.writes != 0 {
+		t.Fatalf("failed final guard allowed Helm writes: workloadWrites=%d releaseWrites=%d", len(kube.writes), store.writes)
 	}
 }

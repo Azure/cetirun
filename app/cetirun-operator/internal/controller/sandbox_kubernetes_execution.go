@@ -78,6 +78,9 @@ func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 	if len(policy.Network.AllowedInternalCIDRs) != 0 {
 		return fmt.Errorf("%w: internal-network exceptions require the common executor", sandboxpolicy.ErrUnsupportedControl)
 	}
+	if policy.Network.Ingress.RequireMTLS {
+		return fmt.Errorf("%w: managed ingress mTLS requires the common executor", sandboxpolicy.ErrUnsupportedControl)
+	}
 	if slices.ContainsFunc(policy.Network.BlockedPorts, func(port api.AgentPolicyPort) bool {
 		return port.Protocol == corev1.ProtocolSCTP
 	}) {

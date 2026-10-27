@@ -20,6 +20,7 @@ func ControlsFromPlan(plan sandboxpolicy.Plan) (Controls, error) {
 		DNSIPs: plan.Network.DNSIPs, TrustedProxyIPs: plan.Network.TrustedProxyIPs, IngressMode: plan.Network.IngressMode,
 		ServiceAccountName: plan.Identity.ServiceAccountName, Volumes: plan.Identity.Volumes,
 		VolumeMounts: plan.Identity.VolumeMounts, Environment: plan.Identity.Env, Objects: plan.Resources,
-		PodLabels: map[string]string{sandboxpolicy.AgentUIDLabel: string(plan.Binding.AgentUID)},
+		PodLabels:   map[string]string{sandboxpolicy.AgentUIDLabel: string(plan.Binding.AgentUID)},
+		IngressMTLS: plan.IngressMTLS,
 	})
 }

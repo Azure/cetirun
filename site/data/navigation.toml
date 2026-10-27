@@ -67,6 +67,7 @@
       "/docs/guides/teams",
       "/docs/operations/storage",
       "/docs/operations/istio",
+      "/docs/guides/agent-ingress-mtls",
     ]
   [[modules.groups]]
     title = "Troubleshooting"

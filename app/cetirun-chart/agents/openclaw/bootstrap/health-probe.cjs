@@ -36,7 +36,16 @@ function finish(code, message) {
 request = http.get({ hostname: "127.0.0.1", port, path, agent: false }, (response) => {
   response.resume();
   if (response.statusCode >= 200 && response.statusCode < 400) {
-    finish(0);
+    if (process.env.CETIRUN_INGRESS_MTLS === "true") {
+      try {
+        require("/etc/cetirun/ingress-health.cjs")((ready) =>
+          finish(ready ? 0 : 1, ready ? undefined : "managed ingress TLS is not current"));
+      } catch {
+        finish(1, "managed ingress TLS probe is unavailable");
+      }
+    } else {
+      finish(0);
+    }
   } else {
     finish(1, `HTTP ${response.statusCode}`);
   }
