@@ -150,6 +150,23 @@ def gateway_general_settings(values):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class NativeGatewayChartTests(unittest.TestCase):
+    def test_native_openclaw_avoids_ephemeral_node_compile_cache(self):
+        for native in (True, False):
+            with self.subTest(native=native):
+                values = native_values()
+                if not native:
+                    values["sandboxWorkload"] = None
+                    values["sidecarScope"]["enabled"] = True
+                objects = render(RUNTIME_CHART, values)
+                pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
+                doctor = next(container for container in pod["initContainers"] if container["name"] == "doctor")
+                for container in (pod["containers"][0], doctor):
+                    env = {item["name"]: item.get("value") for item in container.get("env", [])}
+                    if native:
+                        self.assertEqual(env["NODE_DISABLE_COMPILE_CACHE"], "1")
+                    else:
+                        self.assertNotIn("NODE_DISABLE_COMPILE_CACHE", env)
+
     def test_native_initializers_have_an_init_process_without_changing_their_work(self):
         values = native_values()
         objects = render(RUNTIME_CHART, values)

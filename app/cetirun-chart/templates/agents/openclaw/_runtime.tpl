@@ -140,6 +140,10 @@ OpenClaw init containers
       value: "/home/vibe/.openclaw"
     - name: OPENCLAW_CONFIG_PATH
       value: "/home/vibe/.openclaw/openclaw.json"
+    {{- if .Values.sandboxWorkload }}
+    - name: NODE_DISABLE_COMPILE_CACHE
+      value: "1"
+    {{- end }}
   volumeMounts:
     - name: data
       mountPath: /home/vibe
@@ -246,6 +250,10 @@ OpenClaw container env vars (agent-specific only)
 {{- define "cetirun.agent.openclaw.envVars" -}}
 - name: OPENCLAW_STATE_DIR
   value: "/home/vibe/.openclaw"
+{{- if .Values.sandboxWorkload }}
+- name: NODE_DISABLE_COMPILE_CACHE
+  value: "1"
+{{- end }}
 - name: BRAVE_API_KEY
   valueFrom:
     secretKeyRef:

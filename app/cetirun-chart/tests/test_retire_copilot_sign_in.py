@@ -62,6 +62,7 @@ if os.path.realpath(os.environ.get("OPENCLAW_CONFIG_PATH") or agent_config) == o
     fail("failed to resolve secrets from the active gateway snapshot; local resolution also failed")
 with open(os.environ["OPENCLAW_CONFIG_PATH"]) as handle:
     state.setdefault("configs", []).append(json.load(handle))
+state.setdefault("compile_cache_disabled", []).append(os.environ.get("NODE_DISABLE_COMPILE_CACHE"))
 if state.get("fail") and argv[:len(state["fail"])] == state["fail"]:
     fail("disk I/O error")
 if argv[:3] == ["models", "auth", "list"]:
@@ -329,6 +330,7 @@ def test_native_auth_commands_disable_unused_plugins_without_changing_agent_conf
     assert result.returncode == 0, result.stderr
     assert cli(home)["configs"]
     assert all(config["plugins"].get("enabled") is False for config in cli(home)["configs"])
+    assert all(value == "1" for value in cli(home)["compile_cache_disabled"])
     assert json.loads(active.read_text()) == original
     assert cli(home)["profiles"] == {}
     assert len(compactions(home)) == 2
