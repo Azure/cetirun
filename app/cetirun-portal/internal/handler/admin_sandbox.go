@@ -53,8 +53,8 @@ func toSandboxDTO(box *api.Sandbox) SandboxDTO {
 }
 
 func validateSandboxSpec(spec api.SandboxSpec) string {
-	if spec.Type != api.SandboxKata && spec.Type != api.SandboxGVisor {
-		return "type must be kata or gvisor"
+	if spec.Type != api.SandboxKata && spec.Type != api.SandboxGVisor && spec.Type != api.SandboxContainer {
+		return "type must be kata, gvisor or container"
 	}
 	for _, container := range []struct {
 		name      string

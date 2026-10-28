@@ -113,7 +113,7 @@ Persisted lifetime mode and owned namespace/HOME identities still govern recover
 and cleanup. Configuration changes do not migrate or adopt existing resources,
 and missing ownership evidence still holds execution.
 
-Kata HOME supports `ReadWriteOncePod` (RWOP) and `ReadWriteOnce` (RWO) when the
+Kata and container HOME support `ReadWriteOncePod` (RWOP) and `ReadWriteOnce` (RWO) when the
 selected mode is explicitly listed in the platform's `homeAccessModes`.
 Both use the same common-executor restart, retained suspension/resume and
 cleanup paths. Coordination still waits for observed workload shutdown and
@@ -242,7 +242,7 @@ ownership or discarding grant history.
 
 ### Scoped internal egress
 
-Common-executor Kata OpenClaw/Hermes lifetimes also support
+Common-executor Kata and container OpenClaw/Hermes lifetimes also support
 `AgentPolicy.spec.network.allowedInternalCIDRs` with explicit TCP/UDP ports
 (omitted protocol means TCP), for either registered HOME mode. They use the
 existing Cilium compiler, owned per-Agent policy and current-source Pod
@@ -420,17 +420,66 @@ topology, DNS/Gateway peers, and pinned RuntimeClass/StorageClass identities
 remain required; read-only root and ingress support must match the selected
 policy. The configuration harness allow-list supports `openclaw` and `hermes`;
 the earlier single-start executor itself remains OpenClaw-only.
-`enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
+For native Kata, `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
 FQDN support, Kubernetes access and Entra ID flags must be
 `false`; identity/token grant declarations are unsupported. These are not
 physical fencing or guest-external runtime-observation guarantees.
 
-Common-executor OpenClaw and Hermes can separately opt in to managed ingress
+Common-executor Kata and container OpenClaw/Hermes lifetimes can opt in to managed ingress
 mTLS with `mutualTLS: true`, per-Agent external certificate approvals and the
 registered Envoy endpoint. Retained single-start lifetimes still reject it.
 See [managed Agent ingress mTLS](../../site/content/en/docs/guides/agent-ingress-mtls.md)
 for certificate ownership, supported surfaces, source pins and stop/change/resume
 rotation. It does not enable outbound TLS inspection or FQDN blocking.
+### Ordinary-container backend
+
+An explicit `Sandbox.spec.type: container` runs OpenClaw or Hermes in ordinary
+containers (for example, runc), sharing the node kernel rather than a Kata VM.
+Omitted/null types still default to `kata`; gVisor's existing scope is unchanged.
+Container requires the same opt-in common executor, AgentPolicy/Team binding,
+current Pod admission, Gateway key/budget/spend handling, Cilium compiler and
+owned HOME lifecycle. It cannot use the held or retained single-start executor.
+There is no separate ungoverned runc deployment path.
+
+Register it under `registrations.container` and `platforms.container` in the
+trusted `platform.json`. Select `Capabilities.profile: native-single-start`,
+declare `hostResourceLimits: true` and `perContainerResourceLimits: true`, and
+name an explicit RuntimeClass whose UID and ordinary-container handler are
+pinned in `runtimeClasses`. `requirePerContainerResourceLimits` may also be
+`true`. Do not register a renamed Kata/gVisor class or infer availability from a
+RuntimeClass object: the platform owner must verify the configured handler,
+eligible nodes, resource enforcement, CSI and Cilium before declaring support.
+Missing, unavailable or changed registrations/UIDs/handlers prevent execution;
+there is no fallback to the node's default runtime.
+
+Agent and same-Pod helper requests/limits retain their Kubernetes semantics.
+Effective Pod CPU/memory accounts for regular and init containers; only the
+actual approved RuntimeClass overhead is included, with no automatic VM
+allowance. A normal runc class has no VM overhead. Separate platform auxiliary
+Deployments keep their existing role-specific chart and admission contracts.
+`guestExternalNetwork` retains its platform-network-control meaning (outside
+the workload); it is not a claim that a container has a guest VM.
+
+Both registered RWO and RWOP filesystem HOME modes reuse retained restart,
+suspend/resume and opt-in healthy-source CSI migration. RWO alone is not writer
+exclusion, and neither backend gains physical failover fencing. Runtime
+conversion is not introduced: choose a separate Sandbox and a new Agent for a
+different backend; active configuration reservations still reject runtime edits.
+Container uses the same supported CIDR/port/ingress policy subset as native Kata.
+Managed ingress mTLS uses the same approved endpoint and certificate contract
+described above; a runtime or capability flag alone does not authorize it.
+FQDN blocking, Entra ID and Kubernetes grants remain unsupported;
+their capability flags must stay `false`, as must `enforcementObservation` and
+`restrictiveFailure`.
+
+See the [ordinary-container configuration example](../../examples/native-sandbox/README.md#ordinary-container-backend).
+Offline tests exercise the same executor and served admission, not a running
+container runtime, Cilium dataplane, CSI driver or model provider.
+
+### Shared native network controls
+
+The following Kata registration examples also apply to container registrations
+under the `container` key, with independently verified runtime/network support.
 
 `network.blockedCIDRs` uses the registered address families and the existing
 guest-external deny baseline. `network.blockedPorts` additionally requires
@@ -2343,7 +2392,7 @@ to reconciliation or status writes.
 An empty or legacy-only fleet has successful collection and no fleet series;
 it is different from failed collection or an unavailable scrape target.
 
-Labels are bounded: `runtime` is `kata`, `gvisor` or `unknown`;
+Labels are bounded: `runtime` is `kata`, `gvisor`, `container` or `unknown`;
 `status` is `True`, `False` or `Unknown`;
 `reason` uses an allowlist and bounded fallback categories. Names, UIDs,
 namespaces, revisions, messages, provider errors and arbitrary values never

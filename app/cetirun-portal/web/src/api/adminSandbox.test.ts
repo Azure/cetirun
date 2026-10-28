@@ -29,9 +29,9 @@ describe("admin Sandbox defaults", () => {
     vi.stubGlobal("fetch", fetchMock);
   });
 
-  it.each([undefined, null, "kata"] as const)("preserves the request type %s and every resource field", async (type) => {
+  it.each([undefined, null, "kata", "gvisor", "container"] as const)("preserves the request type %s and every resource field", async (type) => {
     const body: SandboxUpsertRequest = { ...request, type };
-    const stored = { ...request, type: "kata", uid: "example-uid", resourceVersion: "42", ready: "Unknown", deleting: false };
+    const stored = { ...request, type: type ?? "kata", uid: "example-uid", resourceVersion: "42", ready: "Unknown", deleting: false };
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(stored), {
       status: 201, headers: { "content-type": "application/json" },
     }));
@@ -50,9 +50,9 @@ describe("admin Sandbox defaults", () => {
 
   it("keeps validation failures explicit instead of selecting a fallback runtime", async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
-      error: { code: "invalid_sandbox", message: "type must be kata or gvisor" },
+      error: { code: "invalid_sandbox", message: "type must be kata, gvisor or container" },
     }), { status: 400, headers: { "content-type": "application/json" } }));
-    await expect(createSandbox(request)).rejects.toThrow("type must be kata or gvisor");
+    await expect(createSandbox(request)).rejects.toThrow("type must be kata, gvisor or container");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

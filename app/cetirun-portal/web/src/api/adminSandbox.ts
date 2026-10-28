@@ -5,7 +5,7 @@ import { apiFetch } from "./fetch";
 
 export type SandboxResources = Record<"cpu" | "memory" | "ephemeral-storage", string>;
 export interface SandboxSpec {
-  type: "kata" | "gvisor";
+  type: "kata" | "gvisor" | "container";
   resources: Record<"agent" | "helpers", { requests: SandboxResources; limits: SandboxResources }>;
   storage: {
     home: { storageClassName: string; size: string; accessMode: "ReadWriteOncePod" | "ReadWriteOnce" };

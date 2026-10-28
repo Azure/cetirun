@@ -312,11 +312,16 @@ func finishMigration(t *testing.T, f *nativeSandboxFixture) {
 }
 
 func TestPlannedMigrationRetainsHOMEAcrossRepeatedMoves(t *testing.T) {
+	testPlannedMigrationRetainsHOME(t)
+}
+
+func testPlannedMigrationRetainsHOME(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, coordinated := range []bool{false, true} {
 			for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 				t.Run(fmt.Sprintf("%s/coordination=%t/%s", kind, coordinated, mode), func(t *testing.T) {
-					f := newMigrationFixture(t, kind, coordinated, withNativeHomeAccessMode(t, mode))
+					f := newMigrationFixture(t, kind, coordinated,
+						append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)...)
 					assertNativeHomeAccessMode(t, f, mode)
 					initial := reconciledExpectationForTest(t, f)
 					key := f.current(t).Status.AIGateway.KeyID
