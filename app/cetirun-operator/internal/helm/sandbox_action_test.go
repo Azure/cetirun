@@ -100,6 +100,7 @@ func TestSandboxStageDigestIsReadOnlyAndDetectsReleaseDrift(t *testing.T) {
 type sandboxActionStorage struct {
 	driver.Driver
 	writes        int
+	queryError    error
 	createError   error
 	deployedError error
 }
@@ -141,6 +142,9 @@ func (s *sandboxActionStorage) Get(key string) (*release.Release, error) {
 }
 
 func (s *sandboxActionStorage) Query(labels map[string]string) ([]*release.Release, error) {
+	if s.queryError != nil {
+		return nil, s.queryError
+	}
 	records, err := s.Driver.Query(labels)
 	out := make([]*release.Release, 0, len(records))
 	for _, rel := range records {

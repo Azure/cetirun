@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
@@ -75,6 +76,19 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	}
 	if capabilities.BlockedFQDNs {
 		return platform, fmt.Errorf("%w: the selected Cilium adapter cannot declare full FQDN blocking", ErrUnsupportedControl)
+	}
+	if capabilities.MutualTLS && capabilities.Profile != sandbox.ProfileNativeSingleStart {
+		return platform, fmt.Errorf("%w: this adapter has no qualified ingress mTLS implementation", ErrUnsupportedControl)
+	}
+	if platform.IngressMTLS != nil {
+		if capabilities.Profile != sandbox.ProfileNativeSingleStart || !capabilities.MutualTLS {
+			return platform, fmt.Errorf("%w: mTLS registration requires native endpoint support", ErrUnsupportedControl)
+		}
+		if err := platform.IngressMTLS.Validate(); err != nil {
+			return platform, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+	} else if capabilities.MutualTLS {
+		return platform, fmt.Errorf("%w: mTLS support requires explicit certificate and endpoint registration", ErrUnavailable)
 	}
 	if !adapter.Available {
 		return platform, fmt.Errorf("%w: the registered network adapter is unavailable", ErrUnavailable)
@@ -330,7 +344,7 @@ func ValidatePlatform(platform Platform, capabilities sandbox.Capabilities) erro
 	return err
 }
 
-func compileNetwork(input CompileInput) (NetworkPlan, error) {
+func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPlan, error) {
 	policy, capabilities, topology := input.Resolution.AgentPolicy, input.Resolution.Capabilities, input.Platform.Topology
 	plan := NetworkPlan{
 		Adapter: input.Platform.Adapter.Name, IngressMode: policy.Network.Ingress.Mode,
@@ -563,6 +577,12 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		}
 		var ingressPeers []Peer
 		for _, destination := range topology.Ingress {
+			if len(tlsPlan) != 0 && tlsPlan[0] != nil {
+				destination, err = mtlsDestination(destination, *tlsPlan[0])
+				if err != nil {
+					return plan, err
+				}
+			}
 			if destination.Peer.Namespace == "" {
 				return plan, fmt.Errorf("%w: authenticated ingress requires protected managed Gateway identities", ErrUnsupportedControl)
 			}

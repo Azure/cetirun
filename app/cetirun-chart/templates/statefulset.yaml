@@ -72,6 +72,9 @@ spec:
             {{- end }}
           image: "{{ include "cetirun.image" . }}"
           imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
+          {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+          command: ["/bin/bash", "/etc/cetirun/ingress-entrypoint.sh"]
+          {{- end }}
           {{- with (include "cetirun.agent.args" .) }}
           {{- . | nindent 10 }}
           {{- end }}
@@ -88,6 +91,12 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+            - name: CETIRUN_INGRESS_MTLS
+              value: "true"
+            - name: CETIRUN_INGRESS_SERVER_NAME
+              value: {{ printf "agent-%.32s.%s.%s.svc.cluster.local" (sha256sum (index .Values.podAnnotations "cetirun.microsoft.com/agent-uid")) (include "cetirun.fullname" .) .Release.Namespace | quote }}
+            {{- end }}
             {{- include "cetirun.memory.env" . | nindent 12 }}
             - name: NODE_ENV
               value: "production"

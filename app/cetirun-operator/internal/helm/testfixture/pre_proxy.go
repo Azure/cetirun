@@ -14,6 +14,12 @@ import (
 // laterAdditions are chart changes made after the proxy hook, removed before
 // the original bytes are checked.
 var laterAdditions = map[string][]string{
+	"templates/_sandbox.tpl": {`{{- if $s.ingressMTLS -}}
+{{- if or (not $reconciled) (include "cetirun.tailscaleEnabled" .) (gt (int .Values.msteamsWebhookPort) 0) -}}
+{{- fail "managed ingress mTLS requires common built-in API/UI/terminal/desktop routing without alternate ingress" -}}
+{{- end -}}
+{{- end -}}
+`},
 	"agents/openclaw/config/native.tpl": {`{{- /* Portal sign-in: the ingress lets only the Agent's owner through, after
    their Portal sign-in, and passes their email from that sign-in; the Istio
    sidecar is the Agent's only proxy. OpenClaw then takes the owner from that
@@ -34,7 +40,8 @@ var laterAdditions = map[string][]string{
 {{- $_ := set $config "gateway" $gateway }}
 {{- end }}
 `},
-	"values.schema.json": {`                "portalSignIn": {
+	"values.schema.json": {`                "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
+`, `                "portalSignIn": {
                     "type": "object",
                     "description": "Sign the owner in to the Control UI with their Portal sign-in (OpenClaw trusted-proxy mode)",
                     "additionalProperties": false,

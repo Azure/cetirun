@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import os
 import re
 import sys
@@ -39,6 +40,7 @@ COPILOT_RETIRED_MARKER = Path(".hermes/.cetirun-copilot-sign-in-retired")
 COPILOT_TOKEN_ENV = "COPILOT_GITHUB_TOKEN"
 COPILOT_TOKEN_CACHE = Path(".hermes/.copilot_jwt.json")
 RESERVED_ENV = ("CETIRUN_AI_GATEWAY",)
+INGRESS_ENV = ("API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT")
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 
 
@@ -143,6 +145,63 @@ def remove_gateway(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def reserve_ingress_listeners(config: dict[str, Any], env: dict[str, str]) -> None:
+    """Keep only the Pod's listener settings authoritative, not HOME overrides."""
+    # The native loader merges all three YAML spellings over gateway.json.
+    for path in (("platforms", "api_server"), ("gateway", "platforms", "api_server"), ("gateway", "api_server")):
+        api = config
+        for name in path:
+            if not isinstance(api, dict):
+                raise ValueError("invalid API platform configuration")
+            child = api.get(name)
+            if child is None:
+                api = None
+                break
+            if not isinstance(child, dict):
+                raise ValueError("invalid API platform configuration")
+            # deepcopy preserves YAML aliases. Detach each managed path before
+            # replacing children or removing keys shared with user preferences.
+            api[name] = child.copy()
+            api = api[name]
+        if api is not None:
+            if not isinstance(api, dict):
+                raise ValueError("invalid API platform configuration")
+            # Hermes promotes flat adapter settings into extra, with extra
+            # taking precedence; both spellings must yield to the Pod binding.
+            for name in ("enabled", "host", "port"):
+                api.pop(name, None)
+            extra = api.get("extra")
+            if extra is not None:
+                if not isinstance(extra, dict):
+                    raise ValueError("invalid API adapter configuration")
+                extra = extra.copy()
+                api["extra"] = extra
+                for name in ("host", "port", "_enabled_explicit"):
+                    extra.pop(name, None)
+    for name in INGRESS_ENV:
+        env.pop(name, None)
+
+
+def validate_ingress_environment() -> None:
+    port = os.environ.get("API_SERVER_PORT", "")
+    if (
+        os.environ.get("CETIRUN_INGRESS_MTLS") != "true"
+        or os.environ.get("API_SERVER_ENABLED") != "true"
+        or os.environ.get("API_SERVER_HOST") != "127.0.0.1"
+        or not re.fullmatch(r"[0-9]+", port)
+        or not 1024 <= int(port) <= 65535
+        or int(port) in (7681, 9119, 15440, 15443, 15444, 15445)
+    ):
+        raise ValueError("authoritative ingress binding is unavailable")
+
+
+def without_ingress_environment(text: str) -> str:
+    return "".join(
+        line for line in text.splitlines(keepends=True)
+        if line.strip().split("=", 1)[0] not in INGRESS_ENV
+    )
+
+
 def copilot_sign_in_pending(root: Path) -> bool:
     """Whether this HOME's in-agent GitHub Copilot sign-in is still to be removed."""
     try:
@@ -172,8 +231,12 @@ def main() -> int:
     parser.add_argument("--env", type=Path)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--gateway-key-env", help="on the AI Gateway: the variable carrying the Agent's key")
+    parser.add_argument("--ingress-mtls", action="store_true", help="reserve the managed API listener bindings")
+    parser.add_argument("--listeners-only", action="store_true", help="enforce mTLS listener authority before a supervised gateway start")
     args = parser.parse_args()
-    if not args.check and (args.config is None or args.env is None):
+    if args.listeners_only and (not args.ingress_mtls or args.check or args.config is not None or args.env is not None or args.gateway_key_env is not None):
+        parser.error("--listeners-only requires only --home and --ingress-mtls")
+    if not args.check and not args.listeners_only and (args.config is None or args.env is None):
         parser.error("--config and --env are required unless --check is used")
     if args.gateway_key_env is not None and not ENV_NAME.fullmatch(args.gateway_key_env):
         parser.error("--gateway-key-env must name an environment variable")
@@ -185,9 +248,31 @@ def main() -> int:
         env_path = check_destination(root, Path(".hermes/.env"))
         existing_config = read_yaml(config_path)
         existing_env = read_env(env_path)
-        if args.check:
+        legacy_path, legacy, existing_legacy = None, None, None
+        if args.ingress_mtls:
+            legacy_path = check_destination(root, Path(".hermes/gateway.json"))
+            if legacy_path.exists():
+                existing_legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+                if not isinstance(existing_legacy, dict):
+                    raise ValueError("invalid legacy gateway configuration")
+                legacy = copy.deepcopy(existing_legacy)
+                reserve_ingress_listeners(legacy, {})
+        if args.check or args.listeners_only:
             if not config_path.is_file() or not env_path.is_file():
                 raise ValueError("required configuration is missing")
+            if args.ingress_mtls:
+                config, env = copy.deepcopy(existing_config), dict(existing_env)
+                reserve_ingress_listeners(config, env)
+                if args.check and (config != existing_config or env != existing_env or legacy != existing_legacy):
+                    raise ValueError("persisted ingress overrides remain")
+                if args.listeners_only:
+                    validate_ingress_environment()
+                    if config != existing_config:
+                        replace_file(config_path, yaml.safe_dump(config, sort_keys=False))
+                    if env != existing_env:
+                        replace_file(env_path, without_ingress_environment(env_path.read_text(encoding="utf-8")))
+                    if legacy != existing_legacy:
+                        replace_file(legacy_path, json.dumps(legacy, indent=2) + "\n")
             return 0
         if not args.config.is_file() or not args.env.is_file():
             raise ValueError("required input is missing")
@@ -219,10 +304,14 @@ def main() -> int:
             # OPENAI_API_KEY.
             for name in (args.gateway_key_env, *RESERVED_ENV):
                 existing_env.pop(name, None)
+        if args.ingress_mtls:
+            reserve_ingress_listeners(desired_config, existing_env)
         config_text = yaml.safe_dump(desired_config, sort_keys=False)
         env_text = "".join(f"{key}={value}\n" for key, value in existing_env.items())
         replace_file(config_path, config_text)
         replace_file(env_path, env_text)
+        if legacy != existing_legacy:
+            replace_file(legacy_path, json.dumps(legacy, indent=2) + "\n")
         if retire:
             retire_copilot_sign_in(root)
         return 0
