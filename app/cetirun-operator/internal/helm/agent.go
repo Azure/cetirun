@@ -188,16 +188,20 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		return nil, err
 	}
 	descriptor := harness.Describe()
-	if descriptor.Type == "custom" {
-		if input[sandboxworkload.ValuesKey] != nil {
-			return prepareSandboxCustomChart(chrt, input)
-		}
-		// Custom Agents are compiled through the common Sandbox contract.  The
+	if descriptor.Type == "custom" && input[sandboxworkload.ValuesKey] == nil {
+		// Custom Agents are compiled through the common Sandbox contract. The
 		// former CustomBindings renderer carried an independent model binding and
 		// could therefore bypass the Team-selected Gateway.
 		return nil, fmt.Errorf("Custom requires common Sandbox execution")
 	}
-	if memory, configured, err := resolveMemory(input, chrt, "/home/vibe"); err != nil {
+	memoryHome := "/home/vibe"
+	if descriptor.Type == "custom" {
+		// The protected contribution is the compiler-owned source for Custom's
+		// Harness HOME. Resolve Memory before rendering so its typed options are
+		// applied to Custom as well as native Agents.
+		memoryHome = text(object(object(input["runtime"])["agent"])["home"])
+	}
+	if memory, configured, err := resolveMemory(input, chrt, memoryHome); err != nil {
 		return nil, err
 	} else if configured {
 		inputCopy := make(map[string]any, len(input))
@@ -210,6 +214,9 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 			inputCopy["memoryContext"] = memory.Values()
 		}
 		input = inputCopy
+	}
+	if descriptor.Type == "custom" {
+		return prepareSandboxCustomChart(chrt, input)
 	}
 	profile, err := loadRuntimeProfile(chrt, descriptor, request.Registry)
 	if err != nil {

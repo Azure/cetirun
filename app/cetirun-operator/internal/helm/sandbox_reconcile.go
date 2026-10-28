@@ -50,7 +50,12 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			stateful.Spec.ServiceName != stateful.Name || stateful.Spec.Selector == nil {
 			return fmt.Errorf("reconciled Sandbox must use the owned Agent workload and existing HOME")
 		}
-		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image); err != nil {
+		// Memory enablement was resolved from typed platform options before this
+		// protected render and is sealed with its chart values. Do not infer it
+		// from the rendered Pod, which is the object being validated.
+		memoryValues, _ := p.Values["memoryContext"].(map[string]any)
+		memoryEnabled := memoryValues["enabled"] == true
+		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image, memoryEnabled); err != nil {
 			return err
 		}
 		if request := input.PlannedMigration; request != nil {

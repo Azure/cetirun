@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	corev1 "k8s.io/api/core/v1"
@@ -375,7 +376,7 @@ func ValidateRenderedPod(pod *corev1.Pod, workload RenderedWorkload, owner metav
 	return nil
 }
 
-func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, image string) error {
+func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, image string, memoryEnabled bool) error {
 	spec := template.Spec
 	if !b.input.Reconciled || len(spec.Containers) == 0 || spec.Containers[0].Image != image ||
 		ptr.Deref(spec.RuntimeClassName, "") != b.input.RuntimeClass.Name ||
@@ -434,14 +435,14 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 		}
 	}
 	if b.input.AgentType == "custom" {
-		if err := b.validateCustomReconciledTemplate(&spec); err != nil {
+		if err := b.validateCustomReconciledTemplate(&spec, memoryEnabled); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec) error {
+func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEnabled bool) error {
 	custom := b.input.CustomAgent
 	if custom == nil || b.input.GatewayKey == nil || len(spec.Containers) == 0 || len(spec.InitContainers) == 0 {
 		return fmt.Errorf("reconciled Custom runtime lacks its approved Harness or AI Gateway identity")
@@ -492,7 +493,9 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec) error {
 		{Name: "data", MountPath: custom.Home}, {Name: "tmp", MountPath: "/tmp"},
 		{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
 		{Name: b.input.SkillsMode.volume(skillsIdentity(b.input.Skills)).Name, MountPath: skillsPath(b.input), ReadOnly: true},
-		{Name: "memory-assets", MountPath: "/opt/cetirun-memory", ReadOnly: true},
+	}
+	if memoryEnabled {
+		mainMounts = append(mainMounts, runtimebindings.MemoryMounts()...)
 	}
 	mainMounts = append(mainMounts, b.input.Controls.VolumeMounts...)
 	initMounts := []corev1.VolumeMount{

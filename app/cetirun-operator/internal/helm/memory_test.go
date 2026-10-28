@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
@@ -18,6 +19,8 @@ import (
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 func TestMemoryOptionsPreserveLegacyCharts(t *testing.T) {
@@ -68,6 +71,220 @@ func TestMemoryOptionsResolveSelectedChartAppVersion(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSandboxCustomMemoryOptionsFollowPlatformConfiguration(t *testing.T) {
+	// PrepareSandboxChart renders the complete protected Custom workload before
+	// returning. Exercise every Harness HTTP mode against that real rendering.
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+	digest := "registry.example.com/memory@sha256:" + strings.Repeat("a", 64)
+	chatPort := int32(8080)
+	for _, tc := range []struct {
+		name    string
+		port    *int32
+		webUI   bool
+		options MemoryOptions
+		want    string
+	}{
+		{
+			name: "headless digest override", options: MemoryOptions{Enabled: true, Image: digest}, want: digest,
+		},
+		{
+			name: "chat selected chart appVersion", port: &chatPort,
+			options: MemoryOptions{Enabled: true, Registry: "registry.example.com/staging"},
+			want:    runtimebindings.DefaultMemoryImage("registry.example.com/staging", "7.8.9"),
+		},
+		{
+			name: "web ui disabled", port: &chatPort, webUI: true, options: MemoryOptions{Enabled: false},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chart := testChart(t)
+			chart.Metadata.AppVersion = "7.8.9"
+			platform, bundle := customMemorySandboxInput(t, tc.port, tc.webUI)
+			platform["memoryOptions"] = tc.options
+			before := memoryPlatformJSON(t, platform)
+
+			prepared, err := PrepareSandboxChart(chart, platform, nil, bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after := memoryPlatformJSON(t, platform); after != before {
+				t.Fatal("Sandbox preparation modified the platform-owned input")
+			}
+			if _, present := prepared.Values["memoryOptions"]; present {
+				t.Fatal("internal Memory options leaked into rendered Helm values")
+			}
+			// SandboxTemplate is extracted from the rendered StatefulSet after its
+			// complete protected-render validation, rather than from input values.
+			template, err := prepared.SandboxTemplate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			memory := object(prepared.Values["memoryContext"])
+			assets := slices.IndexFunc(template.Spec.InitContainers, func(container corev1.Container) bool {
+				return container.Name == "memory-assets"
+			})
+			mounted := slices.ContainsFunc(template.Spec.Containers[0].VolumeMounts, func(mount corev1.VolumeMount) bool {
+				return mount.Name == "memory-assets" && mount.MountPath == runtimebindings.MemoryAssetsDir && mount.ReadOnly
+			})
+			volume := slices.ContainsFunc(template.Spec.Volumes, func(volume corev1.Volume) bool {
+				return volume.Name == "memory-assets"
+			})
+			environment := slices.ContainsFunc(template.Spec.Containers[0].Env, func(value corev1.EnvVar) bool {
+				return strings.HasPrefix(value.Name, "CETIRUN_MEMORY_")
+			})
+			if !tc.options.Enabled {
+				if memory["enabled"] != false || assets >= 0 || volume || mounted || environment {
+					t.Fatalf("disabled Memory rendered assets, volumes, mounts or environment: values=%#v assets=%d volume=%t mounted=%t environment=%t", memory, assets, volume, mounted, environment)
+				}
+				changed := template.DeepCopy()
+				changed.Spec.Containers[0].VolumeMounts = append(changed.Spec.Containers[0].VolumeMounts, runtimebindings.MemoryMounts()...)
+				if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false); err == nil {
+					t.Fatal("disabled Memory accepted its main asset mount")
+				}
+				return
+			}
+			if memory["enabled"] != true || memory["image"] != tc.want || memory["home"] != "/home/worker" ||
+				assets < 0 || template.Spec.InitContainers[assets].Image != tc.want || !mounted {
+				t.Fatalf("Custom Memory did not use the platform binding: values=%#v assets=%d mounted=%t", memory, assets, mounted)
+			}
+			changed := template.DeepCopy()
+			changed.Spec.Containers[0].VolumeMounts = slices.DeleteFunc(changed.Spec.Containers[0].VolumeMounts, func(mount corev1.VolumeMount) bool {
+				return mount.Name == "memory-assets"
+			})
+			if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, true); err == nil {
+				t.Fatal("enabled Memory accepted a missing main asset mount")
+			}
+			assertCustomMemoryFinalPodSealed(t, prepared)
+		})
+	}
+
+	for name, options := range map[string]any{
+		"untyped": map[string]any{"Enabled": true},
+		"mutable": MemoryOptions{Enabled: true, Image: "registry.example.com/memory:latest"},
+	} {
+		t.Run("reject "+name, func(t *testing.T) {
+			platform, bundle := customMemorySandboxInput(t, nil, false)
+			platform["memoryOptions"] = options
+			before := memoryPlatformJSON(t, platform)
+			if _, err := PrepareSandboxChart(testChart(t), platform, nil, bundle); err == nil {
+				t.Fatalf("%s Memory options were accepted", name)
+			}
+			if after := memoryPlatformJSON(t, platform); after != before {
+				t.Fatal("rejected Sandbox preparation modified the platform-owned input")
+			}
+		})
+	}
+}
+
+func customMemorySandboxInput(t *testing.T, port *int32, webUI bool) (map[string]any, *w.Bundle) {
+	t.Helper()
+	fixture := testfixture.New("openclaw")
+	input := fixture.Input
+	input.AgentType, input.Reconciled, input.Helpers.Doctor = "custom", true, false
+	input.Resolution.AgentPolicy.Harnesses.Allowed = append(input.Resolution.AgentPolicy.Harnesses.Allowed, api.AgentTypeCustom)
+	input.GatewayAPIBase = "https://gateway.example.test/v1"
+	custom := &w.CustomAgent{
+		Image: "registry.example.test/worker@sha256:" + strings.Repeat("b", 64), Username: "worker", Home: "/home/worker",
+		Port: port, WebUI: webUI,
+		Environment: []w.CustomEnvironment{
+			{Name: "HOME", Value: "/home/worker"},
+			{Name: "OPENAI_BASE_URL", Value: input.GatewayAPIBase},
+			{Name: "OPENAI_API_KEY", CredentialSlot: "model"},
+		},
+	}
+	if port != nil {
+		custom.Environment = append(custom.Environment, w.CustomEnvironment{Name: "PORT", Value: "8080"})
+		custom.Ports = []w.CustomPort{{Name: "http", Number: *port}}
+		custom.HTTP = &w.CustomHTTP{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz"}
+		if webUI {
+			custom.WebBasePath, custom.WebInstance = "/ui/example/", "agent-uid"
+			custom.Environment = append(custom.Environment,
+				w.CustomEnvironment{Name: "CETIRUN_WEB_BASE_PATH", Value: custom.WebBasePath},
+				w.CustomEnvironment{Name: "CETIRUN_WEB_INSTANCE", Value: custom.WebInstance})
+		} else {
+			custom.HTTP.ChatPath, custom.HTTP.ModelsPath = "/v1/chat/completions", "/v1/models"
+		}
+	}
+	input.CustomAgent = custom
+	bundle, err := w.Build(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform := sampleInput("custom", "openai", false)
+	platform["agentRequest"] = map[string]any{"type": "custom"}
+	platform["secrets"] = map[string]any{
+		"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model", "apiBase": input.GatewayAPIBase,
+	}
+	platform["aiGateway"] = map[string]any{
+		"enabled": true, "keySecretName": input.GatewayKey.Name, "keySecretKey": "api-key",
+		"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
+	}
+	return platform, bundle
+}
+
+func memoryPlatformJSON(t *testing.T, values map[string]any) string {
+	t.Helper()
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func assertCustomMemoryFinalPodSealed(t *testing.T, prepared *PreparedRelease) {
+	t.Helper()
+	expectation, err := prepared.ReconcileExpectation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := slices.IndexFunc(expectation.Workloads, func(workload w.RenderedWorkload) bool {
+		return workload.Kind == "StatefulSet"
+	})
+	if index < 0 {
+		t.Fatal("reconciled Custom Memory has no retained workload expectation")
+	}
+	workload := expectation.Workloads[index]
+	owner := metav1.OwnerReference{
+		APIVersion: "apps/v1", Kind: "StatefulSet", Name: workload.Identity.Name, UID: "custom-statefulset-uid",
+		Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
+	}
+	pod := &corev1.Pod{ObjectMeta: *workload.Template.ObjectMeta.DeepCopy(), Spec: *workload.Template.Spec.DeepCopy()}
+	pod.Name = workload.Identity.Name + "-0"
+	pod.OwnerReferences = []metav1.OwnerReference{owner}
+	pod.Labels = map[string]string{}
+	for key, value := range workload.Template.Labels {
+		pod.Labels[key] = value
+	}
+	pod.Labels["statefulset.kubernetes.io/pod-name"], pod.Labels["apps.kubernetes.io/pod-index"], pod.Labels["controller-revision-hash"] = pod.Name, "0", "example-revision"
+	pod.Spec.Hostname, pod.Spec.Subdomain, pod.Spec.Overhead = pod.Name, workload.Identity.Name, workload.Overhead.DeepCopy()
+	if err := w.ValidateRenderedPod(pod, workload, owner, "example-revision"); err != nil {
+		t.Fatalf("approved Custom Memory Pod was rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*corev1.Pod){
+		"removed init": func(pod *corev1.Pod) {
+			pod.Spec.InitContainers = slices.DeleteFunc(pod.Spec.InitContainers, func(container corev1.Container) bool {
+				return container.Name == "memory-assets"
+			})
+		},
+		"changed image": func(pod *corev1.Pod) {
+			for index := range pod.Spec.InitContainers {
+				if pod.Spec.InitContainers[index].Name == "memory-assets" {
+					pod.Spec.InitContainers[index].Image = "registry.example.com/other:1.2.3"
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := pod.DeepCopy()
+			mutate(changed)
+			if err := w.ValidateRenderedPod(changed, workload, owner, "example-revision"); err == nil {
+				t.Fatalf("final Pod with %s Memory assets was accepted", name)
+			}
+		})
 	}
 }
 
