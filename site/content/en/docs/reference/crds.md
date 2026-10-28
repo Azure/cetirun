@@ -54,7 +54,7 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.image` | Required for Custom; once set, cannot be cleared. Built-in defaults are pinned from the selected chart |
 | `agent.registrySecretRef.name` | Optional Portal-managed source Secret reference; no namespace, key, or inline credentials |
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
-| `agent.port` | HTTP port, 1ΓÇô65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
+| `agent.port` | HTTP port, 1–65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
 | `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
 | `team` | Optional for legacy Agents; required for policy binding. Portal Gateway creation still requires an existing Team |
 | `sandboxRef` | Opt into a Team-permitted Sandbox; omitted for legacy execution |
@@ -62,7 +62,7 @@ migration. Retention does not protect against a schema downgrade.
 | `modelAccess.sharedModels` | Explicit request for policy-bound Agents; defaults on for legacy Agents |
 | `modelAccess.githubCopilot` | Explicit request for policy-bound Agents; defaults on for legacy Agents when the deployment offers Copilot |
 | `modelAccess.monthlyBudgetUSD` | Optional LiteLLM USD monthly budget override, bounded by the policy maximum |
-| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team Γê¬ add) ΓêÆ remove` |
+| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team ∪ add) − remove` |
 | `helm.version` | Agent chart pin; backfilled from the operator default on first reconciliation |
 | `helm.values` | Map-shaped top-level entries; see admission notes below |
 | `suspended` | Request zero replicas and removal of the instance VirtualService; false when omitted |
@@ -278,7 +278,7 @@ returns these fields along with `uid` and `resourceVersion`; updates and deletes
 must send those two version fields. A stale version returns `409 Conflict`,
 and missing version fields return `428 Precondition Required`.
 
-The **Admin ΓåÆ Sandboxes** pages manage the complete Sandbox configuration:
+The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
 runtime type, Agent and helper resource requests/limits, HOME storage, and
 scratch size. They use these admin-only endpoints:
 

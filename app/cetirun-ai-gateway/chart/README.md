@@ -37,8 +37,22 @@ providerCredentials:
   existingSecret: gateway-provider-keys
 ```
 
-`<registry>` is where the CetiRun images and charts are published. The master
-key, salt key and console password are generated; see [Credentials](#credentials).
+`<registry>` is the registry you publish the chart and its image to, and
+`<version>` their version. Build and push both from a clone of the repository,
+on a machine with Docker Buildx and Helm, after signing in to the registry with
+`docker login` and `helm registry login`:
+
+```bash
+REGISTRY=<registry> PUSH=true bash scripts/ai-gateway-docker-build.sh
+REGISTRY=<registry> bash scripts/ai-gateway-helm-release.sh
+```
+
+Both take `<version>` from the repository's release version unless `VERSION`
+is set, and the chart runs the image of its own version.
+`make publish REGISTRY=<registry>` publishes them together with every other
+CetiRun image and chart. The master key, salt key and console password are
+generated; see [Credentials](#credentials). To call the Gateway, see
+[Calling the Gateway](#calling-the-gateway).
 
 The model list can be empty. Standalone Gateways can add models through the
 console later. CetiRun AgentPolicy shared-model grants require chart-configured
@@ -1033,6 +1047,88 @@ length moved it up a tier, and, with a model classifier, `classifier_model` and
 `classifier_cost`. [Measuring the routers](#measuring-the-routers) has queries
 over them.
 
+#### Choosing a classifier
+
+`complexity_router_config.classifier_type` sets what decides the tier:
+
+| `classifier_type` | Decides by | Set |
+| --- | --- | --- |
+| `heuristic`, the default | Scoring English keywords and the request's length, without a model call | Nothing |
+| `llm` | Asking a chat model configured here to pick the tier | `classifier_llm_config.model` |
+| `jev` | Asking a decision model configured here, such as Microsoft-Decision-1, to pick the tier | `jev_classifier_config.deployment_name` |
+
+A model classifier makes one call for each request, which the request waits
+for and which is charged to the caller's key; the request log records it as a
+line of its own. A small, fast chat model is enough for `llm`:
+
+```yaml
+  - model_name: auto-llm
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        classifier_type: llm
+        classifier_llm_config:
+          model: gpt-mini
+        tiers:
+          SIMPLE: gpt-mini
+          MEDIUM: gpt-main
+          COMPLEX: gpt-main
+          REASONING: gpt-main
+      complexity_router_default_model: gpt-main
+```
+
+A decision model is a model entry of its own whose `model_info.mode` is
+`evaluation`. LiteLLM calls it through its Decisions API, the operator offers
+it to no Agent, and the guard refuses a request that asks it for a
+conversation (see [The guard callback](#the-guard-callback)).
+Microsoft-Decision-1 is deployed in an Azure AI Foundry resource, not an Azure
+OpenAI one, and LiteLLM reaches it with the `azure_ai` provider at the
+resource's endpoint. It needs a price like any model; `base_model` names
+LiteLLM's:
+
+```yaml
+  - model_name: decision-1
+    litellm_params:
+      model: azure_ai/my-decision-deployment
+      api_base: https://example.services.ai.azure.com
+      api_key: os.environ/AZURE_AI_FOUNDRY_KEY
+    model_info:
+      mode: evaluation
+      base_model: azure_ai/Microsoft-Decision-1
+  - model_name: auto-decision
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        classifier_type: jev
+        jev_classifier_config:
+          deployment_name: decision-1
+        tiers:
+          SIMPLE: gpt-mini
+          MEDIUM: gpt-main
+          COMPLEX: gpt-main
+          REASONING: gpt-main
+      complexity_router_default_model: gpt-main
+```
+
+Measured with this pair and a Microsoft-Decision-1 deployment, classifier calls
+took about half a second and cost a few millionths of a dollar each with a
+short prompt; they grow with the caller's system prompt, which the classifier
+reads whole. Keep LiteLLM's own instructions for it: a router that sets
+`jev_classifier_config.instructions` has a classifier prompt of its own, which
+LiteLLM limits; see "One router per licensed capability" above.
+
+When a model classifier fails, or does not answer within its `timeout_ms`,
+3000 by default, the router classifies the request with `heuristic` instead,
+without an error, and after a timeout skips the classifier for 30 seconds.
+`routing_cause` in the request log and the response header
+`x-litellm-complexity-router-cause` show which one decided: `llm_classifier`
+or `jev_classifier`, against `heuristic_scorer` or `reasoning_override` for
+the local scorer.
+
 #### A router across providers
 
 A router's tiers can mix providers: here GPT models on Azure OpenAI for the
@@ -1257,6 +1353,42 @@ that makes the console page say it is disabled and turns off SSO sign-in, but
 the sign-in endpoint still answers: posting the master key to `/login` returned
 a console session. That grants nothing the master key does not already grant,
 so treat the setting as hiding the console rather than removing it.
+
+### Calling the Gateway
+
+Clients in the cluster reach the Gateway at its Service,
+`http://<release>-cetirun-ai-gateway.<namespace>.svc:4000`. The chart creates
+no Ingress or load balancer: expose the Service yourself, with TLS, to clients
+outside the cluster. For a first test, the port-forward above is enough.
+
+Give each client a virtual key of its own, created with the master key, with
+the models it may use and a budget; see
+[Give agent keys model routes only](#give-agent-keys-model-routes-only) for
+`allowed_routes`. For a release called `gateway`:
+
+```bash
+MASTER_KEY="$(kubectl get secret gateway-cetirun-ai-gateway-auth \
+  -o jsonpath='{.data.master-key}' | base64 -d)"
+curl -s http://localhost:4000/key/generate \
+  -H "Authorization: Bearer ${MASTER_KEY}" -H 'Content-Type: application/json' \
+  -d '{"models": ["auto", "gpt-4o"], "max_budget": 20,
+       "allowed_routes": ["llm_api_routes", "/v1/models", "/models"]}'
+```
+
+The response's `key` is the client's key. An OpenAI-compatible client takes the
+Gateway's address with `/v1` and the key, for example as `OPENAI_BASE_URL` and
+`OPENAI_API_KEY`, and names a model from `models`, a router included:
+
+```bash
+curl -si http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer ${CLIENT_KEY}" -H 'Content-Type: application/json' \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
+```
+
+A response through a router carries how it was routed:
+`x-litellm-complexity-router-tier` names the tier, `-cause` what decided it,
+and `-score` the heuristic score, where there is one. The request log has the
+model that answered; see [Smart routing](#smart-routing).
 
 ### Revoking a key takes up to a minute to reach every replica
 

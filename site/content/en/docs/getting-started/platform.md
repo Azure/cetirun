@@ -107,6 +107,27 @@ The operator chart declares `imagePullSecrets` but does not render
 it into its Deployment. That value cannot supply operator image-pull
 credentials; verify the actual node/service-account pull path separately.
 
+### Publish the images and charts
+
+Build the images and charts from the revision you install, and push them to
+your registry. On a machine with Docker Buildx, Helm, Python 3 and Bash, signed
+in to the registry with `docker login` and `helm registry login`, from a clone
+of the repository:
+
+```bash
+make publish REGISTRY=registry.example.com
+```
+
+It builds and pushes every CetiRun image, the operator, Portal, AI Gateway,
+OpenClaw and Hermes ones among them, and every chart, the platform and Agent
+(`helm/cetirun`) charts among them, all under the repository's release version
+from `app/cetirun-chart/Chart.yaml`. It then pulls each chart back to check
+it. The platform chart takes its images and the Agent chart from the registry
+in `global.registry`, at that version, so the values below need no image tags.
+The OpenClaw image's build runs an installer that needs the `openat2` system
+call, which the builders of Azure Container Registry Tasks refuse: build on a
+Docker host.
+
 ### Example: Azure Container Registry
 
 With the artifacts in an Azure Container Registry, these steps cover the
@@ -253,28 +274,45 @@ uninstall; Portal and Operator manage its per-Agent credentials at runtime.
 The platform chart does not install Istio, certificates, external credentials,
 Agents, or retained Agent data.
 
-Prepare a private values file with tested image and runtime-chart versions,
-for example:
+Prepare a private values file. With the artifacts published as above, for
+example:
 
 ```yaml
+global:
+  # Images and the Agent chart, at the chart's own version.
+  registry: registry.example.com
 cetirun-operator:
-  image:
-    repository: registry.example.com/cetirun-operator
-    tag: example-build
-  cetirun:
-    chart:
-      repoURL: oci://registry.example.com/helm/cetirun
-      version: 0.1.0
+  # The operator's Helm client credential; see the registry example above.
+  acrDockerSecret: acr-helm-pull
 cetirun-portal:
-  image:
-    repository: registry.example.com/cetirun-portal
-    tag: example-build
   noticeBanner: ""
+  admins:
+    aliases:
+      - alice
+cetirun-ai-gateway:
+  # Create this Secret in the release namespace first.
+  providerCredentials:
+    existingSecret: gateway-provider-keys  # holds AZURE_OPENAI_KEY
+  models:
+    - model_name: gpt-main
+      litellm_params:
+        model: azure/my-gpt-deployment
+        api_base: https://example.openai.azure.com/
+        api_key: os.environ/AZURE_OPENAI_KEY
+        # Must support the Responses API: agents' tool calls are sent there.
+        api_version: "2025-04-01-preview"
+      model_info:
+        base_model: azure/gpt-4o
 ```
 
-These are placeholders, not published artifacts. Add the reviewed model,
-registry credentials, administrator list, storage, and runtime settings for
-your environment. After completing the prerequisites:
+These are placeholders, not published artifacts. `admins.aliases` names the
+Portal administrators, who create Teams, Agent Policies and Sandboxes; the
+models are the shared models Agents can use, see the
+[platform chart README]({{< repo "app/cetirun-platform/README.md" >}}#ai-gateway).
+Add the storage and runtime settings for your environment. Agents of a Team
+created in the Portal run in a Sandbox, which needs the additional setup in
+[Policy-bound Teams](../../operations/policy-teams/). After completing the
+prerequisites:
 
 ```bash
 DOMAIN=example.com VALUES_FILE=/absolute/path/platform-values.yaml \
@@ -385,9 +423,11 @@ kubectl rollout status deployment/cetirun-portal -n cetirun-system --timeout=120
 kubectl rollout status deployment/cetirun-ai-gateway -n cetirun-system --timeout=300s
 ```
 
-New agents need a Team. Create one before users create agents, in the portal's
-administration pages or with a `Team` manifest (see the
-[platform chart README]({{< repo "app/cetirun-platform/README.md" >}})).
+New agents need a Team, which an administrator creates in the portal's
+administration pages with an Agent Policy and a Sandbox, once
+[Policy-bound Teams](../../operations/policy-teams/) are set up. To give a
+Team's agents a model that sends each request to a cheaper or a stronger model,
+continue with [Smart routing](../../operations/smart-routing/).
 
 When shared skills are enabled, also check `azureblob-nfs-premium` and the
 `blob.csi.azure.com` CSI driver. HOME storage does not require Blob CSI.
@@ -403,5 +443,5 @@ Test both successful and denied requests, and inspect `IngressReady` independent
 `Ready`. Then give users the portal address and
 [first-instance guide](../first-instance/).
 
-Test Teams, Tailscale, shared storage, and cloud log collection separately
-before enabling them for users.
+Test Tailscale, shared storage, and cloud log collection separately before
+enabling them for users.
