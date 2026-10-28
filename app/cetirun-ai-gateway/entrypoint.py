@@ -225,7 +225,8 @@ def gateway(args, environ=None):
     change the Gateway for one call, keeps per-Agent GitHub Copilot routes to
     the keys that hold them, keeps operator-issued keys to the deployments of
     their access groups, also when an auto router picks the model, refuses a
-    request for a decision model through any API but the Decisions API, removes
+    request for a decision model through any API but the Decisions API,
+    shortens a router's request to a decision model to fit its context, removes
     encrypted reasoning without the Gateway's mark while encrypted content
     affinity is on, writes that mark in a form clients keep, ends fallbacks
     after a deployment refused a request's encrypted reasoning, removes the

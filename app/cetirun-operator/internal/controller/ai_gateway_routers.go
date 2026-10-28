@@ -284,6 +284,12 @@ func planModelRouters(team *api.Team, view aiGatewaySharedRouterView, mergedName
 			// own instructions, so the classifier keeps LiteLLM's instructions
 			// and its other defaults.
 			config["jev_classifier_config"] = map[string]any{"deployment_name": router.Classifier.Model}
+			// A classification that fails, for example while the decision
+			// model is unavailable, goes to the router's default model, its
+			// medium tier. LiteLLM's default would classify the request with
+			// its heuristic scorer instead, which placed 11 of 40 Chinese and
+			// 15 of 40 English prompts on the expected tier in our tests.
+			config["classifier_fallback"] = "default_model"
 		}
 		plan.request = aigateway.RouterRequest{
 			ModelName: plan.gatewayName, AccessGroups: []string{plan.gatewayName}, Config: config,

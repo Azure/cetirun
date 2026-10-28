@@ -178,14 +178,16 @@ spec:
         complex: large-model
 ```
 
-A `jev` classifier sends the decision model the instance's whole system
-prompt and its latest user messages. Microsoft-Decision-1 refuses a request
-that it counts at more than 64,000 tokens. When a classification fails, as it
-does then, the router classifies the request with the heuristic classifier
-instead, without an error. The response header
+LiteLLM sends a `jev` classifier the instance's whole system prompt and its
+latest user messages. Microsoft-Decision-1 takes at most 32,768 tokens. The
+AI Gateway shortens a longer classifier request to as many bytes as the
+decision model takes tokens: its `model_info.max_input_tokens`, or 32,768 when
+that is not set. It keeps the newest user message whole where it fits, and
+the beginning and the end of the rest. When a classification fails anyway,
+for example while the decision model is unavailable, the router sends the
+request to its `medium` model. The response header
 `x-litellm-complexity-router-cause` and the request log's `routing_cause` show
-which classifier decided: `jev_classifier` or `heuristic_scorer`. Measured on
-a test cluster with LiteLLM 1.105.1.
+`jev_classifier`, or `default_model_fallback` after a failed classification.
 
 The operator registers each router in the AI Gateway under an internal name
 and reports it on the Team: `status.modelRouters` lists each router as ready or

@@ -46,6 +46,16 @@ refused with 400 before any deployment is called, for every caller; a key the
 CetiRun operator issued gets the 403 above for any request of its own to a
 decision model.
 
+A router's request to a decision model to classify a request is held to the
+model's context. LiteLLM sends a jev classifier the caller's whole system
+prompt and its latest user messages, however long they are;
+Microsoft-Decision-1 refused a request over its 32,768 tokens with 422, and
+the router then classified the request with its fallback instead, without an
+error. Such a request is shortened to as many bytes as the model takes tokens,
+less its questions and a reserve: the newest message stays whole where it
+fits, the rest keeps its beginning and its end, and each change is logged. A
+client's own call to the Decisions API is left as it is.
+
 Error messages returned to callers no longer include LiteLLM's internal list of
 deployments in cooldown: when no deployment of a model is available, LiteLLM's
 message lists the IDs of every deployment in cooldown, of any model. The proxy
@@ -92,6 +102,7 @@ user chose or to auto; with a reasoning model each failed, out of the user's
 sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
+import json
 import re
 import sys
 
@@ -164,6 +175,29 @@ ROUTING_DECISION = "routing_decision"
 ROUTER_NAME = "router_model_name"
 # The modes of a model Agents can hold a conversation with; a deployment without one counts.
 CHAT_MODES = (None, "", "chat", "completion", "responses")
+
+# The line LiteLLM's complexity router writes before the newest user message in
+# the request it sends a classifier, last; the caller's system prompt, earlier
+# user messages and the conversation's length come before it
+# (complexity_router.py, _build_classifier_user_payload).
+CLASSIFY_MARKER = "\nClassify this message:\n"
+# Microsoft-Decision-1's context in tokens, for a decision model whose
+# deployments state none in model_info.max_input_tokens. It refuses a longer
+# request with 422: "invalid model request: Question prompt exceeds the
+# 32768-token context limit including the decision token".
+DECISION_CONTEXT_TOKENS = 32768
+# Bytes left for the service's own template around the request and for the
+# decision token, and the fewest bytes a request is shortened to.
+DECISION_RESERVE_BYTES = 512
+DECISION_MINIMUM_BYTES = 1024
+# LiteLLM quotes a long message by its beginning and its end, 30% and 70% of
+# the room (complexity_router.py, _truncate); the guard splits the same way.
+HEAD_SHARE = 0.3
+ELISION = "\n[...]\n"
+# What a shortened request keeps, for the warning.
+KEPT_NEWEST = "the newest message whole and the beginning and the end of the rest"
+KEPT_BOTH_ENDS = "the beginning and the end of the newest message and of the rest"
+KEPT_REQUEST_ENDS = "the beginning and the end of the request"
 
 
 def mark_encrypted_content(encrypted_content, model_id):
@@ -583,6 +617,119 @@ def evaluation_only(deployment):
     return isinstance(info, dict) and info.get("mode") == "evaluation"
 
 
+def decision_context(deployments):
+    """The decision model's context in tokens: the smallest model_info.max_input_tokens its deployments
+    state, or Microsoft-Decision-1's when none states one."""
+    sizes = []
+    for deployment in deployments:
+        info = deployment.get("model_info") if isinstance(deployment, dict) else None
+        size = info.get("max_input_tokens") if isinstance(info, dict) else None
+        if isinstance(size, int) and not isinstance(size, bool) and size > 0:
+            sizes.append(size)
+    return min(sizes) if sizes else DECISION_CONTEXT_TOKENS
+
+
+def utf8_size(text):
+    """The bytes text takes as UTF-8. A lone surrogate, which JSON can carry, counts as three."""
+    return len(text.encode("utf-8", "surrogatepass"))
+
+
+def utf8_head(text, size):
+    """The longest beginning of text that takes at most size bytes of UTF-8, cut between characters."""
+    return text.encode("utf-8", "surrogatepass")[:max(size, 0)].decode("utf-8", "ignore")
+
+
+def utf8_tail(text, size):
+    """The longest end of text that takes at most size bytes of UTF-8, cut between characters."""
+    if size <= 0:
+        return ""
+    data = text.encode("utf-8", "surrogatepass")
+    if size >= len(data):
+        return text
+    return data[len(data) - size:].decode("utf-8", "ignore")
+
+
+def beginning_and_end(text, size):
+    """text in at most size bytes of UTF-8: whole when it fits, else its beginning and its end with an
+    elision line between."""
+    if utf8_size(text) <= size:
+        return text
+    room = size - len(ELISION)
+    if room <= 0:
+        return utf8_tail(text, size)
+    head = int(room * HEAD_SHARE)
+    return utf8_head(text, head) + ELISION + utf8_tail(text, room - head)
+
+
+def question_size(questions):
+    """The bytes the questions take as compact JSON, which the decision model reads with the request."""
+    try:
+        text = json.dumps(questions, ensure_ascii=False, separators=(",", ":"), default=str)
+    except (TypeError, ValueError, RecursionError):
+        text = repr(questions)
+    return utf8_size(text)
+
+
+def bounded_classifier_state(state, budget):
+    """(the request a router sends a decision model in at most budget bytes of UTF-8, what it keeps);
+    (state, None) when it fits already, so a second pass changes nothing.
+
+    The newest message, after the last "Classify this message:" line, which LiteLLM writes last, is kept
+    whole when it fits in the budget less what the rest needs, a quarter of the budget at most; otherwise
+    the line and the message's beginning and end. The rest, the caller's system prompt and earlier
+    messages, keeps its beginning and its end in the room left. Without that line, the request keeps its
+    beginning and its end.
+    """
+    if utf8_size(state) <= budget:
+        return state, None
+    split = state.rfind(CLASSIFY_MARKER)
+    if split < 0:
+        return beginning_and_end(state, budget), KEPT_REQUEST_ENDS
+    rest, newest = state[:split], state[split:]
+    reserved = min(utf8_size(rest), budget // 4)
+    if budget - reserved < len(CLASSIFY_MARKER):
+        return beginning_and_end(state, budget), KEPT_REQUEST_ENDS
+    kept = KEPT_NEWEST
+    if utf8_size(newest) > budget - reserved:
+        message = newest[len(CLASSIFY_MARKER):]
+        newest = CLASSIFY_MARKER + beginning_and_end(message, budget - reserved - len(CLASSIFY_MARKER))
+        kept = KEPT_BOTH_ENDS
+    return beginning_and_end(rest, budget - utf8_size(newest)) + newest, kept
+
+
+def bound_classifier_request(request_kwargs, deployments):
+    """Shorten, in place, the request a router sends a decision model to classify, to fit the model's
+    context: (bytes before, bytes after, the context in tokens, what it keeps), or None when it fits or is
+    not such a request.
+
+    LiteLLM's complexity router sends a jev classifier the caller's whole system prompt, up to three
+    earlier user messages and the newest one, however long they are. Microsoft-Decision-1 refuses a
+    request over its context, and the router then classified the request with its fallback instead. The
+    decision model takes as many tokens as its context, less the questions, the service's own template
+    and the decision token. A token of the byte-level tokenizers decision models use is at least one
+    byte of UTF-8 (Microsoft-Decision-1 is post-trained from Qwen3.5-9B), so a request of at most that
+    many bytes fits in any language: Chinese text takes about three bytes a token, English about four.
+    That leaves several times what the router needs; LiteLLM quotes at most 8,000 characters of earlier
+    messages.
+
+    Only a router's own call is changed: marked as the classifier's, with the Decisions API's state and
+    questions. A client's own call to the Decisions API, and a classifier call that asks a chat model,
+    are left as they are.
+    """
+    if not classifier_call(request_kwargs):
+        return None
+    state, questions = request_kwargs.get("state"), request_kwargs.get("questions")
+    if not isinstance(state, str) or not isinstance(questions, dict):
+        return None
+    context = decision_context(deployments)
+    budget = max(context - question_size(questions) - DECISION_RESERVE_BYTES, DECISION_MINIMUM_BYTES)
+    shortened, kept = bounded_classifier_state(state, budget)
+    if kept is None:
+        return None
+    request_kwargs["state"] = shortened
+    return utf8_size(state), utf8_size(shortened), context, kept
+
+
 def has_deployment(name, router):
     """Whether the name is a model with a deployment of its own. A Team's router is registered under the
     same name as its access group, so being one of the key's groups does not make a name a placeholder.
@@ -679,7 +826,8 @@ class Guard(CustomLogger):
         auto router's tier selection goes through this again with the same
         request, so a tier is held to the same rules. A request for a decision
         model through any API but the Decisions API is refused, for every
-        caller. While encrypted content
+        caller. A router's call to a decision model to classify a request is
+        shortened to fit the model's context. While encrypted content
         affinity applies to the model, unmarked or shortened encrypted reasoning
         is removed from a Responses API request first. A fallback after a
         deployment refused the request's encrypted reasoning is ended here, so
@@ -729,6 +877,12 @@ class Guard(CustomLogger):
                     return allowed
                 raise ModelRefused(model)
             kept = allowed
+        shortened = bound_classifier_request(request_kwargs, kept) if kept else None
+        if shortened is not None:
+            before, after, context, what = shortened
+            verbose_proxy_logger.warning(
+                "CetiRun guard: shortened a router's request to the decision model %s from %d to %d bytes, to fit "
+                "its %d-token context; kept %s.", model, before, after, context, what)
         if isinstance(request_kwargs, dict) and kept:
             router = routing_router(model, request_kwargs)
             target = f"the router {router} sent to" if router else "for"

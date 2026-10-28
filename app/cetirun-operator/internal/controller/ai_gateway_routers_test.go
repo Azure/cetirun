@@ -152,6 +152,10 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 	if _, ok := config["classifier_llm_config"]; ok {
 		t.Fatal("a heuristic router names no classifier model")
 	}
+	// A heuristic router keeps LiteLLM's default for a failed classification.
+	if _, ok := config["classifier_fallback"]; ok {
+		t.Fatalf("a heuristic router sets no classifier_fallback: %v", config)
+	}
 	markers := config["reminder_markers"].([]map[string]string)
 	if len(markers) != 2 || markers[0]["open"] != "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" || markers[1]["close"] != "</system-reminder>" {
 		t.Fatalf("reminder markers = %v", markers)
@@ -169,6 +173,10 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 	if llmConfig["classifier_type"] != "llm" || llmConfig["classifier_llm_config"].(map[string]any)["model"] != testSmallModel ||
 		!slices.Equal(llm.copilot, []string{"copilot/fast-1", "copilot/deep-1"}) || !slices.Equal(llm.shared, []string{testSmallModel, testSharedModelOne}) {
 		t.Fatalf("llm router = %+v, config %v", llm, llmConfig)
+	}
+	// An llm classifier that fails falls back to LiteLLM's heuristic scorer, as before.
+	if _, ok := llmConfig["classifier_fallback"]; ok {
+		t.Fatalf("an llm router sets no classifier_fallback: %v", llmConfig)
 	}
 
 	// The ID follows the configuration; the model name does not.
@@ -208,8 +216,9 @@ func TestPlanModelRoutersKeepsTheRegistrationIDsOfExistingRouters(t *testing.T) 
 
 // A jev router asks a shared decision model to pick the tier. It names only
 // the decision model in its jev settings: LiteLLM counts a jev router with its
-// own instructions against its licence limit. The classifier is a shared model
-// the router uses, but no tier.
+// own instructions against its licence limit. A request it fails to classify
+// goes to its default model, the medium tier, not to LiteLLM's heuristic
+// scorer. The classifier is a shared model the router uses, but no tier.
 func TestPlanModelRoutersRegistersAJevClassifier(t *testing.T) {
 	view := withDecisionModel(testRouterView([]string{testSmallModel, testSharedModelOne}), testDecisionModel)
 	team := routerTeam(api.TeamModelRouter{Name: "auto-decision",
@@ -225,6 +234,9 @@ func TestPlanModelRoutersRegistersAJevClassifier(t *testing.T) {
 	jev, ok := config["jev_classifier_config"].(map[string]any)
 	if config["classifier_type"] != "jev" || !ok || len(jev) != 1 || jev["deployment_name"] != testDecisionModel {
 		t.Fatalf("config = %+v", config)
+	}
+	if config["classifier_fallback"] != "default_model" {
+		t.Fatalf("a failed classification must go to the default model: %+v", config)
 	}
 	if _, ok := config["classifier_llm_config"]; ok {
 		t.Fatal("a jev router names no llm classifier")
@@ -750,8 +762,9 @@ func TestTeamRouterWithAJevClassifierIsRegisteredAndGranted(t *testing.T) {
 	}
 	config := aigateway.RouterBody(requests[0])["litellm_params"].(map[string]any)["complexity_router_config"].(map[string]any)
 	jev, _ := config["jev_classifier_config"].(map[string]any)
-	if config["classifier_type"] != "jev" || len(jev) != 1 || jev["deployment_name"] != testDecisionModel {
-		t.Fatalf("config = %+v", config)
+	if config["classifier_type"] != "jev" || len(jev) != 1 || jev["deployment_name"] != testDecisionModel ||
+		config["classifier_fallback"] != "default_model" || requests[0].DefaultModel != testSharedModelOne {
+		t.Fatalf("config = %+v, default model %q", config, requests[0].DefaultModel)
 	}
 	if status := current.Status.ModelRouters; len(status) != 1 || !status[0].Ready ||
 		!slices.Equal(status[0].SharedModels, []string{testSmallModel, testSharedModelOne}) || len(status[0].CopilotModels) != 0 {
@@ -847,7 +860,7 @@ func TestJevRouterSurvivesAStartDuringAGatewayOutage(t *testing.T) {
 	ctx := context.Background()
 	reconcileRouters(t, r, kube, testAIGatewayTeam)
 	requests := routerRequests(gateway)
-	if len(requests) != 1 {
+	if len(requests) != 1 || requests[0].Config["classifier_fallback"] != "default_model" {
 		t.Fatalf("registered %+v", requests)
 	}
 	registered := requests[0].ID
