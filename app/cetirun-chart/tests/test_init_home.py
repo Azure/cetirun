@@ -802,3 +802,55 @@ def test_team_change_refreshes_only_managed_context(agent):
     assert private.read_text() == "retained personal content"
     assert run(agent).returncode == 0
     assert user.read_text().count("<!-- cetirun:team:start -->") == 1
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_openclaw_team_context_does_not_require_awk(agent):
+    (agent["config"] / "team-md").write_text("Synthetic governed Team\n")
+    # The production Azure Linux base deliberately has no awk. If this stub is
+    # called, the init fails; a successful run proves the portable code path.
+    awk = agent["binaries"] / "awk"
+    awk.write_text('#!/bin/sh\nexit 97\n')
+    awk.chmod(0o755)
+
+    result = run(agent)
+
+    assert result.returncode == 0, result.stderr
+    user = agent["target"] / ".openclaw/workspace/USER.md"
+    assert user.read_text().count("<!-- cetirun:team:start -->") == 1
+    assert "Synthetic governed Team" in user.read_text()
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_openclaw_team_context_terminates_owner_last_line_without_newline(agent):
+    (agent["config"] / "team-md").write_text("Synthetic governed Team\n")
+    # The fixture's USER.md input has no final newline. The replacement keeps
+    # the old awk print behavior so managed markers remain standalone lines.
+    result = run(agent)
+
+    assert result.returncode == 0, result.stderr
+    user = agent["target"] / ".openclaw/workspace/USER.md"
+    assert user.read_text().startswith("Example User\n<!-- cetirun:team:start -->\n")
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert user.read_text().count("<!-- cetirun:team:start -->") == 1
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+@pytest.mark.parametrize("invalid", [
+    "<!-- cetirun:team:end -->\n",
+    "<!-- cetirun:team:start -->\n",
+    "<!-- cetirun:team:start -->\n<!-- cetirun:team:end -->\n<!-- cetirun:team:start -->\n<!-- cetirun:team:end -->\n",
+    "<!-- cetirun:team:start -->\n<!-- cetirun:team:start -->\n<!-- cetirun:team:end -->\n",
+])
+def test_openclaw_team_context_rejects_invalid_markers(agent, invalid):
+    (agent["config"] / "team-md").write_text("Synthetic governed Team\n")
+    assert run(agent).returncode == 0
+    user = agent["target"] / ".openclaw/workspace/USER.md"
+    user.write_text(invalid)
+
+    result = run(agent)
+
+    assert result.returncode != 0
+    assert "TeamContextMarkersInvalid" in result.stderr
+    assert user.read_text() == invalid

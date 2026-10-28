@@ -16,7 +16,7 @@ LEGACY_HOME_MARKER=.openclaw/.initialized
 . "$CETIRUN_CONFIG_DIR/init-home-common.sh"
 
 agent_check_requirements() {
-  for tool in jq ln readlink; do
+  for tool in jq ln python3 readlink; do
     command -v "$tool" >/dev/null 2>&1 || { init_error "InitToolsMissing: $tool"; return 1; }
   done
   [ -f "$CETIRUN_CONFIG_DIR/openclaw.json" ] || {
@@ -59,12 +59,42 @@ apply_team_context() (
   if [ ! -s "$CETIRUN_CONFIG_DIR/team-md" ] && ! grep -q "^<!-- cetirun:team:start -->$" "$dest"; then return 0; fi
   temp=$(mktemp "${dest}.tmp.XXXXXX")
   trap 'rm -f "$temp"' 0
-  awk '
-    $0 == "<!-- cetirun:team:start -->" { if (inside || seen++) exit 2; inside=1; next }
-    $0 == "<!-- cetirun:team:end -->" { if (!inside) exit 2; inside=0; next }
-    !inside { print }
-    END { if (inside) exit 2 }
-  ' "$dest" > "$temp" || { init_error "TeamContextMarkersInvalid"; exit 1; }
+  # Azure Linux's runtime base provides Python but not awk. Work in bytes so
+  # the marker check and retained owner content have the same line semantics
+  # as the former awk implementation without assuming a locale or text codec.
+  if ! python3 - "$dest" > "$temp" <<'PY'
+import sys
+
+start = b"<!-- cetirun:team:start -->"
+end = b"<!-- cetirun:team:end -->"
+inside = False
+seen = False
+
+with open(sys.argv[1], "rb") as source:
+    for line in source:
+        record = line[:-1] if line.endswith(b"\n") else line
+        if record == start:
+            if inside or seen:
+                sys.exit(2)
+            inside = True
+            seen = True
+        elif record == end:
+            if not inside:
+                sys.exit(2)
+            inside = False
+        elif not inside:
+            # awk print terminated every retained record, including a final
+            # owner line that had no newline. Preserve that behavior so the
+            # managed start marker always remains on its own line.
+            sys.stdout.buffer.write(record + b"\n")
+
+if inside:
+    sys.exit(2)
+PY
+  then
+    init_error "TeamContextMarkersInvalid"
+    exit 1
+  fi
   if [ -s "$CETIRUN_CONFIG_DIR/team-md" ]; then
     printf '%s\n' '<!-- cetirun:team:start -->' >> "$temp"
     cat "$CETIRUN_CONFIG_DIR/team-md" >> "$temp"
