@@ -81,6 +81,52 @@ func TestSandboxNativeProxyTrustRendering(t *testing.T) {
 	}
 }
 
+func TestSandboxNativeProxyCIDRRendering(t *testing.T) {
+	for _, preProxy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "current chart", true: "pre-proxy chart"}[preProxy], func(t *testing.T) {
+			chrt := testChart(t)
+			if preProxy {
+				if err := helmfixture.RestorePreProxyContract(chrt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			input, values := nativeProxyRenderInput()
+			input.Controls.TrustedProxyIPs = []string{"10.244.0.0/16", "fd00:244::/64"}
+			bundle, err := w.Build(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := PrepareSandboxChart(chrt, values, nil, bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var config map[string]any
+			files := object(object(prepared.Values["runtime"])["configFiles"])
+			if err := json.Unmarshal([]byte(text(files["openclaw.json"])), &config); err != nil {
+				t.Fatal(err)
+			}
+			gateway := object(config["gateway"])
+			if !reflect.DeepEqual(gateway["trustedProxies"], []any{"10.244.0.0/16", "fd00:244::/64"}) ||
+				object(gateway["auth"])["mode"] != "token" ||
+				object(gateway["controlUi"])["dangerouslyDisableDeviceAuth"] != false {
+				t.Fatal("registered proxy CIDRs were lost, broadened or changed authentication")
+			}
+			if _, err := prepared.SandboxManifest(); err != nil {
+				t.Fatal("proxy CIDRs did not produce a validated manifest:", err)
+			}
+			input.Controls.TrustedProxyIPs[0] = "10.244.0.0/24"
+			changedBundle, err := w.Build(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed, err := PrepareSandboxChart(chrt, values, nil, changedBundle)
+			if err != nil || prepared.WorkloadHash == changed.WorkloadHash {
+				t.Fatal("proxy CIDRs are not bound into the protected workload:", err)
+			}
+		})
+	}
+}
+
 func TestSandboxNativeProxyTrustWithPreProxyChart(t *testing.T) {
 	chrt := testChart(t)
 	if err := helmfixture.RestorePreProxyContract(chrt); err != nil {

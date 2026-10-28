@@ -17,3 +17,11 @@
 {{- if or (empty .Values.toolService.namespace) (empty .Values.toolService.serviceAccount) }}{{ fail "tool service namespace and ServiceAccount are required" }}{{ end -}}
 {{- if and .Values.tls.enabled (or (empty .Values.tls.secretName) (empty .Values.tls.certKey) (empty .Values.tls.keyKey) (empty .Values.tls.clientCAKey)) }}{{ fail "tls.secretName, certKey, keyKey, and clientCAKey are required when TLS is enabled" }}{{ end -}}
 {{- if empty .Values.workloadTokenAudience }}{{ fail "workloadTokenAudience is required" }}{{ end -}}
+{{- $app := .Values.providers.github.app -}}
+{{- if or $app.id $app.slug $app.clientId $app.credentialsSecretName -}}
+{{- range $name, $value := dict "id" $app.id "slug" $app.slug "clientId" $app.clientId "credentialsSecretName" $app.credentialsSecretName "clientSecretKey" $app.clientSecretKey "privateKeyKey" $app.privateKeyKey -}}
+{{- if empty $value }}{{ fail (printf "providers.github.app.%s is required when GitHub App is configured" $name) }}{{ end -}}
+{{- end -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" (toString $app.id)) }}{{ fail "providers.github.app.id must be a positive integer" }}{{ end -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]*$" $app.slug) }}{{ fail "providers.github.app.slug must be a GitHub App slug" }}{{ end -}}
+{{- end -}}

@@ -1,7 +1,7 @@
 # Native Sandbox first run
 
 This example exercises one OpenClaw Agent with a Kata Sandbox and a
-shared AI Gateway model. It is an explicitly enabled, single-start profile,
+shared AI Gateway model. New Agents use the explicitly enabled common executor,
 not a production failover or complete AgentPolicy conformance test.
 
 ## Prepare one authorized target
@@ -32,9 +32,10 @@ limits, baseline network controls, storage and selected ingress mode still need
 their actual deployment checks; do not enable this profile to bypass them.
 
 Native OpenClaw runs without a same-Pod Istio proxy. Its proxy trust is therefore
-derived from the registered ingress peer IPs, not the legacy `127.0.0.6` sidecar
-address. The controller passes only those exact addresses through its protected
-render plan. Do not use a wildcard proxy range or a per-Agent Helm override.
+derived from the registered ingress peers, not the legacy `127.0.0.6` sidecar
+address. Exact peer IPs remain the default; managed gateways can opt into
+[rollout-stable ingress](#rollout-stable-managed-ingress) below. Do not use a
+wildcard proxy range or a per-Agent Helm override.
 
 The packaged native OpenClaw init containers use `/usr/bin/tini -g --` to
 supervise the existing HOME, doctor and credential-retirement commands.
@@ -61,10 +62,6 @@ sandboxSources:
   platformConfigMapName: sandbox-platform
   homeClaimName: home
   skillsClaimName: skills
-  helpers:
-    doctor: false
-    logger: false
-    desktop: false
 aiGateway:
   enabled: true
 sandboxAdmission:
@@ -72,6 +69,11 @@ sandboxAdmission:
   enforce: true
   podsEnabled: true
 ```
+
+The legacy `sandboxSources.helpers` flags do not control reconciled (`v2`)
+native lifetimes. Those use the runtime chart's helper settings: OpenClaw
+doctor runs on each Pod initialization by default, even if
+`sandboxSources.helpers.doctor` is `false`.
 
 This is an **overlay**, not complete installation configuration. Supply the
 target's admission TLS/administrator/coordination settings, domain, registry,
@@ -99,6 +101,258 @@ An administrator creates the reusable configuration through supported APIs.
 The Agent creator uses an authorized owner context; do not supply internal
 authorization records, lifecycle finalizers or manually edited status.
 Do not pre-create the Agent namespace or substitute unowned HOME/Secret objects.
+
+## Helper memory
+
+The Portal's new-Sandbox form and [configuration.yaml](configuration.yaml)
+recommend `spec.resources.helpers.limits.memory: 2Gi`, with the memory request
+remaining `128Mi`. OpenClaw 2026.9.6's doctor was observed to be OOMKilled at the
+previous `512Mi` limit; `2Gi` allowed initialization to complete. This is a
+starting recommendation, not a measured minimum or a guarantee for every runtime
+and workload. All init containers, including `doctor`, `retire-copilot-sign-in`
+and `retire-direct-model-auth`, and any Agent sidecars share the Sandbox's
+per-helper resource settings. Include them and RuntimeClass overhead when
+planning the aggregate Pod resource budget.
+
+Existing Sandboxes retain their stored limits. To raise them, use the supported
+[coordinated configuration update](../../app/cetirun-operator/README.md#coordinated-configuration-updates)
+flow; changing the Portal default does not resize existing Sandboxes or bypass
+lifecycle and admission checks.
+
+## Default startup window
+
+With the matching runtime chart, common-executor OpenClaw uses 60 failed startup
+probes at 10-second intervals by default. This avoids prematurely restarting a
+gateway still initializing on Kata; startup, readiness and liveness checks all
+remain enabled. `startupProbe.failureThreshold: null` selects this default,
+while an explicit positive value is preserved. Retained single-start OpenClaw,
+Hermes and ordinary non-Sandbox paths keep their previous default of 30.
+
+Probe time begins after initialization, not when a restart or resume is requested.
+Doctor and credential retirement still run; retirement checks saved auth on each
+start, verifies any logout and compacts the databases. Test the complete operation
+on the selected storage and helper resources within the originally declared
+bound, including independent HOME and model witnesses. The larger probe window
+and offline regressions do not establish default-profile Kata acceptance.
+
+## HOME access mode
+
+This example and Portal default to `ReadWriteOncePod` (RWOP). New common-executor
+Kata lifetimes also support `ReadWriteOnce` (RWO): select it in
+`Sandbox.spec.storage.home.accessMode` and explicitly register it in
+`registrations.kata.Capabilities.homeAccessModes`. Do not change an existing
+HOME claim's mode or remove its ownership records to convert a running Agent.
+Retained single-start lifetimes remain RWOP-only.
+
+Both modes use the same retained restart, stop/resume and separately enabled
+healthy-source migration flow. RWO permits multiple mounts on one node; it
+does not replace private HOME ownership, single-replica workload admission or
+acknowledged source termination and CSI detach before migration.
+The local platform probe tests RWOP contention, not RWO lifecycle behavior.
+Qualify the selected Kata/CSI combination separately before declaring RWO
+support; an RWOP probe result alone does not justify adding it to the registration.
+
+## Scoped internal egress
+
+New common-executor Kata OpenClaw/Hermes lifetimes can use
+`AgentPolicy.spec.network.allowedInternalCIDRs` with either registered HOME mode.
+For example, this synthetic **policy fragment** grants TCP `443` throughout one
+private subnet and adds UDP `8080` only in its overlapping subrange:
+
+```yaml
+network:
+  allowedInternalCIDRs:
+    - cidr: 10.20.0.0/16
+      ports:
+        - {port: 443, protocol: TCP}
+    - cidr: 10.20.1.0/24
+      ports:
+        - {port: 8080, protocol: UDP}
+```
+
+Replace these ranges with approved internal destinations; they are not deployed
+test endpoints. Omitted protocols default to TCP; the requested protocol and IP
+family must be explicitly registered. SCTP has the additional
+[direct-endpoint limits](#governed-sctp-egress) below.
+Node, management, metadata and mandatory excluded ranges cannot
+be granted. Explicit CIDR/port denies still win, and TCP/UDP `53` remains limited
+to approved DNS peers even if an internal rule includes that port.
+
+For Cilium-managed Pods, CIDR matching alone is insufficient: the platform must
+register the exact namespace, protected peer-UID label and addresses in
+`topology.peers`, with a complete managed-peer inventory. All addresses of a
+registered peer must receive the same effective port permissions. This does not
+discover changing Pod IPs or translate a Service's port to its backend port.
+Do not grant node ranges, broaden selectors or alter the Cilium deployment to
+work around an incomplete registration.
+
+When configuration coordination is enabled, suspend all consumers and complete
+their normal shutdown before updating reserved policy or platform sources.
+Resume through the ordinary lifecycle after the coordinated configuration
+change; do not remove reservations or edit status. Retained version-1
+single-start lifetimes still reject internal grants.
+
+Offline compiler, chart and API-server checks do not qualify real traffic.
+On an explicitly authorized target, use owner-authenticated Agent requests and
+independent task-owned witnesses to verify the permitted address/port/protocol,
+wrong ports/protocols, outside ranges, overlapping grants, explicit denies,
+managed-peer identities, DNS/node/metadata isolation and unchanged peer Agents.
+Repeat the witness after grant removal through the supported lifecycle and
+confirm access is denied. Record the exact artifacts and registration; this
+field does not complete the Istio handover or enable FQDN/mTLS controls.
+
+## Governed SCTP egress
+
+New common-executor Kata OpenClaw/Hermes lifetimes can request SCTP in both
+`network.blockedPorts` and `network.allowedInternalCIDRs`. They use the existing
+Cilium compiler and owned CiliumNetworkPolicy, not a new proxy or dataplane.
+Retained version-1 single-start lifetimes still reject SCTP port requests.
+
+The existing administrator-controlled
+`registrations.kata.Capabilities.protocols` list is the protocol opt-in.
+Registration examples and the local platform probe still default to TCP/UDP.
+Neither an API value of `SCTP` nor a successful TCP/UDP probe qualifies SCTP.
+Only after separately authorized qualification of the exact Kata, kernel,
+Cilium and address-family combination, add SCTP to that list. Port denies
+also require `blockedPorts: true`. This **capability fragment** is not evidence
+or a complete platform configuration:
+
+```json
+{
+  "protocols": ["TCP", "UDP", "SCTP"],
+  "blockedPorts": true
+}
+```
+
+Keep the native adapter's `qualified: false`; this increment supplies no
+independent enforcement observation or physical fencing. Do not enable SCTP
+in Cilium or change host/kernel settings as part of an offline check.
+
+This synthetic **policy fragment** grants SCTP `3868` to approved direct
+internal endpoints and denies SCTP `3869` at every destination:
+
+```yaml
+network:
+  allowedInternalCIDRs:
+    - cidr: 10.20.0.0/16
+      ports:
+        - {port: 3868, protocol: SCTP}
+  blockedPorts:
+    - {port: 3869, protocol: SCTP}
+```
+
+The internal grant does not permit TCP/UDP `3868` or other SCTP ports.
+Overlapping grants combine exact protocol/port pairs; explicit CIDR and port
+denies still take precedence. TCP/UDP DNS `53` and the registered Gateway
+ports remain required; blocking those pairs rejects the configuration.
+Blocking SCTP on the same numeric port does not block TCP/UDP. Ports must be
+`1`–`65535`; an omitted protocol still means TCP, not SCTP. IPv6 needs an
+explicit `IPv6` registration and corresponding topology.
+The existing public-egress baseline is unchanged: public addresses remain
+permitted except for exclusions and explicit denies. Protocol registration is
+not a public-egress allow-list.
+
+SCTP internal grants cannot overlap registered Service CIDRs or Kubernetes API
+destinations, in addition to the existing node, management, metadata and
+mandatory exclusions. Use direct endpoints and the existing protected
+namespace/peer-UID registration for managed Pods; do not treat CIDRs as
+Service discovery. All addresses of a peer need identical effective port
+permissions. Cilium's [SCTP limitations](https://docs.cilium.io/en/stable/configuration/sctp/)
+include unsupported pod-to-VIP policies, multihoming, port rewriting, BPF
+masquerading and egress gateway. This feature does not add those capabilities;
+the administrator must qualify the actual direct path, including any NAT.
+
+The existing [compiler budgets](../../app/cetirun-operator/internal/sandboxpolicy/limits.go)
+and 40-entry port groups apply without truncating controls. An unregistered
+protocol, unsupported family, malformed rule, protected destination or excessive
+expansion rejects the request. Admission checks a policy against its selected
+Sandbox/platform; storing an unused AgentPolicy alone is not authorization.
+
+Use the ordinary stop/change/resume lifecycle for policy or registration changes.
+Active policy reservations remain enforced. Administrator changes to platform
+inventory invalidate old Pod authority; they are not an in-place capability
+upgrade for running Pods. The compiler and controller bind both the requested
+rules and registration into the existing revisions and source checks.
+
+The served-API and compiler tests exercise these contracts with synthetic
+inventory. They do not run SCTP traffic through Kata/Cilium or qualify a target.
+On a separately authorized target, verify allowed SCTP, wrong ports and
+TCP/UDP on the same port, overlapping grants, explicit denies, required DNS
+and Gateway access, protected destinations, peer isolation and grant removal.
+Record direct endpoint paths and each registered address family, not merely
+application success. FQDN blocking remains unsupported. Ingress mTLS has a
+separate opt-in [managed endpoint contract](../../site/content/en/docs/guides/agent-ingress-mtls.md);
+SCTP registration does not enable it.
+
+## Rollout-stable managed ingress
+
+For an AKS-managed Istio gateway, register the stable labels already supplied by
+the gateway Deployment instead of manually labelling its individual Pods.
+The native single-start profile accepts the following **one-entry fragment**
+under `platforms.kata.topology.ingress` in the administrator's `platform.json`:
+
+```json
+[
+  {
+    "peer": {
+      "name": "aks-istio-ingressgateway-external",
+      "namespace": "aks-istio-ingress",
+      "uid": "example-ingress-deployment-uid",
+      "podSelector": {
+        "istio": "aks-istio-ingressgateway-external"
+      }
+    },
+    "trustedProxyCIDRs": ["10.244.0.0/16"],
+    "ports": [{"port": 18789, "protocol": "TCP"}]
+  }
+]
+```
+
+Replace the synthetic UID, namespace, labels, Pod CIDRs and workload ports with
+the approved target inventory. Use a stable gateway identity, such as its
+Deployment UID, not a Pod UID. The registration declares that identity; it does
+not discover or independently verify the Deployment. For native Hermes, register
+its API port (`8642`) and Dashboard port (`9119`) instead of the OpenClaw port
+above; see [Create, connect and use](#create-connect-and-use).
+
+This mode requires matching Operator and runtime chart support, and:
+
+- At least one valid Pod label, with all labels matched within the exact
+  registered namespace. Do not include `peer.ips`: selection and proxy trust
+  must not depend on the current Pods. The `peer-uid` Pod label is not required
+  for this ingress entry. DNS, AI Gateway and other peers retain their existing
+  IP/peer-UID contract.
+- Explicit `trustedProxyCIDRs` contained in the registered `topology.podCIDRs`.
+  The compiler rejects wildcard ranges and ranges overlapping Service, Node,
+  management, metadata, loopback or link-local networks. Register the actual
+  gateway source Pod networks, including each required IP family. Host-networked
+  gateways or paths that SNAT to Node addresses are not supported by this mode.
+- A platform-controlled namespace and labels, an authenticating gateway that
+  still enforces owner access, and forwarded-client headers overwritten or
+  safely rebuilt by that gateway. Tenants must not be able to create or relabel
+  Pods in the selected gateway namespace.
+
+Cilium still admits only the selected gateway Pods on the registered workload
+ports and explicitly denies other sources and ports. Trusting the bounded Pod
+CIDRs in OpenClaw does **not** admit arbitrary Pods from those networks. Gateway
+Pod replacement within these networks needs no relabelling, registration update
+or native Agent restart. OpenClaw's token and device authentication remain
+enabled; the legacy `openclaw.portalSignIn` mode is not enabled for native
+execution by this change.
+
+This is an opt-in registration change, not an automatic migration of running
+Agents. Existing lifetimes retain their recorded configuration. Arrange the
+normal lifecycle transition before adopting a changed platform registration;
+do not edit their expectations, authorization or start markers. Exact-IP
+registrations remain supported, but their protected labels and proxy IP list
+must still be maintained whenever the gateway Pods change.
+
+Deployment preflight and offline rendering do not qualify gateway rollouts.
+With separate authorization for the target, verify owner UI access before and
+after a gateway Pod replacement, confirm the native Agent Pod and registration
+are unchanged, and check that unauthenticated, non-owner and non-gateway access
+remain denied. Record any source-IP translation or network enforcement failure
+rather than widening proxy trust.
 
 ## Create, connect and use
 
@@ -172,7 +426,7 @@ before taking further action. Do not retry creation or delete by name.
 The legacy full `scripts/e2e-test.sh` flow is not this profile's acceptance run:
 its suspend/resume and legacy integration checks are outside this profile.
 Reuse its explicit-target/UID ownership principles, not its broader assertions.
-FQDN rules, internal-network exceptions, SCTP port denies, Copilot sidecars,
+FQDN rules, unregistered SCTP port requests, Copilot sidecars,
 identity grants and live reconfiguration are unsupported here and must not be
 silently ignored.
 

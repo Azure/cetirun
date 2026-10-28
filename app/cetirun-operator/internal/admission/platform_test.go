@@ -188,6 +188,18 @@ func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
 				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
 				requireResponse(t, f.handler.Validate(ctx, request), true, "")
 				candidate = f.policy.DeepCopy()
+				candidate.Spec.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{
+					{CIDR: "10.20.0.0/16", Ports: []api.AgentPolicyPort{{Port: 443}}},
+				}
+				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
+				requireResponse(t, f.handler.Validate(ctx, request), true, "")
+				injected := *f.handler
+				injected.platformSource, injected.registrations = nil, document.Registrations
+				requireResponse(t, injected.Validate(ctx, request), false, "current platform topology")
+				candidate.Spec.Network.AllowedInternalCIDRs[0].CIDR = "192.168.0.0/16"
+				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
+				requireResponse(t, f.handler.Validate(ctx, request), false, "internal exceptions")
+				candidate = f.policy.DeepCopy()
 				candidate.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 					ServiceAccountName: "operations",
 					RoleBindings:       []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "view"}},

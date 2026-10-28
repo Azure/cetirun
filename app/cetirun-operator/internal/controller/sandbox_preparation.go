@@ -58,6 +58,7 @@ type SandboxHelmInstaller interface {
 // deployment opt-in, not tenant input or an independent enforcement receipt.
 type SandboxPreparation struct {
 	NativeExecution         bool
+	PlannedMigration        bool
 	Configuration           SandboxConfigurationSource
 	Prerequisites           SandboxPreparationSource
 	Installer               SandboxHelmInstaller
@@ -78,6 +79,7 @@ type sandboxPreparationAttempt struct {
 	input          sandboxworkload.Input
 	plan           *sandboxpolicy.Plan
 	sources        []sandboxworkload.SourceReference
+	policyDigest   string
 	platformValues map[string]any
 	userValues     map[string]any
 }
@@ -332,9 +334,15 @@ func (r *AgentReconciler) resolveSandboxInputs(ctx context.Context, requested *a
 		resources.Sandboxes[name] = object
 		sources = append(sources, sandboxSource(object, api.GroupVersion.String(), "Sandbox"))
 	}
+	var policyDigest string
 	for _, name := range uniqueReferences([]string{team.Spec.AgentPolicyRef}) {
 		object := &api.AgentPolicy{}
-		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: name}, object); err != nil {
+		if reconciled && config.NativeExecution {
+			object, policyDigest, err = r.readSandboxExecutionPolicy(ctx, name)
+		} else {
+			err = r.APIReader.Get(ctx, client.ObjectKey{Name: name}, object)
+		}
+		if err != nil {
 			return nil, err
 		}
 		resources.AgentPolicies[name] = object
@@ -360,7 +368,10 @@ func (r *AgentReconciler) resolveSandboxInputs(ctx context.Context, requested *a
 		}
 		return nil, fmt.Errorf("%w: %s: %s", cause, condition.Reason, condition.Message)
 	}
-	return &sandboxPreparationAttempt{reconciled: reconciled, agent: agent, team: team, resolution: resolution, configuration: snapshot, sources: sources}, nil
+	return &sandboxPreparationAttempt{
+		reconciled: reconciled, agent: agent, team: team, resolution: resolution,
+		configuration: snapshot, sources: sources, policyDigest: policyDigest,
+	}, nil
 }
 
 func (a *sandboxPreparationAttempt) selectedPolicy() *api.AgentPolicy {

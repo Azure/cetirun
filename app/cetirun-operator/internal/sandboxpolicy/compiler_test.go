@@ -170,9 +170,8 @@ func TestCompileNativeProfileFailsClosed(t *testing.T) {
 		"unqualified blocked ports": func(i *CompileInput) {
 			i.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolTCP}}
 		},
-		"SCTP port despite declaration": func(i *CompileInput) {
+		"unregistered SCTP port": func(i *CompileInput) {
 			i.Resolution.Capabilities.BlockedPorts = true
-			i.Resolution.Capabilities.Protocols = append(i.Resolution.Capabilities.Protocols, corev1.ProtocolSCTP)
 			i.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolSCTP}}
 		},
 		"custom port": func(i *CompileInput) {

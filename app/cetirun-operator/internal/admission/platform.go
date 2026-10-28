@@ -80,7 +80,8 @@ func (h *Handler) checkNativeNetworkBinding(ctx context.Context, kind api.Sandbo
 	if policy == nil {
 		return fmt.Errorf("native network validation requires the selected AgentPolicy")
 	}
-	if len(policy.Spec.Network.BlockedCIDRs) == 0 && len(policy.Spec.Network.BlockedPorts) == 0 {
+	if len(policy.Spec.Network.BlockedCIDRs) == 0 && len(policy.Spec.Network.BlockedPorts) == 0 &&
+		len(policy.Spec.Network.AllowedInternalCIDRs) == 0 {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {

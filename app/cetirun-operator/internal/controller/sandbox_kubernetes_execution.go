@@ -75,6 +75,17 @@ func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 		policy.EntraID.Enabled || policy.KubernetesAccess != nil || len(agent.Spec.Helm.Values) != 0 {
 		return fmt.Errorf("%w: native execution supports shared Gateway models without sidecars, identity grants or Helm overrides", sandboxpolicy.ErrUnsupportedControl)
 	}
+	if len(policy.Network.AllowedInternalCIDRs) != 0 {
+		return fmt.Errorf("%w: internal-network exceptions require the common executor", sandboxpolicy.ErrUnsupportedControl)
+	}
+	if policy.Network.Ingress.RequireMTLS {
+		return fmt.Errorf("%w: managed ingress mTLS requires the common executor", sandboxpolicy.ErrUnsupportedControl)
+	}
+	if slices.ContainsFunc(policy.Network.BlockedPorts, func(port api.AgentPolicyPort) bool {
+		return port.Protocol == corev1.ProtocolSCTP
+	}) {
+		return fmt.Errorf("%w: SCTP port rules require the common executor", sandboxpolicy.ErrUnsupportedControl)
+	}
 	if errs := sandbox.CheckNativeNetworkPolicy(policy.Network); len(errs) != 0 {
 		return fmt.Errorf("%w: %w", sandboxpolicy.ErrUnsupportedControl, errs.ToAggregate())
 	}

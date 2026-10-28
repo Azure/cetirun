@@ -49,8 +49,9 @@ takes the instance's Copilot route out of rotation for a few seconds and sends
 its requests to the shared deployments: at once after a 429, and for other
 errors once most of the route's recent requests have failed, so a few requests
 can fail first. While the instance's proxy itself cannot be reached, for example
-while it restarts after a sign-in, the requests sent to it fail until the
-Gateway's next health check takes it out of rotation.
+while it restarts after a sign-in, the requests sent to it fail. The Gateway's
+health checks would take it out of rotation at their next probe, but they leave
+Copilot models alone unless the deployment turns their probes on; see below.
 
 Any other Copilot model keeps its own ID, such as `gpt-5.5`, and only the
 instance's Copilot subscription serves it: a 429 from Copilot reaches the
@@ -64,8 +65,13 @@ The instance's key reaches a Copilot model only by that name; the
 instance whose default model is set as `copilot/<model>` uses the model's
 current name.
 
-The Gateway's health checks probe every Copilot model too, every five minutes by
-default. Each probe is a real call, so it spends the owner's Copilot allowance.
+The Gateway's health checks leave Copilot models alone by default. Each probe
+is a real call on the owner's Copilot allowance: at the default interval of
+five minutes, about 288 calls a day for each Copilot model of each instance.
+The operator's `aiGateway.copilotProxy.healthChecks.enabled` turns the probes
+on for every instance. An instance's Copilot route that fails its probe is then
+taken out of rotation; that changes where requests go only for a model that
+shared deployments serve too.
 
 Each instance's key reaches only its own access groups: those of the shared
 models it may use, with `cetirun-shared` for an instance without a policy, and
@@ -197,6 +203,11 @@ A Gateway upgrade does not interrupt instances either. Each Gateway pod keeps
 the configuration it started with until it is replaced, and the operator waits
 for the rollout to finish before it applies a changed model list, so instances
 are updated once rather than once for each replaced pod.
+Changing the operator's `aiGateway.copilotProxy.healthChecks.enabled`, or
+upgrading with it off from a version that let the Gateway probe Copilot models,
+registers every instance's Copilot models again at its next verification,
+within about ten minutes, without restarting instances. Each route is briefly
+unavailable while it is deleted and added again.
 
 OpenClaw also sends short internal tasks, such as generated session titles and
 activity recaps, to a utility model. On the Gateway, an instance's utility
@@ -207,8 +218,9 @@ key like any other.
 An instance governed by an Agent Policy can also carry request limits on its
 key: parallel requests, requests per minute, tokens per minute, and per-model
 limits. The Policy sets them for every Agent of its Teams, each on its own key.
-The operator applies a change to the existing key; like any change to the
-Policy, it also restarts the Agents running under the Policy once. A request
+The operator applies limit-only changes to the existing key without stopping or
+restarting running Agents. Budget and model access changes still use the normal
+policy reprojection fence. A request
 over a limit receives HTTP 429 with a `retry-after` header. A tokens per minute
 limit counts the tokens of finished requests; see the
 [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)

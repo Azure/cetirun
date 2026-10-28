@@ -107,7 +107,7 @@ func (k *kubeClient) getConnectionForAgent(ctx context.Context, agent Agent, id 
 	if err != nil {
 		return nil, "", err
 	}
-	if connectionMode(record.Connection) != modeDelegated || record.Connection.Identity != nil {
+	if !isSharedConnectionMode(connectionMode(record.Connection)) || record.Connection.Identity != nil {
 		return nil, "", errNotFound
 	}
 	return record, version, nil
@@ -141,7 +141,7 @@ func (k *kubeClient) getOwnedConnection(ctx context.Context, owner Owner, id str
 		return k.getConnection(ctx, id)
 	}
 	record, version, err := k.getConnection(ctx, id)
-	if err == nil && connectionMode(record.Connection) == modeDelegated {
+	if err == nil && isSharedConnectionMode(connectionMode(record.Connection)) {
 		if !sameOwner(owner, record.Connection.Owner) {
 			return nil, "", errNotFound
 		}
@@ -193,7 +193,7 @@ func validConnectionReference(secret secretDocument, agent Agent, id string) boo
 // This credential-free reference is for inventory/lifecycle only. Binding and
 // decrypted owner checks remain the authority for using the shared credential.
 func (k *kubeClient) ensureConnectionReference(ctx context.Context, agent Agent, connection Connection) error {
-	if !k.agentNamespaces || connectionMode(connection) != modeDelegated {
+	if !k.agentNamespaces || !isSharedConnectionMode(connectionMode(connection)) {
 		return nil
 	}
 	target, err := k.recordStoreForAgent(ctx, agent)
@@ -208,7 +208,7 @@ func (k *kubeClient) ensureConnectionReference(ctx context.Context, agent Agent,
 		recordLabelPrefix + "id": connection.ID, recordLabelPrefix + "connection-id": connection.ID,
 		recordLabelPrefix + "instance-uid": agent.UID, recordLabelPrefix + "owner-tenant": connection.Owner.TenantID,
 		recordLabelPrefix + "owner-object": connection.Owner.ObjectID, recordLabelPrefix + "provider": connection.Provider,
-		recordLabelPrefix + "mode": modeDelegated,
+		recordLabelPrefix + "mode": connectionMode(connection),
 	}
 	annotations := recordInstanceMetadata(labels, agent.Name, agent.Namespace)
 	annotations[recordLabelPrefix+"credential-namespace"] = k.namespace

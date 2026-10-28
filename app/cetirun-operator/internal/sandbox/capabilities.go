@@ -87,8 +87,19 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 	if !capabilities.HostResourceLimits {
 		errs = append(errs, field.Required(root.Child("hostResourceLimits"), "native runtime resource limits must be supported"))
 	}
-	if !slices.Equal(capabilities.HomeAccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}) {
-		errs = append(errs, field.Invalid(root.Child("homeAccessModes"), capabilities.HomeAccessModes, "native single-start requires only ReadWriteOncePod HOME"))
+	if len(capabilities.HomeAccessModes) == 0 {
+		errs = append(errs, field.Required(root.Child("homeAccessModes"), "native HOME requires an explicitly supported access mode"))
+	}
+	for i, mode := range capabilities.HomeAccessModes {
+		path := root.Child("homeAccessModes").Index(i)
+		switch mode {
+		case corev1.ReadWriteOncePod, corev1.ReadWriteOnce:
+			if slices.Contains(capabilities.HomeAccessModes[:i], mode) {
+				errs = append(errs, field.Duplicate(path, mode))
+			}
+		default:
+			errs = append(errs, field.NotSupported(path, mode, []string{string(corev1.ReadWriteOncePod), string(corev1.ReadWriteOnce)}))
+		}
 	}
 	for _, control := range []struct {
 		name     string
@@ -97,7 +108,6 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 		{"perContainerResourceLimits", capabilities.PerContainerResourceLimits},
 		{"requirePerContainerResourceLimits", capabilities.RequirePerContainerResourceLimits},
 		{"blockedFQDNs", capabilities.BlockedFQDNs},
-		{"mutualTLS", capabilities.MutualTLS},
 		{"kubernetesAccess", capabilities.KubernetesAccess},
 		{"entraID", capabilities.EntraID},
 		{"enforcementObservation", capabilities.EnforcementObservation},
@@ -159,9 +169,9 @@ func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 	return errs
 }
 
-// CheckNativeNetworkPolicy bounds the native path independently of optional
-// capability declarations. Compatibility and compilation still validate those
-// capabilities, address families and conflicts with required destinations.
+// CheckNativeNetworkPolicy bounds native network controls. Compatibility and
+// compilation still require explicit protocol/capability registration, qualified
+// address families and no conflicts with required destinations.
 func CheckNativeNetworkPolicy(network cetirunv1alpha1.AgentPolicyNetwork) field.ErrorList {
 	root := field.NewPath("spec", "network")
 	var errs field.ErrorList
@@ -170,18 +180,23 @@ func CheckNativeNetworkPolicy(network cetirunv1alpha1.AgentPolicyNetwork) field.
 		requested bool
 	}{
 		{root.Child("blockedFQDNs"), len(network.BlockedFQDNs) != 0},
-		{root.Child("allowedInternalCIDRs"), len(network.AllowedInternalCIDRs) != 0},
-		{root.Child("ingress", "requireMTLS"), network.Ingress.RequireMTLS},
 	} {
 		if control.requested {
 			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
 		}
 	}
-	for i, port := range network.BlockedPorts {
-		if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP && port.Protocol != corev1.ProtocolUDP {
-			errs = append(errs, field.NotSupported(root.Child("blockedPorts").Index(i).Child("protocol"),
-				port.Protocol, []string{string(corev1.ProtocolTCP), string(corev1.ProtocolUDP)}))
+	checkPorts := func(path *field.Path, ports []cetirunv1alpha1.AgentPolicyPort) {
+		for i, port := range ports {
+			if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP &&
+				port.Protocol != corev1.ProtocolUDP && port.Protocol != corev1.ProtocolSCTP {
+				errs = append(errs, field.NotSupported(path.Index(i).Child("protocol"),
+					port.Protocol, []string{string(corev1.ProtocolTCP), string(corev1.ProtocolUDP), string(corev1.ProtocolSCTP)}))
+			}
 		}
+	}
+	checkPorts(root.Child("blockedPorts"), network.BlockedPorts)
+	for i, rule := range network.AllowedInternalCIDRs {
+		checkPorts(root.Child("allowedInternalCIDRs").Index(i).Child("ports"), rule.Ports)
 	}
 	return errs
 }
@@ -207,8 +222,8 @@ func CheckCompatibility(sandbox cetirunv1alpha1.SandboxSpec, policy cetirunv1alp
 		errs = append(errs, field.Required(root.Child("hostResourceLimits"), "mandatory control is not qualified"))
 	}
 	if capabilities.Profile == ProfileNativeSingleStart {
-		if sandbox.Type != cetirunv1alpha1.SandboxKata || sandbox.Storage.Home.AccessMode != corev1.ReadWriteOncePod {
-			errs = append(errs, field.Forbidden(field.NewPath("spec"), "native single-start requires Kata and ReadWriteOncePod HOME"))
+		if sandbox.Type != cetirunv1alpha1.SandboxKata {
+			errs = append(errs, field.Forbidden(field.NewPath("spec", "type"), "native execution requires Kata"))
 		}
 		errs = append(errs, CheckNativePolicy(policy)...)
 	}
@@ -284,7 +299,7 @@ func CheckCompatibility(sandbox cetirunv1alpha1.SandboxSpec, policy cetirunv1alp
 		}
 	}
 	if policy.Network.Ingress.RequireMTLS && !capabilities.MutualTLS {
-		errs = append(errs, field.Required(root.Child("mutualTLS"), "guest-external gateway-to-workload mutual TLS is not qualified"))
+		errs = append(errs, field.Required(root.Child("mutualTLS"), "managed Gateway-to-Agent mutual TLS is not registered"))
 	}
 	if policy.KubernetesAccess != nil && !capabilities.KubernetesAccess {
 		errs = append(errs, field.Required(root.Child("kubernetesAccess"), "administrative Kubernetes access is not qualified"))

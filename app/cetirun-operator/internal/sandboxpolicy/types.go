@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
@@ -52,19 +53,22 @@ type AdapterRegistration struct {
 }
 
 // Peer is a trusted, resolved destination, including Service and backend IPs.
-// A namespaced peer denotes Cilium-managed Pods bearing the protected PeerUIDLabel
-// with this UID. An empty namespace denotes a guest-external IP destination.
-// The platform must reconcile endpoint membership and labels before observation.
+// A namespaced peer normally selects Pods bearing the protected PeerUIDLabel.
+// Native ingress may instead select platform-owned Pod labels without pinning
+// Pod IPs. An empty namespace denotes a guest-external IP destination.
+// The platform owns selector protection and endpoint realization.
 type Peer struct {
-	Name      string    `json:"name"`
-	Namespace string    `json:"namespace,omitempty"`
-	UID       types.UID `json:"uid"`
-	IPs       []string  `json:"ips"`
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace,omitempty"`
+	UID         types.UID         `json:"uid"`
+	IPs         []string          `json:"ips,omitempty"`
+	PodSelector map[string]string `json:"podSelector,omitempty"`
 }
 
 type Destination struct {
-	Peer  Peer                  `json:"peer"`
-	Ports []api.AgentPolicyPort `json:"ports"`
+	Peer              Peer                  `json:"peer"`
+	Ports             []api.AgentPolicyPort `json:"ports"`
+	TrustedProxyCIDRs []string              `json:"trustedProxyCIDRs,omitempty"`
 }
 
 // Topology is supplied by an operator/platform source, never AgentPolicy input.
@@ -122,12 +126,13 @@ type EntraIdentity struct {
 }
 
 type Platform struct {
-	Adapter                AdapterRegistration `json:"adapter"`
-	Topology               Topology            `json:"topology"`
-	Grants                 []ApprovedGrant     `json:"grants,omitempty"`
-	Identities             []ApprovedIdentity  `json:"identities,omitempty"`
-	KubernetesAudience     string              `json:"kubernetesAudience,omitempty"`
-	TokenExpirationSeconds int64               `json:"tokenExpirationSeconds,omitempty"`
+	Adapter                AdapterRegistration       `json:"adapter"`
+	Topology               Topology                  `json:"topology"`
+	Grants                 []ApprovedGrant           `json:"grants,omitempty"`
+	Identities             []ApprovedIdentity        `json:"identities,omitempty"`
+	KubernetesAudience     string                    `json:"kubernetesAudience,omitempty"`
+	TokenExpirationSeconds int64                     `json:"tokenExpirationSeconds,omitempty"`
+	IngressMTLS            *ingressmtls.Registration `json:"ingressMTLS,omitempty"`
 }
 
 type CompileInput struct {
@@ -135,6 +140,7 @@ type CompileInput struct {
 	Resolution      sandbox.Resolution
 	AgentName       string
 	Namespace       string
+	ServiceName     string
 	Platform        Platform
 }
 
@@ -150,14 +156,16 @@ type Plan struct {
 	Network            NetworkPlan                 `json:"network"`
 	Identity           IdentityPlan                `json:"identity"`
 	Resources          []unstructured.Unstructured `json:"resources"`
+	IngressMTLS        *ingressmtls.Plan           `json:"ingressMTLS,omitempty"`
 }
 
 type NetworkPlan struct {
-	Adapter         string                     `json:"adapter"`
-	IngressMode     api.AgentPolicyIngressMode `json:"ingressMode"`
-	DNSIPs          []string                   `json:"dnsIPs"`
-	TrustedProxyIPs []string                   `json:"trustedProxyIPs,omitempty"`
-	Policy          CiliumNetworkPolicy        `json:"policy"`
+	Adapter     string                     `json:"adapter"`
+	IngressMode api.AgentPolicyIngressMode `json:"ingressMode"`
+	DNSIPs      []string                   `json:"dnsIPs"`
+	// The existing wire field also carries explicitly registered ingress Pod CIDRs.
+	TrustedProxyIPs []string            `json:"trustedProxyIPs,omitempty"`
+	Policy          CiliumNetworkPolicy `json:"policy"`
 }
 
 type IdentityPlan struct {

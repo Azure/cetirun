@@ -38,11 +38,16 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get"]
-  {{- if and .Values.sandboxSources.enabled (or .Values.sandboxSources.placementConfigMapName .Values.sandboxSources.nativeExecution) }}
+  # Recorded migrations require observation and finalization even when new starts are disabled.
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get"]
-  {{- end }}
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes", "csidrivers"]
+    verbs: ["get"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "patch"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["get"]
@@ -127,12 +132,17 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.istio.io"]
     resources: ["gateways"]
+    {{- if .Values.sandboxSources.nativeExecution }}
+    # Only the native executor registers Gateway metadata watches.
+    verbs: ["get", "list", "watch"]
+    {{- else }}
     verbs: ["get"]
+    {{- end }}
   {{- end }}
 
   # Istio VirtualServices + Sidecar (egress scope)
   - apiGroups: ["networking.istio.io"]
-    resources: ["virtualservices", "sidecars"]
+    resources: ["virtualservices", "sidecars", "destinationrules"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["security.istio.io"]
     resources: ["authorizationpolicies", "peerauthentications"]

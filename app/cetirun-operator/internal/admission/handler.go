@@ -202,6 +202,14 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	if err := h.protectedPolicyBudget(request, agent, old); err != nil {
 		return admission.Denied(err.Error())
 	}
+	var previousMigration *api.PlannedMigrationRequest
+	if old != nil {
+		previousMigration = old.Spec.PlannedMigration
+	}
+	if !equality.Semantic.DeepEqual(agent.Spec.PlannedMigration, previousMigration) &&
+		!h.config.administrator(request.UserInfo) {
+		return admission.Denied("planned migration destinations require platform administrator authority")
+	}
 	assigned := ""
 	if old == nil {
 		name, assignment, err := h.creationTeam(request, agent)

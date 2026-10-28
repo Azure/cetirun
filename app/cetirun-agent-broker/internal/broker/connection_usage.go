@@ -156,7 +156,7 @@ func (k *kubeClient) usage(ctx context.Context, record *connectionRecord) (conne
 		result.Agents = append(result.Agents, agent)
 	}
 	sort.Slice(result.Agents, func(i, j int) bool { return result.Agents[i].InstanceUID < result.Agents[j].InstanceUID })
-	result.CanRemove = len(result.Agents) == 0 && connectionMode(record.Connection) == modeDelegated
+	result.CanRemove = len(result.Agents) == 0 && isSharedConnectionMode(connectionMode(record.Connection))
 	return result, nil
 }
 

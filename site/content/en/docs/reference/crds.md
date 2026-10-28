@@ -67,6 +67,7 @@ migration. Retention does not protect against a schema downgrade.
 | `helm.values` | Map-shaped top-level entries; see admission notes below |
 | `suspended` | Request zero replicas and removal of the instance VirtualService; false when omitted |
 | `restartRequestID` | Optional retained-restart ID: 16-128 letters, digits, `_` or `-`. Changing it requests a new Pod through normal reconciliation; reusing it does not. Cannot be removed once set or changed while suspended |
+| `plannedMigration` | Opt-in administrator request with `requestID` and destination `target.name`/`target.uid`; common-executor OpenClaw/Hermes and one CSI/RWOP HOME only. An accepted request is immutable until completed; the same ID cannot change its destination |
 | `tailscale.authKeySecretRef` | Required non-empty Secret name when `tailscale` is present; instance-namespace Secret must contain non-empty `TAILSCALE_AUTH_KEY` |
 | `msteams.enabled` | Opt in to Teams provisioning; default false |
 | `msteams.appId` | Optional lowercase UUID client ID; the controller uses it as a fallback after tracked/name-based resolution and app creation |
@@ -77,8 +78,8 @@ The namespace and release derive from `metadata.name`. For example, `alice`
 uses `cetirun-alice` and `openclaw-alice`. An owner can have a differently named
 instance; use the reported status instead of deriving names from the alias.
 Use short DNS-label instance names. Portal creation reserves `oauth2`, `api`,
-`internal`, `healthz`, `readyz`, `assets`, `portal`, `instances`, `admin`, and
-`ui`. Direct CRD admission does not impose that same list; the controller
+`internal`, `healthz`, `readyz`, `assets`, `portal`, `instances`, `admin`,
+`connections`, and `ui`. Direct CRD admission does not impose that same list; the controller
 explicitly rejects `ui`. Avoid all reserved names rather than relying on
 schema acceptance to establish safe routing.
 
@@ -140,6 +141,7 @@ check does not prove that an override will reconcile successfully.
 | `namespace`, `helmReleaseName` | Actual managed resource locations |
 | `observedGeneration` | Generation recorded after Helm succeeds, before pod/ingress readiness is established |
 | `observedRestartRequestID` | Restart request observed on the current ready Pod; an accepted request or applied template alone does not set it |
+| `plannedMigration` | Controller-owned source/storage identity and acknowledgement checkpoint; phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, `Completed`. Not a physical-fencing receipt or permission to edit status |
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
@@ -283,8 +285,12 @@ scratch size. They use these admin-only endpoints:
 - `GET` and `POST /api/v1/admin/sandboxes`
 - `GET`, `PUT`, and `DELETE /api/v1/admin/sandboxes/{name}`
 
-The Sandbox request contains `name`, `type`, `resources`, and `storage` with
-the same structure as the CRD spec. Updates and deletes also require the `uid`
+The Sandbox request contains `name`, optional `type`, `resources`, and `storage`
+with the same structure as the CRD spec. Omitting `type` or setting it to `null`
+defaults to `kata` on both create and full-spec update, matching Kubernetes
+defaulting. An explicit invalid value, including an empty string, is rejected
+rather than replaced by the default. Resource and storage fields remain required.
+Updates and deletes also require the `uid`
 and `resourceVersion` returned by a read. The response reports `ready` only
 from a condition for the current generation. Saving a Sandbox does not
 install a runtime or establish runtime readiness.
@@ -378,10 +384,28 @@ when they differ. Removing a field clears it on the key. Other key settings and
 metadata are kept. The limits are not part of the Gateway policy revision, so
 changing them does not start the reprojection fence that a model or budget
 change starts, and the operator keeps each Agent's key. Sandbox execution,
-however, takes the whole AgentPolicy as an input of the Agents it runs: a
-limits change, like any other change to the policy, restarts the policy's
-running Agents once. Keys of legacy Agents without a policy are not changed;
-Gateway administrators manage their limits.
+including coordinated configuration reservations, also excludes
+`modelAccess.rateLimits` from its execution inputs. Adding, editing, or removing
+only these limits, including `perModel`, does not stop or restart running
+native Agents. For common-executor Sandboxes this includes workloads still
+initializing or completing a retained restart: a limits-only update does not
+reapply the workload, temporarily block its key, or release its unchanged
+native reservation. A policy status update during bootstrap is compared against
+the captured execution inputs and immutable UID, not its resource version alone.
+While policy status catches up to the new generation, the
+operator reassesses the current policy against the same trusted platform
+inventory and grants used by the policy controller instead of stopping an Agent
+solely for that observation delay. Unavailable or invalid policy evidence still
+holds execution. Budgets, model authorization, and other execution controls
+retain their normal fencing and coordination checks; the exact coordinated
+write still includes the limits. Keys of legacy Agents without a policy are
+not changed; Gateway administrators manage their limits.
+
+Persisted execution evidence is not rewritten by this change. Older single-start
+lifetimes or coordination reservations whose saved policy digest includes
+`modelAccess.rateLimits`, even an empty object, remain fail-closed on an input
+mismatch and require the existing stop/recreate procedure. Upgrade the operator and admission readers
+before editing limits; do not manually alter their saved digests.
 
 The total limits count every request on the key, including the Agent's GitHub
 Copilot models. A per-model limit applies to the model name a request uses after
@@ -426,11 +450,18 @@ or `/SCTP` is specified. Rule changes are submitted when the Policy is saved.
 
 Agent Identity, Entra ID, blocked FQDNs, and ingress mTLS are read-only in this
 editor. Existing values remain visible and are preserved when other fields are
-saved. FQDN blocking and mTLS lack supported enforcement; Agent Identity lacks
+saved. FQDN blocking lacks supported enforcement; ingress mTLS requires the
+separate [administrator-registered managed endpoint](../../guides/agent-ingress-mtls/),
+not a Portal toggle. Agent Identity lacks
 the credential-service evidence needed for aggregate `PolicyApplied`. Other
 controls also depend on the selected execution profile and platform capabilities.
-For example, native single-start rejects internal CIDR exceptions, SCTP blocked
-ports, Kubernetes access, and Entra ID.
+New common-executor Kata lifetimes support internal CIDR grants and SCTP port
+rules only with the corresponding explicit platform registration. SCTP internal
+grants are limited to direct endpoints, excluding registered Service and
+Kubernetes API destinations. Retained version-1 native single-start lifetimes
+still reject internal grants and SCTP requests. See the
+[native SCTP usage and qualification boundary]({{< repo "examples/native-sandbox/README.md" >}}#governed-sctp-egress);
+an accepted API value does not qualify the actual network path.
 
 The Operator retains the Policy's `Accepted` condition for controller decisions
 and diagnostics; the Portal list and editor do not display this status.

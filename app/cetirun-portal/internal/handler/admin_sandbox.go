@@ -154,7 +154,7 @@ func (h *AdminSandboxHandler) GetSandbox(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *AdminSandboxHandler) CreateSandbox(w http.ResponseWriter, r *http.Request) {
-	var req SandboxUpsertRequest
+	req := SandboxUpsertRequest{SandboxSpec: api.SandboxSpec{Type: api.SandboxKata}}
 	if !decodeConfigurationRequest(w, r, &req) {
 		return
 	}
@@ -180,7 +180,7 @@ func (h *AdminSandboxHandler) UpdateSandbox(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid_name", "Invalid Sandbox name")
 		return
 	}
-	var req SandboxUpsertRequest
+	req := SandboxUpsertRequest{SandboxSpec: api.SandboxSpec{Type: api.SandboxKata}}
 	if !decodeConfigurationRequest(w, r, &req) {
 		return
 	}

@@ -62,6 +62,10 @@ func TestOwnerRestartRejectsForeignOrInvalidManagementRequests(t *testing.T) {
 		{"cross-site", func(r *http.Request, _ *api.Agent) { r.Header.Set("Sec-Fetch-Site", "cross-site") }, http.StatusForbidden},
 		{"missing idempotency key", func(r *http.Request, _ *api.Agent) { r.Header.Del("Idempotency-Key") }, http.StatusBadRequest},
 		{"suspended", func(_ *http.Request, a *api.Agent) { a.Spec.Suspended = true }, http.StatusConflict},
+		{"migration pending", func(_ *http.Request, a *api.Agent) {
+			a.Spec.PlannedMigration = &api.PlannedMigrationRequest{RequestID: "migration-00000001",
+				Target: api.MigrationObject{Name: "node-b", UID: "node-b-uid"}}
+		}, http.StatusConflict},
 		{"single-start", func(_ *http.Request, a *api.Agent) { a.Finalizers = []string{api.SandboxPreparationFinalizer} }, http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {

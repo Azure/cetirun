@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -53,10 +54,10 @@ const maxInstanceNameLength = 35
 //     (infra/istio/templates/ingress/envoy-filter-alias.yaml): exact Portal paths and
 //     complete path-segment subtrees skip the ownership check. An instance using one
 //     of the same bare names would collide with that Portal route (oauth2, api,
-//     internal, healthz, readyz, assets, instances, admin).
+//     internal, healthz, readyz, assets, instances, admin, connections).
 //   - Portal SPA top-level routes (app/cetirun-portal/web/src/App.tsx): the portal
 //     serves these paths itself, so an instance with that name would be unreachable
-//     via the workspace URL (instances).
+//     via the workspace URL (instances, admin, connections).
 //   - Native agent UI namespace (ui): native Agent UIs are served below
 //     /ui/<instance>, so this token cannot be an instance name.
 //   - Portal hostname/subdomain (portal): reserved to keep the portal's own DNS
@@ -64,16 +65,17 @@ const maxInstanceNameLength = 35
 //
 // Keep this list aligned with the three sources above when any of them change.
 var reservedInstanceNames = map[string]struct{}{
-	"oauth2":    {},
-	"api":       {},
-	"internal":  {},
-	"healthz":   {},
-	"readyz":    {},
-	"assets":    {},
-	"portal":    {},
-	"instances": {},
-	"admin":     {},
-	"ui":        {},
+	"oauth2":      {},
+	"api":         {},
+	"internal":    {},
+	"healthz":     {},
+	"readyz":      {},
+	"assets":      {},
+	"portal":      {},
+	"instances":   {},
+	"connections": {},
+	"admin":       {},
+	"ui":          {},
 }
 
 // CreateInstanceRequest is the JSON body for POST /api/v1/instance.
@@ -95,37 +97,41 @@ type CreateInstanceRequest struct {
 
 // InstanceResponse is the JSON response for GET /api/v1/instance.
 type InstanceResponse struct {
-	Alias                    string                      `json:"alias"`
-	InstanceName             string                      `json:"instanceName"`
-	Agent                    cetirunv1alpha1.HarnessSpec `json:"agent"`
-	UID                      string                      `json:"uid"`
-	ResourceVersion          string                      `json:"resourceVersion"`
-	RegistryAuthConfigured   bool                        `json:"registryAuthConfigured"`
-	Generation               int64                       `json:"generation"`
-	ObservedGeneration       int64                       `json:"observedGeneration"`
-	RestartAvailable         bool                        `json:"restartAvailable"`
-	RestartRequestID         string                      `json:"restartRequestId,omitempty"`
-	ObservedRestartRequestID string                      `json:"observedRestartRequestId,omitempty"`
-	DisplayName              string                      `json:"displayName"`
-	Team                     string                      `json:"team"`
-	Model                    string                      `json:"model,omitempty"`
-	Phase                    string                      `json:"phase"`
-	AccessURL                string                      `json:"accessUrl,omitempty"` // Access URL (token is returned separately via GatewayToken)
-	WebUIURL                 string                      `json:"webUIUrl,omitempty"`
-	GatewayToken             string                      `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
-	APIServerKey             string                      `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
-	CetiRunAuthKey           string                      `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
-	TailscaleAuthKey         string                      `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
-	Conditions               []ConditionStatus           `json:"conditions,omitempty"`
-	CreatedAt                string                      `json:"createdAt"`
-	LastReconciled           string                      `json:"lastReconciled,omitempty"`
-	UpgradeAvailable         bool                        `json:"upgradeAvailable"`
-	TeamsEnabled             bool                        `json:"teamsEnabled"`
-	TeamsState               string                      `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
-	TeamsAppID               string                      `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
-	TeamsMessage             string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
-	AgentIdentity            *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
-	AIGateway                *AIGatewayResponse          `json:"aiGateway,omitempty"`
+	Alias                       string                      `json:"alias"`
+	InstanceName                string                      `json:"instanceName"`
+	Agent                       cetirunv1alpha1.HarnessSpec `json:"agent"`
+	UID                         string                      `json:"uid"`
+	ResourceVersion             string                      `json:"resourceVersion"`
+	RegistryAuthConfigured      bool                        `json:"registryAuthConfigured"`
+	Generation                  int64                       `json:"generation"`
+	ObservedGeneration          int64                       `json:"observedGeneration"`
+	Suspended                   bool                        `json:"suspended"`
+	SuspendAvailable            bool                        `json:"suspendAvailable"`
+	SuspensionUnavailableReason string                      `json:"suspensionUnavailableReason,omitempty"`
+	ResumeAvailable             bool                        `json:"resumeAvailable"`
+	RestartAvailable            bool                        `json:"restartAvailable"`
+	RestartRequestID            string                      `json:"restartRequestId,omitempty"`
+	ObservedRestartRequestID    string                      `json:"observedRestartRequestId,omitempty"`
+	DisplayName                 string                      `json:"displayName"`
+	Team                        string                      `json:"team"`
+	Model                       string                      `json:"model,omitempty"`
+	Phase                       string                      `json:"phase"`
+	AccessURL                   string                      `json:"accessUrl,omitempty"` // Access URL (token is returned separately via GatewayToken)
+	WebUIURL                    string                      `json:"webUIUrl,omitempty"`
+	GatewayToken                string                      `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
+	APIServerKey                string                      `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
+	CetiRunAuthKey              string                      `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
+	TailscaleAuthKey            string                      `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
+	Conditions                  []ConditionStatus           `json:"conditions,omitempty"`
+	CreatedAt                   string                      `json:"createdAt"`
+	LastReconciled              string                      `json:"lastReconciled,omitempty"`
+	UpgradeAvailable            bool                        `json:"upgradeAvailable"`
+	TeamsEnabled                bool                        `json:"teamsEnabled"`
+	TeamsState                  string                      `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
+	TeamsAppID                  string                      `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
+	TeamsMessage                string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
+	AgentIdentity               *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
+	AIGateway                   *AIGatewayResponse          `json:"aiGateway,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -732,6 +738,9 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		RegistryAuthConfigured:   configured,
 		Generation:               instance.Generation,
 		ObservedGeneration:       instance.Status.ObservedGeneration,
+		Suspended:                instance.Spec.Suspended,
+		SuspendAvailable:         kube.CanSuspendInstance(instance),
+		ResumeAvailable:          kube.CanResumeInstance(instance),
 		RestartAvailable:         kube.CanRestartInstance(instance),
 		RestartRequestID:         instance.Spec.RestartRequestID,
 		ObservedRestartRequestID: instance.Status.ObservedRestartRequestID,
@@ -743,6 +752,16 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 	}
 	if resp.Phase == "" {
 		resp.Phase = "Pending"
+	}
+	if resp.SuspendAvailable {
+		if err := h.Kube.CheckSuspensionHome(ctx, instance); err != nil {
+			slog.Warn("Retained suspension storage check failed", "name", instance.Name, "error", err)
+			resp.SuspendAvailable = false
+			resp.SuspensionUnavailableReason = kube.ErrSuspensionHomeUnverified.Error()
+			if errors.Is(err, kube.ErrSuspensionHomeRequired) {
+				resp.SuspensionUnavailableReason = kube.ErrSuspensionHomeRequired.Error()
+			}
+		}
 	}
 	if instance.Status.LastReconcileTime != nil {
 		resp.LastReconciled = instance.Status.LastReconcileTime.UTC().Format("2006-01-02T15:04:05Z")

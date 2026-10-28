@@ -203,11 +203,18 @@ func sandboxBuiltinOwned(object client.Object, agent *cetirunv1alpha1.Agent) boo
 }
 
 func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirunv1alpha1.Agent) error {
+	if err := r.stopSandboxBuiltinWorkload(ctx, agent); err != nil {
+		return err
+	}
+	return r.stopNativeSandboxReservation(ctx, agent)
+}
+
+func (r *AgentReconciler) stopSandboxBuiltinWorkload(ctx context.Context, agent *cetirunv1alpha1.Agent) error {
 	reader := r.customReader()
 	namespace := instanceNamespace(agent.Name)
 	if err := reader.Get(ctx, types.NamespacedName{Name: namespace}, &corev1.Namespace{}); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.stopNativeSandboxReservation(ctx, agent)
+			return nil
 		}
 		return err
 	}
@@ -251,11 +258,6 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 		slices.Contains(sts.Spec.Template.Finalizers, sandboxworkload.NativePodFinalizer) ||
 		!agent.DeletionTimestamp.IsZero() {
 		if err := r.finishNativePodLifetime(ctx, agent); err != nil {
-			failures = append(failures, err)
-		}
-	}
-	if len(failures) == 0 {
-		if err := r.stopNativeSandboxReservation(ctx, agent); err != nil {
 			failures = append(failures, err)
 		}
 	}

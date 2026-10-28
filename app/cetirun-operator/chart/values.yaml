@@ -165,8 +165,18 @@ sandboxAdmission:
   caBundle: ""
   # -- Exact authenticated Kubernetes usernames/groups allowed to administer
   # configuration. At least one nonempty list is required even before enforce.
+  # Blanket groups (system:authenticated, system:unauthenticated and the
+  # system:serviceaccounts groups) are refused; list service accounts as users.
   adminUsers: []
   adminGroups: []
+  # -- Name of a ServiceAccount in this release's namespace that is added once
+  # to the administrators, as system:serviceaccount:<release namespace>:<name>,
+  # when admission is enabled. The CetiRun platform chart sets it to the
+  # Portal's ServiceAccount, with which the Portal writes Agents, Teams,
+  # Sandboxes and AgentPolicies. It does not count as the administrator
+  # required above: operations without a Portal page, such as reauthorization,
+  # still need one in adminUsers or adminGroups. Empty adds nothing.
+  portalServiceAccount: ""
   # -- Trusted Kubernetes user/group to Team creation assignments. Conflicting
   # memberships reject; Portal roles or caller-provided Team names are not proof.
   teamAssignments: []
@@ -185,12 +195,16 @@ sandboxAdmission:
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
-  # -- Opt in to common OpenClaw/Hermes reconciliation with Kata/RWOP constraints.
+  # -- Opt in to common OpenClaw/Hermes reconciliation with registered Kata RWO/RWOP HOME.
   # Requires owned bootstrap, enforced admission and the AI Gateway.
   # Existing receipts retain their recorded mode and owned resources.
   # Neither Kubernetes updates nor observed shutdown are physical fencing.
   # Disabling starts retains recorded cleanup and Pod finalization RBAC.
   nativeExecution: false
+  # -- Allow new healthy-source moves of common-executor Agents with one filesystem CSI RWO/RWOP HOME.
+  # Upgrade CRDs, Operator, admission and Portal readers before enabling.
+  # Existing checkpoints remain readable and cleanup permissions are retained when disabled.
+  plannedMigration: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
   # Requires chart/image/port pins; the common flow can record them first.
   # Published content stays external.
@@ -213,7 +227,8 @@ sandboxSources:
   # Must match sandboxAdmission.placementConfigMapName. Records the existing
   # reservation after zero-replica staging; does not enroll Nodes or grant execution.
   placementConfigMapName: ""
-  # -- Approved native helpers; arbitrary injected containers remain unsupported.
+  # -- Approved helpers for legacy held preparation only.
+  # Reconciled (v2) lifetimes use runtime chart helper settings instead.
   helpers:
     doctor: false
     logger: false
@@ -291,6 +306,18 @@ aiGateway:
       # -- Defaults to the release version.
       tag: ""
       digest: ""
+    # -- Let the Gateway's background health checks probe each Agent's GitHub
+    # Copilot routes. Off by default: each probe is a real model call on the
+    # Agent owner's own Copilot allowance, about 288 a day per route at the
+    # Gateway's default interval, and an Agent has a route per Copilot model.
+    # On, the routes are probed like the Gateway's other deployments (its
+    # router.healthChecks), without retries. Off, a route whose proxy cannot
+    # be reached stays in rotation: where it shares a model's name with shared
+    # deployments, the requests that land on it fail until the proxy is back.
+    # A change registers each Agent's routes again within about ten minutes,
+    # without restarting Agents.
+    healthChecks:
+      enabled: false
 
 # -- Override the chart's default skills storage account.
 # Empty string (default) means use the chart's built-in default.

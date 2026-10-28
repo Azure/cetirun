@@ -6,6 +6,15 @@ Licensed under the MIT License.
 - name: desktop
   image: "{{ include "cetirun.desktopImage" . }}"
   imagePullPolicy: {{ .Values.desktop.image.pullPolicy }}
+  {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+  command: ["/bin/bash", "/etc/cetirun/desktop-ingress-entrypoint.sh"]
+  readinessProbe:
+    exec:
+      command: ["python3", "/etc/cetirun/desktop-ingress-probe.py"]
+    periodSeconds: 5
+    timeoutSeconds: 4
+    failureThreshold: 3
+  {{- end }}
   securityContext:
     {{- if .Values.sandboxWorkload }}
     {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
@@ -25,6 +34,10 @@ Licensed under the MIT License.
       containerPort: 18800
       protocol: TCP
   env:
+    {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+    - name: CETIRUN_INGRESS_MTLS
+      value: "true"
+    {{- end }}
     - name: DISPLAY_NUM
       value: "99"
     - name: SCREEN_RESOLUTION
@@ -40,6 +53,11 @@ Licensed under the MIT License.
   resources:
     {{- toYaml .Values.desktop.resources | nindent 4 }}
   volumeMounts:
+    {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+    - name: config
+      mountPath: /etc/cetirun
+      readOnly: true
+    {{- end }}
     - name: data
       mountPath: /home/vibe
     - name: tmp-desktop

@@ -637,6 +637,11 @@ type ModelRequest struct {
 	// each failed probe, which a rate-limited upstream answers with more
 	// rate limiting.
 	ProbeWithoutRetries bool
+	// NoBackgroundHealthCheck sets model_info.disable_background_health_check:
+	// the Gateway's background health checks skip the deployment. It stays in
+	// rotation, since routing leaves out only deployments whose last probe
+	// failed.
+	NoBackgroundHealthCheck bool
 }
 
 // AddModel registers a deployment. The Gateway rejects a second deployment
@@ -651,6 +656,9 @@ func (c *Client) AddModel(ctx context.Context, req ModelRequest) error {
 	}
 	if req.ProbeWithoutRetries {
 		info["health_check_params"] = map[string]any{"max_retries": 0}
+	}
+	if req.NoBackgroundHealthCheck {
+		info["disable_background_health_check"] = true
 	}
 	params := map[string]any{"model": req.Model, "api_base": req.APIBase}
 	if req.APIKey != "" {

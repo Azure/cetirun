@@ -219,7 +219,7 @@ type nativeStartAdmissionObservation struct {
 type nativeStartAPIHarness struct {
 	*nativeSandboxFixture
 	ctx          context.Context
-	admin        client.Client
+	admin        client.WithWatch
 	member       client.Client
 	holdRequests chan nativeStartAdmissionObservation
 	localHelm    *nativeStartLocalHelm
@@ -227,6 +227,30 @@ type nativeStartAPIHarness struct {
 }
 
 func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool, network ...api.AgentPolicyNetwork) *nativeStartAPIHarness {
+	t.Helper()
+	return newNativeStartAPIHarnessWithHome(t, admissionNative, coordinated, corev1.ReadWriteOncePod, network...)
+}
+
+func newNativeStartAPIHarnessWithHome(t *testing.T, admissionNative, coordinated bool, homeMode corev1.PersistentVolumeAccessMode, network ...api.AgentPolicyNetwork) *nativeStartAPIHarness {
+	t.Helper()
+	return newNativeStartAPIHarnessForAgent(t, admissionNative, coordinated, homeMode, "openclaw", network...)
+}
+
+func newNativeStartAPIHarnessForAgent(t *testing.T, admissionNative, coordinated bool, homeMode corev1.PersistentVolumeAccessMode, kind string, network ...api.AgentPolicyNetwork) *nativeStartAPIHarness {
+	t.Helper()
+	return newNativeStartAPIHarnessConfigured(t, admissionNative, coordinated, homeMode, kind, nil, network...)
+}
+
+func newNativeStartAPIHarnessWithRegistration(t *testing.T, admissionNative, coordinated bool, homeMode corev1.PersistentVolumeAccessMode,
+	configure func(*sandbox.Capabilities), network ...api.AgentPolicyNetwork,
+) *nativeStartAPIHarness {
+	t.Helper()
+	return newNativeStartAPIHarnessConfigured(t, admissionNative, coordinated, homeMode, "openclaw", configure, network...)
+}
+
+func newNativeStartAPIHarnessConfigured(t *testing.T, admissionNative, coordinated bool, homeMode corev1.PersistentVolumeAccessMode,
+	kind string, configure func(*sandbox.Capabilities), network ...api.AgentPolicyNetwork,
+) *nativeStartAPIHarness {
 	t.Helper()
 	if len(network) > 1 {
 		t.Fatal("native API fixture accepts at most one network policy")
@@ -247,6 +271,8 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool, n
 		CRDs: []*apiextensionsv1.CustomResourceDefinition{
 			nativeStartExternalCRD("cilium.io", "v2", "CiliumNetworkPolicy", "ciliumnetworkpolicies"),
 			nativeStartExternalCRD("networking.istio.io", "v1beta1", "VirtualService", "virtualservices"),
+			nativeStartExternalCRD("networking.istio.io", "v1beta1", "Gateway", "gateways"),
+			nativeStartExternalCRD("networking.istio.io", "v1beta1", "DestinationRule", "destinationrules"),
 		},
 		ControlPlaneStartTimeout: time.Minute, ControlPlaneStopTimeout: 30 * time.Second,
 	}
@@ -449,9 +475,9 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool, n
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := testfixture.New("openclaw")
+	input := testfixture.New(kind)
 	h.nativeSandboxFixture = &nativeSandboxFixture{r: r, kube: controllerClient, gateway: gateway, agent: input.Agent}
-	h.installPlatform(t, input, admissionNative, network...)
+	h.installPlatform(t, input, admissionNative, homeMode, configure, network...)
 	// Disabled admission must still deny release of the retained execution hold.
 	admissionConfig.NativeExecution = admissionNative
 	handler, err := sandboxadmission.NewHandler(admissionClient, admissionConfig)
@@ -480,8 +506,11 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool, n
 	agent.Spec.Team, agent.Spec.SandboxRef = "", ""
 	agent.Spec.ModelAccess = modelAccess(true, false)
 	agent.Spec.Helm.Version = runtimeChart.Metadata.Version
-	agent.Spec.Agent.Image = ptr.To("registry.example.com/openclaw-gateway:" + runtimeChart.Metadata.AppVersion)
+	agent.Spec.Agent.Image = ptr.To("registry.example.com/" + kind + "-gateway:" + runtimeChart.Metadata.AppVersion)
 	agent.Spec.Agent.Port = ptr.To[int32](18789)
+	if kind == "hermes" {
+		agent.Spec.Agent.Port = ptr.To[int32](8642)
+	}
 	var lastErr error
 	if err := wait.PollUntilContextTimeout(h.ctx, 100*time.Millisecond, 20*time.Second, true, func(ctx context.Context) (bool, error) {
 		probe := agent.DeepCopy()
@@ -502,7 +531,9 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool, n
 	return h
 }
 
-func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.Fixture, nativeProfile bool, network ...api.AgentPolicyNetwork) {
+func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.Fixture, nativeProfile bool, homeMode corev1.PersistentVolumeAccessMode,
+	configure func(*sandbox.Capabilities), network ...api.AgentPolicyNetwork,
+) {
 	t.Helper()
 	runtimeClass := input.Input.RuntimeClass.DeepCopy()
 	runtimeClass.ObjectMeta = metav1.ObjectMeta{Name: runtimeClass.Name}
@@ -510,7 +541,7 @@ func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.
 	h.create(t, runtimeClass)
 	h.create(t, storageClass)
 	capabilities := input.Input.Resolution.Capabilities
-	capabilities.HomeAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}
+	capabilities.HomeAccessModes = []corev1.PersistentVolumeAccessMode{homeMode}
 	capabilities.AuthenticatedIngress = true
 	platform := sandboxpolicy.Platform{
 		Adapter: sandboxpolicy.AdapterRegistration{Name: sandboxpolicy.AzureCNIOverlayCilium, Qualified: true, Available: true, Revision: "synthetic-only"},
@@ -534,11 +565,14 @@ func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.
 		capabilities.Profile = sandbox.ProfileNativeSingleStart
 		capabilities.EnforcementObservation, capabilities.RestrictiveFailure = false, false
 		platform.Adapter.Name, platform.Adapter.Qualified = sandboxpolicy.Cilium, false
-		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
+		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{input.Agent.Spec.Agent.Type}
 	}
 	if len(network) == 1 {
 		input.Policy.Spec.Network = *network[0].DeepCopy()
 		capabilities.BlockedPorts = len(input.Policy.Spec.Network.BlockedPorts) != 0
+	}
+	if configure != nil {
+		configure(&capabilities)
 	}
 	document := SandboxPlatformConfiguration{
 		Version: "v1", Registrations: map[api.SandboxType]sandbox.Registration{api.SandboxKata: {Capabilities: capabilities, Available: true}},
@@ -557,7 +591,7 @@ func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.
 	h.create(t, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Namespace: h.r.OperatorNamespace, Name: "sandbox-platform",
 	}, Data: map[string]string{SandboxPlatformConfigurationKey: string(raw)}})
-	input.Sandbox.Spec.Storage.Home.AccessMode = corev1.ReadWriteOncePod
+	input.Sandbox.Spec.Storage.Home.AccessMode = homeMode
 	input.Policy.Spec.ModelAccess = aiGatewayTestPolicy().Spec.ModelAccess
 	input.Policy.Spec.ModelAccess.Copilot.Allowed = false
 	input.Policy.Spec.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated

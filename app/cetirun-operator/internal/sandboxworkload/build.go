@@ -81,6 +81,14 @@ func Build(input Input) (*Bundle, error) {
 	if err := validateControls(input); err != nil {
 		return nil, err
 	}
+	if tls := input.Controls.IngressMTLS; tls != nil {
+		if !input.Reconciled || tls.AgentUID != binding.AgentUID || tls.Namespace != input.Namespace.Name ||
+			tls.Harness != input.AgentType || slices.Contains(input.AuthorizedSecrets, tls.ServerSecret.Name) ||
+			(input.ImagePullSecret != nil && input.ImagePullSecret.Name == tls.ServerSecret.Name) ||
+			tls.ServiceHost != input.WorkloadName+"."+input.Namespace.Name+".svc.cluster.local" {
+			return nil, fmt.Errorf("mTLS requires the common executor and distinct per-Agent endpoint credentials")
+		}
+	}
 	if len(input.AuthorizedSecrets) == 0 {
 		return nil, fmt.Errorf("an explicitly authorized native runtime Secret is required")
 	}
@@ -112,6 +120,9 @@ func Build(input Input) (*Bundle, error) {
 	b := &Bundle{input: copy}
 	spec := corev1.PodSpec{Containers: []corev1.Container{{Resources: b.agentResources()}}}
 	if input.Helpers.Logger {
+		spec.Containers = append(spec.Containers, corev1.Container{Resources: b.helperResources()})
+	}
+	if input.Controls.IngressMTLS != nil {
 		spec.Containers = append(spec.Containers, corev1.Container{Resources: b.helperResources()})
 	}
 	if input.Helpers.Desktop {
@@ -164,18 +175,19 @@ func validateControls(input Input) error {
 	if c.IngressMode != input.Resolution.AgentPolicy.Network.Ingress.Mode {
 		return fmt.Errorf("compiler ingress mode must match the shared resolution")
 	}
+	if (c.IngressMTLS != nil) != input.Resolution.AgentPolicy.Network.Ingress.RequireMTLS {
+		return fmt.Errorf("compiler mTLS endpoint must match the requested ingress contract")
+	}
 	if err := validateDNSIPs(c.DNSIPs); err != nil {
 		return err
 	}
 	nativeIngress := input.GatewayKey != nil && (input.AgentType == "openclaw" || input.Reconciled) && c.IngressMode == api.AgentPolicyIngressAuthenticated
 	if nativeIngress != (len(c.TrustedProxyIPs) != 0) {
-		return fmt.Errorf("native authenticated ingress requires explicit compiler proxy IPs; other modes cannot grant proxy trust")
+		return fmt.Errorf("native authenticated ingress requires explicit compiler proxy trust; other modes cannot grant it")
 	}
 	for i, value := range c.TrustedProxyIPs {
-		address, err := netip.ParseAddr(value)
-		if err != nil || address.Is4In6() || address.Zone() != "" || address.String() != value ||
-			!address.IsGlobalUnicast() || (i > 0 && c.TrustedProxyIPs[i-1] >= value) {
-			return fmt.Errorf("compiler proxy IPs must be sorted, distinct canonical unicast addresses, not CIDRs")
+		if err := sandboxpolicy.ValidateProxyTrust(value); err != nil || (i > 0 && c.TrustedProxyIPs[i-1] >= value) {
+			return fmt.Errorf("compiler proxy trust must contain sorted, distinct canonical unicast IPs or bounded Pod CIDRs")
 		}
 	}
 	volumes := map[string]bool{}

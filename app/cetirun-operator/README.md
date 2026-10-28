@@ -113,6 +113,15 @@ Persisted lifetime mode and owned namespace/HOME identities still govern recover
 and cleanup. Configuration changes do not migrate or adopt existing resources,
 and missing ownership evidence still holds execution.
 
+Kata HOME supports `ReadWriteOncePod` (RWOP) and `ReadWriteOnce` (RWO) when the
+selected mode is explicitly listed in the platform's `homeAccessModes`.
+Both use the same common-executor restart, retained suspension/resume and
+cleanup paths. Coordination still waits for observed workload shutdown and
+every namespace Pod to terminate before releasing a source reservation.
+RWO is not a shared HOME grant or a single-Pod storage lock; private ownership,
+one main StatefulSet replica and current Pod admission remain required.
+Changing a Sandbox does not convert an existing HOME claim's access mode.
+
 Shared-only, Copilot-only and mixed model configurations use the existing
 Gateway and per-Agent Copilot proxy. The proxy is a separate Deployment, not a
 sidecar: it cannot mount HOME or consume the Agent's runtime/model credentials.
@@ -212,6 +221,16 @@ Cancellation races with submission
 through a conditional state update. Submitted, uncertain or older unmarked
 checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
+Helm configuration and history reads recheck current authority without marking
+submission. The post-renderer records submission before resource writes, so a
+first-install history read failure can cancel a still-pending expectation and
+recover through normal retry or deletion. It cannot reset a previously submitted
+or uncertain checkpoint merely because the workload is absent.
+Final apply claims the expectation resource version before its last authority
+read. First attempts stay pending throughout those reads; a CAS records submitted
+only immediately before manifest delivery. Competing claims fence stale writers,
+while lost submission acknowledgements and previously submitted work remain
+uncertain and require shutdown evidence.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.
@@ -220,6 +239,145 @@ releases/deletes the Operator-namespace grant journal before removing the Agent
 finalizer. This cleanup remains available when new starts are disabled and
 retries terminating journals during foreground deletion without adopting foreign
 ownership or discarding grant history.
+
+### Scoped internal egress
+
+Common-executor Kata OpenClaw/Hermes lifetimes also support
+`AgentPolicy.spec.network.allowedInternalCIDRs` with explicit TCP/UDP ports
+(omitted protocol means TCP), for either registered HOME mode. They use the
+existing Cilium compiler, owned per-Agent policy and current-source Pod
+admission, not an additional network controller. Grants must stay within private
+or registered internal networks and cannot include node, management, metadata,
+loopback or other mandatory exclusions. Explicit CIDR/port denies and the
+approved-DNS-only restriction retain precedence over grants. Overlapping grants
+combine ports only within their common address range; unspecified ports and
+other managed peers remain denied.
+
+Cilium-managed destinations additionally require the platform's complete
+`topology.peers` inventory, exact namespace and protected peer-UID labels.
+All registered addresses for one peer must have identical effective permissions;
+inconsistent address/port permissions are rejected rather than widening its
+endpoint selector. A CIDR grant does not discover Pods, translate Service ports,
+or grant arbitrary cluster access. These network edits still use the
+configuration-coordination rules above, including acknowledged suspension
+before changing reserved sources. Retained version-1 single-start lifetimes
+continue to reject internal grants. See the
+[internal-egress example](../../examples/native-sandbox/README.md#scoped-internal-egress)
+for the policy shape and separate live validation requirements.
+
+### Planned healthy-source migration (separate opt-in)
+
+`sandboxSources.plannedMigration: true` enables a platform-administrator
+Kubernetes API for cold moves of common-executor OpenClaw/Hermes Agents.
+It requires `nativeExecution`, which selects common reconciliation. The default is off;
+the false setting is omitted from controller configuration for reader-first
+rollout. Upgrade the CRDs, all Operator and admission replicas, and Portal
+readers before enabling new requests. Do not roll readers or schemas back while
+migration records remain. Disabling new requests retains accepted operations
+and their cleanup; it does not remove an existing destination pin.
+
+This scope requires one bound filesystem CSI `ReadWriteOncePod` or `ReadWriteOnce` HOME,
+with no other PVC mounts, a CSI driver that requires attachment, and a healthy
+source on a different Node. It preserves Agent, namespace, StatefulSet, HOME
+PVC/PV, chart pin, Gateway key and spending identities. It does not support
+Custom or retained single-start lifetimes, shared-volume migration,
+cross-cluster moves, forced deletion/detach, or unavailable-source recovery.
+Use an explicitly authorized environment and qualify the actual runtime/CSI
+artifact set before enabling this feature.
+
+Set `spec.plannedMigration` to a fresh `requestID` and a `target` containing the
+destination Node's current `name` and `uid`. IDs use the retained-restart
+16-128 character format. Submit with Agent UID/resourceVersion preconditions.
+The same ID cannot select a different destination; an accepted request cannot
+be replaced until completed. A rejected, unaccepted request can be corrected.
+An uncaptured request rejected by the activation gate still rechecks source
+authorization; leaving that request present cannot retain revoked access.
+After a recorded migration, keep the destination rather than removing the field.
+Portal has no migration action in this increment and rejects new owner restarts
+while a migration is pending.
+
+The controller persists `status.plannedMigration` before side effects:
+
+1. `Protecting` captures exact source/storage/Node identities and protects the
+   source Pod and VolumeAttachment with separate finalizers. Once both are
+   protected, failure to write the stop checkpoint does not skip independent
+   authorization checks or shutdown of an unauthorized source. A transient dependency failure retains the source
+   observations and continues shutdown from `Stopping`,
+   rather than requiring readiness that its own hold cleared. Destination start
+   still requires current authorization through common reconciliation; no
+   desired generation is reported as applied merely to pass a migration check.
+   An accepted checkpoint is handled before bootstrap-receipt lookups can enter
+   an independent hold. During `Protecting`, failed source reads or protection
+   writes delay scale-down even when suspension is requested; retries must
+   retain both observations rather than destroy an unprotected source. Those
+   retries still recheck current authorization. Suspension, withdrawn access,
+   changed projections or unavailable authorization independently block the
+   existing Gateway key, withdraw ingress and apply an all-traffic deny to the
+   exact owned Cilium policy while incomplete protection prevents scale-down.
+   Its Agent/namespace selector and the captured source/storage identities are
+   unchanged; ordinary reconciliation restores the policy before destination use.
+   Network write/read-back failures remain explicit and retryable, not evidence
+   of successful dataplane isolation. The temporary block retains key/spend
+   identity without applying a new grant or claiming an administrator's block.
+   Access failures are returned with the protection failure for retry; preserving
+   source observations does not permit continued use of an obsolete grant.
+2. `Stopping` blocks the existing key, withdraws routing and stops main/auxiliary
+   workloads. `SourceTerminated` requires terminal Pod status and a completed
+   status for every named container, while the original source Node/boot and CSI
+   identity remain healthy. A missing Pod is not a termination acknowledgement.
+3. `Detached` requires the original, retained VolumeAttachment to be deleting
+   and to have released the CSI attacher finalizer observed during capture.
+   The attacher removes that finalizer after successful detach, before updating
+   `attached` and clearing `detachError`; those later status writes may be lost
+   without retry. The retained finalizer transition is therefore the completion
+   evidence, even when status is stale. The attachment UID, volume, driver and
+   source Node must still match. Only after recording `Detached` is the migration's
+   attachment finalizer removed. A missing attachment or `attached: false` with
+   the CSI finalizer still present does not establish detach. Ordinary deletion
+   uses the same evidence to release the captured protection. See the upstream
+   [external-attacher completion ordering](https://github.com/kubernetes-csi/external-attacher/blob/e19b215493af4f130a8a82ef5911b5f052edd81c/pkg/controller/util.go#L82).
+4. `Starting` follows removal of source Pods/attachments and release of any
+   configuration reservation. The destination must satisfy the bound PV
+   topology, workload/RuntimeClass scheduling and supported Equal/Exists
+   tolerations. Required node-name affinity intersects existing constraints;
+   it never replaces them or sets `spec.nodeName` directly.
+5. `Completed` requires the current Ready replacement Pod on the selected Node
+   and an attached destination VolumeAttachment for the original HOME.
+
+Both Pod binding APIs re-read the destination Node UID and provider identity.
+Same-name replacement Nodes are rejected. Node health checks require a Ready
+condition and its UID-owned lease renewed within the lease duration, capped at
+60 seconds; lease timestamps more than five seconds ahead are rejected. Source
+boot/CSI identity changes or uncertain observations block progress rather than
+selecting another destination. These API observations are **not physical writer
+fencing** and do not qualify failed-node recovery.
+
+Suspension keeps the checkpoint and prevents destination start; resume continues
+the same request. If suspension arrives before the first checkpoint, a still-ready
+source is captured and protected before stopping. A rejected migration preflight
+does not block independently requested suspension; an unaccepted request remains
+available for administrator correction or withdrawal rather than being silently
+cleared. If an authorization outage holds the source before capture, ordinary
+reconciliation can restore its currently authorized running projection after
+the dependency recovers. The unaccepted destination is not rendered or applied;
+any previous completed destination pin remains in force. Both binding APIs allow
+that source recovery, and capture is retried only after readiness returns.
+Current authorization, suspension and the migration opt-in still apply, and a
+newly persisted checkpoint invalidates an older recovery apply.
+Pending migration/shutdown work reports `Pending`, not completed
+suspension: setting zero replicas alone does not acknowledge source termination.
+Deletion never creates a replacement and releases only the
+captured protections after their acknowledgements. Do not remove finalizers or
+edit status to bypass a wait. Source protection writes, acknowledgements and
+replacement apply remain retryable after conflicts or lost responses.
+
+The Operator retains `get` on Nodes/CSINodes/CSIDrivers and `get/list/patch` on
+VolumeAttachments for observation and finalizer cleanup even when new requests
+are disabled. Admission retains read-only Node access and validates only the
+checkpoint-authorized Pod finalizer delta; it does not mutate lifecycle state.
+Offline tests exercise synthetic kubelet/CSI observations and isolated API
+servers, not a live AKS driver, model, storage durability or physical fencing.
+See the [lifecycle guide](../../site/content/en/docs/guides/lifecycle.md#planned-node-migration).
 
 ### Retained single-start profile and capability registration
 
@@ -250,8 +408,11 @@ registration uses `registrations.kata.Capabilities.profile: "native-single-start
 in `platform.json`, with `platforms.kata.adapter` set to
 `{"name":"cilium","revision":"<probed-version>","qualified":false,"available":true}`.
 This generic Cilium identifier does not assert Azure CNI or Azure topology.
-The profile requires actual Kata resource limits, only `ReadWriteOncePod` HOME,
-and the existing guest-external network, deny-precedence, node-traffic and DNS
+The profile requires actual Kata resource limits and an explicit, nonempty
+`homeAccessModes` list containing only `ReadWriteOncePod` and/or `ReadWriteOnce`.
+New common-executor lifetimes can use either registered mode; retained
+single-start lifetimes still require `ReadWriteOncePod`. Both retain
+the existing guest-external network, deny-precedence, node-traffic and DNS
 IP restrictions. Declare `hostResourceLimits`, `guestExternalNetwork`,
 `denyPrecedence`, `nodeTraffic` and `dnsIPRestrictions` only after establishing
 those controls. TCP and UDP, the actual IP families, revisioned complete
@@ -260,18 +421,34 @@ remain required; read-only root and ingress support must match the selected
 policy. The configuration harness allow-list supports `openclaw` and `hermes`;
 the earlier single-start executor itself remains OpenClaw-only.
 `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
-FQDN support, mTLS, Kubernetes access and Entra ID flags must be
+FQDN support, Kubernetes access and Entra ID flags must be
 `false`; identity/token grant declarations are unsupported. These are not
 physical fencing or guest-external runtime-observation guarantees.
+
+Common-executor OpenClaw and Hermes can separately opt in to managed ingress
+mTLS with `mutualTLS: true`, per-Agent external certificate approvals and the
+registered Envoy endpoint. Retained single-start lifetimes still reject it.
+See [managed Agent ingress mTLS](../../site/content/en/docs/guides/agent-ingress-mtls.md)
+for certificate ownership, supported surfaces, source pins and stop/change/resume
+rotation. It does not enable outbound TLS inspection or FQDN blocking.
 
 `network.blockedCIDRs` uses the registered address families and the existing
 guest-external deny baseline. `network.blockedPorts` additionally requires
 `registrations.kata.Capabilities.blockedPorts: true`; it is never enabled by
 default or inferred from TCP/UDP connectivity. Declare that support only after
 verifying actual deny behavior on the selected Cilium/runtime combination.
-Native port denies support TCP and UDP only; an omitted protocol means TCP.
-SCTP is rejected even if a broader registration lists it. Rules that block
-required DNS/Gateway destinations or ports are rejected, not silently removed.
+Native port requests default to TCP; the example/probe protocol lists remain
+TCP/UDP. New common-executor Kata lifetimes also accept SCTP port denies and
+internal CIDR grants when `registrations.kata.Capabilities.protocols` explicitly
+includes `SCTP`. This existing registration is the opt-in, not a new capability
+flag or an inference from API syntax. Retained version-1 single-start lifetimes
+still reject SCTP port requests. Native SCTP internal grants target direct
+endpoints, not registered Service CIDRs or Kubernetes API destinations; node,
+metadata and management exclusions remain mandatory. See the
+[SCTP usage and qualification boundary](../../examples/native-sandbox/README.md#governed-sctp-egress).
+No Cilium/Kata SCTP dataplane is qualified by offline compilation.
+Rules that block required DNS/Gateway destinations or ports are rejected,
+not silently removed.
 Admission checks these conflicts against current topology when a policy is
 bound to a native Sandbox, when a referenced policy changes, and when an Agent
 is authorized. An unreferenced policy definition alone does not select a
@@ -279,8 +456,10 @@ platform. Capability-only injected registrations cannot authorize native deny
 rules without the matching topology. Configure port support before creating
 consumers; changing platform inventory is not a live capability upgrade.
 Public destinations outside the deny rules retain the existing egress posture.
-These controls do not enable live policy rollout: selected configuration remains
-reserved for the single-start lifetime, and actual source drift still holds it.
+These controls do not enable live policy rollout: use the ordinary
+stop/change/resume lifecycle for reserved policy or platform changes.
+Registration and policy revisions remain inputs to current Pod admission;
+source drift cannot silently authorize the old running workload.
 
 The empty/omitted capabilities profile retains the existing qualified contract,
 including mandatory `enforcementObservation`, `restrictiveFailure` and the
@@ -332,13 +511,18 @@ claims are still rejected.
 Native owner access uses the existing `/ui/<agent>/` route and authentication
 deployment. An unauthenticated sign-in challenge alone is not an access test.
 For authenticated native ingress, the protected renderer replaces OpenClaw's
-`gateway.trustedProxies` with the sorted exact IPs of the approved ingress peers
-from the same platform snapshot. The compiler revision binds those IPs through
-the canonical topology, and the rendered configuration must match the derived
-list; no CIDR-wide or loopback fallback is added. The ingress proxy must overwrite
+`gateway.trustedProxies` with the sorted approved ingress addresses from the same
+platform snapshot. By default these are exact peer IPs selected with the protected
+peer-UID label. The native single-start profile can explicitly register stable
+Pod labels and bounded proxy Pod CIDRs instead; see the
+[managed ingress example](../../examples/native-sandbox/README.md#rollout-stable-managed-ingress).
+The compiler revision binds the selector, namespace and trust ranges through the
+canonical topology, and the rendered configuration must match the derived list.
+No wildcard or loopback fallback is added. The ingress proxy must overwrite
 or safely rebuild forwarded-client headers. Proxy trust does not bypass Gateway
 authentication, owner authorization or device authentication. The
-`sandboxWorkload.trustedProxyIPs` hook is supplied
+existing `sandboxWorkload.trustedProxyIPs` hook carries either exact IPs or the
+explicitly registered Pod CIDRs and is supplied
 only for authenticated native execution; held and legacy rendering without that
 hook preserve their existing proxy configuration.
 Native Agents awaiting preparation can retain chart pins predating this hook.
@@ -596,6 +780,13 @@ with the same `--before` or `--operation-id` then finishes the same recorded
 operation without resubmission. This proves neither physical cleanup nor
 completion of finalizers or dependent cleanup.
 The CLI reports `deletion-accepted`, not resource or dependent cleanup completion.
+If the original UID is still live at a newer resourceVersion, the old conditional
+Delete can no longer apply. Observation reports
+`deletion-superseded-reservation-retained`; explicit recovery reports
+`deletion-superseded` and releases only the old reservation, without a Delete.
+Portal deletion with a freshly read UID/resourceVersion observes and clears
+such an older reservation before authorizing the new conditional request.
+An unchanged uncertain request is never replayed or declared superseded.
 Release after the terminating transition allows normal finalizer cleanup to
 finish. Missing authority remains an error, never permission to delete.
 Deletion observation reads authoritative metadata only, so a replacement's
@@ -891,10 +1082,12 @@ This increment implements:
   Portal administrators do not automatically acquire this independent authority.
 - Creation-only Agent selection defaulting, followed by validation against the
   current Team. Existing Agents are never silently re-defaulted. Portal writes
-  use its administrator identity and may preserve the Team selected by the
-  Agent owner. Non-administrator direct Kubernetes writes require an exact
-  authenticated identity-to-Team assignment configured on the webhook; that
-  cluster access rule is separate from the product's Team selection model.
+  use its administrator identity, its service account (see
+  [Availability and bootstrap](#availability-and-bootstrap)), and may preserve
+  the Team selected by the Agent owner. Non-administrator direct Kubernetes
+  writes require an exact authenticated identity-to-Team assignment configured
+  on the webhook; that cluster access rule is separate from the product's Team
+  selection model.
   Mutation and validation are installed together: Kubernetes runs mutation
   first, including for dry runs. Validation rejects a missing selection rather
   than assuming that a default was persisted.
@@ -1586,7 +1779,9 @@ The candidate Azure CNI Overlay/Cilium compiler emits explicit network controls
 and per-Agent identity resources from trusted topology and grant inventories.
 Gateway endpoints/ports come from that inventory, not hardcoded defaults or
 policy-supplied destinations. Conflicting required destinations reject. FQDN
-blocking and mTLS remain unsupported and reject rather than becoming no-ops.
+blocking and qualified-adapter mTLS remain unsupported and reject rather than
+becoming no-ops. The native common executor has the separately registered
+[managed mTLS endpoint](../../site/content/en/docs/guides/agent-ingress-mtls.md).
 The effective compiled revision includes topology, identity and role-content
 changes; use it rather than only the base resolver revision.
 
@@ -1972,12 +2167,16 @@ cluster-scoped resource names.
    `sandboxAdmission.tlsSecretName`; no issuer is installed and no serving
    certificate is generated by this chart.
 2. Configure exact `sandboxAdmission.adminUsers`/`adminGroups`, then deploy
-   `enabled=true, enforce=false`. Include the Portal's service account,
-   `system:serviceaccount:<portal-namespace>:cetirun-portal` by default: the
-   Portal writes Agents, Teams, Sandboxes and AgentPolicies with it, and the
-   webhook otherwise refuses its writes to policy-bound Agents, such as saving
-   an owner's GitHub Copilot models after a sign-in. The platform chart refuses
-   to enforce admission without it. Verify TLS, readiness, API read permissions,
+   `enabled=true, enforce=false`. Blanket groups such as `system:authenticated`
+   or `system:serviceaccounts:<namespace>` are refused. The Portal's service
+   account must be an administrator too: the Portal writes Agents, Teams,
+   Sandboxes and AgentPolicies with it, and the webhook otherwise refuses its
+   writes to policy-bound Agents, such as saving an owner's GitHub Copilot
+   models after a sign-in. `sandboxAdmission.portalServiceAccount` adds
+   `system:serviceaccount:<release namespace>:<name>` to the administrators
+   once, without counting as the one required; the platform chart sets it to
+   the Portal's, `cetirun-portal` by default. List a Portal in another
+   namespace in `adminUsers`. Verify TLS, readiness, API read permissions,
    two available replicas and their placement. The chart supplies a disruption
    budget and spreading constraints; rendering does not establish availability.
    Use a waiting rollout and request-path checks before the next step; an
@@ -2003,6 +2202,9 @@ must name an existing, platform-approved PriorityClass; the chart does not
 automatically assign system-critical priority. Spread constraints do not
 guarantee distinct hosts when only one eligible topology domain exists, so
 verify actual placement on at least two eligible hosts for availability.
+Spreading is scoped to each `pod-template-hash`: old ReplicaSets must not
+make a replacement revision appear balanced before their Pods disappear.
+Deployment preflight still checks the actual current serving endpoints.
 The disruption budget permits voluntary disruptions only while at least
 `replicaCount - 1` replicas remain available.
 A native 10-second preStop sleep allows endpoint changes to propagate before
@@ -2238,8 +2440,10 @@ Public documentation reviewed on 2026-09-25 narrows the next trial:
 
 The initial candidate is the configured managed Cilium path, with a separately
 qualified upstream Cilium installation as a comparison only where authorized.
-FQDN blocking, gateway-to-workload mTLS and any unqualified protocols remain
-explicitly unsupported. Required network isolation, port blocking, runtime
+FQDN blocking, qualified-adapter gateway-to-workload mTLS and any unqualified
+protocols remain explicitly unsupported. The native common-executor mTLS
+endpoint is a separate opt-in, not qualification of this baseline.
+Required network isolation, port blocking, runtime
 accounting and observation/fencing still need actual target-version tests.
 No cluster was inspected or modified to establish this baseline.
 

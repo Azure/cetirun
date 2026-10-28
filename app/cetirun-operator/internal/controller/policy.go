@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -103,7 +104,10 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 	}
 	resolution, err := r.resolvePolicy(ctx, agent)
 	if err != nil {
-		result := policyReconcileResult{dependencyUnavailable: isPolicyDependencyError(err)}
+		result := policyReconcileResult{
+			dependencyUnavailable: isPolicyDependencyError(err),
+			ingressMTLSPending:    errors.Is(err, ingressmtls.ErrApprovalPending),
+		}
 		return result, r.recordPolicy(ctx, agent, nil, err)
 	}
 	result := policyReconcileResult{
@@ -158,6 +162,7 @@ type policyReconcileResult struct {
 	projectionsVerified   bool
 	reprojectionHold      bool
 	dependencyUnavailable bool
+	ingressMTLSPending    bool
 }
 
 // policyDependencyError distinguishes an unavailable control-plane read
@@ -175,6 +180,49 @@ func policyDependency(format string, args ...any) error {
 func isPolicyDependencyError(err error) bool {
 	var dependency *policyDependencyError
 	return errors.As(err, &dependency)
+}
+
+func (r *AgentReconciler) verifyPolicyAcceptance(ctx context.Context, policy *api.AgentPolicy) error {
+	accepted := meta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
+	if policy.Status.ObservedGeneration != policy.Generation {
+		config := r.SandboxPreparation
+		if config == nil || !config.NativeExecution || config.Configuration == nil ||
+			accepted == nil || accepted.Status != metav1.ConditionTrue ||
+			accepted.ObservedGeneration != policy.Status.ObservedGeneration ||
+			policy.Status.ObservedGeneration <= 0 || policy.Status.ObservedGeneration >= policy.Generation {
+			return policyDependency("AgentPolicy observation is pending for generation %d", policy.Generation)
+		}
+		// A generation bump alone is not an execution change. Assess the current
+		// policy with the same trusted sources as its controller; the per-Agent
+		// projections and execution digests still fence changed controls.
+		assessor := &AgentPolicyReconciler{
+			NativeExecution: true, Source: config.Configuration, Now: config.Now, MaxSnapshotAge: config.MaxSnapshotAge,
+		}
+		condition, observedAt, err := assessor.assess(ctx, configurationReader(r.APIReader, r.Client), policy)
+		if err != nil {
+			return policyDependency("reassess pending AgentPolicy: %w", err)
+		}
+		if condition.Status != metav1.ConditionTrue {
+			return policyDependency("AgentPolicy observation is pending for generation %d: %s", policy.Generation, condition.Reason)
+		}
+		if err := configurationSnapshotTime(observedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
+			return policyDependency("reassess pending AgentPolicy freshness: %w", err)
+		}
+		return nil
+	}
+	if accepted == nil {
+		return policyDependency("AgentPolicy acceptance observation is unavailable")
+	}
+	if accepted.ObservedGeneration != policy.Generation || accepted.Status == metav1.ConditionUnknown {
+		return policyDependency("AgentPolicy acceptance observation is unavailable for generation %d", policy.Generation)
+	}
+	if accepted.Status == metav1.ConditionFalse {
+		return fmt.Errorf("effective AgentPolicy is not accepted")
+	}
+	if accepted.Status != metav1.ConditionTrue {
+		return policyDependency("AgentPolicy acceptance observation has an unrecognized status")
+	}
+	return nil
 }
 
 func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (*policyResolution, error) {
@@ -218,21 +266,8 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		}
 		return nil, fmt.Errorf("read effective AgentPolicy: %w", err)
 	}
-	if policy.Status.ObservedGeneration != policy.Generation {
-		return nil, policyDependency("AgentPolicy observation is pending for generation %d", policy.Generation)
-	}
-	policyAccepted := meta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
-	if policyAccepted == nil {
-		return nil, policyDependency("AgentPolicy acceptance observation is unavailable")
-	}
-	if policyAccepted.ObservedGeneration != policy.Generation || policyAccepted.Status == metav1.ConditionUnknown {
-		return nil, policyDependency("AgentPolicy acceptance observation is unavailable for generation %d", policy.Generation)
-	}
-	if policyAccepted.Status == metav1.ConditionFalse {
-		return nil, fmt.Errorf("effective AgentPolicy is not accepted")
-	}
-	if policyAccepted.Status != metav1.ConditionTrue {
-		return nil, policyDependency("AgentPolicy acceptance observation has an unrecognized status")
+	if err := r.verifyPolicyAcceptance(ctx, policy); err != nil {
+		return nil, err
 	}
 	if !slices.Contains(policy.Spec.Harnesses.Allowed, agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q is not allowed by policy", agent.Spec.Agent.Type)
@@ -403,7 +438,8 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		NativeExecution: r.SandboxPreparation.NativeExecution,
-		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name), Platform: platform,
+		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name),
+		ServiceName: instanceServiceName(agent.Name), Platform: platform,
 	})
 	if err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {

@@ -164,10 +164,52 @@ func nativeCapabilities() Capabilities {
 	return capabilities
 }
 
+func TestNativeHomeAccessModes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		requested  corev1.PersistentVolumeAccessMode
+		registered []corev1.PersistentVolumeAccessMode
+		allowed    bool
+	}{
+		{"RWOP", corev1.ReadWriteOncePod, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}, true},
+		{"RWO", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, true},
+		{"both with RWOP", corev1.ReadWriteOncePod, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteOncePod}, true},
+		{"both with RWO", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce}, true},
+		{"RWO not registered", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}, false},
+		{"RWOP not registered", corev1.ReadWriteOncePod, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, false},
+		{"no registered modes", corev1.ReadWriteOnce, nil, false},
+		{"shared mode", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteMany}, false},
+		{"duplicate mode", corev1.ReadWriteOnce, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteOnce}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := resolverFixture()
+			box := input.Resources.Sandboxes["standard"].Spec
+			box.Storage.Home.AccessMode = tc.requested
+			capabilities := nativeCapabilities()
+			capabilities.HomeAccessModes = tc.registered
+			policy := compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{})
+			errs := CheckCompatibility(box, policy, capabilities)
+			if (len(errs) == 0) != tc.allowed {
+				t.Fatalf("HOME mode %s with registration %v: %v", tc.requested, tc.registered, errs)
+			}
+			if tc.allowed {
+				if err := CheckExecutionProfile(capabilities, false); err == nil {
+					t.Fatal("native HOME support authorized the held execution path")
+				}
+				box.Type = cetirunv1alpha1.SandboxGVisor
+				if len(CheckCompatibility(box, policy, capabilities)) == 0 {
+					t.Fatal("native HOME support authorized another runtime")
+				}
+			}
+		})
+	}
+}
+
 func TestNativeNetworkCompatibility(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		network cetirunv1alpha1.AgentPolicyNetwork
+		name      string
+		network   cetirunv1alpha1.AgentPolicyNetwork
+		protocols []corev1.Protocol
 	}{
 		{name: "CIDR", network: cetirunv1alpha1.AgentPolicyNetwork{BlockedCIDRs: []string{"198.51.100.0/24"}}},
 		{name: "TCP", network: cetirunv1alpha1.AgentPolicyNetwork{
@@ -180,6 +222,24 @@ func TestNativeNetworkCompatibility(t *testing.T) {
 			BlockedCIDRs: []string{"198.51.100.0/24"},
 			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 8080}},
 		}},
+		{name: "scoped internal TCP and UDP", network: cetirunv1alpha1.AgentPolicyNetwork{
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{
+				{CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443}}},
+				{CIDR: "fd00:20::/64", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 8080, Protocol: corev1.ProtocolUDP}}},
+			},
+		}},
+		{name: "registered SCTP", network: cetirunv1alpha1.AgentPolicyNetwork{
+			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 3869, Protocol: corev1.ProtocolSCTP}},
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{
+				{CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 3868, Protocol: corev1.ProtocolSCTP}}},
+				{CIDR: "fd00:20::/64", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 65535, Protocol: corev1.ProtocolSCTP}}},
+			},
+		}, protocols: []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP}},
+		{name: "registered SCTP grant without port blocking", network: cetirunv1alpha1.AgentPolicyNetwork{
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{{
+				CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 3868, Protocol: corev1.ProtocolSCTP}},
+			}},
+		}, protocols: []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := resolverFixture()
@@ -189,6 +249,9 @@ func TestNativeNetworkCompatibility(t *testing.T) {
 			}
 			capabilities := nativeCapabilities()
 			capabilities.BlockedPorts = len(tc.network.BlockedPorts) != 0
+			if tc.protocols != nil {
+				capabilities.Protocols = tc.protocols
+			}
 			if errs := CheckCompatibility(input.Resources.Sandboxes["standard"].Spec, policy, capabilities); len(errs) != 0 {
 				t.Fatalf("supported native network restrictions were rejected: %v", errs.ToAggregate())
 			}
@@ -213,14 +276,26 @@ func TestNativeNetworkCompatibilityRetainsCapabilityChecks(t *testing.T) {
 		{name: "IPv6 not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
 			BlockedCIDRs: []string{"2001:db8::/32"},
 		}, configure: func(c *Capabilities) { c.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol} }},
-		{name: "SCTP declared but unsupported", network: cetirunv1alpha1.AgentPolicyNetwork{
+		{name: "SCTP not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
 			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolSCTP}},
-		}, configure: func(c *Capabilities) { c.Protocols = append(c.Protocols, corev1.ProtocolSCTP) }},
+		}},
+		{name: "internal SCTP not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{{
+				CIDR: "10.20.0.0/16", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolSCTP}},
+			}},
+		}},
+		{name: "internal IPv6 not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
+			AllowedInternalCIDRs: []cetirunv1alpha1.AgentPolicyCIDRRule{{
+				CIDR: "fd00:20::/64", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443}},
+			}},
+		}, configure: func(c *Capabilities) { c.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			capabilities := nativeCapabilities()
 			capabilities.BlockedPorts = true
-			tc.configure(&capabilities)
+			if tc.configure != nil {
+				tc.configure(&capabilities)
+			}
 			policy.Network = tc.network
 			if errs := CheckCompatibility(box, policy, capabilities); len(errs) == 0 {
 				t.Fatal("native network control exceeded its declared or supported capabilities")
@@ -253,7 +328,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		"physical fencing":  func(c *Capabilities) { c.RestrictiveFailure = true },
 		"container quotas":  func(c *Capabilities) { c.PerContainerResourceLimits = true },
 		"FQDN support":      func(c *Capabilities) { c.BlockedFQDNs = true },
-		"mTLS support":      func(c *Capabilities) { c.MutualTLS = true },
 		"admin support":     func(c *Capabilities) { c.KubernetesAccess = true },
 		"Entra support":     func(c *Capabilities) { c.EntraID = true },
 	} {
@@ -272,9 +346,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		"FQDN": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedFQDNs = []string{"blocked.example.com"} },
 		"port": func(p *cetirunv1alpha1.AgentPolicySpec) {
 			p.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}
-		},
-		"internal": func(p *cetirunv1alpha1.AgentPolicySpec) {
-			p.Network.AllowedInternalCIDRs = []cetirunv1alpha1.AgentPolicyCIDRRule{{CIDR: "192.0.2.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443}}}}
 		},
 		"mTLS":  func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.Ingress.RequireMTLS = true },
 		"Entra": func(p *cetirunv1alpha1.AgentPolicySpec) { p.EntraID.Enabled = true },

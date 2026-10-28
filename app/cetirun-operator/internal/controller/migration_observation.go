@@ -11,7 +11,10 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
@@ -193,9 +196,10 @@ func (r *AgentReconciler) migrationHome(ctx context.Context, agent *api.Agent, s
 		return nil, err
 	}
 	if !sandboxBuiltinOwned(home, agent) || !home.DeletionTimestamp.IsZero() || home.Status.Phase != corev1.ClaimBound ||
-		home.Spec.VolumeName != state.Volume.Name || !slices.Equal(home.Spec.AccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}) ||
+		home.Spec.VolumeName != state.Volume.Name || len(home.Spec.AccessModes) != 1 ||
+		(home.Spec.AccessModes[0] != corev1.ReadWriteOncePod && home.Spec.AccessModes[0] != corev1.ReadWriteOnce) ||
 		ptr.Deref(home.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != corev1.PersistentVolumeFilesystem {
-		return nil, fmt.Errorf("migration requires the same bound owned filesystem RWOP HOME")
+		return nil, fmt.Errorf("migration requires the same bound owned filesystem RWO or RWOP HOME")
 	}
 	volume := &corev1.PersistentVolume{}
 	if err := r.migrationGet(ctx, "", state.Volume, volume); err != nil {
@@ -233,6 +237,148 @@ func migrationDetachAcknowledged(attachment *storagev1.VolumeAttachment, driver 
 	// removes it after successful detach, before status writes it may never retry.
 	return !attachment.DeletionTimestamp.IsZero() &&
 		!slices.Contains(attachment.Finalizers, migrationAttacherFinalizer(driver))
+}
+
+func (r *AgentReconciler) captureMigration(ctx context.Context, agent *api.Agent) (*api.PlannedMigrationStatus, error) {
+	request := agent.Spec.PlannedMigration
+	// Suspension can overtake the request before capture. Protect a still-ready
+	// source before stopping it, without treating suspension intent as shutdown.
+	if request == nil || !api.ValidRestartRequestID(request.RequestID) || request.Target.UID == "" ||
+		agent.Status.Phase != api.PhaseReady ||
+		!isConditionTrue(agent.Status.Conditions, api.ConditionReady) ||
+		agent.Spec.RestartRequestID != agent.Status.ObservedRestartRequestID {
+		return nil, fmt.Errorf("migration requires a ready Agent with no pending restart")
+	}
+	namespace := &corev1.Namespace{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		return nil, err
+	}
+	object := &corev1.ConfigMap{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{
+		Namespace: r.OperatorNamespace, Name: w.PodExpectationName(namespace.Name, namespace.UID),
+	}, object); err != nil {
+		return nil, err
+	}
+	expected, err := w.ReadReconcileExpectation(object)
+	if err != nil {
+		return nil, err
+	}
+	if expected.Agent != (w.ObjectIdentity{Name: agent.Name, UID: agent.UID}) ||
+		expected.AgentGeneration != agent.Status.ObservedGeneration || expected.Namespace.UID != namespace.UID {
+		return nil, fmt.Errorf("migration requires the currently reconciled Agent lifetime")
+	}
+	workload := &appsv1.StatefulSet{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: instanceServiceName(agent.Name)}, workload); err != nil {
+		return nil, err
+	}
+	if workload.UID == "" || !sandboxBuiltinOwned(workload, agent) || !workload.DeletionTimestamp.IsZero() ||
+		ptr.Deref(workload.Spec.Replicas, 0) != 1 || workload.Status.ObservedGeneration < workload.Generation ||
+		workload.Status.ReadyReplicas != 1 || workload.Status.UpdatedReplicas != 1 {
+		return nil, fmt.Errorf("migration requires a stable single-Pod owned workload")
+	}
+	if !slices.ContainsFunc(expected.Workloads, func(item w.RenderedWorkload) bool {
+		return item.Kind == "StatefulSet" && item.Identity.Name == workload.Name &&
+			item.Replicas == 1 && w.SamePodTemplate(item.Template, workload.Spec.Template)
+	}) {
+		return nil, fmt.Errorf("migration workload differs from its current authorized template")
+	}
+	pods := &corev1.PodList{}
+	if err := r.customReader().List(ctx, pods, client.InNamespace(namespace.Name)); err != nil {
+		return nil, err
+	}
+	var source *corev1.Pod
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		owner := metav1.GetControllerOf(pod)
+		if owner != nil && owner.Kind == "StatefulSet" && owner.Name == workload.Name && owner.UID == workload.UID {
+			if source != nil {
+				return nil, fmt.Errorf("migration found multiple source Pods")
+			}
+			source = pod
+		}
+	}
+	if source == nil || source.UID == "" || source.Spec.NodeName == "" || !source.DeletionTimestamp.IsZero() ||
+		source.Status.Phase != corev1.PodRunning || ptr.Deref(source.Spec.TerminationGracePeriodSeconds, 0) <= 0 ||
+		!slices.ContainsFunc(source.Status.Conditions, func(c corev1.PodCondition) bool {
+			return c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue
+		}) {
+		return nil, fmt.Errorf("migration requires one ready source Pod with ordinary graceful termination")
+	}
+	for _, volume := range source.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName != expected.Home.Name {
+			return nil, fmt.Errorf("planned migration currently supports one persistent HOME volume")
+		}
+	}
+	if source.Spec.NodeName == request.Target.Name {
+		return nil, fmt.Errorf("migration destination must differ from the source")
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: expected.Home.Name}, home); err != nil {
+		return nil, err
+	}
+	volume := &corev1.PersistentVolume{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: home.Spec.VolumeName}, volume); err != nil {
+		return nil, err
+	}
+	if home.UID != expected.Home.UID || volume.Spec.CSI == nil || volume.Spec.CSI.Driver == "" || volume.Spec.CSI.VolumeHandle == "" {
+		return nil, fmt.Errorf("migration requires the original HOME and an attachable CSI volume")
+	}
+	driver := &storagev1.CSIDriver{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: volume.Spec.CSI.Driver}, driver); err != nil {
+		return nil, err
+	}
+	if !driver.DeletionTimestamp.IsZero() || !ptr.Deref(driver.Spec.AttachRequired, true) {
+		return nil, fmt.Errorf("migration requires CSI attachment acknowledgements")
+	}
+	_, from, err := r.migrationNode(ctx, api.MigrationObject{Name: source.Spec.NodeName}, driver.Name)
+	if err != nil {
+		return nil, err
+	}
+	node, destination, err := r.migrationNode(ctx, request.Target, driver.Name)
+	if err != nil {
+		return nil, err
+	}
+	spec := workload.Spec.Template.Spec.DeepCopy()
+	if previous := agent.Status.PlannedMigration; previous != nil {
+		if previous.Phase != api.MigrationCompleted || workload.Spec.Template.Annotations[api.AnnotationMigrationRequest] != previous.RequestID {
+			return nil, fmt.Errorf("the previous migration has not completed on the current workload")
+		}
+		if err := runtimebindings.UnpinMigrationNode(spec, previous.Target.Name); err != nil {
+			return nil, err
+		}
+	}
+	if err := r.migrationScheduling(ctx, node, spec, volume); err != nil {
+		return nil, err
+	}
+	attachments, err := r.migrationAttachments(ctx, volume.Name)
+	if err != nil {
+		return nil, err
+	}
+	if len(attachments) != 1 {
+		return nil, fmt.Errorf("migration requires one unambiguous source VolumeAttachment")
+	}
+	attachment := &attachments[0]
+	if attachment.UID == "" || attachment.Spec.NodeName != source.Spec.NodeName || attachment.Spec.Attacher != driver.Name ||
+		!attachment.DeletionTimestamp.IsZero() || !attachment.Status.Attached || attachment.Status.AttachError != nil ||
+		attachment.Status.DetachError != nil || !slices.Contains(attachment.Finalizers, migrationAttacherFinalizer(driver.Name)) {
+		return nil, fmt.Errorf("migration source attachment is not acknowledged by its CSI attacher")
+	}
+	templateHash, err := sandboxPreparationDigest(workload.Spec.Template)
+	if err != nil {
+		return nil, err
+	}
+	state := &api.PlannedMigrationStatus{PlannedMigrationRequest: *request, Phase: api.MigrationProtecting,
+		Namespace: migrationIdentity(namespace), Workload: migrationIdentity(workload), WorkloadTemplateHash: templateHash,
+		SourcePod: migrationIdentity(source), Source: from, Destination: destination, Home: migrationIdentity(home),
+		Volume: migrationIdentity(volume), Attachment: migrationIdentity(attachment), Driver: driver.Name,
+		VolumeHandle: volume.Spec.CSI.VolumeHandle, StartedAt: metav1.NewTime(r.migrationNow())}
+	if previous := agent.Status.PlannedMigration; previous != nil {
+		state.PreviousRequestID = previous.RequestID
+	}
+	if _, err := r.migrationHome(ctx, agent, state); err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 func migrationPodTerminated(pod *corev1.Pod) bool {

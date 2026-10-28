@@ -20,6 +20,7 @@ var (
 	ErrInstanceSuspended     = errors.New("a suspended Agent cannot be restarted")
 	ErrRestartUnsupported    = errors.New("retained single-start Agents do not support user-requested restart")
 	ErrRestartNotReady       = errors.New("the Agent must be ready at its current generation with no pending restart")
+	ErrMigrationPending      = errors.New("the planned migration must finish before requesting a restart")
 )
 
 func restartStateError(instance *api.Agent) error {
@@ -28,6 +29,9 @@ func restartStateError(instance *api.Agent) error {
 	}
 	if instance.Spec.Suspended {
 		return ErrInstanceSuspended
+	}
+	if instance.MigrationPending() {
+		return ErrMigrationPending
 	}
 	if slices.Contains(instance.Finalizers, api.SandboxPreparationFinalizer) {
 		return ErrRestartUnsupported

@@ -3,7 +3,11 @@
 
 package broker
 
-import "time"
+import (
+	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
+)
 
 type Owner struct {
 	TenantID string `json:"-"`
@@ -11,8 +15,9 @@ type Owner struct {
 }
 
 const (
-	modeDelegated = "delegated"
-	modeAgent     = "agent"
+	modeDelegated    = "delegated"
+	modeInstallation = "installation"
+	modeAgent        = "agent"
 )
 
 // IdentityBinding is derived from platform status and verified provider data.
@@ -24,35 +29,37 @@ type IdentityBinding struct {
 }
 
 type Connection struct {
-	CanonicalConnectionID string           `json:"canonicalConnectionId,omitempty"`
-	Mode                  string           `json:"mode,omitempty"`
-	Identity              *IdentityBinding `json:"identity,omitempty"`
-	ID                    string           `json:"id"`
-	Provider              string           `json:"provider"`
-	AccountDisplay        string           `json:"accountDisplay"`
-	Services              []string         `json:"services"`
-	Scopes                []string         `json:"scopes"`
-	Revision              uint64           `json:"revision"`
-	Status                string           `json:"status"`
-	CreatedAt             time.Time        `json:"createdAt"`
-	UpdatedAt             time.Time        `json:"-"`
-	Owner                 Owner            `json:"-"`
-	AccountID             string           `json:"-"`
+	CanonicalConnectionID string                         `json:"canonicalConnectionId,omitempty"`
+	Mode                  string                         `json:"mode,omitempty"`
+	Identity              *IdentityBinding               `json:"identity,omitempty"`
+	GitHub                *agenttools.GitHubInstallation `json:"github,omitempty"`
+	ID                    string                         `json:"id"`
+	Provider              string                         `json:"provider"`
+	AccountDisplay        string                         `json:"accountDisplay"`
+	Services              []string                       `json:"services"`
+	Scopes                []string                       `json:"scopes"`
+	Revision              uint64                         `json:"revision"`
+	Status                string                         `json:"status"`
+	CreatedAt             time.Time                      `json:"createdAt"`
+	UpdatedAt             time.Time                      `json:"-"`
+	Owner                 Owner                          `json:"-"`
+	AccountID             string                         `json:"-"`
 }
 
 // ConnectionBinding permits one Agent to use selected services of a Connection.
 // Provider RBAC or OAuth scopes determine which resource operations succeed.
 type ConnectionBinding struct {
-	ID           string    `json:"id"`
-	InstanceUID  string    `json:"instanceUid"`
-	ConnectionID string    `json:"connectionId"`
-	Services     []string  `json:"services"`
-	Enabled      bool      `json:"enabled"`
-	Revision     uint64    `json:"revision"`
-	Owner        Owner     `json:"-"`
-	Revoked      bool      `json:"-"`
-	CreatedAt    time.Time `json:"-"`
-	UpdatedAt    time.Time `json:"-"`
+	ID           string                  `json:"id"`
+	InstanceUID  string                  `json:"instanceUid"`
+	ConnectionID string                  `json:"connectionId"`
+	Services     []string                `json:"services"`
+	Enabled      bool                    `json:"enabled"`
+	Revision     uint64                  `json:"revision"`
+	Owner        Owner                   `json:"-"`
+	Revoked      bool                    `json:"-"`
+	CreatedAt    time.Time               `json:"-"`
+	UpdatedAt    time.Time               `json:"-"`
+	GitHub       *agenttools.GitHubGrant `json:"github,omitempty"`
 }
 
 type providerCredential struct {
@@ -71,6 +78,8 @@ type connectionTransaction struct {
 	ResultConnectionID string `json:"resultConnectionId,omitempty"`
 	Status             string `json:"status,omitempty"`
 	Provider           string `json:"provider"`
+	Mode               string `json:"mode,omitempty"`
+	AppSlug            string `json:"appSlug,omitempty"`
 	StateHash          string `json:"stateHash"`
 	// BrowserBindingHash is present only for GitHub OAuth transactions. The
 	// Portal holds the corresponding browser secret in an HttpOnly cookie.
@@ -83,15 +92,27 @@ type connectionTransaction struct {
 }
 
 type connectionRecord struct {
-	References  map[string]bindingReservation `json:"references,omitempty"`
-	Connection  Connection                    `json:"connection"`
-	Credential  *providerCredential           `json:"credential,omitempty"`
-	Transaction *connectionTransaction        `json:"transaction,omitempty"`
-	Deleted     bool                          `json:"deleted"`
+	// A verified installation selection is locked before claiming its account
+	// index. The connection remains unbindable until canonicalization completes.
+	PendingInstallation *agenttools.GitHubInstallation `json:"pendingInstallation,omitempty"`
+	References          map[string]bindingReservation  `json:"references,omitempty"`
+	Connection          Connection                     `json:"connection"`
+	Credential          *providerCredential            `json:"credential,omitempty"`
+	RefreshLease        *credentialRefreshLease        `json:"refreshLease,omitempty"`
+	Transaction         *connectionTransaction         `json:"transaction,omitempty"`
+	Deleted             bool                           `json:"deleted"`
 	// Display snapshots come from the trusted Agent resource. They are never
 	// used to resolve ownership or authorize calls; instance UID remains binding.
 	InstanceName      string `json:"instanceName,omitempty"`
 	InstanceNamespace string `json:"instanceNamespace,omitempty"`
+}
+
+// Refresh leases are encrypted with the Connection record. They fence rotating
+// GitHub App user refresh tokens across Broker replicas without exposing any
+// credential material.
+type credentialRefreshLease struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 type bindingRecord struct {

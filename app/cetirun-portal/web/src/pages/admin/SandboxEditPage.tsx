@@ -7,11 +7,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Text, Title2 } from "@fluentui/react-components";
 import { createSandbox, getSandbox, updateSandbox, type SandboxSpec, type SandboxUpsertRequest } from "../../api/adminSandbox";
 
-const emptyForm: SandboxUpsertRequest = {
+type SandboxForm = SandboxUpsertRequest & SandboxSpec;
+
+const emptyForm: SandboxForm = {
   name: "", type: "kata",
   resources: {
     agent: { requests: { cpu: "500m", memory: "1Gi", "ephemeral-storage": "1Gi" }, limits: { cpu: "2", memory: "4Gi", "ephemeral-storage": "8Gi" } },
-    helpers: { requests: { cpu: "100m", memory: "128Mi", "ephemeral-storage": "128Mi" }, limits: { cpu: "500m", memory: "512Mi", "ephemeral-storage": "1Gi" } },
+    helpers: { requests: { cpu: "100m", memory: "128Mi", "ephemeral-storage": "128Mi" }, limits: { cpu: "500m", memory: "2Gi", "ephemeral-storage": "1Gi" } },
   },
   storage: { home: { storageClassName: "", size: "10Gi", accessMode: "ReadWriteOncePod" }, scratch: { sizeLimit: "1Gi" } },
 };
@@ -21,7 +23,7 @@ export function SandboxEditPage() {
   const isCreate = !name;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [form, setForm] = useState<SandboxUpsertRequest>(emptyForm);
+  const [form, setForm] = useState<SandboxForm>(emptyForm);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const { data: existing, isLoading, error } = useQuery({ queryKey: ["admin", "sandbox", name], queryFn: () => getSandbox(name!), enabled: !isCreate });
   useEffect(() => {
@@ -63,6 +65,7 @@ export function SandboxEditPage() {
           </Field>))}
         </div>
         <Text size={300}>Use Kubernetes quantities such as 500m for CPU and 1Gi for memory or storage. Requests must not exceed limits.</Text>
+        {container === "helpers" && <Text size={300}>OpenClaw initialization can exceed 512Mi; 2Gi is the recommended starting memory limit per helper container.</Text>}
       </div>)}
       <Divider />
       <Text weight="semibold">Agent HOME</Text>

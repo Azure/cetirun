@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"reflect"
@@ -32,11 +33,12 @@ import (
 )
 
 const (
-	sandboxApplyStateAnnotation = "sandbox.cetirun.microsoft.com/apply-state"
-	sandboxApplyInitializing    = "initializing"
-	sandboxApplyPending         = "pending"
-	sandboxApplySubmitted       = "submitted"
-	sandboxApplyCancelled       = "cancelled"
+	sandboxApplyStateAnnotation   = "sandbox.cetirun.microsoft.com/apply-state"
+	sandboxApplyAttemptAnnotation = "sandbox.cetirun.microsoft.com/apply-attempt"
+	sandboxApplyInitializing      = "initializing"
+	sandboxApplyPending           = "pending"
+	sandboxApplySubmitted         = "submitted"
+	sandboxApplyCancelled         = "cancelled"
 )
 
 func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
@@ -99,6 +101,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err := r.sandboxPreparationInput(ctx, attempt); err != nil {
 		return nil, err
 	}
+	if err := r.sandboxIngressMTLSInputs(ctx, attempt); err != nil {
+		return nil, fmt.Errorf("%w: %w", errSandboxIngressMTLS, err)
+	}
 	if agent.Spec.Agent.RegistrySecretRef != nil {
 		name, err := registryauth.PullSecretName(agent.UID)
 		if err != nil {
@@ -145,7 +150,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	platform := attempt.configuration.Platforms[attempt.resolution.Sandbox.Type]
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		NativeExecution: true, Resolution: *attempt.resolution, AgentName: agent.Name,
-		Namespace: attempt.input.Namespace.Name, Platform: platform,
+		Namespace: attempt.input.Namespace.Name, ServiceName: attempt.input.WorkloadName, Platform: platform,
 	})
 	if err != nil {
 		return nil, err
@@ -169,6 +174,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if !w.EffectiveSource(source) {
 			continue
 		}
+		if source.APIVersion == api.GroupVersion.String() && source.Kind == "AgentPolicy" &&
+			source.UID == attempt.resolution.Binding.AgentPolicyUID {
+			digests[w.SourceKey(source)] = attempt.policyDigest
+			continue
+		}
 		digest, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, false)
 		if err != nil {
 			return nil, err
@@ -177,7 +187,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	var published *corev1.ConfigMap
 	var reservation *sandboxcoordination.NativeTicket
+	var migrationTemplate *corev1.PodSpec
 	guard := func(ctx context.Context) error {
+		if err := r.checkMigrationApply(ctx, agent, migrationTemplate); err != nil {
+			return err
+		}
 		if reservation != nil {
 			if err := r.SandboxNativeCoordination.CheckNative(ctx, *reservation); err != nil {
 				return err
@@ -229,7 +243,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 				return err
 			}
 			if digest != digests[w.SourceKey(source)] {
-				return fmt.Errorf("Sandbox input changed before resource reconciliation")
+				return fmt.Errorf("%w: Sandbox input changed before resource reconciliation", errSandboxSourceChanged)
 			}
 		}
 		return nil
@@ -241,23 +255,40 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if err := guard(ctx); err != nil {
 			return err
 		}
-		if published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending {
-			submitted := published.DeepCopy()
+		unsubmitted := published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending
+		claimed := published.DeepCopy()
+		// Fence competing renderers before the final authority read. A first
+		// attempt remains pending, and therefore cancellable, until that read passes.
+		metav1.SetMetaDataAnnotation(&claimed.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
+		if err := r.Patch(ctx, claimed, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("claim Sandbox apply attempt: %w", err)
+		}
+		published = claimed
+		if err := guard(ctx); err != nil {
+			return err
+		}
+		if unsubmitted {
+			submitted := claimed.DeepCopy()
 			submitted.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
-			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
 				return fmt.Errorf("record Sandbox apply submission: %w", err)
 			}
 			published = submitted
 		}
-		return guard(ctx)
+		return nil
 	}
-	result, err := prepared.ReconcileSandbox(values, bundle, applyGuard)
+	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, applyGuard)
 	if err != nil {
 		return nil, err
 	}
 	expected, err := result.ReconcileExpectation()
 	if err != nil {
 		return nil, err
+	}
+	for _, workload := range expected.Workloads {
+		if workload.Kind == "StatefulSet" {
+			migrationTemplate = workload.Template.Spec.DeepCopy()
+		}
 	}
 	for _, object := range expected.Controls {
 		current := &unstructured.Unstructured{}
@@ -311,6 +342,10 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	expected.Sources, expected.SourceDigests = sources, digests
 	role, binding, access, err := r.sandboxSourceAccess(attempt, pods...)
+	if err != nil {
+		return nil, err
+	}
+	tlsRole, tlsBinding, tlsAccess, err := r.sandboxMTLSSourceAccess(attempt)
 	if err != nil {
 		return nil, err
 	}
@@ -382,6 +417,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		default:
 			return nil, fmt.Errorf("Sandbox apply checkpoint is invalid")
 		}
+		if attempt := current.Annotations[sandboxApplyAttemptAnnotation]; attempt != "" {
+			metav1.SetMetaDataAnnotation(&desired.ObjectMeta, sandboxApplyAttemptAnnotation, attempt)
+		}
 		if !reflect.DeepEqual(current.Data, desired.Data) || !reflect.DeepEqual(current.Annotations, desired.Annotations) {
 			base := current.DeepCopy()
 			current.Data, current.Annotations = desired.Data, desired.Annotations
@@ -410,6 +448,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 	}
 	desiredGrants := []sandboxpolicy.BindingReference{access}
+	if tlsRole != nil {
+		desiredGrants = append(desiredGrants, tlsAccess)
+	}
 	if err := journal.Revoke(ctx, agent.Name, agent.UID, sandboxpolicy.ObsoleteBindings(previous, desiredGrants)); err != nil {
 		return nil, err
 	}
@@ -418,6 +459,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	if err := r.applySandboxSourceAccess(ctx, agent, role, binding, access); err != nil {
 		return nil, err
+	}
+	if tlsRole != nil {
+		if err := r.applySandboxSourceAccess(ctx, agent, tlsRole, tlsBinding, tlsAccess); err != nil {
+			return nil, err
+		}
 	}
 	confirmed, err := r.sandboxBindingUIDs(ctx, desiredGrants)
 	if err != nil {
@@ -609,7 +655,7 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 			return fmt.Errorf("common Sandbox source reservation waits for acknowledged controller shutdown")
 		}
 	}
-	quiescence := &KubernetesNativeQuiescence{APIReader: r.customReader()}
+	quiescence := &KubernetesNativeQuiescence{APIReader: r.customReader(), Reconciled: true}
 	if err := quiescence.CheckQuiesced(ctx, agent, SandboxPrerequisites{
 		AgentUID: agent.UID, AgentGeneration: agent.Generation, NamespaceUID: expected.Namespace.UID, Home: expected.Home,
 	}); err != nil {
@@ -691,8 +737,24 @@ func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.
 }
 
 func (r *AgentReconciler) stopReconciledSandboxForSuspension(ctx context.Context, agent *api.Agent) error {
-	if err := r.checkRegistryIntent(ctx, agent); err != nil {
-		return err
+	return r.stopReconciledSandbox(ctx, agent, true)
+}
+
+func (r *AgentReconciler) stopReconciledSandboxForMigration(ctx context.Context, agent *api.Agent) error {
+	// Migration retains terminal Pods until their acknowledgement is durable.
+	// Releasing the reservation here would wait for those same Pods to vanish.
+	return r.stopReconciledSandbox(ctx, agent, false)
+}
+
+func (r *AgentReconciler) stopReconciledSandbox(ctx context.Context, agent *api.Agent, finishReservation bool) error {
+	if !finishReservation && !agent.DeletionTimestamp.IsZero() {
+		if err := r.checkMigrationIntent(ctx, agent); err != nil {
+			return err
+		}
+	} else {
+		if err := r.checkRegistryIntent(ctx, agent); err != nil {
+			return err
+		}
 	}
 	var blockErr error
 	if r.AIGateway.configured() {
@@ -714,7 +776,10 @@ func (r *AgentReconciler) stopReconciledSandboxForSuspension(ctx context.Context
 	// Independent shutdown must precede chart/bootstrap reads and must still
 	// run when Gateway revocation or one component's stop cannot complete.
 	auxiliaryErr := r.stopReconciledAuxiliaries(ctx, agent)
-	stopErr := r.stopSandboxBuiltin(ctx, agent)
+	stopErr := r.stopSandboxBuiltinWorkload(ctx, agent)
+	if stopErr == nil && finishReservation {
+		stopErr = r.stopNativeSandboxReservation(ctx, agent)
+	}
 	agent.Status.AccessURL = ""
 	if err := errors.Join(blockErr, auxiliaryErr, stopErr); err != nil {
 		agent.Status.Phase = api.PhasePending

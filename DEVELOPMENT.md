@@ -207,22 +207,143 @@ go -C app/cetirun-portal vet ./internal/...
 Report that reduced scope; it does not validate the frontend or the complete
 portal binary. Do not treat a placeholder embed directory as a frontend build.
 
-The retained-restart API also has an isolated API-server test. With the pinned
+The retained lifecycle APIs also have an isolated API-server test. With the pinned
 Kubernetes 1.37 binaries described below already installed, run:
 
 ```bash
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
-  go -C app/cetirun-portal test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1
+  go -C app/cetirun-portal test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1
 ```
 
-It verifies persisted request identity, conditional updates, and CRD validation.
+It verifies persisted restart identity, conditional suspend/resume intent,
+duplicate requests, stale UID/version rejection, and CRD validation. The Sandbox
+case compares omitted/null runtime defaults and full resource/storage fields
+through the Portal and the served Kubernetes API, including conditional updates.
 It starts its own API server and etcd, never an existing cluster; it does not
 run Pods, contact a model provider, or qualify storage/failure recovery.
-Operator CI also runs this test using its existing pinned admission-test tools.
+Operator CI also runs these tests using its existing pinned admission-test tools.
+
+Planned migration has a focused Operator API-server regression using the same
+local assets:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/admission -run '^TestPlannedMigrationServedAPIAndBinding$' -count=1
+```
+
+It checks the generated migration schema, durable finalizer authorization and
+both real Pod binding APIs, including same-name replacement Nodes. Normal
+Operator tests cover source/CSI acknowledgement ordering, repeated moves,
+partial/lost writes, suspension and deletion using synthetic observations.
+These checks do not run kubelets or CSI controllers and are not AKS validation.
+
+The common-executor RWO HOME contract has an isolated API-server regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxRWOHomeAPIServer$' -count=1
+```
+
+It exercises served Agent authorization, common chart rendering, current Pod
+admission and HOME access-mode immutability. Normal controller tests cover both
+RWO and RWOP retained restarts, coordinated shutdown/resume and repeated
+healthy-source migration with synthetic Pod/CSI observations. These are offline
+contracts, not runtime, file-retention, model-spend or CSI qualification.
+
+Common Sandbox policy updates also have a focused served-API regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxPendingRateLimitsAPIServer$' -count=1
+```
+
+It adds and removes rate limits before the first Ready observation, including
+policy status catching up during bootstrap, with both RWO and RWOP HOME. It
+checks unchanged workload, Pod, key and reservation identities and rejects
+mixed execution-control edits. Unit tests additionally cover retained restarts,
+both built-in harnesses, full source comparisons and final-apply/submission
+guards. The Gateway, scheduler and kubelet observations are synthetic; this
+local API test does not qualify live traffic, Kata or storage behavior.
+
+Kata internal CIDR grants have a focused served-API regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxInternalNetworkAPIServer$' -count=1
+```
+
+It verifies configuration binding, default TCP ports, owned Cilium policy output,
+protected network conflicts, active source reservations and Pod admission after
+policy drift. Normal compiler/controller tests additionally cover address/port
+boundaries, managed-peer isolation, deny precedence and grant removal for
+OpenClaw/Hermes with RWO/RWOP. These are offline checks, not Cilium dataplane
+qualification; use the [internal-egress example](examples/native-sandbox/README.md#scoped-internal-egress)
+for the separate authorized live witnesses.
+
+Registered Kata SCTP rules have a focused served-API regression using the same
+local assets:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxSCTPNetworkAPIServer$' -count=1
+```
+
+It exercises persisted SCTP/default-TCP fields, native Cilium compilation,
+conflicting bindings, malformed requests, active policy reservations, and
+Pod admission after control drift and controller holds after registration drift.
+Compiler tests cover exact protocol/port isolation, deny precedence, dual-family
+rules and unchanged resource budgets. Controller tests cover both built-in
+harnesses and HOME modes. The API server is local; running Pod observations are
+synthetic. These checks do not qualify SCTP traffic, Kata, Cilium, NAT or Services.
+See the [SCTP example](examples/native-sandbox/README.md#governed-sctp-egress)
+for the requested-versus-qualified contract.
 
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.
+
+### Managed Agent ingress mTLS
+
+Focused offline checks for the registered common-executor endpoint:
+
+```bash
+go -C app/cetirun-operator test ./internal/sandboxpolicy ./internal/controller -run 'TestIngressMTLS|TestReconciledSandboxIngressMTLS' -count=1
+python3 -B -m unittest discover -s app/cetirun-chart/tests -p test_hermes_ingress.py -v
+python3 -B -m unittest discover -s app/cetirun-chart/tests -p test_desktop_ingress.py -v
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxIngressMTLS((Preflight|FinalGuard)Recovery)?APIServer$' -count=1
+CETIRUN_ENVOY_BINARY="$PWD/.tools/envoy" \
+  go -C app/cetirun-operator test -tags=envoy ./internal/ingressmtls -count=1
+```
+
+The API-server command uses the same pinned local assets described above and
+real configuration coordination, RBAC and Pod admission; workload readiness
+observations remain synthetic. The transport command requires a separately
+restored Envoy **1.36.3** executable.
+The Linux x86-64 upstream release asset
+`https://github.com/envoyproxy/envoy/releases/download/v1.36.3/envoy-1.36.3-linux-x86_64`
+has SHA-256
+`6dcacec73f0ff18d2f68f605f9f041cd0e1c4d30d3c38977058cd923daa2dea6`.
+Verify it before running; the tests do not download tools. They use actual
+loopback TLS with generated, short-lived test keys and clean up their listeners,
+processes and files.
+
+Set `CETIRUN_OPENCLAW_IMAGE` to an explicitly approved cached OpenClaw 2026.9.6
+image to additionally exercise the real native API/Control UI and ttyd.
+Set `CETIRUN_HERMES_IMAGE` to an explicitly approved cached Hermes 0.21.5 image
+to exercise its API/dashboard and ttyd with fresh HOME, retained bind overrides,
+and a supervised restart after overrides are reintroduced. The tests use the
+candidate configuration assets and HOME authority helper; no model request is
+issued. `CETIRUN_DESKTOP_IMAGE` enables a cached websockify/noVNC HTTP/WebSocket
+TLS check with synthetic RFB/CDP backends; it checks the candidate bind commands
+and readiness without qualifying Xvfb, Chrome or graphical interaction.
+These optional tests run Docker with `--pull=never`, no network, a read-only root,
+a synthetic in-memory HOME and only read-only test-tool mounts. They do not use
+host credentials, a cluster, a model provider or a deployment.
+Without the corresponding variable, that native-image test explicitly skips;
+the Envoy transport tests still run. Exact target-image and real Istio/Kata/Cilium
+qualification remain separate. See the
+[usage and rotation contract](site/content/en/docs/guides/agent-ingress-mtls.md).
 
 ### Agent Identity Broker
 

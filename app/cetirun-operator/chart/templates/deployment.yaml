@@ -158,6 +158,10 @@ spec:
               value: {{ .Values.aiGateway.defaultModel | quote }}
             - name: AI_GATEWAY_COPILOT_PROXY_IMAGE
               value: {{ include "cetirun-operator.copilotProxyImage" . | quote }}
+            {{- /* Read key by key: a release upgraded with --reuse-values from
+            a chart without the setting keeps the probes off. */}}
+            - name: AI_GATEWAY_COPILOT_HEALTH_CHECKS
+              value: {{ dig "copilotProxy" "healthChecks" "enabled" false .Values.aiGateway | quote }}
             {{- end }}
             - name: KUBE_FEATURE_WatchListClient
               value: "false"

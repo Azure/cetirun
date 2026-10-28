@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -27,6 +28,14 @@ import (
 )
 
 func TestNativeSandboxMetadataUpdatePreservesAuthorizationAPIServer(t *testing.T) {
+	testNativeSandboxPolicyUpdatePreservesAuthorizationAPIServer(t, false)
+}
+
+func TestNativeSandboxRateLimitUpdatePreservesAuthorizationAPIServer(t *testing.T) {
+	testNativeSandboxPolicyUpdatePreservesAuthorizationAPIServer(t, true)
+}
+
+func testNativeSandboxPolicyUpdatePreservesAuthorizationAPIServer(t *testing.T, rateLimits bool) {
 	h := newNativeStartAPIHarness(t, true, true)
 	store := h.r.SandboxNativeCoordination
 	team := &api.Team{}
@@ -140,7 +149,15 @@ func TestNativeSandboxMetadataUpdatePreservesAuthorizationAPIServer(t *testing.T
 	}
 	gateway := &metadataContinuityGateway{fakeAIGateway: h.gateway}
 	h.r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return gateway, nil }
-	keysBefore, err := json.Marshal(h.gateway.keys)
+	expectedKeys := make(map[string]*aigateway.Key, len(h.gateway.keys))
+	for token, key := range h.gateway.keys {
+		expected := *key
+		if rateLimits {
+			expected.Limits = exampleKeyLimits()
+		}
+		expectedKeys[token] = &expected
+	}
+	keysBefore, err := json.Marshal(expectedKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +165,9 @@ func TestNativeSandboxMetadataUpdatePreservesAuthorizationAPIServer(t *testing.T
 	before := policy.DeepCopy()
 	after := policy.DeepCopy()
 	after.Labels["example.com/change"] = "metadata"
+	if rateLimits {
+		after.Spec.ModelAccess.RateLimits = exampleRateLimits()
+	}
 	ticket, err = store.AcquireConfigurationChange(h.ctx, before, after)
 	if err != nil {
 		t.Fatal(err)
@@ -163,19 +183,19 @@ func TestNativeSandboxMetadataUpdatePreservesAuthorizationAPIServer(t *testing.T
 	for _, run := range runs {
 		current := run.harness
 		if _, err := current.reconcile(); err != nil {
-			t.Error("metadata-only update could not preserve Agent reconciliation:", err)
+			t.Error("execution-neutral policy update could not preserve Agent reconciliation:", err)
 		}
 		workload := current.workload(t)
 		if workload.UID != run.expected.Workload.UID || ptr.Deref(workload.Spec.Replicas, -1) != 1 ||
 			current.pod(t).UID != run.expected.PodUID {
-			t.Error("metadata-only update stopped or replaced a referencing Agent's compute")
+			t.Error("execution-neutral policy update stopped or replaced a referencing Agent's compute")
 		}
 		route := run.route.DeepCopy()
 		if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(route), route); err != nil || route.GetUID() != run.route.GetUID() {
-			t.Error("metadata-only update removed or replaced a referencing Agent's route:", err)
+			t.Error("execution-neutral policy update removed or replaced a referencing Agent's route:", err)
 		}
 		if current.current(t).Status.Phase != api.PhaseReady {
-			t.Error("metadata-only update interrupted a referencing Agent's readiness")
+			t.Error("execution-neutral policy update interrupted a referencing Agent's readiness")
 		}
 	}
 	keysAfter, err := json.Marshal(h.gateway.keys)
@@ -184,14 +204,18 @@ func TestNativeSandboxMetadataUpdatePreservesAuthorizationAPIServer(t *testing.T
 	}
 	if string(keysBefore) != string(keysAfter) || len(h.gateway.generated) != generatedBefore ||
 		len(h.gateway.deletedTokens) != 0 || len(h.gateway.deletedAliases) != 0 || gateway.blocks != 0 {
-		t.Error("metadata-only update blocked, changed or replaced an Agent's key/spend")
+		t.Error("execution-neutral policy update did not preserve key identity/spend with the expected limits")
 	}
 	currentPolicy := &api.AgentPolicy{}
 	if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(policy), currentPolicy); err != nil {
 		t.Fatal(err)
 	}
-	if currentPolicy.Generation != before.Generation || !reflect.DeepEqual(currentPolicy.Status, before.Status) {
-		t.Error("metadata-only update invalidated the existing acceptance observation")
+	wantGeneration := before.Generation
+	if rateLimits {
+		wantGeneration++
+	}
+	if currentPolicy.Generation != wantGeneration || !reflect.DeepEqual(currentPolicy.Status, before.Status) {
+		t.Error("policy update did not preserve the original status across the expected generation change")
 	}
 	if currentPolicy.ResourceVersion == before.ResourceVersion || currentPolicy.Labels["example.com/change"] != "metadata" {
 		t.Fatal("metadata update was not persisted")

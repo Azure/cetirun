@@ -110,13 +110,29 @@ before enabling it, and turn it off before disabling native execution.
 These defaults do not authorize a runtime or change the
 selected AgentPolicy/Sandbox checks.
 
-When `cetirun-operator.sandboxAdmission` is enabled and enforced, list the
-Portal's service account, `system:serviceaccount:<namespace>:cetirun-portal`,
-in `cetirun-operator.sandboxAdmission.adminUsers`. The Portal writes Agents,
-Teams, Sandboxes and AgentPolicies with it, and the admission webhook refuses its
-writes to policy-bound Agents otherwise, for example saving an owner's GitHub
-Copilot models after a sign-in. The chart refuses to render enforced admission
-without it, unless an administrator group holds the namespace's service accounts.
+When `cetirun-operator.sandboxAdmission` is enabled, the chart adds the Portal's
+service account, `system:serviceaccount:<release namespace>:cetirun-portal`, to
+the admission administrators. The Portal writes Agents, Teams, Sandboxes and
+AgentPolicies with it, and the enforced admission webhook refuses its writes to
+policy-bound Agents otherwise, for example saving an owner's GitHub Copilot
+models after a sign-in. `cetirun-operator.sandboxAdmission.portalServiceAccount`
+names the account, `cetirun-portal` by default. An installation that already
+lists it in `adminUsers` keeps the same admission configuration. It does not
+count as the administrator that `adminUsers` or `adminGroups` must name:
+reauthorization, for example, has no Portal page.
+
+- With a custom `cetirun-portal.serviceAccount.name`, set `portalServiceAccount`
+  to the same name; the chart refuses different names.
+- With the bundled Portal disabled, clear `portalServiceAccount`; the chart
+  refuses it otherwise. List a separately installed Portal's service account in
+  `adminUsers`.
+- An upgrade with `--reuse-values` from an older release does not set
+  `portalServiceAccount`. Set it, or list the Portal's service account in
+  `adminUsers`; the chart refuses enforced admission with neither.
+
+Administrator groups cannot be blanket groups such as `system:authenticated` or
+`system:serviceaccounts:<namespace>`: the admission server refuses to start with
+them, so the chart refuses them too.
 
 ## AI Gateway
 
@@ -167,8 +183,11 @@ over.
 
 Shared models are optional. Without them OpenClaw Agents use their owners'
 GitHub Copilot; with `cetirun-operator.aiGateway.copilotProxy.enabled` turned
-off, the Portal creates no OpenClaw Agent until a shared model is offered. A
-model added in the console is shared only with the access group
+off, the Portal creates no OpenClaw Agent until a shared model is offered. The
+Gateway's health checks do not probe the Agents' GitHub Copilot routes, since
+each probe is a real call on the owner's Copilot allowance;
+`cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` turns their
+probes on. A model added in the console is shared only with the access group
 `cetirun-shared` and a price, and only with Agents without a policy. Open the
 console with:
 

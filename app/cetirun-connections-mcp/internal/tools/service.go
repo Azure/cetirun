@@ -201,9 +201,11 @@ func validAuthorization(check brokerclient.CheckResponse, caller identity.Caller
 	}
 	switch c.Mode {
 	case "delegated":
-		return c.Identity == nil
+		return c.Identity == nil && c.GitHub == nil && b.GitHub == nil
+	case "installation":
+		return c.Provider == "github" && c.Identity == nil && c.GitHub != nil && c.GitHub.InstallationID > 0 && c.GitHub.AccountLogin != "" && c.GitHub.UserLogin != "" && b.GitHub.Valid()
 	case "agent":
-		return c.Provider == "azure" && c.Identity != nil && c.Identity.InstanceUID == caller.InstanceUID && c.Identity.TenantID != "" && c.Identity.PrincipalID != "" && c.Identity.ClientID != ""
+		return c.Provider == "azure" && c.GitHub == nil && b.GitHub == nil && c.Identity != nil && c.Identity.InstanceUID == caller.InstanceUID && c.Identity.TenantID != "" && c.Identity.PrincipalID != "" && c.Identity.ClientID != ""
 	default:
 		return false
 	}

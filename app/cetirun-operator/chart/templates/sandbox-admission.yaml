@@ -59,6 +59,9 @@
 {{- if or (eq (trim $identity) "") (ne (trim $identity) $identity) -}}
 {{- fail (printf "sandboxAdmission.%s must contain nonempty strings without surrounding whitespace" $field) -}}
 {{- end -}}
+{{- if and (eq $field "adminGroups") (or (eq $identity "system:authenticated") (eq $identity "system:unauthenticated") (hasPrefix "system:serviceaccounts" $identity)) -}}
+{{- fail "sandboxAdmission.adminGroups cannot use system:authenticated, system:unauthenticated or the system:serviceaccounts groups: the admission server refuses to start with them; list exact users or groups instead" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if and (empty $admission.adminUsers) (empty $admission.adminGroups) -}}
@@ -73,7 +76,24 @@
 {{- fail "namespace and serviceAccount.name must not contain surrounding whitespace" -}}
 {{- end -}}
 {{- $controllerUsername := printf "system:serviceaccount:%s:%s" $controllerNamespace $controllerServiceAccount -}}
-{{- $config := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "validationMode" $admission.validationMode -}}
+{{- /* The Portal writes Agents, Teams, Sandboxes and AgentPolicies with its own
+       service account, named here by the platform chart. It is added to the
+       administrators once and does not count as the administrator required above. */ -}}
+{{- $adminUsers := $admission.adminUsers -}}
+{{- $portalServiceAccount := get $admission "portalServiceAccount" -}}
+{{- if not (kindIs "string" $portalServiceAccount) -}}
+{{- fail "sandboxAdmission.portalServiceAccount must be a string" -}}
+{{- end -}}
+{{- if $portalServiceAccount -}}
+{{- if or (gt (len $portalServiceAccount) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $portalServiceAccount)) -}}
+{{- fail "sandboxAdmission.portalServiceAccount must be a valid ServiceAccount name" -}}
+{{- end -}}
+{{- $portalUsername := printf "system:serviceaccount:%s:%s" .Release.Namespace $portalServiceAccount -}}
+{{- if not (has $portalUsername $adminUsers) -}}
+{{- $adminUsers = append $adminUsers $portalUsername -}}
+{{- end -}}
+{{- end -}}
+{{- $config := dict "adminUsers" $adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "validationMode" $admission.validationMode -}}
 {{- if $placementName -}}
 {{- $_ := set $config "placementConfigMapName" $placementName -}}
 {{- end -}}
@@ -165,10 +185,10 @@ rules:
   - apiGroups: ["apps"]
     resources: ["statefulsets", "controllerrevisions"]
     verbs: ["get"]
-  {{- if $placementName }}
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get"]
+  {{- if $placementName }}
   - apiGroups: ["apps"]
     resources: ["daemonsets"]
     verbs: ["get"]
@@ -190,6 +210,9 @@ rules:
     verbs: ["get"]
   - apiGroups: ["cilium.io"]
     resources: ["ciliumnetworkpolicies"]
+    verbs: ["get"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["gateways", "destinationrules"]
     verbs: ["get"]
   {{- end }}
 ---
@@ -313,15 +336,20 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       topologySpreadConstraints:
+        # Old ReplicaSets must not mask a skewed replacement revision.
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys:
+            - pod-template-hash
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: cetirun-sandbox-admission
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
           whenUnsatisfiable: ScheduleAnyway
+          matchLabelKeys:
+            - pod-template-hash
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: cetirun-sandbox-admission

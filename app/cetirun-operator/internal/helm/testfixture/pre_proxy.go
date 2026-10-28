@@ -14,6 +14,12 @@ import (
 // laterAdditions are chart changes made after the proxy hook, removed before
 // the original bytes are checked.
 var laterAdditions = map[string][]string{
+	"templates/_sandbox.tpl": {`{{- if $s.ingressMTLS -}}
+{{- if or (not $reconciled) (include "cetirun.tailscaleEnabled" .) (gt (int .Values.msteamsWebhookPort) 0) -}}
+{{- fail "managed ingress mTLS requires common built-in API/UI/terminal/desktop routing without alternate ingress" -}}
+{{- end -}}
+{{- end -}}
+`},
 	"agents/openclaw/config/native.tpl": {`{{- /* Portal sign-in: the ingress lets only the Agent's owner through, after
    their Portal sign-in, and passes their email from that sign-in; the Istio
    sidecar is the Agent's only proxy. OpenClaw then takes the owner from that
@@ -34,7 +40,8 @@ var laterAdditions = map[string][]string{
 {{- $_ := set $config "gateway" $gateway }}
 {{- end }}
 `},
-	"values.schema.json": {`                "portalSignIn": {
+	"values.schema.json": {`                "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
+`, `                "portalSignIn": {
                     "type": "object",
                     "description": "Sign the owner in to the Control UI with their Portal sign-in (OpenClaw trusted-proxy mode)",
                     "additionalProperties": false,
@@ -51,6 +58,9 @@ var laterAdditions = map[string][]string{
 // RestorePreProxyContract reconstructs the three chart assets changed by the
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
+	if startup, ok := chrt.Values["startupProbe"].(map[string]any); ok {
+		startup["failureThreshold"] = 30
+	}
 	if gateway, ok := chrt.Values["aiGateway"].(map[string]any); ok {
 		if proxy, ok := gateway["copilotProxy"].(map[string]any); ok {
 			delete(proxy, "replicaCount")
@@ -92,6 +102,12 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			{"{{- if $contextSkills }}\n{{- $plugins :=", "{{- if and (not .Values.sandboxWorkload) (dig \"enabled\" false (.Values.memoryContext | default dict)) }}\n{{- $plugins :="},
 		},
 		"values.schema.json": {
+			{`"type": ["integer", "null"],
+                    "minimum": 1,
+                    "default": null,
+                    "description": "Null selects 60 for common-executor OpenClaw Sandboxes, otherwise 30; explicit positive integers are preserved"`,
+				`"type": "integer",
+                    "default": 30`},
 			{"                        \"replicaCount\": {\"type\": [\"integer\", \"null\"], \"minimum\": 0, \"maximum\": 1, \"default\": null},\n", ""},
 			{`"executionHeld": {"type": "boolean"},
                 "reconciled": {"const": true}`, `"executionHeld": {"const": true}`},
@@ -164,11 +180,16 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			addition: `                "trustedProxyIPs": {
                     "type": "array",
                     "uniqueItems": true,
-                    "description": "Exact compiler-selected ingress peer IPs; not tenant proxy trust",
+                    "description": "Compiler-selected ingress IPs or registered Pod CIDRs; not tenant proxy trust",
                     "items": {
                         "type": "string",
                         "minLength": 1,
-                        "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]
+                        "anyOf": [
+                            {"format": "ipv4"},
+                            {"format": "ipv6"},
+                            {"pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$"},
+                            {"pattern": "^[0-9a-fA-F]*:[0-9a-fA-F:]+/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"}
+                        ]
                     }
                 },
 `,
