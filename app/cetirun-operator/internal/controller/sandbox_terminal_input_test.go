@@ -4,11 +4,14 @@
 package controller
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -75,9 +78,9 @@ func TestDesiredCustomSandboxIngressesMatchHarnessAndTerminalInputs(t *testing.T
 	}
 }
 
-func TestReconciledBuiltinSandboxIgnoresCustomTerminalPlatformInput(t *testing.T) {
+func TestReconciledBuiltinSandboxUsesNativeTerminalChartInput(t *testing.T) {
 	terminal := map[string]any{
-		"enabled": true, "port": 7681, "sessionSeconds": 1800,
+		"enabled": true, "port": 7682, "shell": "/bin/bash", "basePath": "/native/term", "sessionSeconds": 1800,
 		"image": map[string]any{
 			"repository": "registry.example.test/cetirun-terminal",
 			"digest":     "sha256:" + strings.Repeat("a", 64),
@@ -92,11 +95,45 @@ func TestReconciledBuiltinSandboxIgnoresCustomTerminalPlatformInput(t *testing.T
 			)
 			expected := reconciledExpectationForTest(t, f)
 			if expected.Terminal != nil {
-				t.Fatalf("%s common Sandbox retained the Custom terminal target: %#v", harness, expected.Terminal)
+				t.Fatalf("%s common Sandbox retained an isolated Custom terminal target: %#v", harness, expected.Terminal)
 			}
 			if f.workload(t).Name != instanceServiceName(f.agent.Name) {
 				t.Fatalf("%s common Sandbox did not start its primary workload", harness)
 			}
+			settings, ok := f.installer.prepared.Values["ttyd"].(map[string]any)
+			if !ok || settings["enabled"] != true || fmt.Sprint(settings["port"]) != "7682" || settings["shell"] != "/bin/bash" || settings["basePath"] != "/native/term" {
+				t.Fatalf("%s native ttyd chart input = %#v", harness, f.installer.prepared.Values["ttyd"])
+			}
+			main := f.workload(t).Spec.Template.Spec.Containers[0]
+			if !hasNativeTerminalEnv(main, "TTYD_ENABLED", "true") || !hasNativeTerminalEnv(main, "TTYD_PORT", "7682") ||
+				!hasNativeTerminalEnv(main, "TTYD_SHELL", "/bin/bash") || !hasNativeTerminalEnv(main, "TTYD_BASE_PATH", "/native/term") {
+				t.Fatalf("%s native workload did not retain ttyd process inputs: %#v", harness, main.Env)
+			}
+			service := &corev1.Service{}
+			if err := f.kube.Get(context.Background(), client.ObjectKey{Namespace: instanceNamespace(f.agent.Name), Name: instanceServiceName(f.agent.Name)}, service); err != nil {
+				t.Fatal(err)
+			}
+			if !hasNativeTerminalServicePort(service.Spec.Ports, 7682) {
+				t.Fatalf("%s native Service did not retain ttyd port: %#v", harness, service.Spec.Ports)
+			}
 		})
 	}
+}
+
+func hasNativeTerminalEnv(container corev1.Container, name, value string) bool {
+	for _, env := range container.Env {
+		if env.Name == name && env.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNativeTerminalServicePort(ports []corev1.ServicePort, port int32) bool {
+	for _, value := range ports {
+		if value.Name == "ttyd" && value.Port == port && value.TargetPort.IntVal == port {
+			return true
+		}
+	}
+	return false
 }

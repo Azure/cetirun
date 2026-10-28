@@ -558,21 +558,7 @@ func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (m
 	}
 	copy := agent.DeepCopy()
 	copy.Spec.Helm.Values = nil
-	// The operator's ttyd stanza is the typed platform input for the isolated
-	// Custom terminal. Built-in common Sandboxes have no Terminal contract, so
-	// passing that shared stanza through would incorrectly request a terminal
-	// that the protected bundle must reject. Keep the existing built-in chart
-	// behavior outside common Sandbox execution unchanged.
-	operatorValues := r.CetiRunHelmValues
-	if _, configured := operatorValues["ttyd"]; configured {
-		operatorValues = make(map[string]interface{}, len(r.CetiRunHelmValues)-1)
-		for name, value := range r.CetiRunHelmValues {
-			if name != "ttyd" {
-				operatorValues[name] = value
-			}
-		}
-	}
-	platform, err := buildHelmValues(copy, team, r.DomainSuffix, r.SkillsStorageAccount, operatorValues, r.ChartRegistry, r.DefaultModel)
+	platform, err := buildHelmValues(copy, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -277,9 +277,10 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 				}
 			}
 			guardCalled := false
+			var authorityErr error
 			apply, err := prepared.ReconcileSandbox(values, bundle, func(context.Context) error {
 				guardCalled = true
-				return nil
+				return authorityErr
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -294,11 +295,11 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 				}
 			}
 			stale := errors.New("synthetic Custom authority changed")
-			apply.sandboxGuard = func(context.Context) error { return stale }
+			authorityErr = stale
 			if err := (&Client{}).InstallOrUpgrade(input.Namespace.Name, input.ReleaseName, apply); !errors.Is(err, stale) {
 				t.Fatalf("Custom apply bypassed current Sandbox authority: %v", err)
 			}
-			apply.sandboxGuard = func(context.Context) error { return nil }
+			authorityErr = nil
 			apply.Values["replicaCount"] = 2
 			if err := (&Client{}).InstallOrUpgrade(input.Namespace.Name, input.ReleaseName, apply); err == nil || errors.Is(err, rest.ErrNotInCluster) {
 				t.Fatalf("mutated Custom plan reached the Kubernetes client: %v", err)

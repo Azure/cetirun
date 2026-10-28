@@ -32,6 +32,7 @@ func TestCustomUsesTheCommonSandboxContract(t *testing.T) {
 			{Name: "OPENAI_API_KEY", CredentialSlot: "model"},
 		},
 	}
+	input.Context = &w.Context{ObjectIdentity: w.ObjectIdentity{Name: "custom-context-example", UID: "context-uid"}, Files: map[string]string{"AGENTS.md": "AGENTS.md"}}
 	bundle, err := w.Build(input)
 	if err != nil {
 		t.Fatal(err)
@@ -66,12 +67,24 @@ func TestCustomUsesTheCommonSandboxContract(t *testing.T) {
 	if hasSecretEnv(main.Env, "MODEL_API_KEY", "runtime-secret", "MODEL_API_KEY") {
 		t.Fatal("Custom workload retained a direct model credential")
 	}
+	if !hasConfigMapVolume(template.Spec.Volumes, "context", input.Context.Name) {
+		t.Fatal("Custom workload did not project the canonical context ConfigMap")
+	}
 }
 
 func hasSecretEnv(env []corev1.EnvVar, name, secret, key string) bool {
 	for _, value := range env {
 		if value.Name == name && value.ValueFrom != nil && value.ValueFrom.SecretKeyRef != nil &&
 			value.ValueFrom.SecretKeyRef.Name == secret && value.ValueFrom.SecretKeyRef.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConfigMapVolume(volumes []corev1.Volume, name, configMap string) bool {
+	for _, volume := range volumes {
+		if volume.Name == name && volume.ConfigMap != nil && volume.ConfigMap.Name == configMap {
 			return true
 		}
 	}

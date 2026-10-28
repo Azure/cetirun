@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -80,9 +81,24 @@ func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt
 		if source.Kind != "Secret" {
 			continue
 		}
+		matchesTLSReference := func(ref ingressmtls.Reference) bool {
+			return source.APIVersion == "v1" && source.ValidIdentity() &&
+				source.Namespace == ref.Namespace && source.Name == ref.Name &&
+				source.UID == ref.UID && source.ResourceVersion == ref.ResourceVersion
+		}
+		endpointSecret := false
+		if plan := attempt.input.Controls.IngressMTLS; plan != nil {
+			// The Gateway client key has its own exact read grant in the
+			// Gateway namespace. It must not enter this Agent namespace role
+			// or the application's authorized credential inventory.
+			if matchesTLSReference(plan.ClientSecret) {
+				continue
+			}
+			endpointSecret = matchesTLSReference(plan.ServerSecret)
+		}
 		approved := slices.Contains(attempt.input.AuthorizedSecrets, source.Name) ||
 			(attempt.input.ImagePullSecret != nil && source.Name == attempt.input.ImagePullSecret.Name &&
-				source.UID == attempt.input.ImagePullSecret.UID)
+				source.UID == attempt.input.ImagePullSecret.UID) || endpointSecret
 		if source.APIVersion != "v1" || source.Namespace != attempt.input.Namespace.Name ||
 			!source.ValidIdentity() || !approved {
 			return nil, nil, sandboxpolicy.BindingReference{}, fmt.Errorf("Sandbox source-read grant contains an unapproved Secret source")

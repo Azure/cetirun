@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -99,6 +100,72 @@ func TestSandboxSourceAccessRejectsInvalidPinnedSecretIdentity(t *testing.T) {
 			}
 			if role != nil || binding != nil {
 				t.Fatalf("invalid pinned Secret source emitted a grant: role=%+v binding=%+v", role, binding)
+			}
+		})
+	}
+}
+
+func TestSandboxSourceAccessSeparatesPinnedMTLSSecrets(t *testing.T) {
+	const namespace = "cetirun-native"
+	server := validSecretSource(namespace, "ingress-server")
+	client := validSecretSource("platform", "ingress-client")
+	ref := func(source sandboxworkload.SourceReference) ingressmtls.Reference {
+		return ingressmtls.Reference{Namespace: source.Namespace, Name: source.Name,
+			UID: source.UID, ResourceVersion: source.ResourceVersion}
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func([]sandboxworkload.SourceReference)
+	}{
+		{name: "exact identities"},
+		{name: "server namespace", mutate: func(s []sandboxworkload.SourceReference) { s[1].Namespace = "other" }},
+		{name: "server replacement", mutate: func(s []sandboxworkload.SourceReference) { s[1].UID = "replacement" }},
+		{name: "server revision", mutate: func(s []sandboxworkload.SourceReference) { s[1].ResourceVersion = "2" }},
+		{name: "client namespace", mutate: func(s []sandboxworkload.SourceReference) { s[2].Namespace = namespace }},
+		{name: "client replacement", mutate: func(s []sandboxworkload.SourceReference) { s[2].UID = "replacement" }},
+		{name: "client revision", mutate: func(s []sandboxworkload.SourceReference) { s[2].ResourceVersion = "2" }},
+		{name: "client API version", mutate: func(s []sandboxworkload.SourceReference) { s[2].APIVersion = "example.test/v1" }},
+		{name: "unapproved source", mutate: func(s []sandboxworkload.SourceReference) { s[2] = validSecretSource(namespace, "foreign") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempt := sandboxSourceAccessAttempt(namespace, []string{"runtime", "gateway-key"}, []sandboxworkload.SourceReference{
+				validSecretSource(namespace, "runtime"), server, client, validSecretSource(namespace, "gateway-key"),
+			})
+			attempt.input.Controls.IngressMTLS = &ingressmtls.Plan{Binding: ingressmtls.Binding{
+				ServerSecret: ref(server), ClientSecret: ref(client), Gateway: ingressmtls.Reference{Namespace: "platform", Name: "ingress"},
+			}}
+			if tc.mutate != nil {
+				tc.mutate(attempt.sources)
+			}
+			r := sandboxSourceAccessReconciler()
+			role, binding, _, err := r.sandboxSourceAccess(attempt)
+			if tc.mutate != nil {
+				if err == nil || !strings.Contains(err.Error(), "unapproved Secret source") || role != nil || binding != nil {
+					t.Fatalf("changed TLS identity produced a grant: role=%+v binding=%+v error=%v", role, binding, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if role.Namespace != namespace || len(role.Rules) != 1 ||
+				!sandboxSourceAccessEqualStrings(role.Rules[0].Resources, []string{"secrets"}) ||
+				!sandboxSourceAccessEqualStrings(role.Rules[0].ResourceNames, []string{"gateway-key", "ingress-server", "runtime"}) ||
+				!sandboxSourceAccessEqualStrings(role.Rules[0].Verbs, []string{"get"}) {
+				t.Fatalf("Agent namespace TLS source grant is not exact: %+v", role)
+			}
+			clientRole, _, _, err := r.sandboxMTLSSourceAccess(attempt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if clientRole.Namespace != client.Namespace || len(clientRole.Rules) != 1 ||
+				!sandboxSourceAccessEqualStrings(clientRole.Rules[0].Resources, []string{"secrets"}) ||
+				!sandboxSourceAccessEqualStrings(clientRole.Rules[0].ResourceNames, []string{client.Name}) ||
+				!sandboxSourceAccessEqualStrings(clientRole.Rules[0].Verbs, []string{"get"}) {
+				t.Fatalf("Gateway client source grant is not isolated: %+v", clientRole)
+			}
+			if !sandboxSourceAccessEqualStrings(attempt.input.AuthorizedSecrets, []string{"runtime", "gateway-key"}) {
+				t.Fatalf("TLS approval expanded application credentials: %v", attempt.input.AuthorizedSecrets)
 			}
 		})
 	}

@@ -157,17 +157,20 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	} else if gateway["enabled"] == true {
 		return nil, fmt.Errorf("native Gateway requires a typed authorized key projection")
 	}
-	terminalEnabled := b.input.Terminal != nil
-	if requested, present := out["ttyd"]; present {
-		settings, ok := requested.(map[string]any)
-		value, ok := settings["enabled"].(bool)
-		if !ok {
-			return nil, fmt.Errorf("ttyd.enabled must be a boolean")
+	terminalEnabled := false
+	if b.input.AgentType == "custom" {
+		terminalEnabled = b.input.Terminal != nil
+		if requested, present := out["ttyd"]; present {
+			settings, ok := requested.(map[string]any)
+			value, ok := settings["enabled"].(bool)
+			if !ok {
+				return nil, fmt.Errorf("ttyd.enabled must be a boolean")
+			}
+			terminalEnabled = value
 		}
-		terminalEnabled = value
-	}
-	if terminalEnabled && b.input.Terminal == nil {
-		return nil, fmt.Errorf("terminal is unavailable for this Sandbox")
+		if terminalEnabled && b.input.Terminal == nil {
+			return nil, fmt.Errorf("terminal is unavailable for this Sandbox")
+		}
 	}
 	if b.input.SkillsMode == SkillsModeEmpty && out["skills"] != nil {
 		skills, ok := out["skills"].(map[string]any)
@@ -236,9 +239,6 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		"topologySpreadConstraints": []any{},
 		"autoscaling":               map[string]any{"enabled": false},
 		"ingress":                   map[string]any{"enabled": false},
-		// The only tenant-controlled terminal input is this boolean. The image,
-		// network destination, identity and command remain platform-owned.
-		"ttyd": map[string]any{"enabled": terminalEnabled},
 		// Protected namespaces use the operator's CONNECT guard instead of
 		// the legacy per-release exec policy and its caller exemption.
 		"execRestriction":     map[string]any{"enabled": false},
@@ -259,6 +259,11 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
 	}
 	if custom := b.input.CustomAgent; custom != nil {
+		// Custom's isolated terminal only permits the caller to choose whether
+		// the controller-owned, typed terminal plan is rendered. Native
+		// harnesses retain the complete chart ttyd configuration from the
+		// platform, including its port, shell and base path.
+		overlay["ttyd"] = map[string]any{"enabled": terminalEnabled}
 		contextFiles := map[string]any{}
 		for destination, source := range b.input.Context.Files {
 			contextFiles[destination] = source

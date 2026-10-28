@@ -90,7 +90,7 @@ func Build(input Input) (*Bundle, error) {
 		return nil, err
 	}
 	if tls := input.Controls.IngressMTLS; tls != nil {
-		if !input.Reconciled || tls.AgentUID != binding.AgentUID || tls.Namespace != input.Namespace.Name ||
+		if (input.AgentType != "openclaw" && input.AgentType != "hermes") || !input.Reconciled || tls.AgentUID != binding.AgentUID || tls.Namespace != input.Namespace.Name ||
 			tls.Harness != input.AgentType || slices.Contains(input.AuthorizedSecrets, tls.ServerSecret.Name) ||
 			(input.ImagePullSecret != nil && input.ImagePullSecret.Name == tls.ServerSecret.Name) ||
 			tls.ServiceHost != input.WorkloadName+"."+input.Namespace.Name+".svc.cluster.local" {
