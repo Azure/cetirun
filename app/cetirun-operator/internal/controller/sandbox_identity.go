@@ -13,9 +13,11 @@ import (
 	"strings"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -41,22 +43,40 @@ func (r *AgentReconciler) bootstrapIdentityAccountName(attempt *sandboxPreparati
 	if err != nil {
 		return "", err
 	}
-	if approval.Entra == nil || approval.Kubernetes {
-		return "", fmt.Errorf("%w: native identity approval must be Entra-only", sandboxpolicy.ErrUnapprovedGrant)
+	if approval.Entra == nil {
+		return "", fmt.Errorf("%w: native Entra identity requires an explicit approval", sandboxpolicy.ErrUnapprovedGrant)
+	}
+	if access := attempt.resolution.AgentPolicy.KubernetesAccess; access != nil &&
+		(!approval.Kubernetes || access.ServiceAccountName != approval.ServiceAccountName) {
+		return "", fmt.Errorf("%w: combined Kubernetes identity must use the same approved ServiceAccount", sandboxpolicy.ErrUnapprovedGrant)
 	}
 	return approval.ServiceAccountName, nil
 }
 
 func (r *AgentReconciler) sandboxIdentityPin(ctx context.Context, attempt *sandboxPreparationAttempt) (*sandboxpolicy.IdentityPin, error) {
 	name, err := r.bootstrapIdentityAccountName(attempt)
-	if err != nil || name == "" {
-		return nil, err
-	}
-	state, receipt, err := r.readSandboxBootstrap(ctx, attempt.agent)
 	if err != nil {
 		return nil, err
 	}
+	optional := false
+	if name == "" {
+		access := attempt.resolution.AgentPolicy.KubernetesAccess
+		if access == nil || !r.SandboxPreparation.NativeExecution {
+			return nil, nil
+		}
+		name, optional = access.ServiceAccountName, true
+	}
+	state, receipt, err := r.readSandboxBootstrap(ctx, attempt.agent)
+	if err != nil {
+		if optional && apierrors.IsNotFound(err) && !slices.Contains(attempt.agent.Finalizers, sandbox.BootstrapFinalizer) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	account := receipt.ServiceAccount
+	if optional && account == nil {
+		return nil, nil
+	}
 	if account == nil || account.Name != name || account.UID == "" || state.DeletionTimestamp != nil {
 		return nil, fmt.Errorf("%w: bootstrap ServiceAccount identity is not durably recorded", sandboxpolicy.ErrUnavailable)
 	}
@@ -94,14 +114,20 @@ func (r *AgentReconciler) syncSandboxIdentity(ctx context.Context, attempt *sand
 	if err := validateSandboxBootstrapObject(current, base, pin.UID, false); err != nil {
 		return err
 	}
+	removedAnnotations := []string{}
 	for key := range current.Annotations {
 		if strings.HasPrefix(key, "azure.workload.identity/") {
 			if _, approved := desired.Annotations[key]; !approved {
+				if !attempt.resolution.AgentPolicy.EntraID.Enabled &&
+					(key == "azure.workload.identity/client-id" || key == "azure.workload.identity/tenant-id") {
+					removedAnnotations = append(removedAnnotations, key)
+					continue
+				}
 				return fmt.Errorf("Entra ServiceAccount contains unapproved identity metadata")
 			}
 		}
 	}
-	changed := false
+	changed := len(removedAnnotations) != 0
 	for key, value := range desired.Annotations {
 		changed = changed || current.Annotations[key] != value
 	}
@@ -116,14 +142,17 @@ func (r *AgentReconciler) syncSandboxIdentity(ctx context.Context, attempt *sand
 		if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
 			return err
 		}
-		annotations, labels := maps.Clone(current.Annotations), maps.Clone(current.Labels)
-		if annotations == nil {
-			annotations = map[string]string{}
+		annotations := make(map[string]any, len(desired.Annotations)+len(removedAnnotations))
+		for key, value := range desired.Annotations {
+			annotations[key] = value
 		}
+		for _, key := range removedAnnotations {
+			annotations[key] = nil
+		}
+		labels := maps.Clone(current.Labels)
 		if labels == nil {
 			labels = map[string]string{}
 		}
-		maps.Copy(annotations, desired.Annotations)
 		maps.Copy(labels, desired.Labels)
 		patch, err := json.Marshal(map[string]any{"metadata": map[string]any{
 			"uid": pin.UID, "resourceVersion": current.ResourceVersion, "annotations": annotations, "labels": labels,

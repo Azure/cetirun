@@ -143,16 +143,17 @@ func (e ReconcileExpectation) Validate() error {
 	if main == nil {
 		return fmt.Errorf("Sandbox has no retained HOME workload")
 	}
-	entra := false
+	entra, kubernetes := false, false
 	for _, volume := range main.Template.Spec.Volumes {
 		if volume.Projected != nil {
 			for _, projection := range volume.Projected.Sources {
 				entra = entra || projection.ServiceAccountToken != nil && projection.ServiceAccountToken.Audience == sandboxpolicy.EntraAudience
+				kubernetes = kubernetes || volume.Name == "sandbox-kubernetes-api" && projection.ServiceAccountToken != nil
 			}
 		}
 	}
-	if entra != (e.IdentityServiceAccount != nil) {
-		return fmt.Errorf("Entra execution requires a bootstrap-owned identity source")
+	if entra && e.IdentityServiceAccount == nil || e.IdentityServiceAccount != nil && !entra && !kubernetes {
+		return fmt.Errorf("bootstrap identity source must match an active identity projection")
 	}
 	sources := map[string]bool{}
 	required := map[string]bool{}

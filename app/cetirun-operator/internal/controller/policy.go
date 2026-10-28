@@ -439,7 +439,7 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		return "", err
 	}
 	var identityPin *sandboxpolicy.IdentityPin
-	if resolution.AgentPolicy.EntraID.Enabled && r.SandboxPreparation.NativeExecution {
+	if (resolution.AgentPolicy.EntraID.Enabled || resolution.AgentPolicy.KubernetesAccess != nil) && r.SandboxPreparation.NativeExecution {
 		common, err := r.usesReconciledSandbox(ctx, agent)
 		if err != nil {
 			return "", policyDependency("read identity lifetime: %w", err)

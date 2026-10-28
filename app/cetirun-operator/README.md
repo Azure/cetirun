@@ -1848,6 +1848,9 @@ output creates no Kubernetes RoleBinding or ClusterRoleBinding and requires
 neither Kubernetes RBAC grants nor ingress mTLS. The separately declared
 Kubernetes API audience must differ from the Entra exchange audience; that
 declaration is not an API permission or network grant.
+When Kubernetes access is also supported and requested, both capabilities must
+be explicitly approved on the same ServiceAccount. An unused approval never
+adds a token projection or grants.
 
 Common-executor OpenClaw and Hermes support this projection when the native
 registration explicitly declares `entraID: true`, policy enables it, and the
@@ -1906,7 +1909,11 @@ ownership to the chart.
 
 Suspension, retained restart and approval refresh preserve the account UID, HOME
 and Gateway key. Disabling Entra removes its projected token/environment but
-retains the account and pin, without Kubernetes RBAC, for the Agent lifetime.
+retains the account and pin for the Agent lifetime. If Kubernetes access remains
+enabled, bootstrap still owns that account; Helm must not adopt it or erase its
+creation record. Retired Azure identity annotations are removed only after
+quiescence with UID/resource-version checks. Without requested Kubernetes
+access, retaining the account grants no Kubernetes RBAC.
 The account name cannot change after it is recorded. Final Agent/namespace
 deletion releases the account through the existing bootstrap cleanup ordering
 after workload shutdown; Helm cannot delete or recreate it.

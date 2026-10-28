@@ -69,9 +69,9 @@ func validateObjects(input Input) error {
 	}
 	inventory := slices.Clone(c.Objects)
 	if account := c.ServiceAccountSource; account != nil {
-		if !input.Reconciled || !input.Resolution.AgentPolicy.EntraID.Enabled || access != nil ||
+		if !input.Reconciled || (!input.Resolution.AgentPolicy.EntraID.Enabled && access == nil) ||
 			account.UID == "" || account.Annotations["cetirun.microsoft.com/sandbox-bootstrap"] == "" {
-			return fmt.Errorf("bootstrap identity source requires a pinned common Entra workload")
+			return fmt.Errorf("bootstrap identity source requires a pinned common identity workload")
 		}
 		raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(account)
 		if err != nil {

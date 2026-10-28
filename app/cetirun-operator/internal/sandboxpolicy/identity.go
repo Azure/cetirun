@@ -116,10 +116,10 @@ func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *Approv
 	if policy.EntraID.Enabled {
 		projectIdentity(&plan, false, approval.Entra, platform.KubernetesAudience, expiration)
 	}
-	if input.NativeExecution && policy.EntraID.Enabled {
+	if input.NativeExecution && (policy.EntraID.Enabled || input.IdentityPin != nil) {
 		pin := input.IdentityPin
 		if pin == nil || pin.Name != plan.ServiceAccountName || pin.UID == "" || pin.BootstrapUID == "" {
-			return plan, nil, nil, fmt.Errorf("%w: native Entra requires its durably pinned bootstrap ServiceAccount", ErrUnapprovedGrant)
+			return plan, nil, nil, fmt.Errorf("%w: native identity requires its durably pinned bootstrap ServiceAccount", ErrUnapprovedGrant)
 		}
 		plan.BootstrapServiceAccount = true
 		plan.ServiceAccount.UID = pin.UID

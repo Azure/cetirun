@@ -22,6 +22,9 @@ import (
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -101,6 +104,89 @@ func nativeEntraFixture(t *testing.T, kind string, configure ...func(*AgentRecon
 		t.Fatalf("identity bootstrap missing: %v; status=%+v", err, f.current(t).Status)
 	}
 	return f
+}
+
+func TestNativeEntraIndependentKubernetesApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		requested  string
+		kubernetes bool
+		entra      bool
+		wantError  bool
+	}{
+		{name: "Entra only", entra: true},
+		{name: "unused Kubernetes approval", kubernetes: true, entra: true},
+		{name: "same account independently approved", requested: "example-entra", kubernetes: true, entra: true},
+		{name: "Kubernetes not approved", requested: "example-entra", entra: true, wantError: true},
+		{name: "different Kubernetes account", requested: "other", kubernetes: true, entra: true, wantError: true},
+		{name: "Entra not approved", requested: "example-entra", kubernetes: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &AgentReconciler{
+				SandboxPreparation:        &SandboxPreparation{NativeExecution: true},
+				SandboxNativeCoordination: &sandboxcoordination.Store{},
+			}
+			agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "example-agent"}}
+			approval := sandboxpolicy.ApprovedIdentity{
+				AgentUID: agent.UID, Namespace: instanceNamespace(agent.Name), ServiceAccountName: "example-entra",
+				Revision: "example-approval", Kubernetes: tc.kubernetes,
+			}
+			if tc.entra {
+				approval.Entra = &sandboxpolicy.EntraIdentity{ClientID: "example-client", TenantID: "example-tenant"}
+			}
+			resolution := &sandbox.Resolution{Sandbox: api.SandboxSpec{Type: api.SandboxKata}}
+			resolution.AgentPolicy.EntraID.Enabled = true
+			if tc.requested != "" {
+				resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{ServiceAccountName: tc.requested}
+			}
+			name, err := r.bootstrapIdentityAccountName(&sandboxPreparationAttempt{
+				reconciled: true, agent: agent, resolution: resolution,
+				configuration: SandboxConfigurationSnapshot{Platforms: map[api.SandboxType]sandboxpolicy.Platform{
+					api.SandboxKata: {Identities: []sandboxpolicy.ApprovedIdentity{approval}},
+				}},
+			})
+			if (err != nil) != tc.wantError || err == nil && name != "example-entra" {
+				t.Fatalf("bootstrap account = %q, error = %v, want error %v", name, err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestNativeEntraRetainsKubernetesAccountPin(t *testing.T) {
+	ctx := context.Background()
+	f := nativeEntraFixture(t, "hermes")
+	agent := f.current(t)
+	state, receipt, err := f.r.readSandboxBootstrap(ctx, agent)
+	if err != nil || receipt.ServiceAccount == nil || !slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer) {
+		t.Fatal("fixture requires a confirmed bootstrap-owned account:", err)
+	}
+	resolution := &sandbox.Resolution{}
+	resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{ServiceAccountName: receipt.ServiceAccount.Name}
+	attempt := &sandboxPreparationAttempt{reconciled: true, agent: agent, resolution: resolution}
+	pin, err := f.r.sandboxIdentityPin(ctx, attempt)
+	if err != nil || pin == nil || pin.UID != receipt.ServiceAccount.UID || pin.BootstrapUID != state.UID {
+		t.Fatal("removing Entra lost the retained Kubernetes account pin:", err)
+	}
+	resolution.AgentPolicy.KubernetesAccess.ServiceAccountName = "other-account"
+	if _, err := f.r.sandboxIdentityPin(ctx, attempt); !errors.Is(err, sandboxpolicy.ErrUnavailable) {
+		t.Fatal("a different Kubernetes account reused the retained pin:", err)
+	}
+	resolution.AgentPolicy.KubernetesAccess.ServiceAccountName = receipt.ServiceAccount.Name
+	f.r.APIReader = interceptor.NewClient(f.kube.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			if _, ok := object.(*corev1.ConfigMap); ok && key == client.ObjectKeyFromObject(state) {
+				return apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, key.Name)
+			}
+			return c.Get(ctx, key, object, opts...)
+		},
+	})
+	if _, err := f.r.sandboxIdentityPin(ctx, attempt); err == nil {
+		t.Fatal("an existing lifetime accepted a missing bootstrap authority")
+	}
+	attempt.agent = &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "fresh", UID: "fresh-agent"}}
+	if pin, err := f.r.sandboxIdentityPin(ctx, attempt); err != nil || pin != nil {
+		t.Fatal("a fresh Kubernetes-only lifetime unexpectedly required Entra bootstrap:", err)
+	}
 }
 
 func restartEntraReconciler(r *AgentReconciler) *AgentReconciler {
