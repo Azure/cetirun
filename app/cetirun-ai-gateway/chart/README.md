@@ -1380,6 +1380,19 @@ the console cannot remove it. It:
   recognizes the operator's keys by their model list: only `cetirun-` access
   groups, or `no-default-models`. The master key, and keys granted models by
   name, `*` or every model, are left to LiteLLM's own checks;
+- refuses a request for a decision model, a model whose every deployment sets
+  `mode: evaluation`, through any API but LiteLLM's Decisions API
+  (`/v1/systemone` and `/v1/decisions`), from any caller: a chat, Responses,
+  Anthropic Messages or embeddings request for it gets a 400, "The model
+  <name> is a decision model: call it through /v1/systemone or /v1/decisions.",
+  before any deployment is called, with no retry, fallback or cooldown, and the
+  Gateway logs a warning with the model, the API and the key's alias. Measured
+  on a Gateway without the operator before this: a chat request for
+  Microsoft-Decision-1 from a key created in the console got the provider's
+  404, LiteLLM cooled the deployment down, and for about four seconds every
+  router classifying with it used its default classifier, for every caller.
+  The Decisions API and a router's own classifier calls reach the model as
+  before; a key the operator issued keeps the 403 above;
 - keeps a key the CetiRun operator issued from listing what it cannot talk to:
   `GET /v1/models` (and `/model/info`) leaves out the key's access groups that
   LiteLLM lists as if they were models, such as an Agent's Copilot group before
@@ -1422,9 +1435,10 @@ the console cannot remove it. It:
   `retry-after` header; LiteLLM sets none on its Anthropic Messages API. The
   Gateway's own log and the request log keep the full message.
 
-With `operatorIntegration` off, the guard's request fields and error messages
-apply all the same; a standalone Gateway has no `cetirun-copilot-` groups for
-it to separate, and no keys the operator issued.
+With `operatorIntegration` off, the guard's request fields, its decision model
+rule, its parameter changes and its error messages apply all the same; a
+standalone Gateway has no `cetirun-copilot-` groups for it to separate, and no
+keys the operator issued.
 
 Measured on LiteLLM 1.105.1 with two replicas and two Copilot routes added
 through the management API under one `copilot/` name: each of two Agent keys

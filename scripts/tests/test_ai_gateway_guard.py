@@ -5,9 +5,10 @@
 LiteLLM is not installed for these tests: the callback only subclasses
 LiteLLM's CustomLogger, recognizes its UserAPIKeyAuth, logs to its proxy logger
 and raises FastAPI's HTTPException, which are replaced by stand-ins. The
-deployments, keys and errors below follow what LiteLLM 1.105.1 hands its
+deployments, keys and errors below follow what LiteLLM 1.105.6 hands its
 callbacks: deployments as model_list entries, the calling key as
-UserAPIKeyAuth in the request's metadata, and RouterRateLimitError's message.
+UserAPIKeyAuth in the request's metadata, the request's logging object with the
+API it came through, and RouterRateLimitError's message.
 """
 
 import asyncio
@@ -149,6 +150,20 @@ class ProviderError(Exception):
         self.message = message
         self.status_code = 429
         super().__init__(message)
+
+
+class LoggingObject:
+    """Stands in for the logging object the proxy puts on each request it serves: its call type names the API."""
+
+    def __init__(self, call_type):
+        self.call_type = call_type
+
+
+class CallType:
+    """Shaped like LiteLLM's CallTypes enum members."""
+
+    def __init__(self, value):
+        self.value = value
 
 
 class EncryptedContentAffinityCheck:
@@ -393,6 +408,97 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.filtered(classifier, [decision], "decision"), [decision])
         # Other callers, such as the master key, are left to LiteLLM.
         self.assertEqual(self.filtered({"metadata": {"user_api_key_auth": Key([])}}, [decision], "decision"), [decision])
+        # Through the Decisions API too: the key's own requests stay refused.
+        for call_type in ("asystemone", "adecisions"):
+            with self.subTest(call_type=call_type):
+                self.refused({"metadata": {"user_api_key_auth": key}, "litellm_logging_obj": LoggingObject(call_type)},
+                             [decision], "decision")
+
+    # ----- decision models, for every caller -----
+
+    @staticmethod
+    def decision_deployment():
+        decision = chart_model("decision", "dddd")
+        decision["model_info"]["mode"] = "evaluation"
+        return decision
+
+    @staticmethod
+    def via(call_type, key=None, **extra):
+        """A request the proxy served through the API call_type, from key (the master key by default)."""
+        return {"metadata": {"user_api_key_auth": Key([]) if key is None else key},
+                "litellm_logging_obj": LoggingObject(call_type), **extra}
+
+    def decision_refused(self, request_kwargs, deployments=None, model="decision"):
+        """The error the filter raised, which must be the decision model's refusal."""
+        deployments = [self.decision_deployment()] if deployments is None else deployments
+        with self.assertRaises(self.module.DecisionModelRefused) as raised:
+            self.filtered(request_kwargs, deployments, model)
+        return raised.exception
+
+    def test_any_api_but_the_decisions_api_is_refused_for_every_caller(self):
+        # Measured on a standalone Gateway: a key outside the operator's chatted
+        # with the decision model, the provider answered 404, LiteLLM cooled the
+        # deployment down and the router classifying with it used its default
+        # classifier for about four seconds.
+        for key in (Key([]), Key(["*"]), Key(["decision"]), Key(["all-proxy-models"])):
+            for call_type in ("acompletion", "aresponses", "anthropic_messages", "aembedding", "atext_completion",
+                              CallType("acompletion")):
+                with self.subTest(models=key.models, call_type=call_type):
+                    error = self.decision_refused(self.via(call_type, key))
+                    self.assertIsInstance(error, HTTPException)
+                    self.assertEqual(error.status_code, 400)
+                    self.assertEqual(error.detail, "The model decision is a decision model: call it through "
+                                                   "/v1/systemone or /v1/decisions.")
+                    # The proxy answers 429 for these.
+                    self.assertNotIn("No deployments available", error.detail)
+
+    def test_the_decisions_api_reaches_the_decision_model(self):
+        for call_type in ("asystemone", "adecisions", "systemone", "decisions", CallType("asystemone")):
+            with self.subTest(call_type=call_type):
+                decision = self.decision_deployment()
+                self.assertEqual(self.filtered(self.via(call_type), [decision], "decision"), [decision])
+
+    def test_a_routers_classifier_call_reaches_the_decision_model(self):
+        # LiteLLM makes the call itself, through the Decisions API, without the
+        # request's logging object; marked as the classifier's either way.
+        decision = self.decision_deployment()
+        for request in ({"metadata": {"user_api_key_auth": Key([]), "internal_call_origin": "autorouter_classifier"}},
+                        self.via("acompletion", metadata={"user_api_key_auth": Key([]),
+                                                          "internal_call_origin": "autorouter_classifier"})):
+            with self.subTest(request=sorted(request)):
+                self.assertEqual(self.filtered(request, [decision], "decision"), [decision])
+
+    def test_a_call_with_no_recorded_api_is_left_to_litellm(self):
+        # Calls LiteLLM makes itself carry no logging object; neither does one
+        # whose logging object names no API.
+        decision = self.decision_deployment()
+        for request in ({"metadata": {"user_api_key_auth": Key([])}}, None, {},
+                        self.via(None), self.via(""), self.via(CallType(None)),
+                        {"litellm_logging_obj": {"call_type": "acompletion"}}):
+            with self.subTest(request=request):
+                self.assertEqual(self.filtered(request, [decision], "decision"), [decision])
+
+    def test_only_a_model_every_deployment_of_which_decides_is_refused(self):
+        decision = self.decision_deployment()
+        chat = chart_model("decision", "eeee")
+        for deployments in ([decision, chat], [chat], []):
+            with self.subTest(deployments=self.ids(deployments)):
+                self.assertEqual(self.filtered(self.via("acompletion"), deployments, "decision"), deployments)
+        # A router's tier is held to the same rule: it is routed with the request that reached the router.
+        routed = self.via("acompletion")
+        routed["metadata"]["routing_decision"] = {"router_model_name": "auto-decision", "tier": "SIMPLE"}
+        self.decision_refused(routed, [decision], "decision")
+
+    def test_a_decision_model_refusal_is_logged_once(self):
+        error = self.module.DecisionModelRefused("decision-1", "acompletion")
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            self.assertIsNone(asyncio.run(self.guard.async_post_call_failure_hook({}, error, ROUTER_KEY)))
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("decision-1", logs.output[0])
+        self.assertIn("acompletion", logs.output[0])
+        self.assertIn("cetirun-synthetic-agent-0000", logs.output[0])
+        self.assertNotIn("synthetic-hashed-token", logs.output[0])
+
     def test_no_other_call_origin_is_exempt(self):
         for origin in ("autorouter_classifier ", "AUTOROUTER_CLASSIFIER", "health_check", None,
                        ["autorouter_classifier"]):

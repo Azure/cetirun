@@ -36,6 +36,16 @@ available, LiteLLM's own error applies. The call a router makes to classify a
 request is exempt: the router makes it on the key's behalf, to a model of its
 own configuration that the key need not hold.
 
+A decision model, one whose deployments LiteLLM lists with the evaluation mode,
+such as Microsoft-Decision-1, answers only LiteLLM's Decisions API
+(/v1/systemone and /v1/decisions). Asked for through any other API, such as
+chat completions, the provider refused the request with 404 and LiteLLM cooled
+the deployment down, so every router classifying with it fell back to its
+default classifier, for every caller, for a few seconds. Such a request is
+refused with 400 before any deployment is called, for every caller; a key the
+CetiRun operator issued gets the 403 above for any request of its own to a
+decision model.
+
 Error messages returned to callers no longer include LiteLLM's internal list of
 deployments in cooldown: when no deployment of a model is available, LiteLLM's
 message lists the IDs of every deployment in cooldown, of any model. The proxy
@@ -114,6 +124,11 @@ CALLER_KEY = "user_api_key_auth"
 # proxy removes the field from the metadata a client sends.
 CALL_ORIGIN = "internal_call_origin"
 CLASSIFIER_ORIGIN = "autorouter_classifier"
+# Where the proxy keeps the request's logging object, which records the API the
+# request came through as its call type, and the call types of LiteLLM's
+# Decisions API, the only API a decision model answers.
+LOGGING_OBJECT = "litellm_logging_obj"
+DECISIONS_CALL_TYPES = frozenset(("adecisions", "decisions", "asystemone", "systemone"))
 # The proxy's module, which holds the live router. Read from sys.modules only:
 # the callback never imports the proxy itself.
 PROXY_SERVER_MODULE = "litellm.proxy.proxy_server"
@@ -515,6 +530,21 @@ def classifier_call(request_kwargs):
     )
 
 
+def request_call_type(request_kwargs):
+    """The API the request came through, as the proxy recorded it, or None when it recorded none.
+
+    The proxy sets the request's logging object for every request it serves,
+    before routing, from the route that received the request rather than from
+    its body. Calls LiteLLM makes itself, such as an auto router's classifier
+    call, have none.
+    """
+    if not isinstance(request_kwargs, dict):
+        return None
+    call_type = getattr(request_kwargs.get(LOGGING_OBJECT), "call_type", None)
+    call_type = getattr(call_type, "value", call_type)
+    return call_type if isinstance(call_type, str) and call_type else None
+
+
 def model_groups(model, deployments, team_id):
     """The access groups of every deployment of the model, available or not.
 
@@ -608,6 +638,22 @@ class ModelRefused(HTTPException):
         self.refused_model = model
 
 
+class DecisionModelRefused(HTTPException):
+    """The refusal of a decision model asked for through an API other than LiteLLM's Decisions API.
+
+    Raised before any deployment is called, so the provider never sees the
+    request and LiteLLM does not cool the deployment down; as for ModelRefused,
+    LiteLLM treats a 400 HTTPException from a callback as a guardrail's
+    decision and neither retries nor falls back.
+    """
+
+    def __init__(self, model, call_type):
+        super().__init__(status_code=400,
+                         detail=f"The model {model} is a decision model: call it through /v1/systemone or /v1/decisions.")
+        self.refused_model = model
+        self.refused_call_type = call_type
+
+
 class Guard(CustomLogger):
     """Request sanitization, the deployments a key reaches, and caller-facing errors."""
 
@@ -631,7 +677,9 @@ class Guard(CustomLogger):
         not hold. For a key the operator issued, then also every deployment
         outside its access groups, except on a router's classifier call. An
         auto router's tier selection goes through this again with the same
-        request, so a tier is held to the same rules. While encrypted content
+        request, so a tier is held to the same rules. A request for a decision
+        model through any API but the Decisions API is refused, for every
+        caller. While encrypted content
         affinity applies to the model, unmarked or shortened encrypted reasoning
         is removed from a Responses API request first. A fallback after a
         deployment refused the request's encrypted reasoning is ended here, so
@@ -659,11 +707,19 @@ class Guard(CustomLogger):
         ]
         caller = caller_key(request_kwargs)
         held = operator_groups(caller)
-        if held is not None and kept and not classifier_call(request_kwargs) and all(map(evaluation_only, kept)):
+        decision_model = bool(kept) and not classifier_call(request_kwargs) and all(map(evaluation_only, kept))
+        if held is not None and decision_model:
             # A decision model answers only a router's classifier calls. Called directly, the provider
             # refused the request and LiteLLM cooled the deployment down, so every router classifying
             # with it fell back to its default classifier for everyone.
             raise ModelRefused(model)
+        if decision_model:
+            # Every other caller may use the Decisions API itself. A request through any other API is
+            # refused here, where no deployment has been called yet; one the proxy recorded no API for,
+            # such as a call LiteLLM makes itself, is left to LiteLLM.
+            call_type = request_call_type(request_kwargs)
+            if call_type is not None and call_type not in DECISIONS_CALL_TYPES:
+                raise DecisionModelRefused(model, call_type)
         if held is not None and kept and not classifier_call(request_kwargs):
             allowed = [deployment for deployment in kept if held.intersection(access_groups(deployment))]
             if not allowed:
@@ -717,6 +773,12 @@ class Guard(CustomLogger):
             verbose_proxy_logger.warning(
                 "CetiRun guard: refused the model %s to the key %s, which holds none of the model's access groups",
                 original_exception.refused_model, getattr(user_api_key_dict, "key_alias", None))
+        if isinstance(original_exception, DecisionModelRefused):
+            verbose_proxy_logger.warning(
+                "CetiRun guard: refused a %s request for the decision model %s from the key %s; a decision model "
+                "answers only the Decisions API",
+                original_exception.refused_call_type, original_exception.refused_model,
+                getattr(user_api_key_dict, "key_alias", None))
         remove_cooldown_list(original_exception)
         return None
 
