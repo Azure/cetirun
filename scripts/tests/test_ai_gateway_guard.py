@@ -447,7 +447,7 @@ class GuardTest(unittest.TestCase):
     # ----- sampling parameters a router's chosen model refuses -----
 
     def with_gpt5_rule(self, none_effort=()):
-        """LiteLLM's GPT-5 rule, as 1.105.1 states it, for model names; none_effort supports and defaults to none."""
+        """LiteLLM's GPT-5 rule, as 1.105.6 states it, for model names; none_effort supports and defaults to none."""
 
         class OpenAIGPT5Config:
             @classmethod
@@ -575,7 +575,7 @@ class GuardTest(unittest.TestCase):
     # ----- a reasoning effort of none that an Azure deployment refuses -----
 
     def with_azure_gpt5_rule(self, none_effort=()):
-        """LiteLLM's Azure GPT-5 rule, as 1.105.1 states it; none_effort lists the models marked as taking none."""
+        """LiteLLM's Azure GPT-5 rule, as 1.105.6 states it; none_effort lists the models marked as taking none."""
 
         class AzureOpenAIGPT5Config:
             @classmethod

@@ -207,14 +207,14 @@ def deployment_id(deployment):
 def install_failover_past_affinity():
     """Let a request's failover leave the deployment that key affinity kept it on.
 
-    LiteLLM 1.105.1 runs its deployment-affinity filter before it removes the
-    deployments a weighted failover already tried. A key kept on a deployment
-    that fails is narrowed to that deployment, which the exclusion then
-    removes: no deployment is left, so the failover is not attempted and the
-    key's requests fail until the deployment is in cooldown. Here the filter is
-    given the deployments the failover may still use, so a kept deployment that
-    already failed this request is not chosen again and affinity applies among
-    the others.
+    LiteLLM 1.105.6, like 1.105.1, runs its deployment-affinity filter before
+    it removes the deployments a weighted failover already tried. A key kept on
+    a deployment that fails is narrowed to that deployment, which the exclusion
+    then removes: no deployment is left, so the failover is not attempted and
+    the key's requests fail until the deployment is in cooldown. Here the
+    filter is given the deployments the failover may still use, so a kept
+    deployment that already failed this request is not chosen again and
+    affinity applies among the others.
     """
     try:
         from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck
@@ -413,10 +413,12 @@ def strip_sampling(request_kwargs, deployments):
 def refuses_no_reasoning(deployment):
     """Whether LiteLLM refuses a reasoning effort of none for the deployment before calling it.
 
-    LiteLLM's own rule in 1.105.1, for Chat Completions to Azure: a model of
-    the GPT-5 or GPT-6 series, by base_model or deployment name, takes none only
-    when the price table marks it as supporting none; otherwise LiteLLM answers
-    400. Other providers, and the Responses API, take the request as it is.
+    LiteLLM's own rule, for Chat Completions to Azure: a model of the GPT-5 or
+    GPT-6 series, by base_model or deployment name, takes none only when the
+    price table marks it as supporting none; otherwise LiteLLM answers 400.
+    Other providers take the request as it is. The Responses API's form,
+    reasoning.effort, is LiteLLM's to check: since 1.105.6 it answers a level
+    the table marks as unsupported with its own 400.
     """
     params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
     model = params.get("model") if isinstance(params, dict) else None
