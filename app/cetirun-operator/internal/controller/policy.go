@@ -439,9 +439,19 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		}
 		return "", err
 	}
+	var customIngress *sandboxpolicy.CustomIngress
+	var terminalIngress *sandboxpolicy.TerminalIngress
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		platformValues, userValues, err := r.sandboxHelmValues(agent, team)
+		if err != nil {
+			return "", err
+		}
+		customIngress, terminalIngress = r.desiredCustomSandboxIngresses(agent, platformValues, userValues)
+	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		NativeExecution: r.SandboxPreparation.NativeExecution,
 		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name), Platform: platform,
+		CustomIngress: customIngress, TerminalIngress: terminalIngress,
 	})
 	if err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {

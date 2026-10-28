@@ -359,11 +359,18 @@ func sandboxTerminalNumber(value any) (int32, bool) {
 
 func (r *AgentReconciler) sandboxCustomIngress(attempt *sandboxPreparationAttempt) *sandboxpolicy.CustomIngress {
 	custom := attempt.input.CustomAgent
-	if custom == nil || custom.Port == nil || custom.HTTP == nil {
+	if custom == nil {
 		return nil
 	}
-	ingress := &sandboxpolicy.CustomIngress{Port: *custom.Port, WebUI: custom.WebUI}
-	if !custom.WebUI && custom.HTTP.ChatPath != "" && r.ChatAccess.Enabled && len(r.ChatAccess.Callers) != 0 {
+	return r.customSandboxIngress(custom.Port, custom.WebUI, custom.HTTP != nil && custom.HTTP.ChatPath != "")
+}
+
+func (r *AgentReconciler) customSandboxIngress(port *int32, webUI, chatExposed bool) *sandboxpolicy.CustomIngress {
+	if port == nil {
+		return nil
+	}
+	ingress := &sandboxpolicy.CustomIngress{Port: *port, WebUI: webUI}
+	if !webUI && chatExposed && r.ChatAccess.Enabled && len(r.ChatAccess.Callers) != 0 {
 		for _, caller := range r.ChatAccess.Callers {
 			ingress.ChatCallers = append(ingress.ChatCallers, sandboxpolicy.IngressCaller{
 				Namespace: caller.Namespace, PodLabels: caller.PodLabels,
@@ -377,11 +384,33 @@ func (r *AgentReconciler) sandboxCustomIngress(attempt *sandboxPreparationAttemp
 }
 
 func (r *AgentReconciler) sandboxTerminalIngress(attempt *sandboxPreparationAttempt) *sandboxpolicy.TerminalIngress {
-	terminal := attempt.input.Terminal
+	return terminalSandboxIngress(attempt.input.Terminal)
+}
+
+func terminalSandboxIngress(terminal *sandboxworkload.Terminal) *sandboxpolicy.TerminalIngress {
 	if terminal == nil {
 		return nil
 	}
 	return &sandboxpolicy.TerminalIngress{Port: terminal.Port}
+}
+
+// desiredCustomSandboxIngresses derives the two optional Custom network
+// contracts from current approved inputs. It deliberately does not inspect a
+// prior plan, expectation or observation: callers use it when calculating the
+// desired policy revision before deciding whether any existing evidence is
+// current.
+func (r *AgentReconciler) desiredCustomSandboxIngresses(agent *api.Agent, platform, user map[string]any) (*sandboxpolicy.CustomIngress, *sandboxpolicy.TerminalIngress) {
+	if agent == nil || agent.Spec.Agent.Type != api.AgentTypeCustom {
+		return nil, nil
+	}
+	// Custom's v1 Harness contribution exposes Chat whenever it has a port and
+	// is not a Web UI. The reconciled contribution is checked separately before
+	// execution, while policy resolution must derive the same approved shape
+	// without depending on an existing expectation.
+	custom := r.customSandboxIngress(agent.Spec.Agent.Port, agent.Spec.Agent.WebUI,
+		agent.Spec.Agent.Port != nil && !agent.Spec.Agent.WebUI)
+	terminal := sandboxTerminalInput(platform, user, instanceServiceName(agent.Name))
+	return custom, terminalSandboxIngress(terminal)
 }
 
 func sandboxSource(object client.Object, version, kind string) sandboxworkload.SourceReference {

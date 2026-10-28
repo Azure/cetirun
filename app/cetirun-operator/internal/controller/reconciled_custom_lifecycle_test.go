@@ -45,6 +45,34 @@ func TestReconciledCustomLifecycleUsesCommonRuntimeAndPrivateChatRoute(t *testin
 	f.reconcileOK(t)
 	assertReconciledCustomReady(t, f, caller)
 	assertNoLegacyCustomCompletion(t, f)
+	// A Ready Custom Agent must keep its approved execution identity on a
+	// subsequent ordinary reconciliation. This catches divergence between the
+	// policy-time compiler inputs and the reconciled execution plan.
+	beforeWorkload := f.workload(t)
+	beforeKeyID, beforeStages := f.current(t).Status.AIGateway.KeyID, f.installer.stages
+	f.reconcileOK(t)
+	afterWorkload := f.workload(t)
+	after := f.current(t)
+	if after.Status.Phase != api.PhaseReady || afterWorkload.UID != beforeWorkload.UID ||
+		after.Status.AIGateway.KeyID != beforeKeyID || f.installer.stages != beforeStages {
+		t.Fatalf("repeated Ready Custom reconcile changed execution identity: workload=%s/%s key=%q/%q stages=%d/%d phase=%s",
+			beforeWorkload.UID, afterWorkload.UID, beforeKeyID, after.Status.AIGateway.KeyID,
+			beforeStages, f.installer.stages, after.Status.Phase)
+	}
+	if after.Status.Policy == nil || after.Status.Sandbox == nil ||
+		after.Status.Policy.Enforcement.Sandbox.DesiredRevision != after.Status.Sandbox.AppliedRevision ||
+		!isConditionTrue(after.Status.Conditions, api.ConditionPolicyApplied) {
+		t.Fatalf("Ready Custom policy was not current: policy=%#v sandbox=%#v conditions=%v", after.Status.Policy, after.Status.Sandbox, after.Status.Conditions)
+	}
+	originalChat := f.r.ChatAccess
+	f.r.ChatAccess = chataccess.Config{Enabled: true, Callers: []chataccess.Caller{{
+		Namespace: "cetirun-portal", PodLabels: map[string]string{"app": "different-portal"},
+	}}}
+	changed, err := f.r.resolvePolicy(ctx, after)
+	if err != nil || !policyReprojectionMustHold(after, changed) {
+		t.Fatalf("changed Custom Chat caller did not require a policy hold: resolution=%#v err=%v", changed, err)
+	}
+	f.r.ChatAccess = originalChat
 
 	agent := f.current(t)
 	agent.Spec.Suspended = true

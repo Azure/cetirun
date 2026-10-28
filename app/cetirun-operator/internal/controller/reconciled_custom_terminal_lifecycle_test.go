@@ -116,6 +116,28 @@ func TestReconciledCustomTerminalWaitsWithoutHoldingMainWorkloadAndSuspendsBothW
 	if current.Status.Phase != api.PhaseReady {
 		t.Fatalf("common Custom did not become Ready after terminal availability: phase=%s conditions=%v", current.Status.Phase, current.Status.Conditions)
 	}
+	beforeMain, beforeTerminal := f.workload(t), reconciledCustomTerminalDeployment(t, f)
+	beforeKeyID, beforeStages := current.Status.AIGateway.KeyID, f.installer.stages
+	f.reconcileOK(t)
+	current = f.current(t)
+	afterMain, afterTerminal := f.workload(t), reconciledCustomTerminalDeployment(t, f)
+	if current.Status.Phase != api.PhaseReady || afterMain.UID != beforeMain.UID || afterTerminal.UID != beforeTerminal.UID ||
+		current.Status.AIGateway.KeyID != beforeKeyID || f.installer.stages != beforeStages {
+		t.Fatalf("repeated Ready Custom terminal reconcile changed identity: main=%s/%s terminal=%s/%s key=%q/%q stages=%d/%d phase=%s",
+			beforeMain.UID, afterMain.UID, beforeTerminal.UID, afterTerminal.UID,
+			beforeKeyID, current.Status.AIGateway.KeyID, beforeStages, f.installer.stages, current.Status.Phase)
+	}
+	if current.Status.Policy == nil || current.Status.Sandbox == nil ||
+		current.Status.Policy.Enforcement.Sandbox.DesiredRevision != current.Status.Sandbox.AppliedRevision ||
+		!isConditionTrue(current.Status.Conditions, api.ConditionPolicyApplied) {
+		t.Fatalf("Ready Custom terminal policy was not current: policy=%#v sandbox=%#v conditions=%v", current.Status.Policy, current.Status.Sandbox, current.Status.Conditions)
+	}
+	f.r.CetiRunHelmValues["ttyd"].(map[string]any)["port"] = 7682
+	changed, err := f.r.resolvePolicy(ctx, current)
+	if err != nil || !policyReprojectionMustHold(current, changed) {
+		t.Fatalf("changed Custom terminal port did not require a policy hold: resolution=%#v err=%v", changed, err)
+	}
+	f.r.CetiRunHelmValues["ttyd"].(map[string]any)["port"] = 7681
 
 	current.Spec.Suspended = true
 	current.Generation++
