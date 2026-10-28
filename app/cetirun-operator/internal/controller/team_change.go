@@ -357,6 +357,12 @@ func (r *AgentReconciler) preflightTeamChange(ctx context.Context, agent *api.Ag
 	// and an acquire may have committed before its checkpoint was recorded.
 	// Neither recovery may depend on the target still existing or matching.
 	var preflightTicket *sandboxcoordination.TransitionTicket
+	// A ticket can only be released by this preflight pass after its exact
+	// checkpoint was durably written by this pass. A failed status write leaves
+	// the outcome unknown: another reconcile may already have advanced the
+	// checkpoint while this informer still serves Validating. Releasing in that
+	// case can strand the newer Stopping checkpoint without its transition.
+	preflightCheckpointed := false
 	if state.Phase == api.TeamChangeValidating && !state.Stopped {
 		ticket, found, err := r.SandboxNativeCoordination.ReadTransition(ctx, agent.UID)
 		if err != nil {
@@ -376,7 +382,7 @@ func (r *AgentReconciler) preflightTeamChange(ctx context.Context, agent *api.Ag
 			preflightTicket = &ticket
 		}
 		defer func() {
-			if resultErr != nil && preflightTicket != nil {
+			if resultErr != nil && preflightTicket != nil && preflightCheckpointed {
 				resultErr = r.releaseFailedTeamChangePreflight(ctx, agent, state, *preflightTicket, resultErr)
 			}
 		}()
@@ -384,6 +390,7 @@ func (r *AgentReconciler) preflightTeamChange(ctx context.Context, agent *api.Ag
 			if err := r.persistTeamChangeTransition(ctx, agent, state, *preflightTicket); err != nil {
 				return err
 			}
+			preflightCheckpointed = true
 			if err := r.verifyTeamChangeTarget(ctx, preflightTicket.Transition.Target); err != nil {
 				return err
 			}
@@ -505,6 +512,7 @@ func (r *AgentReconciler) preflightTeamChange(ctx context.Context, agent *api.Ag
 		if err := r.persistTeamChangeTransition(ctx, agent, state, ticket); err != nil {
 			return err
 		}
+		preflightCheckpointed = true
 		if err := r.verifyTeamChangeTarget(ctx, ticket.Transition.Target); err != nil {
 			return err
 		}

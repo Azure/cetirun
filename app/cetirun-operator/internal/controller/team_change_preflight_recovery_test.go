@@ -5,11 +5,118 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+func TestTeamChangeStaleValidatingReconcileRetainsStoppingTransition(t *testing.T) {
+	ctx := context.Background()
+	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "hermes", true, false, withReconciledCoordination(t))
+	markTeamChangeSourceRunning(t, f)
+	target := createTeamChangeTarget(t, f, "stale-checkpoint-target", false)
+	submitTeamChange(t, f, target, "stale-checkpoint-request-0001")
+	f.reconcileOK(t) // Persist the initial Validating checkpoint.
+	stale := f.current(t)
+	if stale.Status.TeamChange.Phase != api.TeamChangeValidating {
+		t.Fatalf("initial checkpoint phase = %s, want Validating", stale.Status.TeamChange.Phase)
+	}
+	f.reconcileOK(t) // Acquire and persist the current Stopping checkpoint.
+	current := f.current(t)
+	if current.Status.TeamChange.Phase != api.TeamChangeStopping {
+		t.Fatalf("current checkpoint phase = %s, want Stopping", current.Status.TeamChange.Phase)
+	}
+	ticket, found, err := f.r.SandboxNativeCoordination.ReadTransition(ctx, current.UID)
+	if err != nil || !found {
+		t.Fatalf("read acquired transition: found=%t err=%v", found, err)
+	}
+
+	// An informer pass that started before the previous status update can still
+	// provide Validating. APIReader remains current, so its status checkpoint
+	// write conflicts. That stale pass must not release the transition now owned
+	// by the authoritative Stopping checkpoint.
+	f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+			if out, ok := object.(*api.Agent); ok && key.Name == stale.Name {
+				*out = *stale.DeepCopy()
+				return nil
+			}
+			return c.Get(ctx, key, object, options...)
+		},
+	})
+	_, reconcileErr := f.reconcile()
+	f.r.Client = f.kube
+	if reconcileErr == nil {
+		t.Fatal("stale status checkpoint unexpectedly succeeded")
+	}
+	current = f.current(t)
+	retained, found, err := f.r.SandboxNativeCoordination.ReadTransition(ctx, current.UID)
+	if err != nil || !found || retained.Transition.ID != ticket.Transition.ID {
+		t.Fatalf("stale full Reconcile removed current transition: found=%t err=%v", found, err)
+	}
+	if current.Status.TeamChange.Phase != api.TeamChangeStopping || !current.Status.TeamChange.Fenced {
+		t.Fatalf("stale reconcile changed the authoritative checkpoint: %+v", current.Status.TeamChange)
+	}
+}
+
+func TestTeamChangeTransitionSurvivesCheckpointWriteFailure(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		name := "before-write"
+		if committed {
+			name = "response-lost-after-commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "hermes", true, false, withReconciledCoordination(t))
+			markTeamChangeSourceRunning(t, f)
+			target := createTeamChangeTarget(t, f, "checkpoint-write-failure-"+name, false)
+			submitTeamChange(t, f, target, "checkpoint-write-failure-"+name)
+			f.reconcileOK(t) // Persist the initial Validating checkpoint.
+
+			// An acquire may commit while the status write fails, or while its
+			// response is lost after the API server accepted it. This pass cannot
+			// prove it still owns the checkpoint, so it retains the ticket for a
+			// fresh Validating reconcile to recover.
+			f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, underlying client.Client, subResource string, object client.Object, patch client.Patch, options ...client.SubResourcePatchOption) error {
+					if subResource == "status" {
+						if _, ok := object.(*api.Agent); ok {
+							if committed {
+								if err := underlying.SubResource(subResource).Patch(ctx, object, patch, options...); err != nil {
+									return err
+								}
+							}
+							return fmt.Errorf("synthetic lost status response")
+						}
+					}
+					return underlying.SubResource(subResource).Patch(ctx, object, patch, options...)
+				},
+			})
+			_, reconcileErr := f.reconcile()
+			f.r.Client = f.kube
+			if reconcileErr == nil {
+				t.Fatal("checkpoint write failure unexpectedly succeeded")
+			}
+			current := f.current(t)
+			ticket, found, err := f.r.SandboxNativeCoordination.ReadTransition(ctx, current.UID)
+			if err != nil || !found {
+				t.Fatalf("checkpoint write failure released the acquired transition: found=%t err=%v", found, err)
+			}
+			if current.Status.TeamChange.Phase != api.TeamChangeValidating || current.Status.TeamChange.Fenced != committed {
+				t.Fatalf("unexpected durable validating state after failed checkpoint write: %+v", current.Status.TeamChange)
+			}
+
+			f.reconcileOK(t)
+			current = f.current(t)
+			if current.Status.TeamChange.Phase != api.TeamChangeStopping || current.Status.TeamChange.TransitionID != ticket.Transition.ID {
+				t.Fatalf("fresh reconcile did not recover the retained transition: %+v", current.Status.TeamChange)
+			}
+		})
+	}
+}
 
 func TestTeamChangePreflightRecoversTargetDriftAndLostCleanupCheckpoint(t *testing.T) {
 	for _, targetDeleted := range []bool{false, true} {
