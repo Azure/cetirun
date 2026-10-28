@@ -14,6 +14,11 @@ registry access configured for your organization.
 For local chart validation without deploying resources, use
 [Local checks](../local-checks/).
 
+To run only the AI Gateway, for agents you operate yourself, install its chart
+on its own instead: the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#install)
+covers publishing its image and chart, installing it, smart-routing models and
+a client's first call.
+
 ## Prepare the environment
 
 | Requirement | Why it matters |
@@ -23,6 +28,7 @@ For local chart validation without deploying resources, use
 | Azure Disk CSI and the `default` StorageClass | Default persistent HOME volumes |
 | Blob CSI and `azureblob-nfs-premium` StorageClass, when shared skills are enabled | Optional shared skills volumes |
 | A compatible `kata-vm-isolation` RuntimeClass | Default agent chart sandbox; do not silently remove it |
+| Kubernetes 1.37 or later, Kata node pools and Azure CNI powered by Cilium | Agents of Teams created in the portal run in a Sandbox; see [Policy-bound Teams](../../operations/policy-teams/) |
 | Enforced Kubernetes NetworkPolicy and required admission APIs | Runtime isolation rules and the default exec-denial policy |
 | Accessible images and versioned OCI agent chart | Operator fetches the agent chart, then nodes pull images |
 | Entra ID app, allowed groups, federated credential | Portal login and group-based admission |
@@ -290,7 +296,7 @@ cetirun-portal:
     aliases:
       - alice
 cetirun-ai-gateway:
-  # Create this Secret in the release namespace first.
+  # The Secret created below.
   providerCredentials:
     existingSecret: gateway-provider-keys  # holds AZURE_OPENAI_KEY
   models:
@@ -309,6 +315,15 @@ These are placeholders, not published artifacts. `admins.aliases` names the
 Portal administrators, who create Teams, Agent Policies and Sandboxes; the
 models are the shared models Agents can use, see the
 [platform chart README]({{< repo "app/cetirun-platform/README.md" >}}#ai-gateway).
+The Gateway reads the models' provider keys from the Secret the values name.
+Create it in the release namespace before the install:
+
+```bash
+kubectl create namespace cetirun-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic gateway-provider-keys -n cetirun-system \
+  --from-literal=AZURE_OPENAI_KEY='<key>'
+```
+
 Add the storage and runtime settings for your environment. Agents of a Team
 created in the Portal run in a Sandbox, which needs the additional setup in
 [Policy-bound Teams](../../operations/policy-teams/). After completing the
