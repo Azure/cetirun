@@ -444,7 +444,8 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 
 func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEnabled bool) error {
 	custom := b.input.CustomAgent
-	if custom == nil || b.input.GatewayKey == nil || len(spec.Containers) == 0 || len(spec.InitContainers) == 0 {
+	context := b.input.Context
+	if custom == nil || context == nil || b.input.GatewayKey == nil || len(spec.Containers) == 0 || len(spec.InitContainers) == 0 {
 		return fmt.Errorf("reconciled Custom runtime lacks its approved Harness or AI Gateway identity")
 	}
 	main := spec.Containers[0]
@@ -489,11 +490,14 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 	} else if !customHTTPProbesMatch(main, custom.HTTP) {
 		return fmt.Errorf("reconciled Custom runtime probes differ from the Harness contract")
 	}
+	// Custom always materializes a bounded canonical view. Besides keeping the
+	// Team snapshot immutable, this guarantees an empty skills directory for
+	// Harnesses when Memory and shared skills are both disabled.
 	mainMounts := []corev1.VolumeMount{
 		{Name: "data", MountPath: custom.Home}, {Name: "tmp", MountPath: "/tmp"},
 		{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
-		{Name: b.input.SkillsMode.volume(skillsIdentity(b.input.Skills)).Name, MountPath: skillsPath(b.input), ReadOnly: true},
 	}
+	mainMounts = append(mainMounts, corev1.VolumeMount{Name: "context-view", MountPath: custom.Home + "/.agents", SubPath: "current", ReadOnly: true})
 	if memoryEnabled {
 		mainMounts = append(mainMounts, runtimebindings.MemoryMounts()...)
 	}
@@ -501,12 +505,47 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 	initMounts := []corev1.VolumeMount{
 		{Name: "data", MountPath: "/home-data"}, {Name: "tmp", MountPath: "/tmp"},
 		{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
+		{Name: "context", MountPath: "/etc/cetirun-context", ReadOnly: true},
+	}
+	initEnv := []corev1.EnvVar{
+		{Name: "SOURCE_HOME", Value: custom.Home}, {Name: "TARGET_HOME", Value: "/home-data"},
+		{Name: "CETIRUN_INIT_IMAGE", Value: custom.Image}, {Name: "CETIRUN_INIT_COMMON", Value: "/etc/cetirun/init-home-common.sh"},
+		{Name: "CETIRUN_CONTEXT_DIR", Value: "/etc/cetirun-context"},
+	}
+	initMounts = append(initMounts, corev1.VolumeMount{Name: "context-view", MountPath: "/etc/cetirun-context-view"})
+	initEnv = append(initEnv, corev1.EnvVar{Name: "CETIRUN_CONTEXT_VIEW", Value: "/etc/cetirun-context-view"})
+	if b.input.SkillsMode != SkillsModeEmpty {
+		initMounts = append(initMounts, corev1.VolumeMount{Name: "shared-skills", MountPath: "/etc/cetirun-shared-skills", ReadOnly: true})
+		initEnv = append(initEnv, corev1.EnvVar{Name: "CETIRUN_SHARED_SKILLS_DIR", Value: "/etc/cetirun-shared-skills"})
+	}
+	if memoryEnabled {
+		initMounts = append(initMounts, runtimebindings.MemoryMounts()...)
+		initEnv = append(initEnv, corev1.EnvVar{Name: "CETIRUN_MEMORY_ASSETS", Value: runtimebindings.MemoryAssetsDir})
 	}
 	initMounts = append(initMounts, b.input.Controls.VolumeMounts...)
-	if !equalMounts(main.VolumeMounts, mainMounts) || !equalMounts(init.VolumeMounts, initMounts) {
+	if !equalMounts(main.VolumeMounts, mainMounts) || !equalMounts(init.VolumeMounts, initMounts) ||
+		!equality.Semantic.DeepEqual(init.Env, initEnv) {
 		return fmt.Errorf("reconciled Custom runtime mounts differ from the common Sandbox contract")
 	}
+	contextVolume := corev1.Volume{Name: "context", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+		LocalObjectReference: corev1.LocalObjectReference{Name: context.Name}, DefaultMode: ptr.To[int32](0444),
+		Items: []corev1.KeyToPath{{Key: "AGENTS.md", Path: "AGENTS.md"}},
+	}}}
+	if !hasExactVolume(*spec, contextVolume) {
+		return fmt.Errorf("reconciled Custom runtime context source differs from the controller snapshot")
+	}
+	if !hasExactVolume(*spec, corev1.Volume{Name: "context-view", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+		SizeLimit: ptr.To(b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit),
+	}}}) {
+		return fmt.Errorf("reconciled Custom runtime canonical context view differs from the Sandbox scratch limit")
+	}
 	return nil
+}
+
+func hasExactVolume(spec corev1.PodSpec, expected corev1.Volume) bool {
+	return slices.ContainsFunc(spec.Volumes, func(actual corev1.Volume) bool {
+		return equality.Semantic.DeepEqual(actual, expected)
+	})
 }
 
 func customContainerPorts(ports []CustomPort) []corev1.ContainerPort {

@@ -140,6 +140,24 @@ func TestReconciledCustomAPIServerCreatesOwnedRuntimeSecretWithoutCallerGatewayR
 	if mounted := w.PodSourceReferences(workload.Spec.Template.Spec, workload.Namespace); containsSource(mounted, "Secret", secret.Name) {
 		t.Fatalf("Custom workload mounted its controller-owned runtime Secret: %+v", mounted)
 	}
+	contextName := ""
+	for _, volume := range workload.Spec.Template.Spec.Volumes {
+		if volume.Name == "context" && volume.ConfigMap != nil {
+			contextName = volume.ConfigMap.Name
+		}
+	}
+	if contextName == "" {
+		t.Fatal("common Custom workload has no canonical context source")
+	}
+	contextSnapshot := &corev1.ConfigMap{}
+	contextKey := client.ObjectKey{Namespace: workload.Namespace, Name: contextName}
+	if err := h.admin.Get(ctx, contextKey, contextSnapshot); err != nil {
+		t.Fatalf("read canonical Custom context: %v", err)
+	}
+	if !hasAgentOwner(contextSnapshot, current) || !ptr.Deref(contextSnapshot.Immutable, false) ||
+		len(contextSnapshot.Data) != 1 || contextSnapshot.Data["AGENTS.md"] == "" {
+		t.Fatal("canonical Custom context is not an immutable, Agent-owned snapshot")
+	}
 	admissionConfig := rest.CopyConfig(h.localHelm.config)
 	admissionConfig.Impersonate = rest.ImpersonationConfig{
 		UserName: "system:serviceaccount:cetirun-system:cetirun-sandbox-admission",
@@ -161,6 +179,20 @@ func TestReconciledCustomAPIServerCreatesOwnedRuntimeSecretWithoutCallerGatewayR
 	h.assertAccess(t, admissionClient, authorizationv1.ResourceAttributes{
 		Resource: "secrets", Verb: "watch", Namespace: secret.Namespace,
 	}, false)
+	if err := admissionClient.Get(ctx, contextKey, &corev1.ConfigMap{}); err != nil {
+		t.Fatalf("actual admission ServiceAccount cannot read the pinned context: %v", err)
+	}
+	h.assertAccess(t, admissionClient, authorizationv1.ResourceAttributes{
+		Resource: "configmaps", Verb: "get", Namespace: contextKey.Namespace, Name: contextKey.Name,
+	}, true)
+	h.assertAccess(t, admissionClient, authorizationv1.ResourceAttributes{
+		Resource: "configmaps", Verb: "get", Namespace: contextKey.Namespace, Name: "unrelated-context",
+	}, false)
+	for _, verb := range []string{"list", "watch"} {
+		h.assertAccess(t, admissionClient, authorizationv1.ResourceAttributes{
+			Resource: "configmaps", Verb: verb, Namespace: contextKey.Namespace,
+		}, false)
+	}
 }
 
 func containsSource(sources []w.SourceReference, kind, name string) bool {

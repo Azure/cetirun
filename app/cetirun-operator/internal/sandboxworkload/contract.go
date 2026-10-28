@@ -85,14 +85,18 @@ type Input struct {
 	// GatewayAPIBase is the protected, in-cluster OpenAI-compatible endpoint.
 	// It is required for Custom because its process adapter consumes standard
 	// OPENAI_BASE_URL/OPENAI_API_KEY variables.
-	GatewayAPIBase    string
-	Namespace         ObjectIdentity
-	WorkloadName      string
-	ReleaseName       string
-	RuntimeClass      *nodev1.RuntimeClass
-	Home              *corev1.PersistentVolumeClaim
-	Skills            *corev1.PersistentVolumeClaim
-	SkillsMode        SkillsMode `json:",omitempty"`
+	GatewayAPIBase string
+	Namespace      ObjectIdentity
+	WorkloadName   string
+	ReleaseName    string
+	RuntimeClass   *nodev1.RuntimeClass
+	Home           *corev1.PersistentVolumeClaim
+	Skills         *corev1.PersistentVolumeClaim
+	SkillsMode     SkillsMode `json:",omitempty"`
+	// Context is the controller-owned immutable snapshot of the Team context
+	// consumed by Custom's canonical $HOME/.agents view. It is intentionally a
+	// typed input: tenant Helm values must never select its source or files.
+	Context           *Context `json:",omitempty"`
 	Helpers           Helpers
 	Controls          Controls
 	AuthorizedSecrets []string
@@ -102,6 +106,14 @@ type Input struct {
 	// terminal. It never gives that workload HOME, model credentials, or the
 	// Agent's service account.
 	Terminal *Terminal `json:",omitempty"`
+}
+
+// Context identifies an immutable ConfigMap and its exact canonical files.
+// Custom currently supports only AGENTS.md; keeping the mapping explicit makes
+// future additions an audited contract change rather than a chart input.
+type Context struct {
+	ObjectIdentity
+	Files map[string]string `json:"files"`
 }
 
 // Terminal is selected by the platform and rendered only for a reconciled

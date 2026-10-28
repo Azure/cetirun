@@ -70,6 +70,20 @@
                 "identityVolumes": {"type": "array"},
                 "identityMounts": {"type": "array"},
                 "identityEnvironment": {"type": "array"},
+                "context": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "files"],
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+                        "files": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["AGENTS.md"],
+                            "properties": {"AGENTS.md": {"const": "AGENTS.md"}}
+                        }
+                    }
+                },
                 "terminal": {
                     "type": "object",
                     "additionalProperties": false,

@@ -242,7 +242,9 @@ func (p *PreparedRelease) validateTerminalDeployment(deployment *appsv1.Deployme
 	expectedVolumes := []corev1.Volume{
 		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(input.Resolution.Sandbox.Storage.Scratch.SizeLimit.DeepCopy())}}},
 		{Name: "api-access", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{DefaultMode: ptr.To[int32](0440), Sources: []corev1.VolumeProjection{
-			{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Path: "token", Audience: "https://kubernetes.default.svc", ExpirationSeconds: ptr.To[int64](3600)}},
+			// Omitted audience asks Kubernetes for its API server's configured
+			// audience. A Service DNS name is not necessarily an accepted audience.
+			{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Path: "token", ExpirationSeconds: ptr.To[int64](3600)}},
 			{ConfigMap: &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"}, Items: []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}}}},
 			{DownwardAPI: &corev1.DownwardAPIProjection{Items: []corev1.DownwardAPIVolumeFile{{Path: "namespace", FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.namespace"}}}}},
 		}}}},

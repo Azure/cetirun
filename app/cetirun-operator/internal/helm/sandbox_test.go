@@ -79,6 +79,7 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 				custom.HTTP.ChatPath, custom.HTTP.ModelsPath = "/v1/chat/completions", "/v1/models"
 			}
 			input.CustomAgent = custom
+			input.Context = &w.Context{ObjectIdentity: w.ObjectIdentity{Name: "custom-context-example", UID: "context-uid"}, Files: map[string]string{"AGENTS.md": "AGENTS.md"}}
 			input.Terminal = &w.Terminal{
 				Image: "registry.example.test/cetirun-terminal@sha256:" + strings.Repeat("b", 64),
 				Port:  7681, SessionSeconds: 1800, ServiceAccountName: "example-terminal",
@@ -118,9 +119,45 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 			if !slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool {
 				return mount.Name == "data" && mount.MountPath == "/home/worker"
 			}) || !slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool {
-				return mount.Name == "shared-skills" && mount.MountPath == "/home/worker/.aks/skills" && mount.ReadOnly
+				return mount.Name == "context-view" && mount.MountPath == "/home/worker/.agents" && mount.SubPath == "current" && mount.ReadOnly
+			}) || slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool {
+				return mount.Name == "shared-skills"
 			}) {
-				t.Fatal("Custom runtime did not use the Harness HOME and common skills path")
+				t.Fatal("Custom runtime did not use the canonical Team context view")
+			}
+			init := template.Spec.InitContainers[slices.IndexFunc(template.Spec.InitContainers, func(container corev1.Container) bool {
+				return container.Name == "init-home-data"
+			})]
+			if !slices.ContainsFunc(init.Env, func(value corev1.EnvVar) bool {
+				return value.Name == "CETIRUN_CONTEXT_DIR" && value.Value == "/etc/cetirun-context"
+			}) || !slices.ContainsFunc(init.VolumeMounts, func(mount corev1.VolumeMount) bool {
+				return mount.Name == "context" && mount.MountPath == "/etc/cetirun-context" && mount.ReadOnly
+			}) || !slices.ContainsFunc(template.Spec.Volumes, func(volume corev1.Volume) bool {
+				return volume.Name == "context" && volume.ConfigMap != nil && volume.ConfigMap.Name == input.Context.Name &&
+					volume.ConfigMap.DefaultMode != nil && *volume.ConfigMap.DefaultMode == 0444 &&
+					len(volume.ConfigMap.Items) == 1 && volume.ConfigMap.Items[0] == (corev1.KeyToPath{Key: "AGENTS.md", Path: "AGENTS.md"})
+			}) {
+				t.Fatal("Custom initializer did not receive the immutable canonical context source")
+			}
+			missingContextEnv := template.DeepCopy()
+			for index := range missingContextEnv.Spec.InitContainers {
+				if missingContextEnv.Spec.InitContainers[index].Name == "init-home-data" {
+					missingContextEnv.Spec.InitContainers[index].Env = slices.DeleteFunc(missingContextEnv.Spec.InitContainers[index].Env, func(value corev1.EnvVar) bool {
+						return value.Name == "CETIRUN_CONTEXT_DIR"
+					})
+				}
+			}
+			if err := bundle.ValidateReconciledTemplate(missingContextEnv, prepared.Agent.Image, false); err == nil {
+				t.Fatal("Custom initializer without its canonical context environment was accepted")
+			}
+			tamperedContextSource := template.DeepCopy()
+			for index := range tamperedContextSource.Spec.Volumes {
+				if tamperedContextSource.Spec.Volumes[index].Name == "context" {
+					tamperedContextSource.Spec.Volumes[index].ConfigMap.Name = "other-context"
+				}
+			}
+			if err := bundle.ValidateReconciledTemplate(tamperedContextSource, prepared.Agent.Image, false); err == nil {
+				t.Fatal("Custom runtime with a substituted context source was accepted")
 			}
 			if tc.port == nil {
 				if len(main.Ports) != 0 || main.StartupProbe != nil || main.ReadinessProbe != nil || main.LivenessProbe != nil {
@@ -172,6 +209,7 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 			if err := w.ValidateRenderedPod(terminalPod, terminalWorkload, terminalOwner, "hash"); err != nil {
 				t.Fatalf("RuntimeClass-injected terminal overhead was rejected: %v", err)
 			}
+			assertTerminalAPIAudience(t, prepared, terminalWorkload, terminalPod, terminalOwner)
 			missingOverhead := terminalPod.DeepCopy()
 			missingOverhead.Spec.Overhead = nil
 			if err := w.ValidateRenderedPod(missingOverhead, terminalWorkload, terminalOwner, "hash"); err == nil {

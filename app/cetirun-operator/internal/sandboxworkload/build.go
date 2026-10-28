@@ -142,7 +142,7 @@ var terminalImage = regexp.MustCompile(`^[^[:space:]@]+@sha256:[a-f0-9]{64}$`)
 
 func validateCustomAgent(input Input) error {
 	if input.AgentType != "custom" {
-		if input.CustomAgent != nil || input.GatewayAPIBase != "" {
+		if input.CustomAgent != nil || input.GatewayAPIBase != "" || input.Context != nil {
 			return fmt.Errorf("only Custom workloads may set a portable runtime identity")
 		}
 		return nil
@@ -154,8 +154,11 @@ func validateCustomAgent(input Input) error {
 		(custom.WebUI && custom.Port == nil) {
 		return fmt.Errorf("Custom Sandbox rendering requires a Harness-validated image, user, HOME and port mode")
 	}
-	if input.GatewayKey == nil || input.GatewayAPIBase == "" {
-		return fmt.Errorf("Custom Sandbox rendering requires a typed AI Gateway key and endpoint")
+	if input.GatewayKey == nil || input.GatewayAPIBase == "" || input.Context == nil ||
+		input.Context.Name == "" || input.Context.UID == "" ||
+		len(validation.IsDNS1123Subdomain(input.Context.Name)) != 0 ||
+		len(input.Context.Files) != 1 || input.Context.Files["AGENTS.md"] != "AGENTS.md" {
+		return fmt.Errorf("Custom Sandbox rendering requires typed AI Gateway and canonical context bindings")
 	}
 	return nil
 }
@@ -234,7 +237,7 @@ func validateControls(input Input) error {
 	}
 	volumes := map[string]bool{}
 	for _, volume := range c.Volumes {
-		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills", "empty-skills"}, volume.Name) {
+		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills", "empty-skills", "context", "context-view", "memory-assets"}, volume.Name) {
 			return fmt.Errorf("identity volumes conflict with protected mounts")
 		}
 		volumes[volume.Name] = true

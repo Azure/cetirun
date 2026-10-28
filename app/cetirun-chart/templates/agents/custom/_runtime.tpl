@@ -22,6 +22,7 @@ Licensed under the MIT License.
 
 {{- define "cetirun.custom.validate" -}}
 {{- $r := .Values.runtime | default dict -}}
+{{- $s := .Values.sandboxWorkload | default dict -}}
 {{- if not (and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled) -}}
 {{- fail "Custom requires the common reconciled Sandbox execution plan" -}}
 {{- end -}}
@@ -30,6 +31,9 @@ Licensed under the MIT License.
 {{- end -}}
 {{- if or (ne $r.agent.type "custom") (not $r.agent.image) (not $r.agent.home) (not $r.model.apiBase) (not $r.model.keySecretName) -}}
 {{- fail "Custom requires an approved image, HOME and AI Gateway binding" -}}
+{{- end -}}
+{{- if or (not $s.context) (not $s.context.name) (ne (len $s.context.files) 1) (ne (index $s.context.files "AGENTS.md") "AGENTS.md") -}}
+{{- fail "Custom requires a controller-owned canonical AGENTS.md context source" -}}
 {{- end -}}
 {{- if or .Values.agentIdentity.enabled .Values.connectionsMCP.enabled -}}
 {{- fail "Custom does not support Agent Identity or CetiRun Connections MCP" -}}
@@ -49,7 +53,6 @@ podSelector:
 {{- include "cetirun.custom.validate" . -}}
 {{- $r := .Values.runtime -}}
 {{- $s := .Values.sandboxWorkload -}}
-{{- $emptySkills := eq ($s.skillsMode | default "") "empty" -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -96,7 +99,18 @@ spec:
               value: {{ $r.agent.image | quote }}
             - name: CETIRUN_INIT_COMMON
               value: /etc/cetirun/init-home-common.sh
-            {{- include "cetirun.context.initEnv" . | nindent 12 }}
+            - name: CETIRUN_CONTEXT_DIR
+              value: /etc/cetirun-context
+            - name: CETIRUN_CONTEXT_VIEW
+              value: /etc/cetirun-context-view
+            {{- if .Values.skills.shared }}
+            - name: CETIRUN_SHARED_SKILLS_DIR
+              value: /etc/cetirun-shared-skills
+            {{- end }}
+            {{- if .Values.memoryContext.enabled }}
+            - name: CETIRUN_MEMORY_ASSETS
+              value: /opt/cetirun-memory
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: /home-data
@@ -105,7 +119,21 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- include "cetirun.context.initMounts" . | nindent 12 }}
+            - name: context
+              mountPath: /etc/cetirun-context
+              readOnly: true
+            - name: context-view
+              mountPath: /etc/cetirun-context-view
+            {{- if .Values.skills.shared }}
+            - name: shared-skills
+              mountPath: /etc/cetirun-shared-skills
+              readOnly: true
+            {{- end }}
+            {{- if .Values.memoryContext.enabled }}
+            - name: memory-assets
+              mountPath: /opt/cetirun-memory
+              readOnly: true
+            {{- end }}
         {{- with .Values.initContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -176,15 +204,10 @@ spec:
             {{- with $s.identityMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- if $emptySkills }}
-            - name: empty-skills
-              mountPath: {{ .Values.skills.mountPath | quote }}
+            - name: context-view
+              mountPath: {{ printf "%s/.agents" $r.agent.home | quote }}
+              subPath: current
               readOnly: true
-            {{- else if .Values.skills.shared }}
-            - name: shared-skills
-              mountPath: {{ .Values.skills.mountPath | quote }}
-              readOnly: true
-            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -200,12 +223,18 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | quote }}
-        {{- include "cetirun.platform.temporaryVolumes" . | nindent 8 }}
-        {{- if $emptySkills }}
-        - name: empty-skills
+        - name: context
+          configMap:
+            name: {{ $s.context.name | quote }}
+            defaultMode: 0444
+            items:
+              - key: AGENTS.md
+                path: AGENTS.md
+        - name: context-view
           emptyDir:
             sizeLimit: {{ $s.scratchSizeLimit | quote }}
-        {{- else if .Values.skills.shared }}
+        {{- include "cetirun.platform.temporaryVolumes" . | nindent 8 }}
+        {{- if .Values.skills.shared }}
         - name: shared-skills
           persistentVolumeClaim:
             claimName: {{ .Values.skills.existingClaim | quote }}

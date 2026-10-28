@@ -259,6 +259,14 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
 	}
 	if custom := b.input.CustomAgent; custom != nil {
+		contextFiles := map[string]any{}
+		for destination, source := range b.input.Context.Files {
+			contextFiles[destination] = source
+		}
+		overlay[ValuesKey].(map[string]any)["context"] = map[string]any{
+			"name":  b.input.Context.Name,
+			"files": contextFiles,
+		}
 		port := any(nil)
 		if custom.Port != nil {
 			port = *custom.Port

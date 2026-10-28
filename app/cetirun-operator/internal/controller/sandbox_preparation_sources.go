@@ -5,6 +5,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -178,6 +180,15 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 				StartupPath: contribution.HTTP.StartupPath, ChatPath: contribution.HTTP.ChatPath, ModelsPath: contribution.HTTP.ModelsPath}
 		}
 		attempt.input.GatewayAPIBase = r.AIGateway.URL + "/v1"
+		contextSnapshot, err := r.ensureCustomSandboxContext(ctx, agent, attempt.team, namespace.Name)
+		if err != nil {
+			return err
+		}
+		attempt.input.Context = &sandboxworkload.Context{
+			ObjectIdentity: sandboxworkload.ObjectIdentity{Name: contextSnapshot.Name, UID: contextSnapshot.UID},
+			Files:          map[string]string{"AGENTS.md": "AGENTS.md"},
+		}
+		attempt.sources = append(attempt.sources, sandboxSource(contextSnapshot, "v1", "ConfigMap"))
 		if attempt.reconciled {
 			platform, user, err := r.sandboxHelmValues(agent, attempt.team)
 			if err != nil {
@@ -220,6 +231,48 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 	// Recheck captured versions before applying grants/workloads or accepting
 	// read-only reuse; durable bookkeeping can precede those checks.
 	return nil
+}
+
+// ensureCustomSandboxContext snapshots the Team member context into an
+// Agent-owned immutable source. The rendered Custom runtime can therefore
+// consume only the source pinned in its Sandbox expectation, never mutable
+// Team data or tenant-selected Helm values.
+func (r *AgentReconciler) ensureCustomSandboxContext(ctx context.Context, agent *api.Agent, team *api.Team, namespace string) (*corev1.ConfigMap, error) {
+	if team == nil {
+		return nil, fmt.Errorf("Custom Sandbox requires a resolved Team context")
+	}
+	data := map[string]string{"AGENTS.md": "# CetiRun Team Context\n\n## Role\n" + team.Spec.MemberContext.Role +
+		"\n\n## Context\n" + strings.Join(team.Spec.MemberContext.Description, "\n") + "\n"}
+	raw, err := json.Marshal(struct {
+		AgentUID string            `json:"agentUID"`
+		TeamUID  string            `json:"teamUID"`
+		Files    map[string]string `json:"files"`
+	}{AgentUID: string(agent.UID), TeamUID: string(team.UID), Files: data})
+	if err != nil {
+		return nil, fmt.Errorf("encode Custom context snapshot: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	name := "custom-context-" + hex.EncodeToString(sum[:16])
+	wantOwner := []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)}
+	snapshot := &corev1.ConfigMap{}
+	err = r.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, snapshot)
+	if apierrors.IsNotFound(err) {
+		snapshot = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, OwnerReferences: wantOwner}, Immutable: ptr.To(true), Data: data}
+		if err := r.Create(ctx, snapshot); err != nil {
+			return nil, err
+		}
+		if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(snapshot), snapshot); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	if snapshot.UID == "" || snapshot.ResourceVersion == "" || !snapshot.DeletionTimestamp.IsZero() ||
+		!ptr.Deref(snapshot.Immutable, false) || !equality.Semantic.DeepEqual(snapshot.OwnerReferences, wantOwner) ||
+		!equality.Semantic.DeepEqual(snapshot.Data, data) || len(snapshot.BinaryData) != 0 {
+		return nil, fmt.Errorf("Custom context snapshot has changed or has foreign ownership")
+	}
+	return snapshot, nil
 }
 
 // sandboxTerminalInput selects only a controller-owned immutable terminal

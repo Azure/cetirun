@@ -103,7 +103,7 @@ func TestSandboxCustomMemoryOptionsFollowPlatformConfiguration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			chart := testChart(t)
 			chart.Metadata.AppVersion = "7.8.9"
-			platform, bundle := customMemorySandboxInput(t, tc.port, tc.webUI)
+			platform, bundle := customMemorySandboxInput(t, tc.port, tc.webUI, false)
 			platform["memoryOptions"] = tc.options
 			before := memoryPlatformJSON(t, platform)
 
@@ -167,7 +167,7 @@ func TestSandboxCustomMemoryOptionsFollowPlatformConfiguration(t *testing.T) {
 		"mutable": MemoryOptions{Enabled: true, Image: "registry.example.com/memory:latest"},
 	} {
 		t.Run("reject "+name, func(t *testing.T) {
-			platform, bundle := customMemorySandboxInput(t, nil, false)
+			platform, bundle := customMemorySandboxInput(t, nil, false, false)
 			platform["memoryOptions"] = options
 			before := memoryPlatformJSON(t, platform)
 			if _, err := PrepareSandboxChart(testChart(t), platform, nil, bundle); err == nil {
@@ -180,7 +180,7 @@ func TestSandboxCustomMemoryOptionsFollowPlatformConfiguration(t *testing.T) {
 	}
 }
 
-func customMemorySandboxInput(t *testing.T, port *int32, webUI bool) (map[string]any, *w.Bundle) {
+func customMemorySandboxInput(t *testing.T, port *int32, webUI, emptySkills bool) (map[string]any, *w.Bundle) {
 	t.Helper()
 	fixture := testfixture.New("openclaw")
 	input := fixture.Input
@@ -210,6 +210,10 @@ func customMemorySandboxInput(t *testing.T, port *int32, webUI bool) (map[string
 		}
 	}
 	input.CustomAgent = custom
+	input.Context = &w.Context{ObjectIdentity: w.ObjectIdentity{Name: "custom-context-example", UID: "context-uid"}, Files: map[string]string{"AGENTS.md": "AGENTS.md"}}
+	if emptySkills {
+		input.Skills, input.SkillsMode = nil, w.SkillsModeEmpty
+	}
 	bundle, err := w.Build(input)
 	if err != nil {
 		t.Fatal(err)
@@ -224,6 +228,34 @@ func customMemorySandboxInput(t *testing.T, port *int32, webUI bool) (map[string
 		"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
 	}
 	return platform, bundle
+}
+
+func TestSandboxCustomCanonicalContextWithoutMemoryOrSharedSkills(t *testing.T) {
+	platform, bundle := customMemorySandboxInput(t, nil, false, true)
+	platform["memoryOptions"] = MemoryOptions{Enabled: false}
+	prepared, err := PrepareSandboxChart(testChart(t), platform, nil, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := prepared.SandboxTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := template.Spec.Containers[0]
+	if !slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool {
+		return mount.Name == "context-view" && mount.MountPath == "/home/worker/.agents" && mount.ReadOnly && mount.SubPath == "current"
+	}) || slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool {
+		return mount.Name == "empty-skills"
+	}) {
+		t.Fatalf("Custom context must always use the canonical read-only view: %#v", main.VolumeMounts)
+	}
+	changed := template.DeepCopy()
+	changed.Spec.Containers[0].VolumeMounts = slices.DeleteFunc(changed.Spec.Containers[0].VolumeMounts, func(mount corev1.VolumeMount) bool {
+		return mount.Name == "context-view"
+	})
+	if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false); err == nil {
+		t.Fatal("Custom context mount removal was accepted")
+	}
 }
 
 func memoryPlatformJSON(t *testing.T, values map[string]any) string {

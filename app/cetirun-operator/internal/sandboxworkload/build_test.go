@@ -177,6 +177,7 @@ func TestCustomUsesTheCommonSandboxGatewayRuntimeContract(t *testing.T) {
 		Ports: []w.CustomPort{{Name: "http", Number: 8080}},
 		HTTP:  &w.CustomHTTP{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"},
 	}
+	input.Context = &w.Context{ObjectIdentity: w.ObjectIdentity{Name: "custom-context-example", UID: "context-uid"}, Files: map[string]string{"AGENTS.md": "AGENTS.md"}}
 	bundle, err := w.Build(input)
 	if err != nil {
 		t.Fatal(err)

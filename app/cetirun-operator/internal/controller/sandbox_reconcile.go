@@ -237,7 +237,12 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if !w.EffectiveSource(source) {
 			continue
 		}
-		digest, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, false)
+		// The render attempt contains the Team snapshot that was materialized
+		// into Custom's immutable context ConfigMap. Capture that same Team
+		// resourceVersion for the initial digest; otherwise a Team update between
+		// snapshot and digest could authorize new Team inputs with old context.
+		capture := source.APIVersion == api.GroupVersion.String() && source.Kind == "Team"
+		digest, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, capture)
 		if err != nil {
 			return nil, err
 		}
