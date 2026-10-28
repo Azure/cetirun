@@ -503,7 +503,9 @@ token files, full Helm values or browser cookies for a public diagnostic bundle.
   Check Agent reconciliation and native-client reload/restart requirements
   before removing old trust; server reload alone does not update every client.
 - Back up encrypted records together with a recovery plan for their Key Vault
-  key versions and identity permissions. Encryption does not prevent an
+  key versions and identity permissions. Use the [restore procedure below](#restore-with-fresh-owner-authorization)
+  before returning a recovered environment to service. Encryption does not
+  establish that a backup reflects current owner consent or prevent an
   administrator with decryption authority from using credentials.
 - To retire Entra, stop new identity creation while retaining Operator
   `agentIdentity.cleanupEnabled`, Blueprint federation and Broker access until
@@ -514,6 +516,54 @@ token files, full Helm values or browser cookies for a public diagnostic bundle.
   certificates and encryption authority only after dependent records, Agents
   and retained backups have been handled; do not delete the credential namespace
   or Key Vault as a first troubleshooting step.
+
+### Restore with fresh owner authorization
+
+Exclude saved authorization records from routine restores and require fresh
+owner authorization. Encryption and revision checks do not provide protection
+against restoring older authorization state, including superseded grants and
+revocation tombstones. A successful decryption or readiness check is not
+approval to resume access.
+
+If a whole-cluster or namespace restore includes those records, use this order:
+
+1. **Keep execution closed before restoring.** Block Agent-to-MCP requests
+   and Broker credential issuance, including internal cluster traffic. Quiesce
+   authorization writes and in-flight requests; ensure restored workloads and
+   controllers cannot reopen these paths during recovery. Closing only the
+   public Portal ingress does not stop native MCP access.
+2. **Inventory authorization records in both storage locations.** Cover the
+   Broker credential namespace and every Agent workload namespace, including
+   any older centrally stored bindings. Broker-managed Secret metadata uses
+   `app.kubernetes.io/managed-by=cetirun-agent-broker` and
+   `agenttools.cetirun.microsoft.com/record-type`. The record types to exclude
+   or clear are `connection`, `binding`, `grant` (legacy), `authorization`
+   (OAuth transactions), `account-index`, and `connection-reference`. Inspect
+   metadata without exporting Secret bodies. These records are distinct from
+   provider client configuration, TLS Secrets, Key Vault keys and Agent
+   lifecycle metadata.
+3. **Clear restored authorization state before enabling management writes.**
+   Remove the restored records identified above from both storage locations;
+   do not resume old OAuth transactions or restore their indexes/references
+   later. When recovering into an existing environment, preserve its newer
+   revocation tombstones and never replace them with older snapshots. This is
+   a recovery reset, not routine tombstone garbage collection. Retain the
+   infrastructure credentials and lifecycle metadata needed for current Entra
+   identity reconciliation and cleanup; do not delete whole namespaces.
+4. **Rebuild access through current owners.** Restore management access while
+   keeping general Agent execution blocked. Owners recreate required
+   Connections, sign in again where required, select GitHub App installations,
+   and explicitly grant each Agent its services, repositories and permissions.
+   Verify current Agent UIDs, owners and any Entra identity state before
+   granting access. An old binding or a restored provider credential is not a
+   substitute for this owner action.
+5. **Validate before reopening traffic.** Through isolated recovery checks,
+   verify that Agents without a new grant cannot use the services or obtain
+   credentials, including Agents whose UID survived the restore. Verify a
+   newly granted Agent's allowed access and that **Remove access** blocks new
+   requests. Reopen general execution only after the record inventory and
+   these checks pass. Previously sent provider requests or issued tokens are
+   not recalled by this reset; handle provider-side revocation separately.
 
 Configuration sources: [Broker values]({{< repo "app/cetirun-agent-broker/chart/values.yaml" >}}),
 [MCP values]({{< repo "app/cetirun-connections-mcp/chart/values.yaml" >}}),
