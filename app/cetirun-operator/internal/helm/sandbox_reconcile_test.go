@@ -509,7 +509,7 @@ func TestReconciledSandboxHistoryFailureDoesNotSubmit(t *testing.T) {
 	submitted, checked := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { checked = true; return nil },
-		func(context.Context) error { submitted = true; return nil })
+		func(context.Context) error { submitted = true; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +550,7 @@ func TestReconciledSandboxPreflightRejectsStaleAuthority(t *testing.T) {
 	submitted, configured := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { return stale },
-		func(context.Context) error { submitted = true; return nil })
+		func(context.Context) error { submitted = true; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestReconciledSandboxApplyGuardFailureDoesNotWrite(t *testing.T) {
 	checked, submitted := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { checked = true; return nil },
-		func(context.Context) error { submitted = true; return injected })
+		func(context.Context) error { submitted = true; return injected }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

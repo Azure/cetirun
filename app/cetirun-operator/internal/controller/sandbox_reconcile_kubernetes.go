@@ -5,6 +5,8 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -17,6 +19,170 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func unconfirmedKubernetesGrants(bindings []sandboxpolicy.BindingReference) []sandboxpolicy.BindingReference {
+	var pending []sandboxpolicy.BindingReference
+	for _, ref := range bindings {
+		if ref.RoleRef.Kind == "ClusterRole" && ref.UID == "" {
+			pending = append(pending, ref)
+		}
+	}
+	return pending
+}
+
+const sandboxGrantSubmissionsAnnotation = "sandbox.cetirun.microsoft.com/grant-submissions"
+
+func reconciledGrantSubmissions(state *corev1.ConfigMap) (map[string]bool, bool, error) {
+	raw, present := state.Annotations[sandboxGrantSubmissionsAnnotation]
+	if !present {
+		return nil, false, nil
+	}
+	var digests []string
+	if len(raw) > sandboxpolicy.MaxGrantJournalReferences*68 || json.Unmarshal([]byte(raw), &digests) != nil ||
+		digests == nil || len(digests) > sandboxpolicy.MaxGrantJournalReferences {
+		return nil, true, fmt.Errorf("Kubernetes grant submission inventory is invalid")
+	}
+	result := make(map[string]bool, len(digests))
+	for _, digest := range digests {
+		if !w.ValidInputDigest(digest) || result[digest] {
+			return nil, true, fmt.Errorf("Kubernetes grant submission inventory is ambiguous")
+		}
+		result[digest] = true
+	}
+	return result, true, nil
+}
+
+func reconciledGrantDigest(ref sandboxpolicy.BindingReference) (string, error) {
+	ref.UID = ""
+	return sandboxPreparationDigest(ref)
+}
+
+func submittedReconciledGrants(state *corev1.ConfigMap, bindings []sandboxpolicy.BindingReference) ([]sandboxpolicy.BindingReference, error) {
+	pending := unconfirmedKubernetesGrants(bindings)
+	submissions, present, err := reconciledGrantSubmissions(state)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		if phase := state.Annotations[sandboxApplyStateAnnotation]; phase == sandboxApplyPending || phase == sandboxApplyCancelled {
+			return nil, nil
+		}
+		return pending, nil
+	}
+	var submitted []sandboxpolicy.BindingReference
+	for _, ref := range pending {
+		digest, err := reconciledGrantDigest(ref)
+		if err != nil {
+			return nil, err
+		}
+		if submissions[digest] {
+			submitted = append(submitted, ref)
+		}
+	}
+	return submitted, nil
+}
+
+func (r *AgentReconciler) confirmReconciledGrantOutcomes(ctx context.Context, agent *api.Agent, state *corev1.ConfigMap, bindings []sandboxpolicy.BindingReference) error {
+	submitted, err := submittedReconciledGrants(state, bindings)
+	if err != nil || len(submitted) == 0 {
+		return err
+	}
+	return r.sandboxGrantJournal().ConfirmBindingIntents(ctx, agent.Name, agent.UID, submitted)
+}
+
+func (r *AgentReconciler) recordReconciledGrantSubmission(ctx context.Context, agent *api.Agent, state *corev1.ConfigMap, requested sandboxpolicy.BindingReference) error {
+	digests, _, err := reconciledGrantSubmissions(state)
+	if err != nil {
+		return err
+	}
+	if digests == nil {
+		digests = map[string]bool{}
+	}
+	bindings, err := r.sandboxGrantJournal().Read(ctx, agent.Name, agent.UID)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(unconfirmedKubernetesGrants(bindings), requested) {
+		return fmt.Errorf("Kubernetes grant creation requires its unconfirmed journal intent")
+	}
+	digest, err := reconciledGrantDigest(requested)
+	if err != nil {
+		return err
+	}
+	if digests[digest] {
+		return fmt.Errorf("%w: Kubernetes grant creation is already submitted", sandboxpolicy.ErrRevocationPending)
+	}
+	digests[digest] = true
+	if len(digests) > sandboxpolicy.MaxGrantJournalReferences {
+		return fmt.Errorf("Kubernetes grant submission inventory exceeds its bound")
+	}
+	values := make([]string, 0, len(digests))
+	for digest := range digests {
+		values = append(values, digest)
+	}
+	slices.Sort(values)
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	state.Annotations[sandboxGrantSubmissionsAnnotation] = string(raw)
+	return nil
+}
+
+func (r *AgentReconciler) prepareReconciledGrantRevocation(ctx context.Context, agent *api.Agent, bindings []sandboxpolicy.BindingReference) error {
+	if len(unconfirmedKubernetesGrants(bindings)) == 0 {
+		return nil
+	}
+	reconciled, err := r.recordedReconciledSandbox(ctx, agent)
+	if err != nil || !reconciled {
+		return err
+	}
+	pending := unconfirmedKubernetesGrants(bindings)
+	confirmWithoutProof := func(proofErr error) error {
+		if err := r.sandboxGrantJournal().ConfirmBindingIntents(ctx, agent.Name, agent.UID, pending); err != nil {
+			return errors.Join(err, proofErr)
+		}
+		return nil
+	}
+	namespace := &corev1.Namespace{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		return confirmWithoutProof(err)
+	}
+	if !sandboxBuiltinOwned(namespace, agent) {
+		return confirmWithoutProof(fmt.Errorf("Kubernetes grant cleanup requires the owned namespace"))
+	}
+	state := &corev1.ConfigMap{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{
+		Namespace: r.OperatorNamespace, Name: w.PodExpectationName(namespace.Name, namespace.UID),
+	}, state); err != nil {
+		return confirmWithoutProof(err)
+	}
+	expected, err := w.ReadReconcileExpectationForCleanup(state)
+	if err != nil || expected.Agent != (w.ObjectIdentity{Name: agent.Name, UID: agent.UID}) ||
+		expected.Namespace != (w.ObjectIdentity{Name: namespace.Name, UID: namespace.UID}) {
+		return confirmWithoutProof(fmt.Errorf("Kubernetes grant cleanup requires its recorded lifetime"))
+	}
+	submitted, err := submittedReconciledGrants(state, pending)
+	if err != nil {
+		return err
+	}
+	if len(submitted) != 0 {
+		if err := r.sandboxGrantJournal().ConfirmBindingIntents(ctx, agent.Name, agent.UID, submitted); err != nil {
+			return err
+		}
+	}
+	if len(submitted) == len(pending) {
+		return nil
+	}
+	cancelled, err := r.cancelUnsubmittedReconciledApply(ctx, state, expected)
+	if err != nil {
+		return err
+	}
+	if !cancelled {
+		return r.fenceReconciledGrantRevocation(ctx, state)
+	}
+	return nil
+}
 
 func (r *AgentReconciler) checkMissingReconciledGrantJournal(ctx context.Context, agent *api.Agent) error {
 	recorded, err := r.recordedReconciledSandbox(ctx, agent)

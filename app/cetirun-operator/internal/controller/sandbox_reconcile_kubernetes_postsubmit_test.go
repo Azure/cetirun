@@ -173,14 +173,18 @@ func TestReconciledSandboxKubernetesPostSubmitRecovery(t *testing.T) {
 				if state.Annotations[sandboxApplyStateAnnotation] != wantState {
 					t.Fatal("proven no-write failure retained a submitted checkpoint")
 				}
-				cleanupPending := scenario == "cancellation-write-failure" || scenario == "cancellation-ack-loss"
+				cleanupPending := scenario == "cancellation-write-failure"
 				ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, f.agent.UID)
 				if err != nil || found != cleanupPending || (found && ticket.Reservation.Phase != sandboxcoordination.Stopping) {
 					t.Fatal("pre-write failure did not preserve the confirmed cleanup state:", err)
 				}
 				grants, err := f.r.sandboxGrantJournal().Read(ctx, f.agent.Name, f.agent.UID)
-				if err != nil || len(grants) != 0 {
-					t.Fatal("rejected apply retained Kubernetes grants:", err)
+				if err != nil {
+					t.Fatal(err)
+				}
+				unconfirmed := unconfirmedKubernetesGrants(grants)
+				if (cleanupPending && len(unconfirmed) != 2) || (!cleanupPending && len(grants) != 0) {
+					t.Fatal("grant cleanup did not retain intent until cancellation was confirmed")
 				}
 				if err := attempted.AuthorizeSandboxApply(ctx); err == nil {
 					t.Fatal("cancelled preparation still authorized a delayed apply")

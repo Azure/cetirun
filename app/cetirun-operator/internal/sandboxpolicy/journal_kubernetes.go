@@ -46,6 +46,25 @@ func (s GrantJournalStore) verifyKubernetesBindings(ctx context.Context, agentNa
 	if !cm.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("%w: the grant journal is terminating", ErrUnavailable)
 	}
+	owned, err := ownedBindingInventory(ctx, s.APIReader, agentName, agentUID, true)
+	if err != nil {
+		return err
+	}
+	inventory := make(map[journalBindingKey]BindingReference, len(recorded))
+	for _, ref := range recorded {
+		inventory[journalKey(ref)] = ref
+	}
+	for _, ref := range owned {
+		if ref.RoleRef.Kind != "ClusterRole" {
+			continue
+		}
+		expected, wantedGrant := wanted[journalKey(ref)]
+		record, recordedGrant := inventory[journalKey(ref)]
+		if !wantedGrant || !recordedGrant || journalIdentity(ref) != journalIdentity(expected) ||
+			journalIdentity(ref) != journalIdentity(record) || (record.UID != "" && ref.UID != record.UID) {
+			return fmt.Errorf("%w: an owned Kubernetes binding is outside current grant authority", ErrOwnership)
+		}
+	}
 	for _, ref := range recorded {
 		if ref.RoleRef.Kind != "ClusterRole" {
 			if ref.ServiceAccountNamespace != s.Namespace {

@@ -168,6 +168,10 @@ func canonicalBindingReferences(values []BindingReference) []BindingReference {
 // for change/rebind revocation, including resources not currently listable.
 // Pass the manager's APIReader, not an eventually consistent cache.
 func OwnedBindingInventory(ctx context.Context, c client.Reader, agentName string, agentUID types.UID) ([]BindingReference, error) {
+	return ownedBindingInventory(ctx, c, agentName, agentUID, false)
+}
+
+func ownedBindingInventory(ctx context.Context, c client.Reader, agentName string, agentUID types.UID, clusterRolesOnly bool) ([]BindingReference, error) {
 	if c == nil || agentUID == "" || len(validation.IsDNS1123Subdomain(agentName)) != 0 {
 		return nil, fmt.Errorf("%w: an Agent identity and binding client are required", ErrOwnership)
 	}
@@ -181,6 +185,9 @@ func OwnedBindingInventory(ctx context.Context, c client.Reader, agentName strin
 	}
 	var inventory []BindingReference
 	add := func(object client.Object, kind string, role rbacv1.RoleRef, subjects []rbacv1.Subject) error {
+		if clusterRolesOnly && role.Kind != "ClusterRole" {
+			return nil
+		}
 		relevant := object.GetLabels()[AgentUIDLabel] == string(agentUID)
 		for _, owner := range object.GetOwnerReferences() {
 			relevant = relevant || owner.UID == agentUID

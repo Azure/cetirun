@@ -264,7 +264,14 @@ func ValidateReconciledVolumes(spec corev1.PodSpec, claims []string, projections
 }
 
 func ReconciledObjectMatches(actual, desired *unstructured.Unstructured) bool {
-	if actual == nil || desired == nil || actual.GetUID() == "" || !actual.GetDeletionTimestamp().IsZero() ||
+	return actual != nil && actual.GetUID() != "" && ReconciledObjectContentMatches(actual, desired)
+}
+
+// ReconciledObjectContentMatches also validates an object before the API server
+// assigns its UID. Persisted-object checks must use ReconciledObjectMatches.
+func ReconciledObjectContentMatches(actual, desired *unstructured.Unstructured) bool {
+	if actual == nil || desired == nil || actual.GetName() != desired.GetName() ||
+		actual.GetNamespace() != desired.GetNamespace() || !actual.GetDeletionTimestamp().IsZero() ||
 		!equality.Semantic.DeepEqual(actual.GetOwnerReferences(), desired.GetOwnerReferences()) {
 		return false
 	}

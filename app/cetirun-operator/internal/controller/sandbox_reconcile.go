@@ -275,9 +275,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if err := guard(ctx); err != nil {
 			return err
 		}
+		submitted := claimed.DeepCopy()
 		if unsubmitted {
-			submitted := claimed.DeepCopy()
 			submitted.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
+		}
+		if !reflect.DeepEqual(submitted.Annotations, claimed.Annotations) {
 			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
 				return fmt.Errorf("record Sandbox apply submission: %w", err)
 			}
@@ -285,7 +287,39 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 		return nil
 	}
-	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, applyGuard)
+	bindingGuard := func(ctx context.Context, object unstructured.Unstructured) error {
+		if published == nil {
+			return fmt.Errorf("Kubernetes grant creation requires its published expectation")
+		}
+		index := slices.IndexFunc(desiredGrants, func(ref sandboxpolicy.BindingReference) bool {
+			return ref.Kind == object.GetKind() && ref.Namespace == object.GetNamespace() && ref.Name == object.GetName()
+		})
+		if index < 0 {
+			return fmt.Errorf("Kubernetes grant creation has no recorded binding identity")
+		}
+		if err := guard(ctx); err != nil {
+			return err
+		}
+		claimed := published.DeepCopy()
+		metav1.SetMetaDataAnnotation(&claimed.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
+		if err := r.Patch(ctx, claimed, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("claim Kubernetes grant creation: %w", err)
+		}
+		published = claimed
+		if err := guard(ctx); err != nil {
+			return err
+		}
+		submitted := claimed.DeepCopy()
+		if err := r.recordReconciledGrantSubmission(ctx, agent, submitted, desiredGrants[index]); err != nil {
+			return err
+		}
+		if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("record Kubernetes grant submission: %w", err)
+		}
+		published = submitted
+		return nil
+	}
+	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, applyGuard, bindingGuard)
 	if err != nil {
 		return nil, err
 	}
@@ -396,6 +430,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	current := &corev1.ConfigMap{}
 	err = r.customReader().Get(ctx, client.ObjectKeyFromObject(desired), current)
 	if apierrors.IsNotFound(err) {
+		if err := r.confirmReconciledGrantOutcomes(ctx, agent, current, previous); err != nil {
+			return nil, err
+		}
 		// Persist non-submission before the journal so either publication can
 		// retry without losing the proof. Older or lost records stay uncertain.
 		if missingJournal && unobserved {
@@ -410,6 +447,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 		if missingJournal && current.Annotations[sandboxApplyStateAnnotation] != sandboxApplyInitializing {
 			return nil, fmt.Errorf("Sandbox grant authority is missing for an existing execution")
+		}
+		if err := r.confirmReconciledGrantOutcomes(ctx, agent, current, previous); err != nil {
+			return nil, err
 		}
 		switch state := current.Annotations[sandboxApplyStateAnnotation]; state {
 		case sandboxApplyInitializing:
@@ -431,6 +471,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if attempt := current.Annotations[sandboxApplyAttemptAnnotation]; attempt != "" {
 			metav1.SetMetaDataAnnotation(&desired.ObjectMeta, sandboxApplyAttemptAnnotation, attempt)
 		}
+		desired.Annotations[sandboxGrantSubmissionsAnnotation] = "[]"
 		if !reflect.DeepEqual(current.Data, desired.Data) || !reflect.DeepEqual(current.Annotations, desired.Annotations) {
 			base := current.DeepCopy()
 			current.Data, current.Annotations = desired.Data, desired.Annotations
@@ -439,6 +480,13 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	if err != nil {
 		return nil, err
+	}
+	if _, present := current.Annotations[sandboxGrantSubmissionsAnnotation]; !present {
+		before := current.DeepCopy()
+		metav1.SetMetaDataAnnotation(&current.ObjectMeta, sandboxGrantSubmissionsAnnotation, "[]")
+		if err := r.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+			return nil, fmt.Errorf("initialize Kubernetes grant submission inventory: %w", err)
+		}
 	}
 	initializing := current.Annotations[sandboxApplyStateAnnotation] == sandboxApplyInitializing
 	if missingJournal || initializing {
@@ -587,6 +635,37 @@ func (r *AgentReconciler) reconciledSandboxApplied(ctx context.Context, agent *a
 	return true, nil
 }
 
+func (r *AgentReconciler) fenceReconciledGrantRevocation(ctx context.Context, state *corev1.ConfigMap) error {
+	before := state.DeepCopy()
+	metav1.SetMetaDataAnnotation(&state.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
+	if err := r.Patch(ctx, state, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("fence unsubmitted Kubernetes grants: %w", err)
+	}
+	return nil
+}
+
+func (r *AgentReconciler) cancelUnsubmittedReconciledApply(ctx context.Context, state *corev1.ConfigMap, expected w.ReconcileExpectation) (bool, error) {
+	applyState := state.Annotations[sandboxApplyStateAnnotation]
+	if applyState != sandboxApplyPending && applyState != sandboxApplyCancelled {
+		return false, nil
+	}
+	if slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
+		return workload.Identity.UID != ""
+	}) {
+		return false, fmt.Errorf("unsubmitted Sandbox expectation has a recorded workload")
+	}
+	if applyState == sandboxApplyPending {
+		// Compete with submission on its resource version; absence alone cannot
+		// cancel an outstanding grant or workload write.
+		before := state.DeepCopy()
+		state.Annotations[sandboxApplyStateAnnotation] = sandboxApplyCancelled
+		if err := r.Patch(ctx, state, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+			return false, fmt.Errorf("cancel unsubmitted Sandbox apply: %w", err)
+		}
+	}
+	return true, nil
+}
+
 func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *api.Agent, ticket sandboxcoordination.NativeTicket) error {
 	intent := ticket.Reservation.Intent
 	state := &corev1.ConfigMap{}
@@ -600,24 +679,11 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 		expected.Home != intent.Home || expected.Binding != intent.Binding {
 		return fmt.Errorf("common Sandbox cleanup differs from its source reservation")
 	}
+	if _, err := r.cancelUnsubmittedReconciledApply(ctx, state, expected); err != nil {
+		return err
+	}
 	applyState := state.Annotations[sandboxApplyStateAnnotation]
-	if applyState == sandboxApplyPending || applyState == sandboxApplyCancelled {
-		if slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
-			return workload.Identity.UID != ""
-		}) {
-			return fmt.Errorf("unsubmitted Sandbox expectation has a recorded workload")
-		}
-		if applyState == sandboxApplyPending {
-			// Compete with submission on the same resource version. A cancelled
-			// snapshot cannot authorize an in-flight or subsequently retried apply.
-			before := state.DeepCopy()
-			state.Annotations[sandboxApplyStateAnnotation] = sandboxApplyCancelled
-			if err := r.Patch(ctx, state, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-				return fmt.Errorf("cancel unsubmitted Sandbox apply: %w", err)
-			}
-			applyState = sandboxApplyCancelled
-		}
-	} else if applyState != "" && applyState != sandboxApplySubmitted {
+	if applyState != sandboxApplyCancelled && applyState != "" && applyState != sandboxApplySubmitted {
 		return fmt.Errorf("Sandbox apply checkpoint is invalid")
 	}
 	for _, desired := range expected.Workloads {
@@ -669,6 +735,9 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 	if err := quiescence.CheckQuiesced(ctx, agent, SandboxPrerequisites{
 		AgentUID: agent.UID, AgentGeneration: agent.Generation, NamespaceUID: expected.Namespace.UID, Home: expected.Home,
 	}); err != nil {
+		return err
+	}
+	if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
 		return err
 	}
 	return r.SandboxNativeCoordination.ReleaseNative(ctx, ticket)

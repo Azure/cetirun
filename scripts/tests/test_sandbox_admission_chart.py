@@ -1070,6 +1070,11 @@ class SandboxAdmissionChartTests(unittest.TestCase):
 
     def test_pod_bootstrap_scopes_state_reads_without_installing_rules(self):
         documents = self.render(self.server_values(podsEnabled=True))
+        self.assertIn({
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["rolebindings", "clusterrolebindings"],
+            "verbs": ["list"],
+        }, documents[("ClusterRole", NAME)]["rules"])
         self.assertNotIn(("ValidatingWebhookConfiguration", "cetirun-sandbox-pods"), documents)
         self.assertNotIn(("ValidatingAdmissionPolicy", "cetirun-sandbox-namespace"), documents)
         container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]

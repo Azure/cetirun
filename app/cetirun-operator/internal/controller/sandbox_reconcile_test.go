@@ -87,6 +87,11 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 		current := &unstructured.Unstructured{}
 		current.SetGroupVersionKind(object.GroupVersionKind())
 		if err := i.kube.Get(ctx, client.ObjectKeyFromObject(object), current); apierrors.IsNotFound(err) {
+			if w.KubernetesBindingResource(*object) {
+				if err := prepared.AuthorizeSandboxBindingCreate(ctx, *object); err != nil {
+					return err
+				}
+			}
 			if err := i.kube.Create(ctx, object); err != nil {
 				return err
 			}

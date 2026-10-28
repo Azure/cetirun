@@ -86,15 +86,13 @@ func (h *PodHandler) validateReconciledKubernetesGrants(ctx context.Context, exp
 	if err != nil {
 		return podDenied("GrantInventoryInvalid", "current Kubernetes grant inventory is invalid")
 	}
-	if len(bindings) != 0 {
-		journal := sandboxpolicy.GrantJournalStore{APIReader: h.reader, Namespace: h.config.StateNamespace}
-		verify := journal.VerifyKubernetesBindings
-		if !confirmed {
-			verify = journal.VerifyKubernetesBindingIntents
-		}
-		if err := verify(ctx, expected.Agent.Name, expected.Agent.UID, bindings); err != nil {
-			return podDenied("KubernetesGrantsUnconfirmed", "current Kubernetes grants do not match confirmed journal authority")
-		}
+	journal := sandboxpolicy.GrantJournalStore{APIReader: h.reader, Namespace: h.config.StateNamespace}
+	verify := journal.VerifyKubernetesBindings
+	if !confirmed {
+		verify = journal.VerifyKubernetesBindingIntents
+	}
+	if err := verify(ctx, expected.Agent.Name, expected.Agent.UID, bindings); err != nil {
+		return podDenied("KubernetesGrantsUnconfirmed", "current Kubernetes grants do not match confirmed journal authority")
 	}
 	return nil
 }

@@ -167,3 +167,16 @@ func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
 	}
 	return p.sandboxGuard(ctx)
 }
+
+func (p *PreparedRelease) AuthorizeSandboxBindingCreate(ctx context.Context, object unstructured.Unstructured) error {
+	if p == nil || p.sandboxReconcile == nil || p.sandboxBindingCreate == nil || p.sealedInput != p.inputDigest() {
+		return fmt.Errorf("Kubernetes grant creation requires current per-binding authority")
+	}
+	if object.GetUID() != "" || object.GetResourceVersion() != "" ||
+		!slices.ContainsFunc(p.sandboxReconcile.Controls, func(expected unstructured.Unstructured) bool {
+			return w.KubernetesBindingResource(expected) && w.ReconciledObjectContentMatches(&object, &expected)
+		}) {
+		return fmt.Errorf("Kubernetes grant creation differs from the sealed control inventory")
+	}
+	return p.sandboxBindingCreate(ctx, object)
+}

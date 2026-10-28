@@ -263,6 +263,11 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 	if prepared.custom {
 		return prepared.installOrUpgradeCustom(cfg, namespace, releaseName)
 	}
+	if prepared.sandboxReconcile != nil {
+		guarded := *cfg
+		guarded.KubeClient = &reconciledGrantKube{Interface: cfg.KubeClient, prepared: prepared}
+		cfg = &guarded
+	}
 	chrt, values := prepared.chart, prepared.Values
 
 	exists, err := releaseExists(cfg, releaseName)
@@ -310,7 +315,7 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 		if err != nil {
 			// Another reconcile loop may have raced us to the install.
 			// Treat "already exists" as success — the release is there.
-			if strings.Contains(err.Error(), "already exists") {
+			if prepared.sandboxReconcile == nil && strings.Contains(err.Error(), "already exists") {
 				return nil
 			}
 			return fmt.Errorf("helm install %s: %w", releaseName, err)

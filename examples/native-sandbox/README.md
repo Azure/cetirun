@@ -253,6 +253,22 @@ requires current approvals and confirms newly created binding UIDs. A nil
 Use the normal coordinated configuration update after acknowledged shutdown;
 do not edit grant journals or expectations to change access.
 
+Unconfirmed binding writes keep their journal entries and the source reservation
+held; a missing object alone does not complete revocation. The controller records
+per-grant submission fingerprints, fences grants that were never submitted, and
+persists observed binding UIDs before deleting completed writes. This distinguishes
+a retained workload's earlier submission from its next set of grants. Outcomes
+that remain uncertain stay held rather than authorizing another apply.
+Only attempted binding creates receive submission records; binding updates use
+UID/version preconditions, and Helm does not prune grants by name from release
+history. Older records without per-grant evidence are treated conservatively.
+
+Admission also checks the owned ClusterRole-binding inventory, including when
+the new policy removes all Kubernetes grants. An obsolete or unrecorded owned
+workload grant blocks admission; platform source-reader Roles are separate.
+The admission reader therefore needs read-only `list` access to RoleBindings and
+ClusterRoleBindings in addition to its existing exact-object reads.
+
 The served-API check in [DEVELOPMENT.md](../../DEVELOPMENT.md) exercises these
 contracts without a cluster or running containers. Before registering a target
 as supported, separately authorize live positive/negative API requests, token

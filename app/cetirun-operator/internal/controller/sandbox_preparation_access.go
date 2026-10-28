@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -63,6 +64,16 @@ func (r *AgentReconciler) revokeSandboxPreparationGrants(ctx context.Context, ag
 	}
 	if len(bindings) == 0 {
 		return nil
+	}
+	if err := r.prepareReconciledGrantRevocation(ctx, agent, bindings); err != nil {
+		confirmed, readErr := read(ctx, agent.Name, agent.UID)
+		if readErr != nil {
+			return errors.Join(err, readErr)
+		}
+		confirmed = slices.DeleteFunc(confirmed, func(ref sandboxpolicy.BindingReference) bool {
+			return ref.RoleRef.Kind == "ClusterRole" && ref.UID == ""
+		})
+		return errors.Join(err, journal.Revoke(ctx, agent.Name, agent.UID, confirmed))
 	}
 	return journal.Revoke(ctx, agent.Name, agent.UID, bindings)
 }
