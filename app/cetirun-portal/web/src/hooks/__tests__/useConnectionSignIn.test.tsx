@@ -77,4 +77,22 @@ describe("OAuth popup transaction", () => {
   await waitFor(() => expect(complete).toHaveBeenCalledExactlyOnceWith(connection));
   expect(hook.result.current.message).toBe("");
  });
+ it("accepts an installation-required GitHub App connection for installation selection", async () => {
+  const installation = { id: "github-app", mode: "installation", status: "installation_required" };
+  vi.mocked(getConnectionAuthorization).mockResolvedValue({ authorizationId: "tx-1", status: "complete", connectionId: "github-app" });
+  vi.mocked(listConnections).mockResolvedValue([installation as never]);
+  const hook = setup(); const complete = vi.fn();
+  await act(async () => hook.result.current.begin(async () => authorization, complete, "installation"));
+  await act(async () => message());
+  await waitFor(() => expect(complete).toHaveBeenCalledWith(installation));
+ });
+ it("accepts a reauthorized GitHub App connection without changing its mode", async () => {
+  const installation = { id: "github-app", mode: "installation", status: "connected", github: { installationId: 7 } };
+  vi.mocked(getConnectionAuthorization).mockResolvedValue({ authorizationId: "tx-1", status: "complete", connectionId: "github-app" });
+  vi.mocked(listConnections).mockResolvedValue([installation as never]);
+  const hook = setup(); const complete = vi.fn();
+  await act(async () => hook.result.current.begin(async () => authorization, complete, "installation"));
+  await act(async () => message());
+  await waitFor(() => expect(complete).toHaveBeenCalledWith(installation));
+ });
 });

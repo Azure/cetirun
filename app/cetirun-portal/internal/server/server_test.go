@@ -128,7 +128,11 @@ func TestConnectionRoutesAreOptInAndAuthenticated(t *testing.T) {
 		for _, route := range []struct{ method, path string }{
 			{http.MethodGet, "/api/v1/connections"},
 			{http.MethodPost, "/api/v1/connections/start"},
+			{http.MethodGet, "/api/v1/connections/github-app/config"},
 			{http.MethodGet, "/api/v1/connections/id"},
+			{http.MethodGet, "/api/v1/connections/id/github/installations"},
+			{http.MethodGet, "/api/v1/connections/id/github/repositories?installationId=1&page=1"},
+			{http.MethodPost, "/api/v1/connections/id/github/installation"},
 			{http.MethodGet, "/api/v1/connections/id/usage"},
 			{http.MethodGet, "/api/v1/connection-authorizations/id"},
 			{http.MethodDelete, "/api/v1/connections/id"},
@@ -158,6 +162,15 @@ func TestConnectionRoutesAreOptInAndAuthenticated(t *testing.T) {
 					t.Errorf("%s %s enabled=%v signedIn=%v: got %d want %d", route.method, route.path, enabled, signedIn, response.Code, want)
 				}
 			}
+		}
+		setup := httptest.NewRequest(http.MethodGet, "/api/v1/connections/github-app/setup?installation_id=untrusted", nil)
+		setupResponse := httptest.NewRecorder()
+		mux.ServeHTTP(setupResponse, setup)
+		if enabled && setupResponse.Code != http.StatusOK {
+			t.Errorf("setup enabled=%v: got %d want 200", enabled, setupResponse.Code)
+		}
+		if !enabled && setupResponse.Code != http.StatusUnauthorized {
+			t.Errorf("setup enabled=%v: got %d want 401", enabled, setupResponse.Code)
 		}
 		// The final cutover removes the legacy authorization API.
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/demo/agent-authorization", nil)

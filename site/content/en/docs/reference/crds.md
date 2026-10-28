@@ -78,8 +78,8 @@ The namespace and release derive from `metadata.name`. For example, `alice`
 uses `cetirun-alice` and `openclaw-alice`. An owner can have a differently named
 instance; use the reported status instead of deriving names from the alias.
 Use short DNS-label instance names. Portal creation reserves `oauth2`, `api`,
-`internal`, `healthz`, `readyz`, `assets`, `portal`, `instances`, `admin`, and
-`ui`. Direct CRD admission does not impose that same list; the controller
+`internal`, `healthz`, `readyz`, `assets`, `portal`, `instances`, `admin`,
+`connections`, and `ui`. Direct CRD admission does not impose that same list; the controller
 explicitly rejects `ui`. Avoid all reserved names rather than relying on
 schema acceptance to establish safe routing.
 

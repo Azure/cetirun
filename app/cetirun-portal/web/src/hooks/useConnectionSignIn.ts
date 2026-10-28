@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { getConnectionAuthorization, listConnections, type Connection, type ConnectionStart } from "../api/toolAuthorization";
+import { getConnectionAuthorization, listConnections, type Connection, type ConnectionMode, type ConnectionStart } from "../api/toolAuthorization";
 
 /** A popup notification is a hint. Only the owner-scoped transaction result can
  * select an account; this hook never creates an Agent association. */
@@ -18,7 +18,7 @@ export function useConnectionSignIn(scope: string) {
   const cancel = useCallback(() => { generation.current++; cleanup.current(); setPending(false); }, []);
   useEffect(() => { cancel(); setMessage(""); return () => { generation.current++; cleanup.current(); }; }, [scope, cancel]);
 
-  const begin = (start: () => Promise<ConnectionStart>, complete: (connection: Connection) => void) => {
+  const begin = (start: () => Promise<ConnectionStart>, complete: (connection: Connection) => void, expectedMode: ConnectionMode = "delegated") => {
     cancel(); setMessage("");
     const popup = window.open("about:blank", "cetirun-account-signin", "popup,width=620,height=720");
     if (!popup) { setMessage("Allow popups for this Portal to sign in."); return; }
@@ -57,7 +57,7 @@ export function useConnectionSignIn(scope: string) {
           }
           const connections = await listConnections(controller.signal);
           if (!active()) return;
-          const connection = connections.find((c) => c.id === result.connectionId && c.mode === "delegated" && c.status === "connected");
+          const connection = connections.find((c) => c.id === result.connectionId && c.mode === expectedMode && (c.status === "connected" || (expectedMode === "installation" && c.status === "installation_required")));
           if (!connection) { finish("The signed-in account is unavailable. Try again."); return; }
           client.setQueryData(["tool-connections"], connections);
           void client.invalidateQueries({ queryKey: ["connection-usage"] });

@@ -28,15 +28,19 @@ func connectionView(c Connection) agenttools.Connection {
 	if c.Identity != nil {
 		identity = &agenttools.IdentityBinding{InstanceUID: c.Identity.InstanceUID, TenantID: c.Identity.TenantID, PrincipalID: c.Identity.PrincipalID, ClientID: c.Identity.ClientID}
 	}
-	return agenttools.Connection{ID: c.ID, Mode: connectionMode(c), Identity: identity, Provider: c.Provider, AccountDisplay: c.AccountDisplay, Services: c.Services, Scopes: c.Scopes, Revision: c.Revision, Status: c.Status, CreatedAt: c.CreatedAt}
+	return agenttools.Connection{ID: c.ID, Mode: connectionMode(c), Identity: identity, GitHub: c.GitHub, Provider: c.Provider, AccountDisplay: c.AccountDisplay, Services: c.Services, Scopes: c.Scopes, Revision: c.Revision, Status: c.Status, CreatedAt: c.CreatedAt}
 }
 
 func bindingView(b ConnectionBinding) agenttools.Binding {
-	return agenttools.Binding{ID: b.ID, InstanceUID: b.InstanceUID, ConnectionID: b.ConnectionID, Services: b.Services, Enabled: b.Enabled && !b.Revoked, Revision: b.Revision}
+	return agenttools.Binding{ID: b.ID, InstanceUID: b.InstanceUID, ConnectionID: b.ConnectionID, Services: b.Services, Enabled: b.Enabled && !b.Revoked, Revision: b.Revision, GitHub: b.GitHub}
 }
 
 func serviceAuthorization(identity workloadIdentity, connection *connectionRecord, binding ConnectionBinding, service string) agenttools.CheckResponse {
-	return agenttools.CheckResponse{ExecutorAccountID: connection.Connection.AccountID, InstanceUID: identity.Agent.UID, Connection: connectionView(connection.Connection), Binding: bindingView(binding), Service: service, ContractVersion: agenttools.ContractVersion}
+	executor := connection.Connection.AccountID
+	if connectionMode(connection.Connection) == modeInstallation && connection.Connection.GitHub != nil && connection.Connection.GitHub.InstallationID > 0 {
+		executor = "github-installation:" + strconv.FormatInt(connection.Connection.GitHub.InstallationID, 10)
+	}
+	return agenttools.CheckResponse{ExecutorAccountID: executor, InstanceUID: identity.Agent.UID, Connection: connectionView(connection.Connection), Binding: bindingView(binding), Service: service, ContractVersion: agenttools.ContractVersion}
 }
 
 func (s *Server) checkServiceAuthorization(ctx context.Context, input serviceRequest, requireVersions bool) (workloadIdentity, *connectionRecord, ConnectionBinding, error) {
@@ -87,6 +91,9 @@ func (s *Server) checkServiceAuthorization(ctx context.Context, input serviceReq
 	}
 	if connection.Deleted || c.Status == "disconnected" {
 		return fail("binding_required", 403)
+	}
+	if connectionMode(c) == modeInstallation && (c.GitHub == nil || c.GitHub.InstallationID <= 0 || c.GitHub.AccountLogin == "" || c.GitHub.UserLogin == "" || !binding.GitHub.Valid()) {
+		return fail("permission_denied", 403)
 	}
 	if c.Status != "connected" {
 		return fail("interaction_required", 401)
@@ -168,10 +175,10 @@ func (s *Server) toolCredentialsIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditTarget(r, connection.Connection.ID, identity.Agent.UID, binding.ID)
-	token, expiresAt, err := s.issueServiceCredential(r.Context(), connection, input.Service, identity.Agent)
+	token, expiresAt, err := s.issueServiceCredential(r.Context(), connection, input.Service, identity.Agent, binding)
 	if err != nil {
 		code, status := "dependency_unavailable", 503
-		if category, ok := oauthTokenFailureCategory(err); ok && category == string(oauthTokenInvalidGrant) && connectionMode(connection.Connection) == modeDelegated {
+		if category, ok := oauthTokenFailureCategory(err); ok && category == string(oauthTokenInvalidGrant) && isSharedConnectionMode(connectionMode(connection.Connection)) {
 			code, status = "interaction_required", 401
 		}
 		writeAPIError(w, status, code, "Provider credential is unavailable", correlationID(r))
@@ -249,7 +256,7 @@ func jwtExpiry(token string) (time.Time, error) {
 	return time.Unix(claims.Exp, 0).UTC(), nil
 }
 
-func (s *Server) issueServiceCredential(ctx context.Context, connection *connectionRecord, serviceID string, agent Agent) (string, time.Time, error) {
+func (s *Server) issueServiceCredential(ctx context.Context, connection *connectionRecord, serviceID string, agent Agent, bindings ...ConnectionBinding) (string, time.Time, error) {
 	profile, ok := agenttools.LookupService(serviceID)
 	if !ok || profile.Provider != connection.Connection.Provider {
 		return "", time.Time{}, errors.New("invalid service")
@@ -259,6 +266,13 @@ func (s *Server) issueServiceCredential(ctx context.Context, connection *connect
 	}
 	if connectionMode(connection.Connection) == modeAgent {
 		return s.issueAgentCredential(ctx, connection.Connection, agent)
+	}
+	var binding ConnectionBinding
+	if len(bindings) == 1 {
+		binding = bindings[0]
+	}
+	if connectionMode(connection.Connection) == modeInstallation {
+		return s.issueGitHubInstallationCredential(ctx, connection, binding)
 	}
 	if connection.Credential == nil {
 		return "", time.Time{}, errors.New("credential is unavailable")

@@ -494,7 +494,7 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 	// Each reserved name collides with either an EnvoyFilter gateway path token or
 	// a portal SPA top-level route. Prefixing or suffixing a reserved token remains
 	// valid because the gateway matches complete path segments, not string prefixes.
-	reserved := []string{"oauth2", "api", "internal", "healthz", "readyz", "assets", "portal", "instances", "admin", "ui"}
+	reserved := []string{"oauth2", "api", "internal", "healthz", "readyz", "assets", "portal", "instances", "admin", "connections", "ui"}
 	for _, name := range reserved {
 		t.Run(name, func(t *testing.T) {
 			fc := newFakeClient()

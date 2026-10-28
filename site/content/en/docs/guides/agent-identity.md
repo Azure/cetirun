@@ -7,22 +7,26 @@ weight: 45
 CetiRun connects Agents to Azure, GitHub, Microsoft Graph, Gmail and Google
 Calendar through a native remote MCP service. **Providers decide resource
 permissions**: Azure evaluates RBAC; personal providers evaluate their OAuth
-scopes and the connected user's rights. CetiRun binds an Agent to a Connection
-and selected services, without a second per-tool or resource grant editor.
+scopes and the connected user's rights. GitHub App connections additionally
+let each Agent select repositories and permissions that narrow its installation
+token. CetiRun binds an Agent to a Connection and selected services.
 
 Hermes and OpenClaw connect natively. Custom and Sandbox runtimes do not support
 this integration. Use a qualified Hermes runtime when OpenClaw is unavailable.
 Microsoft Entra Agent Identity is required for independent Azure access and the
-Azure/Microsoft delegated flow. GitHub and Google use personal connections.
+Azure/Microsoft delegated flow. GitHub supports personal OAuth and shared App
+connections; Google uses personal connections.
 
 ## Independent Azure access
 
 1. Enable Agent Identity on a supported instance and wait for it to be Ready.
-2. In **Connections for this agent**, select **Connect → Azure Agent identity**,
-   review the service, and confirm **Connect**. An existing identity is reused.
-   The Broker derives tenant, principal, client and immutable Agent UID from
-   trusted platform state.
-3. A resource owner assigns the displayed **Agent principal ID** appropriate
+2. In **Identities**, select **Add identity → Azure**. Continue with the
+   default **Agent identity** method, choose the service, review the access,
+   and select **Allow access**. An existing identity is reused. The
+   Broker derives tenant, principal, client and immutable Agent UID from trusted
+   platform state.
+3. Expand **Assign Azure permissions**. A resource owner assigns the displayed
+   **Principal ID** appropriate
    Azure RBAC at the required scope. Reader permits reads. An appropriate write
    role is needed for writes; the scope can be a subscription, resource group or
    resource according to Azure's rules.
@@ -53,6 +57,10 @@ by a person is a separate event from the Agent's resource operation.
 
 ## Authorize personal GitHub access
 
+For repository selection and separate read/write permissions, use a
+[shared GitHub App](../github-app/) instead. The personal OAuth option below
+remains available with its broader scope.
+
 An environment administrator creates a standard GitHub **OAuth App**, with the
 Portal origin as homepage and its exact `/api/v1/connections/callback` URL as
 callback. Configure the Broker chart's
@@ -60,11 +68,12 @@ callback. Configure the Broker chart's
 `client-secret` in the Broker namespace. GitHub App installations, private keys
 and bot identities are not used.
 
-1. Select **Connect**, choose GitHub under **Sign in to another account**, and
-   select **Sign in**. You can also select an existing authorized account.
+1. Select **Identities → Add identity → GitHub**, expand **Other access
+   methods**, choose **Personal account**, then select **Sign in to GitHub**. You can also
+   select an existing authorized account.
 2. Complete sign-in in the popup. The wizard resumes with the verified account.
-3. Review the GitHub REST API service and confirm **Connect**. Cancelling the
-   wizard does not associate the account with this Agent.
+3. Review the GitHub REST API service and select **Allow access**. Cancelling
+   the wizard does not associate the account with this Agent.
 
 The OAuth App requests `repo`, a broad read/write scope. Existing repository
 rights and organization OAuth/SSO restrictions also apply. CetiRun does not
@@ -73,10 +82,10 @@ GitHub records the connected personal account as the actor. CetiRun audit
 additionally identifies which Agent used the connection.
 
 GitHub tokens may lack provider expiry; internal credential issuance still has
-a short finite validity. Disconnecting stops future CetiRun issuance but does
+a short finite validity. Removing Agent access stops future CetiRun issuance but does
 not revoke external OAuth consent. Revoke that separately in GitHub Settings →
 Applications → Authorized OAuth Apps. Reauthorize preserves the original account;
-a different account must be added through Connect.
+a different account must be added through **Add identity**.
 
 ## Authorize personal Google access
 
@@ -98,9 +107,9 @@ environment administrator registers a Google Web OAuth client once:
 5. Store the client ID/secret in the Broker namespace using `client-id` and
    `client-secret` keys. Configure `providers.google.credentialsSecretName`.
 
-Users select **Connect → Sign in to another account → Google → Sign in** and
-complete consent in the popup. The wizard resumes with the verified account;
-select Gmail, Calendar or both services and confirm **Connect**.
+Users select **Identities → Add identity → Google → Sign in to Google** and complete
+consent in the popup. The wizard resumes with the verified account; select Gmail,
+Calendar or both services, review access, and select **Allow access**.
 An enabled service is not a read-only promise: Google determines whether each
 API operation is permitted by the actual OAuth scopes.
 
@@ -127,26 +136,30 @@ The Portal currently shows **Not reported** for downstream OBO scopes. It does
 not infer Graph or ARM permissions from the intermediate sign-in token or
 configured scope requests. The provider still evaluates every API request.
 
-## Manage connections and accounts
+## Manage identities and connections
 
-The Agent page lists only its active associations. **Disconnect** removes that
-Agent's association; other Agents and the saved personal account are unaffected.
-**Edit services** appears for accounts with multiple services and requires at
-least one service. **Reauthorize** appears when sign-in is required. Results
+The Agent page lists only its active associations in **Identities**. Its
+**Remove access** menu item removes only that Agent's association; other Agents
+and the saved authorization are unaffected. **Manage access** appears for
+editable access and requires at least one service; select **Save access** to
+apply changes. **Sign in again** appears when sign-in is required. Results
 refresh automatically; loading failures offer **Retry**.
 
-Use **My accounts** in the Portal header to view personal accounts, reported OAuth
-scopes and associated Agents. Reauthorize opens sign-in without clearing working
-credentials. Remove is available only when no Agent uses the account; the server
-also checks usage and rejects concurrent association/removal races. Disconnect
-from the listed Agents first. Removing the local account does not revoke the
-provider's OAuth consent.
+Use **Connections** in the Portal header to view existing personal
+authorizations and GitHub App connections, their reported details, and the
+Agents using them. It does not create new authorizations: use **Add identity**
+from an Agent for that. Signing in again does not clear working credentials.
+**Remove connection** is available only when no Agent uses the authorization;
+the server also checks usage and rejects concurrent association/removal races.
+Remove access from the listed Agents first. Removing the local connection does
+not revoke the provider's OAuth consent or uninstall a GitHub App.
 
 Repeated sign-in to the same verified provider account reuses its canonical
-Connection. Existing duplicate records retain their IDs and associations and are
-shown with dates and short IDs in My accounts; Connect offers one canonical
-choice. Unused duplicates can be removed individually. Historical disabled
-associations remain inactive until the user explicitly connects again.
+Connection. Existing duplicate records retain their IDs and associations and
+remain visible as separate authorizations in **Connections**. **Add
+identity** offers one canonical choice. Unused duplicates can be removed
+individually. Historical disabled associations remain inactive until the user
+explicitly gives that Agent access again.
 
 ## Use generic REST tools
 
@@ -211,10 +224,11 @@ Azure Connections and credential-free personal-connection references are stored
 in the Agent's namespace with immutable Agent owner references. Agent deletion
 cleans those records and preserves owner-managed personal credentials.
 
-Use **Edit services** for accounts with multiple services, or **Disconnect**
-to remove the association. Disconnecting from the Agent page revokes only that
-Agent's binding and preserves the personal account connection and other Agents'
-bindings. The Agent page does not offer account-wide disconnection.
+Use **Manage access** for accounts with multiple services, then select **Save
+access**, or use **Remove access** to remove the association. Removing access
+from the Agent page revokes only that Agent's binding and preserves the personal
+account connection and other Agents' bindings. The Agent page does not offer
+account-wide connection removal.
 Every issuance checks live Agent state, owner, enabled binding and service,
 and rechecks revisions after credential acquisition. An already-sent request
 cannot be recalled. This contract has no migration or compatibility workflow
