@@ -715,3 +715,62 @@ func TestNativeEntraEnableOnRetainedBootstrap(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeEntraPendingBootstrapKeepsConfirmedSuspension(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false,
+				withReconciledCoordination(t))
+			agent := f.current(t)
+			agent.Spec.Suspended = true
+			agent.Generation++
+			if err := f.kube.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			f.reconcileOK(t)
+			acknowledgeEntraStop(t, f)
+			f.reconcileOK(t)
+			if f.current(t).Status.Phase != api.PhaseSuspended {
+				t.Fatal("fixture did not confirm suspension")
+			}
+			withNativeEntra(t)(f.r, f.kube)
+			keyID, stages := f.current(t).Status.AIGateway.KeyID, f.installer.stages
+			var version string
+			for index := range 3 {
+				_, reconcileErr := f.reconcile()
+				current := f.current(t)
+				if current.Status.Phase != api.PhaseSuspended || current.Status.AccessURL != "" ||
+					current.Status.AIGateway.KeyID != keyID || !current.Status.AIGateway.Blocked ||
+					current.Status.AIGateway.Reason != aiGatewayReasonSuspended ||
+					ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 || f.installer.stages != stages {
+					t.Fatalf("pending identity changed suspension: phase=%s blocked=%t reason=%s replicas=%d stages=%d/%d error=%v",
+						current.Status.Phase, current.Status.AIGateway.Blocked, current.Status.AIGateway.Reason,
+						ptr.Deref(f.workload(t).Spec.Replicas, -1), f.installer.stages, stages, reconcileErr)
+				}
+				if index > 0 && current.ResourceVersion != version {
+					t.Fatal("unchanged pending identity caused suspended status churn")
+				}
+				version = current.ResourceVersion
+				_, receipt, err := f.r.readSandboxBootstrap(ctx, current)
+				if err != nil || receipt.ServiceAccount != nil {
+					t.Fatal("suspension must not create a new identity account:", err)
+				}
+			}
+			agent = f.current(t)
+			agent.Spec.Suspended = false
+			agent.Generation++
+			if err := f.kube.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			for range 5 {
+				f.reconcileOK(t)
+			}
+			_, receipt, err := f.r.readSandboxBootstrap(ctx, f.current(t))
+			if err != nil || receipt.ServiceAccount == nil || receipt.ServiceAccount.UID == "" ||
+				ptr.Deref(f.workload(t).Spec.Replicas, 0) != 1 || f.current(t).Status.AIGateway.KeyID != keyID {
+				t.Fatal("explicit resume did not bootstrap the approved identity on the retained lifetime:", err)
+			}
+		})
+	}
+}

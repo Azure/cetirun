@@ -1914,6 +1914,10 @@ enabled, bootstrap still owns that account; Helm must not adopt it or erase its
 creation record. Retired Azure identity annotations are removed only after
 quiescence with UID/resource-version checks. Without requested Kubernetes
 access, retaining the account grants no Kubernetes RBAC.
+Enabling a new projection while the Agent is stopped leaves its confirmed
+suspension and blocked key intact. Pending identity preparation remains visible
+in policy conditions; it does not create an account or alternate the lifecycle
+back to Pending. An explicit resume starts the approved bootstrap.
 The account name cannot change after it is recorded. Final Agent/namespace
 deletion releases the account through the existing bootstrap cleanup ordering
 after workload shutdown; Helm cannot delete or recreate it.
