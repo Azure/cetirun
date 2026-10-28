@@ -53,6 +53,9 @@ cetirun-operator:
   # OpenClaw and Hermes Agents take their models from the AI Gateway; the
   # platform requires it.
   # Without a url, the operator uses cetirun-ai-gateway in its namespace.
+  # The Gateway probes no Agent's GitHub Copilot routes, each probe being a
+  # real call on the owner's Copilot allowance, unless
+  # aiGateway.copilotProxy.healthChecks.enabled is set.
   aiGateway:
     enabled: true
   sandboxAdmission:

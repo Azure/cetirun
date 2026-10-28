@@ -1926,7 +1926,7 @@ func TestParseAIGatewayConfig(t *testing.T) {
 		return func(key string) string { return values[key] }
 	}
 	cfg, err := ParseAIGatewayConfig(env(nil))
-	if err != nil || cfg.Enabled || cfg.configured() {
+	if err != nil || cfg.Enabled || cfg.configured() || cfg.CopilotHealthChecks {
 		t.Fatalf("empty configuration: %+v %v", cfg, err)
 	}
 	valid := map[string]string{
@@ -1936,8 +1936,20 @@ func TestParseAIGatewayConfig(t *testing.T) {
 	}
 	cfg, err = ParseAIGatewayConfig(env(valid))
 	if err != nil || !cfg.Enabled || cfg.URL != testAIGatewayURL || cfg.MasterKeySecretKey != "master-key" || cfg.DefaultBudget != 12.5 ||
-		!strings.HasPrefix(cfg.CopilotProxyImage, "registry.example.com/") {
+		!strings.HasPrefix(cfg.CopilotProxyImage, "registry.example.com/") || cfg.CopilotHealthChecks {
 		t.Fatalf("valid configuration: %+v %v", cfg, err)
+	}
+	// The Gateway probes the Agents' Copilot routes only when the setting is
+	// true, in any letter case and with spaces around it.
+	for value, want := range map[string]bool{"": false, "false": false, "yes": false, "true": true, " TRUE ": true} {
+		values := maps.Clone(valid)
+		values["AI_GATEWAY_COPILOT_HEALTH_CHECKS"] = value
+		if cfg, err := ParseAIGatewayConfig(env(values)); err != nil || cfg.CopilotHealthChecks != want {
+			t.Errorf("AI_GATEWAY_COPILOT_HEALTH_CHECKS=%q: probes of Copilot routes %v, want %v: %v", value, cfg.CopilotHealthChecks, want, err)
+		}
+	}
+	if cfg, err := ParseAIGatewayConfig(env(map[string]string{"AI_GATEWAY_COPILOT_HEALTH_CHECKS": "true"})); err != nil || !cfg.CopilotHealthChecks {
+		t.Errorf("the setting is read without a Gateway to call too: %+v %v", cfg, err)
 	}
 	for name, override := range map[string][2]string{
 		"external URL":       {"AI_GATEWAY_URL", "http://gateway.example.com:4000"},

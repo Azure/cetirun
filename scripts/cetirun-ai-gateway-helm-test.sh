@@ -325,8 +325,9 @@ assert_contains 'context_window_fallbacks: \[{"lint-model":\["long-model"\]}\]' 
   "$(render --set 'router.contextWindowFallbacks[0].lint-model[0]=long-model')"
 assert_rejected "a fallback target that is not a list" --set-string 'router.fallbacks[0].lint-model=other-model'
 
-# Each probe is a real call, to every deployment: those configured here, those
-# added later and the operator's per-Agent GitHub Copilot routes. LiteLLM never
+# Each probe is a real call, to every deployment: those configured here and
+# those added later, but not one that sets disable_background_health_check, as
+# the operator's per-Agent GitHub Copilot routes do by default. LiteLLM never
 # probes an auto router itself. With Redis, one replica probes under a lock and
 # the others reuse its results for one interval.
 echo "==> background health checks probe every deployment, once for all replicas"

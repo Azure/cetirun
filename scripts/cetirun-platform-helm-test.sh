@@ -86,6 +86,12 @@ for flag in AI_GATEWAY_ENABLED FEATURE_AI_GATEWAY_ENABLED; do
     exit 1
   }
 done
+# Each probe of an Agent's GitHub Copilot route is a real call on the owner's
+# Copilot allowance, so the Gateway probes none of them by default.
+grep -A1 'name: AI_GATEWAY_COPILOT_HEALTH_CHECKS$' <<< "${output}" | grep -q 'value: "false"' || {
+  echo "FAIL: the operator does not turn the probes of the Agents' GitHub Copilot routes off by default" >&2
+  exit 1
+}
 # The platform writes the Gateway's request log and keeps LiteLLM's spend log
 # for seven days, so the console's request log pages work, and serves the
 # Gateway's metrics for managed Prometheus.
@@ -121,6 +127,23 @@ for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com \
     exit 1
   }
 done
+
+echo "==> helm template platform (probes of the Agents' GitHub Copilot routes)"
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" \
+  --set cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled=true)
+grep -A1 'name: AI_GATEWAY_COPILOT_HEALTH_CHECKS$' <<< "${output}" | grep -q 'value: "true"' || {
+  echo "FAIL: the operator does not let the Gateway probe the Agents' GitHub Copilot routes when asked" >&2
+  exit 1
+}
+# helm upgrade --reuse-values keeps the values of the chart version a release
+# was installed with, which may not have the setting. Setting it to null
+# removes it the same way: such a release keeps the probes off.
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" \
+  --set cetirun-operator.aiGateway.copilotProxy.healthChecks=null)
+grep -A1 'name: AI_GATEWAY_COPILOT_HEALTH_CHECKS$' <<< "${output}" | grep -q 'value: "false"' || {
+  echo "FAIL: a release from before the setting does not keep the probes of GitHub Copilot routes off" >&2
+  exit 1
+}
 
 echo "==> helm template platform (shared registry and version)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" \
