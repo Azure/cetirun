@@ -60,6 +60,8 @@ def fail(reason, also_logged=None):
 agent_config = os.path.join(os.environ["OPENCLAW_STATE_DIR"], "openclaw.json")
 if os.path.realpath(os.environ.get("OPENCLAW_CONFIG_PATH") or agent_config) == os.path.realpath(agent_config):
     fail("failed to resolve secrets from the active gateway snapshot; local resolution also failed")
+with open(os.environ["OPENCLAW_CONFIG_PATH"]) as handle:
+    state.setdefault("configs", []).append(json.load(handle))
 if state.get("fail") and argv[:len(state["fail"])] == state["fail"]:
     fail("disk I/O error")
 if argv[:3] == ["models", "auth", "list"]:
@@ -313,6 +315,23 @@ def test_native_empty_auth_store_is_checked_once_per_start(home):
         ]
         assert ["doctor", "--state-sqlite", "compact"] in calls
         assert cli(home)["profiles"] == {}
+
+
+def test_native_auth_commands_disable_unused_plugins_without_changing_agent_config(home):
+    signed_in_home(home)
+    original = {
+        **AGENT_CONFIG,
+        "plugins": {"enabled": True, "entries": {"example-plugin": {"enabled": True}}},
+    }
+    active = home["state"] / "openclaw.json"
+    active.write_text(json.dumps(original))
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode == 0, result.stderr
+    assert cli(home)["configs"]
+    assert all(config["plugins"].get("enabled") is False for config in cli(home)["configs"])
+    assert json.loads(active.read_text()) == original
+    assert cli(home)["profiles"] == {}
+    assert len(compactions(home)) == 2
 
 
 @pytest.mark.parametrize("command", [
