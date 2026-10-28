@@ -189,7 +189,7 @@
                 },
                 "healthChecks": {
                     "type": "object",
-                    "description": "Background probes of every deployment, including those added through the console and the operator's per-Agent GitHub Copilot routes, and routing only to those that answered. With Redis, one replica probes for all.",
+                    "description": "Background probes of every deployment, including those added through the console, and routing only to those that answered. The operator's per-Agent GitHub Copilot routes are probed only when the operator's aiGateway.copilotProxy.healthChecks.enabled is on. With Redis, one replica probes for all.",
                     "properties": {
                         "enabled": {
                             "type": "boolean",

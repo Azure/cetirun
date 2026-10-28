@@ -22,12 +22,16 @@ func connectionMode(c Connection) string {
 	return c.Mode
 }
 
+func isSharedConnectionMode(mode string) bool {
+	return mode == modeDelegated || mode == modeInstallation
+}
+
 func connectionMatchesAgent(c Connection, agent Agent, tenant string) bool {
 	if agent.UnsupportedRuntime {
 		return false
 	}
 	switch connectionMode(c) {
-	case modeDelegated:
+	case modeDelegated, modeInstallation:
 		return c.Identity == nil
 	case modeAgent:
 		b := c.Identity

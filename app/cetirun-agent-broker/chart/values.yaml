@@ -68,6 +68,14 @@ providers:
     credentialsSecretName: ""
     clientIDKey: client-id
     clientSecretKey: client-secret
+    app:
+      # Optional shared GitHub App; personal OAuth remains independently available.
+      id: ""
+      slug: ""
+      clientId: ""
+      credentialsSecretName: ""
+      clientSecretKey: client-secret
+      privateKeyKey: private-key.pem
   google:
     credentialsSecretName: ""
     clientIDKey: client-id

@@ -901,6 +901,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			result, holdErr := r.holdReconciledSandbox(ctx, instance)
 			return result, stderrors.Join(err, holdErr)
 		}
+		if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
+			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+			return result, stderrors.Join(err, holdErr)
+		}
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
 	if instance.Spec.Suspended {

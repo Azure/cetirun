@@ -121,7 +121,7 @@ func TestCLIDeleteAndObservationRecovery(t *testing.T) {
 }
 
 func TestCLIDeletionRecoveryByOperationID(testContext *testing.T) {
-	for _, scenario := range []string{"committed", "lost reply", "crash"} {
+	for _, scenario := range []string{"committed", "lost reply", "crash", "superseded"} {
 		testContext.Run(scenario, func(testContext *testing.T) {
 			args, store, storage, before, _ := cliFixture(testContext)
 			deleteArgs := args[:len(args)-2]
@@ -165,7 +165,7 @@ func TestCLIDeletionRecoveryByOperationID(testContext *testing.T) {
 					testContext.Fatal(err)
 				}
 				operation = ticket.Change.ID
-			case "crash":
+			case "crash", "superseded":
 				ticket, err := store.AcquireConfigurationDeletion(context.Background(), before)
 				if err != nil {
 					testContext.Fatal(err)
@@ -174,8 +174,16 @@ func TestCLIDeletionRecoveryByOperationID(testContext *testing.T) {
 				if err != nil {
 					testContext.Fatal(err)
 				}
-				if err := writer.Delete(context.Background(), before); err != nil {
-					testContext.Fatal(err)
+				if scenario == "superseded" {
+					current := before.DeepCopy()
+					current.Annotations = map[string]string{"example.com/observed": "true"}
+					if err := storage.Update(context.Background(), current); err != nil {
+						testContext.Fatal(err)
+					}
+				} else {
+					if err := writer.Delete(context.Background(), before); err != nil {
+						testContext.Fatal(err)
+					}
 				}
 				operation = ticket.Change.ID
 			}
@@ -192,8 +200,12 @@ func TestCLIDeletionRecoveryByOperationID(testContext *testing.T) {
 					return errors.New("operation-id observation must not delete")
 				},
 			})
+			wantStatus, wantDeletes := "deletion-accepted", 1
+			if scenario == "superseded" {
+				wantStatus, wantDeletes = "deletion-superseded", 0
+			}
 			code, observed, message := invoke(testContext, append(recoveryArgs, "--action", "observe-delete"), injectedClients(observer))
-			if code != 0 || observed.Status != "deletion-accepted-reservation-retained" ||
+			if code != 0 || observed.Status != wantStatus+"-reservation-retained" ||
 				observed.Operation != operation || observed.Source.Name != before.Name || observed.Source.UID != before.UID {
 				testContext.Fatal("operation-id observation did not retain its recorded deletion:", message)
 			}
@@ -201,7 +213,7 @@ func TestCLIDeletionRecoveryByOperationID(testContext *testing.T) {
 				testContext.Fatal("operation-id observation released the deletion reservation:", err)
 			}
 			code, recovered, message := invoke(testContext, append(recoveryArgs, "--action", "delete"), injectedClients(writer))
-			if code != 0 || recovered.Status != "deletion-accepted" || recovered.Operation != operation || deletes != 1 {
+			if code != 0 || recovered.Status != wantStatus || recovered.Operation != operation || deletes != wantDeletes {
 				testContext.Fatal("operation-id recovery resubmitted or did not release the deletion:", message)
 			}
 			if _, err := store.ReadConfigurationDeletion(context.Background(), before); !errors.Is(err, sandboxcoordination.ErrUnavailable) {

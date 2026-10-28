@@ -153,12 +153,31 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					_, err = store.ReconcileChange(ctx, recovered, deletionAdapter(t, nil, storage, before))
-					if (err == nil) != (scenario == "lost-reply") {
-						t.Fatal("unexpected observation-only recovery:", err)
+					observer := deletionAdapter(t, nil, storage, before)
+					outcome, err := observer.ObserveChange(ctx, recovered)
+					if err != nil {
+						t.Fatal("definitive deletion outcome was not observed:", err)
 					}
-					if scenario == "source-race" && store.CheckChange(ctx, recovered) != nil {
-						t.Fatal("conflicted deletion lost its reservation")
+					if scenario == "source-race" {
+						if !outcome.Aborted || !outcome.Superseded || outcome.Applied {
+							t.Fatal("superseded Delete was reported as accepted:", outcome)
+						}
+						current := before.DeepCopyObject().(client.Object)
+						if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil ||
+							current.GetUID() != before.GetUID() || !current.GetDeletionTimestamp().IsZero() {
+							t.Fatal("superseded conditional Delete changed the live source:", err)
+						}
+					} else if !outcome.Applied || outcome.Aborted || outcome.Superseded {
+						t.Fatal("accepted Delete was not distinguished from supersession:", outcome)
+					}
+					if err := store.CheckChange(ctx, recovered); err != nil {
+						t.Fatal("read-only observation released its reservation:", err)
+					}
+					if _, err := store.ReconcileChange(ctx, recovered, observer); err != nil {
+						t.Fatal("definitive observation could not release its reservation:", err)
+					}
+					if err := store.CheckChange(ctx, recovered); err == nil {
+						t.Fatal("completed recovery retained its reservation")
 					}
 				}
 				if deletes != 1 {

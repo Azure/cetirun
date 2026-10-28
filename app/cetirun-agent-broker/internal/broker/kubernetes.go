@@ -678,7 +678,7 @@ func (k *kubeClient) listConnections(ctx context.Context, owner Owner) ([]Connec
 	}
 	connections := make([]Connection, 0, len(records))
 	for _, item := range records {
-		if !item.record.Deleted && sameOwner(item.record.Connection.Owner, owner) && (!k.agentNamespaces || connectionMode(item.record.Connection) == modeDelegated) {
+		if !item.record.Deleted && sameOwner(item.record.Connection.Owner, owner) && (!k.agentNamespaces || isSharedConnectionMode(connectionMode(item.record.Connection))) {
 			connections = append(connections, item.record.Connection)
 		}
 	}

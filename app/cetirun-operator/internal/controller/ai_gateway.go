@@ -106,6 +106,10 @@ type AIGatewayConfig struct {
 	// CopilotProxyImage is the image of the per-Agent GitHub Copilot proxy,
 	// the Gateway image. Empty turns GitHub Copilot off for every Agent.
 	CopilotProxyImage string
+	// CopilotHealthChecks lets the Gateway's background health checks probe
+	// the Agents' GitHub Copilot routes. Each probe is a real call on the
+	// owner's Copilot allowance, so without it the routes are not probed.
+	CopilotHealthChecks bool
 }
 
 // ParseAIGatewayConfig reads the operator's AI Gateway settings from the
@@ -118,6 +122,7 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 		MasterKeySecretKey:  strings.TrimSpace(getenv("AI_GATEWAY_MASTER_KEY_SECRET_KEY")),
 		DefaultModel:        strings.TrimSpace(getenv("AI_GATEWAY_DEFAULT_MODEL")),
 		CopilotProxyImage:   strings.TrimSpace(getenv("AI_GATEWAY_COPILOT_PROXY_IMAGE")),
+		CopilotHealthChecks: strings.EqualFold(strings.TrimSpace(getenv("AI_GATEWAY_COPILOT_HEALTH_CHECKS")), "true"),
 	}
 	if cfg.MasterKeySecretKey == "" {
 		cfg.MasterKeySecretKey = "master-key"
