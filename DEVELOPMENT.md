@@ -250,6 +250,21 @@ RWO and RWOP retained restarts, coordinated shutdown/resume and repeated
 healthy-source migration with synthetic Pod/CSI observations. These are offline
 contracts, not runtime, file-retention, model-spend or CSI qualification.
 
+Common Sandbox policy updates also have a focused served-API regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxPendingRateLimitsAPIServer$' -count=1
+```
+
+It adds and removes rate limits before the first Ready observation, including
+policy status catching up during bootstrap, with both RWO and RWOP HOME. It
+checks unchanged workload, Pod, key and reservation identities and rejects
+mixed execution-control edits. Unit tests additionally cover retained restarts,
+both built-in harnesses, full source comparisons and final-apply/submission
+guards. The Gateway, scheduler and kubelet observations are synthetic; this
+local API test does not qualify live traffic, Kata or storage behavior.
+
 Kata internal CIDR grants have a focused served-API regression:
 
 ```bash

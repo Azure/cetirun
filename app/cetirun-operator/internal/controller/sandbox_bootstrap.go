@@ -362,6 +362,26 @@ func (r *AgentReconciler) sandboxBootstrapGuard(ctx context.Context, attempt *sa
 	if actualDigest != expectedDigest {
 		return fmt.Errorf("%w: Sandbox bootstrap platform changed", errSandboxSourceChanged)
 	}
+	if attempt.reconciled && config.NativeExecution {
+		if err := validateSandboxSourceInventory(attempt.sources); err != nil {
+			return err
+		}
+		for _, source := range attempt.sources {
+			if source.APIVersion == api.GroupVersion.String() && source.Kind == "AgentPolicy" &&
+				source.UID == attempt.resolution.Binding.AgentPolicyUID {
+				digest, err := r.executionSourceDigest(ctx, source, current.Spec.SandboxRef, false)
+				if err != nil {
+					return err
+				}
+				if !sandboxworkload.ValidInputDigest(attempt.policyDigest) || digest != attempt.policyDigest {
+					return fmt.Errorf("%w: Sandbox bootstrap policy inputs changed", errSandboxSourceChanged)
+				}
+			} else if _, err := r.readSandboxSource(ctx, source); err != nil {
+				return err
+			}
+		}
+		return ctx.Err()
+	}
 	return r.verifySandboxSources(ctx, attempt.sources)
 }
 
