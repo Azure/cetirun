@@ -117,6 +117,10 @@ with that possibility in mind.
 
 ## Deployment configuration
 
+Follow the [Agent Identity setup guide](../../site/content/en/docs/operations/agent-identity.md)
+for the complete Broker/MCP certificate and trust layout, platform values, and
+provider preparation before enabling this service.
+
 The image, standalone Helm chart, default ServiceAccount, and workload token
 audience use `cetirun-connections-mcp`. The platform umbrella chart enables this
 component through `cetirun-connections-mcp.enabled`.

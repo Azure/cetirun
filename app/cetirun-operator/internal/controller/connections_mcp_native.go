@@ -41,12 +41,13 @@ func (r *AgentReconciler) nativeConnectionsDestination(ctx context.Context, agen
 	}
 	endpoint, _ := url.Parse(r.ConnectionsMCPURL)
 	name := endpoint.Hostname()[:len(endpoint.Hostname())-len("."+namespace+".svc.cluster.local")]
-	port := 443
+	port := int32(443)
 	if endpoint.Port() != "" {
-		port, err = strconv.Atoi(endpoint.Port())
-		if err != nil || port < 1 || port > 65535 {
+		parsed, err := strconv.ParseUint(endpoint.Port(), 10, 16)
+		if err != nil || parsed == 0 {
 			return nil, nil, fmt.Errorf("Connections MCP service port is invalid")
 		}
+		port = int32(parsed)
 	}
 	service := &corev1.Service{}
 	if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, service); err != nil {
@@ -73,10 +74,10 @@ func (r *AgentReconciler) nativeConnectionsDestination(ctx context.Context, agen
 			return nil, nil, fmt.Errorf("native Connections Service address is absent from the protected managed-peer inventory")
 		}
 	}
-	ports := []api.AgentPolicyPort{{Protocol: corev1.ProtocolTCP, Port: int32(port)}}
+	ports := []api.AgentPolicyPort{{Protocol: corev1.ProtocolTCP, Port: port}}
 	found := false
 	for _, current := range service.Spec.Ports {
-		if current.Port != int32(port) || current.Protocol != corev1.ProtocolTCP {
+		if current.Port != port || current.Protocol != corev1.ProtocolTCP {
 			continue
 		}
 		if found {
@@ -92,7 +93,7 @@ func (r *AgentReconciler) nativeConnectionsDestination(ctx context.Context, agen
 		if target < 1 || target > 65535 {
 			return nil, nil, fmt.Errorf("native Connections target port is not supported")
 		}
-		if target != int32(port) {
+		if target != port {
 			ports = append(ports, api.AgentPolicyPort{Protocol: corev1.ProtocolTCP, Port: target})
 		}
 		found = true

@@ -6,6 +6,11 @@ authorities. GitHub App bindings narrow installation tokens to selected
 repositories and permissions. There are no business-level AgentGrants,
 per-tool permissions or prerequisite Azure RBAC verification.
 
+Platform administrators should start with the
+[Agent Identity setup guide](../../site/content/en/docs/operations/agent-identity.md)
+for encryption, federation, certificates, provider registrations and deployment
+order. This README describes the component contracts after those prerequisites.
+
 A binding associates an immutable Agent UID with a Connection and selected
 services. New associations are always enabled. Sharing an owner does not share
 connections automatically.

@@ -11,8 +11,10 @@ scopes and the connected user's rights. GitHub App connections additionally
 let each Agent select repositories and permissions that narrow its installation
 token. CetiRun binds an Agent to a Connection and selected services.
 
-Hermes and OpenClaw connect natively. Custom and Sandbox runtimes do not support
-this integration. Use a qualified Hermes runtime when OpenClaw is unavailable.
+Hermes and OpenClaw connect natively. Governed common-executor workloads require
+the explicit [native Connections configuration]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-native-workloads).
+Custom runtimes and retained single-start Sandbox lifetimes remain unsupported.
+Use a qualified Hermes runtime when OpenClaw is unavailable.
 Microsoft Entra Agent Identity is required for independent Azure access and the
 Azure/Microsoft delegated flow. GitHub supports personal OAuth and shared App
 connections; Google uses personal connections.
@@ -20,9 +22,13 @@ connections; Google uses personal connections.
 For a policy-governed Agent, directory identity readiness is not aggregate
 `PolicyApplied`. The Operator also requires current, owner- and identity-bound
 credential-service readback; requested or desired revisions are not evidence.
-The Broker's existing unsupported-Sandbox gate remains in place, so storing a
-credential restriction does not enable native Agent Identity. Generic Entra
-workload projection and Connections' Pod-bound workload proof remain distinct.
+Native workload authorization additionally verifies the current Pod and protected
+common-executor sources; a stored restriction alone is not sufficient. Generic
+Entra workload projection and Connections' Pod-bound workload proof remain distinct.
+
+Platform administrators prepare these capabilities with
+[Agent Identity setup](../../operations/agent-identity/). The steps below are
+for users of an already configured environment.
 
 ## Independent Azure access
 
@@ -68,12 +74,10 @@ For repository selection and separate read/write permissions, use a
 [shared GitHub App](../github-app/) instead. The personal OAuth option below
 remains available with its broader scope.
 
-An environment administrator creates a standard GitHub **OAuth App**, with the
-Portal origin as homepage and its exact `/api/v1/connections/callback` URL as
-callback. Configure the Broker chart's
-`providers.github.credentialsSecretName`, using Secret keys `client-id` and
-`client-secret` in the Broker namespace. GitHub App installations, private keys
-and bot identities are not used.
+An administrator first configures the
+[personal GitHub OAuth provider](../../operations/identity-providers/#github-personal-oauth).
+This mode uses an OAuth App; GitHub App installations, private keys and bot
+identities are not used.
 
 1. Select **Identities → Add identity → GitHub**, expand **Other access
    methods**, choose **Personal account**, then select **Sign in to GitHub**. You can also
@@ -96,23 +100,10 @@ a different account must be added through **Add identity**.
 
 ## Authorize personal Google access
 
-Personal Gmail works without a Workspace organization or service account. An
-environment administrator registers a Google Web OAuth client once:
-
-1. Create or select a [Google Cloud project](https://console.cloud.google.com/)
-   and enable **Gmail API** and **Google Calendar API**.
-2. Configure Google Auth Platform **Branding** and **Audience**. For personal
-   Gmail choose **External**, and add test users while in **Testing**.
-3. Under **Data Access**, add `openid`,
-   `https://www.googleapis.com/auth/userinfo.email`,
-   `https://www.googleapis.com/auth/gmail.readonly`,
-   `https://www.googleapis.com/auth/gmail.send`, and
-   `https://www.googleapis.com/auth/calendar`.
-4. Create a **Web application** client with the exact Portal callback, such as
-   `https://portal.example.com/api/v1/connections/callback`, under **Authorized
-   redirect URIs**.
-5. Store the client ID/secret in the Broker namespace using `client-id` and
-   `client-secret` keys. Configure `providers.google.credentialsSecretName`.
+Personal Gmail works without a Workspace organization or service account.
+An administrator first registers the
+[Google Web OAuth client](../../operations/identity-providers/#google-personal-oauth),
+enables the APIs, configures consent and installs the Broker credentials.
 
 Users select **Identities → Add identity → Google → Sign in to Google** and complete
 consent in the popup. The wizard resumes with the verified account; select Gmail,

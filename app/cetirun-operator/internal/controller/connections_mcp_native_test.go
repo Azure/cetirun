@@ -76,6 +76,78 @@ func withNativeConnections(t *testing.T) func(*AgentReconciler, client.Client) {
 	}
 }
 
+func TestNativeConnectionsDestinationPortBounds(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "hermes", true, false, withNativeConnections(t))
+	configuration := &corev1.ConfigMap{}
+	if err := f.kube.Get(ctx, client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: "sandbox-platform"}, configuration); err != nil {
+		t.Fatal(err)
+	}
+	var document SandboxPlatformConfiguration
+	if err := json.Unmarshal([]byte(configuration.Data[SandboxPlatformConfigurationKey]), &document); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name        string
+		port        string
+		servicePort int32
+		targetPort  intstr.IntOrString
+		want        []int32
+	}{
+		{name: "default HTTPS", servicePort: 443, targetPort: intstr.FromInt32(8443), want: []int32{443, 8443}},
+		{name: "explicit HTTPS", port: "443", servicePort: 443, targetPort: intstr.FromString("https"), want: []int32{443, 8443}},
+		{name: "leading zeroes", port: "00443", servicePort: 443, targetPort: intstr.FromInt32(8443), want: []int32{443, 8443}},
+		{name: "minimum", port: "1", servicePort: 1, targetPort: intstr.FromInt32(1), want: []int32{1}},
+		{name: "unsigned range", port: "32768", servicePort: 32768, targetPort: intstr.FromInt32(65535), want: []int32{32768, 65535}},
+		{name: "maximum", port: "65535", servicePort: 65535, targetPort: intstr.FromInt32(65535), want: []int32{65535}},
+		{name: "default target", port: "65535", servicePort: 65535, want: []int32{65535}},
+		{name: "zero", port: "0", servicePort: 443},
+		{name: "above maximum", port: "65536", servicePort: 443},
+		{name: "int32 overflow", port: "2147483648", servicePort: 443},
+		{name: "would wrap to HTTPS", port: "4294967739", servicePort: 443},
+		{name: "uint64 overflow", port: "18446744073709551616", servicePort: 443},
+		{name: "negative", port: "-1", servicePort: 443},
+		{name: "nonnumeric", port: "https", servicePort: 443},
+		{name: "different Service port", port: "8443", servicePort: 443},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authority := "connections.cetirun-tools.svc.cluster.local"
+			if tc.port != "" {
+				authority += ":" + tc.port
+			}
+			f.r.ConnectionsMCPURL = "https://" + authority + "/mcp"
+			service := &corev1.Service{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: "cetirun-tools", Name: "connections"}, service); err != nil {
+				t.Fatal(err)
+			}
+			service.Spec.Ports = []corev1.ServicePort{{
+				Name: "https", Protocol: corev1.ProtocolTCP, Port: tc.servicePort, TargetPort: tc.targetPort,
+			}}
+			if err := f.kube.Update(ctx, service); err != nil {
+				t.Fatal(err)
+			}
+			destination, observed, err := f.r.nativeConnectionsDestination(ctx, f.current(t), document.Platforms[api.SandboxKata])
+			if tc.want == nil {
+				if err == nil || destination != nil || observed != nil {
+					t.Fatal("invalid port produced a managed destination")
+				}
+				return
+			}
+			if err != nil || destination == nil || observed == nil {
+				t.Fatalf("valid port was rejected: %v", err)
+			}
+			if observed.UID != service.UID || len(destination.Ports) != len(tc.want) {
+				t.Fatal("destination lost its Service identity or port set")
+			}
+			for i, port := range destination.Ports {
+				if port.Protocol != corev1.ProtocolTCP || port.Port != tc.want[i] {
+					t.Fatalf("unexpected port at %d: %+v", i, port)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeConnectionsUsesExistingCurrentSASource(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		t.Run(kind, func(t *testing.T) {
