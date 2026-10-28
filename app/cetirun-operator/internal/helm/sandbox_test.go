@@ -80,6 +80,9 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 			}
 			input.CustomAgent = custom
 			input.Context = &w.Context{ObjectIdentity: w.ObjectIdentity{Name: "custom-context-example", UID: "context-uid"}, Files: map[string]string{"AGENTS.md": "AGENTS.md"}}
+			if tc.port != nil {
+				input.LoopbackProbe = &w.LoopbackProbe{Image: "registry.example.test/cetirun-terminal@sha256:" + strings.Repeat("b", 64)}
+			}
 			input.Terminal = &w.Terminal{
 				Image: "registry.example.test/cetirun-terminal@sha256:" + strings.Repeat("b", 64),
 				Port:  7681, SessionSeconds: 1800, ServiceAccountName: "example-terminal",
@@ -166,6 +169,37 @@ func TestSandboxCustomUsesTheCommonGatewayRuntime(t *testing.T) {
 			} else if len(main.Ports) != 1 || main.Ports[0].Name != "http" || main.Ports[0].ContainerPort != *tc.port ||
 				main.StartupProbe == nil || main.ReadinessProbe == nil {
 				t.Fatal("HTTP Custom runtime did not render the Harness port and probes")
+			} else {
+				wantURL := "http://127.0.0.1:8080/healthz"
+				if main.StartupProbe.Exec == nil || main.ReadinessProbe.Exec == nil || main.StartupProbe.HTTPGet != nil ||
+					!slices.Equal(main.StartupProbe.Exec.Command, []string{"/cetirun-probe/http-probe", "--url", wantURL}) ||
+					!slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool {
+						return mount.Name == "loopback-probe" && mount.MountPath == "/cetirun-probe" && mount.ReadOnly
+					}) {
+					t.Fatal("HTTP Custom runtime did not use the fixed loopback probe contract")
+				}
+				installer := slices.IndexFunc(template.Spec.InitContainers, func(container corev1.Container) bool {
+					return container.Name == "install-loopback-probe"
+				})
+				if installer < 0 || template.Spec.InitContainers[installer].Image != input.LoopbackProbe.Image ||
+					!slices.Equal(template.Spec.InitContainers[installer].Command, []string{"/loopback-probe", "install", "/cetirun-probe/http-probe"}) {
+					t.Fatal("HTTP Custom runtime did not use the platform probe installer")
+				}
+				tamperedProbe := template.DeepCopy()
+				tamperedProbe.Spec.InitContainers[installer].Command[2] = "/tmp/probe"
+				if err := bundle.ValidateReconciledTemplate(tamperedProbe, prepared.Agent.Image, false); err == nil {
+					t.Fatal("Custom runtime accepted a modified loopback probe installer")
+				}
+				tamperedEndpoint := template.DeepCopy()
+				tamperedEndpoint.Spec.Containers[0].ReadinessProbe.Exec.Command[2] = "http://127.0.0.1:8080/other"
+				if err := bundle.ValidateReconciledTemplate(tamperedEndpoint, prepared.Agent.Image, false); err == nil {
+					t.Fatal("Custom runtime accepted a modified loopback probe endpoint")
+				}
+				tamperedTimeout := template.DeepCopy()
+				tamperedTimeout.Spec.Containers[0].StartupProbe.TimeoutSeconds = 2
+				if err := bundle.ValidateReconciledTemplate(tamperedTimeout, prepared.Agent.Image, false); err == nil {
+					t.Fatal("Custom runtime accepted a modified loopback probe timeout")
+				}
 			}
 			if tc.webUI && (!slices.ContainsFunc(main.Env, func(value corev1.EnvVar) bool {
 				return value.Name == "CETIRUN_WEB_BASE_PATH" && value.Value == "/ui/example/"

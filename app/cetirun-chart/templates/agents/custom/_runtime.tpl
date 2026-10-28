@@ -35,6 +35,11 @@ Licensed under the MIT License.
 {{- if or (not $s.context) (not $s.context.name) (ne (len $s.context.files) 1) (ne (index $s.context.files "AGENTS.md") "AGENTS.md") -}}
 {{- fail "Custom requires a controller-owned canonical AGENTS.md context source" -}}
 {{- end -}}
+{{- if $r.http -}}
+{{- if or (not $r.agent.port) (not $s.loopbackProbe) (not $s.loopbackProbe.image) -}}
+{{- fail "Custom HTTP requires a controller-owned loopback probe image and port" -}}
+{{- end -}}
+{{- end -}}
 {{- if or .Values.agentIdentity.enabled .Values.connectionsMCP.enabled -}}
 {{- fail "Custom does not support Agent Identity or CetiRun Connections MCP" -}}
 {{- end -}}
@@ -137,6 +142,19 @@ spec:
         {{- with .Values.initContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- with $r.http }}
+        - name: install-loopback-probe
+          image: {{ $s.loopbackProbe.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/loopback-probe", "install", "/cetirun-probe/http-probe"]
+          securityContext:
+            {{- toYaml $s.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml $s.helperResources | nindent 12 }}
+          volumeMounts:
+            - name: loopback-probe
+              mountPath: /cetirun-probe
+        {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: {{ $r.agent.image | quote }}
@@ -180,16 +198,16 @@ spec:
           {{- end }}
           {{- with $r.http }}
           startupProbe:
-            httpGet:
-              path: {{ .startupPath | quote }}
-              port: {{ .portName | quote }}
+            exec:
+              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .startupPath | quote }}]
             periodSeconds: 5
+            timeoutSeconds: 3
             failureThreshold: 60
           readinessProbe:
-            httpGet:
-              path: {{ .healthPath | quote }}
-              port: {{ .portName | quote }}
+            exec:
+              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .healthPath | quote }}]
             periodSeconds: 10
+            timeoutSeconds: 3
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -208,6 +226,11 @@ spec:
               mountPath: {{ printf "%s/.agents" $r.agent.home | quote }}
               subPath: current
               readOnly: true
+            {{- with $r.http }}
+            - name: loopback-probe
+              mountPath: /cetirun-probe
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -233,6 +256,11 @@ spec:
         - name: context-view
           emptyDir:
             sizeLimit: {{ $s.scratchSizeLimit | quote }}
+        {{- with $r.http }}
+        - name: loopback-probe
+          emptyDir:
+            sizeLimit: {{ $s.scratchSizeLimit | quote }}
+        {{- end }}
         {{- include "cetirun.platform.temporaryVolumes" . | nindent 8 }}
         {{- if .Values.skills.shared }}
         - name: shared-skills

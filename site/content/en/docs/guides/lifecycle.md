@@ -29,7 +29,7 @@ Probe paths differ by runtime:
 | --- | --- | --- |
 | OpenClaw | `/health` on the gateway port, 18789 by default | `/healthz` on the gateway port |
 | Hermes | `/health` on the API port, 8642 by default | `/health` on the API port |
-| Custom with a port | `/healthz` on the declared port | Readiness uses `/healthz`; no liveness probe |
+| Custom with a port | Platform static probe calls `/healthz` on the declared `127.0.0.1` port | Readiness uses the same loopback probe; no liveness probe |
 | Headless Custom | None | No HTTP probes |
 
 These are pod probes, not checks of Entra login, model entitlement, Teams

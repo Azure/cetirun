@@ -195,6 +195,12 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 				return err
 			}
 			attempt.input.Terminal = sandboxTerminalInput(platform, user, attempt.input.WorkloadName)
+			if attempt.input.CustomAgent.HTTP != nil {
+				attempt.input.LoopbackProbe = sandboxLoopbackProbeInput(platform)
+				if attempt.input.LoopbackProbe == nil {
+					return fmt.Errorf("Custom HTTP requires a platform loopback probe image")
+				}
+			}
 		}
 	}
 	if state := agent.Status.PlannedMigration; state.CanStart() {
@@ -315,6 +321,25 @@ func sandboxTerminalInput(platform, user map[string]any, workload string) *sandb
 		Image: repository + "@" + digest, Port: port, SessionSeconds: session,
 		ServiceAccountName: terminalpolicy.WorkloadName(workload),
 	}
+}
+
+// sandboxLoopbackProbeInput selects the same immutable platform image as the
+// Custom terminal, but does not depend on the terminal deployment being
+// enabled. HTTP Custom Harnesses use its static helper in their own Pod.
+func sandboxLoopbackProbeInput(platform map[string]any) *sandboxworkload.LoopbackProbe {
+	settings, _ := platform["ttyd"].(map[string]any)
+	image, _ := settings["image"].(map[string]any)
+	repository, _ := image["repository"].(string)
+	if registry, ok := platform["global"].(map[string]any); ok {
+		if value, ok := registry["registry"].(string); ok && strings.TrimSuffix(value, "/") != "" {
+			repository = strings.TrimSuffix(value, "/") + "/cetirun-terminal"
+		}
+	}
+	digest, _ := image["digest"].(string)
+	if repository == "" || !strings.HasPrefix(digest, "sha256:") {
+		return nil
+	}
+	return &sandboxworkload.LoopbackProbe{Image: repository + "@" + digest}
 }
 
 func sandboxTerminalNumber(value any) (int32, bool) {

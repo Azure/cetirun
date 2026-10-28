@@ -487,8 +487,19 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 		if main.StartupProbe != nil || main.ReadinessProbe != nil || main.LivenessProbe != nil {
 			return fmt.Errorf("headless Custom runtime cannot define HTTP probes")
 		}
-	} else if !customHTTPProbesMatch(main, custom.HTTP) {
+	} else if !customHTTPProbesMatch(main, custom.HTTP, *custom.Port) {
 		return fmt.Errorf("reconciled Custom runtime probes differ from the Harness contract")
+	}
+	if custom.HTTP != nil {
+		probe := b.input.LoopbackProbe
+		installer := slices.IndexFunc(spec.InitContainers, func(container corev1.Container) bool { return container.Name == "install-loopback-probe" })
+		if probe == nil || installer < 0 || !equality.Semantic.DeepEqual(spec.InitContainers[installer], corev1.Container{
+			Name: "install-loopback-probe", Image: probe.Image, ImagePullPolicy: corev1.PullIfNotPresent,
+			Command: []string{"/loopback-probe", "install", "/cetirun-probe/http-probe"}, SecurityContext: b.SecurityContext(),
+			Resources: b.helperResources(), VolumeMounts: []corev1.VolumeMount{{Name: "loopback-probe", MountPath: "/cetirun-probe"}},
+		}) {
+			return fmt.Errorf("reconciled Custom runtime loopback probe installer differs from the platform contract")
+		}
 	}
 	// Custom always materializes a bounded canonical view. Besides keeping the
 	// Team snapshot immutable, this guarantees an empty skills directory for
@@ -498,6 +509,9 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 		{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
 	}
 	mainMounts = append(mainMounts, corev1.VolumeMount{Name: "context-view", MountPath: custom.Home + "/.agents", SubPath: "current", ReadOnly: true})
+	if custom.HTTP != nil {
+		mainMounts = append(mainMounts, corev1.VolumeMount{Name: "loopback-probe", MountPath: "/cetirun-probe", ReadOnly: true})
+	}
 	if memoryEnabled {
 		mainMounts = append(mainMounts, runtimebindings.MemoryMounts()...)
 	}
@@ -539,6 +553,11 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 	}}}) {
 		return fmt.Errorf("reconciled Custom runtime canonical context view differs from the Sandbox scratch limit")
 	}
+	if custom.HTTP != nil && !hasExactVolume(*spec, corev1.Volume{Name: "loopback-probe", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+		SizeLimit: ptr.To(b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit),
+	}}}) {
+		return fmt.Errorf("reconciled Custom runtime loopback probe volume differs from the Sandbox scratch limit")
+	}
 	return nil
 }
 
@@ -556,13 +575,15 @@ func customContainerPorts(ports []CustomPort) []corev1.ContainerPort {
 	return result
 }
 
-func customHTTPProbesMatch(container corev1.Container, http *CustomHTTP) bool {
+func customHTTPProbesMatch(container corev1.Container, http *CustomHTTP, port int32) bool {
+	probe := func(path string, period, failures int32) *corev1.Probe {
+		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+			"/cetirun-probe/http-probe", "--url", fmt.Sprintf("http://127.0.0.1:%d%s", port, path),
+		}}}, PeriodSeconds: period, TimeoutSeconds: 3, FailureThreshold: failures}
+	}
 	return container.LivenessProbe == nil && container.StartupProbe != nil && container.ReadinessProbe != nil &&
-		container.StartupProbe.HTTPGet != nil && container.ReadinessProbe.HTTPGet != nil &&
-		container.StartupProbe.HTTPGet.Path == http.StartupPath && container.ReadinessProbe.HTTPGet.Path == http.HealthPath &&
-		container.StartupProbe.HTTPGet.Port.StrVal == http.PortName && container.ReadinessProbe.HTTPGet.Port.StrVal == http.PortName &&
-		container.StartupProbe.PeriodSeconds == 5 && container.StartupProbe.FailureThreshold == 60 &&
-		container.ReadinessProbe.PeriodSeconds == 10
+		equality.Semantic.DeepEqual(container.StartupProbe, probe(http.StartupPath, 5, 60)) &&
+		equality.Semantic.DeepEqual(container.ReadinessProbe, probe(http.HealthPath, 10, 0))
 }
 
 func equalMounts(actual, expected []corev1.VolumeMount) bool {

@@ -106,6 +106,10 @@ type Input struct {
 	// terminal. It never gives that workload HOME, model credentials, or the
 	// Agent's service account.
 	Terminal *Terminal `json:",omitempty"`
+	// LoopbackProbe identifies the immutable platform image that installs the
+	// static probe binary for Custom HTTP Harnesses. It is independent of
+	// whether the browser terminal is enabled.
+	LoopbackProbe *LoopbackProbe `json:",omitempty"`
 }
 
 // Context identifies an immutable ConfigMap and its exact canonical files.
@@ -123,6 +127,10 @@ type Terminal struct {
 	Port               int32  `json:"port"`
 	SessionSeconds     int32  `json:"sessionSeconds"`
 	ServiceAccountName string `json:"serviceAccountName"`
+}
+
+type LoopbackProbe struct {
+	Image string `json:"image"`
 }
 
 // CustomAgent is the minimum Harness-validated identity required to render a

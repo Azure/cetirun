@@ -267,6 +267,9 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 			"name":  b.input.Context.Name,
 			"files": contextFiles,
 		}
+		if probe := b.input.LoopbackProbe; probe != nil {
+			overlay[ValuesKey].(map[string]any)["loopbackProbe"] = map[string]any{"image": probe.Image}
+		}
 		port := any(nil)
 		if custom.Port != nil {
 			port = *custom.Port

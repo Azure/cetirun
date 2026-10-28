@@ -75,6 +75,9 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 		names = append(names, "logger")
 	}
 	initNames := []string{"init-home-data"}
+	if b.input.AgentType == "custom" && b.input.CustomAgent.HTTP != nil {
+		initNames = append(initNames, "install-loopback-probe")
+	}
 	if b.input.Helpers.Doctor {
 		initNames = append(initNames, "doctor")
 	}
@@ -120,7 +123,12 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 		container.RestartPolicy != nil || len(container.ResizePolicy) != 0 {
 		return fmt.Errorf("%s resources, security or extensions violate the bundle", container.Name)
 	}
-	if container.Image == "" || (container.Name != "desktop" && container.Image != image) {
+	probeImage := ""
+	if b.input.LoopbackProbe != nil {
+		probeImage = b.input.LoopbackProbe.Image
+	}
+	if container.Image == "" || (container.Name == "install-loopback-probe" && container.Image != probeImage) ||
+		(container.Name != "desktop" && container.Name != "install-loopback-probe" && container.Image != image) {
 		return fmt.Errorf("%s image differs from the native profile", container.Name)
 	}
 	for _, port := range container.Ports {
@@ -173,6 +181,13 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 		}
 		if !b.matchesInitCommand(container.Command, []string{"/bin/sh", script}) || len(container.Args) != 0 {
 			return fmt.Errorf("unapproved HOME initializer")
+		}
+	case "install-loopback-probe":
+		mounts = []corev1.VolumeMount{{Name: "loopback-probe", MountPath: "/cetirun-probe"}}
+		if b.input.AgentType != "custom" || b.input.CustomAgent == nil || b.input.CustomAgent.HTTP == nil ||
+			!slices.Equal(container.Command, []string{"/loopback-probe", "install", "/cetirun-probe/http-probe"}) ||
+			len(container.Args) != 0 || len(container.Env) != 0 || len(container.Ports) != 0 {
+			return fmt.Errorf("unapproved Custom loopback probe installer")
 		}
 	case "doctor":
 		if !b.matchesInitCommand(container.Command, []string{"openclaw", "doctor", "--fix", "--non-interactive", "--yes"}) ||
@@ -245,6 +260,11 @@ func (b *Bundle) validateVolumes(volumes []corev1.Volume) error {
 	wanted[skills.Name] = skills
 	if b.input.Helpers.Desktop {
 		wanted["tmp-desktop"] = corev1.Volume{Name: "tmp-desktop", VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit)},
+		}}
+	}
+	if b.input.AgentType == "custom" && b.input.CustomAgent.HTTP != nil {
+		wanted["loopback-probe"] = corev1.Volume{Name: "loopback-probe", VolumeSource: corev1.VolumeSource{
 			EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit)},
 		}}
 	}

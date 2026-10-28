@@ -126,6 +126,9 @@ func Build(input Input) (*Bundle, error) {
 		spec.Containers = append(spec.Containers, corev1.Container{Resources: b.helperResources()})
 	}
 	spec.InitContainers = []corev1.Container{{Resources: b.helperResources()}}
+	if input.AgentType == "custom" && input.CustomAgent.HTTP != nil {
+		spec.InitContainers = append(spec.InitContainers, corev1.Container{Resources: b.helperResources()})
+	}
 	if input.Helpers.Doctor {
 		spec.InitContainers = append(spec.InitContainers, corev1.Container{Resources: b.helperResources()})
 	}
@@ -142,7 +145,7 @@ var terminalImage = regexp.MustCompile(`^[^[:space:]@]+@sha256:[a-f0-9]{64}$`)
 
 func validateCustomAgent(input Input) error {
 	if input.AgentType != "custom" {
-		if input.CustomAgent != nil || input.GatewayAPIBase != "" || input.Context != nil {
+		if input.CustomAgent != nil || input.GatewayAPIBase != "" || input.Context != nil || input.LoopbackProbe != nil {
 			return fmt.Errorf("only Custom workloads may set a portable runtime identity")
 		}
 		return nil
@@ -154,11 +157,20 @@ func validateCustomAgent(input Input) error {
 		(custom.WebUI && custom.Port == nil) {
 		return fmt.Errorf("Custom Sandbox rendering requires a Harness-validated image, user, HOME and port mode")
 	}
+	if (custom.HTTP == nil) != (custom.Port == nil) {
+		return fmt.Errorf("Custom Sandbox HTTP bindings must match the configured port mode")
+	}
 	if input.GatewayKey == nil || input.GatewayAPIBase == "" || input.Context == nil ||
 		input.Context.Name == "" || input.Context.UID == "" ||
 		len(validation.IsDNS1123Subdomain(input.Context.Name)) != 0 ||
 		len(input.Context.Files) != 1 || input.Context.Files["AGENTS.md"] != "AGENTS.md" {
 		return fmt.Errorf("Custom Sandbox rendering requires typed AI Gateway and canonical context bindings")
+	}
+	if custom.HTTP != nil && (input.LoopbackProbe == nil || !terminalImage.MatchString(input.LoopbackProbe.Image)) {
+		return fmt.Errorf("Custom HTTP requires an immutable platform loopback probe image")
+	}
+	if custom.HTTP == nil && input.LoopbackProbe != nil {
+		return fmt.Errorf("headless Custom cannot configure a loopback probe")
 	}
 	return nil
 }
@@ -237,7 +249,7 @@ func validateControls(input Input) error {
 	}
 	volumes := map[string]bool{}
 	for _, volume := range c.Volumes {
-		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills", "empty-skills", "context", "context-view", "memory-assets"}, volume.Name) {
+		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills", "empty-skills", "context", "context-view", "memory-assets", "loopback-probe"}, volume.Name) {
 			return fmt.Errorf("identity volumes conflict with protected mounts")
 		}
 		volumes[volume.Name] = true

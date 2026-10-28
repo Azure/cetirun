@@ -140,6 +140,15 @@ Agent CRD. Set `spec.helm.values.ttyd.enabled: false` to disable an instance's
 terminal. Charts from before this terminal integration keep their previous
 Custom behavior.
 
+For a Custom Agent with an HTTP port, the same immutable terminal image also
+installs the platform static loopback probe into the Agent Pod. Startup and
+readiness call it against the declared `127.0.0.1` endpoint, so the main
+NetworkPolicy can continue to deny kubelet host and remote-node ingress. This
+probe is present even when the browser Terminal is disabled. Operators must
+provide a digest-pinned `ttyd.image` and update the terminal helper image, the
+runtime Chart, and the Operator together; an older helper image cannot satisfy
+the Custom HTTP contract.
+
 The terminal opens a Kubernetes exec session in the Agent's main container.
 Its entrypoint checks that container for `zsh`, then `bash`, then `sh`; it
 reports a missing terminal and fails if none can run. It repeats discovery

@@ -812,6 +812,17 @@ func newUnreconciledSandboxRuntimeFixture(t *testing.T, native bool, skills []st
 	r.Client, r.APIReader = kube, kube
 	r.OperatorSAName, r.ChartRegistry, r.ChartVersion = "cetirun-operator", "registry.example.com", chrt.Metadata.Version
 	r.DefaultModel, r.IstioGateway = testSharedModelOne, "platform/ingress"
+	if kind == "custom" {
+		// Custom HTTP needs the immutable probe helper even while its separate
+		// browser terminal Deployment remains disabled.
+		r.CetiRunHelmValues = map[string]any{"ttyd": map[string]any{
+			"enabled": false,
+			"image": map[string]any{
+				"repository": "registry.example.test/cetirun-terminal",
+				"digest":     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+		}}
+	}
 	capabilities := input.Input.Resolution.Capabilities
 	capabilities.HomeAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}
 	capabilities.AuthenticatedIngress = true

@@ -193,7 +193,7 @@ func validateExpectedInventory(spec corev1.PodSpec) error {
 		allowed    []string
 	}{
 		{spec.Containers, []string{"cetirun", "logger", "desktop"}},
-		{spec.InitContainers, []string{"init-home-data", "doctor", "retire-copilot-sign-in", "retire-direct-model-auth"}},
+		{spec.InitContainers, []string{"init-home-data", "install-loopback-probe", "doctor", "retire-copilot-sign-in", "retire-direct-model-auth"}},
 	} {
 		for _, container := range group.containers {
 			sc := container.SecurityContext

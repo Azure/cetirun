@@ -178,6 +178,7 @@ func TestCustomUsesTheCommonSandboxGatewayRuntimeContract(t *testing.T) {
 		HTTP:  &w.CustomHTTP{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"},
 	}
 	input.Context = &w.Context{ObjectIdentity: w.ObjectIdentity{Name: "custom-context-example", UID: "context-uid"}, Files: map[string]string{"AGENTS.md": "AGENTS.md"}}
+	input.LoopbackProbe = &w.LoopbackProbe{Image: "registry.example.test/cetirun-terminal@sha256:" + strings.Repeat("b", 64)}
 	bundle, err := w.Build(input)
 	if err != nil {
 		t.Fatal(err)
@@ -195,9 +196,11 @@ func TestCustomUsesTheCommonSandboxGatewayRuntimeContract(t *testing.T) {
 		t.Fatalf("Custom runtime did not retain the common Gateway and Harness contract: %#v", runtime)
 	}
 	for name, mutate := range map[string]func(*w.Input){
-		"no gateway":       func(i *w.Input) { i.GatewayKey = nil },
-		"unverified home":  func(i *w.Input) { i.CustomAgent.Home = "/home/other" },
-		"invalid web mode": func(i *w.Input) { i.CustomAgent.WebUI, i.CustomAgent.Port = true, nil },
+		"no gateway":        func(i *w.Input) { i.GatewayKey = nil },
+		"unverified home":   func(i *w.Input) { i.CustomAgent.Home = "/home/other" },
+		"invalid web mode":  func(i *w.Input) { i.CustomAgent.WebUI, i.CustomAgent.Port = true, nil },
+		"no loopback probe": func(i *w.Input) { i.LoopbackProbe = nil },
+		"HTTP without port": func(i *w.Input) { i.CustomAgent.Port = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := input

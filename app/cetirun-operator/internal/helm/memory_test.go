@@ -211,6 +211,9 @@ func customMemorySandboxInput(t *testing.T, port *int32, webUI, emptySkills bool
 	}
 	input.CustomAgent = custom
 	input.Context = &w.Context{ObjectIdentity: w.ObjectIdentity{Name: "custom-context-example", UID: "context-uid"}, Files: map[string]string{"AGENTS.md": "AGENTS.md"}}
+	if port != nil {
+		input.LoopbackProbe = &w.LoopbackProbe{Image: "registry.example.test/cetirun-terminal@sha256:" + strings.Repeat("a", 64)}
+	}
 	if emptySkills {
 		input.Skills, input.SkillsMode = nil, w.SkillsModeEmpty
 	}
