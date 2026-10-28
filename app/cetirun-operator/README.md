@@ -2496,6 +2496,51 @@ denied and allowed controls from outside the guest. This can check the predicted
 counterexample, not qualify hostname support; a different hostname-aware backend
 still needs a separately agreed design and qualification.
 
+#### Observed-SNI egress core candidate
+
+[`internal/egresscapture`](internal/egresscapture/config.go) builds **egress-only
+candidate** Envoy static resources and IPv4/IPv6 capture arguments. It is not wired
+into production; `blockedFQDNs` capability rejection remains in place pending the
+shared controlled-Envoy integration and scoped acceptance. It does not add a Pod
+builder, init executor, policy field or Cilium policy.
+
+An empty list returns no resources or commands. Otherwise, a dedicated proxy UID
+1337 is exempt from Pod-local TCP capture to port 15001. Agent/helper processes
+must use different nonroot UIDs with capabilities dropped; only a controlled init
+may have NET_ADMIN in that Pod network namespace. Capture commands never flush
+existing rules and fail if their chain already exists. They are not a hot-update
+or cleanup executor. The caller must reconcile removal too, not leave old capture
+installed after the list becomes empty.
+
+The candidate uses `original_dst`, stock `tls_inspector`, exact
+`requested_server_name` DENY matching, and an ORIGINAL_DST TCP proxy. Names are
+validated as lowercase ASCII hostnames; matching is the stock exact,
+case-sensitive metadata comparison, not suffix matching or DNS resolution.
+UDP is untouched. A separate terminal filter chain rejects the loopback capture
+destination **before** creating an upstream connection, including silent direct
+application sockets; the same port at a remote destination is not excluded.
+
+The inspection window is explicitly **1 second**, with continuation afterward.
+Server-first TCP therefore incurs that wait. A delayed/incomplete ClientHello
+can continue without SNI inspection, and no-SNI/nonmatching traffic retains its
+L3/L4 treatment. This is observed-SNI filtering, **not full hostname enforcement**.
+The exported `IPv4TimeoutCounter` and `IPv6TimeoutCounter` identify uninspected
+listener timeouts. TLS inspector's SNI/TLS counters give separate observations
+but can be process-aggregate in a shared Envoy. RBAC `allowed` means only “not
+denied,” never “hostname inspected and allowed.” These counters must remain
+observable in the shared sidecar integration.
+
+The local candidate does not prove equivalence with old deployed proxies or
+qualify Cilium, Service translation, Kata, startup/readiness, mutation or removal.
+Its caller owns bootstrap/admin configuration, reserved UID/port validation,
+availability of both loopback families, Pod admission, lifecycle and preservation
+of runtime-aware capability checks.
+
+```bash
+go -C app/cetirun-operator test ./internal/egresscapture -count=1
+go -C app/cetirun-operator vet ./internal/egresscapture
+```
+
 ### Offline checks
 
 With the documented pinned tools and dependencies already installed:
