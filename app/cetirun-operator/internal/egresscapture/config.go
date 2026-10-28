@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// Package egresscapture builds an observed-SNI egress candidate. It does not
-// install capture, authorize a Pod, or enable any production capability.
+// Package egresscapture builds observed-SNI controls for registered runtimes.
+// Builders do not themselves install capture or authorize a Pod.
 package egresscapture
 
 import (

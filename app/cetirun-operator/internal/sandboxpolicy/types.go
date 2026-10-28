@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/egresscapture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
@@ -126,13 +127,14 @@ type EntraIdentity struct {
 }
 
 type Platform struct {
-	Adapter                AdapterRegistration       `json:"adapter"`
-	Topology               Topology                  `json:"topology"`
-	Grants                 []ApprovedGrant           `json:"grants,omitempty"`
-	Identities             []ApprovedIdentity        `json:"identities,omitempty"`
-	KubernetesAudience     string                    `json:"kubernetesAudience,omitempty"`
-	TokenExpirationSeconds int64                     `json:"tokenExpirationSeconds,omitempty"`
-	IngressMTLS            *ingressmtls.Registration `json:"ingressMTLS,omitempty"`
+	Adapter                AdapterRegistration         `json:"adapter"`
+	Topology               Topology                    `json:"topology"`
+	Grants                 []ApprovedGrant             `json:"grants,omitempty"`
+	Identities             []ApprovedIdentity          `json:"identities,omitempty"`
+	KubernetesAudience     string                      `json:"kubernetesAudience,omitempty"`
+	TokenExpirationSeconds int64                       `json:"tokenExpirationSeconds,omitempty"`
+	IngressMTLS            *ingressmtls.Registration   `json:"ingressMTLS,omitempty"`
+	EgressSNI              *egresscapture.Registration `json:"egressSNI,omitempty"`
 }
 
 type CompileInput struct {
@@ -157,6 +159,8 @@ type Plan struct {
 	Identity           IdentityPlan                `json:"identity"`
 	Resources          []unstructured.Unstructured `json:"resources"`
 	IngressMTLS        *ingressmtls.Plan           `json:"ingressMTLS,omitempty"`
+	EgressSNI          *egresscapture.Plan         `json:"egressSNI,omitempty"`
+	ProxyDigest        string                      `json:"proxyDigest,omitempty"`
 }
 
 type NetworkPlan struct {

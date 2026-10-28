@@ -23,6 +23,8 @@
                 "executionHeld": {"type": "boolean"},
                 "reconciled": {"const": true},
                 "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
+                "egressSNI": {"const": true, "description": "Internal compiler-owned observed-SNI capture; never a user policy override"},
+                "managedInitContainers": {"type": "array", "minItems": 2, "maxItems": 2, "description": "Exact managed Envoy and trusted capture initializer prefix"},
                 "skillsMode": {
                     "const": "empty",
                     "description": "Internal native empty-selection source; omitted for the existing skills PVC path"

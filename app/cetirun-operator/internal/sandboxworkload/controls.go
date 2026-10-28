@@ -21,6 +21,6 @@ func ControlsFromPlan(plan sandboxpolicy.Plan) (Controls, error) {
 		ServiceAccountName: plan.Identity.ServiceAccountName, Volumes: plan.Identity.Volumes,
 		VolumeMounts: plan.Identity.VolumeMounts, Environment: plan.Identity.Env, Objects: plan.Resources,
 		PodLabels:   map[string]string{sandboxpolicy.AgentUIDLabel: string(plan.Binding.AgentUID)},
-		IngressMTLS: plan.IngressMTLS,
+		IngressMTLS: plan.IngressMTLS, EgressSNI: plan.EgressSNI, ProxyDigest: plan.ProxyDigest,
 	})
 }

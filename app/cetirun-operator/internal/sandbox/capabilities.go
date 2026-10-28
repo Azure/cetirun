@@ -107,7 +107,6 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 	}{
 		{"perContainerResourceLimits", capabilities.PerContainerResourceLimits},
 		{"requirePerContainerResourceLimits", capabilities.RequirePerContainerResourceLimits},
-		{"blockedFQDNs", capabilities.BlockedFQDNs},
 		{"kubernetesAccess", capabilities.KubernetesAccess},
 		{"entraID", capabilities.EntraID},
 		{"enforcementObservation", capabilities.EnforcementObservation},
@@ -175,16 +174,6 @@ func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 func CheckNativeNetworkPolicy(network cetirunv1alpha1.AgentPolicyNetwork) field.ErrorList {
 	root := field.NewPath("spec", "network")
 	var errs field.ErrorList
-	for _, control := range []struct {
-		path      *field.Path
-		requested bool
-	}{
-		{root.Child("blockedFQDNs"), len(network.BlockedFQDNs) != 0},
-	} {
-		if control.requested {
-			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
-		}
-	}
 	checkPorts := func(path *field.Path, ports []cetirunv1alpha1.AgentPolicyPort) {
 		for i, port := range ports {
 			if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP &&
@@ -286,7 +275,7 @@ func CheckCompatibility(sandbox cetirunv1alpha1.SandboxSpec, policy cetirunv1alp
 		errs = append(errs, field.Required(root.Child("blockedPorts"), "destination-port blocking is not qualified"))
 	}
 	if len(policy.Network.BlockedFQDNs) > 0 && !capabilities.BlockedFQDNs {
-		errs = append(errs, field.Required(root.Child("blockedFQDNs"), "full hostname blocking is not qualified"))
+		errs = append(errs, field.Required(root.Child("blockedFQDNs"), "observed-SNI blocking is not registered"))
 	}
 	switch policy.Network.Ingress.Mode {
 	case cetirunv1alpha1.AgentPolicyIngressAuthenticated:

@@ -81,6 +81,9 @@ func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 	if policy.Network.Ingress.RequireMTLS {
 		return fmt.Errorf("%w: managed ingress mTLS requires the common executor", sandboxpolicy.ErrUnsupportedControl)
 	}
+	if len(policy.Network.BlockedFQDNs) != 0 {
+		return fmt.Errorf("%w: observed-SNI capture requires the common executor", sandboxpolicy.ErrUnsupportedControl)
+	}
 	if slices.ContainsFunc(policy.Network.BlockedPorts, func(port api.AgentPolicyPort) bool {
 		return port.Protocol == corev1.ProtocolSCTP
 	}) {

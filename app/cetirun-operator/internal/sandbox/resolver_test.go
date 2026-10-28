@@ -479,7 +479,7 @@ func TestDefaultSandboxChangeDoesNotReselectExistingAgent(t *testing.T) {
 		t.Fatal("adding/changing an unselected default changed the existing Agent")
 	}
 	input.Resources.AgentPolicies["normal"].Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
-	if _, err := Resolve(input); err == nil || !strings.Contains(err.Error(), "full hostname") {
-		t.Fatalf("unsupported full hostname blocking must fail explicitly: %v", err)
+	if _, err := Resolve(input); err == nil || !strings.Contains(err.Error(), "observed-SNI") {
+		t.Fatalf("unregistered observed-SNI blocking must fail explicitly: %v", err)
 	}
 }

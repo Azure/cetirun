@@ -101,6 +101,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err := r.sandboxPreparationInput(ctx, attempt); err != nil {
 		return nil, err
 	}
+	if err := sandboxEgressSNIInputs(attempt); err != nil {
+		return nil, err
+	}
 	if err := r.sandboxIngressMTLSInputs(ctx, attempt); err != nil {
 		return nil, fmt.Errorf("%w: %w", errSandboxIngressMTLS, err)
 	}
