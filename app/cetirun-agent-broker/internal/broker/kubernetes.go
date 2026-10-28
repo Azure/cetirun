@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 var errConflict = errors.New("record update conflict")
@@ -129,9 +131,10 @@ type tokenReview struct {
 }
 
 type workloadIdentity struct {
-	Agent  Agent
-	PodUID string
-	SAUID  string
+	CredentialPolicy *agenttools.CredentialPolicyReference
+	Agent            Agent
+	PodUID           string
+	SAUID            string
 }
 
 type kubeClient struct {
@@ -380,7 +383,8 @@ func tokenReviewAudienceAccepted(audiences []string, expected string) bool {
 
 func agentFromDocument(document agentDocument) Agent {
 	agent := Agent{
-		Deleting: document.Metadata.DeletionTimestamp != nil, RuntimeType: document.Spec.Agent.Type,
+		PolicyManaged: agentDocumentSandboxRequested(document),
+		Deleting:      document.Metadata.DeletionTimestamp != nil, RuntimeType: document.Spec.Agent.Type,
 		Name:               document.Metadata.Name,
 		UnsupportedRuntime: agentDocumentSandboxRequested(document) || (document.Spec.Agent.Type != "hermes" && document.Spec.Agent.Type != "openclaw"),
 		UID:                document.Metadata.UID,

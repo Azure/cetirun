@@ -59,8 +59,9 @@ The three internal routes are registered only on the direct mTLS listener:
 - `POST /internal/v1/service-credentials/issue`
 
 Input contains `callerProof`, `connectionId`, `service`, `contractVersion`, and
-(for issuance) connection/binding revisions. It contains no REST arguments or
-operation policy. The Broker independently TokenReviews the Pod-bound proof,
+(for issuance) connection/binding revisions and the governed `credentialPolicy`
+reference (revision, record UID and resource version). It contains no REST
+arguments or operation policy. The Broker independently TokenReviews the Pod-bound proof,
 checks the live Pod and ServiceAccount, follows the namespace Agent owner
 reference to a named Agent GET, validates its immutable UID, owner and binding,
 and resolves the service from the trusted profile. Identity, connection and
@@ -84,6 +85,63 @@ chart's `workloadTokenAudience` and the Operator chart's `connectionsMCP.audienc
 All three default to `cetirun-connections-mcp`; a custom audience must match across
 all three releases because both MCP and the Broker independently verify the
 Agent's projected workload token.
+
+## Credential policy execution and readback
+
+The Operator's existing authenticated mesh API also exposes `PUT`, `GET` and
+`DELETE /operator/v1/instances/{uid}/credential-policy`. This is not a token
+endpoint. The versioned `credential-policy-v3` projection binds the Agent, Team
+and AgentPolicy UIDs, trusted owner tenant/object IDs, canonical Agent client
+and principal IDs, and the requested/allowed/required identity controls.
+`azure-resource-manager` maps only to the fixed `azure_arm` profile.
+
+PUT independently reads the live Agent, its selected Team and accepted
+AgentPolicy, then conditionally writes a credential-free, exactly Agent-owned
+Secret in the Broker namespace, using its existing Secret permissions. It
+requires no Secret access or token mount in the Agent namespace. It neither
+provisions an identity nor creates a Connection or ConnectionBinding.
+Its 204 acknowledgment is **not** applied
+evidence. GET reads the actual record and rechecks current authorization before
+returning its UID, resource version and projection revision. Desired status,
+legacy bearer issuance and provider token acquisition cannot supply this
+readback. No provider call is made by application or readback.
+
+Readback also requires an available supported executor. **The current native
+Sandbox runtime remains unsupported by Broker workload authorization.** Its
+stored restriction therefore cannot produce ready readback:
+`dependency_unavailable` leaves `CredentialPolicyRevision` empty and aggregate
+`PolicyApplied` pending. This change does not approve native projections,
+install Broker namespace RBAC for Sandbox, or lift any runtime hold. A generic
+Entra workload token projection is distinct from Connections' Pod-bound proof.
+
+For governed Azure app-only and Azure/Microsoft delegated acquisition, the real
+check/issue path requires the stored projection to match current sources.
+Unaccepted, removed, changed or unreadable inputs fail before acquiring a
+credential. The policy revision and record UID/resource version are pinned along
+with Connection and Binding revisions and rechecked after acquisition;
+Connections also compares the policy revision with
+the authenticated Agent's status before execution. A governed ARM-only policy
+does not authorize Microsoft Graph. Existing non-governed provider integrations
+keep their Connection/Binding authorization.
+
+Connection discovery lists owned metadata; it does not read ARM credential-policy
+evidence or certify credential authorization. Missing, revoked, stale or
+unavailable ARM evidence is not a list-wide dependency for GitHub/Google.
+Existing owner, binding and runtime filters remain unchanged; identity-backed
+service check/issue still requires current credential-policy evidence.
+
+After an uncertain PUT, read before retrying; an identical stored projection is
+not rewritten. DELETE uses exact Agent ownership and Secret UID/resource-version
+preconditions and confirms absence. The existing authorization cleanup route
+removes this record before its other Agent-scoped records; the Operator still
+waits for Broker cleanup before directory deletion. Failed cleanup remains
+retryable. Source checks reject suspended/deleting Agents even if an old record
+is present. None of this revokes already issued provider tokens or retries a
+provider operation whose execution result is unknown.
+
+The internal Broker/Connections wire version is `2026-10-28`; deploy matching
+Broker, Connections and Operator builds. There is no legacy policy receipt
+adapter or migration reader.
 
 ## Availability and identity modes
 
@@ -202,14 +260,17 @@ a fixed operation catalog. Google's testing-mode token expiry still applies.
 | Record | Storage | Owner |
 | --- | --- | --- |
 | ConnectionBinding | Agent workload namespace | Agent UID |
+| Credential policy enforcement (no credentials) | Broker namespace | Agent UID |
 | Independent Azure Connection | Agent workload namespace | Agent UID |
 | Credential-free delegated connection reference | Agent workload namespace | Agent UID |
 | Personal OAuth Connection | Broker credential namespace | Portal owner |
 | OAuth client configuration / Broker TLS | Broker namespace | Platform |
 
-Per-Agent storage is mandatory for this contract. There is no migration command
-or compatibility reader for the previous grant model. The Broker resolves the
-namespace from live Agent state and checks its owner reference. Encrypted
+Per-Agent workload namespace storage remains mandatory for ConnectionBindings
+and independent Connections. The credential-free policy record instead uses the
+Broker namespace, still with exact Agent ownership. There is no migration
+command or compatibility reader for the previous grant model. The Broker resolves
+the workload namespace from live Agent state and checks its owner reference. Encrypted
 records bind owner, immutable IDs and revisions. Labels and display snapshots
 support inventory only and cannot establish authority. Workload authentication
 uses namespace ownership and named Agent reads, without a cluster-wide Agent

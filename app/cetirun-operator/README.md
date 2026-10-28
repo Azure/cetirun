@@ -95,6 +95,32 @@ registration revision must represent qualified runtime/chart/topology/grant
 inventory, not merely the existence of a RuntimeClass.
 An observation validator checks an adapter's input; it does not generate evidence.
 
+### Credential policy evidence
+
+Agent Identity's credential projection uses the existing
+`status.policy.enforcement.credential.desiredRevision` and
+`status.agentIdentity.credentialPolicyRevision` fields. The latter is written
+only after typed Broker readback of an actual owned enforcement record matches
+current policy, owner and canonical identity references. The
+`CredentialPolicyReady` condition distinguishes that evidence from directory
+identity readiness. Merely requesting Agent Identity, copying a desired
+revision, or obtaining a bearer token cannot complete aggregate `PolicyApplied`.
+
+The controller reads before applying and reads again after a successful write;
+lost replies, invalid readback and status conflicts do not become evidence.
+Policy/identity drift clears the applied revision. Removing Agent Identity
+does not satisfy the identity-free policy until the existing identity cleanup
+finishes, including Broker revocation before directory deletion.
+
+The current Broker still rejects native Sandbox workload authorization and
+does not issue ready readback for an unsupported executor. This patch therefore
+does **not** enable native Agent Identity or lift its aggregate readiness hold.
+Native projection/ServiceAccount integration and platform qualification remain
+separate prerequisites. Generic Entra workload projections do not establish a
+Connections MCP identity. See the
+[Broker contract](../cetirun-agent-broker/README.md#credential-policy-execution-and-readback)
+for installation, readback, current-source matching and cleanup boundaries.
+
 ### Common Sandbox reconciliation (explicit opt-in)
 
 With `sandboxSources.nativeExecution: true`, new OpenClaw and Hermes Agents use the

@@ -17,6 +17,13 @@ Microsoft Entra Agent Identity is required for independent Azure access and the
 Azure/Microsoft delegated flow. GitHub supports personal OAuth and shared App
 connections; Google uses personal connections.
 
+For a policy-governed Agent, directory identity readiness is not aggregate
+`PolicyApplied`. The Operator also requires current, owner- and identity-bound
+credential-service readback; requested or desired revisions are not evidence.
+The Broker's existing unsupported-Sandbox gate remains in place, so storing a
+credential restriction does not enable native Agent Identity. Generic Entra
+workload projection and Connections' Pod-bound workload proof remain distinct.
+
 ## Independent Azure access
 
 1. Enable Agent Identity on a supported instance and wait for it to be Ready.

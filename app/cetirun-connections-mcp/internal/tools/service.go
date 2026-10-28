@@ -87,6 +87,9 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 			if check.Connection.Identity != nil {
 				attributes = append(attributes, "executor_principal", check.Connection.Identity.PrincipalID)
 			}
+			if check.CredentialPolicy != nil {
+				attributes = append(attributes, "credential_policy_revision", agenttools.AuditText(check.CredentialPolicy.Revision, 80))
+			}
 		}
 		if status != 0 {
 			attributes = append(attributes, "provider_status", status, "provider_request_ids", requestIDs)
@@ -165,7 +168,9 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 	if !validAuthorization(check, caller, service, input.ConnectionID) {
 		return nil, &ToolError{Code: "authorization_changed"}
 	}
-	issued, e := s.broker.Issue(ctx, brokerclient.NewRequest(caller.Proof, service, input.ConnectionID, &check.Binding.Revision, &check.Connection.Revision))
+	issueRequest := brokerclient.NewRequest(caller.Proof, service, input.ConnectionID, &check.Binding.Revision, &check.Connection.Revision)
+	issueRequest.CredentialPolicy = check.CredentialPolicy
+	issued, e := s.broker.Issue(ctx, issueRequest)
 	if e != nil {
 		return nil, brokerError(e)
 	}
@@ -195,6 +200,14 @@ func brokerError(err error) error {
 }
 func validAuthorization(check brokerclient.CheckResponse, caller identity.Caller, service, connectionID string) bool {
 	c, b := check.Connection, check.Binding
+	if agenttools.UsesAgentIdentity(c.Provider) && (caller.PolicyManaged || caller.CredentialPolicyRevision != "") ||
+		check.CredentialPolicy != nil {
+		if !caller.PolicyManaged || !agenttools.UsesAgentIdentity(c.Provider) || service != "azure_arm" ||
+			!agenttools.ValidCredentialPolicyRevision(caller.CredentialPolicyRevision) ||
+			!check.CredentialPolicy.Valid() || check.CredentialPolicy.Revision != caller.CredentialPolicyRevision {
+			return false
+		}
+	}
 	p, ok := agenttools.LookupService(service)
 	if !ok || check.ContractVersion != agenttools.ContractVersion || check.InstanceUID != caller.InstanceUID || check.Service != service || c.ID != connectionID || c.Status != "connected" || c.Revision == 0 || c.Provider != p.Provider || !contains(c.Services, service) || b.ID == "" || b.Revision == 0 || !b.Enabled || b.InstanceUID != caller.InstanceUID || b.ConnectionID != c.ID || !contains(b.Services, service) {
 		return false

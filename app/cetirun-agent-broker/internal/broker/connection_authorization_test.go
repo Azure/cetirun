@@ -694,6 +694,9 @@ func TestOperatorCleanupBeforeNamespaceProvisioningIsIdempotent(t *testing.T) {
 	f.secrets = map[string]secretDocument{}
 	original := f.server.store.client.Transport
 	f.server.store.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces/credentials/secrets/"+toolRecordName(credentialPolicyRecord, f.agent.Metadata.UID) {
+			return securityJSONResponse(t, 404, map[string]any{}), nil
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/namespaces/credentials/secrets/agent-authorization-") {
 			return securityJSONResponse(t, 404, map[string]any{}), nil
 		}

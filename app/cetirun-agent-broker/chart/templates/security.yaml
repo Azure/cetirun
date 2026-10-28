@@ -37,9 +37,9 @@ spec:
       to:
         - operation:
             ports: ["8080"]
-            methods: ["DELETE"]
+            methods: ["GET", "PUT", "DELETE"]
             # Istio StringMatch supports a trailing prefix wildcard. The Go
-            # ServeMux still exposes only the exact bounded cleanup route.
+            # ServeMux exposes only bounded cleanup and credential-policy routes.
             paths: ["/operator/v1/instances/*"]
     - from:
         - source:

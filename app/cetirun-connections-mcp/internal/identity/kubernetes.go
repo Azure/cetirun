@@ -37,8 +37,10 @@ type Kubernetes struct {
 }
 
 type Caller struct {
-	Proof       string
-	InstanceUID string
+	PolicyManaged            bool
+	CredentialPolicyRevision string
+	Proof                    string
+	InstanceUID              string
 }
 
 type tokenReview struct {
@@ -91,11 +93,13 @@ type agent struct {
 		Suspended bool `json:"suspended"`
 	} `json:"spec"`
 	Status struct {
-		Phase         string `json:"phase"`
-		Namespace     string `json:"namespace"`
+		Policy        *json.RawMessage `json:"policy"`
+		Phase         string           `json:"phase"`
+		Namespace     string           `json:"namespace"`
 		AgentIdentity *struct {
-			Phase    string `json:"phase"`
-			ClientID string `json:"clientId"`
+			CredentialPolicyRevision string `json:"credentialPolicyRevision"`
+			Phase                    string `json:"phase"`
+			ClientID                 string `json:"clientId"`
 		} `json:"agentIdentity"`
 	} `json:"status"`
 }
@@ -197,7 +201,11 @@ func (k *Kubernetes) Authenticate(ctx context.Context, bearer string) (Caller, e
 	if item.Metadata.Name != owner.Name || item.Metadata.UID != owner.UID || item.Metadata.DeletionTimestamp != nil || item.Spec.Suspended || item.Status.Phase != "Ready" || item.Status.Namespace != namespace || instanceServiceName(item.Metadata.Name) != serviceAccountName {
 		return Caller{}, ErrUnauthenticated
 	}
-	return Caller{Proof: bearer, InstanceUID: item.Metadata.UID}, nil
+	caller := Caller{Proof: bearer, InstanceUID: item.Metadata.UID, PolicyManaged: item.Status.Policy != nil}
+	if item.Status.AgentIdentity != nil {
+		caller.CredentialPolicyRevision = item.Status.AgentIdentity.CredentialPolicyRevision
+	}
+	return caller, nil
 }
 
 func (k *Kubernetes) getWorkload(ctx context.Context, path string, result any) error {

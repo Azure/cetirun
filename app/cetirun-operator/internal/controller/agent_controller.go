@@ -427,6 +427,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if agentIdentityRequested(instance) && (instance.Status.AgentIdentity == nil || instance.Status.AgentIdentity.ObservedGeneration != instance.Generation) {
 		status := ensureAgentIdentityStatus(instance)
 		status.Phase = cetirunv1alpha1.AgentIdentityPhaseProvisioning
+		status.CredentialPolicyRevision = ""
 		status.ObservedGeneration = instance.Generation
 		status.Reason = ""
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
@@ -769,6 +770,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
 			now := metav1.Now()
 			instance.Status.AgentIdentity.LastVerifiedTime = &now
+		}
+		if instance.Status.Policy != nil {
+			// Broker readback uses the persisted canonical identity, never the
+			// in-memory result of a directory request.
+			if err := r.updateStatus(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 

@@ -386,6 +386,22 @@ boundary:
 go -C app/cetirun-operator test ./internal/runtimebindings ./internal/helm ./internal/controller -run 'TestCustomAgentIdentity' -count=1
 ```
 
+Credential policy application/readback has focused offline regressions:
+
+```bash
+go -C app/internal test ./agenttools -run 'TestCredentialPolicy' -count=1
+go -C app/cetirun-agent-broker test ./internal/broker -run 'TestCredentialPolicy' -count=1
+go -C app/cetirun-connections-mcp test ./internal/tools -run 'TestCredentialPolicy' -count=1
+go -C app/cetirun-operator test ./internal/controller -run 'TestCredentialPolicy' -count=1
+```
+
+They cover owned storage, current-policy/identity matching, failed and lost
+replies, read-before-retry, status conflicts, removal and the provider execution
+boundary. Operator consumer tests use a synthetic supported executor;
+Broker tests separately verify that the current native Sandbox gate remains
+unavailable, even after a restriction is stored. These tests do not qualify
+native Entra, a live identity, provider permissions or runtime activation.
+
 `npm --prefix app/cetirun-portal/web run dev` starts a local frontend server.
 Its API proxy expects a backend on localhost and injects development identity
 headers. Keep it local; it is not a production authentication configuration.

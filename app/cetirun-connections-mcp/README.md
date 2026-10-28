@@ -67,6 +67,18 @@ verification and independently checks the owner-scoped connection and Agent bind
 that Broker check and issuance responses agree on connection and binding
 revisions before sending a request.
 
+For governed Agent Identity acquisition, they must also agree on the current
+credential-policy revision read from the authenticated Agent, and on the
+enforcement record UID/resource version. Recreating an identical record does
+not reuse an earlier check response. The Broker
+independently validates an owned enforcement record against the live Agent,
+Team and AgentPolicy before and after credential acquisition. Missing, changed
+or unreadable evidence stops execution; an ARM-only policy cannot be used for
+Graph OBO. This does not create a Connection, authorize a provider operation or
+enable native Sandbox workload identity. The Broker's current unsupported-native
+gate still prevents ready credential readback. See the
+[credential policy contract](../cetirun-agent-broker/README.md#credential-policy-execution-and-readback).
+
 Workload authentication failures return HTTP 401 with `unauthenticated` when
 the proof is invalid or its live binding is missing, changed or inactive.
 Kubernetes API timeouts, failed API requests, invalid responses, and
