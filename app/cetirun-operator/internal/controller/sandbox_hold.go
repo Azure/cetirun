@@ -135,7 +135,9 @@ func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent 
 		failures = append(failures, err)
 	}
 	if recorded || reconciledUncertain {
-		failures = append(failures, r.stopReconciledAuxiliaries(ctx, agent))
+		if err := r.stopReconciledAuxiliaries(ctx, agent); err != nil {
+			failures = append(failures, err)
+		}
 	}
 	if prepare {
 		if len(failures) == 0 {
