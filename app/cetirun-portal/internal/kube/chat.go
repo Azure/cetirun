@@ -67,7 +67,10 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 		target.Reason = "sandbox_held"
 		return target, nil
 	}
-	if newRequest && agent.Status.ObservedGeneration != agent.Generation || !meta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionAgentConfigReady) {
+	// Common execution is checked against the complete current intent below.
+	// Request-only updates can advance raw status independently of its retained
+	// execution generation, so neither raw status comparison proves freshness.
+	if newRequest && !common && agent.Status.ObservedGeneration != agent.Generation || !meta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionAgentConfigReady) {
 		return target, nil
 	}
 	if !meta.IsStatusConditionTrue(agent.Status.Conditions, chataccess.Condition) {

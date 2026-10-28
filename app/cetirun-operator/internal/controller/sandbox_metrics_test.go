@@ -429,6 +429,12 @@ func TestSandboxMetricsReportedStatus(t *testing.T) {
 		{"other condition", func(a *api.Agent) { a.Status.Conditions[0].Type = api.ConditionReady }, "Unknown/ConditionMissing"},
 		{"old generation", func(a *api.Agent) { a.Status.Conditions[0].ObservedGeneration-- }, "Unknown/ConditionStale"},
 		{"future generation", func(a *api.Agent) { a.Status.Conditions[0].ObservedGeneration++ }, "Unknown/ConditionStale"},
+		{"current raw failure after request-only Team change", func(a *api.Agent) {
+			a.Status.TeamChange = &api.TeamChangeStatus{Phase: api.TeamChangeFailed, SourceGeneration: a.Generation}
+			a.Generation++
+			a.Status.Conditions[0].Status, a.Status.Conditions[0].Reason = metav1.ConditionFalse, "EnforcementPending"
+			a.Status.Conditions[0].ObservedGeneration = a.Generation
+		}, "False/EnforcementPending"},
 		{"unobserved generation", func(a *api.Agent) { a.Status.Conditions[0].ObservedGeneration = 0 }, "Unknown/ConditionStale"},
 		{"unspecified generations", func(a *api.Agent) {
 			a.Generation, a.Status.Conditions[0].ObservedGeneration = 0, 0

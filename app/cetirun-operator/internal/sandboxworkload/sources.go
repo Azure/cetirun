@@ -6,12 +6,9 @@ package sandboxworkload
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 )
 
@@ -40,51 +37,12 @@ func AgentSourceReference(agent *api.Agent) (SourceReference, error) {
 	if agent.Generation < 1 || agent.ResourceVersion == "" {
 		return SourceReference{}, fmt.Errorf("Sandbox Agent intent requires a persisted generation and resource version")
 	}
-	annotations := make(map[string]string, 2)
-	for _, key := range []string{sandboxbinding.AuthorizationAnnotation, sandboxbinding.ReauthorizeAnnotation} {
-		if value, found := agent.Annotations[key]; found {
-			annotations[key] = value
-		}
-	}
-	// Team-change intent is an operation request. It cannot change the active
-	// execution fingerprint before its controller-owned commit; otherwise a
-	// Portal request would invalidate the running source that must be stopped
-	// safely. Committed Team/Sandbox/model fields remain ordinary inputs.
-	spec := agent.Spec
-	spec.TeamChangeRequest = nil
-	generation := agent.Generation
-	if request := agent.Spec.TeamChangeRequest; request != nil {
-		// A request write increments generation before the controller has an
-		// opportunity to persist its checkpoint. The last observed generation is
-		// the only durable running proof during that short window.
-		if agent.Status.ObservedGeneration > 0 {
-			generation = agent.Status.ObservedGeneration
-		}
-		if state := agent.Status.TeamChange; state != nil && state.RequestID == request.RequestID && state.SourceGeneration > 0 &&
-			(state.Phase == api.TeamChangeValidating || state.Phase == api.TeamChangeStopping ||
-				(state.Phase == api.TeamChangeFailed && !state.Stopped)) {
-			generation = state.SourceGeneration
-		}
-	}
-	intent := struct {
-		Spec         api.AgentSpec
-		Annotations  map[string]string
-		Held         bool
-		Prepared     bool
-		Bootstrapped bool `json:",omitempty"`
-	}{
-		Spec: spec, Annotations: annotations,
-		Held:         slices.Contains(agent.Finalizers, sandbox.HoldFinalizer),
-		Prepared:     slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer),
-		Bootstrapped: slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer),
-	}
-	raw, err := json.Marshal(intent)
+	digest, err := agent.ExecutionIntentDigest()
 	if err != nil {
-		return SourceReference{}, fmt.Errorf("encode Sandbox Agent intent: %w", err)
+		return SourceReference{}, err
 	}
-	digest := sha256.Sum256(raw)
 	return SourceReference{
 		APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID,
-		Generation: generation, IntentDigest: hex.EncodeToString(digest[:]),
+		Generation: agent.ExecutionGeneration(), IntentDigest: digest,
 	}, nil
 }

@@ -56,7 +56,7 @@ func emitSandboxAgentTransition(ctx context.Context, before, after *api.Agent) {
 
 func sandboxAgentTransition(agent *api.Agent, history *api.SandboxStatus) sandboxTransitionEvent {
 	condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
-	if condition == nil || condition.ObservedGeneration != agent.Generation ||
+	if !sandboxConditionGenerationCurrent(agent, condition) ||
 		agent.Spec.Suspended || !agent.DeletionTimestamp.IsZero() {
 		return sandboxTransitionEvent{}
 	}

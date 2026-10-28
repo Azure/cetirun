@@ -92,7 +92,7 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 		return reject(failure)
 	}
 	agent, binding, err := sandboxbinding.Read(ctx, h.reader, client.ObjectKey{Name: expected.Agent.Name})
-	if err != nil || agent.UID != expected.Agent.UID || agent.Generation != expected.AgentGeneration || binding != expected.Binding {
+	if err != nil || agent.UID != expected.Agent.UID || agent.ExecutionGeneration() != expected.AgentGeneration || binding != expected.Binding {
 		return reject(podDenied("BindingUnauthorized", "Sandbox binding or desired generation is not current"))
 	}
 	if agent.Spec.Suspended || !agent.DeletionTimestamp.IsZero() || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
@@ -283,7 +283,7 @@ func (h *Handler) reconciledHoldRelease(ctx context.Context, request admission.R
 		return rejectPod(ctx, request, failure), true
 	}
 	if !handled || record.Agent != (w.ObjectIdentity{Name: old.Name, UID: old.UID}) ||
-		record.AgentGeneration != old.Generation || old.Spec.Suspended || !old.DeletionTimestamp.IsZero() {
+		record.AgentGeneration != old.ExecutionGeneration() || old.Spec.Suspended || !old.DeletionTimestamp.IsZero() {
 		return admission.Denied("hold release requires the current reconciled Sandbox intent"), true
 	}
 	if failure := handler.validateReconciledSources(ctx, record); failure != nil {

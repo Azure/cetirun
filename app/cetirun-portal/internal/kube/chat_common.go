@@ -50,11 +50,14 @@ type commonChatWorkload struct {
 }
 
 type commonChatSource struct {
-	APIVersion string    `json:"apiVersion"`
-	Kind       string    `json:"kind"`
-	Name       string    `json:"name"`
-	UID        types.UID `json:"uid"`
-	Generation int64     `json:"generation,omitempty"`
+	APIVersion      string    `json:"apiVersion"`
+	Kind            string    `json:"kind"`
+	Namespace       string    `json:"namespace,omitempty"`
+	Name            string    `json:"name"`
+	UID             types.UID `json:"uid"`
+	ResourceVersion string    `json:"resourceVersion,omitempty"`
+	Generation      int64     `json:"generation,omitempty"`
+	IntentDigest    string    `json:"intentDigest,omitempty"`
 }
 
 type commonChatExpectation struct {
@@ -81,7 +84,8 @@ func commonChatCandidate(agent *api.Agent, team *api.Team) bool {
 		return false
 	}
 	condition := meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
-	return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration == agent.Generation &&
+	return condition != nil && condition.Status == metav1.ConditionTrue &&
+		(condition.ObservedGeneration == agent.Generation || condition.ObservedGeneration == agent.ExecutionGeneration()) &&
 		agent.Status.Sandbox.TeamUID != "" && agent.Status.Sandbox.SandboxUID != "" && agent.Status.Sandbox.AgentPolicyUID != "" && agent.Status.Sandbox.AppliedRevision != ""
 }
 
@@ -100,16 +104,27 @@ func (c *Client) verifyCommonChatExpectation(ctx context.Context, agent *api.Age
 		return expected, false, nil
 	}
 	raw := state.Data[commonExpectationKey]
+	intentDigest, err := agent.ExecutionIntentDigest()
+	if err != nil {
+		return expected, false, err
+	}
 	if len(raw) == 0 || len(raw) > 512*1024 || json.Unmarshal([]byte(raw), &expected) != nil ||
 		expected.Version != "v2" || expected.Agent != (commonChatIdentity{Name: agent.Name, UID: agent.UID}) ||
-		expected.AgentGeneration != agent.Generation || expected.Namespace != (commonChatIdentity{Name: namespace.Name, UID: namespace.UID}) ||
+		expected.AgentGeneration != agent.ExecutionGeneration() || expected.Namespace != (commonChatIdentity{Name: namespace.Name, UID: namespace.UID}) ||
 		expected.Revision != state.Annotations[commonRevisionAnnotation] || expected.Revision != agent.Status.Sandbox.AppliedRevision || expected.PlanHash == "" ||
 		expected.Binding.AgentUID != agent.UID || expected.Binding.TeamUID != agent.Status.Sandbox.TeamUID || expected.Binding.SandboxUID != agent.Status.Sandbox.SandboxUID || expected.Binding.AgentPolicyUID != agent.Status.Sandbox.AgentPolicyUID {
 		return expected, false, nil
 	}
-	workloadOK, agentSource := false, false
+	workloadOK, agentSources := false, 0
 	for _, source := range expected.Sources {
-		agentSource = agentSource || source.APIVersion == api.GroupVersion.String() && source.Kind == "Agent" && source.Name == agent.Name && source.UID == agent.UID && source.Generation == agent.Generation
+		if source.APIVersion != api.GroupVersion.String() || source.Kind != "Agent" {
+			continue
+		}
+		if source.Namespace != "" || source.ResourceVersion != "" || source.Name != agent.Name || source.UID != agent.UID ||
+			source.Generation != agent.ExecutionGeneration() || source.IntentDigest != intentDigest {
+			return expected, false, nil
+		}
+		agentSources++
 	}
 	for _, workload := range expected.Workloads {
 		if workload.Kind == "StatefulSet" && workload.Identity.Name == sts.Name && workload.Identity.UID == sts.UID && workload.Replicas == 1 &&
@@ -118,7 +133,7 @@ func (c *Client) verifyCommonChatExpectation(ctx context.Context, agent *api.Age
 			workloadOK = true
 		}
 	}
-	if !agentSource || !workloadOK || !commonChatCiliumAllows(expected.Controls, agent, namespace.Name, caller, *agent.Spec.Agent.Port) {
+	if agentSources != 1 || !workloadOK || !commonChatCiliumAllows(expected.Controls, agent, namespace.Name, caller, *agent.Spec.Agent.Port) {
 		return expected, false, nil
 	}
 	return expected, true, nil

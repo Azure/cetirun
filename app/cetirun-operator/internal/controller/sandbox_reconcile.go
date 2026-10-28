@@ -563,7 +563,7 @@ func (r *AgentReconciler) readReconciledSandboxExpectation(ctx context.Context, 
 		return nil, empty, err
 	}
 	if expected.Agent != (w.ObjectIdentity{Name: agent.Name, UID: agent.UID}) ||
-		expected.AgentGeneration != agent.Generation ||
+		expected.AgentGeneration != agent.ExecutionGeneration() ||
 		expected.Namespace != (w.ObjectIdentity{Name: namespace.Name, UID: namespace.UID}) ||
 		expected.Binding.AgentUID != agent.UID {
 		return nil, empty, fmt.Errorf("common Sandbox expectation differs from the current Agent")
@@ -607,7 +607,7 @@ func (r *AgentReconciler) observeReconciledSandbox(ctx context.Context, agent *a
 		"ReconciledSandboxReady", "Selected Sandbox configuration is applied through common reconciliation; physical failover fencing is not provided")
 	for index := range agent.Status.Conditions {
 		if agent.Status.Conditions[index].Type == api.ConditionSandboxReady {
-			agent.Status.Conditions[index].ObservedGeneration = agent.Generation
+			agent.Status.Conditions[index].ObservedGeneration = agent.ExecutionGeneration()
 		}
 	}
 	return nil

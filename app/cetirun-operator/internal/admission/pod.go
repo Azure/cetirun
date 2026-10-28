@@ -321,7 +321,7 @@ func (h *PodHandler) validateTerminalConnect(ctx context.Context, request admiss
 		return deny("TerminalCommandUnauthorized", "terminal exec command differs from the approved shell protocol")
 	}
 	agent, binding, err := sandboxbinding.Read(ctx, h.reader, client.ObjectKey{Name: expected.Agent.Name})
-	if err != nil || agent.UID != expected.Agent.UID || agent.Generation != expected.AgentGeneration || binding != expected.Binding ||
+	if err != nil || agent.UID != expected.Agent.UID || agent.ExecutionGeneration() != expected.AgentGeneration || binding != expected.Binding ||
 		agent.Spec.Suspended || !agent.DeletionTimestamp.IsZero() || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
 		return deny("BindingUnauthorized", "terminal binding or lifecycle state is not current")
 	}

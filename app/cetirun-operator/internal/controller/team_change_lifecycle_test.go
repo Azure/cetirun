@@ -76,6 +76,10 @@ func submitTeamChange(t *testing.T, f *nativeSandboxFixture, target teamChangeTa
 	t.Helper()
 	ctx := context.Background()
 	agent := f.current(t)
+	// The fake client does not emulate API-server generation increments for a
+	// spec update. Team-change is request-only at this boundary, so exercise
+	// the real generation bump every lifecycle test depends on.
+	agent.Generation++
 	agent.Spec.TeamChangeRequest = &api.TeamChangeRequest{
 		RequestID: requestID, ExpectedUID: agent.UID, ExpectedResourceVersion: agent.ResourceVersion, TargetTeam: target.team.Name,
 	}
@@ -235,6 +239,49 @@ func TestTeamChangeRunningSourceCompletesTwicePreservingIdentityHomeAndKey(t *te
 	submitTeamChange(t, f, targetB, "team-change-running-0002")
 	completeTeamChange(t, f, targetB, f.pod(t), false)
 	assertCompletedTeamChangePreservesIdentity(t, f, targetB, initial, uid, keyID, false)
+}
+
+func TestCompletedTeamChangeClearRetainsRuntimeProofUntilNextRequest(t *testing.T) {
+	ctx := context.Background()
+	f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "openclaw", true, false, withReconciledCoordination(t))
+	markTeamChangeSourceRunning(t, f)
+	target := createTeamChangeTarget(t, f, "team-change-clear-proof-target", false)
+	submitTeamChange(t, f, target, "team-change-clear-proof-0001")
+	completeTeamChange(t, f, target, nil, false)
+	before := f.current(t)
+	beforeExpected := reconciledExpectationForTest(t, f)
+	podUID := f.pod(t).UID
+	keyCount := len(f.gateway.generated)
+	if before.Status.TeamChange == nil || before.Status.TeamChange.ObservedGeneration != beforeExpected.AgentGeneration {
+		t.Fatalf("completion did not persist target execution epoch: checkpoint=%+v expectation=%+v", before.Status.TeamChange, beforeExpected)
+	}
+
+	// Clearing a completed request is request-only. Fake clients do not emulate
+	// the API-server generation increment, so model it explicitly.
+	before.Generation++
+	before.Spec.TeamChangeRequest = nil
+	if err := f.kube.Update(ctx, before); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		f.reconcileOK(t)
+	}
+	after := f.current(t)
+	afterExpected := reconciledExpectationForTest(t, f)
+	if after.Status.Phase != api.PhaseReady || afterExpected.AgentGeneration != beforeExpected.AgentGeneration ||
+		afterExpected.Home != beforeExpected.Home || f.pod(t).UID != podUID || len(f.gateway.generated) != keyCount {
+		t.Fatalf("clearing a completed request churned the running source: before=%+v after=%+v", beforeExpected, afterExpected)
+	}
+
+	// A subsequent request captures the retained target epoch as its source,
+	// rather than the generation added only to clear the previous request.
+	next := createTeamChangeTarget(t, f, "team-change-clear-proof-next", false)
+	submitTeamChange(t, f, next, "team-change-clear-proof-0002")
+	f.reconcileOK(t)
+	checkpoint := f.current(t).Status.TeamChange
+	if checkpoint == nil || checkpoint.Phase != api.TeamChangeValidating || checkpoint.SourceGeneration != beforeExpected.AgentGeneration {
+		t.Fatalf("next Team change did not retain the completed source epoch: %+v", checkpoint)
+	}
 }
 
 func TestTeamChangePausedSourceCompletesPreservingIdentityHomeAndKey(t *testing.T) {

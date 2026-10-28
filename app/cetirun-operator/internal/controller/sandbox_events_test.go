@@ -568,6 +568,20 @@ func TestSandboxEventsExcludeHeldAndUnverifiedApplication(t *testing.T) {
 	}
 }
 
+func TestSandboxEventsAcceptCurrentRawFailureAfterRequestOnlyTeamChange(t *testing.T) {
+	agent, input := sandboxEventAgentFixture(t)
+	if _, err := UpdateSandboxAgentStatus(agent, input); err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.TeamChange = &api.TeamChangeStatus{Phase: api.TeamChangeFailed, SourceGeneration: agent.Generation}
+	agent.Generation++
+	condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
+	condition.Status, condition.Reason, condition.ObservedGeneration = metav1.ConditionFalse, "EnforcementPending", agent.Generation
+	if event := sandboxAgentTransition(agent, nil); event.event != "sandbox.enforcement.failed" || event.reason != "EnforcementPending" {
+		t.Fatalf("current raw failure was not emitted after a request-only Team change: %+v", event)
+	}
+}
+
 func TestSandboxEventsProductionHoldAndPreparation(t *testing.T) {
 	agent, _ := sandboxEventAgentFixture(t)
 	ctx, capture := captureSandboxEvents(t)

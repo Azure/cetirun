@@ -272,12 +272,27 @@ func sandboxMetricReportedStatus(agent *api.Agent) (metav1.ConditionStatus, stri
 	if len(metav1validation.ValidateCondition(*ready, field.NewPath("status", "conditions"))) != 0 {
 		return metav1.ConditionUnknown, "ConditionMalformed"
 	}
-	if agent.Generation <= 0 || ready.ObservedGeneration != agent.Generation {
+	if !sandboxConditionGenerationCurrent(agent, ready) {
 		return metav1.ConditionUnknown, "ConditionStale"
 	}
 	// LastTransitionTime describes a condition transition, not an enforcement
 	// observation clock. Applied binding history is not consulted for readiness.
 	return ready.Status, sandboxMetricReason(ready.Reason)
+}
+
+// sandboxConditionGenerationCurrent keeps successful execution evidence tied
+// to the canonical execution epoch. Hold and rejection writers publish their
+// negative observation against the current raw generation, which is not an
+// execution authorization and must remain visible while a request-only Team
+// change retains its previous execution epoch.
+func sandboxConditionGenerationCurrent(agent *api.Agent, condition *metav1.Condition) bool {
+	if agent == nil || condition == nil || agent.ExecutionGeneration() <= 0 {
+		return false
+	}
+	if condition.ObservedGeneration == agent.ExecutionGeneration() {
+		return true
+	}
+	return condition.Status != metav1.ConditionTrue && condition.ObservedGeneration == agent.Generation
 }
 
 func sandboxMetricReason(reason string) string {

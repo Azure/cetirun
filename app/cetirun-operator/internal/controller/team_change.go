@@ -240,7 +240,9 @@ func (r *AgentReconciler) reconcileTeamChange(ctx context.Context, agent *api.Ag
 			// A source that was paused before this request remains paused after
 			// its new binding is committed. A later suspension at this checkpoint
 			// is also terminally safe: no target native reservation exists.
-			state.Phase = api.TeamChangeCompleted
+			// The completion checkpoint preserves the committed target execution
+			// epoch across a later request-only clear or retry.
+			state.ObservedGeneration, state.Phase = agent.Generation, api.TeamChangeCompleted
 			return false, ctrl.Result{}, r.updateTeamChangeStatus(ctx, agent, state)
 		}
 		if isConditionTrue(agent.Status.Conditions, api.ConditionReady) &&
@@ -258,7 +260,9 @@ func (r *AgentReconciler) reconcileTeamChange(ctx context.Context, agent *api.Ag
 			// interrupted, the absence of the exact durable ticket is positive
 			// evidence that only the checkpoint write needs recovery. At this
 			// point the target is already Ready and holds no Sandbox finalizer.
-			state.Phase = api.TeamChangeCompleted
+			// The completion checkpoint preserves the committed target execution
+			// epoch across a later request-only clear or retry.
+			state.ObservedGeneration, state.Phase = agent.Generation, api.TeamChangeCompleted
 			return false, ctrl.Result{}, r.updateTeamChangeStatus(ctx, agent, state)
 		}
 		return true, ctrl.Result{RequeueAfter: teamChangeWait}, nil
@@ -326,7 +330,7 @@ func stateForTeamChange(agent *api.Agent, request *api.TeamChangeRequest) *api.T
 	return &api.TeamChangeStatus{TeamChangeRequest: cloneTeamChangeRequest(request), Phase: api.TeamChangeValidating,
 		OriginalRequest: request.DeepCopy(),
 		SourceTeam:      agent.Spec.Team, SourceSandbox: agent.Spec.SandboxRef,
-		SourceGeneration: agent.Status.ObservedGeneration, ObservedGeneration: agent.Generation}
+		SourceGeneration: agent.ExecutionGeneration(), ObservedGeneration: agent.Generation}
 }
 
 func validTeamChangeRequest(agent *api.Agent, request *api.TeamChangeRequest) error {

@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	HoldFinalizer        = "cetirun.microsoft.com/sandbox-hold"
+	HoldFinalizer        = api.SandboxHoldFinalizer
 	PreparationFinalizer = api.SandboxPreparationFinalizer
-	BootstrapFinalizer   = "cetirun.microsoft.com/sandbox-bootstrap"
+	BootstrapFinalizer   = api.SandboxBootstrapFinalizer
 )
 
 // Requested detects policy assignment intent, not a valid or enforced binding.

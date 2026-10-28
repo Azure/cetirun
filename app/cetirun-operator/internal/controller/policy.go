@@ -587,7 +587,7 @@ func policyEnforcementVerified(agent *api.Agent, resolution *policyResolution) b
 		agent.Status.Sandbox.TeamUID != resolution.team.UID ||
 		agent.Status.Sandbox.AgentPolicyUID != resolution.policy.UID ||
 		sandboxReady == nil ||
-		sandboxReady.Status != metav1.ConditionTrue || sandboxReady.ObservedGeneration != agent.Generation {
+		sandboxReady.Status != metav1.ConditionTrue || sandboxReady.ObservedGeneration != agent.ExecutionGeneration() {
 		return false
 	}
 	needsModels := agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled()

@@ -242,6 +242,24 @@ func TestPolicyEnforcementRejectsStaleSandboxEvidence(t *testing.T) {
 	if !policyEnforcementVerified(agent, resolution) {
 		t.Fatal("current Sandbox evidence was not accepted")
 	}
+	requestOnly := agent.DeepCopy()
+	requestOnly.Generation, requestOnly.Status.ObservedGeneration = 8, 8
+	requestOnly.Spec.TeamChangeRequest = &api.TeamChangeRequest{RequestID: "request-only-policy-0001"}
+	requestOnly.Status.TeamChange = &api.TeamChangeStatus{TeamChangeRequest: *requestOnly.Spec.TeamChangeRequest,
+		Phase: api.TeamChangeFailed, SourceGeneration: 7, ObservedGeneration: 8}
+	requestOnly.Status.Conditions[0].ObservedGeneration = 7
+	requestOnly.Status.Policy = &api.PolicyStatus{Enforcement: api.PolicyEnforcementStatus{
+		Sandbox:    api.PolicyRevisionExpectation{DesiredRevision: resolution.sandboxRevision},
+		Gateway:    api.PolicyRevisionExpectation{DesiredRevision: resolution.gatewayRevision},
+		Credential: api.PolicyRevisionExpectation{DesiredRevision: resolution.credentialRevision},
+	}}
+	if !policyEnforcementVerified(requestOnly, resolution) || policyReprojectionMustHold(requestOnly, resolution) {
+		t.Fatal("request-only failed Team change invalidated current Sandbox policy evidence")
+	}
+	requestOnly.Status.Conditions[0].ObservedGeneration = 8
+	if policyEnforcementVerified(requestOnly, resolution) {
+		t.Fatal("raw generation replaced the current normalized execution proof")
+	}
 	for name, mutate := range map[string]func(*api.Agent){
 		"revision":   func(a *api.Agent) { a.Status.Sandbox.AppliedRevision = "sandbox-old" },
 		"team":       func(a *api.Agent) { a.Status.Sandbox.TeamUID = "old-team" },

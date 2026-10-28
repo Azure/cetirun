@@ -113,6 +113,15 @@ func TestResolveCommonCustomChatRequiresCurrentExpectationAndCiliumCallerRule(t 
 		"foreign binding": func(_ *api.Agent, expected *commonChatExpectation) {
 			expected.Binding.TeamUID = "foreign-team"
 		},
+		"missing intent digest": func(_ *api.Agent, expected *commonChatExpectation) {
+			expected.Sources[0].IntentDigest = ""
+		},
+		"namespaced Agent source": func(_ *api.Agent, expected *commonChatExpectation) {
+			expected.Sources[0].Namespace = "unexpected"
+		},
+		"duplicate Agent source": func(_ *api.Agent, expected *commonChatExpectation) {
+			expected.Sources = append(expected.Sources, expected.Sources[0])
+		},
 		"wrong caller selector": func(_ *api.Agent, expected *commonChatExpectation) {
 			labels := expected.Controls[0].Object["spec"].(map[string]any)["ingress"].([]any)[0].(map[string]any)["fromEndpoints"].([]any)[0].(map[string]any)["matchLabels"].(map[string]any)
 			labels["k8s:app"] = "foreign-portal"
@@ -144,6 +153,112 @@ func TestResolveCommonCustomChatRequiresCurrentExpectationAndCiliumCallerRule(t 
 				t.Fatalf("accepted invalid common target: %+v %v", value, err)
 			}
 		})
+	}
+}
+
+func TestCommonChatRetainsRequestOnlyIntentAndRejectsChangedExecution(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*api.Agent)
+		ready  bool
+	}{
+		{name: "failed preflight request only", mutate: func(*api.Agent) {}, ready: true},
+		{name: "observed failed preflight", mutate: func(a *api.Agent) { a.Status.ObservedGeneration = a.Generation }, ready: true},
+		{name: "new request after rejected attempt", mutate: func(a *api.Agent) {
+			a.Status.ObservedGeneration = a.Generation
+			a.Generation++
+			a.Spec.TeamChangeRequest = a.Spec.TeamChangeRequest.DeepCopy()
+			a.Spec.TeamChangeRequest.RequestID = "synthetic-second-request"
+		}, ready: true},
+		{name: "model changed", mutate: func(a *api.Agent) { a.Spec.Model = "different-model" }},
+		{name: "chart upgrade", mutate: func(a *api.Agent) { a.Spec.Helm.Version = "0.1.1-synthetic" }},
+		{name: "runtime upgrade", mutate: func(a *api.Agent) { a.Spec.Agent.Image = ptr.To("registry.example.com/custom@sha256:changed") }},
+		{name: "Team changed", mutate: func(a *api.Agent) { a.Spec.Team = "changed-team" }},
+		{name: "paused", mutate: func(a *api.Agent) { a.Spec.Suspended = true }},
+		{name: "authorization changed", mutate: func(a *api.Agent) {
+			a.Annotations = maps.Clone(a.Annotations)
+			if a.Annotations == nil {
+				a.Annotations = map[string]string{}
+			}
+			a.Annotations["cetirun.microsoft.com/sandbox-authorization"] = "changed"
+		}},
+		{name: "reauthorization requested", mutate: func(a *api.Agent) {
+			a.Annotations = maps.Clone(a.Annotations)
+			if a.Annotations == nil {
+				a.Annotations = map[string]string{}
+			}
+			a.Annotations["cetirun.microsoft.com/sandbox-reauthorize"] = "requested"
+		}},
+		{name: "held", mutate: func(a *api.Agent) { a.Finalizers = append(a.Finalizers, "cetirun.microsoft.com/sandbox-hold") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent, objects, state, expected := commonChatObjects(t)
+			generation := agent.Generation
+			agent.Spec.TeamChangeRequest = &api.TeamChangeRequest{
+				RequestID: "synthetic-failed-request", ExpectedUID: agent.UID, ExpectedResourceVersion: "1", TargetTeam: "incompatible-team",
+			}
+			agent.Status.TeamChange = &api.TeamChangeStatus{
+				TeamChangeRequest: *agent.Spec.TeamChangeRequest, Phase: api.TeamChangeFailed,
+				SourceGeneration: generation, ObservedGeneration: generation + 1, FailureReason: "PreflightFailed",
+			}
+			agent.Generation++
+			tc.mutate(agent)
+			if agent.ExecutionGeneration() != generation {
+				t.Fatal("fixture must keep the original execution generation")
+			}
+			writeCommonChatExpectation(t, state, expected)
+			c := NewClient(newFakeClient(objects...))
+			// Check the common proof directly so changed Team lookup or outer
+			// lifecycle gates cannot conceal a stale-source acceptance.
+			_, verified, err := c.verifyCommonChatExpectation(context.Background(), agent, objects[1].(*corev1.Namespace), objects[2].(*appsv1.StatefulSet), chattest.Caller)
+			if err != nil || verified != tc.ready {
+				t.Fatalf("current execution proof = %v, want %v: %v", verified, tc.ready, err)
+			}
+			if tc.ready {
+				target, err := c.ResolveChat(context.Background(), agent, chattest.Caller)
+				if err != nil || !target.Available {
+					t.Fatalf("request-only failure interrupted Chat: %+v %v", target, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCommonChatResumeRequiresCurrentExecutionProof(t *testing.T) {
+	agent, objects, state, expected := commonChatObjects(t)
+	agent.Spec.TeamChangeRequest = &api.TeamChangeRequest{RequestID: "synthetic-paused-request"}
+	agent.Status.TeamChange = &api.TeamChangeStatus{
+		TeamChangeRequest: *agent.Spec.TeamChangeRequest, Phase: api.TeamChangeFailed,
+		SourceGeneration: agent.Generation, FailureReason: "Paused",
+	}
+	agent.Spec.Suspended = true
+	agent.Finalizers = append(agent.Finalizers, api.SandboxHoldFinalizer)
+	pausedDigest, err := agent.ExecutionIntentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected.Sources[0].IntentDigest = pausedDigest
+	// Simulate completed resume reconciliation, but retain the paused proof
+	// first. A matching execution generation alone cannot authorize Chat.
+	agent.Spec.Suspended = false
+	agent.Finalizers = nil
+	agent.Generation += 2
+	agent.Status.ObservedGeneration = agent.Generation
+	writeCommonChatExpectation(t, state, expected)
+	c := NewClient(newFakeClient(objects...))
+	target, err := c.ResolveChat(context.Background(), agent, chattest.Caller)
+	if err != nil || target.Available {
+		t.Fatalf("resumed Agent accepted paused proof: %+v %v", target, err)
+	}
+	expected.Sources[0].IntentDigest, err = agent.ExecutionIntentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCommonChatExpectation(t, state, expected)
+	c = NewClient(newFakeClient(objects...))
+	target, err = c.ResolveChat(context.Background(), agent, chattest.Caller)
+	if err != nil || !target.Available {
+		t.Fatalf("fresh resumed execution proof rejected: %+v %v", target, err)
 	}
 }
 
@@ -182,13 +297,17 @@ func commonChatObjects(t *testing.T) (*api.Agent, []client.Object, *corev1.Confi
 			"toPorts":       []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}},
 		}}},
 	}}
+	intentDigest, err := agent.ExecutionIntentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
 	expected := commonChatExpectation{
 		Version: "v2", Agent: commonChatIdentity{Name: agent.Name, UID: agent.UID}, AgentGeneration: agent.Generation,
 		Namespace: commonChatIdentity{Name: ns.Name, UID: ns.UID},
 		Binding:   commonChatBinding{AgentUID: agent.UID, TeamUID: agent.Status.Sandbox.TeamUID, SandboxUID: agent.Status.Sandbox.SandboxUID, AgentPolicyUID: agent.Status.Sandbox.AgentPolicyUID},
 		Revision:  agent.Status.Sandbox.AppliedRevision, PlanHash: "synthetic-plan",
 		Workloads: []commonChatWorkload{{Kind: "StatefulSet", Identity: commonChatIdentity{Name: sts.Name, UID: sts.UID}, Replicas: 1, Template: sts.Spec.Template}},
-		Sources:   []commonChatSource{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID, Generation: agent.Generation}},
+		Sources:   []commonChatSource{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID, Generation: agent.Generation, IntentDigest: intentDigest}},
 		Controls:  []unstructured.Unstructured{control},
 	}
 	state := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{

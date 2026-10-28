@@ -4,6 +4,12 @@
 package v1alpha1
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"slices"
+
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -126,4 +132,101 @@ func (a *Agent) TeamChangePending() bool {
 	request, status := a.Spec.TeamChangeRequest, a.Status.TeamChange
 	return request != nil && (status == nil || status.RequestID != request.RequestID ||
 		(status.Phase != TeamChangeCompleted && (status.Phase != TeamChangeFailed || status.Fenced)))
+}
+
+// ExecutionGeneration is the generation used by a governed runtime's durable
+// execution proof. A Team-change request is not an execution input until its
+// controller-owned binding commit, so its request-only generation bump must
+// not invalidate the running source. Ordinary current-spec checks remain
+// separate from this execution identity.
+func (a *Agent) ExecutionGeneration() int64 {
+	if a == nil {
+		return 0
+	}
+	generation := a.Generation
+	request := a.Spec.TeamChangeRequest
+	state := a.Status.TeamChange
+	// A completed Team change has committed a new execution input. Its
+	// checkpoint records that target epoch so later request-only clear/retry
+	// writes do not manufacture a new runtime identity. An unset checkpoint
+	// falls back to the raw generation; all execution evidence still requires
+	// the current intent digest.
+	if state != nil && state.Phase == TeamChangeCompleted {
+		if state.ObservedGeneration > 0 {
+			return state.ObservedGeneration
+		}
+		return generation
+	}
+	if request == nil {
+		// Clearing an unfenced failed request is explicitly request-only. Its
+		// durable source proof remains valid until a real execution input changes
+		// the intent digest.
+		if state != nil && state.Phase == TeamChangeFailed && !state.Fenced && !state.Stopped &&
+			state.SourceGeneration > 0 {
+			return state.SourceGeneration
+		}
+		return generation
+	}
+	if state == nil || state.RequestID != request.RequestID {
+		// A replacement request after a failed preflight is also request-only.
+		// Its durable failed checkpoint identifies the still-running source.
+		if state != nil && state.Phase == TeamChangeFailed && !state.Fenced && !state.Stopped &&
+			state.SourceGeneration > 0 {
+			return state.SourceGeneration
+		}
+		// A request write increments generation before the controller captures
+		// its durable operation checkpoint. The last observed generation is the
+		// only running proof during that short window.
+		if a.Status.ObservedGeneration > 0 {
+			generation = a.Status.ObservedGeneration
+		}
+		return generation
+	}
+	if state.SourceGeneration > 0 && (state.Phase == TeamChangeValidating || state.Phase == TeamChangeStopping ||
+		(state.Phase == TeamChangeFailed && !state.Stopped)) {
+		return state.SourceGeneration
+	}
+	// The protected Team/Sandbox commit is a real execution input change. It
+	// uses the current raw generation through Starting; Completed persists that
+	// target epoch above rather than switching identity on later request writes.
+	return generation
+}
+
+// ExecutionIntentDigest is the canonical current common-Sandbox Agent input.
+// It excludes TeamChangeRequest because that request does not alter execution
+// until its protected commit. It includes the current Spec, controller-owned
+// binding annotations, and lifecycle finalizers, so a resume, upgrade,
+// authorization change, or source change cannot reuse an old execution proof
+// merely because ExecutionGeneration is unchanged.
+func (a *Agent) ExecutionIntentDigest() (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("execution intent requires an Agent")
+	}
+	annotations := make(map[string]string, 2)
+	for _, key := range []string{SandboxAuthorizationAnnotation, SandboxReauthorizeAnnotation} {
+		if value, found := a.Annotations[key]; found {
+			annotations[key] = value
+		}
+	}
+	spec := a.Spec
+	spec.TeamChangeRequest = nil
+	intent := struct {
+		Spec         AgentSpec
+		Annotations  map[string]string
+		Held         bool
+		Prepared     bool
+		Bootstrapped bool `json:",omitempty"`
+	}{
+		Spec:         spec,
+		Annotations:  annotations,
+		Held:         slices.Contains(a.Finalizers, SandboxHoldFinalizer),
+		Prepared:     slices.Contains(a.Finalizers, SandboxPreparationFinalizer),
+		Bootstrapped: slices.Contains(a.Finalizers, SandboxBootstrapFinalizer),
+	}
+	raw, err := json.Marshal(intent)
+	if err != nil {
+		return "", fmt.Errorf("encode Sandbox Agent intent: %w", err)
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
 }
