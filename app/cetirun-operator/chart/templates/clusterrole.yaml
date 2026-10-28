@@ -132,12 +132,17 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.istio.io"]
     resources: ["gateways"]
+    {{- if .Values.sandboxSources.nativeExecution }}
+    # Only the native executor registers Gateway metadata watches.
+    verbs: ["get", "list", "watch"]
+    {{- else }}
     verbs: ["get"]
+    {{- end }}
   {{- end }}
 
   # Istio VirtualServices + Sidecar (egress scope)
   - apiGroups: ["networking.istio.io"]
-    resources: ["virtualservices", "sidecars"]
+    resources: ["virtualservices", "sidecars", "destinationrules"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["security.istio.io"]
     resources: ["authorizationpolicies", "peerauthentications"]

@@ -537,10 +537,25 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertNotIn("nativeExecution", baseline_config)
         role = ("ClusterRole", "cetirun-operator-manager-role")
         added = [rule for rule in configured[role]["rules"] if rule not in baseline[role]["rules"]]
-        self.assertEqual(added, [])
+        self.assertEqual(added, [{
+            "apiGroups": ["networking.istio.io"], "resources": ["gateways"],
+            "verbs": ["get", "list", "watch"],
+        }])
         self.assertIn({"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}, baseline[role]["rules"])
         removed = [rule for rule in baseline[role]["rules"] if rule not in configured[role]["rules"]]
-        self.assertEqual(removed, [])
+        self.assertEqual(removed, [{
+            "apiGroups": ["networking.istio.io"], "resources": ["gateways"],
+            "verbs": ["get"],
+        }])
+        for documents in (baseline, configured):
+            self.assertEqual([
+                rule for rule in documents[role]["rules"]
+                if any(group == "networking.istio.io" for group in rule["apiGroups"]) and "destinationrules" in rule["resources"]
+            ], [{
+                "apiGroups": ["networking.istio.io"],
+                "resources": ["virtualservices", "sidecars", "destinationrules"],
+                "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+            }])
 
     def test_native_finalization_permission_survives_disabling_starts(self):
         admission = self.enforced_values(podsEnabled=True)
@@ -1211,6 +1226,13 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             self.assertNotIn("configmaps", rule["resources"])
             self.assertNotIn("*", rule["resources"])
             self.assertNotIn("*", rule["apiGroups"])
+        self.assertEqual([
+            rule for rule in documents[("ClusterRole", NAME)]["rules"]
+            if any(group == "networking.istio.io" for group in rule["apiGroups"])
+        ], [{
+            "apiGroups": ["networking.istio.io"],
+            "resources": ["gateways", "destinationrules"], "verbs": ["get"],
+        }])
         for api_group, resource in (("node.k8s.io", "runtimeclasses"), ("storage.k8s.io", "storageclasses")):
             self.assertIn({
                 "apiGroups": [api_group], "resources": [resource], "verbs": ["get"],

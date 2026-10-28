@@ -224,7 +224,8 @@ def gateway(args, environ=None):
     The guard callback is always registered: it drops request fields that would
     change the Gateway for one call, keeps per-Agent GitHub Copilot routes to
     the keys that hold them, keeps operator-issued keys to the deployments of
-    their access groups, also when an auto router picks the model, removes
+    their access groups, also when an auto router picks the model, refuses a
+    request for a decision model through any API but the Decisions API, removes
     encrypted reasoning without the Gateway's mark while encrypted content
     affinity is on, writes that mark in a form clients keep, ends fallbacks
     after a deployment refused a request's encrypted reasoning, removes the

@@ -78,6 +78,9 @@ agent_apply_config() {
   if [ -n "$ON_GATEWAY" ]; then
     set -- "$@" --gateway-key-env "${CETIRUN_GATEWAY_KEY_ENV:-CETIRUN_GATEWAY_API_KEY}"
   fi
+  if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
+    set -- "$@" --ingress-mtls
+  fi
   "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" "$@"
 }
 
@@ -111,7 +114,11 @@ agent_prepare_integrations() {
 }
 
 agent_verify() {
-  "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" --home "$TARGET_HOME" --check
+  set -- --home "$TARGET_HOME" --check
+  if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
+    set -- "$@" --ingress-mtls
+  fi
+  "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" "$@"
   if [ -z "$ON_GATEWAY" ]; then
     helper=$(home_path .local/bin/copilot-auth)
     [ -x "$helper" ] || { init_error "HermesAuthHelperUnavailable"; return 1; }

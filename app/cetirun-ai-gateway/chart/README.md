@@ -504,9 +504,10 @@ which, are the administrator's; the `router` values set the rest.
 Measured with two Gateway replicas and the bundled Valkey, against mock
 deployments standing in for separate Azure OpenAI resources, with an
 OpenClaw-like client and with OpenClaw itself, and checked against Azure
-OpenAI where noted. The figures in tables were measured on LiteLLM 1.101.0,
-the image's previous release; what changed in 1.105.1 is said where it
-applies.
+OpenAI where noted. The figures in tables were measured on LiteLLM 1.101.0;
+what changed in 1.105.1 is said where it applies. The image now runs 1.105.6,
+a patch release of the same line; measurements that name 1.105.1 were not
+repeated on it unless said.
 
 ### Choosing a deployment
 
@@ -1379,6 +1380,19 @@ the console cannot remove it. It:
   recognizes the operator's keys by their model list: only `cetirun-` access
   groups, or `no-default-models`. The master key, and keys granted models by
   name, `*` or every model, are left to LiteLLM's own checks;
+- refuses a request for a decision model, a model whose every deployment sets
+  `mode: evaluation`, through any API but LiteLLM's Decisions API
+  (`/v1/systemone` and `/v1/decisions`), from any caller: a chat, Responses,
+  Anthropic Messages or embeddings request for it gets a 400, "The model
+  <name> is a decision model: call it through /v1/systemone or /v1/decisions.",
+  before any deployment is called, with no retry, fallback or cooldown, and the
+  Gateway logs a warning with the model, the API and the key's alias. Measured
+  on a Gateway without the operator before this: a chat request for
+  Microsoft-Decision-1 from a key created in the console got the provider's
+  404, LiteLLM cooled the deployment down, and for about four seconds every
+  router classifying with it used its default classifier, for every caller.
+  The Decisions API and a router's own classifier calls reach the model as
+  before; a key the operator issued keeps the 403 above;
 - keeps a key the CetiRun operator issued from listing what it cannot talk to:
   `GET /v1/models` (and `/model/info`) leaves out the key's access groups that
   LiteLLM lists as if they were models, such as an Agent's Copilot group before
@@ -1409,7 +1423,9 @@ the console cannot remove it. It:
   that a router sent to such a tier failed without the user seeing it. The
   model then reasons at its default effort, as LiteLLM's `drop_params` would
   leave it, and the sampling parameters it then refuses are removed as above.
-  The Gateway logs a warning for each request it changes;
+  The Gateway logs a warning for each request it changes. The table decides,
+  so a wrong entry lets `none` through; see
+  [Prices are not pinned to the image by default](#known-gaps);
 - lets a request fail over from the deployment its key is kept on; see
   [A key stays on its deployment](#a-key-stays-on-its-deployment);
 - keeps error messages free of LiteLLM's internal deployment list: error
@@ -1419,9 +1435,10 @@ the console cannot remove it. It:
   `retry-after` header; LiteLLM sets none on its Anthropic Messages API. The
   Gateway's own log and the request log keep the full message.
 
-With `operatorIntegration` off, the guard's request fields and error messages
-apply all the same; a standalone Gateway has no `cetirun-copilot-` groups for
-it to separate, and no keys the operator issued.
+With `operatorIntegration` off, the guard's request fields, its decision model
+rule, its parameter changes and its error messages apply all the same; a
+standalone Gateway has no `cetirun-copilot-` groups for it to separate, and no
+keys the operator issued.
 
 Measured on LiteLLM 1.105.1 with two replicas and two Copilot routes added
 through the management API under one `copilot/` name: each of two Agent keys
@@ -2089,7 +2106,7 @@ appropriate at a single replica.
 ## Image
 
 The Gateway runs `cetirun-ai-gateway`, built from `app/cetirun-ai-gateway` and
-published with the other CetiRun images. It is open-source LiteLLM, 1.105.1,
+published with the other CetiRun images. It is open-source LiteLLM, 1.105.6,
 installed as pinned packages on the Azure Linux Python base from MCR, running as
 the non-root user 65532.
 
@@ -2098,9 +2115,11 @@ the non-root user 65532.
   The differences are deliberate: `litellm-enterprise`, which carries the
   BerriAI Enterprise License, is left out; two backports that Python 3.12
   needs are added; and a package with a known security advisory is moved to a
-  patched version, with the advisory marked in the file. The 1.105.1 set needs
-  no such move. The build fails if the enterprise package is present, or if
-  `pip check` finds a requirement the set does not meet.
+  patched version, with the advisory marked in the file. No package of the
+  1.105.6 set is moved yet: the advisories published after that release, for
+  ddtrace, dnspython and filelock, are handled separately. The build fails if
+  the enterprise package is present, or if `pip check` finds a requirement the
+  set does not meet.
 - The prisma CLI and engines are installed at build time, so migrations need
   neither npm nor network access. Measured on a network with no route out:
   migrations applied and the proxy became ready.
@@ -2185,7 +2204,13 @@ GitHub Copilot models from the table the Gateway loaded, so a Copilot model
 newer than the image is not offered. Measured on LiteLLM 1.105.1 with the
 table's address pointed at a mock: with the variable, neither the proxy's
 start, the migrate step's import of LiteLLM nor a reload requested the table;
-without it, each did.
+without it, each did. The table also says which parameters each model takes,
+and the guard and LiteLLM's own checks go by it, so the image's copy can be
+wrong where the downloaded one has been corrected. The copy in LiteLLM 1.105.1
+marked Azure's gpt-6-astra and gpt-6.1-sol as taking `reasoning_effort: none`,
+which Azure refuses: with `priceTable: bundled`, or when the download failed, a
+request with it got Azure's 400 instead of losing the parameter (measured with
+gpt-6-astra). The copy in 1.105.6, which the image ships, has the correction.
 
 **GitOps.** Generated credentials rely on Helm's `lookup`, which returns nothing
 under `helm template`, so tools that render that way, such as Argo CD, must
