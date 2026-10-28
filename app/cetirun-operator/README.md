@@ -2544,8 +2544,9 @@ requires the managed proxy, plus current certificates when mTLS is enabled.
 
 The implementation uses `original_dst`, stock `tls_inspector`, exact
 `requested_server_name` DENY matching, and an ORIGINAL_DST TCP proxy. Names are
-validated as lowercase ASCII hostnames; matching is the stock exact,
-case-sensitive metadata comparison, not suffix matching or DNS resolution.
+validated as lowercase ASCII hostnames. Envoy lowercases the observed server
+name before the exact comparison, so wire-case variants of a listed hostname
+are also denied. This is not suffix matching or DNS resolution.
 UDP is untouched. A separate terminal filter chain rejects the loopback capture
 destination **before** creating an upstream connection, including silent direct
 application sockets; the same port at a remote destination is not excluded.

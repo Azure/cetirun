@@ -44,8 +44,8 @@ type object = map[string]any
 
 // Build returns nil for an empty list: no listener, cluster or capture commands.
 // Names follow AgentPolicy's exact lowercase ASCII hostname syntax. Matching is
-// Envoy's exact requested_server_name comparison, not DNS resolution or suffix
-// matching. A timeout continues uninspected, not as a negative hostname match.
+// Envoy's exact comparison against its lowercase-normalized requested_server_name,
+// not DNS resolution or suffix matching. A timeout continues uninspected.
 func Build(blockedFQDNs []string) (*Config, error) {
 	if len(blockedFQDNs) == 0 {
 		return nil, nil
