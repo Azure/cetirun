@@ -89,8 +89,10 @@ type modelRouterPlan struct {
 	// problem is a configuration error that keeps the router out of the
 	// Gateway; it names the router and what is wrong.
 	problem string
-	// shared and copilot are the tier and classifier models the router
-	// sends requests to, by kind.
+	// shared are the shared models the router sends requests to: those its
+	// tiers are registered as, and the model of an llm or jev classifier, a
+	// chat model or a decision model that classifies the requests. copilot
+	// are its copilot/<ID> tiers registered under the ID.
 	shared  []string
 	copilot []string
 	// tierNames are the Gateway names the tier models are registered
@@ -163,6 +165,12 @@ func routerModelNotChat(model aigateway.RouterModel) string {
 	return routerModelNames(model) + ", which is not a chat model"
 }
 
+// routerModelNotDecision is the problem of a jev classifier that names a
+// shared model that is not a decision model.
+func routerModelNotDecision(model aigateway.RouterModel) string {
+	return routerModelNames(model) + ", which is not a decision model (a shared model whose model_info.mode is evaluation)"
+}
+
 // routerModelIsARouter is the problem of a router model that is a router
 // itself.
 func routerModelIsARouter(model aigateway.RouterModel) string {
@@ -183,21 +191,21 @@ func routerModelNotAllowed(model aigateway.RouterModel) string {
 }
 
 // planModelRouters checks a Team's routers against the shared models of a
-// live catalog and builds their registrations.
-func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, routers map[string]bool, mergedName func(string) string) []modelRouterPlan {
-	sharedNames := map[string]bool{}
-	for _, model := range shared {
-		sharedNames[model.Name] = true
-	}
+// listed catalog, as the view of the shared routers gives them, and builds
+// their registrations.
+func planModelRouters(team *api.Team, view aiGatewaySharedRouterView, mergedName func(string) string) []modelRouterPlan {
+	routers := view.routerSet()
 	plans := make([]modelRouterPlan, 0, len(team.Spec.ModelRouters))
 	for _, router := range team.Spec.ModelRouters {
 		plan := modelRouterPlan{router: router, gatewayName: modelRouterGatewayName(team.Name, router.Name), tierNames: map[string]string{}}
 		var problems []string
-		if sharedNames[router.Name] {
+		// Any shared model's name, whether it answers conversations or not.
+		if view.shared[router.Name] {
 			problems = append(problems, fmt.Sprintf("the name %s is also a shared model", router.Name))
 		}
 		for i, model := range router.Tiers.Models() {
 			tier := modelRouterTierNames[i]
+			use := aigateway.RouterModel{Use: aigateway.RouterTier, Tier: tier, Name: model}
 			switch {
 			case strings.HasPrefix(model, copilotTierPrefix):
 				if !copilotModelID.MatchString(strings.TrimPrefix(model, copilotTierPrefix)) {
@@ -216,9 +224,11 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, routers ma
 				}
 			case routers[model]:
 				// A router of the Gateway picks a model of its own for the request.
-				problems = append(problems, routerModelIsARouter(aigateway.RouterModel{Use: aigateway.RouterTier, Tier: tier, Name: model}))
-			case !sharedNames[model]:
-				problems = append(problems, routerModelNotShared(aigateway.RouterModel{Use: aigateway.RouterTier, Tier: tier, Name: model}))
+				problems = append(problems, routerModelIsARouter(use))
+			case !view.shared[model]:
+				problems = append(problems, routerModelNotShared(use))
+			case view.nonChat[model]:
+				problems = append(problems, routerModelNotChat(use))
 			case !slices.Contains(plan.shared, model):
 				plan.shared = append(plan.shared, model)
 			}
@@ -227,17 +237,26 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, routers ma
 		if classifier == "" {
 			classifier = api.ModelRouterClassifierHeuristic
 		}
-		if classifier == api.ModelRouterClassifierLLM {
+		if classifier == api.ModelRouterClassifierLLM || classifier == api.ModelRouterClassifierJev {
 			// A router as the classifier would send the request on to a model
 			// of its own choice: the classifier call is made on the Agent's
 			// behalf without its key's checks, so that model could be one the
 			// Agent may not use.
-			if routers[router.Classifier.Model] {
-				problems = append(problems, routerModelIsARouter(aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: router.Classifier.Model}))
-			} else if !sharedNames[router.Classifier.Model] {
-				problems = append(problems, routerModelNotShared(aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: router.Classifier.Model}))
-			} else if !slices.Contains(plan.shared, router.Classifier.Model) {
-				plan.shared = append(plan.shared, router.Classifier.Model)
+			use := aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: router.Classifier.Model}
+			switch {
+			case routers[use.Name]:
+				problems = append(problems, routerModelIsARouter(use))
+			case !view.shared[use.Name]:
+				problems = append(problems, routerModelNotShared(use))
+			case classifier == api.ModelRouterClassifierLLM && view.nonChat[use.Name]:
+				// The llm classifier asks its model in a chat request.
+				problems = append(problems, routerModelNotChat(use))
+			case classifier == api.ModelRouterClassifierJev && !view.decision[use.Name]:
+				// The jev classifier asks LiteLLM's Decisions API, which only a
+				// decision model answers.
+				problems = append(problems, routerModelNotDecision(use))
+			case !slices.Contains(plan.shared, use.Name):
+				plan.shared = append(plan.shared, use.Name)
 			}
 		}
 		if len(problems) > 0 {
@@ -256,8 +275,15 @@ func planModelRouters(team *api.Team, shared []aiGatewayCatalogModel, routers ma
 			"max_tokens_from_tier_model":       false,
 			"enable_context_window_escalation": true,
 		}
-		if classifier == api.ModelRouterClassifierLLM {
+		switch classifier {
+		case api.ModelRouterClassifierLLM:
 			config["classifier_llm_config"] = map[string]any{"model": router.Classifier.Model}
+		case api.ModelRouterClassifierJev:
+			// The decision model, and nothing else: without a licence, LiteLLM
+			// allows only one router per Gateway whose jev classifier sets its
+			// own instructions, so the classifier keeps LiteLLM's instructions
+			// and its other defaults.
+			config["jev_classifier_config"] = map[string]any{"deployment_name": router.Classifier.Model}
 		}
 		plan.request = aigateway.RouterRequest{
 			ModelName: plan.gatewayName, AccessGroups: []string{plan.gatewayName}, Config: config,
@@ -355,7 +381,7 @@ func (r *TeamModelRouterReconciler) Reconcile(ctx context.Context, request ctrl.
 		}
 		return ctrl.Result{}, err
 	}
-	shared, _ := r.Agents.aiGatewayCatalog.shared()
+	view := r.Agents.aiGatewayCatalog.sharedRouters()
 	teams := &api.TeamList{}
 	if err := r.List(ctx, teams); err != nil {
 		return ctrl.Result{}, err
@@ -368,7 +394,7 @@ func (r *TeamModelRouterReconciler) Reconcile(ctx context.Context, request ctrl.
 		if !item.DeletionTimestamp.IsZero() {
 			continue
 		}
-		plans := planModelRouters(item, shared, r.Agents.aiGatewayCatalog.sharedRouters().routerSet(), r.Agents.copilotTierSharedNames())
+		plans := planModelRouters(item, view, r.Agents.copilotTierSharedNames())
 		if team != nil && item.Name == team.Name {
 			requested = plans
 		}
@@ -547,10 +573,10 @@ func (r *TeamModelRouterReconciler) patchStatus(ctx context.Context, before, tea
 // to: for a policy-bound Agent, the policy allows the router's name, each
 // shared tier and, for GitHub Copilot tiers, Copilot; for every Agent, its
 // shared models are on for shared tiers and the classifier, and each Copilot
-// tier is one of its owner's registered Copilot models. The classifier is a
-// shared model the router calls on the Agent's behalf; it need not be in the
-// policy's list. copilot reports whether the Agent's Copilot models are
-// granted at all.
+// tier is one of its owner's registered Copilot models. The classifier, a
+// chat model for llm or a decision model for jev, is a shared model the
+// router calls on the Agent's behalf; it need not be in the policy's list.
+// copilot reports whether the Agent's Copilot models are granted at all.
 func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client aiGatewayKeyClient, instance *api.Agent, team *api.Team, policy *api.AgentPolicy, copilot bool) ([]string, []api.AIGatewayModelRouterStatus) {
 	if team == nil || len(team.Spec.ModelRouters) == 0 {
 		return nil, nil
@@ -561,7 +587,8 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 	shared, _ := r.aiGatewayCatalog.shared()
 	if _, listed := r.aiGatewayCatalog.has(""); !listed {
 		// Nothing can be checked without a listed catalog (a seeded one
-		// names shared models only): grant no router until there is one.
+		// names shared and decision models only): grant no router until
+		// there is one.
 		return nil, nil
 	}
 	// The Gateway name of each of the owner's Copilot models, by copilot/<ID>.
@@ -575,7 +602,7 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 	}
 	var groups []string
 	var statuses []api.AIGatewayModelRouterStatus
-	for _, plan := range planModelRouters(team, shared, r.aiGatewayCatalog.sharedRouters().routerSet(), r.copilotTierSharedNames()) {
+	for _, plan := range planModelRouters(team, r.aiGatewayCatalog.sharedRouters(), r.copilotTierSharedNames()) {
 		status := api.AIGatewayModelRouterStatus{Name: plan.router.Name}
 		status.Reason = r.modelRouterRefusal(instance, plan, policy, copilot, registeredCopilot)
 		if status.Reason == "" {
@@ -674,8 +701,11 @@ func (r *AgentReconciler) aiGatewayAgentTeam(ctx context.Context, instance *api.
 // aiGatewayPolicySharedModels leaves the names of model routers out of a
 // policy's allowed models: a router is granted by its own checks, never
 // resolved as a shared model. A name some Team defines as a router counts as
-// a router unless it is also a shared model, which makes that router
-// misconfigured instead.
+// a router unless it is also a shared model Agents can hold a conversation
+// with, which makes that router misconfigured instead. A router named like a
+// shared model that answers no conversation, such as a decision model, is
+// misconfigured too, but its name still counts as a router here: a policy
+// that lists the name grants neither the router nor the model.
 func (r *AgentReconciler) aiGatewayPolicySharedModels(ctx context.Context, models []string) ([]string, error) {
 	teams := &api.TeamList{}
 	if err := r.List(ctx, teams); err != nil {

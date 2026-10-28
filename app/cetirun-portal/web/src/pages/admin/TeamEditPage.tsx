@@ -140,11 +140,13 @@ export function TeamEditPage() {
   const policiesQuery = useQuery({ queryKey: ["admin", "policies"], queryFn: listPolicies, retry: false });
   const sandboxesQuery = useQuery({ queryKey: ["admin", "sandboxes"], queryFn: listSandboxes, retry: false });
   // Tier and classifier pickers suggest the shared models that are not routers of the Gateway themselves,
-  // which the operator refuses there; the operator checks the routers.
+  // which the operator refuses there; the decision classifier offers the Gateway's decision models. The
+  // operator checks the routers.
   const catalogQuery = useQuery({ queryKey: ["ai-gateway", "catalog"], queryFn: getAIGatewayCatalog, retry: false });
   const sharedModelNames = (catalogQuery.data?.sharedModels || [])
     .filter((model) => !model.routerModels?.length && !model.routerUnverifiable)
     .map((model) => model.name);
+  const decisionModelNames = catalogQuery.data ? catalogQuery.data.decisionModels || [] : undefined;
   const policies = policiesQuery.data || [];
   const sandboxes = (sandboxesQuery.data || []).filter(box => !box.deleting);
   const configurationError = policiesQuery.error || sandboxesQuery.error;
@@ -312,6 +314,7 @@ export function TeamEditPage() {
         routers={form.modelRouters}
         status={existing?.modelRouterStatus}
         sharedModels={sharedModelNames}
+        decisionModels={decisionModelNames}
         onChange={(modelRouters) => setForm({ ...form, modelRouters })}
       />
 

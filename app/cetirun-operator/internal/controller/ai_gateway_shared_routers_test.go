@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -584,8 +585,8 @@ func TestGatewayRouterMayClassifyWithAModelThatAnswersNoConversation(t *testing.
 
 // An Agent without a policy gets a router that classifies with a decision
 // model, and its key the decision model's group, but neither its models, its
-// default model nor the published catalog list the decision model, even when
-// the Agent asks for it.
+// default model nor the published catalog's shared models list the decision
+// model, even when the Agent asks for it.
 func TestLegacyAgentIsNotConfiguredWithADecisionModel(t *testing.T) {
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: testLegacyRouterTeam, Generation: 1}}
 	agent := aiGatewayTestAgent(testLegacyRouterTeam)
@@ -623,8 +624,15 @@ func TestLegacyAgentIsNotConfiguredWithADecisionModel(t *testing.T) {
 	if err := kube.Get(ctx, types.NamespacedName{Namespace: "cetirun-system", Name: api.AIGatewayCatalogConfigMap}, configMap); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(configMap.Data[api.AIGatewayCatalogKey], testDecisionModel) {
-		t.Fatalf("the published catalog lists the decision model: %s", configMap.Data[api.AIGatewayCatalogKey])
+	// The decision model is listed apart, for a Team router's jev
+	// classifier, never as a shared model.
+	var published api.AIGatewayCatalog
+	if err := json.Unmarshal([]byte(configMap.Data[api.AIGatewayCatalogKey]), &published); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(published.SharedModels, func(model api.AIGatewayCatalogModel) bool { return model.Name == testDecisionModel }) ||
+		!slices.Equal(published.DecisionModels, []string{testDecisionModel}) {
+		t.Fatalf("the published catalog lists the decision model as a shared model: %s", configMap.Data[api.AIGatewayCatalogKey])
 	}
 }
 
@@ -662,7 +670,7 @@ func TestPublishedCatalogNamesTheModelsOfEachSharedRouter(t *testing.T) {
 	}
 	// The operator's own view never takes them from the published catalog.
 	var seeded aiGatewayCatalog
-	seeded.seed(described)
+	seeded.seed(described, nil)
 	if now, _ := seeded.shared(); len(now) == 0 || slices.ContainsFunc(now, func(m api.AIGatewayCatalogModel) bool { return m.RouterModels != nil }) {
 		t.Fatalf("seeded = %+v", now)
 	}
@@ -681,5 +689,74 @@ func TestAIGatewayCatalogChangedBySeesADecisionModelBecomeAChatModel(t *testing.
 	decision.Mode = "chat"
 	if !catalog.changedBy([]aigateway.Deployment{sol, decision}, false) {
 		t.Fatal("a model that now answers conversations is a change")
+	}
+}
+
+// A shared name is a decision model, which a Team router's jev classifier may
+// name, only when every shared deployment behind it is one. Deployments that
+// are not shared models, such as another group's, do not count.
+func TestAIGatewayCatalogFindsTheDecisionModels(t *testing.T) {
+	var catalog aiGatewayCatalog
+	small := aigateway.Deployment{ID: testSmallDeployment, ModelName: testSmallModel, AccessGroups: []string{testSmallGroup},
+		DatabaseSourceKnown: true, Mode: "chat"}
+	shared := func(id, name, mode string) aigateway.Deployment {
+		return aigateway.Deployment{ID: id, ModelName: name, AccessGroups: []string{aiGatewaySharedAccessGroup}, Mode: mode}
+	}
+	// decision-chat also answers conversations; decision-embedding answers
+	// none but is no decision model; admin-decision is not a shared model.
+	listing := []aigateway.Deployment{small, decisionModel(),
+		shared("dc-a", "decision-chat", "evaluation"), shared("dc-b", "decision-chat", "chat"),
+		shared("de-a", "decision-embedding", "evaluation"), shared("de-b", "decision-embedding", "embedding"),
+		shared("embed", "embedder", "embedding"),
+		{ID: "admin", ModelName: "admin-decision", AccessGroups: []string{"cetirun-admin"}, Mode: "evaluation"},
+	}
+	catalog.update(listing, false, time.Now())
+	view := catalog.sharedRouters()
+	if got := view.decisionModels(); !slices.Equal(got, []string{testDecisionModel}) {
+		t.Fatalf("decision models = %v", got)
+	}
+	for name, nonChat := range map[string]bool{testDecisionModel: true, "decision-chat": false, "decision-embedding": true, "embedder": true} {
+		if !view.shared[name] || view.nonChat[name] != nonChat {
+			t.Errorf("%s: shared %v nonChat %v, want nonChat %v", name, view.shared[name], view.nonChat[name], nonChat)
+		}
+	}
+	// A decision model that is no longer one is a change, even when it still
+	// answers no conversation: a jev router that names it is withdrawn.
+	listing[1].Mode = "embedding"
+	if !catalog.changedBy(listing, false) {
+		t.Fatal("a decision model that is no longer one is a change")
+	}
+	if changed, _, _ := catalog.update(listing, false, time.Now()); !changed || catalog.sharedRouters().decisionModels() != nil {
+		t.Fatalf("changed %v, decision models %v", changed, catalog.sharedRouters().decisionModels())
+	}
+}
+
+// The catalog seeded from the published one at a start during a Gateway
+// outage takes the decision models as shared models that answer no
+// conversation, so no Agent is configured with them, and a catalog published
+// again keeps listing them. A catalog an earlier operator published has none.
+func TestAIGatewayCatalogSeedsTheDecisionModels(t *testing.T) {
+	var seeded aiGatewayCatalog
+	seeded.seed([]aiGatewayCatalogModel{{Name: testSmallModel, ContextWindow: 400000}, {Name: testSharedModelOne}},
+		[]string{testDecisionModel, "", testSmallModel, testDecisionModel})
+	shared, known := seeded.shared()
+	if !known || len(shared) != 2 || shared[0].Name != testSmallModel || shared[0].ContextWindow != 400000 || shared[1].Name != testSharedModelOne {
+		t.Fatalf("shared = %+v", shared)
+	}
+	view := seeded.sharedRouters()
+	if view.known || !view.shared[testDecisionModel] || !view.nonChat[testDecisionModel] || view.nonChat[testSmallModel] ||
+		!slices.Equal(view.decisionModels(), []string{testDecisionModel}) {
+		t.Fatalf("view = %+v", view)
+	}
+	var earlier aiGatewayCatalog
+	earlier.seed([]aiGatewayCatalogModel{{Name: testSmallModel}}, nil)
+	if view := earlier.sharedRouters(); view.decisionModels() != nil || view.nonChat != nil {
+		t.Fatalf("view = %+v", view)
+	}
+	// A listing replaces the seeded view.
+	seeded.update([]aigateway.Deployment{{ID: testSmallDeployment, ModelName: testSmallModel, AccessGroups: []string{testSmallGroup},
+		DatabaseSourceKnown: true}}, false, time.Now())
+	if view := seeded.sharedRouters(); !view.known || view.shared[testDecisionModel] || view.decisionModels() != nil {
+		t.Fatalf("view = %+v", view)
 	}
 }

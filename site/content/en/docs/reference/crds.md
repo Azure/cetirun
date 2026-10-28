@@ -218,9 +218,9 @@ not material to paste into a public bug report.
 | `skillStorage.mountPath` | Optional read-only alias for native Agents; common view at `$HOME/.agents/skills` |
 | `modelRouters` | Smart-routing models, at most 10, keyed by `name`; see [smart routing](../../guides/teams/#smart-routing) |
 | `modelRouters[].name` | Model name instances request: 1 to 64 characters without whitespace or `/`, not starting with `cetirun-` in any letter case |
-| `modelRouters[].classifier.type` | `heuristic` (default) or `llm`; LiteLLM's licence-limited classifier types are not accepted |
-| `modelRouters[].classifier.model` | Shared model that classifies requests, not a router of the Gateway; required for `llm` and not allowed for `heuristic` |
-| `modelRouters[].tiers.simple`, `.medium`, `.complex` | Required model of each tier: a shared model name that is not a router of the Gateway, or `copilot/<model>` for a GitHub Copilot model; `medium` also takes requests that cannot be classified |
+| `modelRouters[].classifier.type` | `heuristic` (default), `llm` or `jev`; LiteLLM's licence-limited classifier types are not accepted |
+| `modelRouters[].classifier.model` | Shared model that classifies requests, not a router of the Gateway: a chat model for `llm`, a decision model (`model_info.mode: evaluation`) for `jev`; required for `llm` and `jev` and not allowed for `heuristic` |
+| `modelRouters[].tiers.simple`, `.medium`, `.complex` | Required model of each tier: the name of a shared model that answers conversations and is not a router of the Gateway, or `copilot/<model>` for a GitHub Copilot model; `medium` also takes requests that cannot be classified |
 | `modelRouters[].tiers.reasoning` | Optional; empty uses the `complex` model |
 
 | Field under `status` | Contract |

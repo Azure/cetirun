@@ -98,8 +98,9 @@ func TestTeamModelRouterSchema(t *testing.T) {
 		for _, value := range classifier.Properties["type"].Enum {
 			types = append(types, strings.Trim(string(value.Raw), `"`))
 		}
-		// LiteLLM's licence-limited classifier types are not offered.
-		if !slices.Equal(types, []string{ModelRouterClassifierHeuristic, ModelRouterClassifierLLM}) {
+		// LiteLLM's licence-limited classifier types are not offered; jev,
+		// with LiteLLM's own instructions, is not limited.
+		if !slices.Equal(types, []string{ModelRouterClassifierHeuristic, ModelRouterClassifierLLM, ModelRouterClassifierJev}) {
 			t.Fatalf("%s: classifier types = %v", path, types)
 		}
 		if len(classifier.XValidations) != 1 {
@@ -111,7 +112,9 @@ func TestTeamModelRouterSchema(t *testing.T) {
 		}{
 			{map[string]any{"type": "heuristic"}, true},
 			{map[string]any{"type": "llm", "model": "small-model"}, true},
+			{map[string]any{"type": "jev", "model": "decision-model"}, true},
 			{map[string]any{"type": "llm"}, false},
+			{map[string]any{"type": "jev"}, false},
 			{map[string]any{"type": "heuristic", "model": "small-model"}, false},
 			{map[string]any{"model": "small-model"}, false},
 			{map[string]any{}, true},

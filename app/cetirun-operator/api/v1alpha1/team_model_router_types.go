@@ -8,12 +8,16 @@ package v1alpha1
 // naming each router that is not, and why.
 const ConditionTeamModelRoutersReady = "ModelRoutersReady"
 
-// Classifier types a Team model router offers. LiteLLM's other classifier
-// types, custom tier sets and custom classifier prompts are limited to one
-// router per Gateway without a LiteLLM licence, so a Team cannot use them.
+// Classifier types a Team model router offers: heuristic, llm and jev.
+// Without a LiteLLM licence, LiteLLM limits the heuristic_v2, capability and
+// llm_v2 classifiers, custom tier sets and custom classifier prompts, a jev
+// classifier's own instructions included, to one router per Gateway, so a
+// Team cannot use them. A jev classifier with LiteLLM's own instructions is
+// not limited.
 const (
 	ModelRouterClassifierHeuristic = "heuristic"
 	ModelRouterClassifierLLM       = "llm"
+	ModelRouterClassifierJev       = "jev"
 )
 
 // TeamModelRouter is one smart-routing model of a Team: a model name Agents
@@ -40,18 +44,23 @@ type TeamModelRouter struct {
 }
 
 // TeamModelRouterClassifier selects how a router classifies requests.
-// +kubebuilder:validation:XValidation:rule="(has(self.type) && self.type == 'llm') == has(self.model)",message="classifier.model is required for the llm classifier and not allowed for the heuristic classifier"
+// +kubebuilder:validation:XValidation:rule="(has(self.type) && self.type in ['llm', 'jev']) == has(self.model)",message="classifier.model is required for the llm and jev classifiers and not allowed for the heuristic classifier"
 type TeamModelRouterClassifier struct {
 	// Type is heuristic, which scores each request locally without a model
-	// call, or llm, which asks a shared model to classify each request.
-	// +kubebuilder:validation:Enum=heuristic;llm
+	// call, llm, which asks a shared model to classify each request, or jev,
+	// which asks a shared decision model, such as Microsoft-Decision-1, to
+	// pick the tier.
+	// +kubebuilder:validation:Enum=heuristic;llm;jev
 	// +kubebuilder:default=heuristic
 	// +optional
 	Type string `json:"type,omitempty"`
 
-	// Model is the shared model that classifies requests for the llm
-	// classifier. It must be a shared model of the AI Gateway, not a GitHub
-	// Copilot model or another router. Its calls are charged to the Agent.
+	// Model is the shared model that classifies requests: a chat model for
+	// the llm classifier, a decision model (a shared model whose
+	// model_info.mode is evaluation) for the jev classifier. It must be a
+	// shared model of the AI Gateway, not a GitHub Copilot model or another
+	// router, and need not be listed by the AgentPolicy. Its calls are
+	// charged to the Agent.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=256
 	// +kubebuilder:validation:Pattern=`^[^\s]+$`

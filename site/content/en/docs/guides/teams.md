@@ -128,14 +128,18 @@ Each router has:
 - a **name**, 1 to 64 characters without spaces or slashes, not starting with
   the reserved `cetirun-` prefix, and not the name of a shared model;
 - a **classifier**: `heuristic` (the default) scores each request locally
-  without a model call; `llm` asks a shared model to classify each request,
-  and those calls are charged to the instance. The classifier is a model, never
-  a router of the Gateway such as `auto`: the Gateway makes the classifier call
-  on the instance's behalf without its key's checks, and a router would send it
-  on to a model of its own choice;
+  without a model call; `llm` asks a shared chat model to classify each
+  request; `jev` asks a shared decision model, such as Microsoft-Decision-1, to
+  pick the tier. A decision model is a shared model whose `model_info.mode` is
+  `evaluation`: LiteLLM calls it through its Decisions API, and it answers no
+  conversation. The calls of an `llm` or `jev` classifier are charged to the
+  instance. The classifier is a model, never a router of the Gateway such as
+  `auto`: the Gateway makes the classifier call on the instance's behalf
+  without its key's checks, and a router would send it on to a model of its
+  own choice;
 - four **tiers**, `simple`, `medium`, `complex` and `reasoning`, each naming a
-  shared model that is not itself a router, or `copilot/<model>` for a GitHub
-  Copilot model. `reasoning`
+  shared model that answers conversations and is not itself a router, or
+  `copilot/<model>` for a GitHub Copilot model. `reasoning`
   may be left empty to use the `complex` model. Requests the router cannot
   classify go to the `medium` model.
 
@@ -164,15 +168,36 @@ spec:
         medium: medium-model
         complex: copilot/large-model
         reasoning: large-model
+    - name: auto-decision
+      classifier:
+        type: jev
+        model: decision-model
+      tiers:
+        simple: small-model
+        medium: medium-model
+        complex: large-model
 ```
+
+A `jev` classifier sends the decision model the instance's whole system
+prompt and its latest user messages. Microsoft-Decision-1 refuses a request
+that it counts at more than 64,000 tokens. When a classification fails, as it
+does then, the router classifies the request with the heuristic classifier
+instead, without an error. The response header
+`x-litellm-complexity-router-cause` and the request log's `routing_cause` show
+which classifier decided: `jev_classifier` or `heuristic_scorer`. Measured on
+a test cluster with LiteLLM 1.105.1.
 
 The operator registers each router in the AI Gateway under an internal name
 and reports it on the Team: `status.modelRouters` lists each router as ready or
 explains why it is not, and the `ModelRoutersReady` condition summarizes them.
 A router is not registered while a tier or the classifier names a model the
-Gateway does not offer as a shared model, or a router of the Gateway; the
-message names the router and the tier. A changed router replaces its registration under the same internal name,
-so instances keep their configuration, and a removed router is unregistered.
+Gateway does not offer as a shared model, or a router of the Gateway. Nor is
+it registered while a tier or an `llm` classifier names a shared model that
+answers no conversation, or while a `jev` classifier names a shared model that
+is not a decision model. The message names the router and the tier or the
+classifier. A changed router replaces its registration under the same internal
+name, so instances keep their configuration, and a removed router is
+unregistered.
 The registrations appear in the Gateway's console under their internal
 `cetirun-router-` names; change them on the Team, not in the console, which
 the operator does not watch for edits. The Gateway's request log, and the
@@ -187,9 +212,10 @@ requests to, which the Gateway also holds the router to: it refuses, with HTTP
 
 - with an Agent Policy, the Policy's allowed shared models must list the
   router's name and each shared tier, and GitHub Copilot tiers need Copilot to
-  be allowed. The classifier must be a shared model, but need not be listed;
-- the instance must use shared models for a router with a shared tier or a
-  model classifier;
+  be allowed. The classifier must be a shared model, a chat model for `llm`
+  or a decision model for `jev`, but need not be listed;
+- the instance must use shared models for a router with a shared tier or an
+  `llm` or `jev` classifier;
 - a GitHub Copilot tier works for an instance once its owner has signed in to
   GitHub Copilot with an account that offers that model. Every member's
   account is assumed to offer the same models; a router whose tiers are all
@@ -207,8 +233,10 @@ is configured with for the router follow the tiers, as described in
 
 LiteLLM limits some router features to a single router per Gateway without a
 LiteLLM licence: the `heuristic_v2`, `capability` and `llm_v2` classifiers,
-custom tier sets and custom classifier prompts. A Team cannot use them; the
-Gateway chart's own routers can, within that limit.
+custom tier sets and custom classifier prompts, the instructions of a `jev`
+classifier included. A Team cannot use them; the Gateway chart's own routers
+can, within that limit. A Team's `jev` classifier keeps LiteLLM's own
+instructions, which LiteLLM does not limit.
 
 Sources: [team event handling]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [team defaults and skills]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
