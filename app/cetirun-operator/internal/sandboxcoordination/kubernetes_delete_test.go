@@ -39,7 +39,7 @@ func deletionOptions(before client.Object) metav1.DeleteOptions {
 
 func TestConfigurationDeletionOperationRecovery(testContext *testing.T) {
 	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
-		for _, scenario := range []string{"removed", "terminating", "replacement", "unchanged", "observation unavailable", "release unavailable"} {
+		for _, scenario := range []string{"removed", "terminating", "replacement", "superseded", "unchanged", "observation unavailable", "release unavailable"} {
 			testContext.Run(kind+"/"+scenario, func(testContext *testing.T) {
 				ctx := context.Background()
 				store, storage, before, _ := configurationFixture(testContext, kind)
@@ -57,8 +57,15 @@ func TestConfigurationDeletionOperationRecovery(testContext *testing.T) {
 				if err != nil {
 					testContext.Fatal(err)
 				}
-				if scenario != "unchanged" {
+				if scenario != "unchanged" && scenario != "superseded" {
 					if err := storage.Delete(ctx, before, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+						testContext.Fatal(err)
+					}
+				}
+				if scenario == "superseded" {
+					current := before.DeepCopyObject().(client.Object)
+					current.SetAnnotations(map[string]string{"example.com/observed": "true"})
+					if err := storage.Update(ctx, current); err != nil {
 						testContext.Fatal(err)
 					}
 				}
@@ -526,7 +533,15 @@ func TestConfigurationDeletionRetainsUnknownOutcomesAndPreflightFailures(t *test
 			if err := adapter.Submit(ctx, ticket, guard); err == nil || calls != 0 {
 				t.Fatal("failed preflight submitted a deletion:", err)
 			}
-			if _, err := adapter.ObserveChange(ctx, ticket); err == nil {
+			outcome, err := adapter.ObserveChange(ctx, ticket)
+			if scenario == "source drift" {
+				if err != nil || !outcome.Aborted || !outcome.Superseded || outcome.Applied || !outcome.NoPendingSubmissions {
+					t.Fatal("superseded conditional deletion was not distinguished from acceptance:", outcome, err)
+				}
+				if err := store.CheckChange(ctx, ticket); err != nil {
+					t.Fatal("observation released the reservation:", err)
+				}
+			} else if err == nil {
 				t.Fatal("unobserved deletion was declared complete")
 			}
 		})

@@ -25,6 +25,9 @@ type ChangeOutcome struct {
 	// Removed proves the Before UID is absent. After must be empty, and any
 	// delayed submission must be unable to affect a same-name replacement.
 	Removed bool
+	// Superseded proves a newer resourceVersion excludes every delayed
+	// conditional submission using Before, without claiming the write applied.
+	Superseded bool
 }
 
 type ChangeAdapter interface {
@@ -57,22 +60,35 @@ func (s Store) ReconcileChange(ctx context.Context, ticket ChangeTicket, adapter
 	if ticket.Change.Phase != Changing {
 		return ticket, ErrConflict
 	}
+	_, err := s.observeAndReleaseChange(ctx, ticket, adapter)
+	return ticket, err
+}
+
+func (s Store) observeAndReleaseChange(ctx context.Context, ticket ChangeTicket, adapter ChangeAdapter) (*ChangeOutcome, error) {
 	outcome, err := adapter.ObserveChange(ctx, ticket.DeepCopy())
 	if err != nil {
-		return ticket, err
+		return nil, err
 	}
 	if outcome == nil || outcome.AuthorityUID != string(ticket.AuthorityUID) ||
 		outcome.OperationID != ticket.Change.ID || outcome.Before != ticket.Change.Before ||
 		outcome.DesiredDigest != ticket.Change.DesiredDigest || !outcome.NoPendingSubmissions ||
 		outcome.Applied == outcome.Aborted || !validChangeAfter(outcome) {
-		return ticket, fmt.Errorf("%w: source change outcome is unknown or mismatched", ErrUnavailable)
+		return nil, fmt.Errorf("%w: source change outcome is unknown or mismatched", ErrUnavailable)
 	}
-	return ticket, s.ReleaseChange(ctx, ticket)
+	if err := s.ReleaseChange(ctx, ticket); err != nil {
+		return nil, err
+	}
+	return outcome, nil
 }
 
 func validChangeAfter(outcome *ChangeOutcome) bool {
 	if outcome.Removed {
-		return outcome.Applied && !outcome.Aborted && outcome.After == (w.SourceReference{})
+		return outcome.Applied && !outcome.Aborted && !outcome.Superseded && outcome.After == (w.SourceReference{})
+	}
+	if outcome.Superseded {
+		return outcome.Aborted && !outcome.Applied && validSource(outcome.After) &&
+			sourceKey(outcome.After) == sourceKey(outcome.Before) && outcome.After.UID == outcome.Before.UID &&
+			outcome.After.ResourceVersion != outcome.Before.ResourceVersion
 	}
 	return validSource(outcome.After) && sourceKey(outcome.After) == sourceKey(outcome.Before) &&
 		outcome.After.UID == outcome.Before.UID &&

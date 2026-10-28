@@ -548,6 +548,11 @@ a new version or is absent. Delayed conditional requests cannot delete a
 replacement. Explicit `delete` can then release the recorded reservation without
 resubmission; read-only observation retains it. `deletion-accepted` does not
 mean finalizers, dependents or physical cleanup have completed.
+If that UID remains live at a newer resourceVersion, the old conditional Delete
+cannot apply. `observe-delete` reports `deletion-superseded-reservation-retained`;
+explicit recovery reports `deletion-superseded` without replaying the Delete.
+Portal deletion can then authorize a new request using the administrator's
+fresh UID/resourceVersion. An unchanged uncertain operation remains held.
 
 An already-terminating configuration can remove existing finalizers through its
 normal authorized update path without acquiring a new change ticket. This
