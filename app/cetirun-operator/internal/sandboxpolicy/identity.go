@@ -27,6 +27,9 @@ func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *Approv
 	if policy.KubernetesAccess == nil && !policy.EntraID.Enabled {
 		return plan, grants, nil, nil
 	}
+	if err := ValidateIdentityApprovals(platform.Identities); err != nil {
+		return plan, nil, nil, err
+	}
 	var approval *ApprovedIdentity
 	for i := range platform.Identities {
 		candidate := platform.Identities[i]
@@ -65,29 +68,8 @@ func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *Approv
 		ObjectMeta:                   metadata,
 		AutomountServiceAccountToken: &automount,
 	}
+	projectIdentity(&plan, policy.KubernetesAccess != nil, nil, platform.KubernetesAudience, expiration)
 	if policy.KubernetesAccess != nil {
-		mode := int32(0440)
-		plan.Volumes = append(plan.Volumes, corev1.Volume{
-			Name: "sandbox-kubernetes-api",
-			VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
-				DefaultMode: &mode,
-				Sources: []corev1.VolumeProjection{
-					{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-						Audience: platform.KubernetesAudience, ExpirationSeconds: &expiration, Path: "token",
-					}},
-					{ConfigMap: &corev1.ConfigMapProjection{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"},
-						Items:                []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}},
-					}},
-					{DownwardAPI: &corev1.DownwardAPIProjection{Items: []corev1.DownwardAPIVolumeFile{{
-						Path: "namespace", FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.namespace"},
-					}}}},
-				},
-			}},
-		})
-		plan.VolumeMounts = append(plan.VolumeMounts, corev1.VolumeMount{
-			Name: "sandbox-kubernetes-api", MountPath: "/var/run/secrets/kubernetes.io/serviceaccount", ReadOnly: true,
-		})
 		subject := rbacv1.Subject{Kind: "ServiceAccount", Name: plan.ServiceAccountName, Namespace: input.Namespace}
 		for _, grant := range grants {
 			grantRevision, err := digest(grant)
@@ -131,27 +113,7 @@ func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *Approv
 		}
 	}
 	if policy.EntraID.Enabled {
-		mode := int32(0440)
-		plan.Volumes = append(plan.Volumes, corev1.Volume{
-			Name: "sandbox-entra-exchange",
-			VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
-				DefaultMode: &mode, Sources: []corev1.VolumeProjection{{
-					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-						Audience: EntraAudience, ExpirationSeconds: &expiration, Path: "azure-identity-token",
-					},
-				}},
-			}},
-		})
-		plan.VolumeMounts = append(plan.VolumeMounts, corev1.VolumeMount{
-			Name: "sandbox-entra-exchange", MountPath: "/var/run/secrets/azure/tokens", ReadOnly: true,
-		})
-		plan.Env = []corev1.EnvVar{
-			{Name: "AZURE_CLIENT_ID", Value: approval.Entra.ClientID},
-			{Name: "AZURE_TENANT_ID", Value: approval.Entra.TenantID},
-			{Name: "AZURE_FEDERATED_TOKEN_FILE", Value: "/var/run/secrets/azure/tokens/azure-identity-token"},
-		}
-		plan.ServiceAccount.Annotations["azure.workload.identity/client-id"] = approval.Entra.ClientID
-		plan.ServiceAccount.Annotations["azure.workload.identity/tenant-id"] = approval.Entra.TenantID
+		projectIdentity(&plan, false, approval.Entra, platform.KubernetesAudience, expiration)
 	}
 	// Unrequested privileges are not projected or included as effective identity.
 	approval.Kubernetes = policy.KubernetesAccess != nil

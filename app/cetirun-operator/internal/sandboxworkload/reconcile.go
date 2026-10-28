@@ -348,6 +348,9 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 			return fmt.Errorf("mTLS static configuration requires its rollout checksum")
 		}
 	}
+	if err := b.ValidateIdentityProjection(spec); err != nil {
+		return err
+	}
 	if !b.input.Reconciled || len(spec.Containers) == 0 || spec.Containers[0].Image != image ||
 		ptr.Deref(spec.RuntimeClassName, "") != b.input.RuntimeClass.Name ||
 		spec.HostNetwork || spec.HostPID || spec.HostIPC || ptr.Deref(spec.ShareProcessNamespace, false) ||

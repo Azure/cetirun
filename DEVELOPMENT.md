@@ -392,6 +392,30 @@ headers. Keep it local; it is not a production authentication configuration.
 Starting the Go backend or operator uses Kubernetes configuration and is
 outside the offline validation loop.
 
+### Sandbox Entra projection core
+
+The generic `AgentPolicy.spec.entraID` projection is distinct from Broker Agent
+Identity and credential-service policy. Its compiler, common chart rendering and
+current Namespace/ServiceAccount binding checks are testable offline. Native
+Entra capability remains disabled until the shared source-pin and lifecycle
+integration is complete; a render or a passing test is not an execution permit.
+
+```bash
+go -C app/cetirun-operator test ./internal/sandboxpolicy ./internal/sandboxworkload ./internal/helm ./internal/controller -run '^Test(Entra|NativeEntra)' -count=1 -timeout=20m
+go -C app/cetirun-operator test -race ./internal/sandboxpolicy ./internal/sandboxworkload ./internal/helm ./internal/controller -run '^Test(Entra|NativeEntra)' -count=1 -timeout=20m
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/helm -run '^TestEntraIdentityBindingAPIServer$' -count=1 -timeout=20m
+```
+
+The API test starts its own API server/etcd with synthetic identity approvals.
+It verifies real namespace and ServiceAccount UIDs, metadata drift, confirmed
+ServiceAccount deletion/replacement and absence of unrequested Kubernetes RBAC.
+It does not start a Pod, request an Entra token, contact a cloud/identity API or
+qualify federation, Azure permissions or cloud-token revocation. The normal
+controller cases keep unsupported identity activation held while preserving
+owned HOME, Gateway keys and ordinary resume behavior for both harnesses.
+See the [remaining integration boundary](app/cetirun-operator/README.md#entra-runtime-projection-core).
+
 ### Runtime chart and Python helpers
 
 The [shared base image version notes](app/cetirun-chart/base-image.md) record

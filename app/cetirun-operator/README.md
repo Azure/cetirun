@@ -1825,6 +1825,54 @@ including fragmented ranges; no entries are truncated.
 Ordinary workloads keep the default ServiceAccount without token automount.
 Approved Kubernetes API and Entra identities use separate audience-bound token
 projections; Entra-only identity does not implicitly authorize Kubernetes access.
+
+#### Entra runtime projection core
+
+`AgentPolicy.spec.entraID.enabled` selects the generic workload token projection,
+not `Agent.spec.agentIdentity` or the Broker's credential-service authorization.
+The compiler requires a current platform approval for the exact Agent UID,
+workload namespace, dedicated non-default ServiceAccount, approval revision,
+client ID and tenant ID. An approval inventory cannot assign one ServiceAccount
+to two Agents in the same namespace. Disabled identity projects nothing;
+Kubernetes-only policy does not inherit an unrequested Entra approval.
+
+The existing compiler and common chart emit a read-only `0440` projected token
+with audience `api://AzureADTokenExchange`, a 600–3600 second lifetime and the
+three explicit `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
+`AZURE_FEDERATED_TOKEN_FILE` settings. Structural validation shares the compiler's
+projection builder and confines identity volumes, mounts and environment to
+the main `cetirun` container, excluding init containers, helpers and ephemeral
+containers. No workload identity webhook injection is enabled. Entra-only
+output creates no Kubernetes RoleBinding or ClusterRoleBinding and requires
+neither Kubernetes RBAC grants nor ingress mTLS. The separately declared
+Kubernetes API audience must differ from the Entra exchange audience; that
+declaration is not an API permission or network grant.
+
+This is **independently testable core, not native Entra activation**. The native
+capability, policy and platform gates still reject Entra. Common chart rendering
+already preserves the projection, but rendering does not authorize an apply.
+[`ValidateIdentityBinding`](internal/sandboxworkload/identity_binding.go), on a
+`Bundle` or existing `ReconcileExpectation`, checks authoritative
+namespace/ServiceAccount readback against the current compiled approval and an
+existing `ObjectIdentity` UID pin. It rejects replacements,
+foreign owners, stale approval metadata and implicit token/credential inheritance;
+it never adopts or records a replacement itself.
+
+Final common-executor integration must use the existing source reservation and
+lifecycle machinery: persist the dedicated ServiceAccount UID before use, check
+its identity/approval metadata at apply, observation and Pod-admission boundaries,
+and retain the checks through hold, suspension, restart, configuration changes
+and deletion. Generic control comparison alone does not establish this identity
+metadata contract. Native activation requires that shared mounting/readback/
+recovery integration; selecting a generic profile is not a supported substitute.
+
+Offline tests cover compiler approvals, both built-in chart renderers, current
+binding readback, negative Kubernetes RBAC checks on an isolated API server and
+fail-closed native lifecycle behavior. They do not exchange tokens with Entra,
+provision federated credentials, verify Azure permissions, run Pods or establish
+cloud token revocation. Stopping new projections cannot revoke already-issued
+Azure access tokens. See the [focused commands](../../DEVELOPMENT.md#sandbox-entra-projection-core).
+
 The compiler does not provision or revoke cloud identities. RBAC revocation
 helpers require authoritative UID/ownership checks and confirmed absence, and
 preserve shared roles/accounts. The held controller uses

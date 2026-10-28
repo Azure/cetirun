@@ -62,6 +62,9 @@ func validateObjects(input Input) error {
 			tlsObjects[key], _ = json.Marshal(object.Object)
 		}
 	}
+	identity := sandboxpolicy.IdentityPlan{
+		ServiceAccountName: c.ServiceAccountName, Volumes: c.Volumes, VolumeMounts: c.VolumeMounts, Env: c.Environment,
+	}
 	for _, object := range c.Objects {
 		kind := object.GetAPIVersion() + "/" + object.GetKind()
 		key := kind + "/" + object.GetNamespace() + "/" + object.GetName()
@@ -106,6 +109,7 @@ func validateObjects(input Input) error {
 				return fmt.Errorf("compiler must emit only the bound dedicated ServiceAccount without implicit token or pull credentials")
 			}
 			serviceAccounts++
+			identity.ServiceAccount = &account
 		case "rbac.authorization.k8s.io/v1/RoleBinding":
 			var grant rbacv1.RoleBinding
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &grant, true); err != nil {
@@ -141,7 +145,7 @@ func validateObjects(input Input) error {
 			return fmt.Errorf("compiler resource inventory omits a requested Kubernetes binding")
 		}
 	}
-	return nil
+	return sandboxpolicy.ValidateIdentityProjection(input.Resolution.AgentPolicy, identity)
 }
 
 func validateGrant(input Input, metadata metav1.ObjectMeta, role rbacv1.RoleRef, subjects []rbacv1.Subject, grants map[grantScope]bool) error {
