@@ -87,15 +87,16 @@ base64 -w0 ca.crt > ca-bundle.txt
 
 `ca-bundle.txt` holds the CA bundle for the enforcement step. Keep `ca.key`
 outside the cluster, and renew the certificate before it expires: an expired
-certificate makes the admission server unready and refuses every write it
-checks. The operator README describes
+certificate makes the admission server unready, and once admission is enforced,
+every write it checks is refused. The operator README describes
 [rotating the CA]({{< repo "app/cetirun-operator/README.md" >}}#availability-and-bootstrap).
 
 ## Admission without enforcement
 
-Admission has to run and answer before it may refuse anything: it cannot be
-installed enforced. Add to your platform values file, and run the deployment
-helper again:
+Install admission without enforcement first, so that it runs and answers
+before its refusals count; installing it enforced from the start is not
+supported. Add to your platform values file, and run the deployment helper
+again:
 
 ```yaml
 cetirun-operator:
@@ -110,10 +111,10 @@ cetirun-operator:
       - "<admin-group-object-id>"  # an Entra ID group's object ID
 ```
 
-List at least one administrator in `adminUsers` or `adminGroups`: only they
-can create policy-bound configuration with `kubectl`, and only they can
-reauthorize an Agent, for which the Portal has no page. Then check that both
-replicas are ready, on different nodes:
+List at least one administrator in `adminUsers` or `adminGroups`. They can
+write policy-bound configuration with `kubectl`, and reauthorize an Agent, for
+which the Portal has no page. Then check that both replicas are ready, on
+different nodes:
 
 ```bash
 kubectl rollout status deployment/cetirun-sandbox-admission -n cetirun-system
@@ -241,9 +242,10 @@ kubectl create configmap sandbox-platform -n cetirun-system --from-file=platform
 
 ## Peer labels
 
-Cilium selects the Pods of the DNS and Gateway peers by the label
-`sandbox.cetirun.microsoft.com/peer-uid`, whose value is the peer's `uid`; an
-Agent can reach no Pod without it. Label CoreDNS and the AI Gateway:
+Cilium lets an Agent reach the Pods of the DNS and Gateway peers only when they
+carry the label `sandbox.cetirun.microsoft.com/peer-uid`, whose value is the
+peer's `uid`; their addresses alone are not enough. Label CoreDNS and the AI
+Gateway:
 
 ```bash
 kubectl label pods -n kube-system -l k8s-app=kube-dns \
@@ -318,8 +320,8 @@ support. Members can then create Agents for the Team, as in
   are not available to Sandbox Agents.
 - Changing a Policy's model access, budget, network or security settings
   restarts its running Agents once. Changing only its request limits does not.
-- An Agent cannot move to another Team; an administrator reauthorizes it with
-  `kubectl`.
+- An Agent moves to another Team only when an administrator reauthorizes it
+  with `kubectl`.
 
 Sources: [Sandbox capabilities]({{< repo "app/cetirun-operator/internal/sandbox/capabilities.go" >}}),
 [network compiler]({{< repo "app/cetirun-operator/internal/sandboxpolicy/network.go" >}}),
