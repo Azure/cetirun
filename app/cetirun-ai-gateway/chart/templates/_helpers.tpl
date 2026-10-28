@@ -343,7 +343,10 @@ have to be {open, close} pairs, as LiteLLM 1.105.1 requires.
 {{- $writesPrompt = true -}}
 {{- end -}}
 {{- else if eq $type "jev" -}}
-{{- if kindIs "string" (get (get $config "jev_classifier_config" | default dict) "instructions") -}}
+{{- /* get returns "" for a missing key: check for the key first, so that a jev
+       classifier with LiteLLM's own instructions claims nothing. */ -}}
+{{- $jev := get $config "jev_classifier_config" | default dict -}}
+{{- if and (hasKey $jev "instructions") (kindIs "string" (index $jev "instructions")) -}}
 {{- $writesPrompt = true -}}
 {{- end -}}
 {{- end -}}

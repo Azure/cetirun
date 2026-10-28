@@ -519,6 +519,15 @@ two_routers "${router_dir}/shipped-prompts.yaml" "classifier_type: llm, classifi
   "classifier_type: llm, classifier_llm_config: {model: lint-model}"
 helm template "${release_name}" "${chart_dir}" -f "${router_dir}/shipped-prompts.yaml" > /dev/null \
   || { echo "FAIL: two model classifiers with LiteLLM's own prompt were counted" >&2; exit 1; }
+# A jev classifier claims the classifier prompt only with instructions of its own.
+two_routers "${router_dir}/shipped-jev.yaml" "classifier_type: jev, jev_classifier_config: {deployment_name: lint-model}" \
+  "classifier_type: llm, classifier_llm_config: {model: lint-model, system_prompt: rubric}"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/shipped-jev.yaml" > /dev/null \
+  || { echo "FAIL: a jev classifier with LiteLLM's own instructions was counted" >&2; exit 1; }
+two_routers "${router_dir}/two-jev-instructions.yaml" \
+  "classifier_type: jev, jev_classifier_config: {deployment_name: lint-model, instructions: rubric}" \
+  "classifier_type: jev, jev_classifier_config: {deployment_name: lint-model, instructions: rubric}"
+router_rejected "two jev classifiers with their own instructions" "${router_dir}/two-jev-instructions.yaml"
 
 # ----- Budgets -----
 

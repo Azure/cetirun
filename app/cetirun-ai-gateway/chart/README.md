@@ -1038,8 +1038,10 @@ user_turn`) only for clients that send a session ID it recognizes; OpenClaw
 `classifier_type: capability`, `classifier_type: llm_v2`, and its own
 `tier_definitions` or classifier prompt (`classifier_llm_config.system_prompt`,
 `classification_prompt` or `classification_examples`, with a classifier that
-calls a model). With two in one class, the proxy refused to start; the chart
-rejects the second. One router in each class is accepted.
+calls a model, or `jev_classifier_config.instructions` other than LiteLLM's
+own). With two in one class, the proxy refused to start; the chart rejects the
+second, counting any `jev_classifier_config.instructions`. One router in each
+class is accepted.
 
 The request log line of a routed call carries the router's name as `model`, the
 model it picked as `provider_model`, and `routing_tier`, `routing_cause`,
