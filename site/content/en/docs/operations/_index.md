@@ -18,6 +18,7 @@ before later checks fail; read their prerequisites and side effects first.
 
 - [Install CetiRun](../getting-started/platform/) — prerequisites and installation order
 - [Infrastructure](infrastructure/) — AKS and Azure Blob NFS
+- [Agent Identity setup](agent-identity/) — encryption, workload trust, certificates, provider registrations and rollout
 
 ## Configuration
 
@@ -25,6 +26,8 @@ before later checks fail; read their prerequisites and side effects first.
 - [Configure a team](../guides/teams/) — team context, provider defaults, and skills
 - [Storage](storage/)
 - [Istio authentication and egress](istio/)
+- [Entra Agent Identity setup](entra-agent-identity/) — Blueprint, federation and Azure/Microsoft authorization
+- [Identity provider setup](identity-providers/) — GitHub App, GitHub OAuth and Google OAuth
 
 ## Troubleshooting
 

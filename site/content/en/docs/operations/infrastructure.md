@@ -118,6 +118,9 @@ templates use Istio `Gateway` and `VirtualService` resources.
 Cluster provisioning alone does not publish images, create all Entra
 registrations, issue TLS certificates, or establish end-user provider accounts.
 Complete the [platform checklist](../../getting-started/platform/).
+For Agent connections, follow [Agent Identity setup](../agent-identity/) for
+the encryption identity and Key Vault key, provider applications, certificates,
+and coordinated Broker/MCP/Portal configuration.
 
 Cluster parameters enable Container Insights and Prometheus metrics by default.
 Inspect the workspace and data-collection resources, retention, access roles,

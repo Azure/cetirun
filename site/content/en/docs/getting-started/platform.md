@@ -87,6 +87,11 @@ ServiceEntry nor the built-in egress blacklist is a complete outbound allowlist.
 
 ## 3. Install the operator and portal
 
+For Agent connections, complete [Agent Identity setup](../../operations/agent-identity/)
+before enabling the Portal feature. It covers the separate Broker, Key Vault,
+MCP certificates and trust, provider registrations, and optional Entra lifecycle
+configuration. The platform chart does not provision these external resources.
+
 For a new installation, the platform chart packages the operator, the portal
 and the AI Gateway into one release. Independent component charts are also available. Do not
 install both over the same resources: the umbrella does not adopt resources
