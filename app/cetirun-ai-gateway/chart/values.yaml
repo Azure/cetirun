@@ -256,11 +256,12 @@ router:
   # -- The same, for requests too long for the model's context window.
   contextWindowFallbacks: []
   # -- Probe every deployment in the background, and send requests only to
-  # those that answered their last probe: the models configured above, those
-  # added through the console, and the GitHub Copilot routes the CetiRun
-  # operator registers for each Agent. Each probe is a real call, with
+  # those that answered their last probe: the models configured above and
+  # those added through the console. Each probe is a real call, with
   # max_tokens 16, and writes a request log line marked as a probe
-  # (call_origin health_check). A probe of an Agent's GitHub Copilot route
+  # (call_origin health_check). The GitHub Copilot routes the CetiRun
+  # operator registers for each Agent are not probed unless the operator's
+  # aiGateway.copilotProxy.healthChecks.enabled is on: a probe of one
   # spends that Agent owner's own Copilot allowance. With Redis, one replica
   # probes for all of them. Set model_info.mode on a model that is not a chat
   # model, such as an embedding or image model, so it is probed the right way,

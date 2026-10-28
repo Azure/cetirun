@@ -335,15 +335,17 @@ runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 | `cetirun-ai-gateway.router.routingStrategy` | `simple-shuffle`; how one of a model's deployments is chosen: also `least-busy`, `latency-based-routing`, `usage-based-routing-v2` or `cost-based-routing`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-deployment) |
 | `cetirun-ai-gateway.router.failover`, `router.continuationAffinity` | `true`; with several deployments behind one model name, a request that failed on one is sent once more to another (not a retry; `simple-shuffle` only), and a Responses API continuation goes to the deployment that stored the earlier response. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#routing) |
 | `cetirun-ai-gateway.router.encryptedContentAffinity`, `router.deploymentAffinity` | `true`; keeps each Responses API conversation on the deployment that encrypted its reasoning, and each key on the deployment that served it last, for the provider's prompt cache. When that deployment fails, the conversation's requests fail with it until it is in cooldown or marked unhealthy by the health checks; only then does the conversation move, without its encrypted reasoning. Keep health checks on: a cooldown lasts five seconds. Deployment affinity is off for models whose deployments set `order`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#encrypted-reasoning-stays-with-its-resource) |
-| `cetirun-ai-gateway.router.healthChecks.enabled`, `router.healthChecks.intervalSeconds`, `router.healthChecks.concurrency` | `true`, `300` and `8`; probes every deployment, at most eight at a time, including each Agent's GitHub Copilot routes, which spends the owner's Copilot allowance, and routes only to those that answered. With Redis, one replica probes for all |
+| `cetirun-ai-gateway.router.healthChecks.enabled`, `router.healthChecks.intervalSeconds`, `router.healthChecks.concurrency` | `true`, `300` and `8`; probes every deployment, at most eight at a time, and routes only to those that answered. With Redis, one replica probes for all. Each Agent's GitHub Copilot routes are probed only with `cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` |
 | `cetirun-ai-gateway.budgetExceededStatusCode` | `402`; the status of a request refused for an exhausted key or team budget. OpenClaw and Hermes stop and report exhausted credits; `422` makes them report a malformed request and `429` a rate limit they retry. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#when-a-budget-runs-out) |
 | `cetirun-ai-gateway.podDisruptionBudget.enabled` | `true`; above one Gateway replica, a PodDisruptionBudget with `maxUnavailable: 1` so a node drain evicts one replica at a time |
 | `cetirun-ai-gateway.router.fallbacks`, `router.contextWindowFallbacks` | `[]`; models to try when a model fails, or when a request is too long for it. Each target is checked against the Agent's key |
 | `cetirun-operator.aiGateway.enabled`, `cetirun-portal.features.aiGatewayEnabled` | `true`; required, the chart refuses to install with either off |
+| `cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` | `false`; the Gateway's health checks skip each Agent's GitHub Copilot routes, since every probe is a real call on the owner's Copilot allowance. `true` probes them like the other deployments, without retries: a route that shares a model's name with shared deployments then leaves rotation at the next probe when its proxy cannot be reached. A change registers each Agent's routes again within about ten minutes, without restarting Agents. See [Choose a model](../../guides/models/#models-through-the-ai-gateway) |
 | `cetirun-operator.domainSuffix`, `cetirun-portal.istio.host` | Required deployment domain for enabled components |
 | `cetirun-operator.istioGateway`, `cetirun-portal.istio.gateway` | Matching Gateway resource in `namespace/name` form |
 | `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` | Namespace containing the gateway workload allowed to reach agents |
 | `cetirun-portal.istio.gatewayNamespace`, `gatewayServiceAccount` | Gateway workload identity used by portal access controls |
+| `cetirun-operator.sandboxAdmission.portalServiceAccount` | `cetirun-portal` in the platform (the operator chart defaults to empty); with Sandbox admission enabled, adds the Portal's service account in the release namespace to the admission administrators, which the Portal's writes to policy-bound Agents need. Keep it equal to `cetirun-portal.serviceAccount.name`; clear it when the Portal is disabled. See the [platform chart README]({{< repo "app/cetirun-platform/README.md" >}}) |
 
 The chart does not own managed Istio, the independent CetiRun Istio release,
 certificates, credentials, agent instances, or retained agent data. Setting
@@ -548,6 +550,11 @@ a new version or is absent. Delayed conditional requests cannot delete a
 replacement. Explicit `delete` can then release the recorded reservation without
 resubmission; read-only observation retains it. `deletion-accepted` does not
 mean finalizers, dependents or physical cleanup have completed.
+If that UID remains live at a newer resourceVersion, the old conditional Delete
+cannot apply. `observe-delete` reports `deletion-superseded-reservation-retained`;
+explicit recovery reports `deletion-superseded` without replaying the Delete.
+Portal deletion can then authorize a new request using the administrator's
+fresh UID/resourceVersion. An unchanged uncertain operation remains held.
 
 An already-terminating configuration can remove existing finalizers through its
 normal authorized update path without acquiring a new change ticket. This

@@ -709,7 +709,10 @@ deployment unhealthy: within one `router.healthChecks.intervalSeconds`, 300
 seconds by default, on the replica that probes, and up to one interval later
 on the others, which reuse its result. The conversation then stays moved while
 the probes keep failing. Keep health checks on; a shorter interval narrows the
-window, at the cost of more probes.
+window, at the cost of more probes. The GitHub Copilot routes the CetiRun
+operator registers are not probed unless the operator turns their probes on
+(see [Health checks](#health-checks)): a conversation kept on an Agent's
+Copilot route that fails leaves it only for moments, as without health checks.
 
 ### A key stays on its deployment
 
@@ -770,16 +773,28 @@ failing: every request went to the other one, where 10 of 30 failed without
 health checks. When every deployment of a model fails its probe, requests are
 still sent.
 
-Every deployment means the models in `models`, those added through the
-console, and the GitHub Copilot routes the CetiRun operator registers for each
-Agent. Each probe is a real call, with `max_tokens` 16, so a probe of an
-Agent's Copilot route spends that Agent owner's own GitHub Copilot allowance:
-about 288 small calls a day per route at the default interval. A router from
+Every deployment means the models in `models` and those added through the
+console. Each probe is a real call, with `max_tokens` 16. A router from
 LiteLLM's auto routing is not probed itself; its models are. Set
 `model_info.mode` on a model that is not a chat model, such as an embedding or
 image model, so it is probed the right way, and
 `model_info.disable_background_health_check: true` on a model that should not
 be probed.
+
+The GitHub Copilot routes the CetiRun operator registers for each Agent are
+not probed by default: the operator registers them with
+`model_info.disable_background_health_check: true`. A probe of an Agent's
+Copilot route spends that Agent owner's own GitHub Copilot allowance: about
+288 small calls a day per route at the default interval, and an Agent has a
+route for each of its Copilot models. The operator chart's
+`aiGateway.copilotProxy.healthChecks.enabled`
+(`cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` in the
+`cetirun-platform` chart) turns their probes on, and they are then probed like
+every other deployment. That changes routing only for a route under a shared
+model's name: a name that only the Agent's own route serves gets its requests
+either way. Without probes, nothing takes such a route out of rotation when
+its proxy cannot be reached; see
+[Serving CetiRun Agents](#serving-cetirun-agents).
 
 Probes start at most `router.healthChecks.concurrency` at a time, 8 by
 default (`health_check_concurrency`). Without a limit LiteLLM starts every
@@ -788,9 +803,10 @@ probed within about 100 ms, and one GitHub account answered 11 to 43 of a
 cycle's Copilot probes with 429. LiteLLM retries a failed probe at the SDK
 level, which adds calls, unless the deployment sets
 `model_info.health_check_params: {max_retries: 0}`. The CetiRun operator
-registers every GitHub Copilot route that way: measured on LiteLLM 1.105.1
-against an upstream answering 429, a route registered with it got one call per
-probe, and one without it three.
+registers every GitHub Copilot route that way, so their probes, once turned
+on, are not retried: measured on LiteLLM 1.105.1 against an upstream answering
+429, a route registered with it got one call per probe, and one without it
+three.
 
 A probe answered with 429 or 408 is ignored for routing: the deployment keeps
 the state of its previous probe, for up to two intervals, and no cooldown
@@ -1280,10 +1296,15 @@ sets. `router.routingStrategy` then spreads the Agent's requests over the shared
 deployments and its own route, and LiteLLM's default cooldown takes a failing
 route out of rotation, see [Failover](#a-failed-request-goes-to-another-deployment).
 LiteLLM neither cools down nor retries elsewhere a request that could not
-connect, as when the Agent's proxy is down: until the health checks take the
-route out of rotation at their next probe (`router.healthChecks`), the requests
-that land on it fail. Measured with a route whose proxy refused connections:
-4 of 20 requests failed. Spend is counted at the model's list price either way.
+connect, as when the Agent's proxy is down, and by default the operator
+registers the Copilot routes without health checks (see
+[Health checks](#health-checks)): such a route keeps its share of the model's
+requests until the proxy is back, and the requests that land on it fail.
+Measured with a route whose proxy refused connections: 4 of 20 requests
+failed. With the operator's `aiGateway.copilotProxy.healthChecks.enabled` on,
+the health checks take the route out of rotation at their next probe
+(`router.healthChecks`), at the cost of the probes' calls on the owner's
+Copilot allowance. Spend is counted at the model's list price either way.
 
 Any other Copilot model goes under its own ID, such as `gpt-5.5`, with
 `litellm_params.cooldown_time: 0`: it is the only deployment the Agent's key
@@ -1738,7 +1759,8 @@ with:
   than seven days;
 - `router`: `simple-shuffle`, failover and the affinity checks on, no
   fallbacks, and health checks every 300 seconds, at most 8 probes at a time,
-  which start probing every deployment;
+  which start probing every deployment but those that opt out, such as the
+  CetiRun operator's GitHub Copilot routes by default;
 - `budgetExceededStatusCode`: 402;
 - `podDisruptionBudget`: a PodDisruptionBudget above one replica;
 - `priceTable`: `remote`, so LiteLLM keeps downloading the price table.

@@ -237,6 +237,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if !w.EffectiveSource(source) {
 			continue
 		}
+		if source.APIVersion == api.GroupVersion.String() && source.Kind == "AgentPolicy" &&
+			source.UID == attempt.resolution.Binding.AgentPolicyUID {
+			digests[w.SourceKey(source)] = attempt.policyDigest
+			continue
+		}
 		// The render attempt contains the Team snapshot that was materialized
 		// into Custom's immutable context ConfigMap. Capture that same Team
 		// resourceVersion for the initial digest; otherwise a Team update between
@@ -307,7 +312,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 				return err
 			}
 			if digest != digests[w.SourceKey(source)] {
-				return fmt.Errorf("Sandbox input changed before resource reconciliation")
+				return fmt.Errorf("%w: Sandbox input changed before resource reconciliation", errSandboxSourceChanged)
 			}
 		}
 		return nil

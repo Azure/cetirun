@@ -142,8 +142,8 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 		t.Fatalf("a dated model keeps its own name and is never cooled down: %+v", own)
 	}
 	for _, route := range routes {
-		if !route.ProbeWithoutRetries {
-			t.Fatalf("every Copilot route is probed without the provider client's retries: %+v", route)
+		if !route.ProbeWithoutRetries || !route.NoBackgroundHealthCheck {
+			t.Fatalf("every Copilot route is probed without the provider client's retries, and by default not at all: %+v", route)
 		}
 	}
 	// The same model as a shared model the Agent is not granted, under that
@@ -206,6 +206,80 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 	if routes := routesByModel(gateway); routes["gpt-5.5"].Routing.String() != "order=1,weight=5" || routes["gpt-5.5"].ID == merged.ID ||
 		!slices.Contains(gateway.deletedModels, merged.ID) {
 		t.Fatalf("a changed routing replaces the route: %+v deleted %v", routes, gateway.deletedModels)
+	}
+
+	// The deployment turns the probes of Copilot routes on: every route is
+	// registered again, probed and under the ID it had before the probes
+	// could be turned off, and the unprobed one is removed. Then off again.
+	// The Agent's models and configuration, and its policy's Gateway
+	// projection, stay as they are each time, so the Agent is not restarted.
+	unprobed := maps.Clone(gateway.models)
+	routesBefore := slices.Clone(agent.Status.AIGateway.Copilot.Routes)
+	modelsBefore := slices.Clone(agent.Status.AIGateway.Copilot.Models)
+	policyRevision := func() string {
+		t.Helper()
+		resolution, err := r.resolvePolicy(ctx, agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resolution.gatewayRevision
+	}
+	revision, hash := r.aiGatewayRevision(agent), r.configHash(agent, nil, "", "")
+	projection := policyRevision()
+	proxyKey := string(readSecret(t, kube, aiGatewayProxySecretName).Data[aiGatewayProxySecretField])
+	unchanged := func(step string) {
+		t.Helper()
+		current := agent.Status.AIGateway.Copilot
+		if current.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady || !slices.Equal(current.Routes, routesBefore) ||
+			!slices.Equal(current.Models, modelsBefore) {
+			t.Fatalf("%s: the Copilot routes keep their models and names: %+v", step, current)
+		}
+		if r.aiGatewayRevision(agent) != revision || r.configHash(agent, nil, "", "") != hash {
+			t.Fatalf("%s: the Agent's configuration must not change", step)
+		}
+		if policyRevision() != projection {
+			t.Fatalf("%s: the policy's Gateway projection must not change", step)
+		}
+	}
+	r.AIGateway.CopilotHealthChecks = true
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	unchanged("probes on")
+	if len(gateway.models) != len(unprobed) {
+		t.Fatalf("each route is registered once: %v", gateway.modelNames())
+	}
+	for id, route := range gateway.models {
+		placement := copilotPlacement{name: route.ModelName, shared: !route.NoCooldown, routing: route.Routing}
+		earlier := copilotRegistrationID(agent, route.Model[len("litellm_proxy/"):], copilotRevision(append([]string{"probe-without-retries",
+			copilotProxyURL(agent), proxyKey, route.BaseModel}, copilotPlacementRevision(placement)...)...))
+		if route.NoBackgroundHealthCheck || !route.ProbeWithoutRetries || id != earlier {
+			t.Fatalf("a probed route is probed without retries, under its earlier ID %s: %+v", earlier, route)
+		}
+	}
+	for id := range unprobed {
+		if _, kept := gateway.models[id]; kept || !slices.Contains(gateway.deletedModels, id) {
+			t.Fatalf("the unprobed route %s is replaced: deleted %v", id, gateway.deletedModels)
+		}
+	}
+	probed := maps.Clone(gateway.models)
+	r.AIGateway.CopilotHealthChecks = false
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	unchanged("probes off")
+	if ids := slices.Sorted(maps.Keys(gateway.models)); !slices.Equal(ids, slices.Sorted(maps.Keys(unprobed))) {
+		t.Fatalf("turned off again, the routes are registered unprobed as before: %v", ids)
+	}
+	for id, route := range gateway.models {
+		if !route.NoBackgroundHealthCheck || !route.ProbeWithoutRetries {
+			t.Fatalf("turned off again, route %s is left out of the probes: %+v", id, route)
+		}
+	}
+	for id := range probed {
+		if !slices.Contains(gateway.deletedModels, id) {
+			t.Fatalf("the probed route %s is replaced: deleted %v", id, gateway.deletedModels)
+		}
 	}
 
 	// A deployment default may name a Copilot model the earlier way too.

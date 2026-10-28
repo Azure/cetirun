@@ -9,8 +9,11 @@ credential never enters Agent context, logs, files, command arguments, or tool
 results.
 
 Services include Azure Resource Manager, GitHub, Microsoft Graph, Gmail and
-Google Calendar. Provider RBAC and OAuth permissions determine resource access. CetiRun verifies that the Agent can use its connection, but
-does not maintain a second per-operation or per-resource permission catalog.
+Google Calendar. Provider RBAC, OAuth permissions, and GitHub App installation
+permissions determine resource access. GitHub App bindings include explicit
+repositories and permissions; the Broker narrows each installation token to
+that grant. MCP checks this metadata across authorization and issuance without
+maintaining a REST operation permission catalog.
 
 ## Tools and request contract
 

@@ -880,6 +880,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, nil)
 		if err != nil {
+			if stderrors.Is(err, errSandboxSourceChanged) {
+				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+				return result, stderrors.Join(err, holdErr)
+			}
 			return r.rejectAgentConfig(ctx, instance, err)
 		}
 		helmValues = prepared.Values
@@ -939,6 +943,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			prepared, err = r.HelmClient.Refresh(prepared, helmValues)
 		}
 		if err != nil {
+			if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
+				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+				return result, stderrors.Join(err, holdErr)
+			}
 			return r.rejectAgentConfig(ctx, instance, err)
 		}
 	}

@@ -225,7 +225,8 @@ func main() {
 	}
 	if aiGatewayConfig.Enabled {
 		setupLog.Info("AI Gateway enabled", "url", aiGatewayConfig.URL,
-			"defaultModel", aiGatewayConfig.DefaultModel, "githubCopilot", aiGatewayConfig.CopilotProxyImage != "")
+			"defaultModel", aiGatewayConfig.DefaultModel, "githubCopilot", aiGatewayConfig.CopilotProxyImage != "",
+			"copilotHealthChecks", aiGatewayConfig.CopilotHealthChecks)
 	}
 
 	// Auto-detect OIDC issuer URL from the cluster.

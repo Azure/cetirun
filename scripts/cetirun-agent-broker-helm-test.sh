@@ -68,6 +68,33 @@ if grep -Fq 'name: GITHUB_APP_' <<<"${oauth_output}"; then
   echo 'FAIL: personal GitHub OAuth must not configure GitHub App credentials' >&2
   exit 1
 fi
+app_values=(--set-string providers.github.app.id=12345 --set-string providers.github.app.slug=cetirun-example --set-string providers.github.app.clientId=Iv1.example --set-string providers.github.app.credentialsSecretName=github-app-example)
+app_output="$(helm template broker-test "${chart_dir}" "${values[@]}" "${app_values[@]}" --set-string providers.github.credentialsSecretName=github-oauth-example)"
+"${PYTHON:-python3}" -c '
+import sys
+import yaml
+
+deployment = next(doc for doc in yaml.safe_load_all(sys.stdin) if doc and doc.get("kind") == "Deployment")
+spec = deployment["spec"]["template"]["spec"]
+broker = next(c for c in spec["containers"] if c["name"] == "broker")
+env = {e["name"]: e for e in broker["env"]}
+assert env["GITHUB_APP_ID"]["value"] == "12345"
+assert env["GITHUB_APP_CLIENT_SECRET"]["valueFrom"]["secretKeyRef"] == {"name": "github-app-example", "key": "client-secret"}
+assert env["GITHUB_APP_PRIVATE_KEY_FILE"]["value"] == "/var/run/cetirun/github-app/private-key.pem"
+assert "GITHUB_OAUTH_CLIENT_ID" in env
+assert {"name": "github-app-key", "mountPath": "/var/run/cetirun/github-app", "readOnly": True} in broker["volumeMounts"]
+for container in spec["containers"]:
+    if container["name"] != "broker":
+        assert not any(m["name"] == "github-app-key" for m in container.get("volumeMounts", []))
+volume = next(v for v in spec["volumes"] if v["name"] == "github-app-key")
+assert volume["secret"]["items"] == [{"key": "private-key.pem", "path": "private-key.pem"}]
+' <<<"${app_output}"
+for field in id slug clientId credentialsSecretName clientSecretKey privateKeyKey; do
+  if helm template broker-test "${chart_dir}" "${values[@]}" "${app_values[@]}" --set-string "providers.github.app.${field}=" >/dev/null 2>&1; then
+    echo "FAIL: GitHub App accepted missing ${field}" >&2
+    exit 1
+  fi
+done
 google_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string providers.google.credentialsSecretName=google-oauth-example --set-string providers.google.clientIDKey=google-client-id --set-string providers.google.clientSecretKey=google-client-secret)"
 grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_ID' <<<"${google_output}" | grep -Fq 'name: "google-oauth-example"'
 grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_ID' <<<"${google_output}" | grep -Fq 'key: "google-client-id"'

@@ -165,8 +165,18 @@ sandboxAdmission:
   caBundle: ""
   # -- Exact authenticated Kubernetes usernames/groups allowed to administer
   # configuration. At least one nonempty list is required even before enforce.
+  # Blanket groups (system:authenticated, system:unauthenticated and the
+  # system:serviceaccounts groups) are refused; list service accounts as users.
   adminUsers: []
   adminGroups: []
+  # -- Name of a ServiceAccount in this release's namespace that is added once
+  # to the administrators, as system:serviceaccount:<release namespace>:<name>,
+  # when admission is enabled. The CetiRun platform chart sets it to the
+  # Portal's ServiceAccount, with which the Portal writes Agents, Teams,
+  # Sandboxes and AgentPolicies. It does not count as the administrator
+  # required above: operations without a Portal page, such as reauthorization,
+  # still need one in adminUsers or adminGroups. Empty adds nothing.
+  portalServiceAccount: ""
   # -- Trusted Kubernetes user/group to Team creation assignments. Conflicting
   # memberships reject; Portal roles or caller-provided Team names are not proof.
   teamAssignments: []
@@ -294,6 +304,18 @@ aiGateway:
       # -- Defaults to the release version.
       tag: ""
       digest: ""
+    # -- Let the Gateway's background health checks probe each Agent's GitHub
+    # Copilot routes. Off by default: each probe is a real model call on the
+    # Agent owner's own Copilot allowance, about 288 a day per route at the
+    # Gateway's default interval, and an Agent has a route per Copilot model.
+    # On, the routes are probed like the Gateway's other deployments (its
+    # router.healthChecks), without retries. Off, a route whose proxy cannot
+    # be reached stays in rotation: where it shares a model's name with shared
+    # deployments, the requests that land on it fail until the proxy is back.
+    # A change registers each Agent's routes again within about ten minutes,
+    # without restarting Agents.
+    healthChecks:
+      enabled: false
 
 # -- Override the chart's default skills storage account.
 # Empty string (default) means use the chart's built-in default.

@@ -1,9 +1,10 @@
 # CetiRun Agent Connection Broker
 
 The Broker manages owner-scoped Connections and explicit per-Agent connection
-bindings. Azure RBAC and personal-provider OAuth permissions are the resource
-authorization authorities. There are no business-level AgentGrants, resource
-allowlists, per-tool permissions or prerequisite Azure RBAC verification.
+bindings. Azure RBAC and provider permissions are the resource authorization
+authorities. GitHub App bindings narrow installation tokens to selected
+repositories and permissions. There are no business-level AgentGrants,
+per-tool permissions or prerequisite Azure RBAC verification.
 
 A binding associates an immutable Agent UID with a Connection and selected
 services. New associations are always enabled. Sharing an owner does not share
@@ -19,6 +20,10 @@ and match the live Agent owner. Provider credentials are absent from API views.
 
 - `GET /v1/connections`
 - `POST /v1/connections/start`
+- `GET /v1/connections/github-app/config`
+- `GET /v1/connections/{id}/github/installations`
+- `GET /v1/connections/{id}/github/repositories?installationId=123&page=1`
+- `POST /v1/connections/{id}/github/installation`
 - `GET|DELETE /v1/connections/{id}`
 - `POST /v1/connections/{id}/reconnect`
 - `GET /v1/connection-authorizations/{id}` (owner-scoped OAuth result)
@@ -34,6 +39,16 @@ Revocation retains a tombstone so re-creation cannot reuse an issued revision.
 Disconnect revokes the binding and blocks future issuance. New disabled writes
 are rejected; historical disabled records require explicit reconnection. Requests already sent
 to providers cannot be recalled; provider-side revocation remains external.
+
+GitHub App connection start additionally supplies `mode: installation` with
+`provider: github`. After GitHub user authorization, the owner selects an
+installation with `{ "installationId": 123 }`. A selected installation is
+immutable; connect again to use a different installation. Binding input requires
+`github: { "repositoryIds": [456], "permissions": { "contents": "read" } }`.
+Supported permission keys are `contents`, `pull_requests`, and `issues`, each
+`read` or `write`; omit a permission for no access. Metadata read is implicit.
+The Broker rejects an empty repository list, duplicates, more than 500 IDs,
+unknown permissions, and grants exceeding current installation authority.
 
 ## Internal credential issuance
 
@@ -56,8 +71,9 @@ Independent Azure uses the platform-derived tenant, child Agent client ID and
 principal ID. Its two-step autonomous OAuth exchange obtains an ARM app-only
 token; it never falls back to a personal account. Personal Azure and Microsoft
 Graph retain the Entra Auth SDK OBO flow and require a ready Agent Identity.
-GitHub and Google use personal OAuth credentials and need only a supported ready
-workload. Returned tokens exist only in the trusted MCP process for execution.
+GitHub supports personal OAuth or App installation credentials; Google uses
+personal OAuth. These connections need only a supported ready workload.
+Returned tokens exist only in the trusted MCP process for execution.
 
 HTTP `:8080` serves Portal/Operator mesh APIs; HTTPS `:8443` serves MCP internal
 APIs. The latter validates a client certificate with exactly the configured
@@ -105,6 +121,40 @@ requests and established server connections can finish. See the
 for mount and rollover details. Broker shutdown cancels reload/maintenance loops
 and allows HTTP requests up to ten seconds to drain.
 
+## Shared GitHub App
+
+Configure `providers.github.app` with `id`, `slug`, `clientId`, and
+`credentialsSecretName`. The Secret contains `client-secret` and `private-key.pem`;
+only the Broker mounts the private key. Partial App configuration is rejected,
+while an entirely absent configuration leaves personal OAuth available.
+See the [registration and user guide](../../site/content/en/docs/guides/github-app.md)
+for exact callback URLs, App permissions, rotation, and trust boundaries.
+
+App connections store the verified GitHub user's refreshable authorization in
+the existing encrypted credential store. That credential verifies installation
+access and repository ownership/Admin authority; it is never returned to MCP.
+Each execution issuance rechecks live GitHub authority and signs a new
+installation token with explicit repository IDs and permission limits. No
+installation token cache or webhook is used. Binding revisions are checked again
+after acquisition, and there is no fallback to personal OAuth.
+
+The platform's App key can mint tokens up to the full installation grant.
+Per-Agent limits protect normal execution but do not remove trust in platform
+administrators. GitHub sees the App bot; internal audit distinguishes Agents.
+
+Selecting an installation reuses the Connection for the same CetiRun owner,
+verified GitHub user ID and stable installation ID. App renames do not create a
+new connection; GitHub verifies which App owns the installation. A conditional
+index serializes concurrent selections. Healthy existing credentials and Agent grants are
+preserved; each Agent still has its own repository and permission selection.
+Personal OAuth connections, different users and different installations remain
+separate. A temporary sign-in record is consumed only after reuse succeeds;
+retrying its selection returns the completed result. Historical duplicates keep
+their IDs and bindings, and `canonicalConnectionId` identifies the connection
+offered for new access. Connections labels these historical duplicates
+and retains their usage and removal controls. Removing an unused duplicate does
+not revoke the provider authorization or uninstall the App.
+
 ## Personal OAuth
 
 The callback is `/api/v1/connections/callback`. OAuth transactions bind owner,
@@ -135,7 +185,7 @@ GitHub uses an OAuth App with `repo` scope, configured by
 `providers.github.credentialsSecretName` (`client-id`, `client-secret`). Calls
 execute as the connected user. OAuth and repository/organization permissions
 apply in full; CetiRun does not narrow them to repositories or operations.
-GitHub App installation identities are not used. Non-expiring GitHub tokens are
+The personal OAuth mode does not use App installations. Non-expiring GitHub tokens are
 explicitly marked; internal issuance still has a finite five-minute validity.
 
 Google uses a Web OAuth client configured by

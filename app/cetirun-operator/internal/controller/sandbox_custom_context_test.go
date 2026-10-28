@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -134,8 +135,12 @@ func TestReconciledCustomContextSnapshotCannotMixWithUpdatedTeamDigest(t *testin
 			return nil
 		},
 	})
-	if _, err := f.reconcile(); err == nil {
-		t.Fatal("reconciled Custom accepted a Team update between context snapshot and initial digest capture")
+	if _, err := f.reconcile(); !errors.Is(err, errSandboxSourceChanged) {
+		t.Fatalf("reconciled Custom must retry a Team/context snapshot race: %v", err)
+	}
+	current := f.current(t)
+	if current.Status.Phase != api.PhasePending {
+		t.Fatalf("transient Team/context race became a permanent configuration failure: %s", current.Status.Phase)
 	}
 	if !changed || f.installer.stages != stages {
 		t.Fatalf("Team/context race reached workload apply: changed=%t stages=%d want=%d", changed, f.installer.stages, stages)

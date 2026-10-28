@@ -22,8 +22,6 @@ import { useMe } from "../context/MeContext";
 import cetirunLogo from "../assets/cetirun.png";
 import { useChatAccount } from "../chat/ChatAccount";
 
-const MyAccountsDialog = lazy(() => import("./MyAccountsDialog"));
-
 const HistoryDrawer = lazy(() => import("../chat/HistoryDrawer"));
 
 const THEME_MODES: ThemeMode[] = ["system", "light", "dark"];
@@ -49,7 +47,6 @@ export function Header() {
   const { me } = useMe();
   const { data: features } = useFeatures();
   const account = useChatAccount();
-  const [accountsOpen, setAccountsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [clearHistory, setClearHistory] = useState(false);
@@ -116,7 +113,23 @@ export function Header() {
               Local history
             </Button>
           )}
-          {features?.agentToolsEnabled && <Button appearance="subtle" size="small" onClick={() => setAccountsOpen(true)}>My accounts</Button>}
+          {features?.agentToolsEnabled && (
+            <NavLink
+              to="/connections"
+              style={({ isActive }) => ({
+                textDecoration: "none",
+                padding: "4px 8px",
+                borderRadius: "4px",
+                fontSize: "14px",
+                color: isActive
+                  ? tokens.colorBrandForeground1
+                  : tokens.colorNeutralForeground1,
+                fontWeight: isActive ? 600 : 400,
+              })}
+            >
+              Connections
+            </NavLink>
+          )}
           {me?.isAdmin && (
             <NavLink
               to="/admin"
@@ -161,7 +174,6 @@ export function Header() {
           />
         </Suspense>
       )}
-      {features?.agentToolsEnabled && accountsOpen && <Suspense fallback={null}><MyAccountsDialog onClose={() => setAccountsOpen(false)} /></Suspense>}
       <Dialog
         open={signOutOpen}
         onOpenChange={(_, data) => setSignOutOpen(data.open)}
