@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Azure/CetiRun/app/internal/podtemplate"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
@@ -290,57 +290,14 @@ func SamePodTemplate(actual, expected corev1.PodTemplateSpec) bool {
 }
 
 func defaultPod(spec *corev1.PodSpec) error {
-	if spec.RestartPolicy == "" {
-		spec.RestartPolicy = corev1.RestartPolicyAlways
-	}
-	if spec.DNSPolicy == "" {
-		spec.DNSPolicy = corev1.DNSClusterFirst
-	}
-	if spec.SchedulerName == "" {
-		spec.SchedulerName = corev1.DefaultSchedulerName
-	}
-	if spec.TerminationGracePeriodSeconds == nil {
-		spec.TerminationGracePeriodSeconds = ptr.To(int64(30))
-	}
-	if spec.DeprecatedServiceAccount == "" {
-		spec.DeprecatedServiceAccount = spec.ServiceAccountName
+	if err := podtemplate.DefaultSpec(spec); err != nil {
+		return err
 	}
 	if spec.Priority == nil {
 		spec.Priority = ptr.To(int32(0))
 	}
 	if spec.PreemptionPolicy == nil {
 		spec.PreemptionPolicy = ptr.To(corev1.PreemptLowerPriority)
-	}
-	for i := range spec.Containers {
-		defaultContainer(&spec.Containers[i])
-	}
-	for i := range spec.InitContainers {
-		defaultContainer(&spec.InitContainers[i])
-	}
-	for i := range spec.Volumes {
-		source := &spec.Volumes[i].VolumeSource
-		if source.ConfigMap != nil && source.ConfigMap.DefaultMode == nil {
-			source.ConfigMap.DefaultMode = ptr.To(int32(0644))
-		}
-		if source.Secret != nil && source.Secret.DefaultMode == nil {
-			source.Secret.DefaultMode = ptr.To(int32(0644))
-		}
-		if source.Projected != nil && source.Projected.DefaultMode == nil {
-			source.Projected.DefaultMode = ptr.To(int32(0644))
-		}
-		if source.DownwardAPI != nil {
-			if source.DownwardAPI.DefaultMode == nil {
-				source.DownwardAPI.DefaultMode = ptr.To(int32(0644))
-			}
-			defaultDownwardItems(source.DownwardAPI.Items)
-		}
-		if source.Projected != nil {
-			for _, projection := range source.Projected.Sources {
-				if projection.DownwardAPI != nil {
-					defaultDownwardItems(projection.DownwardAPI.Items)
-				}
-			}
-		}
 	}
 	for _, key := range []string{"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"} {
 		defaultToleration(spec, corev1.Toleration{
@@ -385,70 +342,4 @@ func defaultToleration(spec *corev1.PodSpec, expected corev1.Toleration) {
 		}
 	}
 	spec.Tolerations = append(spec.Tolerations, expected)
-}
-
-func defaultDownwardItems(items []corev1.DownwardAPIVolumeFile) {
-	for i := range items {
-		defaultFieldSelectors(items[i].FieldRef, items[i].ResourceFieldRef)
-	}
-}
-
-func defaultFieldSelectors(field *corev1.ObjectFieldSelector, resourceField *corev1.ResourceFieldSelector) {
-	if field != nil && field.APIVersion == "" {
-		field.APIVersion = "v1"
-	}
-	if resourceField != nil && resourceField.Divisor.IsZero() {
-		resourceField.Divisor = resource.MustParse("1")
-	}
-}
-
-func defaultContainer(container *corev1.Container) {
-	if container.ImagePullPolicy == "" {
-		container.ImagePullPolicy = corev1.PullIfNotPresent
-		tag := container.Image[strings.LastIndex(container.Image, "/")+1:]
-		if !strings.Contains(container.Image, "@") && (!strings.Contains(tag, ":") || strings.HasSuffix(tag, ":latest")) {
-			container.ImagePullPolicy = corev1.PullAlways
-		}
-	}
-	if container.TerminationMessagePath == "" {
-		container.TerminationMessagePath = corev1.TerminationMessagePathDefault
-	}
-	if container.TerminationMessagePolicy == "" {
-		container.TerminationMessagePolicy = corev1.TerminationMessageReadFile
-	}
-	for _, env := range container.Env {
-		if env.ValueFrom != nil {
-			defaultFieldSelectors(env.ValueFrom.FieldRef, env.ValueFrom.ResourceFieldRef)
-		}
-	}
-	for i := range container.Ports {
-		if container.Ports[i].Protocol == "" {
-			container.Ports[i].Protocol = corev1.ProtocolTCP
-		}
-	}
-	for _, probe := range []*corev1.Probe{container.LivenessProbe, container.ReadinessProbe, container.StartupProbe} {
-		if probe == nil {
-			continue
-		}
-		if probe.TimeoutSeconds == 0 {
-			probe.TimeoutSeconds = 1
-		}
-		if probe.PeriodSeconds == 0 {
-			probe.PeriodSeconds = 10
-		}
-		if probe.SuccessThreshold == 0 {
-			probe.SuccessThreshold = 1
-		}
-		if probe.FailureThreshold == 0 {
-			probe.FailureThreshold = 3
-		}
-		if probe.HTTPGet != nil {
-			if probe.HTTPGet.Scheme == "" {
-				probe.HTTPGet.Scheme = corev1.URISchemeHTTP
-			}
-			if probe.HTTPGet.Path == "" {
-				probe.HTTPGet.Path = "/"
-			}
-		}
-	}
 }

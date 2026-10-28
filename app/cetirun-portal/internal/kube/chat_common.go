@@ -14,9 +14,9 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
+	"github.com/Azure/CetiRun/app/internal/podtemplate"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -25,9 +25,10 @@ import (
 )
 
 const (
-	commonExpectationKey       = "expectation.json"
-	commonReconciledAnnotation = "sandbox.cetirun.microsoft.com/reconciled"
-	commonRevisionAnnotation   = "sandbox.cetirun.microsoft.com/revision"
+	commonExpectationKey             = "expectation.json"
+	commonReconciledAnnotation       = "sandbox.cetirun.microsoft.com/reconciled"
+	commonWorkloadRevisionAnnotation = "cetirun.microsoft.com/sandbox-revision"
+	commonPolicyRevisionAnnotation   = "sandbox.cetirun.microsoft.com/revision"
 )
 
 type commonChatIdentity struct {
@@ -96,7 +97,7 @@ func (c *Client) verifyCommonChatExpectation(ctx context.Context, agent *api.Age
 		return expected, false, err
 	}
 	if state.UID == "" || !state.DeletionTimestamp.IsZero() || len(state.Data) != 1 || len(state.BinaryData) != 0 ||
-		state.Annotations[chataccess.AgentUIDAnnotation] != string(agent.UID) || state.Annotations[commonRevisionAnnotation] == "" {
+		state.Annotations[chataccess.AgentUIDAnnotation] != string(agent.UID) || state.Annotations[commonWorkloadRevisionAnnotation] == "" {
 		return expected, false, nil
 	}
 	owner := metav1.GetControllerOf(state)
@@ -111,7 +112,7 @@ func (c *Client) verifyCommonChatExpectation(ctx context.Context, agent *api.Age
 	if len(raw) == 0 || len(raw) > 512*1024 || json.Unmarshal([]byte(raw), &expected) != nil ||
 		expected.Version != "v2" || expected.Agent != (commonChatIdentity{Name: agent.Name, UID: agent.UID}) ||
 		expected.AgentGeneration != agent.ExecutionGeneration() || expected.Namespace != (commonChatIdentity{Name: namespace.Name, UID: namespace.UID}) ||
-		expected.Revision != state.Annotations[commonRevisionAnnotation] || expected.Revision != agent.Status.Sandbox.AppliedRevision || expected.PlanHash == "" ||
+		expected.Revision != state.Annotations[commonWorkloadRevisionAnnotation] || expected.Revision != agent.Status.Sandbox.AppliedRevision || expected.PlanHash == "" ||
 		expected.Binding.AgentUID != agent.UID || expected.Binding.TeamUID != agent.Status.Sandbox.TeamUID || expected.Binding.SandboxUID != agent.Status.Sandbox.SandboxUID || expected.Binding.AgentPolicyUID != agent.Status.Sandbox.AgentPolicyUID {
 		return expected, false, nil
 	}
@@ -129,7 +130,7 @@ func (c *Client) verifyCommonChatExpectation(ctx context.Context, agent *api.Age
 	for _, workload := range expected.Workloads {
 		if workload.Kind == "StatefulSet" && workload.Identity.Name == sts.Name && workload.Identity.UID == sts.UID && workload.Replicas == 1 &&
 			workload.Template.Annotations[commonReconciledAnnotation] == "true" && workload.Template.Annotations[chataccess.AgentUIDAnnotation] == string(agent.UID) &&
-			equality.Semantic.DeepEqual(workload.Template, sts.Spec.Template) {
+			podtemplate.Same(workload.Template, sts.Spec.Template) {
 			workloadOK = true
 		}
 	}
@@ -142,7 +143,7 @@ func (c *Client) verifyCommonChatExpectation(ctx context.Context, agent *api.Age
 func commonChatCiliumAllows(controls []unstructured.Unstructured, agent *api.Agent, namespace string, caller chataccess.Caller, port int32) bool {
 	for _, control := range controls {
 		if control.GetAPIVersion() != "cilium.io/v2" || control.GetKind() != "CiliumNetworkPolicy" || control.GetNamespace() != namespace ||
-			control.GetAnnotations()[commonRevisionAnnotation] != agent.Status.Sandbox.AppliedRevision {
+			control.GetAnnotations()[commonPolicyRevisionAnnotation] != agent.Status.Sandbox.AppliedRevision {
 			continue
 		}
 		owner := metav1.GetControllerOf(&control)

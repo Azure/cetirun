@@ -127,7 +127,7 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 	owner = metav1.GetControllerOf(pod)
 	if owner == nil || owner.Kind != "StatefulSet" || owner.UID != sts.UID || pod.UID == "" || !pod.DeletionTimestamp.IsZero() ||
 		(!common && pod.Annotations[chataccess.WorkloadAnnotation] != sts.Annotations[chataccess.WorkloadAnnotation]) ||
-		(common && (pod.Annotations[commonReconciledAnnotation] != "true" || pod.Annotations[commonRevisionAnnotation] != commonExpectation.Revision || pod.Annotations[chataccess.AgentUIDAnnotation] != string(agent.UID))) {
+		(common && (pod.Annotations[commonReconciledAnnotation] != "true" || pod.Annotations[commonWorkloadRevisionAnnotation] != commonExpectation.Revision || pod.Annotations[chataccess.AgentUIDAnnotation] != string(agent.UID))) {
 		return target, nil
 	}
 	ready := false
