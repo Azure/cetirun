@@ -268,7 +268,7 @@ func coordinationFixture(t *testing.T) (client.WithWatch, sandboxcoordination.St
 		ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: types.UID("policy-uid")},
 		Spec:       api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}}},
 	}
-	storage := fake.NewClientBuilder().WithScheme(scheme).WithGlobalResourceVersionCounter().WithObjects(authorityObject, policy).Build()
+	storage := fake.NewClientBuilder().WithScheme(scheme).WithGlobalResourceVersionCounter().WithStatusSubresource(&api.AgentPolicy{}).WithObjects(authorityObject, policy).Build()
 	if err := storage.Get(context.Background(), client.ObjectKeyFromObject(policy), policy); err != nil {
 		t.Fatal(err)
 	}

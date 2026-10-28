@@ -9,6 +9,16 @@ SCREEN_RES=${SCREEN_RESOLUTION:-1920x1080x24}
 VNC_PORT=${VNC_PORT:-5900}
 NOVNC_PORT=${NOVNC_PORT:-6080}
 DESKTOP_LOGGING=${DESKTOP_LOGGING:-false}
+VNC_BIND_ARGS=
+CHROME_BIND_ARGS=
+NOVNC_LISTEN=${NOVNC_PORT}
+if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
+  VNC_PORT=5900
+  NOVNC_PORT=6080
+  VNC_BIND_ARGS="-listen 127.0.0.1 -localhost"
+  NOVNC_LISTEN="127.0.0.1:6080"
+  CHROME_BIND_ARGS="--remote-debugging-address=127.0.0.1"
+fi
 
 # Resolve log destinations based on DESKTOP_LOGGING flag.
 if [ "${DESKTOP_LOGGING}" = "true" ]; then
@@ -85,7 +95,7 @@ stdout_logfile=/dev/null
 stderr_logfile=/dev/null
 
 [program:x11vnc]
-command=x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbport ${VNC_PORT} -nopw -xkb -noxrecord -noxfixes -threads
+command=x11vnc -display :${DISPLAY_NUM} -forever -shared ${VNC_BIND_ARGS} -rfbport ${VNC_PORT} -nopw -xkb -noxrecord -noxfixes -threads
 priority=20
 autorestart=true
 startretries=10
@@ -95,7 +105,7 @@ stderr_logfile=${VNC_LOG}
 stderr_logfile_maxbytes=${VNC_LOG_MAXBYTES}
 
 [program:novnc]
-command=websockify ${NOVNC_LOG_FLAG} --web /tmp/novnc ${NOVNC_PORT} localhost:${VNC_PORT}
+command=websockify ${NOVNC_LOG_FLAG} --web /tmp/novnc ${NOVNC_LISTEN} localhost:${VNC_PORT}
 priority=30
 autorestart=true
 stdout_logfile=${VNC_LOG}
@@ -104,7 +114,7 @@ stderr_logfile=${VNC_LOG}
 stderr_logfile_maxbytes=${VNC_LOG_MAXBYTES}
 
 [program:chrome]
-command=google-chrome --no-sandbox --disable-gpu --no-first-run --disable-dev-shm-usage --start-maximized --remote-debugging-port=18800 --no-zygote --disable-sync --user-data-dir=/home/vibe/.config/google-chrome/openclaw
+command=google-chrome --no-sandbox --disable-gpu --no-first-run --disable-dev-shm-usage --start-maximized --remote-debugging-port=18800 ${CHROME_BIND_ARGS} --no-zygote --disable-sync --user-data-dir=/home/vibe/.config/google-chrome/openclaw
 priority=35
 autorestart=true
 startretries=5

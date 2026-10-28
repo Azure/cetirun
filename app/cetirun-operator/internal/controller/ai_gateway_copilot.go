@@ -166,8 +166,8 @@ type copilotRegistration struct {
 
 // copilotRegistrationID names a route by the Agent UID, the model and a
 // revision of everything the route carries, so a changed proxy address, key,
-// price entry, Gateway name or routing replaces the route instead of leaving
-// a stale one.
+// price entry, Gateway name, routing or probe setting replaces the route
+// instead of leaving a stale one.
 func copilotRegistrationID(instance *cetirunv1alpha1.Agent, model, revision string) string {
 	return fmt.Sprintf("%s%s-%s-%s", aiGatewayCopilotGroupPrefix, instance.UID, model, revision)
 }
@@ -178,11 +178,20 @@ func copilotRevision(parts ...string) string {
 }
 
 // copilotRouteFormat names what every Copilot route carries besides its
-// per-Agent fields: here, health check probes without the provider client's
-// retries, so one GitHub account's probes do not multiply when GitHub rate
-// limits them. It is part of each route's revision, so a change to it
-// registers the existing routes again.
-const copilotRouteFormat = "probe-without-retries"
+// per-Agent fields. It is part of each route's revision, so a change to it
+// registers the existing routes again. A route is probed without the provider
+// client's retries, so one GitHub account's probes do not multiply when
+// GitHub rate limits them, and only when the deployment turns the probes of
+// Copilot routes on (healthChecks): otherwise the Gateway's background health
+// checks skip it, as each probe is a real call on the owner's Copilot
+// allowance. Probed routes keep the format, and so the IDs, every route had
+// before the probes could be turned off.
+func copilotRouteFormat(healthChecks bool) string {
+	if healthChecks {
+		return "probe-without-retries"
+	}
+	return "probe-without-retries,no-background-health-check"
+}
 
 // reconcileAIGatewayCopilot keeps the Agent's Copilot proxy credentials and
 // model routes in line with the owner's sign-in. The proxy reads the token
@@ -284,6 +293,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 		}
 		skipped = skippedModels
 		proxyURL := copilotProxyURL(instance)
+		format := copilotRouteFormat(r.AIGateway.CopilotHealthChecks)
 		for _, model := range wanted {
 			placement, placed := placements[model.ID]
 			if !placed {
@@ -294,11 +304,12 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 				unpriced = append(unpriced, model.ID)
 				continue
 			}
-			id := copilotRegistrationID(instance, model.ID, copilotRevision(append([]string{copilotRouteFormat, proxyURL, proxyKey, base}, copilotPlacementRevision(placement)...)...))
+			id := copilotRegistrationID(instance, model.ID, copilotRevision(append([]string{format, proxyURL, proxyKey, base}, copilotPlacementRevision(placement)...)...))
 			desired[id] = copilotRegistration{model: model, placement: placement, request: aigateway.ModelRequest{
 				ID: id, ModelName: placement.name, Model: "litellm_proxy/" + model.ID,
 				APIBase: proxyURL, APIKey: proxyKey, AccessGroups: []string{copilot.AccessGroup}, BaseModel: base,
 				Routing: placement.routing, NoCooldown: !placement.shared, ProbeWithoutRetries: true,
+				NoBackgroundHealthCheck: !r.AIGateway.CopilotHealthChecks,
 			}}
 		}
 	}

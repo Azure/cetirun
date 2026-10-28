@@ -54,10 +54,10 @@ const maxInstanceNameLength = 35
 //     (infra/istio/templates/ingress/envoy-filter-alias.yaml): exact Portal paths and
 //     complete path-segment subtrees skip the ownership check. An instance using one
 //     of the same bare names would collide with that Portal route (oauth2, api,
-//     internal, healthz, readyz, assets, instances, admin).
+//     internal, healthz, readyz, assets, instances, admin, connections).
 //   - Portal SPA top-level routes (app/cetirun-portal/web/src/App.tsx): the portal
 //     serves these paths itself, so an instance with that name would be unreachable
-//     via the workspace URL (instances).
+//     via the workspace URL (instances, admin, connections).
 //   - Native agent UI namespace (ui): native Agent UIs are served below
 //     /ui/<instance>, so this token cannot be an instance name.
 //   - Portal hostname/subdomain (portal): reserved to keep the portal's own DNS
@@ -65,16 +65,17 @@ const maxInstanceNameLength = 35
 //
 // Keep this list aligned with the three sources above when any of them change.
 var reservedInstanceNames = map[string]struct{}{
-	"oauth2":    {},
-	"api":       {},
-	"internal":  {},
-	"healthz":   {},
-	"readyz":    {},
-	"assets":    {},
-	"portal":    {},
-	"instances": {},
-	"admin":     {},
-	"ui":        {},
+	"oauth2":      {},
+	"api":         {},
+	"internal":    {},
+	"healthz":     {},
+	"readyz":      {},
+	"assets":      {},
+	"portal":      {},
+	"instances":   {},
+	"connections": {},
+	"admin":       {},
+	"ui":          {},
 }
 
 // CreateInstanceRequest is the JSON body for POST /api/v1/instance.

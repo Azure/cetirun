@@ -49,6 +49,11 @@ type Config struct {
 	WorkloadTokenAudience   string
 	GitHubOAuthClientID     string
 	GitHubOAuthClientSecret string
+	GitHubAppID             int64
+	GitHubAppSlug           string
+	GitHubAppClientID       string
+	GitHubAppClientSecret   string
+	GitHubAppPrivateKeyFile string
 	GoogleClientID          string
 	GoogleClientSecret      string
 	TransactionTTL          time.Duration
@@ -85,12 +90,24 @@ func LoadConfig() (Config, error) {
 		WorkloadTokenAudience:   env("WORKLOAD_TOKEN_AUDIENCE", "cetirun-connections-mcp"),
 		GitHubOAuthClientID:     os.Getenv("GITHUB_OAUTH_CLIENT_ID"),
 		GitHubOAuthClientSecret: os.Getenv("GITHUB_OAUTH_CLIENT_SECRET"),
+		GitHubAppSlug:           os.Getenv("GITHUB_APP_SLUG"),
+		GitHubAppClientID:       os.Getenv("GITHUB_APP_CLIENT_ID"),
+		GitHubAppClientSecret:   os.Getenv("GITHUB_APP_CLIENT_SECRET"),
+		GitHubAppPrivateKeyFile: os.Getenv("GITHUB_APP_PRIVATE_KEY_FILE"),
 		GoogleClientID:          os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
 		GoogleClientSecret:      os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
 		TransactionTTL:          10 * time.Minute,
 		RequestTimeout:          15 * time.Second,
 
 		AuthorizationCleanupInterval: 5 * time.Minute,
+	}
+	appID := strings.TrimSpace(os.Getenv("GITHUB_APP_ID"))
+	if appID != "" {
+		value, err := strconv.ParseInt(appID, 10, 64)
+		if err != nil || value <= 0 {
+			return Config{}, errors.New("GITHUB_APP_ID must be a positive integer")
+		}
+		cfg.GitHubAppID = value
 	}
 	azureAgent, err := strconv.ParseBool(env("AZURE_AGENT_ENABLED", "true"))
 	if err != nil {
@@ -140,7 +157,24 @@ func LoadConfig() (Config, error) {
 	if !keyOK || !strings.HasSuffix(strings.ToLower(keyHost), ".vault.azure.net") {
 		return Config{}, errors.New("Key Vault key URL is invalid")
 	}
+	if err := cfg.validateGitHubApp(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func (c Config) githubAppEnabled() bool {
+	return c.GitHubAppID != 0 || c.GitHubAppSlug != "" || c.GitHubAppClientID != "" || c.GitHubAppClientSecret != "" || c.GitHubAppPrivateKeyFile != ""
+}
+
+func (c Config) validateGitHubApp() error {
+	if !c.githubAppEnabled() {
+		return nil
+	}
+	if c.GitHubAppID <= 0 || !dnsLabel(c.GitHubAppSlug) || c.GitHubAppClientID == "" || c.GitHubAppClientSecret == "" || c.GitHubAppPrivateKeyFile == "" {
+		return errors.New("GitHub App configuration is incomplete")
+	}
+	return nil
 }
 
 func env(name, fallback string) string {

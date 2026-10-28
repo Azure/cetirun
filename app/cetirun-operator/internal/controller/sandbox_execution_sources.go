@@ -12,9 +12,33 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func (r *AgentReconciler) readSandboxExecutionPolicy(ctx context.Context, name string) (*api.AgentPolicy, string, error) {
+	object := &unstructured.Unstructured{}
+	object.SetGroupVersionKind(api.GroupVersion.WithKind("AgentPolicy"))
+	key := client.ObjectKey{Name: name}
+	if err := r.APIReader.Get(ctx, key, object); err != nil {
+		return nil, "", err
+	}
+	if client.ObjectKeyFromObject(object) != key {
+		return nil, "", fmt.Errorf("%w: AgentPolicy source key changed", errSandboxSourceChanged)
+	}
+	// Capture the wire image before typed resolution so unknown controls cannot
+	// disappear from the comparison. Only Gateway rate limits are excluded.
+	digest, err := w.ExecutionObjectDigest(object)
+	if err != nil {
+		return nil, "", err
+	}
+	policy := &api.AgentPolicy{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, policy); err != nil {
+		return nil, "", err
+	}
+	return policy, digest, nil
+}
 
 func selectedSandboxExecutionSources(sources []w.SourceReference, binding sandbox.Binding) []w.SourceReference {
 	selected := make([]w.SourceReference, 0, len(sources))

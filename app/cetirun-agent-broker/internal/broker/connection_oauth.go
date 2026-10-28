@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 // OAuth transactions and account indexes use the same encrypted envelope as
@@ -36,7 +38,15 @@ func (k *kubeClient) getOAuthRecord(ctx context.Context, kind, id string) (*conn
 }
 
 func (s *Server) startAuthorization(w http.ResponseWriter, r *http.Request, owner Owner, provider, target, accountID string) {
-	if !s.cfg.connectionModeEnabled(Connection{Provider: provider, Mode: modeDelegated}) {
+	s.startAuthorizationMode(w, r, owner, provider, modeDelegated, target, accountID)
+}
+
+func (s *Server) startInstallationAuthorization(w http.ResponseWriter, r *http.Request, owner Owner, target, accountID string) {
+	s.startAuthorizationMode(w, r, owner, "github", modeInstallation, target, accountID)
+}
+
+func (s *Server) startAuthorizationMode(w http.ResponseWriter, r *http.Request, owner Owner, provider, mode, target, accountID string) {
+	if !s.cfg.connectionModeEnabled(Connection{Provider: provider, Mode: mode}) {
 		writeAPIError(w, 503, "dependency_unavailable", "This identity mode is disabled", correlationID(r))
 		return
 	}
@@ -54,7 +64,12 @@ func (s *Server) startAuthorization(w http.ResponseWriter, r *http.Request, owne
 	if client == nil {
 		client = newProviderClient(s.cfg)
 	}
-	location, err := client.authorizationURL(provider, state, verifier, nonce)
+	var location string
+	if mode == modeInstallation {
+		location, err = client.githubAppAuthorizationURL(state, verifier)
+	} else {
+		location, err = client.authorizationURL(provider, state, verifier, nonce)
+	}
 	if err != nil {
 		writeAPIError(w, 503, "dependency_unavailable", "Provider OAuth is not configured", correlationID(r))
 		return
@@ -62,7 +77,7 @@ func (s *Server) startAuthorization(w http.ResponseWriter, r *http.Request, owne
 	now := s.currentTime().UTC()
 	// The unguessable state digest also allows an exact lookup without a scan.
 	id := "oauth-" + stateHash(state)[:40]
-	record := &connectionRecord{Connection: Connection{ID: id, Provider: provider, Mode: modeDelegated, Owner: owner, Revision: 1, CreatedAt: now}, Transaction: &connectionTransaction{Provider: provider, StateHash: stateHash(state), BrowserBindingHash: proof, CodeVerifier: verifier, Nonce: nonce, ExpectedAccountID: accountID, TargetConnectionID: target, ExpiresAt: now.Add(s.cfg.TransactionTTL), Status: "pending"}}
+	record := &connectionRecord{Connection: Connection{ID: id, Provider: provider, Mode: mode, Owner: owner, Revision: 1, CreatedAt: now}, Transaction: &connectionTransaction{Provider: provider, Mode: mode, AppSlug: s.cfg.GitHubAppSlug, StateHash: stateHash(state), BrowserBindingHash: proof, CodeVerifier: verifier, Nonce: nonce, ExpectedAccountID: accountID, TargetConnectionID: target, ExpiresAt: now.Add(s.cfg.TransactionTTL), Status: "pending"}}
 	if err := s.store.pruneAuthorizations(r.Context(), owner, now); err != nil {
 		writeAPIError(w, 503, "dependency_unavailable", "Sign-in storage is unavailable", correlationID(r))
 		return
@@ -156,7 +171,7 @@ func (s *Server) connectionCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	id := "oauth-" + stateHash(state)[:40]
 	record, version, err := s.store.getOAuthRecord(r.Context(), "authorization", id)
-	if err != nil || record.Transaction == nil || record.Transaction.StateHash != stateHash(state) || record.Transaction.Consumed || !validProvider(record.Transaction.Provider) || !s.cfg.connectionModeEnabled(Connection{Provider: record.Transaction.Provider, Mode: modeDelegated}) || !s.currentTime().Before(record.Transaction.ExpiresAt) {
+	if err != nil || record.Transaction == nil || record.Transaction.StateHash != stateHash(state) || record.Transaction.Consumed || !validProvider(record.Transaction.Provider) || !s.cfg.connectionModeEnabled(Connection{Provider: record.Transaction.Provider, Mode: record.Transaction.Mode}) || !s.currentTime().Before(record.Transaction.ExpiresAt) {
 		s.callbackPage(w, false, id)
 		return
 	}
@@ -177,7 +192,11 @@ func (s *Server) connectionCallback(w http.ResponseWriter, r *http.Request) {
 		if finishErr == nil && accountID != "" && (tx.ExpectedAccountID == "" || accountID == tx.ExpectedAccountID) {
 			auditOwner(r, record.Connection.Owner)
 			auditMutation(r)
-			result, err = s.store.completeAccount(r.Context(), record.Connection.Owner, tx, credential, display, accountID, s.currentTime().UTC())
+			if tx.Mode == modeInstallation {
+				result, err = s.store.completeGitHubInstallationAccount(r.Context(), record.Connection.Owner, tx, credential, display, accountID, s.currentTime().UTC())
+			} else {
+				result, err = s.store.completeAccount(r.Context(), record.Connection.Owner, tx, credential, display, accountID, s.currentTime().UTC())
+			}
 			if err != nil {
 				result = ""
 			} else {
@@ -301,6 +320,7 @@ func (k *kubeClient) completeAccount(ctx context.Context, owner Owner, tx connec
 			return id, nil
 		}
 		record.Credential = &credential
+		record.RefreshLease = nil
 		record.Transaction = nil
 		record.Connection.AccountDisplay = display
 		record.Connection.Scopes = credential.Scopes
@@ -318,13 +338,100 @@ func (k *kubeClient) completeAccount(ctx context.Context, owner Owner, tx connec
 	return "", errConflict
 }
 
+// App user authorization is deliberately separate from legacy OAuth account
+// canonicalization. A shared App connection cannot accidentally reuse a broad
+// legacy GitHub OAuth credential for the same GitHub user.
+func (k *kubeClient) completeGitHubInstallationAccount(ctx context.Context, owner Owner, tx connectionTransaction, credential providerCredential, display, accountID string, now time.Time) (string, error) {
+	if credential.NonExpiring || credential.ExpiresAt.IsZero() || credential.RefreshToken == "" || display == "" || accountID == "" {
+		return "", errors.New("GitHub App user authorization is incomplete")
+	}
+	id := tx.TargetConnectionID
+	if id == "" {
+		id = opaqueID()
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		record, version, err := k.getConnection(ctx, id)
+		if errors.Is(err, errNotFound) && tx.TargetConnectionID == "" {
+			record = &connectionRecord{Connection: Connection{ID: id, Provider: "github", Mode: modeInstallation, Owner: owner, AccountID: "github-app-user-" + accountID, CreatedAt: now}}
+		} else if err != nil {
+			return "", err
+		}
+		if record.Deleted || !sameOwner(record.Connection.Owner, owner) || record.Connection.Provider != "github" || connectionMode(record.Connection) != modeInstallation || record.Connection.AccountID != "github-app-user-"+accountID {
+			return "", errConflict
+		}
+		github := record.Connection.GitHub
+		if pending := record.PendingInstallation; pending != nil {
+			// A provider request started before selection can invalidate this
+			// authorization after its installation choice has been locked. Let
+			// the same user reconnect, retaining the choice and account-index
+			// claim so selection can resume without changing its identity.
+			if record.Connection.Status != "interaction_required" || github == nil || github.InstallationID != 0 || tx.AppSlug == "" || pending.AppSlug != tx.AppSlug || github.AppSlug != tx.AppSlug || pending.InstallationID <= 0 || len(record.References) != 0 || record.RefreshLease != nil {
+				return "", errConflict
+			}
+		}
+		if tx.TargetConnectionID != "" && (github == nil || github.InstallationID < 0 || (github.InstallationID == 0 && github.AccountLogin != "") || (github.InstallationID > 0 && github.AccountLogin == "")) {
+			return "", errConflict
+		}
+		record.Credential = &credential
+		record.RefreshLease = nil
+		record.Transaction = nil
+		if tx.AppSlug == "" {
+			record.Connection.AccountDisplay = display
+		} else {
+			record.Connection.AccountDisplay = tx.AppSlug + "[bot]"
+		}
+		record.Connection.AccountID = "github-app-user-" + accountID
+		if tx.TargetConnectionID == "" {
+			github = &agenttools.GitHubInstallation{UserLogin: display, AppSlug: tx.AppSlug}
+		} else {
+			if tx.AppSlug != "" {
+				github.AppSlug = tx.AppSlug
+			}
+			github.UserLogin = display
+		}
+		record.Connection.GitHub = github
+		record.Connection.Services = connectionServices(record.Connection)
+		record.Connection.Scopes = credential.Scopes
+		if github.InstallationID > 0 {
+			record.Connection.Status = "connected"
+		} else {
+			record.Connection.Status = "installation_required"
+		}
+		record.Connection.Revision++
+		record.Connection.UpdatedAt = now
+		if err := k.putConnection(ctx, record, version); errors.Is(err, errConflict) {
+			continue
+		} else if err != nil {
+			return "", err
+		}
+		return id, nil
+	}
+	return "", errConflict
+}
+
 func (k *kubeClient) projectCanonicalConnections(ctx context.Context, connections []Connection) error {
 	for i := range connections {
 		c := &connections[i]
-		if connectionMode(*c) != modeDelegated || c.AccountID == "" {
+		if c.AccountID == "" {
 			continue
 		}
-		id, err := k.canonicalAccount(ctx, c.Owner, c.Provider, c.AccountID)
+		var id string
+		var err error
+		switch connectionMode(*c) {
+		case modeDelegated:
+			id, err = k.canonicalAccount(ctx, c.Owner, c.Provider, c.AccountID)
+		case modeInstallation:
+			if !sameGitHubInstallation(*c, *c) {
+				continue
+			}
+			id, err = k.canonicalGitHubInstallation(ctx, *c)
+			// A removal can win after listConnections took its snapshot.
+			if errors.Is(err, errConflict) || errors.Is(err, errNotFound) {
+				continue
+			}
+		default:
+			continue
+		}
 		if err != nil {
 			return err
 		}

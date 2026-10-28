@@ -328,7 +328,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		"physical fencing":  func(c *Capabilities) { c.RestrictiveFailure = true },
 		"container quotas":  func(c *Capabilities) { c.PerContainerResourceLimits = true },
 		"FQDN support":      func(c *Capabilities) { c.BlockedFQDNs = true },
-		"mTLS support":      func(c *Capabilities) { c.MutualTLS = true },
 		"Entra support":     func(c *Capabilities) { c.EntraID = true },
 	} {
 		t.Run(name, func(t *testing.T) {

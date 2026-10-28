@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -207,7 +208,8 @@ func (e ReconcileExpectation) Validate() error {
 		controls[key] = true
 		switch kind {
 		case "v1/ConfigMap", "v1/Service", "v1/ServiceAccount", "networking.k8s.io/v1/NetworkPolicy", "cilium.io/v2/CiliumNetworkPolicy",
-			"rbac.authorization.k8s.io/v1/RoleBinding", "rbac.authorization.k8s.io/v1/ClusterRoleBinding":
+			"rbac.authorization.k8s.io/v1/RoleBinding", "rbac.authorization.k8s.io/v1/ClusterRoleBinding",
+			"networking.istio.io/v1beta1/DestinationRule":
 		default:
 			return fmt.Errorf("Sandbox control inventory contains an unsupported resource")
 		}
@@ -367,6 +369,15 @@ func ValidateRenderedPod(pod *corev1.Pod, workload RenderedWorkload, owner metav
 
 func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, image string) error {
 	spec := template.Spec
+	if err := b.validateIngressTemplate(spec); err != nil {
+		return err
+	}
+	if plan := b.input.Controls.IngressMTLS; plan != nil {
+		digest, err := plan.ConfigDigest()
+		if err != nil || template.Annotations[ingressmtls.ConfigDigestAnnotation] != digest {
+			return fmt.Errorf("mTLS static configuration requires its rollout checksum")
+		}
+	}
 	if !b.input.Reconciled || len(spec.Containers) == 0 || spec.Containers[0].Image != image ||
 		ptr.Deref(spec.RuntimeClassName, "") != b.input.RuntimeClass.Name ||
 		spec.HostNetwork || spec.HostPID || spec.HostIPC || ptr.Deref(spec.ShareProcessNamespace, false) ||
@@ -407,7 +418,8 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 	runtimeSources := spec
 	runtimeSources.ImagePullSecrets = nil
 	for _, source := range PodSourceReferences(runtimeSources, b.input.Namespace.Name) {
-		if source.Kind == "Secret" && !slices.Contains(b.input.AuthorizedSecrets, source.Name) {
+		endpointSecret := b.input.Controls.IngressMTLS != nil && source.Name == b.input.Controls.IngressMTLS.ServerSecret.Name
+		if source.Kind == "Secret" && !slices.Contains(b.input.AuthorizedSecrets, source.Name) && !endpointSecret {
 			return fmt.Errorf("reconciled Agent cannot consume an unauthorized Secret")
 		}
 		if source.Kind == "PersistentVolumeClaim" && source.Name != b.input.Home.Name && source.Name != skillsIdentity(b.input.Skills).Name {

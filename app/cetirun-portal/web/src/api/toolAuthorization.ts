@@ -4,8 +4,8 @@
 import { apiFetch } from "./fetch";
 
 export type ConnectionProvider = "azure" | "microsoft" | "github" | "google";
-export type ConnectionMode = "agent" | "delegated";
-export type ConnectionStatus = "connecting" | "connected" | "interaction_required" | "disconnected" | "pending" | "ready";
+export type ConnectionMode = "agent" | "delegated" | "installation";
+export type ConnectionStatus = "connecting" | "connected" | "interaction_required" | "installation_required" | "disconnected" | "pending" | "ready";
 
 export interface AgentIdentity {
   instanceUid: string;
@@ -28,6 +28,15 @@ export interface Connection {
   mode: ConnectionMode;
   /** Present only for Broker-derived independent Agent identities. */
   identity?: AgentIdentity;
+  /** Present for shared GitHub App connections. */
+  github?: GitHubConnection;
+}
+
+export interface GitHubConnection {
+  installationId?: number;
+  accountLogin?: string;
+  appSlug?: string;
+  userLogin: string;
 }
 
 export interface ConnectionStart {
@@ -44,9 +53,27 @@ export interface ConnectionBinding {
   services: string[];
   enabled: boolean;
   revision: number;
+  github?: GitHubBinding;
 }
 export interface ConnectionBindingList { bindings: ConnectionBinding[]; readOnly: boolean }
-export interface ConnectionBindingInput { connectionId: string; services: string[]; enabled: boolean; revision?: number }
+export interface GitHubPermissions {
+  contents?: "read" | "write";
+  pull_requests?: "read" | "write";
+  issues?: "read" | "write";
+}
+export interface GitHubBinding { repositoryIds: number[]; permissions: GitHubPermissions }
+export interface ConnectionBindingInput { connectionId: string; services: string[]; enabled: boolean; revision?: number; github?: GitHubBinding }
+
+export interface GitHubAppConfig { enabled: boolean; installUrl?: string }
+export interface GitHubInstallation {
+  id: number;
+  accountLogin: string;
+  accountType: string;
+  permissions: Record<string, string>;
+}
+export interface GitHubInstallations { installations: GitHubInstallation[]; installUrl: string }
+export interface GitHubRepository { id: number; fullName: string; admin: boolean }
+export interface GitHubRepositories { repositories: GitHubRepository[]; hasNextPage: boolean }
 
 export class ToolAuthorizationError extends Error {
   constructor(message: string, readonly code?: string) {
@@ -73,8 +100,25 @@ export async function listConnections(signal?: AbortSignal): Promise<Connection[
   return parse(await apiFetch("/api/v1/connections", { signal }));
 }
 
-export async function startConnection(provider: ConnectionProvider): Promise<ConnectionStart> {
-  return parse(await apiFetch("/api/v1/connections/start", { method: "POST", body: JSON.stringify({ provider }) }));
+export async function startConnection(provider: ConnectionProvider, mode?: "installation"): Promise<ConnectionStart> {
+  return parse(await apiFetch("/api/v1/connections/start", { method: "POST", body: JSON.stringify(mode ? { provider, mode } : { provider }) }));
+}
+
+export async function getGitHubAppConfig(signal?: AbortSignal): Promise<GitHubAppConfig> {
+  return parse(await apiFetch("/api/v1/connections/github-app/config", { signal }));
+}
+
+export async function listGitHubInstallations(id: string, signal?: AbortSignal): Promise<GitHubInstallations> {
+  return parse(await apiFetch(`/api/v1/connections/${encodeURIComponent(id)}/github/installations`, { signal }));
+}
+
+export async function selectGitHubInstallation(id: string, installationId: number): Promise<Connection> {
+  return parse(await apiFetch(`/api/v1/connections/${encodeURIComponent(id)}/github/installation`, { method: "POST", body: JSON.stringify({ installationId }) }));
+}
+
+export async function listGitHubRepositories(id: string, installationId: number, page: number, signal?: AbortSignal): Promise<GitHubRepositories> {
+  const query = new URLSearchParams({ installationId: String(installationId), page: String(page) });
+  return parse(await apiFetch(`/api/v1/connections/${encodeURIComponent(id)}/github/repositories?${query}`, { signal }));
 }
 
 export async function reconnectConnection(id: string): Promise<ConnectionStart> {

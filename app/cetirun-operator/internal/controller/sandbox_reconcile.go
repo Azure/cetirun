@@ -101,6 +101,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err := r.sandboxPreparationInput(ctx, attempt); err != nil {
 		return nil, err
 	}
+	if err := r.sandboxIngressMTLSInputs(ctx, attempt); err != nil {
+		return nil, fmt.Errorf("%w: %w", errSandboxIngressMTLS, err)
+	}
 	if agent.Spec.Agent.RegistrySecretRef != nil {
 		name, err := registryauth.PullSecretName(agent.UID)
 		if err != nil {
@@ -150,7 +153,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		NativeExecution: true, Resolution: *attempt.resolution, AgentName: agent.Name,
-		Namespace: attempt.input.Namespace.Name, Platform: platform,
+		Namespace: attempt.input.Namespace.Name, ServiceName: attempt.input.WorkloadName, Platform: platform,
 	})
 	if err != nil {
 		return nil, err
@@ -177,6 +180,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	digests := make(map[string]string, len(sources))
 	for _, source := range sources {
 		if !w.EffectiveSource(source) {
+			continue
+		}
+		if source.APIVersion == api.GroupVersion.String() && source.Kind == "AgentPolicy" &&
+			source.UID == attempt.resolution.Binding.AgentPolicyUID {
+			digests[w.SourceKey(source)] = attempt.policyDigest
 			continue
 		}
 		digest, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, false)
@@ -248,7 +256,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 				return err
 			}
 			if digest != digests[w.SourceKey(source)] {
-				return fmt.Errorf("Sandbox input changed before resource reconciliation")
+				return fmt.Errorf("%w: Sandbox input changed before resource reconciliation", errSandboxSourceChanged)
 			}
 		}
 		if grantsRecorded {
@@ -275,11 +283,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if err := guard(ctx); err != nil {
 			return err
 		}
-		submitted := claimed.DeepCopy()
 		if unsubmitted {
+			submitted := claimed.DeepCopy()
 			submitted.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
-		}
-		if !reflect.DeepEqual(submitted.Annotations, claimed.Annotations) {
 			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
 				return fmt.Errorf("record Sandbox apply submission: %w", err)
 			}
@@ -391,6 +397,10 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	expected.Sources, expected.SourceDigests = sources, digests
 	role, binding, access, err := r.sandboxSourceAccess(attempt, pods...)
+	if err != nil {
+		return nil, err
+	}
+	tlsRole, tlsBinding, tlsAccess, err := r.sandboxMTLSSourceAccess(attempt)
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +516,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 			return nil, fmt.Errorf("finish Sandbox expectation initialization: %w", err)
 		}
 	}
-	desiredGrants = []sandboxpolicy.BindingReference{access}
+	accessGrants := []sandboxpolicy.BindingReference{access}
+	if tlsRole != nil {
+		accessGrants = append(accessGrants, tlsAccess)
+	}
+	desiredGrants = accessGrants
 	if !agent.Spec.Suspended {
 		desiredGrants = append(desiredGrants, attempt.plan.Identity.Bindings...)
 	}
@@ -523,7 +537,12 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err := r.applySandboxSourceAccess(ctx, agent, role, binding, access); err != nil {
 		return nil, err
 	}
-	confirmed, err := r.sandboxBindingUIDs(ctx, []sandboxpolicy.BindingReference{access})
+	if tlsRole != nil {
+		if err := r.applySandboxSourceAccess(ctx, agent, tlsRole, tlsBinding, tlsAccess); err != nil {
+			return nil, err
+		}
+	}
+	confirmed, err := r.sandboxBindingUIDs(ctx, accessGrants)
 	if err != nil {
 		return nil, err
 	}

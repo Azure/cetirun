@@ -250,6 +250,21 @@ RWO and RWOP retained restarts, coordinated shutdown/resume and repeated
 healthy-source migration with synthetic Pod/CSI observations. These are offline
 contracts, not runtime, file-retention, model-spend or CSI qualification.
 
+Common Sandbox policy updates also have a focused served-API regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxPendingRateLimitsAPIServer$' -count=1
+```
+
+It adds and removes rate limits before the first Ready observation, including
+policy status catching up during bootstrap, with both RWO and RWOP HOME. It
+checks unchanged workload, Pod, key and reservation identities and rejects
+mixed execution-control edits. Unit tests additionally cover retained restarts,
+both built-in harnesses, full source comparisons and final-apply/submission
+guards. The Gateway, scheduler and kubelet observations are synthetic; this
+local API test does not qualify live traffic, Kata or storage behavior.
+
 Kata internal CIDR grants have a focused served-API regression:
 
 ```bash
@@ -309,6 +324,49 @@ for the requested-versus-qualified contract.
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.
+
+### Managed Agent ingress mTLS
+
+Focused offline checks for the registered common-executor endpoint:
+
+```bash
+go -C app/cetirun-operator test ./internal/sandboxpolicy ./internal/controller -run 'TestIngressMTLS|TestReconciledSandboxIngressMTLS' -count=1
+python3 -B -m unittest discover -s app/cetirun-chart/tests -p test_hermes_ingress.py -v
+python3 -B -m unittest discover -s app/cetirun-chart/tests -p test_desktop_ingress.py -v
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxIngressMTLS((Preflight|FinalGuard)Recovery)?APIServer$' -count=1
+CETIRUN_ENVOY_BINARY="$PWD/.tools/envoy" \
+  go -C app/cetirun-operator test -tags=envoy ./internal/ingressmtls -count=1
+```
+
+The API-server command uses the same pinned local assets described above and
+real configuration coordination, RBAC and Pod admission; workload readiness
+observations remain synthetic. The transport command requires a separately
+restored Envoy **1.36.3** executable.
+The Linux x86-64 upstream release asset
+`https://github.com/envoyproxy/envoy/releases/download/v1.36.3/envoy-1.36.3-linux-x86_64`
+has SHA-256
+`6dcacec73f0ff18d2f68f605f9f041cd0e1c4d30d3c38977058cd923daa2dea6`.
+Verify it before running; the tests do not download tools. They use actual
+loopback TLS with generated, short-lived test keys and clean up their listeners,
+processes and files.
+
+Set `CETIRUN_OPENCLAW_IMAGE` to an explicitly approved cached OpenClaw 2026.9.6
+image to additionally exercise the real native API/Control UI and ttyd.
+Set `CETIRUN_HERMES_IMAGE` to an explicitly approved cached Hermes 0.21.5 image
+to exercise its API/dashboard and ttyd with fresh HOME, retained bind overrides,
+and a supervised restart after overrides are reintroduced. The tests use the
+candidate configuration assets and HOME authority helper; no model request is
+issued. `CETIRUN_DESKTOP_IMAGE` enables a cached websockify/noVNC HTTP/WebSocket
+TLS check with synthetic RFB/CDP backends; it checks the candidate bind commands
+and readiness without qualifying Xvfb, Chrome or graphical interaction.
+These optional tests run Docker with `--pull=never`, no network, a read-only root,
+a synthetic in-memory HOME and only read-only test-tool mounts. They do not use
+host credentials, a cluster, a model provider or a deployment.
+Without the corresponding variable, that native-image test explicitly skips;
+the Envoy transport tests still run. Exact target-image and real Istio/Kata/Cilium
+qualification remain separate. See the
+[usage and rotation contract](site/content/en/docs/guides/agent-ingress-mtls.md).
 
 ### Agent Identity Broker
 

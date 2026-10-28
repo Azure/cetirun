@@ -355,6 +355,94 @@ func TestStartConnectionRestrictsProviderAndRequestBody(t *testing.T) {
 	}
 }
 
+func TestGitHubAppEndpointsForwardOnlyValidatedOwnerInput(t *testing.T) {
+	requests := make([]string, 0, 4)
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		if r.Header.Get("X-CetiRun-Owner-Object-ID") != toolOwnerObject {
+			t.Fatal("owner headers were not forwarded")
+		}
+		_, _ = w.Write([]byte(`{"enabled":true}`))
+	}))
+	defer broker.Close()
+	handler := NewToolConnectionsHandler(nil, broker.URL, "https://portal.example.invalid")
+	handler.HTTPClient = broker.Client()
+
+	config := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/connections/github-app/config", nil))
+	response := httptest.NewRecorder()
+	handler.GitHubAppConfig(response, config)
+	if response.Code != http.StatusOK {
+		t.Fatalf("config response = %d %s", response.Code, response.Body.String())
+	}
+
+	repositories := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/connections/conn-1/github/repositories?installationId=7&page=2", nil))
+	repositories.SetPathValue("id", "conn-1")
+	response = httptest.NewRecorder()
+	handler.ListGitHubRepositories(response, repositories)
+	if response.Code != http.StatusOK {
+		t.Fatalf("repositories response = %d %s", response.Code, response.Body.String())
+	}
+
+	choose := verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/connections/conn-1/github/installation", strings.NewReader(`{"installationId":7}`)))
+	choose.Header.Set("Content-Type", "application/json")
+	choose.Header.Set("Origin", "https://portal.example.invalid")
+	choose.SetPathValue("id", "conn-1")
+	response = httptest.NewRecorder()
+	handler.SelectGitHubInstallation(response, choose)
+	if response.Code != http.StatusOK {
+		t.Fatalf("installation response = %d %s", response.Code, response.Body.String())
+	}
+
+	invalid := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/connections/conn-1/github/repositories?installationId=0&page=0", nil))
+	invalid.SetPathValue("id", "conn-1")
+	response = httptest.NewRecorder()
+	handler.ListGitHubRepositories(response, invalid)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid repository response = %d %s", response.Code, response.Body.String())
+	}
+
+	want := []string{
+		"GET /v1/connections/github-app/config",
+		"GET /v1/connections/conn-1/github/repositories?installationId=7&page=2",
+		"POST /v1/connections/conn-1/github/installation",
+	}
+	if len(requests) != len(want) {
+		t.Fatalf("requests = %#v, want %#v", requests, want)
+	}
+	for i := range want {
+		if requests[i] != want[i] {
+			t.Errorf("request[%d] = %q, want %q", i, requests[i], want[i])
+		}
+	}
+}
+
+func TestConnectionBindingRejectsInvalidGitHubAccess(t *testing.T) {
+	brokerCalled := false
+	broker := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { brokerCalled = true }))
+	defer broker.Close()
+	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(toolInstance())), broker.URL, "https://portal.example.invalid")
+	handler.HTTPClient = broker.Client()
+	for _, body := range []string{
+		`{"connectionId":"conn","services":["github"],"enabled":true,"github":{"repositoryIds":[],"permissions":{"contents":"read"}}}`,
+		`{"connectionId":"conn","services":["github"],"enabled":true,"github":{"repositoryIds":[1,1],"permissions":{"contents":"read"}}}`,
+		`{"connectionId":"conn","services":["github"],"enabled":true,"github":{"repositoryIds":[1],"permissions":{}}}`,
+		`{"connectionId":"conn","services":["github"],"enabled":true,"github":{"repositoryIds":[1],"permissions":{"contents":"admin"}}}`,
+	} {
+		request := verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/instances/alice-agent/connection-bindings", strings.NewReader(body)))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", "https://portal.example.invalid")
+		request.SetPathValue("name", "alice-agent")
+		response := httptest.NewRecorder()
+		handler.CreateConnectionBinding(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("body %s: response = %d %s", body, response.Code, response.Body.String())
+		}
+	}
+	if brokerCalled {
+		t.Fatal("invalid GitHub binding was forwarded")
+	}
+}
+
 func TestPersonalConnectionBindingUsesStateScopedSecureCookie(t *testing.T) {
 	for _, provider := range []string{"github", "google"} {
 		t.Run(provider, func(t *testing.T) { testPersonalConnectionBinding(t, provider) })

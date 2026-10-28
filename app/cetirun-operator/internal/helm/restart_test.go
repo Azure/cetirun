@@ -57,6 +57,34 @@ func preRestartChart(t *testing.T) *chart.Chart {
   cetirun.microsoft.com/restart-request-id: {{ . | quote }}
   {{- end }}
 `), nil)
+		for _, addition := range []string{
+			`  {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+  command: ["/bin/bash", "/etc/cetirun/desktop-ingress-entrypoint.sh"]
+  readinessProbe:
+    exec:
+      command: ["python3", "/etc/cetirun/desktop-ingress-probe.py"]
+    periodSeconds: 5
+    timeoutSeconds: 4
+    failureThreshold: 3
+  {{- end }}
+`,
+			`    {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+    - name: CETIRUN_INGRESS_MTLS
+      value: "true"
+    {{- end }}
+`,
+			`    {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+    - name: config
+      mountPath: /etc/cetirun
+      readOnly: true
+    {{- end }}
+`,
+		} {
+			if bytes.Count(template.Data, []byte(addition)) != 1 {
+				t.Fatal("pre-restart fixture requires the exact managed desktop addition")
+			}
+			template.Data = bytes.Replace(template.Data, []byte(addition), nil, 1)
+		}
 		// Exact public template at ef9ca7d421e360e07469d3ac63f5d50b82455e0d.
 		if fmt.Sprintf("%x", sha256.Sum256(template.Data)) != "b85759d050fe8f863eaa04997b942d61f3f7d21fd2eeace163f51fb8945919fa" {
 			t.Fatal("pre-restart chart fixture no longer matches its pinned source")

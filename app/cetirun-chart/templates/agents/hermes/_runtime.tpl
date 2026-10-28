@@ -100,6 +100,10 @@ Hermes init containers
       value: {{ include "cetirun.image" . | quote }}
     - name: HERMES_HOME
       value: "/home/vibe/.hermes"
+    {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+    - name: CETIRUN_INGRESS_MTLS
+      value: "true"
+    {{- end }}
     {{- if include "cetirun.agent.hermes.gatewayRouted" . }}
     # The Gateway owns the model choice: init replaces it, and removes the
     # in-agent GitHub Copilot sign-in and the helper.
@@ -155,7 +159,11 @@ Hermes container env vars (agent-specific only)
 - name: HERMES_DASHBOARD_ENABLED
   value: "true"
 - name: HERMES_DASHBOARD_HOST
+  {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+  value: "127.0.0.1"
+  {{- else }}
   value: "0.0.0.0"
+  {{- end }}
 - name: HERMES_DASHBOARD_PORT
   value: "9119"
 - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
@@ -280,6 +288,10 @@ Hermes networkpolicy ingress ports (agent-specific only)
 Hermes configmap data
 */}}
 {{- define "cetirun.agent.hermes.configmapData" }}
+  {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+  hermes-mtls-gateway.sh: |
+{{ .Files.Get "agents/hermes/bootstrap/hermes-mtls-gateway.sh" | indent 4 }}
+  {{- end }}
   {{- if (.Values.sandboxWorkload | default dict).reconciled }}
   health-probe.cjs: |
 {{ .Files.Get "agents/openclaw/bootstrap/health-probe.cjs" | indent 4 }}

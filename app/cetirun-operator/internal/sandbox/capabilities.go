@@ -108,7 +108,6 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 		{"perContainerResourceLimits", capabilities.PerContainerResourceLimits},
 		{"requirePerContainerResourceLimits", capabilities.RequirePerContainerResourceLimits},
 		{"blockedFQDNs", capabilities.BlockedFQDNs},
-		{"mutualTLS", capabilities.MutualTLS},
 		{"entraID", capabilities.EntraID},
 		{"enforcementObservation", capabilities.EnforcementObservation},
 		{"restrictiveFailure", capabilities.RestrictiveFailure},
@@ -179,7 +178,6 @@ func CheckNativeNetworkPolicy(network cetirunv1alpha1.AgentPolicyNetwork) field.
 		requested bool
 	}{
 		{root.Child("blockedFQDNs"), len(network.BlockedFQDNs) != 0},
-		{root.Child("ingress", "requireMTLS"), network.Ingress.RequireMTLS},
 	} {
 		if control.requested {
 			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
@@ -299,7 +297,7 @@ func CheckCompatibility(sandbox cetirunv1alpha1.SandboxSpec, policy cetirunv1alp
 		}
 	}
 	if policy.Network.Ingress.RequireMTLS && !capabilities.MutualTLS {
-		errs = append(errs, field.Required(root.Child("mutualTLS"), "guest-external gateway-to-workload mutual TLS is not qualified"))
+		errs = append(errs, field.Required(root.Child("mutualTLS"), "managed Gateway-to-Agent mutual TLS is not registered"))
 	}
 	if policy.KubernetesAccess != nil && !capabilities.KubernetesAccess {
 		errs = append(errs, field.Required(root.Child("kubernetesAccess"), "administrative Kubernetes access is not qualified"))

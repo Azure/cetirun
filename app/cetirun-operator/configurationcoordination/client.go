@@ -105,6 +105,10 @@ func (c *Client) RecoverUpdate(ctx context.Context, before, after client.Object)
 // Delete reserves and submits one exact UID/resourceVersion-conditional
 // background Delete. An uncertain outcome deliberately retains the reservation.
 func (c *Client) Delete(ctx context.Context, before client.Object) error {
+	completed, err := c.store.RecoverConfigurationDeletion(ctx, before)
+	if err != nil || completed {
+		return err
+	}
 	adapter, err := sandboxcoordination.NewKubernetesDeleteAdapter(c.writer, c.reader, before)
 	if err != nil {
 		return err

@@ -564,6 +564,27 @@ func TestReconciledSandboxPreflightRejectsStaleAuthority(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxConfigurationFailureDoesNotSubmit(t *testing.T) {
+	bundle, values := reconciledSandboxInputs(t)
+	base, err := PrepareChart(testChart(t), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked, submitted := false, false
+	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
+		func(context.Context) error { checked = true; return nil },
+		func(context.Context) error { submitted = true; return nil }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("synthetic Helm configuration read outage")
+	err = (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
+		func(string) (*action.Configuration, error) { return nil, injected })
+	if !errors.Is(err, injected) || !checked || submitted {
+		t.Fatal("read-only configuration failure submitted a workload:", err)
+	}
+}
+
 func TestReconciledSandboxApplyGuardFailureDoesNotWrite(t *testing.T) {
 	bundle, values := reconciledSandboxInputs(t)
 	base, err := PrepareChart(testChart(t), values)

@@ -189,6 +189,37 @@ func assertKubernetesFixtureGrants(t *testing.T, f *nativeSandboxFixture, grante
 	return workloadBindings
 }
 
+func TestReconciledSandboxKubernetesIngressMTLS(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			input := testfixture.New(kind)
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false,
+				withReconciledCoordination(t), withIngressMTLS(t, kind),
+				func(r *AgentReconciler, author client.Client) {
+					configureReconciledKubernetesAccess(t, r, author, input.Agent.Name, input.Policy.Name)
+					installKubernetesFixtureCA(t, r, author, input.Agent.Name)
+				})
+			f.reconcileOK(t)
+			assertKubernetesFixtureGrants(t, f, true)
+			expected := reconciledExpectationForTest(t, f)
+			if !slices.ContainsFunc(expected.Controls, func(object unstructured.Unstructured) bool {
+				return object.GetKind() == "DestinationRule"
+			}) {
+				t.Fatal("Kubernetes access omitted the managed ingress TLS control")
+			}
+			refs, err := f.r.sandboxGrantJournal().Read(context.Background(), f.agent.Name, f.agent.UID)
+			if err != nil || len(refs) != 4 {
+				t.Fatalf("expected two source-reader and two workload grants, got %d: %v", len(refs), err)
+			}
+			for _, ref := range refs {
+				if ref.UID == "" {
+					t.Fatal("combined Kubernetes and TLS access left an unconfirmed grant")
+				}
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxKubernetesAccess(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteOncePod} {

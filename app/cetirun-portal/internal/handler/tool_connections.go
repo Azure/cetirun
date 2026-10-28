@@ -134,6 +134,62 @@ func (h *ToolConnectionsHandler) StartConnection(w http.ResponseWriter, r *http.
 	h.forwardConnectionAuthorization(w, r, "/v1/connections/start", headers, body, binding, true)
 }
 
+// GitHubAppConfig reports whether the shared GitHub App has been configured.
+// It is owner-scoped because its install URL is used from an authenticated
+// connection workflow.
+func (h *ToolConnectionsHandler) GitHubAppConfig(w http.ResponseWriter, r *http.Request) {
+	headers, ok := h.ownerHeaders(w, r)
+	if !ok {
+		return
+	}
+	h.forward(w, r, http.MethodGet, "/v1/connections/github-app/config", headers, nil)
+}
+
+func (h *ToolConnectionsHandler) ListGitHubInstallations(w http.ResponseWriter, r *http.Request) {
+	headers, ok := h.ownerHeaders(w, r)
+	if !ok {
+		return
+	}
+	h.forward(w, r, http.MethodGet, "/v1/connections/"+url.PathEscape(r.PathValue("id"))+"/github/installations", headers, nil)
+}
+
+func (h *ToolConnectionsHandler) ListGitHubRepositories(w http.ResponseWriter, r *http.Request) {
+	headers, ok := h.ownerHeaders(w, r)
+	if !ok {
+		return
+	}
+	installationID, page, ok := readGitHubRepositoryPage(w, r)
+	if !ok {
+		return
+	}
+	path := fmt.Sprintf("/v1/connections/%s/github/repositories?installationId=%d&page=%d", url.PathEscape(r.PathValue("id")), installationID, page)
+	h.forward(w, r, http.MethodGet, path, headers, nil)
+}
+
+func (h *ToolConnectionsHandler) SelectGitHubInstallation(w http.ResponseWriter, r *http.Request) {
+	headers, ok := h.writeOwnerHeaders(w, r)
+	if !ok {
+		return
+	}
+	body, ok := readGitHubInstallation(w, r)
+	if !ok {
+		return
+	}
+	h.forward(w, r, http.MethodPost, "/v1/connections/"+url.PathEscape(r.PathValue("id"))+"/github/installation", headers, body)
+}
+
+// GitHubAppSetup is the optional GitHub App setup return page. Selection is
+// always performed through authenticated owner-scoped APIs, so this endpoint
+// intentionally ignores all query parameters and never contacts the Broker.
+func (h *ToolConnectionsHandler) GitHubAppSetup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = io.WriteString(w, "<!doctype html><title>GitHub App setup</title><p>You can close this window and return to CetiRun.</p><script>window.close()</script>")
+}
+
 func (h *ToolConnectionsHandler) GetConnection(w http.ResponseWriter, r *http.Request) {
 	headers, ok := h.ownerHeaders(w, r)
 	if !ok {
@@ -328,6 +384,7 @@ func (h *ToolConnectionsHandler) runtimeSupported(instance *cetirunv1alpha1.Agen
 
 type connectionStartRequest struct {
 	Provider string `json:"provider"`
+	Mode     string `json:"mode,omitempty"`
 }
 
 type toolIdentityRequest struct {
@@ -360,6 +417,10 @@ func readConnectionStart(w http.ResponseWriter, r *http.Request) ([]byte, string
 		writeError(w, http.StatusBadRequest, "invalid_provider", "Provider must be azure, microsoft, github, or google")
 		return nil, "", false
 	}
+	if request.Mode != "" && !(request.Provider == "github" && request.Mode == "installation") {
+		writeError(w, http.StatusBadRequest, "invalid_mode", "GitHub installation mode is the only supported connection mode")
+		return nil, "", false
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "Connection request is invalid")
@@ -369,10 +430,26 @@ func readConnectionStart(w http.ResponseWriter, r *http.Request) ([]byte, string
 }
 
 type connectionBindingRequest struct {
-	ConnectionID string   `json:"connectionId"`
-	Services     []string `json:"services"`
-	Enabled      bool     `json:"enabled"`
-	Revision     uint64   `json:"revision,omitempty"`
+	ConnectionID string                `json:"connectionId"`
+	Services     []string              `json:"services"`
+	Enabled      bool                  `json:"enabled"`
+	Revision     uint64                `json:"revision,omitempty"`
+	GitHub       *githubBindingRequest `json:"github,omitempty"`
+}
+
+type githubBindingRequest struct {
+	RepositoryIDs []int64                  `json:"repositoryIds"`
+	Permissions   githubPermissionsRequest `json:"permissions"`
+}
+
+type githubPermissionsRequest struct {
+	Contents     string `json:"contents,omitempty"`
+	PullRequests string `json:"pull_requests,omitempty"`
+	Issues       string `json:"issues,omitempty"`
+}
+
+type githubInstallationRequest struct {
+	InstallationID int64 `json:"installationId"`
 }
 
 func (h *ToolConnectionsHandler) readBinding(w http.ResponseWriter, r *http.Request, requireRevision bool) ([]byte, string, bool) {
@@ -392,6 +469,10 @@ func (h *ToolConnectionsHandler) readBinding(w http.ResponseWriter, r *http.Requ
 		}
 		seen[id] = true
 	}
+	if request.GitHub != nil && !validGitHubBinding(request.GitHub, request.Services) {
+		writeError(w, http.StatusBadRequest, "invalid_github_binding", "GitHub bindings require 1 to 500 unique repositories and at least one read or write permission")
+		return nil, "", false
+	}
 	if requireRevision && request.Revision == 0 {
 		writeError(w, 400, "revision_required", "Binding revision is required for updates")
 		return nil, "", false
@@ -402,6 +483,70 @@ func (h *ToolConnectionsHandler) readBinding(w http.ResponseWriter, r *http.Requ
 		return nil, "", false
 	}
 	return body, strconv.FormatUint(request.Revision, 10), true
+}
+
+func validGitHubBinding(binding *githubBindingRequest, services []string) bool {
+	if len(services) != 1 || services[0] != "github" || len(binding.RepositoryIDs) == 0 || len(binding.RepositoryIDs) > 500 {
+		return false
+	}
+	seen := make(map[int64]struct{}, len(binding.RepositoryIDs))
+	for _, id := range binding.RepositoryIDs {
+		if id <= 0 {
+			return false
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	permissions := []string{binding.Permissions.Contents, binding.Permissions.PullRequests, binding.Permissions.Issues}
+	granted := false
+	for _, permission := range permissions {
+		if permission == "" {
+			continue
+		}
+		if permission != "read" && permission != "write" {
+			return false
+		}
+		granted = true
+	}
+	return granted
+}
+
+func readGitHubInstallation(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	var request githubInstallationRequest
+	if !decodeJSON(w, r, &request) {
+		return nil, false
+	}
+	if request.InstallationID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_installation", "GitHub installation is required")
+		return nil, false
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "GitHub installation request is invalid")
+		return nil, false
+	}
+	return body, true
+}
+
+func readGitHubRepositoryPage(w http.ResponseWriter, r *http.Request) (int64, int, bool) {
+	query := r.URL.Query()
+	if len(query["installationId"]) != 1 || len(query["page"]) != 1 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "GitHub installation and page are required")
+		return 0, 0, false
+	}
+	installationID, err := strconv.ParseInt(query.Get("installationId"), 10, 64)
+	if err != nil || installationID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_installation", "GitHub installation is invalid")
+		return 0, 0, false
+	}
+	page, err := strconv.Atoi(query.Get("page"))
+	if err != nil || page < 1 || page > 10000 {
+		writeError(w, http.StatusBadRequest, "invalid_page", "GitHub repository page is invalid")
+		return 0, 0, false
+	}
+	return installationID, page, true
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {

@@ -78,8 +78,8 @@ The namespace and release derive from `metadata.name`. For example, `alice`
 uses `cetirun-alice` and `openclaw-alice`. An owner can have a differently named
 instance; use the reported status instead of deriving names from the alias.
 Use short DNS-label instance names. Portal creation reserves `oauth2`, `api`,
-`internal`, `healthz`, `readyz`, `assets`, `portal`, `instances`, `admin`, and
-`ui`. Direct CRD admission does not impose that same list; the controller
+`internal`, `healthz`, `readyz`, `assets`, `portal`, `instances`, `admin`,
+`connections`, and `ui`. Direct CRD admission does not impose that same list; the controller
 explicitly rejects `ui`. Avoid all reserved names rather than relying on
 schema acceptance to establish safe routing.
 
@@ -387,7 +387,12 @@ change starts, and the operator keeps each Agent's key. Sandbox execution,
 including coordinated configuration reservations, also excludes
 `modelAccess.rateLimits` from its execution inputs. Adding, editing, or removing
 only these limits, including `perModel`, does not stop or restart running
-native Agents. While policy status catches up to the new generation, the
+native Agents. For common-executor Sandboxes this includes workloads still
+initializing or completing a retained restart: a limits-only update does not
+reapply the workload, temporarily block its key, or release its unchanged
+native reservation. A policy status update during bootstrap is compared against
+the captured execution inputs and immutable UID, not its resource version alone.
+While policy status catches up to the new generation, the
 operator reassesses the current policy against the same trusted platform
 inventory and grants used by the policy controller instead of stopping an Agent
 solely for that observation delay. Unavailable or invalid policy evidence still
@@ -453,7 +458,9 @@ or `/SCTP` is specified. Rule changes are submitted when the Policy is saved.
 
 Agent Identity, Entra ID, blocked FQDNs, and ingress mTLS are read-only in this
 editor. Existing values remain visible and are preserved when other fields are
-saved. FQDN blocking and mTLS lack supported enforcement; Agent Identity lacks
+saved. FQDN blocking lacks supported enforcement; ingress mTLS requires the
+separate [administrator-registered managed endpoint](../../guides/agent-ingress-mtls/),
+not a Portal toggle. Agent Identity lacks
 the credential-service evidence needed for aggregate `PolicyApplied`. Other
 controls also depend on the selected execution profile and platform capabilities.
 New common-executor Kata lifetimes support internal CIDR grants, approved

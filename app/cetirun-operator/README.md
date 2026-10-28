@@ -226,6 +226,11 @@ submission. The post-renderer records submission before resource writes, so a
 first-install history read failure can cancel a still-pending expectation and
 recover through normal retry or deletion. It cannot reset a previously submitted
 or uncertain checkpoint merely because the workload is absent.
+Final apply claims the expectation resource version before its last authority
+read. First attempts stay pending throughout those reads; a CAS records submitted
+only immediately before manifest delivery. Competing claims fence stale writers,
+while lost submission acknowledgements and previously submitted work remain
+uncertain and require shutdown evidence.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.
@@ -416,7 +421,7 @@ remain required; read-only root and ingress support must match the selected
 policy. The configuration harness allow-list supports `openclaw` and `hermes`;
 the earlier single-start executor itself remains OpenClaw-only.
 `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
-FQDN support, mTLS and Entra ID flags must be `false`. Kubernetes access may be
+FQDN support and Entra ID flags must be `false`. Kubernetes access may be
 explicitly registered for new common-executor lifetimes with exact policy-role
 and per-Agent identity approvals; see the
 [Kubernetes API access example](../../examples/native-sandbox/README.md#kubernetes-api-access).
@@ -427,6 +432,13 @@ capability alone does not make a rollback safe. Follow the example's cleanup
 and old-compatible-state prerequisites before downgrading.
 These are not
 physical fencing or guest-external runtime-observation guarantees.
+
+Common-executor OpenClaw and Hermes can separately opt in to managed ingress
+mTLS with `mutualTLS: true`, per-Agent external certificate approvals and the
+registered Envoy endpoint. Retained single-start lifetimes still reject it.
+See [managed Agent ingress mTLS](../../site/content/en/docs/guides/agent-ingress-mtls.md)
+for certificate ownership, supported surfaces, source pins and stop/change/resume
+rotation. It does not enable outbound TLS inspection or FQDN blocking.
 
 `network.blockedCIDRs` uses the registered address families and the existing
 guest-external deny baseline. `network.blockedPorts` additionally requires
@@ -776,6 +788,13 @@ with the same `--before` or `--operation-id` then finishes the same recorded
 operation without resubmission. This proves neither physical cleanup nor
 completion of finalizers or dependent cleanup.
 The CLI reports `deletion-accepted`, not resource or dependent cleanup completion.
+If the original UID is still live at a newer resourceVersion, the old conditional
+Delete can no longer apply. Observation reports
+`deletion-superseded-reservation-retained`; explicit recovery reports
+`deletion-superseded` and releases only the old reservation, without a Delete.
+Portal deletion with a freshly read UID/resourceVersion observes and clears
+such an older reservation before authorizing the new conditional request.
+An unchanged uncertain request is never replayed or declared superseded.
 Release after the terminating transition allows normal finalizer cleanup to
 finish. Missing authority remains an error, never permission to delete.
 Deletion observation reads authoritative metadata only, so a replacement's
@@ -1071,10 +1090,12 @@ This increment implements:
   Portal administrators do not automatically acquire this independent authority.
 - Creation-only Agent selection defaulting, followed by validation against the
   current Team. Existing Agents are never silently re-defaulted. Portal writes
-  use its administrator identity and may preserve the Team selected by the
-  Agent owner. Non-administrator direct Kubernetes writes require an exact
-  authenticated identity-to-Team assignment configured on the webhook; that
-  cluster access rule is separate from the product's Team selection model.
+  use its administrator identity, its service account (see
+  [Availability and bootstrap](#availability-and-bootstrap)), and may preserve
+  the Team selected by the Agent owner. Non-administrator direct Kubernetes
+  writes require an exact authenticated identity-to-Team assignment configured
+  on the webhook; that cluster access rule is separate from the product's Team
+  selection model.
   Mutation and validation are installed together: Kubernetes runs mutation
   first, including for dry runs. Validation rejects a missing selection rather
   than assuming that a default was persisted.
@@ -1766,7 +1787,9 @@ The candidate Azure CNI Overlay/Cilium compiler emits explicit network controls
 and per-Agent identity resources from trusted topology and grant inventories.
 Gateway endpoints/ports come from that inventory, not hardcoded defaults or
 policy-supplied destinations. Conflicting required destinations reject. FQDN
-blocking and mTLS remain unsupported and reject rather than becoming no-ops.
+blocking and qualified-adapter mTLS remain unsupported and reject rather than
+becoming no-ops. The native common executor has the separately registered
+[managed mTLS endpoint](../../site/content/en/docs/guides/agent-ingress-mtls.md).
 The effective compiled revision includes topology, identity and role-content
 changes; use it rather than only the base resolver revision.
 
@@ -2159,12 +2182,16 @@ cluster-scoped resource names.
    `sandboxAdmission.tlsSecretName`; no issuer is installed and no serving
    certificate is generated by this chart.
 2. Configure exact `sandboxAdmission.adminUsers`/`adminGroups`, then deploy
-   `enabled=true, enforce=false`. Include the Portal's service account,
-   `system:serviceaccount:<portal-namespace>:cetirun-portal` by default: the
-   Portal writes Agents, Teams, Sandboxes and AgentPolicies with it, and the
-   webhook otherwise refuses its writes to policy-bound Agents, such as saving
-   an owner's GitHub Copilot models after a sign-in. The platform chart refuses
-   to enforce admission without it. Verify TLS, readiness, API read permissions,
+   `enabled=true, enforce=false`. Blanket groups such as `system:authenticated`
+   or `system:serviceaccounts:<namespace>` are refused. The Portal's service
+   account must be an administrator too: the Portal writes Agents, Teams,
+   Sandboxes and AgentPolicies with it, and the webhook otherwise refuses its
+   writes to policy-bound Agents, such as saving an owner's GitHub Copilot
+   models after a sign-in. `sandboxAdmission.portalServiceAccount` adds
+   `system:serviceaccount:<release namespace>:<name>` to the administrators
+   once, without counting as the one required; the platform chart sets it to
+   the Portal's, `cetirun-portal` by default. List a Portal in another
+   namespace in `adminUsers`. Verify TLS, readiness, API read permissions,
    two available replicas and their placement. The chart supplies a disruption
    budget and spreading constraints; rendering does not establish availability.
    Use a waiting rollout and request-path checks before the next step; an
@@ -2190,6 +2217,9 @@ must name an existing, platform-approved PriorityClass; the chart does not
 automatically assign system-critical priority. Spread constraints do not
 guarantee distinct hosts when only one eligible topology domain exists, so
 verify actual placement on at least two eligible hosts for availability.
+Spreading is scoped to each `pod-template-hash`: old ReplicaSets must not
+make a replacement revision appear balanced before their Pods disappear.
+Deployment preflight still checks the actual current serving endpoints.
 The disruption budget permits voluntary disruptions only while at least
 `replicaCount - 1` replicas remain available.
 A native 10-second preStop sleep allows endpoint changes to propagate before
@@ -2425,8 +2455,10 @@ Public documentation reviewed on 2026-09-25 narrows the next trial:
 
 The initial candidate is the configured managed Cilium path, with a separately
 qualified upstream Cilium installation as a comparison only where authorized.
-FQDN blocking, gateway-to-workload mTLS and any unqualified protocols remain
-explicitly unsupported. Required network isolation, port blocking, runtime
+FQDN blocking, qualified-adapter gateway-to-workload mTLS and any unqualified
+protocols remain explicitly unsupported. The native common-executor mTLS
+endpoint is a separate opt-in, not qualification of this baseline.
+Required network isolation, port blocking, runtime
 accounting and observation/fencing still need actual target-version tests.
 No cluster was inspected or modified to establish this baseline.
 

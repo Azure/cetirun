@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
@@ -56,17 +57,31 @@ func Compile(input CompileInput) (*Plan, error) {
 		return nil, err
 	}
 	input.Resolution, input.Platform = resolution, platform
+	var mtls *ingressmtls.Plan
+	if resolution.AgentPolicy.Network.Ingress.RequireMTLS {
+		if !input.NativeExecution || platform.IngressMTLS == nil {
+			return nil, fmt.Errorf("%w: managed ingress mTLS requires native execution and certificate registration", ErrUnsupportedControl)
+		}
+		if len(validation.IsDNS1123Label(input.ServiceName)) != 0 {
+			return nil, fmt.Errorf("%w: mTLS requires the resolved native Service name", ErrUnavailable)
+		}
+		mtls, err = platform.IngressMTLS.Resolve(binding.AgentUID, input.Namespace, input.ServiceName)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+	}
 	identity, grants, approval, err := compileIdentity(input)
 	if err != nil {
 		return nil, err
 	}
-	network, err := compileNetwork(input)
+	network, err := compileNetwork(input, mtls)
 	if err != nil {
 		return nil, err
 	}
 	plan := &Plan{
 		Binding: binding, AgentName: input.AgentName, Namespace: input.Namespace,
 		ResolutionRevision: resolution.Revision, Network: network, Identity: identity,
+		IngressMTLS: mtls,
 	}
 	capabilities := resolution.Capabilities
 	capabilities.IPFamilies = sortedUnique(capabilities.IPFamilies)
@@ -90,10 +105,11 @@ func Compile(input CompileInput) (*Plan, error) {
 		Approval     *ApprovedIdentity
 		Identity     IdentityPlan
 		Network      NetworkPlan
+		IngressMTLS  *ingressmtls.Plan `json:",omitempty"`
 	}{
 		"sandbox-controls-v1", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
-		platform.Topology, grants, approval, identity, revisionNetwork,
+		platform.Topology, grants, approval, identity, revisionNetwork, mtls,
 	})
 	if err != nil {
 		return nil, err
@@ -107,6 +123,13 @@ func Compile(input CompileInput) (*Plan, error) {
 		return nil, err
 	}
 	plan.Resources = append(plan.Resources, resource)
+	if mtls != nil {
+		resources, err := IngressMTLSResources(input, *mtls, plan.Revision)
+		if err != nil {
+			return nil, err
+		}
+		plan.Resources = append(plan.Resources, resources...)
+	}
 	if plan.Identity.ServiceAccount != nil {
 		plan.Identity.ServiceAccount.Annotations[RevisionAnnotation] = plan.Revision
 		resource, err = manifest(plan.Identity.ServiceAccount)
@@ -185,8 +208,8 @@ func supportedPolicy(policy api.AgentPolicySpec, capabilities sandbox.Capabiliti
 	if len(policy.Network.BlockedFQDNs) != 0 {
 		return fmt.Errorf("%w: full FQDN blocking is not implemented by the selected adapter", ErrUnsupportedControl)
 	}
-	if policy.Network.Ingress.RequireMTLS {
-		return fmt.Errorf("%w: guest-external mTLS has no qualified implementation", ErrUnsupportedControl)
+	if policy.Network.Ingress.RequireMTLS && (capabilities.Profile != sandbox.ProfileNativeSingleStart || !capabilities.MutualTLS) {
+		return fmt.Errorf("%w: managed ingress mTLS requires an explicitly registered native endpoint", ErrUnsupportedControl)
 	}
 	if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
 		return fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
