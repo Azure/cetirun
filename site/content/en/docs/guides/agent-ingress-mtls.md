@@ -17,6 +17,10 @@ place. It does not inspect outbound HTTPS or implement FQDN blocking.
 Cilium remains the guest-external network boundary; the in-VM TLS helper is not
 a replacement for that boundary or independent runtime-enforcement evidence.
 
+Shared-only, Copilot-only and mixed model selections retain the same Gateway
+routing. Only the Agent Service targets the managed TLS ports; the separately
+owned, private Copilot companion Service keeps its own selector and port.
+
 ## Prerequisites and supported surfaces
 
 - Use the common executor, Kata, and the built-in OpenClaw or Hermes harness.
