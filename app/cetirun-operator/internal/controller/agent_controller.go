@@ -117,6 +117,7 @@ type AgentReconciler struct {
 	ConnectionsMCPRuntimeTypes         []string
 	ConnectionsMCPBrokerNamespace      string
 	ConnectionsMCPBrokerServiceAccount string
+	ConnectionsMCPNativeEnabled        bool
 	// agentIdentityGraphClientFactory is test-only dependency injection. A nil
 	// factory constructs the deployment's workload-identity-backed Graph client.
 	agentIdentityGraphClientFactory func() (agentIdentityDirectoryClient, error)
@@ -502,7 +503,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
 	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
-		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team))
+		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance))
 		namespaceMissing := stderrors.Is(brokerRBACErr, errConnectionsMCPBrokerNamespaceMissing)
 		if brokerRBACErr != nil && !namespaceMissing {
 			logger.Error(brokerRBACErr, "Broker storage access setup failed", "instance", instance.Name)
@@ -692,7 +693,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 	}
 
-	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
+	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance)); err != nil {
 		return r.failWith(ctx, instance, "BrokerStorageAccessFailed", fmt.Sprintf("Broker storage access setup failed: %v", err))
 	}
 	// 7. Ensure gateway token secret.
@@ -899,6 +900,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			gatewaySecretResourceVersionAnnotation: gatewaySecretResourceVersion,
 		})
 	}
+	if connectionsCAHash != "" && reconciledSandbox {
+		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
+	}
 	if reconciledSandbox {
 		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, helmValues)
 	} else {
@@ -931,7 +935,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
 	helmValues = prepared.Values
-	if connectionsCAHash != "" {
+	if connectionsCAHash != "" && !reconciledSandbox {
 		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
 	}
 	if reconciledSandbox {

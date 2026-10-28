@@ -74,9 +74,9 @@ not reuse an earlier check response. The Broker
 independently validates an owned enforcement record against the live Agent,
 Team and AgentPolicy before and after credential acquisition. Missing, changed
 or unreadable evidence stops execution; an ARM-only policy cannot be used for
-Graph OBO. This does not create a Connection, authorize a provider operation or
-enable native Sandbox workload identity. The Broker's current unsupported-native
-gate still prevents ready credential readback. See the
+Graph OBO. This does not create a Connection or authorize a provider operation.
+Governed native workloads additionally require the current common-executor proof
+described below; a stored policy alone is insufficient. See the
 [credential policy contract](../cetirun-agent-broker/README.md#credential-policy-execution-and-readback).
 
 Workload authentication failures return HTTP 401 with `unauthenticated` when
@@ -135,6 +135,57 @@ Recreate Agent workloads with the new configuration, projected token audience,
 and mount paths. Previous component and configuration names have no aliases.
 Connection records and provider authorization grants do not require migration.
 
+### Governed native workloads
+
+The common OpenClaw/Hermes executor has an explicit Connections opt-in:
+
+- Operator: enable `sandboxSources.nativeExecution` and
+  `connectionsMCP.nativeEnabled`, alongside the existing Connections URL,
+  purpose audience, CA and Broker namespace/ServiceAccount configuration.
+- Connections chart: enable `nativeSandbox.enabled`, set
+  `nativeSandbox.operatorNamespace`, and provide `nativeSandbox.peerUID`.
+  Register the same protected managed-peer identity, namespace, Service name
+  and Service IP inventory in the Operator's existing Sandbox platform source.
+- Keep the fixed Sandbox Pod-admission webhook and its current serving CA
+  available. Broker and MCP receive only named read access to
+  `cetirun-sandbox-pods`; MCP also needs its normal workload reads and
+  TokenReview permission. They receive no Pod write permission.
+
+The Operator derives the required TCP destination from the current registered
+MCP Service, including its numeric backend port. Deny rules still take
+precedence. The current/default workload ServiceAccount already has UID/version
+pins in common-executor Sources; this path does not create a dedicated
+ServiceAccount or depend on generic Entra projection approval. Only the primary
+container mounts the 600-second, purpose-bound Connections proof. It is not an
+`api://AzureADTokenExchange` token.
+
+Both MCP and Broker independently TokenReview that proof, reread the current
+Running/Ready Pod, namespace, ServiceAccount and Ready Agent, and ask the existing
+Operator Pod-admission validator to validate an identical-object, dry-run UPDATE
+of the API-read Pod. The request cannot select a webhook, namespace or alternate
+validation path. Discovery uses the fixed Kubernetes webhook configuration and
+its current CA. No Pod is written. The existing validator checks current source
+UIDs/versions/digests, Agent binding, rendered workloads/controls and reservation;
+the consumer then rereads identities and webhook trust. Recreated, suspended,
+deleting, held, changed or unavailable authority fails closed.
+
+Native Pods do not carry an Istio sidecar. With this opt-in, port 8443 on MCP
+uses its existing **application HTTPS and Pod-proof authentication**, not an
+additional outer Istio mTLS layer. The chart limits ingress by Agent namespace
+and registers the protected peer selector. A Service-scoped DestinationRule
+also prevents ordinary meshed Agents from adding an incompatible outer mTLS
+layer; their application HTTPS and proof remain required. MCP-to-Broker direct mTLS remains
+required; other MCP ports retain the existing mesh restrictions. The default
+non-native chart configuration remains strict.
+
+Credential-policy configuration readback can run before aggregate Agent Ready;
+it never permits credential serving before workload readiness. Current policy
+evidence can then complete `PolicyApplied`. Independent GitHub/Google metadata
+and credentials do not require Broker Agent Identity or ARM policy records.
+Unavailable *workload authority*, however, rejects all workload-authenticated
+requests, including metadata. Owner-side inventory and exact owned cleanup do
+not require a still-running native Pod.
+
 ## Offline checks
 
 ```bash
@@ -145,4 +196,8 @@ make chart-lint
 ```
 
 Checks use synthetic Azure and Kubernetes fixtures. They do not qualify a live
-Azure tenant, cluster, Portal UI, or native runtime bootstrap.
+Azure tenant, cluster, Portal UI or dataplane. The Operator additionally has a
+local API-server/common-executor/served-admission test documented in
+[DEVELOPMENT.md](../../DEVELOPMENT.md); scheduler, kubelet, directory and provider
+observations remain synthetic. Live Kata/Cilium, Service routing, TLS delivery
+and provider/federation qualification are separate prerequisites.

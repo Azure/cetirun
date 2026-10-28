@@ -33,6 +33,14 @@ func Build(input Input) (*Bundle, error) {
 	if input.AgentType != "openclaw" && input.AgentType != "hermes" {
 		return nil, fmt.Errorf("policy-bound %q rendering is unsupported; legacy fallback is forbidden", input.AgentType)
 	}
+	if input.ConnectionsMCP != nil {
+		if !input.Reconciled {
+			return nil, fmt.Errorf("Connections proof requires the current common executor")
+		}
+		if err := input.ConnectionsMCP.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	if request := input.PlannedMigration; request != nil && (!input.Reconciled ||
 		!api.ValidRestartRequestID(request.RequestID) || request.Target.UID == "" ||
 		len(validation.IsDNS1123Subdomain(request.Target.Name)) != 0) {

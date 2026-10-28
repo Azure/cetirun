@@ -62,6 +62,10 @@ configuration = [rule for rule in role["rules"]
 assert configuration == [{"apiGroups": ["cetirun.microsoft.com"],
                           "resources": ["teams", "agentpolicies"], "verbs": ["get"]}]
 assert not any("secrets" in rule.get("resources", []) for rule in role["rules"])
+for resource, name in (("validatingwebhookconfigurations", "cetirun-sandbox-pods"),
+                       ("rolebindings", "cetirun-agent-tools-broker")):
+    rules = [rule for rule in role["rules"] if resource in rule.get("resources", [])]
+    assert len(rules) == 1 and rules[0]["resourceNames"] == [name] and rules[0]["verbs"] == ["get"], rules
 ' <<<"${output}"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"

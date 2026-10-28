@@ -244,7 +244,9 @@ func (s *Server) credentialPolicyReadback(ctx context.Context, agent Agent) (age
 	// executor. Native Sandbox remains unavailable until its workload identity
 	// integration is qualified; never certify the record as executable here.
 	if agent.UnsupportedRuntime {
-		return agenttools.CredentialPolicyReadback{}, toolAuthorizationFailure("dependency_unavailable", 503)
+		if _, err := s.store.qualifyNativeAgent(ctx, agent, nil); err != nil {
+			return agenttools.CredentialPolicyReadback{}, toolAuthorizationFailure("dependency_unavailable", 503)
+		}
 	}
 	return readback, nil
 }

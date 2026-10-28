@@ -451,7 +451,12 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		}
 		return "", err
 	}
+	connections, _, err := r.nativeConnectionsDestination(ctx, agent, platform)
+	if err != nil {
+		return "", policyDependency("resolve native Connections destination: %w", err)
+	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
+		ConnectionsMCP:  connections,
 		NativeExecution: r.SandboxPreparation.NativeExecution,
 		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name),
 		ServiceName: instanceServiceName(agent.Name), Platform: platform,

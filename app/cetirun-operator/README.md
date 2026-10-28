@@ -112,12 +112,23 @@ Policy/identity drift clears the applied revision. Removing Agent Identity
 does not satisfy the identity-free policy until the existing identity cleanup
 finishes, including Broker revocation before directory deletion.
 
-The current Broker still rejects native Sandbox workload authorization and
-does not issue ready readback for an unsupported executor. This patch therefore
-does **not** enable native Agent Identity or lift its aggregate readiness hold.
-Native projection/ServiceAccount integration and platform qualification remain
-separate prerequisites. Generic Entra workload projections do not establish a
-Connections MCP identity. See the
+With `connectionsMCP.nativeEnabled`, the common OpenClaw/Hermes executor can
+project a purpose-bound Connections proof on its already-pinned current/default
+ServiceAccount. The registered MCP Service, public CA and exactly Agent-owned
+Broker storage Role/RoleBinding are added to existing Sources. Broker and MCP
+independently verify the live workload through current API reads and the existing
+served Pod-admission/source validator; they never trust the enable flag as proof.
+Configuration readback can precede aggregate Ready, but credential serving
+requires a current Running/Ready Pod and Ready Agent. Only verified readback can
+complete the credential part of `PolicyApplied`. Missing, unsupported, stale,
+held, suspended or deleting inputs remain nonready. Verified bootstrap publishes
+the namespace locator before Ready without claiming execution readiness.
+
+This path does not introduce a dedicated ServiceAccount lifecycle. Generic
+Entra workload projections do not establish a Connections MCP identity. Live
+runtime, networking and provider/federation qualification remain prerequisites.
+See [native installation](../cetirun-connections-mcp/README.md#governed-native-workloads)
+and the
 [Broker contract](../cetirun-agent-broker/README.md#credential-policy-execution-and-readback)
 for installation, readback, current-source matching and cleanup boundaries.
 

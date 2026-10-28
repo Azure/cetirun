@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Azure/CetiRun/app/cetirun-connections-mcp/internal/config"
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 const maxKubernetesResponse = 1 << 20
@@ -30,10 +31,12 @@ var (
 )
 
 type Kubernetes struct {
-	baseURL   string
-	tokenFile string
-	client    *http.Client
-	audience  string
+	operatorNamespace        string
+	nativeAdmissionTransport http.RoundTripper
+	baseURL                  string
+	tokenFile                string
+	client                   *http.Client
+	audience                 string
 }
 
 type Caller struct {
@@ -81,6 +84,10 @@ type pod struct {
 	Spec     struct {
 		ServiceAccountName string `json:"serviceAccountName"`
 	} `json:"spec"`
+	Status struct {
+		Phase      string                          `json:"phase"`
+		Conditions []struct{ Type, Status string } `json:"conditions"`
+	} `json:"status"`
 }
 
 type serviceAccount struct {
@@ -121,9 +128,10 @@ func NewKubernetes(cfg config.Config) (*Kubernetes, error) {
 		return nil, errors.New("Kubernetes service CA is invalid")
 	}
 	return &Kubernetes{
-		baseURL:   "https://" + host + ":" + port,
-		tokenFile: cfg.KubernetesTokenFile,
-		audience:  cfg.WorkloadTokenAudience,
+		operatorNamespace: cfg.OperatorNamespace,
+		baseURL:           "https://" + host + ":" + port,
+		tokenFile:         cfg.KubernetesTokenFile,
+		audience:          cfg.WorkloadTokenAudience,
 		client: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			RootCAs:    pool,
@@ -153,7 +161,7 @@ func (k *Kubernetes) Authenticate(ctx context.Context, bearer string) (Caller, e
 	}
 	podName, podUID := extraValue(review.Status.User.Extra, "authentication.kubernetes.io/pod-name"), extraValue(review.Status.User.Extra, "authentication.kubernetes.io/pod-uid")
 	serviceAccountUID := review.Status.User.UID
-	if !dnsLabel(podName) || podUID == "" || serviceAccountUID == "" {
+	if !agenttools.ValidDNSSubdomainName(podName) || podUID == "" || serviceAccountUID == "" {
 		return Caller{}, ErrUnauthenticated
 	}
 	var currentPod pod
@@ -198,8 +206,37 @@ func (k *Kubernetes) Authenticate(ctx context.Context, bearer string) (Caller, e
 	if err := k.getWorkload(ctx, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+owner.Name, &item); err != nil {
 		return Caller{}, err
 	}
-	if item.Metadata.Name != owner.Name || item.Metadata.UID != owner.UID || item.Metadata.DeletionTimestamp != nil || item.Spec.Suspended || item.Status.Phase != "Ready" || item.Status.Namespace != namespace || instanceServiceName(item.Metadata.Name) != serviceAccountName {
+	if item.Metadata.Name != owner.Name || item.Metadata.UID != owner.UID || item.Metadata.DeletionTimestamp != nil || item.Spec.Suspended || item.Status.Phase != "Ready" || item.Status.Namespace != namespace ||
+		(item.Status.Policy == nil && instanceServiceName(item.Metadata.Name) != serviceAccountName) {
 		return Caller{}, ErrUnauthenticated
+	}
+	if item.Status.Policy != nil {
+		ready := false
+		for _, condition := range currentPod.Status.Conditions {
+			ready = ready || condition.Type == "Ready" && condition.Status == "True"
+		}
+		if currentPod.Status.Phase != "Running" || !ready {
+			return Caller{}, ErrUnauthenticated
+		}
+		verifier := agenttools.NativeVerifier{Get: k.Get, OperatorNamespace: k.operatorNamespace,
+			Audience: k.audience, Transport: k.nativeAdmissionTransport}
+		err := verifier.Verify(ctx, agenttools.NativePodIdentity{
+			AgentUID: item.Metadata.UID, Namespace: namespace, PodName: podName, PodUID: podUID,
+			ServiceAccountName: serviceAccountName, ServiceAccountUID: serviceAccountUID,
+		})
+		if errors.Is(err, agenttools.ErrNativeUnavailable) {
+			return Caller{}, ErrDependencyUnavailable
+		}
+		if err != nil {
+			return Caller{}, ErrUnauthenticated
+		}
+		var current agent
+		if err := k.getWorkload(ctx, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+owner.Name, &current); err != nil {
+			return Caller{}, err
+		}
+		if current.Metadata.UID != item.Metadata.UID || current.Metadata.ResourceVersion != item.Metadata.ResourceVersion {
+			return Caller{}, ErrUnauthenticated
+		}
 	}
 	caller := Caller{Proof: bearer, InstanceUID: item.Metadata.UID, PolicyManaged: item.Status.Policy != nil}
 	if item.Status.AgentIdentity != nil {
@@ -290,7 +327,7 @@ func (k *Kubernetes) request(ctx context.Context, method, path string, body any,
 
 func serviceAccountIdentity(username string) (string, string, bool) {
 	parts := strings.Split(username, ":")
-	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" || !dnsLabel(parts[2]) || !dnsLabel(parts[3]) {
+	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" || !dnsLabel(parts[2]) || !agenttools.ValidDNSSubdomainName(parts[3]) {
 		return "", "", false
 	}
 	return parts[2], parts[3], true

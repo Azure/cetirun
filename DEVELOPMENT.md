@@ -397,10 +397,29 @@ go -C app/cetirun-operator test ./internal/controller -run 'TestCredentialPolicy
 
 They cover owned storage, current-policy/identity matching, failed and lost
 replies, read-before-retry, status conflicts, removal and the provider execution
-boundary. Operator consumer tests use a synthetic supported executor;
-Broker tests separately verify that the current native Sandbox gate remains
-unavailable, even after a restriction is stored. These tests do not qualify
-native Entra, a live identity, provider permissions or runtime activation.
+boundary. Unqualified native runtimes still reject stored policy as authority.
+Current native integration has additional offline checks:
+
+```bash
+go -C app/internal test ./agenttools -run 'TestNative' -count=1
+go -C app/cetirun-agent-broker test ./internal/broker -run 'TestNative|TestCredentialPolicy' -count=1
+go -C app/cetirun-connections-mcp test ./internal/identity ./internal/tools -run 'TestNative|TestCredentialPolicy' -count=1
+go -C app/cetirun-operator test ./internal/controller -run 'TestNativeConnections' -count=1
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestNativeConnectionsServedCurrentSourceProof$' -count=1
+```
+
+The API-server test uses actual common chart rendering, owned bootstrap,
+API-issued Pod-bound tokens and TokenReviews, source/UID pins, Pod admission
+and current credential evidence reaching
+`PolicyApplied`, with both harnesses. Broker/MCP served-interface tests use
+synthetic Kubernetes, admission, directory and provider responses.
+The API-server case rejects a freshly issued token for a recreated ServiceAccount against the old
+source pin and clears applied evidence. The API-server test's Broker readback
+fixture is gated by the real admission handler;
+it is not a deployed Broker/MCP/Operator system. Scheduler/kubelet observations
+remain synthetic. These checks do not qualify live Kata/Cilium routing, TLS
+delivery, Entra federation, provider permissions or an Azure tenant.
 
 `npm --prefix app/cetirun-portal/web run dev` starts a local frontend server.
 Its API proxy expects a backend on localhost and injects development identity

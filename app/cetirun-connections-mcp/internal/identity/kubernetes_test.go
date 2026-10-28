@@ -28,8 +28,7 @@ func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 		policyRevision   string
 	}{
 		{name: "pod bound without Entra identity", allowed: true},
-		{name: "current credential policy is read from Agent status", allowed: true, policyManaged: true,
-			policyRevision: "sha256:" + strings.Repeat("1", 64),
+		{name: "status policy alone cannot qualify native identity", allowed: false,
 			mutate: func(review, pod, account, agent map[string]any) {
 				status := agent["status"].(map[string]any)
 				status["policy"] = map[string]any{"phase": "Applied"}

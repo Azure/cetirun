@@ -106,13 +106,28 @@ returning its UID, resource version and projection revision. Desired status,
 legacy bearer issuance and provider token acquisition cannot supply this
 readback. No provider call is made by application or readback.
 
-Readback also requires an available supported executor. **The current native
-Sandbox runtime remains unsupported by Broker workload authorization.** Its
-stored restriction therefore cannot produce ready readback:
-`dependency_unavailable` leaves `CredentialPolicyRevision` empty and aggregate
-`PolicyApplied` pending. This change does not approve native projections,
-install Broker namespace RBAC for Sandbox, or lift any runtime hold. A generic
-Entra workload token projection is distinct from Connections' Pod-bound proof.
+Readback also requires an available supported executor. Opted-in common native
+OpenClaw/Hermes workloads qualify only after current namespace, Pod, Agent and
+ServiceAccount reads and an independent check through the Operator's existing
+Pod-admission validator. Its protected common-executor expectation verifies
+the source UID/version pins, current workload/control shapes and active native
+reservation. A stored restriction, generic Entra projection, runtime capability
+flag or desired policy cannot provide that authority. Missing, stale, held,
+suspended or unqualified native inputs remain unavailable/nonready.
+
+The native path uses the already-pinned current/default ServiceAccount, not a
+new dedicated identity lifecycle. The Operator installs its existing exactly
+Agent-owned Broker storage Role/RoleBinding in the Agent namespace and includes
+them, the public MCP CA and registered MCP Service in common-executor Sources.
+Provider credentials remain outside Agent workloads. See
+[native Connections configuration](../cetirun-connections-mcp/README.md#governed-native-workloads)
+for the opt-in and transport prerequisites; generic `AzureADTokenExchange`
+federation is separate.
+
+Configuration readback may precede aggregate Agent Ready, avoiding a readiness
+cycle. Actual workload authentication additionally requires a Running/Ready
+current Pod and a Ready Agent. The Broker grants neither provider permissions
+nor live runtime qualification through configuration readback.
 
 For governed Azure app-only and Azure/Microsoft delegated acquisition, the real
 check/issue path requires the stored projection to match current sources.

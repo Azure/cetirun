@@ -177,6 +177,12 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces", "pods", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["get"]
+  {{- if .Values.connectionsMCP.nativeEnabled }}
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: [{{ regexFind "^[a-z0-9-]+" (trimPrefix "https://" .Values.connectionsMCP.url) | quote }}]
+    verbs: ["get"]
+  {{- end }}
   {{- if .Values.sandboxSources.skillsCatalogConfigMapName }}
   - apiGroups: [""]
     resources: ["persistentvolumes"]

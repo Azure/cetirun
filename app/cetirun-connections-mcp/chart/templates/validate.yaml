@@ -10,3 +10,8 @@
 {{- if empty .Values.istio.revision }}{{ fail "istio.revision is required" }}{{ end -}}
 
 {{- if eq .Release.Namespace .Values.istio.brokerNamespace }}{{ fail "MCP workload and Broker credentials require distinct namespaces" }}{{ end -}}
+{{- if .Values.nativeSandbox.enabled }}
+{{- if or (gt (len .Values.nativeSandbox.operatorNamespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Values.nativeSandbox.operatorNamespace)) }}{{ fail "nativeSandbox.operatorNamespace must be a namespace name" }}{{ end }}
+{{- if or (empty .Values.nativeSandbox.peerUID) (gt (len .Values.nativeSandbox.peerUID) 63) (not (regexMatch "^[a-zA-Z0-9]([-a-zA-Z0-9_.]*[a-zA-Z0-9])?$" .Values.nativeSandbox.peerUID)) }}{{ fail "nativeSandbox.peerUID must be a protected peer label value" }}{{ end }}
+{{- if eq .Values.workloadTokenAudience "api://AzureADTokenExchange" }}{{ fail "Connections requires its own purpose audience, not Entra token exchange" }}{{ end }}
+{{- end }}

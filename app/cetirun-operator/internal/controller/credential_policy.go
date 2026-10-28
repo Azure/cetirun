@@ -111,6 +111,15 @@ func (r *AgentReconciler) reconcileCredentialPolicy(ctx context.Context, agent *
 		clear("AgentInactive")
 		return finish(nil)
 	}
+	pending, pendingErr := r.nativeConnectionsPodPending(ctx, agent)
+	if pendingErr != nil {
+		clear("NativeProjectionUnavailable")
+		return finish(pendingErr)
+	}
+	if pending {
+		clear("NativeProjectionPending")
+		return finish(nil)
+	}
 	// Read first: a previous PUT may have succeeded even if its reply was lost.
 	readback, code, err := r.credentialPolicyRequest(ctx, agent, http.MethodGet, nil)
 	if err == nil && (code == http.StatusNotFound || code == http.StatusConflict) {
@@ -121,6 +130,12 @@ func (r *AgentReconciler) reconcileCredentialPolicy(ctx context.Context, agent *
 	}
 	if err != nil || code != http.StatusOK || !readback.Matches(projection) || readback.Revision != resolution.credentialRevision {
 		clear("CredentialReadbackUnavailable")
+		if r.nativeConnectionsRequested(agent) {
+			// Keep evidence absent while common reconciliation repairs or
+			// publishes its current projection. Active old workloads are fenced
+			// by policyReprojectionMustHold; this is not applied readiness.
+			return finish(nil)
+		}
 		return finish(fmt.Errorf("credential policy readback is unavailable or changed (HTTP %d)", code))
 	}
 	status.CredentialPolicyRevision = readback.Revision

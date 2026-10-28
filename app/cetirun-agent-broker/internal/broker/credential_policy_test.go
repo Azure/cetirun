@@ -6,6 +6,7 @@ package broker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -53,6 +54,7 @@ func newCredentialPolicyFixture(t *testing.T) *credentialPolicyFixture {
 				t.Fatal(err)
 			}
 			document["metadata"].(map[string]any)["generation"] = f.generation
+			document["metadata"].(map[string]any)["resourceVersion"] = "current-agent-version"
 			document["spec"].(map[string]any)["team"] = f.teamName
 			status := document["status"].(map[string]any)
 			if identity, ok := status["agentIdentity"].(map[string]any); ok {
@@ -332,8 +334,8 @@ func TestCredentialPolicyDeletionIsOwnedRetryableAndObserved(t *testing.T) {
 
 func TestCredentialPolicyUsesExistingAuthorizationAndKeepsNativeBoundary(t *testing.T) {
 	f := newCredentialPolicyFixture(t)
-	if response := f.request(t, "/internal/v1/service-authorizations/check"); response.Code != 403 {
-		t.Fatalf("missing policy reached authorization: %d", response.Code)
+	if response := f.request(t, "/internal/v1/service-authorizations/check"); response.Code != 401 {
+		t.Fatalf("unqualified native workload reached authorization: %d", response.Code)
 	}
 	f.apply(t)
 	identity := workloadIdentity{Agent: agentFromDocument(f.agent)}
@@ -349,6 +351,7 @@ func TestCredentialPolicyUsesExistingAuthorizationAndKeepsNativeBoundary(t *test
 			t.Fatal("credential policy silently enabled an unsupported native workload")
 		}
 	}
+	enableNativeProofFixture(t, f)
 	f.controls.Required = true
 	if response := f.request(t, "/internal/v1/service-authorizations/check"); response.Code != 409 {
 		t.Fatalf("stale policy reached authorization: %d", response.Code)
@@ -357,6 +360,7 @@ func TestCredentialPolicyUsesExistingAuthorizationAndKeepsNativeBoundary(t *test
 
 func TestCredentialPolicyOperatorAuthorizationAndDependencyFailure(t *testing.T) {
 	f := newCredentialPolicyFixture(t)
+	enableNativeProofFixture(t, f)
 	desired := f.desired(t)
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		if response := f.operator(t, method, desired, false); response.Code != 403 {
@@ -408,9 +412,7 @@ func TestCredentialPolicyReadbackMatcherAfterSupportedRuntimePrerequisite(t *tes
 	f := newCredentialPolicyFixture(t)
 	desired := f.apply(t)
 	agent := agentFromDocument(f.agent)
-	// Model only the prerequisite at this internal boundary. The served-route
-	// test above asserts that real main inputs cannot set this to supported.
-	agent.UnsupportedRuntime = false
+	enableNativeProofFixture(t, f)
 	readback, err := f.server.credentialPolicyReadback(context.Background(), agent)
 	if err != nil || !readback.Matches(desired) {
 		t.Fatalf("supported-executor boundary failed current readback: %v", err)
@@ -465,6 +467,7 @@ func TestCredentialPolicyDoesNotGateMetadataListing(t *testing.T) {
 	for _, state := range []string{"missing", "revoked", "stale", "unavailable"} {
 		t.Run(state, func(t *testing.T) {
 			f := newCredentialPolicyFixture(t)
+			enableNativeProofFixture(t, f)
 			expected := http.StatusForbidden
 			switch state {
 			case "revoked":
@@ -474,7 +477,17 @@ func TestCredentialPolicyDoesNotGateMetadataListing(t *testing.T) {
 				}
 			case "stale":
 				f.apply(t)
-				f.controls.Required = true
+				name := toolRecordName(credentialPolicyRecord, f.agent.Metadata.UID)
+				record := f.policySecrets[name]
+				raw, _ := base64.StdEncoding.DecodeString(record.Data["policy.json"])
+				var previous agenttools.CredentialPolicy
+				if json.Unmarshal(raw, &previous) != nil {
+					t.Fatal("invalid fixture policy")
+				}
+				previous.Identity.Required = !previous.Identity.Required
+				raw, _ = json.Marshal(previous)
+				record.Data["policy.json"] = base64.StdEncoding.EncodeToString(raw)
+				f.policySecrets[name] = record
 				expected = http.StatusConflict
 			case "unavailable":
 				expected = http.StatusServiceUnavailable
@@ -489,7 +502,7 @@ func TestCredentialPolicyDoesNotGateMetadataListing(t *testing.T) {
 				if strings.Contains(r.URL.Path, "/teams/") || strings.Contains(r.URL.Path, "/agentpolicies/") ||
 					strings.Contains(r.URL.Path, "/secrets/agent-tools-credential-policy-") {
 					policyReads++
-					if state == "unavailable" {
+					if state == "unavailable" && strings.Contains(r.URL.Path, "/secrets/agent-tools-credential-policy-") {
 						return securityJSONResponse(t, http.StatusServiceUnavailable, map[string]any{}), nil
 					}
 				}
@@ -500,10 +513,10 @@ func TestCredentialPolicyDoesNotGateMetadataListing(t *testing.T) {
 			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &metadata) != nil || policyReads != 0 {
 				t.Fatalf("metadata listing depended on ARM policy: status=%d reads=%d", response.Code, policyReads)
 			}
-			// Listing keeps the existing runtime filter; this is not native
-			// qualification or permission to expose unsupported bindings.
-			if len(metadata.Connections) != 0 || len(metadata.Bindings) != 0 {
-				t.Fatal("metadata listing relaxed the unsupported-runtime filter")
+			// The live native source check qualifies the current Pod without
+			// borrowing ARM policy evidence for metadata discovery.
+			if len(metadata.Connections) != 1 || len(metadata.Bindings) != 1 {
+				t.Fatal("verified native metadata listing lost the owner binding")
 			}
 			for _, route := range []string{"/internal/v1/service-authorizations/check", "/internal/v1/service-credentials/issue"} {
 				before := policyReads

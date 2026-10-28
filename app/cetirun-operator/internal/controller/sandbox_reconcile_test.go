@@ -449,10 +449,15 @@ func TestReconciledSandboxSteadyStateDoesNotRewriteStatus(t *testing.T) {
 }
 
 func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
+	testReconciledSandboxSuspensionKeepsHomeAndKey(t)
+}
+
+func testReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
-				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, withNativeHomeAccessMode(t, mode))
+				options := append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, options...)
 				ctx := context.Background()
 				initial := reconciledExpectationForTest(t, f)
 				keyID := f.current(t).Status.AIGateway.KeyID
@@ -501,10 +506,15 @@ func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
 }
 
 func TestReconciledSandboxRetainedRestartUsesCommonApply(t *testing.T) {
+	testReconciledSandboxRetainedRestartUsesCommonApply(t)
+}
+
+func testReconciledSandboxRetainedRestartUsesCommonApply(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
-				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, withNativeHomeAccessMode(t, mode))
+				options := append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, options...)
 				assertNativeHomeAccessMode(t, f, mode)
 				ctx := context.Background()
 				initial := reconciledExpectationForTest(t, f)

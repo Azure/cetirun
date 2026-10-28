@@ -236,6 +236,9 @@ sandboxSources:
 
 # -- Native MCP runtime integration and optional access to Agent credential records.
 connectionsMCP:
+  # Opt-in common-executor integration, using current/default SA source pins.
+  # Requires a registered managed MCP peer and matching MCP nativeSandbox settings.
+  nativeEnabled: false
   url: ""
   audience: cetirun-connections-mcp
   # The Broker ServiceAccount receives Secret access only through Roles in
