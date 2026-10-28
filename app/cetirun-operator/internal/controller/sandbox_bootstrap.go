@@ -352,6 +352,12 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		} else if err != nil {
 			return err
 		}
+		if role, ok := current.(*rbacv1.Role); ok {
+			current, err = r.upgradeReconciledBootstrapRole(ctx, attempt, receipt, desired, role)
+			if err != nil {
+				return err
+			}
+		}
 		if err := validateSandboxBootstrapObject(current, resource, receipt.Objects[i].UID, false); err != nil {
 			return err
 		}
@@ -366,6 +372,93 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		}
 	}
 	return r.sandboxBootstrapGuard(ctx, attempt)
+}
+
+// upgradeReconciledBootstrapRole performs the one supported bootstrap Role
+// migration: the pre-mTLS Istio rule lacked destinationrules. This is not a
+// general RBAC reconciler; any other difference remains on the strict
+// validation path and requires recovery.
+func (r *AgentReconciler) upgradeReconciledBootstrapRole(ctx context.Context, attempt *sandboxPreparationAttempt, receipt *sandboxBootstrapReceipt, desired []client.Object, current *rbacv1.Role) (*rbacv1.Role, error) {
+	if receipt == nil || !receipt.Reconciled || len(receipt.Objects) < 3 ||
+		receipt.Objects[0].UID == "" || receipt.Objects[1].UID == "" || receipt.Objects[2].UID == "" ||
+		len(desired) < 3 {
+		return current, nil
+	}
+	target, ok := desired[1].(*rbacv1.Role)
+	if !ok || !equality.Semantic.DeepEqual(target.Rules, targetSandboxBootstrapRoleRules) ||
+		equality.Semantic.DeepEqual(current.Rules, target.Rules) ||
+		!equality.Semantic.DeepEqual(current.Rules, legacySandboxBootstrapRoleRules) {
+		return current, nil
+	}
+	legacy := target.DeepCopy()
+	legacy.Rules = slices.Clone(legacySandboxBootstrapRoleRules)
+	if err := validateSandboxBootstrapObject(current, legacy, receipt.Objects[1].UID, false); err != nil {
+		return nil, err
+	}
+	if err := r.validateReconciledBootstrapRoleDependencies(ctx, receipt, desired); err != nil {
+		return nil, err
+	}
+	if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+		return nil, err
+	}
+	before := current.DeepCopy()
+	current.Rules = slices.Clone(targetSandboxBootstrapRoleRules)
+	if err := r.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		return nil, err
+	}
+	observed := &rbacv1.Role{}
+	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(target), observed); err != nil {
+		return nil, err
+	}
+	if err := validateSandboxBootstrapObject(observed, target, receipt.Objects[1].UID, false); err != nil {
+		return nil, err
+	}
+	if err := r.validateReconciledBootstrapRoleDependencies(ctx, receipt, desired); err != nil {
+		return nil, err
+	}
+	if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+		return nil, err
+	}
+	return observed, nil
+}
+
+func (r *AgentReconciler) validateReconciledBootstrapRoleDependencies(ctx context.Context, receipt *sandboxBootstrapReceipt, desired []client.Object) error {
+	namespace := &corev1.Namespace{}
+	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(desired[0]), namespace); err != nil {
+		return err
+	}
+	if err := validateSandboxBootstrapObject(namespace, desired[0], receipt.Objects[0].UID, false); err != nil {
+		return err
+	}
+	binding := &rbacv1.RoleBinding{}
+	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(desired[2]), binding); err != nil {
+		return err
+	}
+	return validateSandboxBootstrapObject(binding, desired[2], receipt.Objects[2].UID, false)
+}
+
+// legacySandboxBootstrapRoleRules and targetSandboxBootstrapRoleRules are the
+// complete Role contracts immediately before and after destinationrules was
+// added in the mTLS release. Keep both explicit so a later RBAC change cannot
+// silently enlarge the migration surface.
+var legacySandboxBootstrapRoleRules = []rbacv1.PolicyRule{
+	{APIGroups: []string{""}, Resources: []string{"secrets", "configmaps", "services", "persistentvolumeclaims", "serviceaccounts"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"apps"}, Resources: []string{"statefulsets", "deployments"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"roles", "rolebindings"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"batch"}, Resources: []string{"jobs"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"networking.istio.io"}, Resources: []string{"virtualservices", "sidecars"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"security.istio.io"}, Resources: []string{"authorizationpolicies", "peerauthentications"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+}
+
+var targetSandboxBootstrapRoleRules = []rbacv1.PolicyRule{
+	{APIGroups: []string{""}, Resources: []string{"secrets", "configmaps", "services", "persistentvolumeclaims", "serviceaccounts"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"apps"}, Resources: []string{"statefulsets", "deployments"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"roles", "rolebindings"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"batch"}, Resources: []string{"jobs"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"networking.istio.io"}, Resources: []string{"virtualservices", "sidecars", "destinationrules"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	{APIGroups: []string{"security.istio.io"}, Resources: []string{"authorizationpolicies", "peerauthentications"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
 }
 
 func (r *AgentReconciler) sandboxBootstrapGuard(ctx context.Context, attempt *sandboxPreparationAttempt) error {
