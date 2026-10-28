@@ -1847,6 +1847,14 @@ lost apply acknowledgement retains the write-ahead cleanup obligation; it does
 not authorize a Pod from an unconfirmed intent. Common suspension renders zero
 replicas without recreating revoked workload bindings, while preserving the
 requested identity for a subsequently authorized resume.
+Each binding CREATE has its own submission checkpoint. A definitive API
+rejection records a non-creation outcome against that submission's exact
+expectation UID and resource version, allowing ordinary grant cleanup and retry.
+It cannot clear a newer submission or replace the workload's shutdown evidence.
+Binding CREATEs do not follow HTTP Retry-After responses: an uncertain first write
+must not be hidden by a later rejection. Timeouts, lost responses and failed
+outcome writes retain the confirmation barrier; a missing binding alone is
+never proof of non-creation.
 This does not provide cloud-identity
 revocation or authorize execution. Recording unchanged canonical inventory uses
 one authoritative read and no write or confirming read; real changes retain the

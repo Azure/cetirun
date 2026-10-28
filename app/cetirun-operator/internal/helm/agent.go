@@ -54,7 +54,7 @@ type PreparedRelease struct {
 	sandboxReconcile     *sandboxworkload.ReconcileExpectation
 	sandboxPreflight     func(context.Context) error
 	sandboxGuard         func(context.Context) error
-	sandboxBindingCreate func(context.Context, unstructured.Unstructured) error
+	sandboxBindingCreate func(context.Context, unstructured.Unstructured) (func(context.Context) error, error)
 }
 
 // CacheKey includes actual rendered output as well as the consumed inputs.

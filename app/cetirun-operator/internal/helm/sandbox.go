@@ -105,7 +105,7 @@ func (p *PreparedRelease) ReconcileSandbox(values map[string]any, bundle *sandbo
 // submission checkpoint recorded immediately before Helm applies resources.
 func (p *PreparedRelease) ReconcileSandboxWithPreflight(values map[string]any, bundle *sandboxworkload.Bundle,
 	preflight, guard func(context.Context) error,
-	bindingCreate func(context.Context, unstructured.Unstructured) error,
+	bindingCreate func(context.Context, unstructured.Unstructured) (func(context.Context) error, error),
 ) (*PreparedRelease, error) {
 	if p == nil || p.chart == nil || bundle == nil || !bundle.Identity().Reconciled || preflight == nil || guard == nil {
 		return nil, fmt.Errorf("Sandbox reconciliation requires a current bundle and guarded apply")

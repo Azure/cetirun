@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -113,6 +114,10 @@ func (r *AgentReconciler) recordReconciledGrantSubmission(ctx context.Context, a
 		return fmt.Errorf("%w: Kubernetes grant creation is already submitted", sandboxpolicy.ErrRevocationPending)
 	}
 	digests[digest] = true
+	return setReconciledGrantSubmissions(state, digests)
+}
+
+func setReconciledGrantSubmissions(state *corev1.ConfigMap, digests map[string]bool) error {
 	if len(digests) > sandboxpolicy.MaxGrantJournalReferences {
 		return fmt.Errorf("Kubernetes grant submission inventory exceeds its bound")
 	}
@@ -127,6 +132,40 @@ func (r *AgentReconciler) recordReconciledGrantSubmission(ctx context.Context, a
 	}
 	state.Annotations[sandboxGrantSubmissionsAnnotation] = string(raw)
 	return nil
+}
+
+func (r *AgentReconciler) rejectReconciledGrantSubmission(ctx context.Context, submitted *corev1.ConfigMap, requested sandboxpolicy.BindingReference) error {
+	if submitted.UID == "" || submitted.ResourceVersion == "" {
+		return fmt.Errorf("Kubernetes grant rejection requires its persisted submission identity")
+	}
+	digests, present, err := reconciledGrantSubmissions(submitted)
+	if err != nil {
+		return err
+	}
+	digest, err := reconciledGrantDigest(requested)
+	if err != nil {
+		return err
+	}
+	if !present || !digests[digest] {
+		return fmt.Errorf("Kubernetes grant rejection has no matching submission")
+	}
+	delete(digests, digest)
+	rejected := submitted.DeepCopy()
+	if err := setReconciledGrantSubmissions(rejected, digests); err != nil {
+		return err
+	}
+	// Fence this terminal outcome to the original submission, never a newer
+	// claim or a same-name replacement expectation.
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{
+		"uid": submitted.UID, "resourceVersion": submitted.ResourceVersion,
+		"annotations": map[string]string{
+			sandboxGrantSubmissionsAnnotation: rejected.Annotations[sandboxGrantSubmissionsAnnotation],
+		},
+	}})
+	if err != nil {
+		return err
+	}
+	return r.Patch(ctx, rejected, client.RawPatch(types.MergePatchType, patch))
 }
 
 func (r *AgentReconciler) prepareReconciledGrantRevocation(ctx context.Context, agent *api.Agent, bindings []sandboxpolicy.BindingReference) error {

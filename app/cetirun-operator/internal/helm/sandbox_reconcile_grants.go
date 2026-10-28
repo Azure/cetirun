@@ -5,6 +5,7 @@ package helm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -12,7 +13,10 @@ import (
 	"helm.sh/helm/v3/pkg/kube"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/client-go/rest"
 )
 
 type reconciledGrantKube struct {
@@ -30,12 +34,12 @@ func (k *reconciledGrantKube) Create(resources kube.ResourceList) (*kube.Result,
 		if err != nil {
 			return result, err
 		}
+		var created *kube.Result
 		if w.KubernetesBindingResource(*object) {
-			if err := k.prepared.AuthorizeSandboxBindingCreate(context.Background(), *object); err != nil {
-				return result, err
-			}
+			created, err = k.createBinding(info, *object)
+		} else {
+			created, err = k.Interface.Create(kube.ResourceList{info})
 		}
-		created, err := k.Interface.Create(kube.ResourceList{info})
 		if created != nil {
 			result.Created = append(result.Created, created.Created...)
 		}
@@ -44,6 +48,46 @@ func (k *reconciledGrantKube) Create(resources kube.ResourceList) (*kube.Result,
 		}
 	}
 	return result, nil
+}
+
+type reconciledGrantRESTClient struct {
+	resource.RESTClient
+}
+
+func (c reconciledGrantRESTClient) Post() *rest.Request {
+	// A retry must not hide an uncertain write behind a later rejection.
+	return c.RESTClient.Post().MaxRetries(0)
+}
+
+func (k *reconciledGrantKube) createBinding(info *resource.Info, object unstructured.Unstructured) (*kube.Result, error) {
+	if info.Client == nil || info.Mapping == nil {
+		return nil, fmt.Errorf("Kubernetes grant creation requires its API resource mapping")
+	}
+	complete, err := k.prepared.AuthorizeSandboxBindingCreate(context.Background(), object)
+	if err != nil {
+		return nil, err
+	}
+	original := info.Client
+	info.Client = reconciledGrantRESTClient{original}
+	defer func() { info.Client = original }()
+	result, err := k.Interface.Create(kube.ResourceList{info})
+	return result, complete(err)
+}
+
+func sandboxBindingCreateRejected(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Code < 400 || status.Status().Code >= 500 {
+		return false
+	}
+	switch apierrors.ReasonForError(err) {
+	case metav1.StatusReasonBadRequest, metav1.StatusReasonUnauthorized, metav1.StatusReasonForbidden,
+		metav1.StatusReasonNotFound, metav1.StatusReasonAlreadyExists, metav1.StatusReasonConflict,
+		metav1.StatusReasonInvalid, metav1.StatusReasonMethodNotAllowed, metav1.StatusReasonRequestEntityTooLarge,
+		metav1.StatusReasonUnsupportedMediaType, metav1.StatusReasonTooManyRequests:
+		return true
+	default:
+		return false
+	}
 }
 
 func (k *reconciledGrantKube) Update(original, target kube.ResourceList, force bool) (*kube.Result, error) {

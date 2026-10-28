@@ -293,37 +293,40 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 		return nil
 	}
-	bindingGuard := func(ctx context.Context, object unstructured.Unstructured) error {
+	bindingGuard := func(ctx context.Context, object unstructured.Unstructured) (func(context.Context) error, error) {
 		if published == nil {
-			return fmt.Errorf("Kubernetes grant creation requires its published expectation")
+			return nil, fmt.Errorf("Kubernetes grant creation requires its published expectation")
 		}
 		index := slices.IndexFunc(desiredGrants, func(ref sandboxpolicy.BindingReference) bool {
 			return ref.Kind == object.GetKind() && ref.Namespace == object.GetNamespace() && ref.Name == object.GetName()
 		})
 		if index < 0 {
-			return fmt.Errorf("Kubernetes grant creation has no recorded binding identity")
+			return nil, fmt.Errorf("Kubernetes grant creation has no recorded binding identity")
 		}
 		if err := guard(ctx); err != nil {
-			return err
+			return nil, err
 		}
 		claimed := published.DeepCopy()
 		metav1.SetMetaDataAnnotation(&claimed.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
 		if err := r.Patch(ctx, claimed, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
-			return fmt.Errorf("claim Kubernetes grant creation: %w", err)
+			return nil, fmt.Errorf("claim Kubernetes grant creation: %w", err)
 		}
 		published = claimed
 		if err := guard(ctx); err != nil {
-			return err
+			return nil, err
 		}
 		submitted := claimed.DeepCopy()
-		if err := r.recordReconciledGrantSubmission(ctx, agent, submitted, desiredGrants[index]); err != nil {
-			return err
+		requested := desiredGrants[index]
+		if err := r.recordReconciledGrantSubmission(ctx, agent, submitted, requested); err != nil {
+			return nil, err
 		}
 		if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
-			return fmt.Errorf("record Kubernetes grant submission: %w", err)
+			return nil, fmt.Errorf("record Kubernetes grant submission: %w", err)
 		}
 		published = submitted
-		return nil
+		return func(ctx context.Context) error {
+			return r.rejectReconciledGrantSubmission(ctx, submitted, requested)
+		}, nil
 	}
 	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, applyGuard, bindingGuard)
 	if err != nil {

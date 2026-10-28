@@ -6,6 +6,7 @@ package helm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -183,15 +184,32 @@ func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
 	return p.sandboxGuard(ctx)
 }
 
-func (p *PreparedRelease) AuthorizeSandboxBindingCreate(ctx context.Context, object unstructured.Unstructured) error {
+// AuthorizeSandboxBindingCreate returns an outcome recorder bound to this
+// submission. Call it with the CREATE result before returning to reconciliation.
+func (p *PreparedRelease) AuthorizeSandboxBindingCreate(ctx context.Context, object unstructured.Unstructured) (func(error) error, error) {
 	if p == nil || p.sandboxReconcile == nil || p.sandboxBindingCreate == nil || p.sealedInput != p.inputDigest() {
-		return fmt.Errorf("Kubernetes grant creation requires current per-binding authority")
+		return nil, fmt.Errorf("Kubernetes grant creation requires current per-binding authority")
 	}
 	if object.GetUID() != "" || object.GetResourceVersion() != "" ||
 		!slices.ContainsFunc(p.sandboxReconcile.Controls, func(expected unstructured.Unstructured) bool {
 			return w.KubernetesBindingResource(expected) && w.ReconciledObjectContentMatches(&object, &expected)
 		}) {
-		return fmt.Errorf("Kubernetes grant creation differs from the sealed control inventory")
+		return nil, fmt.Errorf("Kubernetes grant creation differs from the sealed control inventory")
 	}
-	return p.sandboxBindingCreate(ctx, object)
+	rejected, err := p.sandboxBindingCreate(ctx, object)
+	if err != nil {
+		return nil, err
+	}
+	if rejected == nil {
+		return nil, fmt.Errorf("Kubernetes grant creation requires its rejection checkpoint")
+	}
+	return func(createErr error) error {
+		if !sandboxBindingCreateRejected(createErr) {
+			return createErr
+		}
+		if err := rejected(ctx); err != nil {
+			return errors.Join(createErr, fmt.Errorf("record rejected Kubernetes grant creation: %w", err))
+		}
+		return createErr
+	}, nil
 }

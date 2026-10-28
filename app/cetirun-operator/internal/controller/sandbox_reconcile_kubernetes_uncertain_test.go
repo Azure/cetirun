@@ -63,7 +63,7 @@ func TestReconciledSandboxKubernetesUncertainGrantRecovery(t *testing.T) {
 						if !w.KubernetesBindingResource(object) {
 							continue
 						}
-						if err := prepared.AuthorizeSandboxBindingCreate(ctx, object); err != nil {
+						if _, err := prepared.AuthorizeSandboxBindingCreate(ctx, object); err != nil {
 							return err
 						}
 						if object.GetKind() == delayedKind {

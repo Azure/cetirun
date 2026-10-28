@@ -284,7 +284,7 @@ Kata Kubernetes access has a focused served-API regression:
 
 ```bash
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
-  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxKubernetes(Access|PostSubmitRecovery)APIServer$' -count=1
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxKubernetes(Access|PostSubmitRecovery|RejectedGrantRecovery)APIServer$' -count=1
 ```
 
 It uses real API RBAC and admission for OpenClaw and Hermes, including
@@ -298,7 +298,11 @@ manifest: a first attempt stays pending until that read succeeds, so retry and
 deletion can conditionally cancel it without downgrading a submitted record.
 A served-API regression verifies the cancellation and retry with real
 conditional writes. Previously authorized applies, competing claims and unconfirmed
-cancellations retain their shutdown requirements. All fixtures are
+cancellations retain their shutdown requirements. Rejected-grant tests resume
+stopped Agents with temporarily missing binding authority, then verify retry and
+normal deletion. Helm SDK tests cover definitive rejection, uncertain responses
+and disabled HTTP retries; controller tests fence delayed rejection receipts and
+cover failed and lost outcome writes. All fixtures are
 synthetic; kubelet token rotation, Kubernetes client requests from a running
 Agent and Cilium dataplane enforcement require separately authorized live
 validation. See the [administrator setup](examples/native-sandbox/README.md#kubernetes-api-access).
