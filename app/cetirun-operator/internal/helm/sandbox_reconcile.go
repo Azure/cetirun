@@ -160,7 +160,7 @@ type reconciledSandboxRenderer struct {
 }
 
 func (r reconciledSandboxRenderer) Run(_ *bytes.Buffer) (*bytes.Buffer, error) {
-	if err := r.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+	if err := r.prepared.AuthorizeSandboxRender(context.Background()); err != nil {
 		return nil, err
 	}
 	return bytes.NewBuffer(bytes.Clone(r.prepared.manifest)), nil
@@ -173,6 +173,15 @@ func (p *PreparedRelease) CheckSandboxApply(ctx context.Context) error {
 		return fmt.Errorf("Sandbox preflight requires unchanged current render and controller authority")
 	}
 	return p.sandboxPreflight(ctx)
+}
+
+// AuthorizeSandboxRender fences manifest delivery without declaring that a
+// workload write was submitted. Each workload still needs AuthorizeSandboxApply.
+func (p *PreparedRelease) AuthorizeSandboxRender(ctx context.Context) error {
+	if p == nil || p.sandboxReconcile == nil || p.sandboxRenderGuard == nil || p.sealedInput != p.inputDigest() {
+		return fmt.Errorf("Sandbox render requires unchanged current render and controller authority")
+	}
+	return p.sandboxRenderGuard(ctx)
 }
 
 // AuthorizeSandboxApply rechecks authority and records submission intent before

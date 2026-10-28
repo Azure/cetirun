@@ -506,9 +506,10 @@ func TestReconciledSandboxHistoryFailureDoesNotSubmit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	submitted, checked := false, false
+	submitted, checked, rendered := false, false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { checked = true; return nil },
+		func(context.Context) error { rendered = true; return nil },
 		func(context.Context) error { submitted = true; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -527,8 +528,8 @@ func TestReconciledSandboxHistoryFailureDoesNotSubmit(t *testing.T) {
 	}
 	store.queryError = nil
 	kube.afterWrite = func() {
-		if !submitted {
-			t.Fatal("Helm wrote a resource before the submission checkpoint")
+		if !rendered {
+			t.Fatal("Helm wrote a resource before manifest authorization")
 		}
 	}
 	if err := (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
@@ -550,6 +551,7 @@ func TestReconciledSandboxPreflightRejectsStaleAuthority(t *testing.T) {
 	submitted, configured := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { return stale },
+		func(context.Context) error { return nil },
 		func(context.Context) error { submitted = true; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -573,6 +575,7 @@ func TestReconciledSandboxConfigurationFailureDoesNotSubmit(t *testing.T) {
 	checked, submitted := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { checked = true; return nil },
+		func(context.Context) error { return nil },
 		func(context.Context) error { submitted = true; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +598,8 @@ func TestReconciledSandboxApplyGuardFailureDoesNotWrite(t *testing.T) {
 	checked, submitted := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { checked = true; return nil },
-		func(context.Context) error { submitted = true; return injected }, nil)
+		func(context.Context) error { submitted = true; return injected },
+		func(context.Context) error { return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

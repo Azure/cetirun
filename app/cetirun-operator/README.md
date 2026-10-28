@@ -211,7 +211,7 @@ Removed or never-created auxiliary Deployments still require their ReplicaSets
 and namespace Pods to be absent. Their absence does not replace the main HOME
 workload's acknowledged shutdown.
 A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
-StatefulSet shutdown acknowledgement, but only before any apply is submitted and
+StatefulSet shutdown acknowledgement, but only before any workload write is submitted and
 after ordinary namespace/Pod cleanup checks. Its expectation is first persisted
 as initializing, before the grant journal, and becomes pending only after the
 empty journal is confirmed. Publication retries, including lost acknowledgements,
@@ -222,15 +222,17 @@ through a conditional state update. Submitted, uncertain or older unmarked
 checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
 Helm configuration and history reads recheck current authority without marking
-submission. The post-renderer records submission before resource writes, so a
-first-install history read failure can cancel a still-pending expectation and
-recover through normal retry or deletion. It cannot reset a previously submitted
-or uncertain checkpoint merely because the workload is absent.
-Final apply claims the expectation resource version before its last authority
-read. First attempts stay pending throughout those reads; a CAS records submitted
-only immediately before manifest delivery. Competing claims fence stale writers,
-while lost submission acknowledgements and previously submitted work remain
-uncertain and require shutdown evidence.
+submission. The post-renderer claims the expectation resource version and
+rechecks authority, but leaves a first workload pending. Helm's guarded writer
+records submission immediately before each StatefulSet or Deployment CREATE,
+or before an update batch containing workloads. A first-install binding rejection
+before that boundary can therefore cancel the pending workload and recover through
+normal retry or deletion. Grant submissions remain independently tracked: an
+uncertain binding CREATE still blocks cleanup even when no workload was submitted.
+Cancellation and workload submission compete through conditional state writes;
+no missing-resource observation can reset a submitted or older uncertain record.
+Competing claims fence stale writers, while lost workload-submission
+acknowledgements and previously submitted work retain their shutdown requirements.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.

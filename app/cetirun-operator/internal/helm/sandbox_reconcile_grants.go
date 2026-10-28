@@ -34,6 +34,11 @@ func (k *reconciledGrantKube) Create(resources kube.ResourceList) (*kube.Result,
 		if err != nil {
 			return result, err
 		}
+		if reconciledWorkloadResource(*object) {
+			if err := k.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+				return result, err
+			}
+		}
 		var created *kube.Result
 		if w.KubernetesBindingResource(*object) {
 			created, err = k.createBinding(info, *object)
@@ -48,6 +53,11 @@ func (k *reconciledGrantKube) Create(resources kube.ResourceList) (*kube.Result,
 		}
 	}
 	return result, nil
+}
+
+func reconciledWorkloadResource(object unstructured.Unstructured) bool {
+	return object.GetAPIVersion() == "apps/v1" &&
+		(object.GetKind() == "StatefulSet" || object.GetKind() == "Deployment")
 }
 
 type reconciledGrantRESTClient struct {
@@ -117,6 +127,18 @@ func (k *reconciledGrantKube) Update(original, target kube.ResourceList, force b
 	next, err := withoutGrants(target)
 	if err != nil {
 		return &kube.Result{}, err
+	}
+	for _, info := range next {
+		object, err := sandboxUnstructured(info.Object)
+		if err != nil {
+			return &kube.Result{}, err
+		}
+		if reconciledWorkloadResource(*object) {
+			if err := k.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+				return &kube.Result{}, err
+			}
+			break
+		}
 	}
 	// Grant retirement belongs to the UID-bound journal, not Helm's
 	// name-only pruning against an older deployed release.

@@ -264,29 +264,30 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 		return nil
 	}
-	applyGuard := func(ctx context.Context) error {
+	renderGuard := func(ctx context.Context) error {
 		if published == nil || published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyInitializing {
 			return fmt.Errorf("Sandbox apply requires an initialized expectation")
 		}
 		if err := guard(ctx); err != nil {
 			return err
 		}
-		unsubmitted := published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending
 		claimed := published.DeepCopy()
-		// Fence competing renderers before the final authority read. A first
-		// attempt remains pending, and therefore cancellable, until that read passes.
+		// Fence competing renderers without declaring a workload submission.
 		metav1.SetMetaDataAnnotation(&claimed.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
 		if err := r.Patch(ctx, claimed, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("claim Sandbox apply attempt: %w", err)
 		}
 		published = claimed
-		if err := guard(ctx); err != nil {
+		return guard(ctx)
+	}
+	applyGuard := func(ctx context.Context) error {
+		if err := renderGuard(ctx); err != nil {
 			return err
 		}
-		if unsubmitted {
-			submitted := claimed.DeepCopy()
+		if published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending {
+			submitted := published.DeepCopy()
 			submitted.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
-			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
+			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
 				return fmt.Errorf("record Sandbox apply submission: %w", err)
 			}
 			published = submitted
@@ -328,7 +329,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 			return r.rejectReconciledGrantSubmission(ctx, submitted, requested)
 		}, nil
 	}
-	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, applyGuard, bindingGuard)
+	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, renderGuard, applyGuard, bindingGuard)
 	if err != nil {
 		return nil, err
 	}

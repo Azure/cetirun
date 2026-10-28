@@ -55,7 +55,7 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 			return err
 		}
 	}
-	if err := prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+	if err := prepared.AuthorizeSandboxRender(context.Background()); err != nil {
 		return err
 	}
 	manifest, err := prepared.SandboxManifest()
@@ -84,6 +84,11 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 		annotations["meta.helm.sh/release-name"] = releaseName
 		annotations["meta.helm.sh/release-namespace"] = namespace
 		object.SetAnnotations(annotations)
+		if object.GetAPIVersion() == "apps/v1" && (object.GetKind() == "StatefulSet" || object.GetKind() == "Deployment") {
+			if err := prepared.AuthorizeSandboxApply(ctx); err != nil {
+				return err
+			}
+		}
 		current := &unstructured.Unstructured{}
 		current.SetGroupVersionKind(object.GroupVersionKind())
 		if err := i.kube.Get(ctx, client.ObjectKeyFromObject(object), current); apierrors.IsNotFound(err) {

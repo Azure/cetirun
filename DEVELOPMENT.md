@@ -284,7 +284,7 @@ Kata Kubernetes access has a focused served-API regression:
 
 ```bash
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
-  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxKubernetes(Access|PostSubmitRecovery|RejectedGrantRecovery)APIServer$' -count=1
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxKubernetes(Access|PostSubmitRecovery|RejectedGrantRecovery|FirstInstallRejection)APIServer$' -count=1
 ```
 
 It uses real API RBAC and admission for OpenClaw and Hermes, including
@@ -294,15 +294,19 @@ after restart with new starts disabled. Unit tests additionally cover missing
 and foreign approvals, unconfirmed or shared bindings, lost apply
 acknowledgements, suspension/resume and nil-access isolation. First-install
 recovery tests inject a failed final authority read before Helm receives its
-manifest: a first attempt stays pending until that read succeeds, so retry and
+manifest: a first attempt stays pending until a workload write is authorized, so retry and
 deletion can conditionally cancel it without downgrading a submitted record.
 A served-API regression verifies the cancellation and retry with real
 conditional writes. Previously authorized applies, competing claims and unconfirmed
 cancellations retain their shutdown requirements. Rejected-grant tests resume
 stopped Agents with temporarily missing binding authority, then verify retry and
-normal deletion. Helm SDK tests cover definitive rejection, uncertain responses
-and disabled HTTP retries; controller tests fence delayed rejection receipts and
-cover failed and lost outcome writes. All fixtures are
+normal deletion. First-install rejection tests also verify cancellation before
+any workload write, unchanged lifetime identities on retry, and normal deletion.
+Helm SDK tests check submission immediately before workload CREATEs or update
+batches, including first-install adoption, grant rejection, uncertain responses
+and disabled HTTP retries. Controller tests fence delayed rejection receipts and
+cover failed/lost outcome writes and independent uncertain-grant cleanup barriers.
+All fixtures are
 synthetic; kubelet token rotation, Kubernetes client requests from a running
 Agent and Cilium dataplane enforcement require separately authorized live
 validation. See the [administrator setup](examples/native-sandbox/README.md#kubernetes-api-access).
