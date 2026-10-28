@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
@@ -125,12 +126,13 @@ type EntraIdentity struct {
 }
 
 type Platform struct {
-	Adapter                AdapterRegistration `json:"adapter"`
-	Topology               Topology            `json:"topology"`
-	Grants                 []ApprovedGrant     `json:"grants,omitempty"`
-	Identities             []ApprovedIdentity  `json:"identities,omitempty"`
-	KubernetesAudience     string              `json:"kubernetesAudience,omitempty"`
-	TokenExpirationSeconds int64               `json:"tokenExpirationSeconds,omitempty"`
+	Adapter                AdapterRegistration       `json:"adapter"`
+	Topology               Topology                  `json:"topology"`
+	Grants                 []ApprovedGrant           `json:"grants,omitempty"`
+	Identities             []ApprovedIdentity        `json:"identities,omitempty"`
+	KubernetesAudience     string                    `json:"kubernetesAudience,omitempty"`
+	TokenExpirationSeconds int64                     `json:"tokenExpirationSeconds,omitempty"`
+	IngressMTLS            *ingressmtls.Registration `json:"ingressMTLS,omitempty"`
 }
 
 type CompileInput struct {
@@ -142,6 +144,7 @@ type CompileInput struct {
 	Resolution        sandbox.Resolution
 	AgentName         string
 	Namespace         string
+	ServiceName       string
 	Platform          Platform
 	// CustomIngress is an operator-derived Custom Harness HTTP contract. It is
 	// deliberately separate from AgentPolicy so callers cannot request a port
@@ -158,12 +161,10 @@ type CustomIngress struct {
 	WebUI       bool            `json:"webUI,omitempty"`
 	ChatCallers []IngressCaller `json:"chatCallers,omitempty"`
 }
-
 type IngressCaller struct {
 	Namespace string            `json:"namespace"`
 	PodLabels map[string]string `json:"podLabels"`
 }
-
 type TerminalIngress struct {
 	Port int32 `json:"port"`
 }
@@ -180,6 +181,7 @@ type Plan struct {
 	Network            NetworkPlan                 `json:"network"`
 	Identity           IdentityPlan                `json:"identity"`
 	Resources          []unstructured.Unstructured `json:"resources"`
+	IngressMTLS        *ingressmtls.Plan           `json:"ingressMTLS,omitempty"`
 }
 
 type NetworkPlan struct {

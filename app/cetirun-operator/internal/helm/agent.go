@@ -52,6 +52,7 @@ type PreparedRelease struct {
 	sandboxBundle     *sandboxworkload.Bundle
 	sandboxTemplate   *corev1.PodTemplateSpec
 	sandboxReconcile  *sandboxworkload.ReconcileExpectation
+	sandboxPreflight  func(context.Context) error
 	sandboxGuard      func(context.Context) error
 }
 

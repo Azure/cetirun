@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"reflect"
@@ -33,11 +34,12 @@ import (
 )
 
 const (
-	sandboxApplyStateAnnotation = "sandbox.cetirun.microsoft.com/apply-state"
-	sandboxApplyInitializing    = "initializing"
-	sandboxApplyPending         = "pending"
-	sandboxApplySubmitted       = "submitted"
-	sandboxApplyCancelled       = "cancelled"
+	sandboxApplyStateAnnotation   = "sandbox.cetirun.microsoft.com/apply-state"
+	sandboxApplyAttemptAnnotation = "sandbox.cetirun.microsoft.com/apply-attempt"
+	sandboxApplyInitializing      = "initializing"
+	sandboxApplyPending           = "pending"
+	sandboxApplySubmitted         = "submitted"
+	sandboxApplyCancelled         = "cancelled"
 )
 
 func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
@@ -112,6 +114,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	// reconciliation. Use that snapshot for every protected render input;
 	// the reconciler's argument can predate the first status projection.
 	agent = attempt.agent
+	if err := r.sandboxIngressMTLSInputs(ctx, attempt); err != nil {
+		return nil, fmt.Errorf("%w: %w", errSandboxIngressMTLS, err)
+	}
 	if agent.Spec.Agent.RegistrySecretRef != nil {
 		name, err := registryauth.PullSecretName(agent.UID)
 		if err != nil {
@@ -195,7 +200,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	platform := attempt.configuration.Platforms[attempt.resolution.Sandbox.Type]
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		NativeExecution: true, Resolution: *attempt.resolution, AgentName: agent.Name,
-		Namespace: attempt.input.Namespace.Name, Platform: platform,
+		Namespace: attempt.input.Namespace.Name, ServiceName: attempt.input.WorkloadName, Platform: platform,
 		CustomIngress: r.sandboxCustomIngress(attempt), TerminalIngress: r.sandboxTerminalIngress(attempt),
 	})
 	if err != nil {
@@ -324,17 +329,29 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if err := guard(ctx); err != nil {
 			return err
 		}
-		if published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending {
-			submitted := published.DeepCopy()
+		unsubmitted := published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending
+		claimed := published.DeepCopy()
+		// Fence competing renderers before the final authority read. A first
+		// attempt remains pending, and therefore cancellable, until that read passes.
+		metav1.SetMetaDataAnnotation(&claimed.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
+		if err := r.Patch(ctx, claimed, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("claim Sandbox apply attempt: %w", err)
+		}
+		published = claimed
+		if err := guard(ctx); err != nil {
+			return err
+		}
+		if unsubmitted {
+			submitted := claimed.DeepCopy()
 			submitted.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
-			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
 				return fmt.Errorf("record Sandbox apply submission: %w", err)
 			}
 			published = submitted
 		}
-		return guard(ctx)
+		return nil
 	}
-	result, err := prepared.ReconcileSandbox(effectiveValues, bundle, applyGuard)
+	result, err := prepared.ReconcileSandboxWithPreflight(effectiveValues, bundle, guard, applyGuard)
 	if err != nil {
 		return nil, err
 	}
@@ -398,6 +415,10 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	expected.Sources, expected.SourceDigests = sources, digests
 	role, binding, access, err := r.sandboxSourceAccess(attempt, pods...)
+	if err != nil {
+		return nil, err
+	}
+	tlsRole, tlsBinding, tlsAccess, err := r.sandboxMTLSSourceAccess(attempt)
 	if err != nil {
 		return nil, err
 	}
@@ -469,6 +490,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		default:
 			return nil, fmt.Errorf("Sandbox apply checkpoint is invalid")
 		}
+		if attempt := current.Annotations[sandboxApplyAttemptAnnotation]; attempt != "" {
+			metav1.SetMetaDataAnnotation(&desired.ObjectMeta, sandboxApplyAttemptAnnotation, attempt)
+		}
 		if !reflect.DeepEqual(current.Data, desired.Data) || !reflect.DeepEqual(current.Annotations, desired.Annotations) {
 			base := current.DeepCopy()
 			current.Data, current.Annotations = desired.Data, desired.Annotations
@@ -497,6 +521,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 	}
 	desiredGrants := []sandboxpolicy.BindingReference{access}
+	if tlsRole != nil {
+		desiredGrants = append(desiredGrants, tlsAccess)
+	}
 	if err := journal.Revoke(ctx, agent.Name, agent.UID, sandboxpolicy.ObsoleteBindings(previous, desiredGrants)); err != nil {
 		return nil, err
 	}
@@ -505,6 +532,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	if err := r.applySandboxSourceAccess(ctx, agent, role, binding, access); err != nil {
 		return nil, err
+	}
+	if tlsRole != nil {
+		if err := r.applySandboxSourceAccess(ctx, agent, tlsRole, tlsBinding, tlsAccess); err != nil {
+			return nil, err
+		}
 	}
 	confirmed, err := r.sandboxBindingUIDs(ctx, desiredGrants)
 	if err != nil {

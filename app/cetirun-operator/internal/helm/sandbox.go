@@ -98,14 +98,22 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 func (p *PreparedRelease) ReconcileSandbox(values map[string]any, bundle *sandboxworkload.Bundle,
 	guard func(context.Context) error,
 ) (*PreparedRelease, error) {
-	if p == nil || p.chart == nil || bundle == nil || !bundle.Identity().Reconciled || guard == nil {
+	return p.ReconcileSandboxWithPreflight(values, bundle, guard, guard)
+}
+
+// ReconcileSandboxWithPreflight separates current authority checks from the
+// submission checkpoint recorded immediately before Helm applies resources.
+func (p *PreparedRelease) ReconcileSandboxWithPreflight(values map[string]any, bundle *sandboxworkload.Bundle,
+	preflight, guard func(context.Context) error,
+) (*PreparedRelease, error) {
+	if p == nil || p.chart == nil || bundle == nil || !bundle.Identity().Reconciled || preflight == nil || guard == nil {
 		return nil, fmt.Errorf("Sandbox reconciliation requires a current bundle and guarded apply")
 	}
 	prepared, err := PrepareSandboxChart(p.chart, values, nil, bundle)
 	if err != nil {
 		return nil, err
 	}
-	prepared.sandboxGuard = guard
+	prepared.sandboxPreflight, prepared.sandboxGuard = preflight, guard
 	return prepared, nil
 }
 

@@ -22,6 +22,11 @@ Licensed under the MIT License.
 {{- if or (ne $s.contractVersion "v1") (and (not $reconciled) (or (ne $s.executionHeld true) (ne (int .Values.replicaCount) 0))) (and $reconciled (or $s.executionHeld (gt (int .Values.replicaCount) 1) (lt (int .Values.replicaCount) 0))) -}}
 {{- fail "Sandbox render plans must retain the execution hold" -}}
 {{- end -}}
+{{- if $s.ingressMTLS -}}
+{{- if or (not $reconciled) (include "cetirun.tailscaleEnabled" .) (gt (int .Values.msteamsWebhookPort) 0) -}}
+{{- fail "managed ingress mTLS requires common built-in API/UI/terminal/desktop routing without alternate ingress" -}}
+{{- end -}}
+{{- end -}}
 {{- if or (ne (index .Values.podAnnotations "sidecar.istio.io/inject") "false") .Values.sidecarScope.enabled (not .Values.networkPolicy.enabled) (gt (len .Values.sidecarScope.additionalEgressHosts) 0) -}}
 {{- fail "Sandbox network controls are protected" -}}
 {{- end -}}

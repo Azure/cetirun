@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -116,7 +117,7 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 	}
 	resolution, err := r.resolvePolicy(ctx, agent)
 	if err != nil {
-		result := policyReconcileResult{dependencyUnavailable: isPolicyDependencyError(err)}
+		result := policyReconcileResult{dependencyUnavailable: isPolicyDependencyError(err), ingressMTLSPending: errors.Is(err, ingressmtls.ErrApprovalPending)}
 		recordErr := r.recordPolicy(ctx, agent, nil, err)
 		// A definitive policy denial converges to its durable held status. An
 		// unavailable dependency cannot be accepted as denial, so retain the
@@ -166,6 +167,7 @@ type policyReconcileResult struct {
 	projectionsVerified   bool
 	reprojectionHold      bool
 	dependencyUnavailable bool
+	ingressMTLSPending    bool
 }
 
 // policyDependencyError distinguishes an unavailable control-plane read
@@ -280,6 +282,9 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	}
 	if !slices.Contains(policy.Spec.Harnesses.Allowed, agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q is not allowed by policy", agent.Spec.Agent.Type)
+	}
+	if agent.Spec.Agent.Type == api.AgentTypeCustom && policy.Spec.Network.Ingress.RequireMTLS {
+		return nil, fmt.Errorf("managed ingress mTLS does not support the Custom Harness")
 	}
 	if !aiGatewayHarnessSupported(agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q has no typed AI Gateway enforcement adapter", agent.Spec.Agent.Type)
@@ -449,8 +454,8 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		customIngress, terminalIngress = r.desiredCustomSandboxIngresses(agent, platformValues, userValues)
 	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		NativeExecution: r.SandboxPreparation.NativeExecution,
-		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name), Platform: platform,
+		NativeExecution: r.SandboxPreparation.NativeExecution, Resolution: *resolution, AgentName: agent.Name,
+		Namespace: instanceNamespace(agent.Name), ServiceName: instanceServiceName(agent.Name), Platform: platform,
 		CustomIngress: customIngress, TerminalIngress: terminalIngress,
 	})
 	if err != nil {

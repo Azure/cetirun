@@ -22,6 +22,7 @@
                 "contractVersion": {"const": "v1"},
                 "executionHeld": {"type": "boolean"},
                 "reconciled": {"const": true},
+                "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
                 "skillsMode": {
                     "const": "empty",
                     "description": "Internal native empty-selection source; omitted for the existing skills PVC path"

@@ -233,6 +233,12 @@ func (c *Client) Prepare(namespace string, values map[string]any, chartVersion s
 
 // InstallOrUpgrade applies the already-prepared chart without waiting for Pod readiness.
 func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *PreparedRelease) error {
+	return c.installOrUpgrade(namespace, releaseName, prepared, actionConfig)
+}
+
+func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *PreparedRelease,
+	configure func(string) (*action.Configuration, error),
+) error {
 	if prepared == nil || prepared.chart == nil {
 		return fmt.Errorf("release must be prepared before installation")
 	}
@@ -246,7 +252,7 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 			releaseName != prepared.sandboxBundle.Identity().ReleaseName {
 			return fmt.Errorf("Sandbox namespace or release mismatch")
 		}
-		if err := prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+		if err := prepared.CheckSandboxApply(context.Background()); err != nil {
 			return err
 		}
 	} else if err := prepared.ValidateCustom(namespace, releaseName); err != nil {
@@ -255,7 +261,7 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 	if prepared.custom && !prepared.apiValidated {
 		return fmt.Errorf("Custom application requires successful API preflight")
 	}
-	cfg, err := actionConfig(namespace)
+	cfg, err := configure(namespace)
 	if err != nil {
 		return err
 	}
@@ -264,10 +270,7 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 	}
 	chrt, values := prepared.chart, prepared.Values
 
-	// TODO: ReleaseExists calls actionConfig (and thus InClusterConfig) a second time.
-	// Refactor InstallOrUpgrade to pass cfg into ReleaseExists to avoid the duplicate
-	// in-cluster config lookup and Helm driver initialisation.
-	exists, err := c.ReleaseExists(namespace, releaseName)
+	exists, err := releaseExists(cfg, releaseName)
 	if err != nil {
 		return err
 	}
@@ -354,7 +357,10 @@ func (c *Client) ReleaseExists(namespace, releaseName string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return releaseExists(cfg, releaseName)
+}
 
+func releaseExists(cfg *action.Configuration, releaseName string) (bool, error) {
 	histClient := action.NewHistory(cfg)
 	histClient.Max = 1
 	releases, err := histClient.Run(releaseName)

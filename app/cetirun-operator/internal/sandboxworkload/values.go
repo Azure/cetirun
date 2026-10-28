@@ -371,6 +371,11 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		}
 		out["openclaw"] = native
 	}
+	if b.input.Controls.IngressMTLS != nil {
+		if err := b.applyIngressMTLS(out); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 

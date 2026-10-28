@@ -448,7 +448,9 @@ or `/SCTP` is specified. Rule changes are submitted when the Policy is saved.
 
 Agent Identity, Entra ID, blocked FQDNs, and ingress mTLS are read-only in this
 editor. Existing values remain visible and are preserved when other fields are
-saved. FQDN blocking and mTLS lack supported enforcement; Agent Identity lacks
+saved. FQDN blocking lacks supported enforcement; ingress mTLS requires the
+separate [administrator-registered managed endpoint](../../guides/agent-ingress-mtls/),
+not a Portal toggle. Agent Identity lacks
 the credential-service evidence needed for aggregate `PolicyApplied`. Other
 controls also depend on the selected execution profile and platform capabilities.
 New common-executor Kata lifetimes support internal CIDR grants and SCTP port

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,6 +106,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		if name == testController {
 			role.Rules = append(role.Rules,
 				rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"get"}},
+				rbacv1.PolicyRule{APIGroups: []string{api.GroupVersion.Group}, Resources: []string{"teams", "agentpolicies", "sandboxes"}, Verbs: []string{"get"}},
 				rbacv1.PolicyRule{APIGroups: []string{api.GroupVersion.Group}, Resources: []string{"agents/status"}, Verbs: []string{"get", "update", "patch"}},
 			)
 		}
@@ -707,8 +709,16 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 					}
 				}
 				reconciler := &operatorcontroller.AgentReconciler{Client: controller, APIReader: controller}
-				if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: applied.Name}}); err != nil {
-					t.Fatal("controller could not hold a sparse server-side-applied Agent:", err)
+				team := &api.Team{}
+				if err := admin.Get(ctx, client.ObjectKey{Name: applied.Spec.Team}, team); err != nil {
+					t.Fatal(err)
+				}
+				// This authorization harness does not run the Team reconciler.
+				// Its pending observation must still persist the execution hold;
+				// do not hide unrelated read or authorization errors.
+				pending := fmt.Sprintf("Team observation is pending for generation %d", team.Generation)
+				if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: applied.Name}}); err == nil || err.Error() != pending {
+					t.Fatalf("expected the sparse Agent's pending Team observation, got %v", err)
 				}
 				if err := admin.Get(ctx, client.ObjectKeyFromObject(applied), applied); err != nil {
 					t.Fatal(err)

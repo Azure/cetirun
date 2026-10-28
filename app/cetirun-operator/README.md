@@ -221,6 +221,16 @@ Cancellation races with submission
 through a conditional state update. Submitted, uncertain or older unmarked
 checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
+Helm configuration and history reads recheck current authority without marking
+submission. The post-renderer records submission before resource writes, so a
+first-install history read failure can cancel a still-pending expectation and
+recover through normal retry or deletion. It cannot reset a previously submitted
+or uncertain checkpoint merely because the workload is absent.
+Final apply claims the expectation resource version before its last authority
+read. First attempts stay pending throughout those reads; a CAS records submitted
+only immediately before manifest delivery. Competing claims fence stale writers,
+while lost submission acknowledgements and previously submitted work remain
+uncertain and require shutdown evidence.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.
@@ -411,9 +421,16 @@ remain required; read-only root and ingress support must match the selected
 policy. The configuration harness allow-list supports `openclaw` and `hermes`;
 the earlier single-start executor itself remains OpenClaw-only.
 `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
-FQDN support, mTLS, Kubernetes access and Entra ID flags must be
+FQDN support, Kubernetes access and Entra ID flags must be
 `false`; identity/token grant declarations are unsupported. These are not
 physical fencing or guest-external runtime-observation guarantees.
+
+Common-executor OpenClaw and Hermes can separately opt in to managed ingress
+mTLS with `mutualTLS: true`, per-Agent external certificate approvals and the
+registered Envoy endpoint. Retained single-start lifetimes still reject it.
+See [managed Agent ingress mTLS](../../site/content/en/docs/guides/agent-ingress-mtls.md)
+for certificate ownership, supported surfaces, source pins and stop/change/resume
+rotation. It does not enable outbound TLS inspection or FQDN blocking.
 
 `network.blockedCIDRs` uses the registered address families and the existing
 guest-external deny baseline. `network.blockedPorts` additionally requires
@@ -1762,7 +1779,9 @@ The candidate Azure CNI Overlay/Cilium compiler emits explicit network controls
 and per-Agent identity resources from trusted topology and grant inventories.
 Gateway endpoints/ports come from that inventory, not hardcoded defaults or
 policy-supplied destinations. Conflicting required destinations reject. FQDN
-blocking and mTLS remain unsupported and reject rather than becoming no-ops.
+blocking and qualified-adapter mTLS remain unsupported and reject rather than
+becoming no-ops. The native common executor has the separately registered
+[managed mTLS endpoint](../../site/content/en/docs/guides/agent-ingress-mtls.md).
 The effective compiled revision includes topology, identity and role-content
 changes; use it rather than only the base resolver revision.
 
@@ -2421,8 +2440,10 @@ Public documentation reviewed on 2026-09-25 narrows the next trial:
 
 The initial candidate is the configured managed Cilium path, with a separately
 qualified upstream Cilium installation as a comparison only where authorized.
-FQDN blocking, gateway-to-workload mTLS and any unqualified protocols remain
-explicitly unsupported. Required network isolation, port blocking, runtime
+FQDN blocking, qualified-adapter gateway-to-workload mTLS and any unqualified
+protocols remain explicitly unsupported. The native common-executor mTLS
+endpoint is a separate opt-in, not qualification of this baseline.
+Required network isolation, port blocking, runtime
 accounting and observation/fencing still need actual target-version tests.
 No cluster was inspected or modified to establish this baseline.
 

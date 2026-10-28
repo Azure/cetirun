@@ -271,6 +271,8 @@ func newNativeStartAPIHarnessConfigured(t *testing.T, admissionNative, coordinat
 		CRDs: []*apiextensionsv1.CustomResourceDefinition{
 			nativeStartExternalCRD("cilium.io", "v2", "CiliumNetworkPolicy", "ciliumnetworkpolicies"),
 			nativeStartExternalCRD("networking.istio.io", "v1beta1", "VirtualService", "virtualservices"),
+			nativeStartExternalCRD("networking.istio.io", "v1beta1", "Gateway", "gateways"),
+			nativeStartExternalCRD("networking.istio.io", "v1beta1", "DestinationRule", "destinationrules"),
 		},
 		ControlPlaneStartTimeout: time.Minute, ControlPlaneStopTimeout: 30 * time.Second,
 	}

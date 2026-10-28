@@ -61,6 +61,19 @@ func validateObjects(input Input) error {
 			Key: "k8s:cetirun.microsoft.com/terminal", Operator: metav1.LabelSelectorOpDoesNotExist,
 		}}
 	}
+	tlsObjects := map[string][]byte{}
+	if c.IngressMTLS != nil {
+		expected, err := sandboxpolicy.IngressMTLSResources(sandboxpolicy.CompileInput{
+			AgentName: input.AgentName, Namespace: input.Namespace.Name, Resolution: *input.Resolution,
+		}, *c.IngressMTLS, c.Revision)
+		if err != nil {
+			return err
+		}
+		for _, object := range expected {
+			key := object.GetAPIVersion() + "/" + object.GetKind() + "/" + object.GetNamespace() + "/" + object.GetName()
+			tlsObjects[key], _ = json.Marshal(object.Object)
+		}
+	}
 	for _, object := range c.Objects {
 		kind := object.GetAPIVersion() + "/" + object.GetKind()
 		key := kind + "/" + object.GetNamespace() + "/" + object.GetName()
@@ -76,6 +89,12 @@ func validateObjects(input Input) error {
 			}
 		}
 		switch kind {
+		case "v1/ConfigMap", "networking.istio.io/v1beta1/DestinationRule":
+			encoded, err := json.Marshal(object.Object)
+			if err != nil || string(tlsObjects[key]) != string(encoded) {
+				return fmt.Errorf("mTLS compiler resource differs from the exact approved endpoint")
+			}
+			delete(tlsObjects, key)
 		case "cilium.io/v2/CiliumNetworkPolicy":
 			var policy sandboxpolicy.CiliumNetworkPolicy
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &policy, true); err != nil {
@@ -131,7 +150,7 @@ func validateObjects(input Input) error {
 		objects[key] = true
 	}
 	if network != 1 || (input.Terminal != nil && terminalNetwork != 1) || (input.Terminal == nil && terminalNetwork != 0) ||
-		(dedicated && serviceAccounts != 1) {
+		(dedicated && serviceAccounts != 1) || len(tlsObjects) != 0 {
 		return fmt.Errorf("compiler resource inventory is incomplete or duplicated")
 	}
 	for _, present := range grants {

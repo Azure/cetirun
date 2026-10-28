@@ -4,6 +4,12 @@
 
 set -e
 
+if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
+  export TTYD_BIND_ARGS="--interface 127.0.0.1"
+else
+  export TTYD_BIND_ARGS=""
+fi
+
 cat > /tmp/supervisord.conf << EOF
 [unix_http_server]
 file=/tmp/supervisor.sock
@@ -58,7 +64,7 @@ if [ "${TTYD_ENABLED}" = "true" ]; then
 cat >> /tmp/supervisord.conf << 'TTYD_EOF'
 
 [program:ttyd]
-command=ttyd --port %(ENV_TTYD_PORT)s --base-path %(ENV_TTYD_BASE_PATH)s --writable --check-origin --debug 4 %(ENV_TTYD_SHELL)s
+command=ttyd %(ENV_TTYD_BIND_ARGS)s --port %(ENV_TTYD_PORT)s --base-path %(ENV_TTYD_BASE_PATH)s --writable --check-origin --debug 4 %(ENV_TTYD_SHELL)s
 priority=25
 autorestart=true
 startretries=5

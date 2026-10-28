@@ -76,6 +76,9 @@ agent_apply_config() {
     --config "$CETIRUN_CONFIG_DIR/hermes-config.yaml" \
     --env "$CETIRUN_SECRET_DIR/hermes.env"
   set -- "$@" --gateway-key-env "${CETIRUN_GATEWAY_KEY_ENV:-CETIRUN_GATEWAY_API_KEY}"
+  if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
+    set -- "$@" --ingress-mtls
+  fi
   "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" "$@"
 }
 
@@ -105,7 +108,11 @@ agent_prepare_integrations() {
 }
 
 agent_verify() {
-  "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" --home "$TARGET_HOME" --check
+  set -- --home "$TARGET_HOME" --check
+  if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
+    set -- "$@" --ingress-mtls
+  fi
+  "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" "$@"
   home_write_marker "$LEGACY_HOME_MARKER" initialized-v1
 }
 

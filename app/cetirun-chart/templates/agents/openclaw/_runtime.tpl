@@ -222,7 +222,11 @@ OpenClaw container args
 {{- define "cetirun.agent.openclaw.args" -}}
 args:
   - --bind
+  {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+  - loopback
+  {{- else }}
   - lan
+  {{- end }}
   - --port
   - {{ .Values.openclaw.config.gateway.port | quote }}
 {{- end }}

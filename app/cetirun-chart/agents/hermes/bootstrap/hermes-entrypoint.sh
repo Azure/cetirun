@@ -4,6 +4,14 @@
 
 set -e
 
+if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
+  export TTYD_BIND_ARGS="--interface 127.0.0.1"
+  gateway_command="/bin/sh /etc/cetirun/hermes-mtls-gateway.sh"
+else
+  export TTYD_BIND_ARGS=""
+  gateway_command="hermes gateway run --replace --accept-hooks --external-supervisor"
+fi
+
 export HERMES_HOME="${HERMES_HOME:-/home/vibe/.hermes}"
 PYTHON_BIN="${HERMES_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}"
 if [ ! -x "$PYTHON_BIN" ]; then
@@ -75,7 +83,7 @@ logfile_maxbytes=0
 pidfile=/tmp/supervisord.pid
 
 [program:hermes-gateway]
-command=hermes gateway run --replace --accept-hooks --external-supervisor
+command=${gateway_command}
 priority=40
 autorestart=true
 stopasgroup=true
@@ -132,7 +140,7 @@ if [ "${TTYD_ENABLED}" = "true" ]; then
   cat >> /tmp/supervisord.conf << 'TTYD_EOF'
 
 [program:ttyd]
-command=ttyd --port %(ENV_TTYD_PORT)s --base-path %(ENV_TTYD_BASE_PATH)s --writable --check-origin %(ENV_TTYD_SHELL)s
+command=ttyd %(ENV_TTYD_BIND_ARGS)s --port %(ENV_TTYD_PORT)s --base-path %(ENV_TTYD_BASE_PATH)s --writable --check-origin %(ENV_TTYD_SHELL)s
 priority=25
 autorestart=true
 startretries=5

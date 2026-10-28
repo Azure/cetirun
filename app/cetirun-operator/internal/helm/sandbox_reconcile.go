@@ -143,6 +143,20 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 		if service.Spec.Type != corev1.ServiceTypeClusterIP || service.Spec.ExternalName != "" || len(service.Spec.ExternalIPs) != 0 {
 			return fmt.Errorf("Sandbox services must remain private")
 		}
+		if service.Name == input.WorkloadName {
+			if err := p.sandboxBundle.ValidateIngressService(&service); err != nil {
+				return err
+			}
+			if input.Controls.IngressMTLS != nil {
+				spec, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&service.Spec)
+				if err != nil {
+					return err
+				}
+				if err := unstructured.SetNestedMap(object.Object, spec, "spec"); err != nil {
+					return err
+				}
+			}
+		}
 	case "rbac.authorization.k8s.io/v1/RoleBinding":
 		if err := p.validateTerminalRoleBinding(object); err != nil {
 			return err
@@ -275,6 +289,15 @@ func (r reconciledSandboxRenderer) Run(_ *bytes.Buffer) (*bytes.Buffer, error) {
 		return nil, err
 	}
 	return bytes.NewBuffer(bytes.Clone(r.prepared.manifest)), nil
+}
+
+// CheckSandboxApply validates authority before Helm's read-only preparation
+// without declaring that an apply has been submitted.
+func (p *PreparedRelease) CheckSandboxApply(ctx context.Context) error {
+	if p == nil || p.sandboxReconcile == nil || p.sandboxPreflight == nil || p.sealedInput != p.inputDigest() {
+		return fmt.Errorf("Sandbox preflight requires unchanged current render and controller authority")
+	}
+	return p.sandboxPreflight(ctx)
 }
 
 // AuthorizeSandboxApply rechecks authority and records submission intent before
