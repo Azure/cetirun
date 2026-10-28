@@ -34,6 +34,15 @@ func TestReconciledCustomAPIServerCreatesOwnedRuntimeSecretWithoutCallerGatewayR
 	h := newNativeStartAPIHarnessForAgent(t, true, false, corev1.ReadWriteOncePod, "openclaw")
 	ctx := h.ctx
 	h.r.HelmClient = &commonCustomAPILocalHelm{nativeStartLocalHelm: h.localHelm}
+	// Custom HTTP uses the platform loopback probe even while the separate
+	// browser terminal remains disabled.
+	h.r.CetiRunHelmValues = map[string]any{"ttyd": map[string]any{
+		"enabled": false,
+		"image": map[string]any{
+			"repository": "registry.example.test/cetirun-terminal",
+			"digest":     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+	}}
 
 	policy := &api.AgentPolicy{}
 	if err := h.admin.Get(ctx, client.ObjectKey{Name: "policy-example"}, policy); err != nil {
