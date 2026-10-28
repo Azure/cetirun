@@ -272,8 +272,9 @@ cetirun-ai-gateway:
 
 The Policy then lists `auto-decision`, `gpt-mini`, `gpt-main` and `o3`; the
 decision model need not be listed. Microsoft-Decision-1 reads the Agent's whole
-system prompt and its latest messages, and refuses a request it counts at more
-than 64,000 tokens; the router then uses `heuristic` for it, without an error.
+system prompt and its latest messages, and refuses a request that does not fit
+its 32,768-token context; the router then uses `heuristic` for it, without an
+error.
 The [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-classifier)
 describes the classifiers' settings.
 

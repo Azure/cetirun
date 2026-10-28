@@ -1014,11 +1014,12 @@ translation on the same tier as its original.
 
 The Decision classifier sees the caller's whole system prompt, which LiteLLM
 does not shorten, and the latest user messages. Microsoft-Decision-1 refuses a
-request it counts at more than 64,000 tokens: with a system prompt of about
-40,000 tokens, every classification failed and the router used the default
-classifier instead, without an error. Only the response header
-`x-litellm-complexity-router-cause` and the request log's `routing_cause`
-(`heuristic_scorer` instead of `jev_classifier`) show it.
+request that does not fit its context of 32,768 tokens: measured directly, an
+English prompt of 32,065 tokens was classified, and one 1,000 words longer was
+refused. With a system prompt of about 40,000 tokens, every classification
+failed and the router used the default classifier instead, without an error.
+Only the response header `x-litellm-complexity-router-cause` and the request
+log's `routing_cause` (`heuristic_scorer` instead of `jev_classifier`) show it.
 
 **A conversation can change model.** Each request is classified on its own, so
 one conversation can move between tiers. On the same Azure OpenAI resource that
