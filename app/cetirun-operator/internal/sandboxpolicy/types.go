@@ -142,6 +142,14 @@ type CompileInput struct {
 	Namespace       string
 	ServiceName     string
 	Platform        Platform
+	IdentityPin     *IdentityPin
+}
+
+// IdentityPin is supplied from protected bootstrap readback, never policy input.
+type IdentityPin struct {
+	Name         string
+	UID          types.UID
+	BootstrapUID types.UID
 }
 
 // Plan contains desired resources, never observed status. Render Resources
@@ -175,6 +183,7 @@ type IdentityPlan struct {
 	VolumeMounts                 []corev1.VolumeMount        `json:"volumeMounts,omitempty"`
 	Env                          []corev1.EnvVar             `json:"env,omitempty"`
 	ServiceAccount               *corev1.ServiceAccount      `json:"serviceAccount,omitempty"`
+	BootstrapServiceAccount      bool                        `json:"bootstrapServiceAccount,omitempty"`
 	RoleBindings                 []rbacv1.RoleBinding        `json:"roleBindings,omitempty"`
 	ClusterRoleBindings          []rbacv1.ClusterRoleBinding `json:"clusterRoleBindings,omitempty"`
 	Bindings                     []BindingReference          `json:"bindings,omitempty"`

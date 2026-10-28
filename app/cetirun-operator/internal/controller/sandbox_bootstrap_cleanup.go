@@ -51,7 +51,7 @@ func (r *AgentReconciler) checkSandboxBootstrapCleanup(ctx context.Context, agen
 		} else if err != nil {
 			return err
 		}
-		if err := validateSandboxBootstrapObject(current, desired, receipt.Objects[i].UID, true); err != nil {
+		if err := validateSandboxBootstrapObject(current, desired, receipt.inventory()[i].UID, true); err != nil {
 			return err
 		}
 	}
@@ -89,6 +89,9 @@ func (r *AgentReconciler) releaseSandboxBootstrapResources(ctx context.Context, 
 	if receipt.Skills != nil {
 		order = append([]int{5}, order...)
 	}
+	if receipt.ServiceAccount != nil {
+		order = append([]int{len(receipt.Objects)}, order...)
+	}
 	for _, i := range order {
 		current := desired[i].DeepCopyObject().(client.Object)
 		if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(current), current); apierrors.IsNotFound(err) {
@@ -96,7 +99,7 @@ func (r *AgentReconciler) releaseSandboxBootstrapResources(ctx context.Context, 
 		} else if err != nil {
 			return err
 		}
-		if err := validateSandboxBootstrapObject(current, desired[i], receipt.Objects[i].UID, true); err != nil {
+		if err := validateSandboxBootstrapObject(current, desired[i], receipt.inventory()[i].UID, true); err != nil {
 			return err
 		}
 		if err := r.removeSandboxBootstrapFinalizer(ctx, current); err != nil {

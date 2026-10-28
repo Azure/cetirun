@@ -56,7 +56,7 @@ func TestEntraNativePolicyHeldBeforeProvisioning(t *testing.T) {
 	}
 }
 
-func TestEntraNativeRegistrationHoldPreservesLifetime(t *testing.T) {
+func TestEntraNativeInvalidRegistrationHoldPreservesLifetime(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
@@ -87,7 +87,7 @@ func TestEntraNativeRegistrationHoldPreservesLifetime(t *testing.T) {
 			platform.KubernetesAudience = "https://kubernetes.default.svc"
 			platform.Identities = []sandboxpolicy.ApprovedIdentity{{
 				AgentUID: agent.UID, Namespace: expected.Namespace.Name, ServiceAccountName: "example-entra",
-				Revision: "synthetic-unqualified", Entra: &sandboxpolicy.EntraIdentity{ClientID: "example-client", TenantID: "example-tenant"},
+				Revision: "synthetic-unqualified", Kubernetes: true, Entra: &sandboxpolicy.EntraIdentity{ClientID: "example-client", TenantID: "example-tenant"},
 			}}
 			document.Platforms[api.SandboxKata] = platform
 			raw, err := json.Marshal(document)

@@ -303,6 +303,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// denial. Preserve the key identity and spend record, but block it and
 		// stop compute until fresh authorization evidence is available.
 		bootstrapErr := r.bootstrapPendingIngressMTLS(ctx, instance, policy.ingressMTLSPending)
+		bootstrapErr = stderrors.Join(bootstrapErr, r.bootstrapPendingIdentity(ctx, instance, policy.identityPending))
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
 		return result, stderrors.Join(err, bootstrapErr, holdErr)
 	} else if err != nil {

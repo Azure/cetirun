@@ -13,6 +13,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -30,18 +31,19 @@ const (
 // ReconcileExpectation replaces a one-Pod allowance with the current authorized
 // chart output. It uses the same protected state object, not another authority.
 type ReconcileExpectation struct {
-	Version         string                      `json:"version"`
-	Agent           ObjectIdentity              `json:"agent"`
-	AgentGeneration int64                       `json:"agentGeneration"`
-	Namespace       ObjectIdentity              `json:"namespace"`
-	Binding         sandbox.Binding             `json:"binding"`
-	Revision        string                      `json:"revision"`
-	PlanHash        string                      `json:"planHash"`
-	Home            ObjectIdentity              `json:"home"`
-	Workloads       []RenderedWorkload          `json:"workloads"`
-	Sources         []SourceReference           `json:"sources"`
-	SourceDigests   map[string]string           `json:"sourceDigests"`
-	Controls        []unstructured.Unstructured `json:"controls"`
+	Version                string                      `json:"version"`
+	Agent                  ObjectIdentity              `json:"agent"`
+	AgentGeneration        int64                       `json:"agentGeneration"`
+	Namespace              ObjectIdentity              `json:"namespace"`
+	Binding                sandbox.Binding             `json:"binding"`
+	Revision               string                      `json:"revision"`
+	PlanHash               string                      `json:"planHash"`
+	Home                   ObjectIdentity              `json:"home"`
+	Workloads              []RenderedWorkload          `json:"workloads"`
+	Sources                []SourceReference           `json:"sources"`
+	SourceDigests          map[string]string           `json:"sourceDigests"`
+	Controls               []unstructured.Unstructured `json:"controls"`
+	IdentityServiceAccount *corev1.ServiceAccount      `json:"identityServiceAccount,omitempty"`
 }
 
 type RenderedWorkload struct {
@@ -141,6 +143,17 @@ func (e ReconcileExpectation) Validate() error {
 	if main == nil {
 		return fmt.Errorf("Sandbox has no retained HOME workload")
 	}
+	entra := false
+	for _, volume := range main.Template.Spec.Volumes {
+		if volume.Projected != nil {
+			for _, projection := range volume.Projected.Sources {
+				entra = entra || projection.ServiceAccountToken != nil && projection.ServiceAccountToken.Audience == sandboxpolicy.EntraAudience
+			}
+		}
+	}
+	if entra != (e.IdentityServiceAccount != nil) {
+		return fmt.Errorf("Entra execution requires a bootstrap-owned identity source")
+	}
 	sources := map[string]bool{}
 	required := map[string]bool{}
 	effective := 0
@@ -195,9 +208,25 @@ func (e ReconcileExpectation) Validate() error {
 		if !required[kind] {
 			return fmt.Errorf("Sandbox source inventory is missing %s", kind)
 		}
+		if account := e.IdentityServiceAccount; account != nil {
+			if account.UID == "" || account.Namespace != e.Namespace.Name || account.Name != main.Template.Spec.ServiceAccountName ||
+				!slices.ContainsFunc(e.Sources, func(source SourceReference) bool {
+					return source.APIVersion == "v1" && source.Kind == "ServiceAccount" && source.Namespace == account.Namespace &&
+						source.Name == account.Name && source.UID == account.UID
+				}) || !slices.ContainsFunc(e.Sources, func(source SourceReference) bool {
+				return source.APIVersion == "v1" && source.Kind == "ConfigMap" && source.Namespace != e.Namespace.Name &&
+					string(source.UID) == account.Annotations["cetirun.microsoft.com/sandbox-bootstrap"]
+			}) {
+				return fmt.Errorf("bootstrap identity requires its exact persisted ServiceAccount source")
+			}
+		}
 	}
 	controls := map[string]bool{}
 	for _, object := range e.Controls {
+		if account := e.IdentityServiceAccount; account != nil && object.GetAPIVersion() == "v1" &&
+			object.GetKind() == "ServiceAccount" && object.GetName() == account.Name {
+			return fmt.Errorf("bootstrap ServiceAccount cannot also be chart owned")
+		}
 		key := SourceKey(SourceReference{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()})
 		if controls[key] || object.GetName() == "" || object.GetNamespace() != e.Namespace.Name ||
 			!equality.Semantic.DeepEqual(object.GetOwnerReferences(), []metav1.OwnerReference{AgentOwner(e.Agent.Name, e.Agent.UID)}) {

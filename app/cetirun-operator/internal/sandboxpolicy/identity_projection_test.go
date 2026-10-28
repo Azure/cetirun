@@ -202,15 +202,31 @@ func TestEntraProjectionModesUseCompilerShape(t *testing.T) {
 	}
 }
 
-func TestNativeEntraCapabilityRemainsHeld(t *testing.T) {
+func TestNativeEntraRequiresDeclaredCapabilityAndBootstrapPin(t *testing.T) {
 	for _, declare := range []bool{false, true} {
 		input := nativeCompilerFixture()
 		input.Resolution.Capabilities.EntraID = declare
 		input.Resolution.AgentPolicy.EntraID.Enabled = true
 		input.Platform.Identities = entraCompilerFixture().Platform.Identities
 		input.Platform.KubernetesAudience = "https://kubernetes.default.svc"
-		if plan, err := Compile(input); plan != nil || !errors.Is(err, ErrUnsupportedControl) {
-			t.Fatal("identity-only core enabled native production execution:", err)
+		want := ErrUnsupportedControl
+		if declare {
+			want = ErrUnapprovedGrant
+		}
+		if plan, err := Compile(input); plan != nil || !errors.Is(err, want) {
+			t.Fatal("native identity did not require both support and a recorded pin:", err)
+		}
+		if declare {
+			input.IdentityPin = &IdentityPin{Name: "example-entra", UID: "account-uid", BootstrapUID: "bootstrap-uid"}
+			plan := mustCompile(t, input)
+			if !plan.Identity.BootstrapServiceAccount || plan.Identity.ServiceAccount.UID != input.IdentityPin.UID {
+				t.Fatal("compiler lost the bootstrap identity pin")
+			}
+			for _, object := range plan.Resources {
+				if object.GetKind() == "ServiceAccount" {
+					t.Fatal("bootstrap ServiceAccount was handed to Helm")
+				}
+			}
 		}
 	}
 }

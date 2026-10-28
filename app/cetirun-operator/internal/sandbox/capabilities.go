@@ -109,7 +109,6 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 		{"requirePerContainerResourceLimits", capabilities.RequirePerContainerResourceLimits},
 		{"blockedFQDNs", capabilities.BlockedFQDNs},
 		{"kubernetesAccess", capabilities.KubernetesAccess},
-		{"entraID", capabilities.EntraID},
 		{"enforcementObservation", capabilities.EnforcementObservation},
 		{"restrictiveFailure", capabilities.RestrictiveFailure},
 	} {
@@ -160,7 +159,6 @@ func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 		requested bool
 	}{
 		{root.Child("kubernetesAccess"), policy.KubernetesAccess != nil},
-		{root.Child("entraID", "enabled"), policy.EntraID.Enabled},
 	} {
 		if control.requested {
 			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))

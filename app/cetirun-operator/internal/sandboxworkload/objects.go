@@ -6,6 +6,7 @@ package sandboxworkload
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -13,6 +14,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -65,7 +67,19 @@ func validateObjects(input Input) error {
 	identity := sandboxpolicy.IdentityPlan{
 		ServiceAccountName: c.ServiceAccountName, Volumes: c.Volumes, VolumeMounts: c.VolumeMounts, Env: c.Environment,
 	}
-	for _, object := range c.Objects {
+	inventory := slices.Clone(c.Objects)
+	if account := c.ServiceAccountSource; account != nil {
+		if !input.Reconciled || !input.Resolution.AgentPolicy.EntraID.Enabled || access != nil ||
+			account.UID == "" || account.Annotations["cetirun.microsoft.com/sandbox-bootstrap"] == "" {
+			return fmt.Errorf("bootstrap identity source requires a pinned common Entra workload")
+		}
+		raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(account)
+		if err != nil {
+			return err
+		}
+		inventory = append(inventory, unstructured.Unstructured{Object: raw})
+	}
+	for _, object := range inventory {
 		kind := object.GetAPIVersion() + "/" + object.GetKind()
 		key := kind + "/" + object.GetNamespace() + "/" + object.GetName()
 		if objects[key] || object.GetName() == "" || !equality.Semantic.DeepEqual(object.GetOwnerReferences(), owner) ||

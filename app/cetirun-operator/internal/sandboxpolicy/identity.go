@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
 func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *ApprovedIdentity, error) {
@@ -114,6 +115,18 @@ func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *Approv
 	}
 	if policy.EntraID.Enabled {
 		projectIdentity(&plan, false, approval.Entra, platform.KubernetesAudience, expiration)
+	}
+	if input.NativeExecution && policy.EntraID.Enabled {
+		pin := input.IdentityPin
+		if pin == nil || pin.Name != plan.ServiceAccountName || pin.UID == "" || pin.BootstrapUID == "" {
+			return plan, nil, nil, fmt.Errorf("%w: native Entra requires its durably pinned bootstrap ServiceAccount", ErrUnapprovedGrant)
+		}
+		plan.BootstrapServiceAccount = true
+		plan.ServiceAccount.UID = pin.UID
+		plan.ServiceAccount.Finalizers = []string{sandbox.BootstrapFinalizer}
+		plan.ServiceAccount.Annotations["cetirun.microsoft.com/sandbox-bootstrap"] = string(pin.BootstrapUID)
+		plan.ServiceAccount.Annotations["cetirun.microsoft.com/agent-uid"] = string(input.Resolution.Binding.AgentUID)
+		plan.ServiceAccount.Annotations["cetirun.microsoft.com/agent-name"] = input.AgentName
 	}
 	// Unrequested privileges are not projected or included as effective identity.
 	approval.Kubernetes = policy.KubernetesAccess != nil

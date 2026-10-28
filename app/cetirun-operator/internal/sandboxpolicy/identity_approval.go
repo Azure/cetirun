@@ -38,3 +38,19 @@ func ValidateIdentityApprovals(inventory []ApprovedIdentity) error {
 func identityValue(value string) bool {
 	return value != "" && strings.TrimSpace(value) == value && strings.IndexFunc(value, unicode.IsControl) == -1
 }
+
+func IdentityApproval(agentUID types.UID, namespace string, inventory []ApprovedIdentity) (*ApprovedIdentity, error) {
+	if err := ValidateIdentityApprovals(inventory); err != nil {
+		return nil, err
+	}
+	for _, approval := range inventory {
+		if approval.AgentUID == agentUID && approval.Namespace == namespace {
+			if approval.Entra != nil {
+				entra := *approval.Entra
+				approval.Entra = &entra
+			}
+			return &approval, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: a dedicated per-Agent ServiceAccount registration is required", ErrUnapprovedGrant)
+}

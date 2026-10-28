@@ -6,12 +6,15 @@ package sandboxworkload
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ValidateIdentityBinding checks authoritative readback against a current
@@ -28,6 +31,7 @@ func (b *Bundle) ValidateIdentityBinding(namespace *corev1.Namespace, account *c
 		Agent:     ObjectIdentity{Name: b.input.AgentName, UID: b.input.Resolution.Binding.AgentUID},
 		Namespace: b.input.Namespace, Binding: b.input.Resolution.Binding,
 		Revision: b.input.Controls.Revision, Controls: b.input.Controls.Objects,
+		IdentityServiceAccount: b.input.Controls.ServiceAccountSource,
 	}
 	return expected.ValidateIdentityBinding(namespace, account, pinned)
 }
@@ -65,7 +69,18 @@ func (expected ReconcileExpectation) ValidateIdentityBinding(namespace *corev1.N
 	if err != nil {
 		return err
 	}
-	for _, desired := range expected.Controls {
+	controls := slices.Clone(expected.Controls)
+	if source := expected.IdentityServiceAccount; source != nil {
+		if source.UID != pinned.UID || source.Name != pinned.Name {
+			return fmt.Errorf("runtime identity differs from its bootstrap source pin")
+		}
+		raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(source)
+		if err != nil {
+			return err
+		}
+		controls = append(controls, unstructured.Unstructured{Object: raw})
+	}
+	for _, desired := range controls {
 		if desired.GetAPIVersion() != "v1" || desired.GetKind() != "ServiceAccount" ||
 			desired.GetName() != pinned.Name || desired.GetNamespace() != namespace.Name {
 			continue
