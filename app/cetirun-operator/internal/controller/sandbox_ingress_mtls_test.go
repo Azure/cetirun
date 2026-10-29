@@ -33,6 +33,10 @@ func withIngressMTLS(t *testing.T, kind string, desktop ...bool) func(*AgentReco
 		if err := kube.Get(ctx, client.ObjectKey{Name: input.Agent.Name}, agent); err != nil {
 			t.Fatal(err)
 		}
+		box := &api.Sandbox{}
+		if err := kube.Get(ctx, client.ObjectKey{Name: agent.Spec.SandboxRef}, box); err != nil {
+			t.Fatal(err)
+		}
 		agent.Spec.Helm.Values = map[string]runtime.RawExtension{
 			"desktop": {Raw: []byte(`{"enabled":false}`)},
 		}
@@ -67,10 +71,10 @@ func withIngressMTLS(t *testing.T, kind string, desktop ...bool) func(*AgentReco
 		if err := json.Unmarshal([]byte(cm.Data[SandboxPlatformConfigurationKey]), &config); err != nil {
 			t.Fatal(err)
 		}
-		registration := config.Registrations[api.SandboxKata]
+		registration := config.Registrations[box.Spec.Type]
 		registration.Capabilities.MutualTLS = true
-		config.Registrations[api.SandboxKata] = registration
-		platform := config.Platforms[api.SandboxKata]
+		config.Registrations[box.Spec.Type] = registration
+		platform := config.Platforms[box.Spec.Type]
 		platform.IngressMTLS = &ingressmtls.Registration{
 			Image: "registry.example.com/envoy@sha256:" + strings.Repeat("a", 64),
 			Bindings: []ingressmtls.Binding{{AgentUID: agent.UID, Namespace: server.Namespace, Harness: kind,
@@ -85,7 +89,7 @@ func withIngressMTLS(t *testing.T, kind string, desktop ...bool) func(*AgentReco
 		for _, port := range (ingressmtls.Plan{Binding: platform.IngressMTLS.Bindings[0]}).Ports() {
 			destination.Ports = append(destination.Ports, api.AgentPolicyPort{Port: port.Backend, Protocol: corev1.ProtocolTCP})
 		}
-		config.Platforms[api.SandboxKata] = platform
+		config.Platforms[box.Spec.Type] = platform
 		raw, err := json.Marshal(config)
 		if err != nil {
 			t.Fatal(err)
@@ -124,13 +128,24 @@ func withIngressMTLS(t *testing.T, kind string, desktop ...bool) func(*AgentReco
 }
 
 func TestReconciledSandboxIngressMTLS(t *testing.T) {
+	testReconciledSandboxIngressMTLS(t, api.SandboxKata)
+}
+
+func testReconciledSandboxIngressMTLS(t *testing.T, runtimeType api.SandboxType) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, home := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(kind+"/"+string(home), func(t *testing.T) {
 				ctx := context.Background()
-				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false,
-					withNativeHomeAccessMode(t, home), withIngressMTLS(t, kind))
+				setup := []func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, home)}
+				if runtimeType == api.SandboxContainer {
+					setup = append(setup, withContainerRuntime(t))
+				}
+				setup = append(setup, withIngressMTLS(t, kind))
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, setup...)
 				f.reconcileOK(t)
+				if runtimeType == api.SandboxContainer {
+					assertContainerWorkload(t, f, home)
+				}
 				expected := reconciledExpectationForTest(t, f)
 				workload := f.workload(t)
 				helper := slices.IndexFunc(workload.Spec.Template.Spec.Containers, func(container corev1.Container) bool {
@@ -260,7 +275,7 @@ func TestReconciledSandboxIngressMTLS(t *testing.T) {
 				if err := json.Unmarshal([]byte(platform.Data[SandboxPlatformConfigurationKey]), &configuration); err != nil {
 					t.Fatal(err)
 				}
-				configuration.Platforms[api.SandboxKata].IngressMTLS.Bindings[0].ServerSecret.ResourceVersion = secret.ResourceVersion
+				configuration.Platforms[runtimeType].IngressMTLS.Bindings[0].ServerSecret.ResourceVersion = secret.ResourceVersion
 				raw, err := json.Marshal(configuration)
 				if err != nil {
 					t.Fatal(err)

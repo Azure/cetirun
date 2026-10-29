@@ -184,7 +184,7 @@ storage-failover qualification.
 
 Platform administrators can opt in to planned cold migration for common-executor
 OpenClaw/Hermes Agents with one filesystem CSI HOME using `ReadWriteOncePod`
-(RWOP) or `ReadWriteOnce` (RWO), explicitly supported by the Kata platform
+(RWOP) or `ReadWriteOnce` (RWO), explicitly supported by the selected Kata or container platform
 registration. This is a Kubernetes
 API, not a Portal migration button. The deployment must enable
 `sandboxSources.plannedMigration` after all readers have upgraded. Qualify the

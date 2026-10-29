@@ -46,7 +46,7 @@ const (
 
 // Configuration is the v1 document in ConfigMap data[platform.json].
 // All four maps are required and non-null; empty maps declare no support. The only
-// registration/platform keys are kata and gvisor, with matching entries and pinned
+// registration/platform keys are kata, gvisor and container, with matching entries and pinned
 // RuntimeClasses. Top-level fields use lower-camel JSON names. Inner values retain
 // their existing case-sensitive field names: registrations use Capabilities and
 // Available, runtime pins UID and Handler, and storage pins UID and Provisioner.
@@ -258,12 +258,11 @@ func validateSandboxPlatformConfiguration(document Configuration) error {
 	}
 	roleNames := map[string]struct{}{}
 	for kind, registration := range document.Registrations {
-		if kind != api.SandboxKata && kind != api.SandboxGVisor {
+		if kind != api.SandboxKata && kind != api.SandboxGVisor && kind != api.SandboxContainer {
 			return fmt.Errorf("%w: unsupported Sandbox registration key", sandboxpolicy.ErrUnsupportedControl)
 		}
 		capabilities := registration.Capabilities
-		if len(sandbox.CheckCapabilityProfile(capabilities)) != 0 ||
-			(capabilities.Profile == sandbox.ProfileNativeSingleStart && kind != api.SandboxKata) {
+		if len(sandbox.CheckRuntimeCapabilities(kind, capabilities)) != 0 {
 			return fmt.Errorf("%w: unsupported Sandbox capability profile", sandboxpolicy.ErrUnsupportedControl)
 		}
 		_, runtimeExists := document.RuntimeClasses[capabilities.RuntimeClassName]

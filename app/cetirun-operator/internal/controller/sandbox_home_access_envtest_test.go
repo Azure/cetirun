@@ -28,6 +28,11 @@ func newReconciledStartAPIHarnessWithRegistration(t *testing.T, homeMode corev1.
 ) *nativeStartAPIHarness {
 	t.Helper()
 	h := newNativeStartAPIHarnessWithRegistration(t, true, true, homeMode, configure, network...)
+	return startReconciledAPIHarness(t, h)
+}
+
+func startReconciledAPIHarness(t *testing.T, h *nativeStartAPIHarness) *nativeStartAPIHarness {
+	t.Helper()
 	// Envtest does not run the ServiceAccount controller.
 	h.kube = interceptor.NewClient(h.kube, interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {

@@ -167,6 +167,16 @@ class NativeGatewayChartTests(unittest.TestCase):
                     else:
                         self.assertNotIn("NODE_DISABLE_COMPILE_CACHE", env)
 
+    def test_hermes_dashboard_receives_the_explicit_public_url(self):
+        values = native_values()
+        values["agentType"] = "hermes"
+        values["hermes"] = {"env": {"HERMES_DASHBOARD_PUBLIC_URL": "https://example.com/ui/example-agent"}}
+        pod = object_of_kind(render(RUNTIME_CHART, values), "StatefulSet")["spec"]["template"]["spec"]
+        env = {item["name"]: item for item in pod["containers"][0]["env"]}
+        self.assertEqual(env["HERMES_DASHBOARD_PUBLIC_URL"], {
+            "name": "HERMES_DASHBOARD_PUBLIC_URL", "value": "https://example.com/ui/example-agent",
+        })
+
     def test_native_initializers_have_an_init_process_without_changing_their_work(self):
         values = native_values()
         objects = render(RUNTIME_CHART, values)

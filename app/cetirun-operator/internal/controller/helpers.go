@@ -408,6 +408,13 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 			},
 		})
 	}
+	if agentType == cetirunv1alpha1.AgentTypeHermes && domainSuffix != "" {
+		values["hermes"] = deepMerge(values["hermes"], map[string]interface{}{
+			"env": map[string]interface{}{
+				"HERMES_DASHBOARD_PUBLIC_URL": fmt.Sprintf("https://%s/ui/%s", domainSuffix, instance.Name),
+			},
+		})
+	}
 
 	// Model selection is intentionally declarative and applies only to GitHub
 	// Copilot. An explicit spec.model wins for that provider, followed by the

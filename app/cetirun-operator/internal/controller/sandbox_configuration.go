@@ -350,6 +350,10 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 			continue
 		}
 		capabilities := snapshot.Registrations[key].Capabilities
+		if errs := sandbox.CheckRuntimeCapabilities(key, capabilities); len(errs) != 0 {
+			failures = append(failures, fmt.Errorf("registration %s: %w: %v", key, sandboxpolicy.ErrUnsupportedControl, errs.ToAggregate()))
+			continue
+		}
 		if err := sandbox.CheckExecutionProfile(capabilities, r.NativeExecution); err != nil {
 			failures = append(failures, fmt.Errorf("registration %s: %w: %v", key, sandboxpolicy.ErrUnsupportedControl, err))
 			continue
@@ -377,7 +381,7 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 func runtimePrerequisitesSupported(spec api.SandboxSpec, capabilities sandbox.Capabilities) bool {
 	return len(validation.IsDNS1123Subdomain(capabilities.RuntimeClassName)) == 0 && capabilities.Revision != "" &&
 		capabilities.HostResourceLimits && len(sandbox.CheckNetworkCapabilities(capabilities)) == 0 &&
-		(capabilities.Profile != sandbox.ProfileNativeSingleStart || spec.Type == api.SandboxKata) &&
+		len(sandbox.CheckRuntimeCapabilities(spec.Type, capabilities)) == 0 &&
 		(!capabilities.RequirePerContainerResourceLimits || capabilities.PerContainerResourceLimits) &&
 		slices.Contains(capabilities.HomeAccessModes, spec.Storage.Home.AccessMode)
 }

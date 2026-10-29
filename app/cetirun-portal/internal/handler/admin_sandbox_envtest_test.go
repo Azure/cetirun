@@ -68,19 +68,31 @@ func TestSandboxDefaultsThroughPortalAndServedAPI(t *testing.T) {
 	defer cancel()
 	handler := &AdminSandboxHandler{Kube: kube.NewClient(kc)}
 	for index, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteOncePod} {
-		for _, explicitNull := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/null=%t", mode, explicitNull), func(t *testing.T) {
+		for _, runtimeType := range []struct {
+			name    string
+			present bool
+			value   any
+			want    api.SandboxType
+		}{
+			{name: "omitted", want: api.SandboxKata},
+			{name: "null", present: true, want: api.SandboxKata},
+			{name: "kata", present: true, value: "kata", want: api.SandboxKata},
+			{name: "gvisor", present: true, value: "gvisor", want: api.SandboxGVisor},
+			{name: "container", present: true, value: "container", want: api.SandboxContainer},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", mode, runtimeType.name), func(t *testing.T) {
 				expected := adminSandboxFixture()
+				expected.Type = runtimeType.want
 				expected.Storage.Home.AccessMode = mode
 				spec, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&expected)
 				if err != nil {
 					t.Fatal(err)
 				}
 				delete(spec, "type")
-				if explicitNull {
-					spec["type"] = nil
+				if runtimeType.present {
+					spec["type"] = runtimeType.value
 				}
-				name := fmt.Sprintf("default-%d-%t", index, explicitNull)
+				name := fmt.Sprintf("runtime-%d-%s", index, runtimeType.name)
 				direct := &unstructured.Unstructured{Object: map[string]any{
 					"apiVersion": api.GroupVersion.String(), "kind": "Sandbox",
 					"metadata": map[string]any{"name": name}, "spec": spec,
@@ -112,7 +124,9 @@ func TestSandboxDefaultsThroughPortalAndServedAPI(t *testing.T) {
 				}
 				expected.Storage.Home.Size = resource.MustParse("12Gi")
 				update := SandboxUpsertRequest{Name: dto.Name, UID: dto.UID, ResourceVersion: dto.ResourceVersion, SandboxSpec: expected}
-				update.Type = ""
+				if runtimeType.want == api.SandboxKata {
+					update.Type = ""
+				}
 				response = httptest.NewRecorder()
 				handler.UpdateSandbox(response, sandboxRequest(t, http.MethodPut, dto.Name, update).WithContext(ctx))
 				if response.Code != http.StatusOK {
