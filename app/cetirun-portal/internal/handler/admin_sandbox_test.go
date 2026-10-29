@@ -108,6 +108,7 @@ func TestAdminSandboxTypeDefaultsAndFullSpecRoundTrip(t *testing.T) {
 			{name: "omitted", want: api.SandboxKata},
 			{name: "null", send: true, want: api.SandboxKata},
 			{name: "kata", send: true, value: "kata", want: api.SandboxKata},
+			{name: "container", send: true, value: "container", want: api.SandboxContainer},
 			{name: "existing alternate runtime", send: true, value: "gvisor", want: api.SandboxGVisor},
 		} {
 			t.Run(string(mode)+"/"+runtimeType.name, func(t *testing.T) {
@@ -164,7 +165,7 @@ func TestAdminSandboxTypeDefaultsAndFullSpecRoundTrip(t *testing.T) {
 }
 
 func TestAdminSandboxDefaultDoesNotReplaceInvalidInput(t *testing.T) {
-	for _, value := range []any{"", "unknown", 7, true} {
+	for _, value := range []any{"", "unknown", "runc", 7, true} {
 		t.Run(fmt.Sprint(value), func(t *testing.T) {
 			h := &AdminSandboxHandler{Kube: kube.NewClient(newFakeClient())}
 			raw, err := json.Marshal(SandboxUpsertRequest{Name: "example", SandboxSpec: adminSandboxFixture()})

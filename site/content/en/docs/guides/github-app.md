@@ -11,6 +11,11 @@ installation token to selected repositories and permissions.
 
 ## Register the platform App
 
+Platform administrators should first follow
+[Agent Identity setup](../../operations/agent-identity/) through namespace,
+encryption and certificate preparation. Return to that guide after registering
+the App below to finish the Broker and platform deployment.
+
 An environment maintainer creates the App in GitHub **Settings → Developer
 settings → GitHub Apps → New GitHub App**. Use the deployment's actual Portal
 origin in place of `https://portal.example.com`:

@@ -60,6 +60,7 @@
     pages = [
       "/docs/getting-started/platform",
       "/docs/operations/infrastructure",
+      "/docs/operations/agent-identity",
     ]
   [[modules.groups]]
     title = "Configuration"
@@ -69,6 +70,8 @@
       "/docs/operations/storage",
       "/docs/operations/istio",
       "/docs/guides/agent-ingress-mtls",
+      "/docs/operations/entra-agent-identity",
+      "/docs/operations/identity-providers",
     ]
   [[modules.groups]]
     title = "Troubleshooting"

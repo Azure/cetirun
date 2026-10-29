@@ -79,6 +79,13 @@ Dashboard must use that value for browser requests, resources, and redirects.
 Ingress cannot recover the intended instance once a browser sends an
 unprefixed `/auth/...` request.
 
+The Operator also supplies `HERMES_DASHBOARD_PUBLIC_URL` with the same HTTPS
+origin and `/ui/<instance>` prefix. This declares the public hostname to the
+Dashboard's Host and WebSocket Origin checks when managed ingress mTLS binds
+the backend to loopback. It does not disable those checks or password
+authentication. Under mTLS, retained HOME `.env` assignments cannot override
+this Pod-owned value, including after a supervised restart.
+
 Two upstream paths need adaptation in 0.21.5: the standalone login page
 submits to `/auth/password-login`, and the default Vite build loads Chat's
 lazy JavaScript and CSS from `/assets/`. Both omit the instance prefix.

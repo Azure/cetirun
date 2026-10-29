@@ -105,8 +105,6 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 		name     string
 		declared bool
 	}{
-		{"perContainerResourceLimits", capabilities.PerContainerResourceLimits},
-		{"requirePerContainerResourceLimits", capabilities.RequirePerContainerResourceLimits},
 		{"blockedFQDNs", capabilities.BlockedFQDNs},
 		{"entraID", capabilities.EntraID},
 		{"enforcementObservation", capabilities.EnforcementObservation},
@@ -115,6 +113,37 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 		if control.declared {
 			errs = append(errs, field.Forbidden(root.Child(control.name), "not a guarantee of the native single-start profile"))
 		}
+	}
+	return errs
+}
+
+// CheckRuntimeCapabilities binds the common profile to backend-specific resource
+// semantics. Container support does not qualify gVisor or strengthen Kata quotas.
+func CheckRuntimeCapabilities(kind cetirunv1alpha1.SandboxType, capabilities Capabilities) field.ErrorList {
+	errs := CheckCapabilityProfile(capabilities)
+	root := field.NewPath("registration")
+	switch kind {
+	case cetirunv1alpha1.SandboxKata, cetirunv1alpha1.SandboxGVisor:
+		if capabilities.Profile == ProfileNativeSingleStart {
+			if kind != cetirunv1alpha1.SandboxKata {
+				errs = append(errs, field.Forbidden(field.NewPath("spec", "type"), "native execution requires Kata or container"))
+			}
+			if capabilities.PerContainerResourceLimits || capabilities.RequirePerContainerResourceLimits {
+				errs = append(errs, field.Forbidden(root.Child("perContainerResourceLimits"), "independent container quotas are not a guarantee of native Kata"))
+			}
+		}
+	case cetirunv1alpha1.SandboxContainer:
+		if capabilities.Profile != ProfileNativeSingleStart {
+			errs = append(errs, field.Forbidden(root.Child("profile"), "container requires the native common executor"))
+		}
+		if capabilities.KubernetesAccess {
+			errs = append(errs, field.Forbidden(root.Child("kubernetesAccess"), "Kubernetes access is unsupported by the container backend"))
+		}
+		if !capabilities.PerContainerResourceLimits {
+			errs = append(errs, field.Required(root.Child("perContainerResourceLimits"), "container requires ordinary per-container resource limits"))
+		}
+	default:
+		errs = append(errs, field.NotSupported(field.NewPath("spec", "type"), kind, []string{"kata", "gvisor", "container"}))
 	}
 	return errs
 }
@@ -216,13 +245,11 @@ func CheckCompatibility(sandbox cetirunv1alpha1.SandboxSpec, policy cetirunv1alp
 		errs = append(errs, field.Required(root.Child("revision"), "a platform revision is required"))
 	}
 	errs = append(errs, CheckNetworkCapabilities(capabilities)...)
+	errs = append(errs, CheckRuntimeCapabilities(sandbox.Type, capabilities)...)
 	if !capabilities.HostResourceLimits {
 		errs = append(errs, field.Required(root.Child("hostResourceLimits"), "mandatory control is not qualified"))
 	}
 	if capabilities.Profile == ProfileNativeSingleStart {
-		if sandbox.Type != cetirunv1alpha1.SandboxKata {
-			errs = append(errs, field.Forbidden(field.NewPath("spec", "type"), "native execution requires Kata"))
-		}
 		errs = append(errs, CheckNativePolicy(policy)...)
 	}
 	if capabilities.RequirePerContainerResourceLimits && !capabilities.PerContainerResourceLimits {

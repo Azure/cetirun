@@ -251,6 +251,26 @@ RWO and RWOP retained restarts, coordinated shutdown/resume and repeated
 healthy-source migration with synthetic Pod/CSI observations. These are offline
 contracts, not runtime, file-retention, model-spend or CSI qualification.
 
+The explicit ordinary-container backend has focused offline regressions:
+
+```bash
+go -C app/cetirun-operator test ./api/v1alpha1 ./internal/sandbox ./internal/sandboxplatform ./internal/sandboxworkload -count=1
+go -C app/cetirun-operator test ./internal/controller -run '^TestContainerSandbox' -count=1 -timeout=20m
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestContainerSandbox(Common|IngressMTLS)APIServer$' -count=1 -timeout=20m
+```
+
+These cover explicit registration/handler pins, common rendering/admission,
+per-container resources without implicit VM overhead, both built-in harnesses,
+RWO/RWOP HOME, retained restart, suspension/resume and healthy-source migration.
+Combined container/mTLS tests use the common endpoint path, check resource
+accounting and certificate approval pins, and reject missing or changed approvals.
+The API-server test uses synthetic Gateway, scheduler, kubelet and storage
+observations. Portal's Sandbox API-server test above also covers explicit
+container and gVisor values alongside omitted/null/default Kata. Use the frontend
+tests and real production build above for the runtime selector. None of these
+checks runs runc or Kata, qualifies CSI/Cilium, or grants live acceptance.
+
 Common Sandbox policy updates also have a focused served-API regression:
 
 ```bash

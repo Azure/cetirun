@@ -85,7 +85,7 @@ func TestSchemaDefaultsPreserveExplicitValuesAndInputOwnership(t *testing.T) {
 }
 
 func TestNormalizeSandboxDefaultsAndCopies(t *testing.T) {
-	for _, runtime := range []v1alpha1.SandboxType{"", v1alpha1.SandboxKata, v1alpha1.SandboxGVisor} {
+	for _, runtime := range []v1alpha1.SandboxType{"", v1alpha1.SandboxKata, v1alpha1.SandboxGVisor, v1alpha1.SandboxContainer} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(string(runtime)+"/"+string(mode), func(t *testing.T) {
 				input := normalizationSandboxFixture()
@@ -105,6 +105,9 @@ func TestNormalizeSandboxDefaultsAndCopies(t *testing.T) {
 				}
 				if runtime == "" && got.Type != v1alpha1.SandboxKata {
 					t.Fatalf("default runtime = %q, want kata", got.Type)
+				}
+				if runtime != "" && got.Type != runtime {
+					t.Fatalf("explicit runtime = %q, want %q", got.Type, runtime)
 				}
 				again, errs := NormalizeSandbox(got)
 				if len(errs) != 0 || !reflect.DeepEqual(got, again) {

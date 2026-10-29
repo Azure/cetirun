@@ -303,11 +303,23 @@ rejections are shown in the editor, while transport failures stay in logs.
 
 ## Sandbox and AgentPolicy
 
-`Sandbox` describes the prepared `kata` or `gvisor` runtime, Agent/helper
+`Sandbox` describes the prepared `kata`, `gvisor` or `container` runtime, Agent/helper
 resource budgets, private home storage and scratch. `AgentPolicy` describes
 selection constraints, read-only root filesystem, network and ingress controls,
 and optional Kubernetes or Entra identity intent. Configuration references and
 schema acceptance do not grant access or prove enforcement.
+
+`container` is explicit ordinary-container execution (such as runc), not VM
+isolation: the Agent shares the node kernel. It requires a trusted registration
+with an explicitly pinned RuntimeClass UID/handler and the enabled common
+executor. Kata remains the omitted/null default; gVisor's execution scope does
+not change. Container uses the same AgentPolicy, Gateway, Cilium and retained
+HOME lifecycle, with per-container resource limits and no implicit VM overhead.
+Saving a configuration does not discover or install a handler. Container
+supports the same separately approved [managed ingress mTLS](../../guides/agent-ingress-mtls/)
+as Kata; a capability flag alone does not authorize the endpoint.
+FQDN blocking, Entra ID and Kubernetes grants remain unsupported on this native
+backend. Select a new Sandbox/Agent instead of attempting online runtime conversion.
 
 Policy assignment is opt-in, not a prerequisite for legacy deployment.
 An Agent with no Sandbox selection or recorded governed lifetime can use no

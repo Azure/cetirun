@@ -252,6 +252,13 @@ func newNativeStartAPIHarnessConfigured(t *testing.T, admissionNative, coordinat
 	kind string, configure func(*sandbox.Capabilities), network ...api.AgentPolicyNetwork,
 ) *nativeStartAPIHarness {
 	t.Helper()
+	return newNativeStartAPIHarnessWithRuntime(t, admissionNative, coordinated, homeMode, kind, api.SandboxKata, configure, network...)
+}
+
+func newNativeStartAPIHarnessWithRuntime(t *testing.T, admissionNative, coordinated bool, homeMode corev1.PersistentVolumeAccessMode,
+	kind string, runtimeType api.SandboxType, configure func(*sandbox.Capabilities), network ...api.AgentPolicyNetwork,
+) *nativeStartAPIHarness {
+	t.Helper()
 	if len(network) > 1 {
 		t.Fatal("native API fixture accepts at most one network policy")
 	}
@@ -476,6 +483,15 @@ func newNativeStartAPIHarnessConfigured(t *testing.T, admissionNative, coordinat
 		t.Fatal(err)
 	}
 	input := testfixture.New(kind)
+	if runtimeType == api.SandboxContainer {
+		input.Sandbox.Spec.Type = runtimeType
+		input.Input.RuntimeClass = containerRuntimeClassForTest()
+		input.Input.Resolution.Capabilities.RuntimeClassName = input.Input.RuntimeClass.Name
+		input.Input.Resolution.Capabilities.PerContainerResourceLimits = true
+		input.Input.Resolution.Capabilities.RequirePerContainerResourceLimits = true
+	} else if runtimeType != api.SandboxKata {
+		t.Fatal("unsupported native API fixture runtime")
+	}
 	h.nativeSandboxFixture = &nativeSandboxFixture{r: r, kube: controllerClient, gateway: gateway, agent: input.Agent}
 	h.installPlatform(t, input, admissionNative, homeMode, configure, network...)
 	// Disabled admission must still deny release of the retained execution hold.
@@ -575,8 +591,8 @@ func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.
 		configure(&capabilities)
 	}
 	document := SandboxPlatformConfiguration{
-		Version: "v1", Registrations: map[api.SandboxType]sandbox.Registration{api.SandboxKata: {Capabilities: capabilities, Available: true}},
-		Platforms: map[api.SandboxType]sandboxpolicy.Platform{api.SandboxKata: platform},
+		Version: "v1", Registrations: map[api.SandboxType]sandbox.Registration{input.Sandbox.Spec.Type: {Capabilities: capabilities, Available: true}},
+		Platforms: map[api.SandboxType]sandboxpolicy.Platform{input.Sandbox.Spec.Type: platform},
 		RuntimeClasses: map[string]SandboxRuntimePrerequisite{
 			runtimeClass.Name: {UID: runtimeClass.UID, Handler: runtimeClass.Handler},
 		},

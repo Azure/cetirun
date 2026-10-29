@@ -241,7 +241,7 @@ func sandboxMetricRuntime(agent *api.Agent, box *api.Sandbox) string {
 		return "unknown"
 	}
 	switch box.Spec.Type {
-	case api.SandboxKata, api.SandboxGVisor:
+	case api.SandboxKata, api.SandboxGVisor, api.SandboxContainer:
 		return string(box.Spec.Type)
 	default:
 		return "unknown"

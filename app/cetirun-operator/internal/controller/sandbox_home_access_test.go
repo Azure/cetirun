@@ -45,12 +45,12 @@ func withNativeHomeAccessMode(t *testing.T, mode corev1.PersistentVolumeAccessMo
 		if err := json.Unmarshal([]byte(object.Data[SandboxPlatformConfigurationKey]), &platform); err != nil {
 			t.Fatal(err)
 		}
-		registration, found := platform.Registrations[api.SandboxKata]
+		registration, found := platform.Registrations[box.Spec.Type]
 		if !found {
-			t.Fatal("HOME fixture requires a Kata registration")
+			t.Fatal("HOME fixture requires the selected runtime registration")
 		}
 		registration.Capabilities.HomeAccessModes = []corev1.PersistentVolumeAccessMode{mode}
-		platform.Registrations[api.SandboxKata] = registration
+		platform.Registrations[box.Spec.Type] = registration
 		raw, err := json.Marshal(platform)
 		if err != nil {
 			t.Fatal(err)
