@@ -218,6 +218,18 @@ export function InstanceDetailPage() {
       setDeletionUID(variables.target.uid);
     },
   });
+  const deleteConflict = deleteMutation.error instanceof PortalError && deleteMutation.error.status === 409;
+  const editBusy = updateMutation.isPending || (conflict && detailQuery.isFetching);
+  const deleteBusy = deleteMutation.isPending || (deleteConflict && detailQuery.isFetching);
+  const reloadDeletionConflict = async () => {
+    const targetName = name;
+    const refreshed = await detailQuery.refetch();
+    if (targetName !== activeName.current || refreshed.isError || !refreshed.data) return;
+    const current = refreshed.data;
+    setDeleteTarget({ name: current.name, alias: current.alias, team: current.team, uid: current.uid, resourceVersion: current.resourceVersion });
+    setDeleteName("");
+    deleteMutation.reset();
+  };
 
   const dirty = useMemo(() => {
     if (!draft || !baseline) return false;
@@ -297,10 +309,11 @@ export function InstanceDetailPage() {
   };
 
   if (detailQuery.isLoading) return <Spinner label="Loading agent..." />;
-  if (detailQuery.error) return <MessageBar intent="error">Failed to load: {detailQuery.error.message}</MessageBar>;
+  if (detailQuery.error && !detail) return <MessageBar intent="error">Failed to load: {detailQuery.error.message}</MessageBar>;
   if (!detail) return null;
 
   return <div style={{ maxWidth: 980 }}>
+    {detailQuery.error && !editing && !deleteTarget && <MessageBar intent="error">Failed to refresh Agent: {detailQuery.error.message}. The last loaded configuration is shown.</MessageBar>}
     <Button appearance="subtle" icon={<ArrowLeft20Regular />} onClick={() => navigate("/admin/instances")} style={{ marginBottom: 12 }}>All agents</Button>
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
       <Text as="h1" size={600} weight="semibold" style={{ margin: 0, overflowWrap: "anywhere" }}>{detail.displayName || detail.name}</Text>
@@ -330,20 +343,21 @@ export function InstanceDetailPage() {
       {selectedTab === "status" ? <StatusTab data={statusQuery.data?.uid === detail.uid ? statusQuery.data : undefined} isLoading={statusQuery.isLoading} /> : <EventsTab data={statusQuery.data?.uid === detail.uid ? statusQuery.data : undefined} isLoading={statusQuery.isLoading} />}
     </>}
 
-    <Dialog open={editing && draft !== null} onOpenChange={(_, data) => { if (!data.open && !updateMutation.isPending) cancelEditing(); }}>
+    <Dialog open={editing && draft !== null} onOpenChange={(_, data) => { if (!data.open && !editBusy) cancelEditing(); }}>
       <DialogSurface><DialogBody>
         <DialogTitle>Edit configuration</DialogTitle>
         <DialogContent style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <Text size={200}>{detail.name} · {detail.alias}{detail.team ? ` · ${detail.team}` : ""}</Text>
+          {detailQuery.error && <MessageBar intent="error">Failed to refresh Agent: {detailQuery.error.message}. Your draft is retained.</MessageBar>}
           {reviewNotice && <MessageBar intent="info">{reviewNotice}</MessageBar>}
           {!editableType && <MessageBar intent="info">Runtime configuration is unavailable for this Agent type. The display name can still be changed.</MessageBar>}
           {draft && <>
-            <Field label="Display name" hint="Leave blank to display the Agent name."><Input value={draft.displayName} disabled={deletionInProgress} onChange={(_, data) => setDraft({ ...draft, displayName: data.value })} /></Field>
-            <Field label="Agent image" hint="A pinned image cannot be cleared."><Input value={draft.image} disabled={!editableType || deletionInProgress} onChange={(_, data) => setDraft({ ...draft, image: data.value })} maxLength={2048} /></Field>
-            {custom ? <Field label={draft.webUI ? "Web UI port" : "HTTP port"} required={draft.webUI}><Input type="number" min={1} max={65535} value={draft.port} disabled={!editableType || deletionInProgress} onChange={(_, data) => setDraft({ ...draft, port: data.value })} /></Field> : <Text size={200}>HTTP port: {draft.port || "Platform default"} (managed by the platform runtime).</Text>}
-            {custom && <Checkbox label="Serve Web UI" checked={draft.webUI} disabled={!editableType || deletionInProgress} onChange={(_, data) => setDraft({ ...draft, webUI: data.checked === true })} />}
-            <Field label="Model override" hint="Leave blank to use the platform default."><Input value={draft.model} disabled={!editableType || deletionInProgress} onChange={(_, data) => setDraft({ ...draft, model: data.value })} /></Field>
-            {builtIn && <Checkbox label="Enable Microsoft Teams integration" checked={draft.teamsEnabled} disabled={!editableType || deletionInProgress} onChange={(_, data) => setDraft({ ...draft, teamsEnabled: data.checked === true })} />}
+            <Field label="Display name" hint="Leave blank to display the Agent name."><Input value={draft.displayName} disabled={deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, displayName: data.value })} /></Field>
+            <Field label="Agent image" hint="A pinned image cannot be cleared."><Input value={draft.image} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, image: data.value })} maxLength={2048} /></Field>
+            {custom ? <Field label={draft.webUI ? "Web UI port" : "HTTP port"} required={draft.webUI}><Input type="number" min={1} max={65535} value={draft.port} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, port: data.value })} /></Field> : <Text size={200}>HTTP port: {draft.port || "Platform default"} (managed by the platform runtime).</Text>}
+            {custom && <Checkbox label="Serve Web UI" checked={draft.webUI} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, webUI: data.checked === true })} />}
+            <Field label="Model override" hint="Leave blank to use the platform default."><Input value={draft.model} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, model: data.value })} /></Field>
+            {builtIn && <Checkbox label="Enable Microsoft Teams integration" checked={draft.teamsEnabled} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, teamsEnabled: data.checked === true })} />}
             <Text size={200}>Agent type, username, owner, Team, Sandbox and registry credentials are read-only.</Text>
             {validationError && <Text style={{ color: tokens.colorStatusDangerForeground1 }}>{validationError}</Text>}
             {conflict && <MessageBar intent="warning">This Agent changed since you opened it. Reload and review the current configuration; your draft is retained.</MessageBar>}
@@ -352,22 +366,23 @@ export function InstanceDetailPage() {
           </>}
         </DialogContent>
         <DialogActions>
-          <Button appearance="secondary" onClick={cancelEditing} disabled={updateMutation.isPending}>Cancel</Button>
+          <Button appearance="secondary" onClick={cancelEditing} disabled={editBusy}>Cancel</Button>
           {conflict ? <Button appearance="primary" onClick={() => void reloadAfterConflict()} disabled={detailQuery.isFetching}>Reload and review</Button> : <Button appearance="primary" onClick={save} disabled={!dirty || updateMutation.isPending || deletionInProgress}>{updateMutation.isPending ? "Saving..." : "Save"}</Button>}
         </DialogActions>
       </DialogBody></DialogSurface>
     </Dialog>
 
-    <Dialog open={deleteTarget !== null} onOpenChange={(_, data) => { if (!data.open && !deleteMutation.isPending) setDeleteTarget(null); }}>
+    <Dialog open={deleteTarget !== null} onOpenChange={(_, data) => { if (!data.open && !deleteBusy) setDeleteTarget(null); }}>
       <DialogSurface><DialogBody><DialogTitle>Delete Agent</DialogTitle><DialogContent>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <Text>Delete <strong>{deleteTarget?.name}</strong> owned by {deleteTarget?.alias}{deleteTarget?.team ? ` in Team ${deleteTarget.team}` : ""}? This begins resource cleanup and may delete persistent data.</Text>
-          <Field label={`Type ${deleteTarget?.name || "the Agent name"} to confirm`} required><Input value={deleteName} onChange={(_, data) => setDeleteName(data.value)} /></Field>
-          {deleteMutation.isError && <MessageBar intent="error">{deleteMutation.error.message}{deleteMutation.error instanceof PortalError && deleteMutation.error.status === 409 ? " Close this dialog, reopen it, and confirm the current Agent again." : ""}</MessageBar>}
+          <Field label={`Type ${deleteTarget?.name || "the Agent name"} to confirm`} required><Input value={deleteName} disabled={deleteBusy} onChange={(_, data) => setDeleteName(data.value)} /></Field>
+          {detailQuery.error && <MessageBar intent="error">Failed to refresh Agent: {detailQuery.error.message}. Reload before confirming deletion again.</MessageBar>}
+          {deleteMutation.isError && <MessageBar intent="error">{deleteMutation.error.message}{deleteConflict ? " Reload and review the current owner and Team, then enter the Agent name again." : ""}</MessageBar>}
         </div>
       </DialogContent><DialogActions>
-        <Button appearance="secondary" onClick={() => setDeleteTarget(null)} disabled={deleteMutation.isPending}>Cancel</Button>
-        <Button appearance="primary" onClick={() => { if (deleteTarget) deleteMutation.mutate({ targetName: name!, target: deleteTarget }); }} disabled={deleteName !== deleteTarget?.name || deleteMutation.isPending} style={{ backgroundColor: tokens.colorStatusDangerBackground3 }}>{deleteMutation.isPending ? "Deleting..." : "Delete"}</Button>
+        <Button appearance="secondary" onClick={() => setDeleteTarget(null)} disabled={deleteBusy}>Cancel</Button>
+        {deleteConflict ? <Button appearance="primary" onClick={() => void reloadDeletionConflict()} disabled={detailQuery.isFetching}>Reload and review</Button> : <Button appearance="primary" onClick={() => { if (deleteTarget) deleteMutation.mutate({ targetName: name!, target: deleteTarget }); }} disabled={deleteName !== deleteTarget?.name || deleteMutation.isPending || deletionInProgress} style={{ backgroundColor: tokens.colorStatusDangerBackground3 }}>{deleteMutation.isPending ? "Deleting..." : "Delete"}</Button>}
       </DialogActions></DialogBody></DialogSurface>
     </Dialog>
   </div>;

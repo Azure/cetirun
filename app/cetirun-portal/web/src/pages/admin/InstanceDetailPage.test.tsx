@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -115,6 +115,37 @@ describe("InstanceDetailPage", () => {
     await waitFor(() => expect(adminInstances.deleteAdminInstance).toHaveBeenCalledWith("example", { uid: "agent-uid", resourceVersion: "7" }));
   });
 
+  it("reloads a deletion conflict and requires confirmation of the current Agent", async () => {
+    const replacement = { ...agent, uid: "replacement-uid", resourceVersion: "1", alias: "new-owner", team: "new-team" };
+    vi.mocked(adminInstances.getAdminInstance)
+      .mockResolvedValueOnce(agent)
+      .mockRejectedValueOnce(new Error("Temporarily unavailable"))
+      .mockResolvedValue(replacement);
+    vi.mocked(adminInstances.deleteAdminInstance)
+      .mockRejectedValueOnce(new PortalError("Reload and review", 409, "instance_changed"))
+      .mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Delete" }));
+    const dialog = within(screen.getByRole("dialog"));
+    await user.type(dialog.getByRole("textbox"), "example");
+    await user.click(dialog.getByRole("button", { name: "Delete", exact: true }));
+    await user.click(await dialog.findByRole("button", { name: "Reload and review" }));
+    expect(await dialog.findByText(/Temporarily unavailable/)).toBeInTheDocument();
+    expect(dialog.queryByRole("button", { name: "Delete", exact: true })).not.toBeInTheDocument();
+    expect(adminInstances.deleteAdminInstance).toHaveBeenCalledTimes(1);
+    await user.click(dialog.getByRole("button", { name: "Reload and review" }));
+    await waitFor(() => expect(dialog.getByRole("textbox")).toHaveValue(""));
+    expect(dialog.getByText(/owned by new-owner in Team new-team/)).toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+    expect(adminInstances.deleteAdminInstance).toHaveBeenCalledTimes(1);
+    await user.type(dialog.getByRole("textbox"), "example");
+    await user.click(dialog.getByRole("button", { name: "Delete", exact: true }));
+    await waitFor(() => expect(adminInstances.deleteAdminInstance).toHaveBeenLastCalledWith("example", {
+      uid: "replacement-uid", resourceVersion: "1",
+    }));
+  });
+
   it("returns to the list if a deleted name is reused by a different Agent", async () => {
     vi.mocked(adminInstances.deleteAdminInstance).mockResolvedValue(undefined);
     const user = userEvent.setup();
@@ -180,6 +211,52 @@ describe("InstanceDetailPage", () => {
     await user.click(await screen.findByRole("button", { name: "Reload and review" }));
     expect(await screen.findByText(/was replaced with a new object/)).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Display name" })).not.toBeInTheDocument();
+  });
+
+  it("holds the draft steady while conflict review is loading", async () => {
+    let resolveReload!: (detail: adminInstances.AdminInstanceDetail) => void;
+    const reload = new Promise<adminInstances.AdminInstanceDetail>((resolve) => { resolveReload = resolve; });
+    vi.mocked(adminInstances.getAdminInstance).mockResolvedValueOnce(agent).mockReturnValueOnce(reload);
+    vi.mocked(adminInstances.updateAdminInstance).mockRejectedValue(new PortalError("Reload and review", 409, "instance_changed"));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    const displayName = screen.getByRole("textbox", { name: "Display name" });
+    await user.clear(displayName);
+    await user.type(displayName, "Draft");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Reload and review" }));
+    expect(displayName).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await act(async () => resolveReload({ ...agent, resourceVersion: "8" }));
+    await waitFor(() => expect(displayName).toBeEnabled());
+    expect(displayName).toHaveValue("Draft");
+  });
+
+  it("keeps the edit draft and retry action visible when conflict reload fails", async () => {
+    vi.mocked(adminInstances.getAdminInstance)
+      .mockResolvedValueOnce(agent)
+      .mockRejectedValueOnce(new Error("Temporarily unavailable"))
+      .mockResolvedValue({ ...agent, resourceVersion: "8" });
+    vi.mocked(adminInstances.updateAdminInstance)
+      .mockRejectedValueOnce(new PortalError("Reload and review", 409, "instance_changed"))
+      .mockResolvedValue({ ...agent, resourceVersion: "9", displayName: "Draft" });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByRole("textbox", { name: "Display name" }));
+    await user.type(screen.getByRole("textbox", { name: "Display name" }), "Draft");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Reload and review" }));
+    expect(await screen.findByText(/Temporarily unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Display name" })).toHaveValue("Draft");
+    await user.click(screen.getByRole("button", { name: "Reload and review" }));
+    await user.click(await screen.findByRole("button", { name: "Save" }));
+    await waitFor(() => expect(adminInstances.updateAdminInstance).toHaveBeenLastCalledWith("example", {
+      uid: "agent-uid", resourceVersion: "8", displayName: "Draft",
+    }));
   });
 
   it("shows partial diagnostics failures without hiding available status", async () => {

@@ -157,24 +157,27 @@ func (h *AdminInstanceHandler) GetInstanceStatus(w http.ResponseWriter, r *http.
 		resp.Events = toEventItems(events)
 	}
 	namespace, err := h.Kube.GetInstanceDiagnosticNamespace(r.Context(), instance)
-	if err != nil || namespace == "" {
+	if err != nil || namespace == nil {
 		message := "Agent namespace is not available yet"
 		if err != nil {
 			message = "Agent namespace could not be verified"
 		}
-		resp.Errors = append(resp.Errors, AdminDiagnosticError{"pods", message}, AdminDiagnosticError{"nsEvents", message})
+		markNamespaceDiagnosticsUnavailable(&resp, message)
 	} else {
-		events, err := h.Kube.GetNamespaceEvents(r.Context(), namespace)
+		events, err := h.Kube.GetNamespaceEvents(r.Context(), namespace.Name)
 		if err != nil {
 			resp.Errors = append(resp.Errors, AdminDiagnosticError{"nsEvents", "Namespace events could not be loaded"})
 		} else {
 			resp.NsEvents = toEventItems(events)
 		}
-		pods, err := h.Kube.GetPods(r.Context(), namespace)
+		pods, err := h.Kube.GetPods(r.Context(), namespace.Name)
 		if err != nil {
 			resp.Errors = append(resp.Errors, AdminDiagnosticError{"pods", "Pods could not be loaded"})
 		} else {
 			resp.Pods = toPodStatuses(pods)
+		}
+		if err := h.Kube.VerifyInstanceDiagnosticNamespace(r.Context(), instance, namespace); err != nil {
+			markNamespaceDiagnosticsUnavailable(&resp, "Agent namespace changed while diagnostics were loading")
 		}
 	}
 	// Never associate observations with a same-named replacement Agent.
@@ -188,6 +191,21 @@ func (h *AdminInstanceHandler) GetInstanceStatus(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func markNamespaceDiagnosticsUnavailable(resp *AdminInstanceStatus, message string) {
+	resp.NsEvents = []EventItem{}
+	resp.Pods = []PodStatus{}
+	filtered := resp.Errors[:0]
+	for _, diagnostic := range resp.Errors {
+		if diagnostic.Section != "pods" && diagnostic.Section != "nsEvents" {
+			filtered = append(filtered, diagnostic)
+		}
+	}
+	resp.Errors = append(filtered,
+		AdminDiagnosticError{"pods", message},
+		AdminDiagnosticError{"nsEvents", message},
+	)
 }
 
 // UpdateInstance handles PATCH /api/v1/admin/instances/{name}.

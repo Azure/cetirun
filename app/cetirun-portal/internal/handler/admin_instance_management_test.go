@@ -354,7 +354,7 @@ func TestAdminAgentDeleteRejectsStaleVersionWithoutDeleting(t *testing.T) {
 func TestAdminAgentStatusReportsDiagnosticPartialFailures(t *testing.T) {
 	instance := adminManagedInstance()
 	instance.Status.Namespace = "cetirun-alice"
-	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instance.Status.Namespace, OwnerReferences: []metav1.OwnerReference{{
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instance.Status.Namespace, UID: "namespace-uid", OwnerReferences: []metav1.OwnerReference{{
 		APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: instance.Name, UID: instance.UID,
 	}}}}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(instance, namespace).
@@ -410,7 +410,7 @@ func TestAdminAgentStatusDoesNotQueryAnUnassignedNamespace(t *testing.T) {
 func TestAdminAgentStatusRejectsSameNameReplacement(t *testing.T) {
 	instance := adminManagedInstance()
 	instance.Status.Namespace = "cetirun-alice"
-	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instance.Status.Namespace, OwnerReferences: []metav1.OwnerReference{{
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instance.Status.Namespace, UID: "namespace-uid", OwnerReferences: []metav1.OwnerReference{{
 		APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: instance.Name, UID: instance.UID,
 	}}}}
 	agentGets := 0
@@ -440,5 +440,49 @@ func TestAdminAgentStatusRejectsSameNameReplacement(t *testing.T) {
 	h.GetInstanceStatus(w, adminManagementRequest(http.MethodGet, ""))
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "instance_changed") {
 		t.Fatalf("same-name replacement status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminAgentStatusDiscardsDiagnosticsFromReplacedNamespace(t *testing.T) {
+	instance := adminManagedInstance()
+	instance.Status.Namespace = "cetirun-alice"
+	owner := metav1.OwnerReference{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: instance.Name, UID: instance.UID}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instance.Status.Namespace, UID: "namespace-before", OwnerReferences: []metav1.OwnerReference{owner}}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "agent-pod", Namespace: instance.Status.Namespace}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(instance, namespace, pod).
+		WithInterceptorFuncs(interceptor.Funcs{List: func(ctx context.Context, storage client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.EventList); ok {
+				return nil
+			}
+			if err := storage.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if _, ok := list.(*corev1.PodList); !ok {
+				return nil
+			}
+			current := &corev1.Namespace{}
+			if err := storage.Get(ctx, client.ObjectKey{Name: instance.Status.Namespace}, current); err != nil {
+				return err
+			}
+			if err := storage.Delete(ctx, current); err != nil {
+				return err
+			}
+			replacement := current.DeepCopy()
+			replacement.UID = "namespace-after"
+			replacement.ResourceVersion = ""
+			return storage.Create(ctx, replacement)
+		}}).Build()
+	w := httptest.NewRecorder()
+	adminManagementHandler(fc).GetInstanceStatus(w, adminManagementRequest(http.MethodGet, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var status AdminInstanceStatus
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Pods) != 0 || len(status.NsEvents) != 0 || len(status.Errors) != 2 ||
+		status.Errors[0].Section != "pods" || status.Errors[1].Section != "nsEvents" {
+		t.Fatalf("replacement namespace diagnostics were retained: %+v", status)
 	}
 }

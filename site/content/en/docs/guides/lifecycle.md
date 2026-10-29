@@ -41,6 +41,8 @@ before considering the Agent ready. Background refresh does not overwrite an
 editing draft. If another operation changes the Agent, a version conflict
 preserves the draft: reload and review the current configuration before saving
 again. The Portal does not automatically retry a conflicting write.
+If a refresh fails, the last loaded details and editing draft remain visible,
+with the failure reported so that conflict review can be retried.
 
 Choose **Delete**, review the owner and Team, and enter the complete Agent name
 to confirm. Deletion can remove persistent data, including PVC objects during
@@ -50,6 +52,9 @@ to show status and events. It returns to the list when the Agent resource
 disappears. This does not prove that all external resources or storage have
 finished cleanup. A stuck deletion requires investigation; the page cannot
 remove finalizers or force cleanup. See [deletion behavior](#delete-only-with-a-recovery-plan).
+If deletion encounters a version conflict, select **Reload and review**, check
+the current owner and Team, and enter the complete Agent name again. A reload
+never automatically retries deletion.
 
 The administrative API uses `/api/v1/admin/instances` for listing and
 `/api/v1/admin/instances/{name}` for `GET`, `PATCH`, and `DELETE`.
