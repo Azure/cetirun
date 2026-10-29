@@ -70,6 +70,36 @@ it("edits a Sandbox named new using its exact version and displays rejection det
   expect(api.createSandbox).not.toHaveBeenCalled();
 });
 
+it.each(["ReadWriteOnce", "ReadWriteOncePod"] as const)("creates an explicit container Sandbox with %s and an isolation warning", async (accessMode) => {
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
+  expect(screen.getByRole("combobox", { name: "Runtime" })).toHaveValue("kata");
+  expect(screen.queryByText(/Ordinary containers share/)).not.toBeInTheDocument();
+  await user.selectOptions(screen.getByRole("combobox", { name: "Runtime" }), "container");
+  expect(screen.getByText(/do not provide Kata VM isolation/)).toBeInTheDocument();
+  expect(screen.getByText(/verified handler/)).toBeInTheDocument();
+  await user.type(screen.getByRole("textbox", { name: "Name" }), "container-example");
+  await user.type(screen.getByRole("textbox", { name: "HOME StorageClass" }), "example-csi");
+  await user.selectOptions(screen.getByRole("combobox", { name: "HOME access mode" }), accessMode);
+  await user.click(screen.getByRole("button", { name: "Create" }));
+  await waitFor(() => expect(api.createSandbox).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    name: "container-example", type: "container",
+    storage: { ...box.storage, home: { ...box.storage.home, accessMode } },
+  })));
+  expect(vi.mocked(api.createSandbox).mock.calls[0][0].resources.helpers.limits.memory).toBe("2Gi");
+});
+
+it("preserves an existing container runtime on edit without claiming runtime conversion", async () => {
+  vi.mocked(api.getSandbox).mockResolvedValue({ ...box, type: "container" });
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/example/edit");
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Runtime" })).toHaveValue("container"));
+  expect(screen.getByText(/does not convert a running Agent/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(api.updateSandbox).toHaveBeenCalledExactlyOnceWith("example", expect.objectContaining({
+    type: "container", uid: box.uid, resourceVersion: box.resourceVersion,
+    resources: box.resources, storage: box.storage,
+  })));
+});
+
 it("deletes the version selected for confirmation even if the list refreshes", async () => {
   const user = userEvent.setup(); const client = renderPage("/admin/sandboxes");
   await user.click(await screen.findByRole("button", { name: "Delete example" }));

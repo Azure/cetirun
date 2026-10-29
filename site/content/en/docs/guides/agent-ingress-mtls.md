@@ -1,6 +1,6 @@
 ---
 title: "Managed Agent ingress mTLS"
-description: "Opt-in Gateway-to-Agent TLS for common-executor Kata OpenClaw and Hermes workloads."
+description: "Opt-in Gateway-to-Agent TLS for common-executor Kata and container OpenClaw/Hermes workloads."
 weight: 45
 ---
 
@@ -14,7 +14,7 @@ external Team gateway.
 This is not browser client-certificate authentication. Shared browser HTTPS,
 OIDC, ownership authorization, and native application authentication remain in
 place. It does not inspect outbound HTTPS or implement FQDN blocking.
-Cilium remains the guest-external network boundary; the in-VM TLS helper is not
+Cilium remains the workload-external network boundary; the in-Pod TLS helper is not
 a replacement for that boundary or independent runtime-enforcement evidence.
 
 Shared-only, Copilot-only and mixed model selections retain the same Gateway
@@ -23,13 +23,14 @@ owned, private Copilot companion Service keeps its own selector and port.
 
 ## Prerequisites and supported surfaces
 
-- Use the common executor, Kata, and the built-in OpenClaw or Hermes harness.
+- Use the common executor, a Kata or container Sandbox, and the built-in OpenClaw or Hermes harness.
   Retained single-start lifetimes do not support this opt-in.
 - Upgrade the Operator, independent admission process, and runtime chart before
   enabling it. An older chart without the protected `ingressMTLS` schema field
   fails closed rather than silently rendering plaintext.
 - Register `Capabilities.mutualTLS: true` and a digest-pinned endpoint image
-  under `platforms.kata.ingressMTLS` in the protected platform ConfigMap.
+  under `platforms.kata.ingressMTLS` or `platforms.container.ingressMTLS`,
+  matching the selected runtime in the protected platform ConfigMap.
   A capability flag alone is insufficient.
 - Use one explicitly pinned shared Gateway and its existing protected Pod
   selector in `topology.ingress`. Continue listing the approved **application**
@@ -134,7 +135,8 @@ live object's values in the authorized environment:
 }
 ```
 
-This fragment is the value of `platforms.kata.ingressMTLS`. Hermes uses
+This fragment is the value of `platforms.kata.ingressMTLS`, or
+`platforms.container.ingressMTLS` for ordinary containers. Hermes uses
 `"harness": "hermes"` and its approved primary port (normally 8642).
 The image above is a public, digest-pinned Envoy 1.36.3 multi-platform index;
 pinning is not target runtime/image qualification.

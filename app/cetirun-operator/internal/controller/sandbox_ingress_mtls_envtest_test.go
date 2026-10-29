@@ -21,10 +21,14 @@ import (
 )
 
 func TestReconciledSandboxIngressMTLSAPIServer(t *testing.T) {
+	testReconciledSandboxIngressMTLSAPIServer(t, api.SandboxKata)
+}
+
+func testReconciledSandboxIngressMTLSAPIServer(t *testing.T, runtimeType api.SandboxType) {
 	ctrl.SetLogger(logr.Discard())
 	for _, kind := range []string{"openclaw", "hermes"} {
 		t.Run(kind, func(t *testing.T) {
-			h := newNativeStartAPIHarnessConfigured(t, true, true, corev1.ReadWriteOnce, kind, nil)
+			h := newNativeStartAPIHarnessWithRuntime(t, true, true, corev1.ReadWriteOnce, kind, runtimeType, nil)
 			installer := &nativeSandboxInstaller{kube: h.kube, chart: h.localHelm.chart}
 			h.installer = installer
 			h.r.HelmClient = &sharedSandboxInstaller{nativeSandboxInstaller: installer}
@@ -53,6 +57,9 @@ func TestReconciledSandboxIngressMTLSAPIServer(t *testing.T) {
 			}
 			for range 4 {
 				h.reconcileOK(t)
+			}
+			if runtimeType == api.SandboxContainer {
+				assertContainerWorkload(t, h.nativeSandboxFixture, corev1.ReadWriteOnce)
 			}
 			expected := reconciledExpectationForTest(t, h.nativeSandboxFixture)
 			observed := *h.nativeSandboxFixture

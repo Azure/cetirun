@@ -441,6 +441,8 @@ hermes:
     API_SERVER_PORT: "8642"
     API_SERVER_KEY: ""
     API_SERVER_CORS_ORIGINS: ""
+    # -- Operator-owned external Dashboard URL, including its /ui/<instance> prefix.
+    HERMES_DASHBOARD_PUBLIC_URL: ""
   gateway:
     enabled: true
 
