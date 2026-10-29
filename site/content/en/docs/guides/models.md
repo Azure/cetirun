@@ -147,8 +147,10 @@ prevent arbitrary user code in a Custom image from making its own outbound
 network connection; use network policy when that control is required.
 
 Each instance has its own virtual key with a monthly budget. The instance page
-lists its models and sets the default; saving a new default restarts the
-instance. When an administrator adds or removes a shared model, changes its
+lists its models. For OpenClaw and Hermes, it also sets the default; saving a
+new default restarts the instance. Custom images select a model through their
+own configuration or Chat UI using the models available through the Gateway.
+When an administrator adds or removes a shared model, changes its
 limits, or changes whether it is offered through its price or the Gateway's
 setting, the operator updates every instance that uses shared models, which
 restarts them, and registers their Copilot models again under the names that
@@ -266,22 +268,25 @@ catalog after the owner completes sign-in and the operator publishes access.
 If the Gateway or catalog is unavailable, resolve that condition before
 creating an Agent or selecting a new model.
 
-Changing the model updates the custom resource, causes reconciliation, and can
-restart the Agent. Expect a brief interruption. Clear the per-instance
-selection to resume the Gateway default. The Portal offers only models in the
-Gateway catalog that the selected optional Team Policy permits.
+Changing an OpenClaw or Hermes default model updates the custom resource,
+causes reconciliation, and can restart the Agent. Expect a brief interruption.
+Clear the per-instance selection to resume the Gateway default. The Portal
+offers only models in the Gateway catalog that the selected optional Team
+Policy permits.
 
 ## Persistence and precedence
 
 `Agent.spec.model` is an optional Gateway model ID, at most 256 characters. An
 empty `model` string in a Portal PATCH clears the override. The Portal validates
-new selections against the published Gateway catalog; the operator enforces the
-final key grant. Deployment defaults and per-Agent selections do not bypass
-Gateway authorization.
+the initial selection against the published Gateway catalog when creating an
+Agent. PATCH stores the requested model ID; the operator resolves the effective
+model and enforces the final key grant. Deployment defaults and per-Agent
+selections do not bypass Gateway authorization.
 
-Platform-managed Agent charts do not accept provider-specific Helm values or
-provider API keys. Configure providers, credentials, permissions, budgets, and
-rate limits in the AI Gateway instead.
+The Operator owns platform-managed Agents' model routing. Per-Agent provider
+overrides do not select an upstream provider, and workloads receive a Gateway
+virtual key. Configure providers, credentials, permissions, budgets, and rate
+limits in the AI Gateway instead.
 
 ## Catalog architecture
 

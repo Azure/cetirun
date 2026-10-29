@@ -70,7 +70,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   // The Team's smart-routing models the Team's Policy allows, by name only.
   const modelRouters = useMemo(() => (catalog?.known ? options?.modelRouters ?? [] : []), [catalog, options?.modelRouters]);
   const copilotOffered = catalogKnown && !!catalog?.githubCopilot;
-  // An OpenClaw or Hermes agent needs a model to use: shared models while any are
+  // Every Agent needs a model source: shared models while any are
   // available, or GitHub Copilot while the deployment offers it. Without
   // GitHub Copilot, shared models stay on; with no shared model on,
   // GitHub Copilot does.
@@ -142,7 +142,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       team: team || undefined,
       gatewayToken: !custom ? gatewayToken || undefined : undefined,
       tailscaleAuthKey: !custom ? tailscaleAuthKey || undefined : undefined,
-      model: gatewayModels ? gatewayModel || undefined : undefined,
+      model: gatewayModels && !custom ? gatewayModel || undefined : undefined,
       teamsEnabled: !custom ? teamsEnabled || undefined : undefined,
       agentIdentityEnabled: effectiveIdentity || undefined,
       modelAccess: gatewayModels ? { sharedModels: effectiveShared, githubCopilot: effectiveCopilot } : undefined,
@@ -293,7 +293,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
               label="Use GitHub Copilot"
             />
           </Field>}
-          {((effectiveShared && sharedAvailable) || modelRouters.length > 0) && (
+          {!custom && ((effectiveShared && sharedAvailable) || modelRouters.length > 0) && (
             <Field label="Default model (optional)" hint={[
               effectiveCopilot ? "GitHub Copilot models can be chosen after sign-in." : "",
               modelRouters.length > 0 ? "Smart-routing models pick a model for each request; one works once the agent may use every model it routes to." : "",

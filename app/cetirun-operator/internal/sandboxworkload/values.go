@@ -36,10 +36,6 @@ func ValidateUserValues(values map[string]any, authorizedSecrets []string) error
 					if !slices.Contains(authorizedSecrets, text) {
 						return fmt.Errorf("secrets.existingSecret is not authorized")
 					}
-				case "provider":
-					if !slices.Contains([]string{"github_copilot", "openai", "anthropic"}, text) {
-						return fmt.Errorf("unsupported secrets.provider")
-					}
 				case "model":
 				default:
 					return fmt.Errorf("secrets.%s is protected", field)

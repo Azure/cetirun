@@ -170,7 +170,7 @@ func TestSandboxAllowsModelAndAuthorizedSecretWithoutOverrides(t *testing.T) {
 	input["aiGateway"].(map[string]any)["models"] = []any{map[string]any{"id": "chosen-model", "name": "Chosen model"}}
 	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
 	user := map[string]any{
-		"secrets":  map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "chosen-model"},
+		"secrets":  map[string]any{"existingSecret": "runtime-secret", "model": "chosen-model"},
 		"extraEnv": []any{map[string]any{"name": "EXAMPLE_SETTING", "value": "allowed"}},
 	}
 	prepared, err := PrepareSandboxChart(testChart(t), input, user, bundle)

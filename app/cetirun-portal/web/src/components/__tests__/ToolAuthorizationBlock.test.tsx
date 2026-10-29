@@ -304,7 +304,7 @@ describe("Agent identities", () => {
     expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", binding.id, draft);
     await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled()); await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
-    await user.click(screen.getByRole("button", { name: "Manage access" })); expect(screen.getByRole("checkbox", { name: "Gmail" })).toBeChecked(); expect(screen.getByRole("checkbox", { name: "Calendar" })).not.toBeChecked();
+    await user.click(await screen.findByRole("button", { name: "Manage access" })); expect(screen.getByRole("checkbox", { name: "Gmail" })).toBeChecked(); expect(screen.getByRole("checkbox", { name: "Calendar" })).not.toBeChecked();
     api.updateConnectionBinding.mockResolvedValue({}); await review(user); await user.click(screen.getByRole("button", { name: "Save access" }));
     await waitFor(() => expect(api.updateConnectionBinding).toHaveBeenLastCalledWith("agent-a", binding.id, { connectionId: google.id, services: ["google_gmail"], enabled: true, revision: 9 }));
   });
