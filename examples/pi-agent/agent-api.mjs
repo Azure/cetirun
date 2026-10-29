@@ -7,6 +7,7 @@ import { createHTTPServer, readJSON, writeJSON } from "./http.mjs";
 const CHAT_TIMEOUT_MS = 120_000;
 const OUTPUT_LIMIT = 4 * 1024 * 1024;
 const STREAM_BUFFER_LIMIT = 256 * 1024;
+const STREAM_KEEPALIVE_MS = 15_000;
 
 /**
  * The CetiRun HTTP contract. The supplied runtime implements models(signal)
@@ -94,8 +95,9 @@ async function handleChat(request, response, runtime, activity, runs) {
     created: Math.floor(Date.now() / 1000),
     model: input.model,
   };
+  let stream;
   try {
-    const stream = input.stream ? startStream(response, completion, controller) : undefined;
+    stream = input.stream ? startStream(response, completion, controller, signal) : undefined;
     const result = await runtime.run({
       ...input,
       memory: { noMemory: request.headers["x-cetirun-memory-mode"] === "off", noCapture: ["off", "no-capture"].includes(request.headers["x-cetirun-memory-mode"]) },
@@ -123,27 +125,31 @@ async function handleChat(request, response, runtime, activity, runs) {
     if (response.headersSent) response.destroy();
     else writeJSON(response, 502, { error: { message: "Pi run failed or model access is unavailable" } });
   } finally {
+    stream?.close();
     activity.chat = false;
     runs.delete(controller);
     response.off("close", disconnected);
   }
 }
 
-function startStream(response, completion, controller) {
+function startStream(response, completion, controller, signal) {
   let outputBytes = 0;
+  const write = (event) => {
+    if (response.destroyed || response.writableEnded || signal.aborted) return;
+    outputBytes += Buffer.byteLength(event);
+    if (outputBytes > OUTPUT_LIMIT || response.writableLength > STREAM_BUFFER_LIMIT) {
+      controller.abort();
+      return;
+    }
+    response.write(event);
+  };
   const chunk = (delta, finishReason = null) => {
-    if (response.destroyed) return;
     const data = JSON.stringify({
       ...completion,
       object: "chat.completion.chunk",
       choices: [{ index: 0, delta, finish_reason: finishReason }],
     });
-    outputBytes += Buffer.byteLength(data);
-    if (outputBytes > OUTPUT_LIMIT || response.writableLength > STREAM_BUFFER_LIMIT) {
-      controller.abort();
-      return;
-    }
-    response.write(`data: ${data}\n\n`);
+    write(`data: ${data}\n\n`);
   };
   response.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -151,5 +157,14 @@ function startStream(response, completion, controller) {
     Connection: "close",
   });
   chunk({ role: "assistant" });
-  return { chunk };
+  let timer = setInterval(() => write(": keepalive\n\n"), STREAM_KEEPALIVE_MS);
+  timer.unref();
+  const close = () => {
+    if (timer !== undefined) clearInterval(timer);
+    timer = undefined;
+    signal.removeEventListener("abort", close);
+  };
+  signal.addEventListener("abort", close, { once: true });
+  if (signal.aborted) close();
+  return { chunk, close };
 }
