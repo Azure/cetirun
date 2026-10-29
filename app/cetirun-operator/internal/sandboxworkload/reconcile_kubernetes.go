@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -19,16 +20,18 @@ import (
 
 func KubernetesBindingResource(object unstructured.Unstructured) bool {
 	return object.GetAPIVersion() == rbacv1.SchemeGroupVersion.String() &&
-		(object.GetKind() == "RoleBinding" || object.GetKind() == "ClusterRoleBinding")
+		(object.GetKind() == "ClusterRoleBinding" ||
+			object.GetKind() == "RoleBinding" && object.GetLabels()[terminalpolicy.WorkloadLabel] != "true")
 }
 
 // KubernetesBindings derives journal identities from the already-authorized
 // compiler output. It never discovers or approves a Role or a new subject.
 func (e ReconcileExpectation) KubernetesBindings() ([]sandboxpolicy.BindingReference, error) {
-	var account string
+	var account, workloadName string
 	for _, workload := range e.Workloads {
 		if workload.Kind == "StatefulSet" {
 			account = workload.Template.Spec.ServiceAccountName
+			workloadName = workload.Identity.Name
 		}
 	}
 	binding, err := json.Marshal(e.Binding)
@@ -37,6 +40,23 @@ func (e ReconcileExpectation) KubernetesBindings() ([]sandboxpolicy.BindingRefer
 	}
 	var refs []sandboxpolicy.BindingReference
 	for _, object := range e.Controls {
+		if object.GetAPIVersion() == rbacv1.SchemeGroupVersion.String() && object.GetKind() == "RoleBinding" &&
+			!KubernetesBindingResource(object) {
+			terminalAccount := terminalpolicy.WorkloadName(workloadName)
+			if workloadName == "" || !slices.ContainsFunc(e.Workloads, func(workload RenderedWorkload) bool {
+				return workload.Kind == "Deployment" && workload.Identity.Name == terminalAccount &&
+					workload.Template.Spec.ServiceAccountName == terminalAccount &&
+					workload.Template.Labels[terminalpolicy.WorkloadLabel] == "true"
+			}) ||
+				!equality.Semantic.DeepEqual(object.GetOwnerReferences(), []metav1.OwnerReference{AgentOwner(e.Agent.Name, e.Agent.UID)}) ||
+				object.GetLabels()[sandboxpolicy.AgentUIDLabel] != string(e.Agent.UID) {
+				return nil, fmt.Errorf("terminal role requires the current owned terminal expectation")
+			}
+			if err := terminalpolicy.ValidateRoleBinding(object, e.Namespace.Name, terminalAccount); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		var metadata metav1.ObjectMeta
 		var role rbacv1.RoleRef
 		var subjects []rbacv1.Subject
