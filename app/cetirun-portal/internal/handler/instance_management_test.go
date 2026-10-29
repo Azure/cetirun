@@ -71,7 +71,7 @@ func TestCustomCreateRoundTripWithoutNativeSideEffects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if stored.Spec.GatewayTokenSecretRef != "" || stored.Spec.Tailscale != nil || stored.Spec.MSTeams != nil || stored.Spec.AgentIdentity != nil ||
+		if stored.Spec.GatewayTokenSecretRef != "" || stored.Spec.Tailscale != nil || stored.Spec.AgentIdentity != nil ||
 			stored.Annotations[api.AnnotationOwnerObjectID] != managementOwner {
 			t.Fatal("Custom gained native configuration or lost its verified owner")
 		}
@@ -154,7 +154,6 @@ func TestManagementRejectsOldUnknownAndNativeCustomFields(t *testing.T) {
 		`{"agent":{},"registryAuth":{"password":"sk-dummy"}}`,
 		`{"agent":{"registrySecretRef":{"name":"unowned"}}}`,
 		`{"agent":{"type":"custom","image":"` + managementImage + `"},"gatewayToken":""}`,
-		`{"agent":{"type":"custom","image":"` + managementImage + `"},"teamsEnabled":false}`,
 		`{"agent":{"type":"custom","image":"` + managementImage + `"},"tailscaleAuthKey":null}`,
 		`{"agent":{"type":"custom","image":"` + managementImage + `"},"agentIdentityEnabled":true}`,
 	} {

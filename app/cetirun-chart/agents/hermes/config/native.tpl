@@ -42,26 +42,6 @@ Licensed under the MIT License.
 {{- else }}
 {{- $_ := set $config "model" (dict "default" $model "provider" $hermesProvider) }}
 {{- end }}
-{{- $msteamsAuthType := default "" .Values.msteamsAuthType }}
-{{- $teamsConfigured :=
-    or
-      (and
-        (gt (int .Values.msteamsWebhookPort) 0)
-        .Values.secrets.msteamsAppId
-        .Values.secrets.msteamsTenantId
-        (or
-          (and (or (eq $msteamsAuthType "") (eq $msteamsAuthType "secret")) .Values.secrets.msteamsAppPassword)
-          (or (eq $msteamsAuthType "managedIdentity") (eq $msteamsAuthType "certificate"))
-        )
-      )
-      (and (gt (int .Values.msteamsWebhookPort) 0) .Values.secrets.existingSecret)
-}}
-{{- if $teamsConfigured }}
-{{- $platforms := dig "platforms" (dict) $config }}
-{{- $cetirunTeams := dict "enabled" true "extra" (dict "port" (int .Values.msteamsWebhookPort)) }}
-{{- $_ := set $platforms "cetirun_teams" $cetirunTeams }}
-{{- $_ := set $config "platforms" $platforms }}
-{{- end }}
 {{- $contextSkills := and (or (not .Values.sandboxWorkload) (dig "reconciled" false (.Values.sandboxWorkload | default dict))) (dig "enabled" false (.Values.memoryContext | default dict)) }}
 {{- if or .Values.skills.shared $contextSkills }}
 {{- $skills := dig "skills" (dict) $config }}

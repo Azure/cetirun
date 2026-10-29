@@ -117,10 +117,6 @@ COPY --chown=vibe:vibe agents/hermes/compat/workload_mcp.py /usr/local/lib/herme
 COPY --chown=vibe:vibe agents/hermes/compat/apply_workload_mcp.py /tmp/apply-workload-mcp.py
 RUN python3 /tmp/apply-workload-mcp.py --root /usr/local/lib/hermes-agent && rm /tmp/apply-workload-mcp.py
 
-# Install the CetiRun-specific Teams adapter as a normal bundled Hermes plugin.
-COPY --chown=vibe:vibe agents/hermes/plugins/platforms/cetirun_teams/ \
-  /usr/local/lib/hermes-agent/plugins/platforms/cetirun_teams/
-
 RUN test -x "${HERMES_PYTHON}" && \
     "${HERMES_PYTHON}" -c \
       'import importlib.metadata, pathlib; assert importlib.metadata.version("hermes-agent") == "0.21.5"; assert pathlib.Path("hermes_cli/web_dist/index.html").is_file(); assert pathlib.Path("ui-tui/dist/entry.js").is_file()'

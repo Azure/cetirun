@@ -657,7 +657,7 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 	}
 
 	gwSecretData := gatewayTokenSecret(alias).Data
-	opHash := computeOperatorHash(domainSuffix, computeSecretHash(gwSecretData), "", "", "", "", "", "", "", "", "")
+	opHash := computeOperatorHash(domainSuffix, computeSecretHash(gwSecretData), "", "", "", "")
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, conditions, 1, 1, opHash)
 	s := testScheme()
@@ -718,7 +718,7 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 
 	// Seed the CR as Ready with an operator hash computed from the OLD secret data.
 	oldSecretData := map[string][]byte{"OPENCLAW_GATEWAY_TOKEN": []byte("old-token")}
-	oldHash := computeOperatorHash(domainSuffix, computeSecretHash(oldSecretData), "", "", "", "", "", "", "", "", "")
+	oldHash := computeOperatorHash(domainSuffix, computeSecretHash(oldSecretData), "", "", "", "")
 
 	conditions := []metav1.Condition{
 		{
@@ -796,7 +796,7 @@ func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
 	alias := "legacy-auth-key"
 	domainSuffix := "example.com"
 	legacySecretData := map[string][]byte{"OPENCLAW_GATEWAY_TOKEN": []byte("legacy-token")}
-	legacyHash := computeOperatorHash(domainSuffix, computeSecretHash(legacySecretData), "", "", "", "", "", "", "", "", "")
+	legacyHash := computeOperatorHash(domainSuffix, computeSecretHash(legacySecretData), "", "", "", "")
 
 	conditions := []metav1.Condition{
 		{
@@ -908,18 +908,15 @@ func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 }
 
 // computeOperatorHash reproduces the operatorConfigHash logic for test seeding.
-// The azureTeamsConfig variadic matches the operator's configHash method, which
-// appends Azure config (subscriptionID, resourceGroup, botNamePrefix, tenantID,
-// oidcIssuerURL) followed by the referenced Team's ResourceVersion to
-// the hash so Teams-enabled instances and team-referenced instances can use the
-// skip-cache.
-func computeOperatorHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, azureTeamsConfig ...string) string {
+// Extra configuration includes integration settings and the referenced Team's
+// ResourceVersion, matching the reconciler's cache inputs.
+func computeOperatorHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, config ...string) string {
 	var payload string
-	if skillsStorageAccount == "" && cetirunHelmValuesHash == "" && chartRegistry == "" && len(azureTeamsConfig) == 0 {
+	if skillsStorageAccount == "" && cetirunHelmValuesHash == "" && chartRegistry == "" && len(config) == 0 {
 		payload = domainSuffix + "\x00" + secretHash
 	} else {
 		payload = domainSuffix + "\x00" + secretHash + "\x00" + skillsStorageAccount + "\x00" + cetirunHelmValuesHash + "\x00" + chartRegistry
-		for _, v := range azureTeamsConfig {
+		for _, v := range config {
 			payload += "\x00" + v
 		}
 	}
@@ -1237,7 +1234,7 @@ func TestReconcile_SuspendedSkipCache(t *testing.T) {
 	// Compute the expected operator hash for skip-cache to match.
 	gwSecretData := gatewayTokenSecret(alias).Data
 	gwHash := computeSecretHash(gwSecretData)
-	opHash := computeOperatorHash("example.com", gwHash, "", "", "", "", "", "", "", "", "")
+	opHash := computeOperatorHash("example.com", gwHash, "", "", "", "")
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseSuspended, nil, 1, 1, opHash)
 

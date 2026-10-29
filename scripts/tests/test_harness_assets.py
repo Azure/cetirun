@@ -21,23 +21,6 @@ class HarnessAssetsTests(unittest.TestCase):
             self.assertIn(f"ln -s /home/vibe/.agents/skills /home/vibe/{target}", source)
         self.assertNotIn("/home/vibe/.aks/skills", source)
 
-    def test_teams_discovery_does_not_import_runtime_dependencies(self):
-        path = CHART / "agents/hermes/plugins/platforms/cetirun_teams/__init__.py"
-        code = compile(path.read_text(), str(path), "exec")
-        namespace = {"__name__": "cetirun_teams_registration_test"}
-        registered = {}
-
-        class Context:
-            def register_platform(self, **kwargs):
-                registered.update(kwargs)
-
-        with patch("builtins.__import__", side_effect=AssertionError("Discovery must not import runtime SDKs")):
-            exec(code, namespace)
-            namespace["register"](Context())
-            self.assertTrue(registered["check_fn"]())
-        self.assertEqual(registered["name"], "cetirun_teams")
-        self.assertEqual(registered["adapter_factory"].__name__, "create_adapter")
-
     def test_image_sources_exist_in_unchanged_build_context(self):
         for kind in ("openclaw", "hermes"):
             dockerfile = CHART / f"agents/{kind}/Dockerfile"

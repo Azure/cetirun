@@ -517,13 +517,13 @@ curl requests against loopback fixtures to cover recovery and retry exhaustion.
 
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests require the pinned PyYAML dependency in
-`infra/istio/requirements.txt`. It does not run the Auth/Teams and native
+`infra/istio/requirements.txt`. It does not run the auth and native
 initialization suite. For that suite, prepare the locked dependencies in
 `scripts/ci/requirements.txt` separately, then run `make python-test`. It
 executes the real init scripts against synthetic HOME
-directories and uses test doubles for Hermes interfaces, cloud credentials
-and network calls. OpenClaw initialization tests also require `jq`.
-Keep live Agent, Teams or other service integration tests separately authorized.
+directories, uses synthetic network responses, and blocks outbound network
+connections. OpenClaw initialization tests also require `jq`.
+Keep live Agent or other service integration tests separately authorized.
 
 Operator rendering tests retain the original native configuration and resource
 baselines. Rewritten init assets and `CETIRUN_INIT_IMAGE` are checked separately

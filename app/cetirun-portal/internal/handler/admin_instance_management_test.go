@@ -192,11 +192,6 @@ func TestAdminAgentUpdateValidatesRuntimeSpecificFieldsAndRequestShape(t *testin
 			instance.Spec.Agent.Image = ptr.To(managementImage)
 			instance.Spec.Agent.Username = ptr.To("vibe")
 		}, `{"agent":{"webUI":true}}`, http.StatusOK},
-		{"Custom Teams rejected", func(instance *api.Agent) {
-			instance.Spec.Agent.Type = api.AgentTypeCustom
-			instance.Spec.Agent.Image = ptr.To(managementImage)
-			instance.Spec.Agent.Username = ptr.To("vibe")
-		}, `{"teamsEnabled":true}`, http.StatusBadRequest},
 		{"builtin web UI true rejected", func(*api.Agent) {}, `{"agent":{"webUI":true}}`, http.StatusBadRequest},
 		{"builtin web UI false rejected", func(*api.Agent) {}, `{"agent":{"webUI":false}}`, http.StatusBadRequest},
 		{"invalid Custom port", func(instance *api.Agent) { instance.Spec.Agent.Type = api.AgentTypeCustom }, `{"agent":{"port":0}}`, http.StatusBadRequest},

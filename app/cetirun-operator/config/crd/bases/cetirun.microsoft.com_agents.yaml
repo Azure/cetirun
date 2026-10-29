@@ -218,38 +218,6 @@ spec:
                       Gateway.
                     type: boolean
                 type: object
-              msteams:
-                description: |-
-                  MSTeams configures Microsoft Teams bot integration for this instance.
-                  When set, the operator provisions the necessary Helm values, volumes,
-                  and Istio routing for the Teams webhook endpoint.
-                properties:
-                  appId:
-                    description: |-
-                      AppID is the Azure AD Application (client) ID for the Teams bot.
-                      If Enabled=true and AppID is empty, the operator creates the app
-                      automatically and writes the generated appId to status.msteams.appId.
-                      If provided, the operator uses this existing app instead.
-                    pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
-                    type: string
-                  enabled:
-                    description: |-
-                      Enabled toggles Teams bot provisioning. When false or omitted, no Teams
-                      resources are created even if the MSTeams block is present.
-                    type: boolean
-                  tenantId:
-                    description: TenantID is the Azure AD tenant ID. Defaults to operator-level
-                      config if not set.
-                    pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
-                    type: string
-                  webhookPort:
-                    default: 3978
-                    description: |-
-                      WebhookPort is the port the Teams webhook listener runs on inside the container.
-                      Defaults to 3978.
-                    format: int32
-                    type: integer
-                type: object
               plannedMigration:
                 description: |-
                   PlannedMigration requests a healthy-source cold move of a reconciled
@@ -784,48 +752,6 @@ spec:
                   reconciliation.
                 format: date-time
                 type: string
-              msteams:
-                description: MSTeams reports the observed state of Teams integration
-                  resources.
-                properties:
-                  appId:
-                    description: AppID is the Azure AD Application (client) ID, whether
-                      auto-created or from spec.
-                    type: string
-                  appNotFoundSince:
-                    description: |-
-                      AppNotFoundSince is the timestamp when the cached AppObjectID first returned
-                      a 404 from Graph API. Used to distinguish AAD eventual consistency delays
-                      (which can last up to ~15 min) from genuinely deleted apps. Cleared on
-                      successful app lookup.
-                    format: date-time
-                    type: string
-                  appObjectId:
-                    description: AppObjectID is the Azure AD Application Object ID
-                      (used for Graph API management).
-                    type: string
-                  botResourceId:
-                    description: BotResourceID is the Azure Resource Manager resource
-                      ID of the Bot Service.
-                    type: string
-                  message:
-                    description: Message provides human-readable detail about the
-                      current state.
-                    type: string
-                  servicePrincipalId:
-                    description: ServicePrincipalID is the Object ID of the service
-                      principal for the bot app.
-                    type: string
-                  state:
-                    description: State is the current state of Teams provisioning.
-                    enum:
-                    - Provisioning
-                    - PendingAppRegistration
-                    - Ready
-                    - Failed
-                    - Deleting
-                    type: string
-                type: object
               namespace:
                 description: Namespace is the Kubernetes namespace where the instance
                   is deployed.

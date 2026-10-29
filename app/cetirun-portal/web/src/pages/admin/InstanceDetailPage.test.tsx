@@ -30,7 +30,6 @@ const agent: adminInstances.AdminInstanceDetail = {
   generation: 4,
   observedGeneration: 4,
   suspended: false,
-  teamsEnabled: false,
   tailscaleEnabled: false,
   registryAuthConfigured: true,
   conditions: [],

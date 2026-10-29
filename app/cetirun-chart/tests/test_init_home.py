@@ -47,7 +47,6 @@ def agent(request, tmp_path):
         (source / ".openclaw/npm").symlink_to("/usr/local/share/openclaw-npm")
         (config / "openclaw.json").write_text(json.dumps({
             "agents": {"defaults": {"model": {"primary": "test-model"}}},
-            "channels": {"msteams": {"enabled": True}},
         }))
         (config / "user-md").write_text("Example User")
         script = CHART / "agents/openclaw/bootstrap/init-home.sh"
@@ -111,7 +110,6 @@ def test_native_first_start_and_repeat_preserve_user_files(agent):
             assert installed.read_bytes() == path.read_bytes()
     if agent["kind"] == "openclaw":
         user = agent["target"] / ".openclaw/workspace/USER.md"
-        assert read_config(agent)["channels"]["msteams"]["allowFrom"] == ["00000000-0000-0000-0000-000000000000"]
         assert (agent["target"] / ".openclaw/npm").is_symlink()
         assert not (agent["target"] / ".acpx/config.json").exists()
     else:

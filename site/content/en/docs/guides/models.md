@@ -352,7 +352,7 @@ For an operator-managed instance, keep provider-specific settings under
 a non-empty deployment Copilot default or `spec.model`.
 
 Sources: [model precedence]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
-[default-change detection]({{< repo "app/cetirun-operator/internal/controller/teams.go" >}}),
+[default-change detection]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
 [operator defaults]({{< repo "app/cetirun-operator/chart/values.yaml" >}}),
 and [portal PATCH handler]({{< repo "app/cetirun-portal/internal/handler/instance.go" >}}).
 

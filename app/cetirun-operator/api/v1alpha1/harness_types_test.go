@@ -92,7 +92,6 @@ func TestCreationExamplesDefaultToHermes(t *testing.T) {
 		"../../test/config/sample-bob.yaml",
 		"../../test/config/sample-team.yaml",
 		"../../../../site/content/en/docs/getting-started/first-instance.md",
-		"../../../../site/content/en/docs/guides/msteams.md",
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
@@ -198,7 +197,6 @@ func TestAgentDeepCopy(t *testing.T) {
 			AgentIdentity: &api.AgentIdentitySpec{Enabled: true},
 		},
 		Status: api.AgentStatus{
-			MSTeams:       &api.MSTeamsStatus{AppNotFoundSince: &metav1.Time{}},
 			AgentIdentity: &api.AgentIdentityStatus{LastVerifiedTime: &metav1.Time{}},
 		},
 	}
@@ -208,14 +206,12 @@ func TestAgentDeepCopy(t *testing.T) {
 	*copy.Spec.Agent.Port = 9090
 	copy.Spec.Agent.RegistrySecretRef.Name = "other"
 	copy.Spec.AgentIdentity.Enabled = false
-	copy.Status.MSTeams.AppNotFoundSince.Time = metav1.Now().Time
 	copy.Status.AgentIdentity.LastVerifiedTime.Time = metav1.Now().Time
 	if *instance.Spec.Agent.Image != "registry.example.com/agent:1" ||
 		*instance.Spec.Agent.Username != "vibe" ||
 		*instance.Spec.Agent.Port != 8080 ||
 		instance.Spec.Agent.RegistrySecretRef.Name != "source" ||
 		!instance.Spec.AgentIdentity.Enabled ||
-		!instance.Status.MSTeams.AppNotFoundSince.IsZero() ||
 		!instance.Status.AgentIdentity.LastVerifiedTime.IsZero() {
 		t.Fatal("deep copy shares mutable fields with the original")
 	}

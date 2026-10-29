@@ -48,7 +48,6 @@ POLICY_FILES = {
 POINTERS = {
     "docs/agent-harness-contract.md": "reference/agent-harness.md",
     "docs/agent-policy-admin.design.md": "reference/crds.md",
-    "docs/guides/msteams.md": "guides/msteams.md",
     "docs/guides/tailscale.md": "guides/tailscale.md",
     "docs/live-copilot-model-selection.design.md": "guides/models.md",
     "app/cetirun-chart/README.md": "reference/helm.md",

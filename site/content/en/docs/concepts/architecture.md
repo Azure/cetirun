@@ -75,7 +75,6 @@ not proof that ingress works.
 | `/<instance>/cetirun-auth/` | In-pod authentication helper on 18790, with this prefix removed |
 | `/<instance>/term/` | ttyd on 7681 |
 | `/<instance>/desktop/` | noVNC on 6080 |
-| `POST /<instance>/api/messages` | Teams webhook on 3978 when enabled; otherwise a 404 route while the instance VirtualService exists |
 
 OpenClaw keeps `/ui/<instance>` in its gateway requests; an exact WebSocket
 upgrade at that path is routed without an HTTP redirect. Hermes Dashboard

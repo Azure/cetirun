@@ -146,7 +146,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             'request_handle:headers():remove("x-cetirun-portal-id-token")'
         )
         exempt_branch = self.source.index(
-            "if is_exempt(path_only, method, authority) then", token_removal
+            "if is_exempt(path_only, authority) then", token_removal
         )
         instance_branch = self.source.index(
             "-- Native agent UIs are namespaced", exempt_branch
@@ -199,7 +199,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             self.source.count(
                 'request_handle:headers():remove(AGENT_API_KEY_HEADER)'
             ),
-            4,
+            3,
         )
         self.assertIn(
             'if not instance_name or instance_name == "" then\n'

@@ -51,9 +51,8 @@ An instance references a `Team` by `spec.team`. Teams can set:
 - Up to 20 default skill identifiers.
 - A shared Blob storage location for read-only skills.
 
-The team resource is distinct from **Microsoft Teams**, which is an optional
-messaging integration. A team reference does not verify organizational
-membership or grant shared access to another user's instance.
+A team reference does not verify organizational membership or grant shared
+access to another user's instance.
 
 ## Runtime files and updates
 

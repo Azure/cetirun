@@ -38,22 +38,6 @@ authPolicy:
     - oauth2
     - llmapi
 
-  # Static one-segment apex webhook URI template exempted from OAuth2 Proxy — for POST only.
-  # This is a STATIC Bot Framework webhook exception, NOT a per-instance allowlist: a single
-  # "/{*}/api/messages" covers exactly /<instance>/api/messages. Per-instance enable/disable is enforced by
-  # operator-owned VirtualService routes (a Teams route for enabled instances; an explicit deny
-  # route for everyone else) — do NOT add concrete per-instance paths here.
-  # Only POST requests to these suffixes bypass auth (real Teams webhook calls are POST and carry
-  # a Bot Framework JWT the application validates). A paired method-guard rule sends all non-POST
-  # requests to the same suffix back through OAuth2 Proxy, so the suffix is not a generic anonymous
-  # bypass. To disable the bypass entirely, set this to an empty list: webhookBypassPaths: []
-  webhookBypassPaths:
-    - "/{*}/api/messages"
-
-  # Exact POST-only webhook path retained for legacy instance subdomains.
-  legacySubdomainWebhookBypassPaths:
-    - "/api/messages"
-
   # POST-only unauthenticated callbacks that are valid on the apex Portal host
   # and must never be exempted on legacy instance subdomains.
   apexPostBypassPaths:

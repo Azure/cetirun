@@ -82,8 +82,8 @@ func (r *AgentReconciler) customWaiting(ctx context.Context, instance *api.Agent
 }
 
 func (r *AgentReconciler) customOverrides(instance *api.Agent, team *api.Team) (map[string]any, error) {
-	if instance.Spec.GatewayTokenSecretRef != "" || instance.Spec.Tailscale != nil || instance.Spec.MSTeams != nil {
-		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support native credentials, Tailscale or Teams")
+	if instance.Spec.GatewayTokenSecretRef != "" || instance.Spec.Tailscale != nil {
+		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support native credentials or Tailscale")
 	}
 	if agentIdentityRequested(instance) {
 		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support Agent Identity")

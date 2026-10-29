@@ -24,7 +24,7 @@ import (
 
 func TestCustomNativeUpdatesHaveNoSideEffects(t *testing.T) {
 	for _, byName := range []bool{false, true} {
-		for _, body := range []string{`{"gatewayToken":"sk-dummy"}`, `{"tailscaleAuthKey":"sk-dummy"}`, `{"teamsEnabled":true}`, `{"teamsEnabled":false}`} {
+		for _, body := range []string{`{"gatewayToken":"sk-dummy"}`, `{"tailscaleAuthKey":"sk-dummy"}`} {
 			body = strings.Replace(body, "{", `{"uid":"agent-alice","resourceVersion":"1",`, 1)
 			instance := sampleInstance()
 			instance.Spec.Agent.Type = api.AgentTypeCustom

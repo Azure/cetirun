@@ -4,7 +4,7 @@ description: "Apply shared context and provider defaults with Team."
 weight: 50
 ---
 
-A `Team` is a CetiRun configuration resource, not a Microsoft Teams bot.
+A `Team` is a CetiRun configuration resource.
 Both the team and its member instances are cluster-scoped.
 It does not define a membership roster, verify Entra group membership, or
 authorize access to another user's instance. Portal administrators can manage

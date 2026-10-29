@@ -16,7 +16,6 @@ Replace the example names with your instance and deployment settings.
 
 ## Integrations
 
-- [Connect Microsoft Teams](msteams/) — Azure identity and Bot Service required
 - [Connect Tailscale](tailscale/) — tailnet prerequisites and runtime-specific access
 
 Platform administrators can [configure a team](teams/) in Operations to

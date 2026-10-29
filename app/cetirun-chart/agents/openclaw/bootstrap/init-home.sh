@@ -126,9 +126,6 @@ agent_apply_config() (
             if ($source.models.providers.openai | type) == "object" then .models.providers.openai = $source.models.providers.openai else . end
             | if (.auth.profiles | type) == "object" then .auth.profiles |= del(.["github-copilot:github"]) else . end
           end
-      else . end
-    | if .channels.msteams.enabled then
-        .channels.msteams.allowFrom //= ["00000000-0000-0000-0000-000000000000"]
       else . end'
   if [ -f "$dest" ]; then
     jq -s --argjson gateway "$gateway" --argjson native_gateway "$native_gateway" "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||

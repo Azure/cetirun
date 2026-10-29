@@ -136,7 +136,7 @@ Generated CRD YAML in app/cetirun-operator/config/crd/bases is also outside the
 source-header check. An exclusion preserves uncertainty; it is not a finding
 that the material has no license obligations.
 
-Raster assets, including portal branding and Teams app icons, are not
+Raster assets, including portal branding, are not
 relicensed by source headers. The repository does not contain a per-asset
 authorship/license inventory for these files. Verify that provenance and any
 trademark permissions before redistributing them.
@@ -161,11 +161,10 @@ copyright, attribution, and source-distribution obligations where applicable.
   Commercial/service terms for installed tools are not granted by CetiRun's MIT
   license.
 * agents/openclaw/Dockerfile adds OpenClaw, ClawHub, the OpenClaw ACP, Brave,
-  Discord, Feishu, Microsoft Teams, Perplexity, and Slack extensions.
+  Discord, Feishu, Perplexity, and Slack extensions.
 * agents/hermes/Dockerfile installs the checksum-pinned Hermes Agent
   v2026.9.24 source release, its checked-in uv/npm dependency locks, and the
-  upstream-pinned SQLite compatibility library. CetiRun's Teams plugin is added
-  separately to that source tree.
+  upstream-pinned SQLite compatibility library.
 * Dockerfile.desktop builds or installs Xorg/Xvfb, Fluxbox, LibVNCServer,
   x11vnc, supervisor, websockify, noVNC, Noto CJK fonts, Google Chrome, and
   system libraries. This is not an MIT-only software stack. In particular,

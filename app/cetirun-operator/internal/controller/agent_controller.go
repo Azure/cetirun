@@ -96,14 +96,6 @@ type AgentReconciler struct {
 	SandboxNativeCoordination   *sandboxcoordination.Store
 	RegistryCredentialNamespace string
 
-	// Azure config for Teams auto-provisioning.
-	AzureSubscriptionID string
-	AzureResourceGroup  string
-	AzureBotNamePrefix  string
-	AzureTenantID       string
-	AzureServiceTreeID  string // optional serviceManagementReference for app creation
-	AzureOIDCIssuerURL  string // auto-detected from cluster at startup
-
 	// Microsoft Entra Agent Identity deployment configuration.
 	AgentIdentityEnabled               bool
 	AgentIdentityTenantID              string
@@ -739,27 +731,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			metav1.ConditionFalse, "TailscaleDisabled", "Tailscale is not configured")
 	}
 
-	// 8a. Reconcile Teams integration (Azure AD app, FIC, Bot Service, Teams channel).
-	// This must run before Helm install so that the gateway secret has MSTEAMS_APP_ID
-	// and MSTEAMS_TENANT_ID populated for the chart to pick up.
-	// Run reconcileTeams when Teams is enabled OR when it was previously provisioned
-	// (status.MSTeams != nil) so the disable cleanup path can execute.
-	var teamsRequeueAfter time.Duration
-	if (instance.Spec.MSTeams != nil && instance.Spec.MSTeams.Enabled) || instance.Status.MSTeams != nil {
-		logger.Info("Reconciling Teams integration", "alias", alias)
-		if err := r.reconcileTeams(ctx, instance); err != nil {
-			logger.Error(err, "Teams reconciliation failed", "alias", alias)
-			// Teams failure is non-blocking for the rest of the reconcile.
-			// The TeamsReady condition is already set by reconcileTeams.
-			if statusErr := r.updateStatus(ctx, instance); statusErr != nil {
-				logger.Error(statusErr, "Failed to persist Teams status after reconciliation error", "alias", alias)
-			}
-			// Request a faster requeue so the 404 timer and other retryable
-			// Teams errors don't wait for the next full reconcile cycle.
-			teamsRequeueAfter = 30 * time.Second
-		}
-	}
-
 	// Reconcile the per-instance Agent Identity before rendering the workload.
 	// The Broker reads only the canonical binding persisted in CR status.
 	var agentIdentityRequeueAfter time.Duration
@@ -867,7 +838,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	alreadyDeployed := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
 		instance.Status.ObservedGeneration == instance.Generation &&
 		instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
-	// Teams may have resolved its application ID and Tailscale its auth key.
 	// Rebuild from current bindings without reloading the versioned chart.
 	helmValues, err := buildHelmValuesWithAgentIdentity(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel, AgentIdentityHelmConfig{
 		Enabled:                    r.AgentIdentityEnabled,
@@ -1110,9 +1080,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			r.EventRecorder.Event(instance, corev1.EventTypeNormal, "InstanceSuspended", "Instance suspended — scaled to zero and ingress removed")
 		}
 		requeueAfter := 10 * time.Minute
-		if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
-			requeueAfter = teamsRequeueAfter
-		}
 		if agentIdentityRequeueAfter > 0 && agentIdentityRequeueAfter < requeueAfter {
 			requeueAfter = agentIdentityRequeueAfter
 		}
@@ -1193,9 +1160,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if controls, ok := prepared.Values["sandboxWorkload"].(map[string]any); ok && controls["ingressMTLS"] == true {
 		requeueAfter = 5 * time.Second
 	}
-	if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
-		requeueAfter = teamsRequeueAfter
-	}
 	if aiGatewayRequeueAfter > 0 && aiGatewayRequeueAfter < requeueAfter {
 		requeueAfter = aiGatewayRequeueAfter
 	}
@@ -1231,9 +1195,6 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 			return ctrl.Result{}, err
 		}
 	}
-
-	// Delete Teams Azure resources (best-effort, never blocks deletion).
-	r.deleteTeams(ctx, instance)
 
 	// Agent Identity cleanup is blocking. Removing the finalizer before the
 	// authorization record and directory principal are gone would orphan them.
@@ -1588,7 +1549,7 @@ func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string,
 }
 
 // ensureGatewayToken creates the gateway token Secret if it doesn't exist,
-// and ensures MSTEAMS credential keys are populated when spec.msteams is configured.
+// and prepares native runtime credentials when required.
 func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	logger := log.FromContext(ctx)
 	ns := instanceNamespace(instance.Name)
@@ -1663,23 +1624,11 @@ func (r *AgentReconciler) newGatewayTokenSecret(instance *cetirunv1alpha1.Agent)
 		secret.Data[descriptor.NativeSecretKey] = []byte(apiKey)
 		secret.Data[descriptor.EnvironmentFile] = []byte(renderHermesEnv(secret.Data, apiKey, hermesCORSOrigins(r.DomainSuffix)))
 	}
-	// Seed MSTEAMS keys on initial creation (only when Teams is enabled and values are known).
-	if instance.Spec.MSTeams != nil && instance.Spec.MSTeams.Enabled {
-		if instance.Spec.MSTeams.AppID != "" {
-			secret.Data["MSTEAMS_APP_ID"] = []byte(instance.Spec.MSTeams.AppID)
-		}
-		if instance.Spec.MSTeams.TenantID != "" {
-			secret.Data["MSTEAMS_TENANT_ID"] = []byte(instance.Spec.MSTeams.TenantID)
-		}
-	}
 	return secret, nil
 }
 
 func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger logr.Logger, instance *cetirunv1alpha1.Agent, secret *corev1.Secret) error {
 	if err := r.ensureCetiRunAuthKey(ctx, logger, secret); err != nil {
-		return err
-	}
-	if err := r.ensureMSTeamsSecretKeys(ctx, logger, secret, instance); err != nil {
 		return err
 	}
 	return r.ensureHermesSecretKeys(ctx, logger, secret, instance)
@@ -1801,35 +1750,6 @@ func secretEnvValue(data map[string][]byte, key string) string {
 		}
 	}
 	return ""
-}
-
-// ensureMSTeamsSecretKeys patches the gateway-token Secret with MSTEAMS_APP_ID and
-// MSTEAMS_TENANT_ID when Teams is enabled and the values differ or are missing.
-func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1alpha1.Agent) error {
-	if instance.Spec.MSTeams == nil || !instance.Spec.MSTeams.Enabled {
-		return nil
-	}
-	msteams := instance.Spec.MSTeams
-	needsUpdate := false
-	if secret.Data == nil {
-		secret.Data = map[string][]byte{}
-	}
-	if msteams.AppID != "" && string(secret.Data["MSTEAMS_APP_ID"]) != msteams.AppID {
-		secret.Data["MSTEAMS_APP_ID"] = []byte(msteams.AppID)
-		needsUpdate = true
-	}
-	if msteams.TenantID != "" && string(secret.Data["MSTEAMS_TENANT_ID"]) != msteams.TenantID {
-		secret.Data["MSTEAMS_TENANT_ID"] = []byte(msteams.TenantID)
-		needsUpdate = true
-	}
-	if !needsUpdate {
-		return nil
-	}
-	logger.Info("Updating gateway token secret with MSTEAMS credentials", "secret", secret.Name)
-	if err := r.Update(ctx, secret); err != nil {
-		return fmt.Errorf("update gateway token secret with msteams keys: %w", err)
-	}
-	return nil
 }
 
 // ensureVirtualService creates or updates the Istio VirtualService for this

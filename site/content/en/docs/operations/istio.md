@@ -307,8 +307,6 @@ does not reconfigure the independent Istio release. See the
 | --- | --- |
 | `authPolicy.authExemptPrefixes` | Host prefixes bypassing OAuth2 Proxy |
 | `authPolicy.aliasExemptPrefixes` | Present in values, but unused by the ownership filter |
-| `authPolicy.webhookBypassPaths` | POST-only apex `/<instance>/api/messages` template |
-| `authPolicy.legacySubdomainWebhookBypassPaths` | Exact POST-only `/api/messages` path on legacy instance subdomains |
 
 Both prefix lists contain `oauth2` and `llmapi`. `authExemptPrefixes` bypasses
 OAuth2 Proxy for those subdomain hosts, while `aliasExemptPrefixes` prevents
@@ -320,21 +318,6 @@ The [authorization policy]({{< repo "infra/istio/templates/ingress/authorization
 also exempts apex `/oauth2/*`, `/healthz`, and `/readyz`. The ownership filter's
 static portal-path exclusions are separate from OAuth exemptions; skipping
 an ownership call does not by itself skip sign-in.
-
-The apex webhook default is `["/{*}/api/messages"]`. Istio's `{*}` URI
-template matches exactly one path segment, so only
-`POST /<instance>/api/messages` is exempted. The legacy subdomain exception is
-the exact path `/api/messages`; neither setting is a suffix wildcard. For a
-live per-instance VirtualService, the exact
-`POST /<instance>/api/messages` route goes to the Teams webhook if enabled,
-or returns 404 if disabled. Non-POST requests to the suffix go through
-OAuth2 Proxy.
-
-Suspended or nonexistent instances have no per-instance VirtualService. Do not
-promise a fixed 404 or a Bot adapter for every matching URL. See the
-[route implementation]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}).
-Set both webhook bypass lists to `[]` to remove the exceptions entirely.
-Applications behind exceptions must perform their own request authentication.
 
 ## Egress and logging
 

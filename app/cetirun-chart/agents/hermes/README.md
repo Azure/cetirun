@@ -27,7 +27,6 @@ Node 24.21.0, which satisfies the upstream package's Node engine range.
 | Checksum-verified PyPI wheel, `--no-deps` install, then a second `[all]` install | One source release and its checked-in `uv.lock` |
 | Separate Azure Identity and PyJWT version overrides | Dependencies from the upstream lock and `azure-identity` extra |
 | Copilot helper importing private Python functions | Public `hermes model` and `hermes auth status copilot` commands |
-| Import-time Teams registration and old adapter signatures | Plugin-context registration, scoped settings, and current reconnect/metadata arguments |
 | Gateway shell pipeline and Dashboard `--insecure` | Supervisor-owned gateway process and the upstream Dashboard password provider |
 
 The shared base's unrelated dependency fixes remain unchanged. The pinned
@@ -35,18 +34,12 @@ SQLite build is retained because the base's SQLite does not meet this release's
 WAL safety check. Its compiler, linker, C headers, Linux kernel headers, and
 Make stay in a separate build stage; the runtime receives only the library.
 
-Teams discovery registers lightweight factories. The adapter and Azure SDKs
-load when Hermes creates the adapter or sends a standalone message, not during
-the time-limited plugin discovery step. The upstream discovery timeout is
-unchanged.
-
 ## CetiRun-owned integration
 
 CetiRun keeps these layers on top of the upstream source:
 
 - the persistent user and HOME contract at UID/GID `1024` and
   `/home/vibe/.hermes`;
-- the `cetirun_teams` platform plugin and Azure Workload Identity support;
 - the in-pod CetiRun authentication service, which the entrypoint does not run
   when `CETIRUN_AI_GATEWAY=true`: on the platform AI Gateway the owner signs
   in to GitHub Copilot through the Portal;
@@ -69,7 +62,7 @@ compatibility entrypoint; it no longer imports private Hermes auth functions.
 
 Do not replace these contracts with the upstream container layout without also
 qualifying persistent HOME ownership, chart probes and ports, Istio routes,
-Portal authentication flows, Teams delivery, and upgrade behavior.
+Portal authentication flows and upgrade behavior.
 
 ## Instance URL prefixes
 
@@ -161,14 +154,13 @@ The runtime checks should cover:
 
 - the installed package version and prebuilt Dashboard/TUI assets;
 - SQLite WAL persistence and FTS5 trigram search;
-- actual Teams plugin discovery, connection, reconnect, and mocked delivery;
 - Gateway health and the web-terminal endpoint;
 - Dashboard rejection of unauthenticated requests and incorrect passwords,
   followed by password login and a session-authenticated request;
 - the CetiRun auth helper with and without its bearer key.
 
 These checks use synthetic files and credentials. Model responses, real
-Copilot login, Teams delivery, Chrome/CDP, Tailscale, and Kubernetes ingress
+Copilot login, Chrome/CDP, Tailscale, and Kubernetes ingress
 still require separately authorized integrations; these checks do not claim
 to validate them.
 

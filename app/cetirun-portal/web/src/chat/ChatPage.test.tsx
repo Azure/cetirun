@@ -59,7 +59,6 @@ const instance: Instance = {
   team: "example-team",
   phase: "Ready",
   upgradeAvailable: false,
-  teamsEnabled: false,
   createdAt: "2026-10-05T00:00:00Z",
 };
 const input = () =>

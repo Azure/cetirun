@@ -128,7 +128,6 @@ Do not delete PVCs or remove finalizers to conceal a failed reconciliation.
 ## External integrations
 
 - [Copilot catalog](../../guides/models/#when-discovery-fails)
-- [Microsoft Teams](../../guides/msteams/#troubleshoot-without-exposing-credentials)
 - [Tailscale](../../guides/tailscale/#if-it-does-not-connect)
 
 ## Share a useful report

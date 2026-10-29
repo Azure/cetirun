@@ -159,25 +159,6 @@ jobs:
             --docker-password="${{ secrets.E2E_ACR_PASSWORD }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Validate Azure secrets
-        env:
-          SUBSCRIPTION_ID: ${{ secrets.E2E_AZURE_SUBSCRIPTION_ID }}
-          TENANT_ID: ${{ secrets.E2E_AZURE_TENANT_ID }}
-          CLIENT_ID: ${{ secrets.E2E_AZURE_CLIENT_ID }}
-          RESOURCE_GROUP: ${{ vars.E2E_AZURE_RESOURCE_GROUP }}
-          BOT_NAME_PREFIX: ${{ vars.E2E_AZURE_BOT_NAME_PREFIX }}
-        run: |
-          missing=()
-          [ -z "$SUBSCRIPTION_ID" ] && missing+=(E2E_AZURE_SUBSCRIPTION_ID)
-          [ -z "$TENANT_ID" ] && missing+=(E2E_AZURE_TENANT_ID)
-          [ -z "$CLIENT_ID" ] && missing+=(E2E_AZURE_CLIENT_ID)
-          [ -z "$RESOURCE_GROUP" ] && missing+=(E2E_AZURE_RESOURCE_GROUP)
-          [ -z "$BOT_NAME_PREFIX" ] && missing+=(E2E_AZURE_BOT_NAME_PREFIX)
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing required Azure secrets/variables: ${missing[*]}"
-            exit 1
-          fi
-
       - name: Deploy Operator (local chart + test image)
         env:
           LOCAL_CHART: "true"
@@ -190,7 +171,7 @@ jobs:
             echo "::error::E2E_DOMAIN variable is not set. Configure it in the GitHub environment variables."
             exit 1
           fi
-          export HELM_SET_ARGS="cetirun.chart.repoURL=oci://${{ secrets.E2E_ACR_REGISTRY }}/helm/cetirun cetirun.chart.version=${VERSION} domainSuffix=${DOMAIN} skillsStorageAccount=${{ vars.E2E_SKILLS_STORAGE_ACCOUNT || 'cetirunskills' }} azure.subscriptionId=${{ secrets.E2E_AZURE_SUBSCRIPTION_ID }} azure.resourceGroup=${{ vars.E2E_AZURE_RESOURCE_GROUP }} azure.botNamePrefix=${{ vars.E2E_AZURE_BOT_NAME_PREFIX }} azure.tenantId=${{ secrets.E2E_AZURE_TENANT_ID }} azure.clientId=${{ secrets.E2E_AZURE_CLIENT_ID }}"
+          export HELM_SET_ARGS="cetirun.chart.repoURL=oci://${{ secrets.E2E_ACR_REGISTRY }}/helm/cetirun cetirun.chart.version=${VERSION} domainSuffix=${DOMAIN} skillsStorageAccount=${{ vars.E2E_SKILLS_STORAGE_ACCOUNT || 'cetirunskills' }} azure.clientId=${{ secrets.E2E_AZURE_CLIENT_ID }}"
           cd app/cetirun-operator
           deploy/deploy.sh
 

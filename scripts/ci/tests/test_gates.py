@@ -334,12 +334,6 @@ class PythonSafetyTests(unittest.TestCase):
             "connected",
         )
 
-    def test_cloud_credentials_and_unimplemented_hermes_fail_closed(self):
-        with self.assertRaises(AssertionError):
-            python_safety.NoCloudCredential().get_token("scope")
-        with self.assertRaises(AssertionError):
-            python_safety.UnusedHermesInterface()
-
 
 class WorkflowContractTests(unittest.TestCase):
     """Check small cross-file invariants; actionlint handles YAML/Actions semantics."""
@@ -554,7 +548,6 @@ class WorkflowContractTests(unittest.TestCase):
         requirements = (validate.ROOT / "scripts/ci/requirements.txt").read_text()
         for package, minimum in {
             "aiohttp": (3, 14, 3),
-            "PyJWT[crypto]": (2, 15, 0),
             "pytest": (9, 0, 3),
         }.items():
             with self.subTest(package=package):

@@ -23,7 +23,7 @@ Licensed under the MIT License.
 {{- fail "Sandbox render plans must retain the execution hold" -}}
 {{- end -}}
 {{- if $s.ingressMTLS -}}
-{{- if or (not $reconciled) (include "cetirun.tailscaleEnabled" .) (gt (int .Values.msteamsWebhookPort) 0) -}}
+{{- if or (not $reconciled) (include "cetirun.tailscaleEnabled" .) -}}
 {{- fail "managed ingress mTLS requires common built-in API/UI/terminal/desktop routing without alternate ingress" -}}
 {{- end -}}
 {{- end -}}

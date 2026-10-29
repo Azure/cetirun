@@ -18,9 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/yaml"
 
-	istioapiv1beta1 "istio.io/api/networking/v1beta1"
-	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
-
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
@@ -102,9 +99,7 @@ func TestConfigHashInvalidatesPreRuntimeAgentIdentityWiring(t *testing.T) {
 	legacy := operatorConfigHash(
 		reconciler.DomainSuffix, "secret", reconciler.SkillsStorageAccount,
 		hashCetiRunHelmValues(reconciler.CetiRunHelmValues), reconciler.ChartRegistry,
-		reconciler.AzureSubscriptionID, reconciler.AzureResourceGroup,
-		reconciler.AzureBotNamePrefix, reconciler.AzureTenantID,
-		reconciler.AzureOIDCIssuerURL, reconciler.AgentIdentityTenantID,
+		reconciler.AgentIdentityTenantID,
 		reconciler.AgentIdentityBlueprintClientID, reconciler.AgentIdentityNamePrefix,
 		reconciler.AgentIdentityBrokerURL, "",
 	)
@@ -615,24 +610,6 @@ func TestBuildHelmValues_TailscaleServeOverriddenByHelmValues(t *testing.T) {
 	}
 }
 
-// assertWebhookDenyRoute asserts that route r is the non-Teams webhook deny route:
-// an exact POST match on wantPath that returns a direct 404 with no upstream.
-func assertWebhookDenyRoute(t *testing.T, r *istioapiv1beta1.HTTPRoute, wantPath string) {
-	t.Helper()
-	if exact := r.Match[0].GetUri().GetExact(); exact != wantPath {
-		t.Errorf("deny route: URI exact = %q, want %q", exact, wantPath)
-	}
-	if method := r.Match[0].GetMethod().GetExact(); method != "POST" {
-		t.Errorf("deny route: method = %q, want POST", method)
-	}
-	if r.DirectResponse == nil || r.DirectResponse.Status != 404 {
-		t.Errorf("deny route: expected DirectResponse 404, got %+v", r.DirectResponse)
-	}
-	if len(r.Route) != 0 {
-		t.Errorf("deny route: expected no upstream destination, got %d", len(r.Route))
-	}
-}
-
 // TestBuildVirtualService_Routes verifies that buildVirtualService produces the
 // expected HTTP routes for the OpenClaw branch:
 // /ui/<instanceName> WebSocket Upgrade → OpenClaw Gateway (port 18789),
@@ -653,21 +630,17 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		t.Fatalf("VS hosts = %v, want [%q]", vs.Spec.Hosts, domainSuffix)
 	}
 
-	// Routes: 1 webhook deny route (non-Teams instance, prepended first)
-	//       + 1 exact-path WebSocket route for the OpenClaw Control UI
+	// Routes: 1 exact-path WebSocket route for the OpenClaw Control UI
 	//       + 3 redirects (instance root, desktop, term without trailing slash)
 	//       + 4 proxy routes (cetirun-auth, desktop, term, native Control UI)
-	if len(vs.Spec.Http) != 9 {
-		t.Fatalf("expected 9 HTTP routes, got %d", len(vs.Spec.Http))
+	if len(vs.Spec.Http) != 8 {
+		t.Fatalf("expected 8 HTTP routes, got %d", len(vs.Spec.Http))
 	}
 
-	// Route 0: webhook deny — POST /alice/api/messages → direct 404 (Teams disabled).
-	assertWebhookDenyRoute(t, vs.Spec.Http[0], "/alice/api/messages")
-
-	// Route 1: the Control UI removes the trailing slash when constructing its
+	// Route 0: the Control UI removes the trailing slash when constructing its
 	// WebSocket URL. The Upgrade request must reach the gateway rather than the
 	// canonical HTTP redirect because browsers do not follow WebSocket redirects.
-	r1 := vs.Spec.Http[1]
+	r1 := vs.Spec.Http[0]
 	if exact := r1.Match[0].GetUri().GetExact(); exact != "/ui/alice" {
 		t.Errorf("route 1: URI exact = %q, want /ui/alice", exact)
 	}
@@ -678,9 +651,9 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		t.Errorf("route 1: destination port = %d, want %d", port, openclawPort)
 	}
 
-	// Routes 2-4: trailing-slash redirects
+	// Routes 1-3: trailing-slash redirects
 	for i, path := range []string{"/ui/alice", "/alice/desktop", "/alice/term"} {
-		r := vs.Spec.Http[i+2]
+		r := vs.Spec.Http[i+1]
 		if exact := r.Match[0].GetUri().GetExact(); exact != path {
 			t.Errorf("route %d: URI exact = %q, want %q", i+2, exact, path)
 		}
@@ -689,8 +662,8 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		}
 	}
 
-	// Route 5: /alice/cetirun-auth/ → in-pod auth helper, rewrite to /
-	r5 := vs.Spec.Http[5]
+	// Route 4: /alice/cetirun-auth/ → in-pod auth helper, rewrite to /
+	r5 := vs.Spec.Http[4]
 	if prefix := r5.Match[0].GetUri().GetPrefix(); prefix != "/alice/cetirun-auth/" {
 		t.Errorf("route 5: cetirun-auth prefix = %q, want /alice/cetirun-auth/", prefix)
 	}
@@ -701,8 +674,8 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		t.Errorf("route 5: destination port = %d, want %d", port, cetirunAuthPort)
 	}
 
-	// Route 6: /alice/desktop → noVNC with rewrite to /desktop
-	r6 := vs.Spec.Http[6]
+	// Route 5: /alice/desktop → noVNC with rewrite to /desktop
+	r6 := vs.Spec.Http[5]
 	if prefix := r6.Match[0].GetUri().GetPrefix(); prefix != "/alice/desktop" {
 		t.Errorf("route 6: URI prefix = %q, want %q", prefix, "/alice/desktop")
 	}
@@ -713,8 +686,8 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		t.Errorf("route 6: destination port = %d, want %d", port, novncPort)
 	}
 
-	// Route 7: /alice/term → ttyd with rewrite to /term
-	r7 := vs.Spec.Http[7]
+	// Route 6: /alice/term → ttyd with rewrite to /term
+	r7 := vs.Spec.Http[6]
 	if prefix := r7.Match[0].GetUri().GetPrefix(); prefix != "/alice/term" {
 		t.Errorf("route 7: URI prefix = %q, want %q", prefix, "/alice/term")
 	}
@@ -725,9 +698,9 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		t.Errorf("route 7: destination port = %d, want %d", port, ttydPort)
 	}
 
-	// Route 8: /ui/alice/ → OpenClaw Control UI. The URI remains prefixed because
+	// Route 7: /ui/alice/ → OpenClaw Control UI. The URI remains prefixed because
 	// the gateway is configured with controlUi.basePath=/ui/alice.
-	r8 := vs.Spec.Http[8]
+	r8 := vs.Spec.Http[7]
 	if prefix := r8.Match[0].GetUri().GetPrefix(); prefix != "/ui/alice/" {
 		t.Errorf("route 8: URI prefix = %q, want %q", prefix, "/ui/alice/")
 	}
@@ -762,17 +735,14 @@ func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 
 	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
-	// 1 webhook deny route (non-Teams, prepended) + 3 redirects (root, desktop, term)
-	// + 6 proxy routes (v1, health, cetirun-auth, desktop, term, catch-all dashboard)
-	if len(vs.Spec.Http) != 10 {
-		t.Fatalf("expected 10 HTTP routes, got %d", len(vs.Spec.Http))
+	// 3 redirects (root, desktop, term) + 6 proxy routes (v1, health,
+	// cetirun-auth, desktop, term, catch-all dashboard).
+	if len(vs.Spec.Http) != 9 {
+		t.Fatalf("expected 9 HTTP routes, got %d", len(vs.Spec.Http))
 	}
 
-	// Route 0: webhook deny — POST /alice/api/messages → direct 404 (Teams disabled).
-	assertWebhookDenyRoute(t, vs.Spec.Http[0], "/alice/api/messages")
-
 	for i, path := range []string{"/ui/alice", "/alice/desktop", "/alice/term"} {
-		r := vs.Spec.Http[i+1]
+		r := vs.Spec.Http[i]
 		if exact := r.Match[0].GetUri().GetExact(); exact != path {
 			t.Errorf("route %d: URI exact = %q, want %q", i+1, exact, path)
 		}
@@ -781,15 +751,15 @@ func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 		}
 	}
 	// /v1 → Hermes API
-	if port := vs.Spec.Http[4].Route[0].Destination.Port.Number; port != hermesAPIPort {
+	if port := vs.Spec.Http[3].Route[0].Destination.Port.Number; port != hermesAPIPort {
 		t.Errorf("v1 route port = %d, want %d", port, hermesAPIPort)
 	}
 	// /health → Hermes API
-	if port := vs.Spec.Http[5].Route[0].Destination.Port.Number; port != hermesAPIPort {
+	if port := vs.Spec.Http[4].Route[0].Destination.Port.Number; port != hermesAPIPort {
 		t.Errorf("health route port = %d, want %d", port, hermesAPIPort)
 	}
 	// /cetirun-auth/ → in-pod auth helper service (rewritten to /)
-	authRoute := vs.Spec.Http[6]
+	authRoute := vs.Spec.Http[5]
 	if prefix := authRoute.Match[0].GetUri().GetPrefix(); prefix != "/alice/cetirun-auth/" {
 		t.Errorf("cetirun-auth prefix = %q, want /alice/cetirun-auth/", prefix)
 	}
@@ -800,15 +770,15 @@ func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 		t.Errorf("cetirun-auth port = %d, want %d", port, cetirunAuthPort)
 	}
 	// /desktop → noVNC
-	if port := vs.Spec.Http[7].Route[0].Destination.Port.Number; port != novncPort {
+	if port := vs.Spec.Http[6].Route[0].Destination.Port.Number; port != novncPort {
 		t.Errorf("desktop route port = %d, want %d", port, novncPort)
 	}
 	// /term → ttyd
-	if port := vs.Spec.Http[8].Route[0].Destination.Port.Number; port != ttydPort {
+	if port := vs.Spec.Http[7].Route[0].Destination.Port.Number; port != ttydPort {
 		t.Errorf("term route port = %d, want %d", port, ttydPort)
 	}
 	// catch-all → native Dashboard (must come AFTER /cetirun-auth so it doesn't swallow auth requests)
-	catchAll := vs.Spec.Http[9]
+	catchAll := vs.Spec.Http[8]
 	if prefix := catchAll.Match[0].GetUri().GetPrefix(); prefix != "/ui/alice/" {
 		t.Errorf("catch-all prefix = %q, want /ui/alice/", prefix)
 	}
@@ -1104,287 +1074,6 @@ func TestBuildHelmValues_ImageRepositoryNotSetWhenNoChartRegistry(t *testing.T) 
 	}
 }
 
-// TestBuildHelmValues_ImageRepositoryMergedWithTeams verifies that when both
-// chartRegistry is set and Teams is enabled, image.repository is set without tagSuffix.
-func TestBuildHelmValues_ImageRepositoryMergedWithTeams(t *testing.T) {
-	instance := newTestInstance("bob", "Bob Builder", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
-		Enabled: true,
-		AppID:   "test-app-id",
-	}
-	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "registry.example.com")
-	if err != nil {
-		t.Fatalf("buildHelmValues error: %v", err)
-	}
-	openclaw, ok := values["openclaw"].(map[string]interface{})
-	if !ok {
-		t.Fatal("values[\"openclaw\"] missing or wrong type")
-	}
-	image, ok := openclaw["image"].(map[string]interface{})
-	if !ok {
-		t.Fatal("values[\"openclaw\"].image missing or wrong type")
-	}
-	if got := image["repository"]; got != "registry.example.com/openclaw-gateway" {
-		t.Errorf("openclaw.image.repository = %q, want %q", got, "registry.example.com/openclaw-gateway")
-	}
-	if _, ok := image["tagSuffix"]; ok {
-		t.Error("image.tagSuffix should not be set (Teams uses the same image now)")
-	}
-}
-
-func TestBuildVirtualService_MSTeamsRoute(t *testing.T) {
-	instance := newTestInstance("bob", "Bob Builder", "aks-ai", "gateway-token")
-	instance.Name = "bob"
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
-		Enabled:  true,
-		AppID:    "00000000-0000-0000-0000-000000000001",
-		TenantID: "00000000-0000-0000-0000-000000000002",
-	}
-	domainSuffix := "example.com"
-
-	vs := buildVirtualService(instance, domainSuffix, DefaultIstioGateway)
-
-	// Should have 9 routes: msteams webhook + WebSocket route + 3 redirects + cetirun-auth + 3 proxy routes.
-	if len(vs.Spec.Http) != 9 {
-		t.Fatalf("expected 9 HTTP routes, got %d", len(vs.Spec.Http))
-	}
-
-	// VS must bind to the apex domain
-	if len(vs.Spec.Hosts) != 1 || vs.Spec.Hosts[0] != domainSuffix {
-		t.Errorf("VS hosts = %v, want [%q]", vs.Spec.Hosts, domainSuffix)
-	}
-
-	// The first route (index 0) should be the msteams webhook route (prepended).
-	r0 := vs.Spec.Http[0]
-	if exact := r0.Match[0].GetUri().GetExact(); exact != "/bob/api/messages" {
-		t.Errorf("msteams route: URI exact = %q, want %q", exact, "/bob/api/messages")
-	}
-	if method := r0.Match[0].GetMethod().GetExact(); method != "POST" {
-		t.Errorf("msteams route: method = %q, want POST", method)
-	}
-	if port := r0.Route[0].Destination.Port.Number; port != msteamsWebhookPort {
-		t.Errorf("msteams route: port = %d, want %d", port, msteamsWebhookPort)
-	}
-}
-
-func TestBuildVirtualService_NoMSTeamsRoute(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
-	instance.Name = "alice"
-	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
-
-	// Non-Teams instance still gets a prepended webhook deny route (1 + 8 = 9).
-	if len(vs.Spec.Http) != 9 {
-		t.Fatalf("expected 9 HTTP routes (deny + base), got %d", len(vs.Spec.Http))
-	}
-
-	// Route 0 must be the deny route, not a proxy/redirect, so the static gateway POST
-	// bypass cannot reach the catch-all for a non-Teams instance.
-	assertWebhookDenyRoute(t, vs.Spec.Http[0], "/alice/api/messages")
-}
-
-// TestBuildVirtualService_WebhookRouteIsPerInstance verifies the webhook route (Teams
-// or deny) is scoped to the instance's own path and lives only in that instance's
-// VirtualService — never as a shared/global suffix rule that could shadow
-// another instance. A Teams-enabled instance and a non-Teams instance must each carry
-// their own exact-path route bound to their own apex VirtualService.
-func TestBuildVirtualService_WebhookRouteIsPerInstance(t *testing.T) {
-	teams := newTestInstance("bob", "Bob Builder", "aks-ai", "gateway-token")
-	teams.Name = "bob"
-	teams.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
-
-	plain := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
-	plain.Name = "alice"
-
-	teamsVS := buildVirtualService(teams, "example.com", DefaultIstioGateway)
-	plainVS := buildVirtualService(plain, "example.com", DefaultIstioGateway)
-
-	// Each VS binds only to the shared apex host but matches its own instance path.
-	teamsR0 := teamsVS.Spec.Http[0]
-	if exact := teamsR0.Match[0].GetUri().GetExact(); exact != "/bob/api/messages" {
-		t.Errorf("teams webhook route matches %q, want /bob/api/messages", exact)
-	}
-	if teamsR0.DirectResponse != nil {
-		t.Error("teams instance webhook route must forward, not direct-respond")
-	}
-
-	plainR0 := plainVS.Spec.Http[0]
-	if exact := plainR0.Match[0].GetUri().GetExact(); exact != "/alice/api/messages" {
-		t.Errorf("non-teams webhook route matches %q, want /alice/api/messages", exact)
-	}
-	if plainR0.DirectResponse == nil {
-		t.Error("non-teams instance webhook route must direct-respond (deny)")
-	}
-
-	// No route may use a wildcard/global suffix match that would span instances.
-	for _, vs := range []*istiov1beta1.VirtualService{teamsVS, plainVS} {
-		for i, r := range vs.Spec.Http {
-			if exact := r.Match[0].GetUri().GetExact(); strings.Contains(exact, "*") {
-				t.Errorf("%s route %d uses wildcard exact match %q; webhook routes must be exact per-instance paths", vs.Name, i, exact)
-			}
-		}
-	}
-}
-
-func TestBuildHelmValues_MSTeamsManagedIdentity(t *testing.T) {
-	instance := newTestInstance("bob", "Bob Builder", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
-		Enabled:  true,
-		AppID:    "00000000-0000-0000-0000-000000000001",
-		TenantID: "00000000-0000-0000-0000-000000000002",
-	}
-
-	vals, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
-	if err != nil {
-		t.Fatalf("buildHelmValues: %v", err)
-	}
-
-	// Check msteamsWebhookPort.
-	if port, ok := vals["msteamsWebhookPort"]; !ok || port != 3978 {
-		t.Errorf("msteamsWebhookPort = %v, want 3978", port)
-	}
-
-	// Check azureWorkloadIdentity.
-	awi, ok := vals["azureWorkloadIdentity"].(map[string]interface{})
-	if !ok {
-		t.Fatal("azureWorkloadIdentity not set")
-	}
-	if awi["enabled"] != true {
-		t.Errorf("azureWorkloadIdentity.enabled = %v, want true", awi["enabled"])
-	}
-	if awi["clientId"] != "00000000-0000-0000-0000-000000000001" {
-		t.Errorf("azureWorkloadIdentity.clientId = %v", awi["clientId"])
-	}
-
-	// Check msteamsAuthType Helm value (chart template converts this to env vars).
-	if got := vals["msteamsAuthType"]; got != "managedIdentity" {
-		t.Errorf("msteamsAuthType = %v, want managedIdentity", got)
-	}
-}
-
-func TestBuildHelmValues_MSTeamsCertificate(t *testing.T) {
-	// Certificate auth type has been removed; this test now verifies that
-	// Teams with Enabled=true always uses managedIdentity.
-	instance := newTestInstance("carol", "Carol Cert", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
-		Enabled:  true,
-		AppID:    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-		TenantID: "00000000-0000-0000-0000-000000000002",
-	}
-
-	vals, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
-	if err != nil {
-		t.Fatalf("buildHelmValues: %v", err)
-	}
-
-	// Always managedIdentity now.
-	if got := vals["msteamsAuthType"]; got != "managedIdentity" {
-		t.Errorf("msteamsAuthType = %v, want managedIdentity", got)
-	}
-
-	// No extraVolumes or extraVolumeMounts for certs.
-	if _, ok := vals["extraVolumes"]; ok {
-		t.Error("extraVolumes should not be set (certificate auth removed)")
-	}
-	if _, ok := vals["extraVolumeMounts"]; ok {
-		t.Error("extraVolumeMounts should not be set (certificate auth removed)")
-	}
-}
-
-// TestBuildHelmValues_TeamsNoImageTagSuffix verifies that when MSTeams is enabled
-// without a chartRegistry, no image override is injected (no tagSuffix, no repository).
-func TestBuildHelmValues_TeamsNoImageTagSuffix(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
-		Enabled: true,
-		AppID:   "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-	}
-
-	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
-	if err != nil {
-		t.Fatalf("buildHelmValues: %v", err)
-	}
-
-	// With no chartRegistry, Teams no longer triggers any image override
-	// because the same upstream image now includes Teams support.
-	if _, ok := values["image"]; ok {
-		t.Error("values[\"image\"] should not be set when chartRegistry is empty (Teams merged upstream)")
-	}
-}
-
-// TestBuildHelmValues_NoTeamsNoImageTag verifies that when MSTeams is not enabled,
-// no image override is set (chart uses appVersion by default).
-func TestBuildHelmValues_NoTeamsNoImageTag(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
-
-	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
-	if err != nil {
-		t.Fatalf("buildHelmValues: %v", err)
-	}
-
-	if _, ok := values["image"]; ok {
-		t.Error("values[\"image\"] should not be set when Teams is not enabled")
-	}
-}
-
-// TestBuildHelmValues_TeamsEmptyAppID verifies that when MSTeams is enabled but
-// AppID is empty (auto-provisioned, not yet resolved), azureWorkloadIdentity is
-// disabled to avoid deploying a ServiceAccount with an empty client-id annotation.
-func TestBuildHelmValues_TeamsEmptyAppID(t *testing.T) {
-	instance := newTestInstance("dave", "Dave Auto", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
-		Enabled: true,
-		AppID:   "", // auto-provisioned — not yet resolved
-	}
-
-	vals, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
-	if err != nil {
-		t.Fatalf("buildHelmValues: %v", err)
-	}
-
-	awi, ok := vals["azureWorkloadIdentity"].(map[string]interface{})
-	if !ok {
-		t.Fatal("azureWorkloadIdentity not set")
-	}
-	if awi["enabled"] != false {
-		t.Errorf("azureWorkloadIdentity.enabled = %v, want false (empty appId)", awi["enabled"])
-	}
-	if _, hasClientID := awi["clientId"]; hasClientID {
-		t.Error("azureWorkloadIdentity.clientId should not be set when appId is empty")
-	}
-}
-
-// TestBuildHelmValues_TeamsStatusAppID verifies that when spec.msteams.appId is empty
-// but status.msteams.appId is populated (auto-provisioned, resolved), the status
-// appId is used for azureWorkloadIdentity.
-func TestBuildHelmValues_TeamsStatusAppID(t *testing.T) {
-	instance := newTestInstance("eve", "Eve Auto", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
-		Enabled: true,
-		AppID:   "", // empty in spec
-	}
-	instance.Status.MSTeams = &cetirunv1alpha1.MSTeamsStatus{
-		AppID: "resolved-app-id-from-status",
-	}
-
-	vals, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
-	if err != nil {
-		t.Fatalf("buildHelmValues: %v", err)
-	}
-
-	awi, ok := vals["azureWorkloadIdentity"].(map[string]interface{})
-	if !ok {
-		t.Fatal("azureWorkloadIdentity not set")
-	}
-	if awi["enabled"] != true {
-		t.Errorf("azureWorkloadIdentity.enabled = %v, want true (status appId populated)", awi["enabled"])
-	}
-	if awi["clientId"] != "resolved-app-id-from-status" {
-		t.Errorf("azureWorkloadIdentity.clientId = %v, want resolved-app-id-from-status", awi["clientId"])
-	}
-}
-
-// TestBuildHelmValues_SuspendedSetsReplicaCountZero verifies that when
-// spec.suspended is true, replicaCount is set to 0.
 func TestBuildHelmValues_SuspendedSetsReplicaCountZero(t *testing.T) {
 	instance := newTestInstance("frank", "Frank Suspended", "example-team", "gateway-token")
 	instance.Spec.Suspended = true
@@ -1649,24 +1338,21 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 		t.Errorf("VS hosts = %v, want [%q]", vs.Spec.Hosts, domain)
 	}
 
-	// Must have exactly 9 HTTP routes: 1 webhook deny route (non-Teams, prepended),
-	// 1 exact-path WebSocket route, 3 trailing-slash redirects, cetirun-auth, and 3 proxy routes.
-	if len(vs.Spec.Http) != 9 {
-		t.Fatalf("VS http routes = %d, want 9", len(vs.Spec.Http))
+	// Must have exactly 8 HTTP routes: 1 exact-path WebSocket route, 3
+	// trailing-slash redirects, cetirun-auth, and 3 proxy routes.
+	if len(vs.Spec.Http) != 8 {
+		t.Fatalf("VS http routes = %d, want 8", len(vs.Spec.Http))
 	}
 
-	// Route 0: webhook deny — POST /alice-work/api/messages → direct 404.
-	assertWebhookDenyRoute(t, vs.Spec.Http[0], "/alice-work/api/messages")
-
-	// Route 1: /ui/alice-work with Upgrade: websocket routes directly to the gateway.
-	r1 := vs.Spec.Http[1]
+	// Route 0: /ui/alice-work with Upgrade: websocket routes directly to the gateway.
+	r1 := vs.Spec.Http[0]
 	if r1.Match[0].Uri.GetExact() != "/ui/alice-work" || r1.Match[0].Headers["upgrade"].GetExact() != "websocket" {
 		t.Errorf("route[1] must match WebSocket upgrades for /ui/alice-work")
 	}
 
-	// Routes 2-4: trailing-slash redirects for the native UI, desktop, and terminal.
+	// Routes 1-3: trailing-slash redirects for the native UI, desktop, and terminal.
 	for i, path := range []string{"/ui/alice-work", "/alice-work/desktop", "/alice-work/term"} {
-		r := vs.Spec.Http[i+2]
+		r := vs.Spec.Http[i+1]
 		if r.Match[0].Uri.GetExact() != path {
 			t.Errorf("redirect route[%d] exact = %q, want %q", i+2, r.Match[0].Uri.GetExact(), path)
 		}
@@ -1675,8 +1361,8 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 		}
 	}
 
-	// Route 5: /alice-work/cetirun-auth/ → cetirun-auth helper
-	r5 := vs.Spec.Http[5]
+	// Route 4: /alice-work/cetirun-auth/ → cetirun-auth helper
+	r5 := vs.Spec.Http[4]
 	if r5.Match[0].Uri.GetPrefix() != "/alice-work/cetirun-auth/" {
 		t.Errorf("route[5] prefix = %q, want %q", r5.Match[0].Uri.GetPrefix(), "/alice-work/cetirun-auth/")
 	}
@@ -1684,8 +1370,8 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 		t.Errorf("route[5] port = %d, want %d", r5.Route[0].Destination.Port.Number, cetirunAuthPort)
 	}
 
-	// Route 6: /alice-work/desktop → novnc
-	r6 := vs.Spec.Http[6]
+	// Route 5: /alice-work/desktop → novnc
+	r6 := vs.Spec.Http[5]
 	if r6.Match[0].Uri.GetPrefix() != "/alice-work/desktop" {
 		t.Errorf("route[6] prefix = %q, want %q", r6.Match[0].Uri.GetPrefix(), "/alice-work/desktop")
 	}
@@ -1693,8 +1379,8 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 		t.Errorf("route[6] port = %d, want %d", r6.Route[0].Destination.Port.Number, novncPort)
 	}
 
-	// Route 7: /alice-work/term → ttyd
-	r7 := vs.Spec.Http[7]
+	// Route 6: /alice-work/term → ttyd
+	r7 := vs.Spec.Http[6]
 	if r7.Match[0].Uri.GetPrefix() != "/alice-work/term" {
 		t.Errorf("route[7] prefix = %q, want %q", r7.Match[0].Uri.GetPrefix(), "/alice-work/term")
 	}
@@ -1702,8 +1388,8 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 		t.Errorf("route[7] port = %d, want %d", r7.Route[0].Destination.Port.Number, ttydPort)
 	}
 
-	// Route 8: /ui/alice-work/ → native OpenClaw Control UI, with the URI preserved.
-	r8 := vs.Spec.Http[8]
+	// Route 7: /ui/alice-work/ → native OpenClaw Control UI, with the URI preserved.
+	r8 := vs.Spec.Http[7]
 	if r8.Match[0].Uri.GetPrefix() != "/ui/alice-work/" {
 		t.Errorf("route[8] prefix = %q, want %q", r8.Match[0].Uri.GetPrefix(), "/ui/alice-work/")
 	}

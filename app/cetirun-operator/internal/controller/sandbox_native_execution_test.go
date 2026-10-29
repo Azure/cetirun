@@ -119,7 +119,6 @@ func TestNativeSandboxProfileRejectsUnsupportedOverrides(t *testing.T) {
 		{"no shared models", func(a *sandboxPreparationAttempt) { a.agent.Spec.ModelAccess.SharedModels = ptr.To(false) }},
 		{"Copilot", func(a *sandboxPreparationAttempt) { a.agent.Spec.ModelAccess.GitHubCopilot = ptr.To(true) }},
 		{"Tailscale", func(a *sandboxPreparationAttempt) { a.agent.Spec.Tailscale = &api.TailscaleSpec{} }},
-		{"Teams", func(a *sandboxPreparationAttempt) { a.agent.Spec.MSTeams = &api.MSTeamsSpec{} }},
 		{"Agent Identity", func(a *sandboxPreparationAttempt) { a.agent.Spec.AgentIdentity = &api.AgentIdentitySpec{Enabled: true} }},
 		{"Entra grant", func(a *sandboxPreparationAttempt) { a.resolution.AgentPolicy.EntraID.Enabled = true }},
 		{"Kubernetes grant", func(a *sandboxPreparationAttempt) {

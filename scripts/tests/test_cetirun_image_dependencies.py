@@ -410,7 +410,6 @@ class ImageDependencyTests(unittest.TestCase):
             "brave-plugin",
             "discord",
             "feishu",
-            "msteams",
             "perplexity-plugin",
             "slack",
         )
@@ -434,7 +433,8 @@ class ImageDependencyTests(unittest.TestCase):
         self.assertIn("rm -rf /home/vibe/.openclaw/identity", install)
         self.assertIn("rm -f /home/vibe/.openclaw/openclaw.json", install)
         self.assertNotIn("\nRUN openclaw doctor", content)
-        cases = [(fail_at, 0) for fail_at in range(8)] + [(0, 1), (7, 1)]
+        plugin_count = len(expected_plugins)
+        cases = [(fail_at, 0) for fail_at in range(plugin_count + 1)] + [(0, 1), (plugin_count, 1)]
         for fail_at, cleanup_exit in cases:
             with self.subTest(fail_at=fail_at, cleanup_exit=cleanup_exit):
                 mocks = (

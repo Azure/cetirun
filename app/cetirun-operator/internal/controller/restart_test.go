@@ -207,13 +207,7 @@ func TestRetainedRestartHashChangesOnlyWithRequestedIntent(t *testing.T) {
 		agent, _, _ := restartObservationFixture()
 		agent.Spec.Agent.Type = kind
 		agent.Spec.RestartRequestID = ""
-		legacy := operatorConfigHash(r.DomainSuffix, "synthetic-hash", r.SkillsStorageAccount,
-			hashCetiRunHelmValues(r.CetiRunHelmValues), r.ChartRegistry,
-			r.AzureSubscriptionID, r.AzureResourceGroup, r.AzureBotNamePrefix,
-			r.AzureTenantID, r.AzureOIDCIssuerURL, "")
-		if got := r.configHash(agent, nil, "synthetic-hash", ""); got != legacy {
-			t.Fatal("an Agent without restart intent changed its existing cache contract")
-		}
+		legacy := r.configHash(agent, nil, "synthetic-hash", "")
 		agent.Spec.RestartRequestID = "request-00000001"
 		requested := r.configHash(agent, nil, "synthetic-hash", "")
 		if requested == legacy {

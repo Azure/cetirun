@@ -82,11 +82,11 @@ class RepositoryDocsTests(unittest.TestCase):
 
     def test_source_page_target_fragment(self):
         self.write(
-            "docs/guides/msteams.md",
-            "[Guide](../../site/content/en/docs/guides/msteams.md#setup)\n",
+            "docs/guides/example.md",
+            "[Guide](../../site/content/en/docs/guides/example.md#setup)\n",
         )
         self.write(
-            "site/content/en/docs/guides/msteams.md",
+            "site/content/en/docs/guides/example.md",
             '---\ntitle: "Guide"\n---\n\n## Setup\n',
         )
         self.assertEqual(check_site.check_repository_links(self.root), [])

@@ -224,7 +224,19 @@ func TestNativeUpgradePreservesExistingRuntimeAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeRoute := route.DeepCopy()
-	for range 2 {
+	// The recorded controller installed a Teams-only deny route even for this
+	// Agent. Retiring that endpoint removes exactly this rule while retaining
+	// every native route and the existing runtime/receipt.
+	if len(beforeRoute.Spec.Http) < 2 {
+		t.Fatal("historical fixture is missing its native routes")
+	}
+	webhook := beforeRoute.Spec.Http[0]
+	if len(webhook.Match) != 1 || webhook.Match[0].GetUri().GetExact() != "/"+beforeAgent.Name+"/api/messages" ||
+		webhook.Match[0].GetMethod().GetExact() != "POST" || webhook.GetDirectResponse().GetStatus() != 404 || len(webhook.Route) != 0 {
+		t.Fatal("historical fixture is missing its Teams-only deny route")
+	}
+	beforeRoute.Spec.Http = beforeRoute.Spec.Http[1:]
+	for iteration := range 2 {
 		f.reconcileOK(t)
 		f.assertReady(t)
 		agent := f.current(t)
@@ -247,9 +259,17 @@ func TestNativeUpgradePreservesExistingRuntimeAndReceipt(t *testing.T) {
 		if err := f.kube.Get(ctx, client.ObjectKeyFromObject(oldConfig), currentConfig); err != nil || !reflect.DeepEqual(currentConfig, oldConfig) {
 			t.Fatalf("operator upgrade silently migrated runtime configuration: %v", err)
 		}
-		if err := f.kube.Get(ctx, routeKey, route); err != nil ||
-			!reflect.DeepEqual(route.ObjectMeta, beforeRoute.ObjectMeta) || !proto.Equal(&route.Spec, &beforeRoute.Spec) {
-			t.Fatalf("operator upgrade withdrew or changed the existing route: %v", err)
+		if err := f.kube.Get(ctx, routeKey, route); err != nil {
+			t.Fatal(err)
+		}
+		if iteration == 0 {
+			if route.ResourceVersion == beforeRoute.ResourceVersion {
+				t.Fatal("operator upgrade did not retire the Teams-only deny route")
+			}
+			beforeRoute.ResourceVersion = route.ResourceVersion
+		}
+		if !reflect.DeepEqual(route.ObjectMeta, beforeRoute.ObjectMeta) || !proto.Equal(&route.Spec, &beforeRoute.Spec) {
+			t.Fatal("operator upgrade changed native routing beyond retiring the Teams-only deny route")
 		}
 	}
 	if f.installer.stages != 0 || len(f.gateway.generated) != 0 || len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {

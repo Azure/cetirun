@@ -21,7 +21,6 @@ const baseInstance: Instance = {
   accessUrl: "https://testuser.example.com/",
   gatewayToken: "tok-abc123",
   upgradeAvailable: false,
-  teamsEnabled: false,
 };
 
 const mockUpdate = vi.hoisted(() => vi.fn());
@@ -45,11 +44,6 @@ vi.mock("../hooks/useFeatures", () => ({
 
 vi.mock("./ToolAuthorizationBlock", () => ({
   ToolAuthorizationBlock: () => <div>Azure connection management</div>,
-}));
-
-vi.mock("../api/instance", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../api/instance")>(),
-  downloadTeamsApp: vi.fn(),
 }));
 
 describe("OverviewSection", () => {
@@ -242,7 +236,6 @@ describe("OverviewSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
     expect(screen.queryByLabelText("Gateway Token")).toBeNull();
     expect(screen.queryByLabelText("Tailscale Auth Key")).toBeNull();
-    expect(screen.queryByLabelText("Enable Microsoft Teams Integration")).toBeNull();
     expect(screen.queryByText(/will restart the gateway/)).toBeNull();
   });
 
@@ -262,15 +255,4 @@ describe("OverviewSection", () => {
     expect(screen.getByText(/The controller reports Suspended/i)).toBeInTheDocument();
   });
 
-  it("ignores the removed Teams version gate", () => {
-    const instance = {
-      ...baseInstance,
-      teamsEnabled: true,
-      teamsState: "Ready" as const,
-      teamsUpgradeRequired: true,
-    };
-    renderInRouter(<OverviewSection instance={instance} />);
-    expect(screen.getByRole("button", { name: "Download Teams App" })).toBeInTheDocument();
-    expect(screen.queryByText(/Your chart version does not support Teams integration/i)).toBeNull();
-  });
 });

@@ -63,11 +63,9 @@ for the routing requirements.
 The deployment controls which agent types are offered, whether Tailscale is
 visible, and how many instances each user may create. The portal chart defaults
 to one instance per user; this is a portal creation limit, not a Kubernetes
-resource quota or a restriction on direct CR creation. Keep Microsoft Teams
-disabled for a first instance unless the administrator has configured its
-separate identity and provisioning prerequisites. An instance of a Team with
-an Agent Policy runs in the Team's Sandbox, where Tailscale, Microsoft Teams
-and Agent Identity are not available; see
+resource quota or a restriction on direct CR creation. An instance of a Team
+with an Agent Policy runs in the Team's Sandbox, where Tailscale and Agent
+Identity are not available; see
 [Policy-bound Teams](../../operations/policy-teams/).
 
 Sources: [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}})

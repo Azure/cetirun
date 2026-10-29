@@ -13,7 +13,6 @@ creating an instance.
 | --- | --- |
 | [Get Started](../getting-started/) | Create your first instance and open its workspace |
 | [Using agents](../guides/) | Choose a model and manage your instance |
-| [Microsoft Teams](../guides/msteams/) | Connect an agent to Teams |
 | [Tailscale](../guides/tailscale/) | Access an instance through your tailnet |
 
 For platform installation and shared configuration, see

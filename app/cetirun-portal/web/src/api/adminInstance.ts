@@ -31,9 +31,6 @@ export interface AdminInstanceDetail extends AdminInstanceSummary {
   sandboxRef?: string;
   chartVersion?: string;
   model?: string;
-  teamsEnabled: boolean;
-  teamsState?: string;
-  teamsMessage?: string;
   agentIdentity?: { enabled: boolean; phase?: string; reason?: string };
   tailscaleEnabled: boolean;
   registryAuthConfigured: boolean;
@@ -48,7 +45,6 @@ export interface AdminInstanceStatus extends StatusResponse {
 export interface AdminUpdateInstanceRequest extends InstanceVersion {
   displayName?: string;
   model?: string;
-  teamsEnabled?: boolean;
   agent?: {
     image?: string | null;
     port?: number | null;

@@ -100,7 +100,7 @@ definitions instead of repeating them.
 
 - Name concepts and reference pages with short noun phrases, such as
   **Architecture** and **Security**. Name tasks with actions, such as
-  **Choose a model** or **Connect Microsoft Teams**.
+  **Choose a model** or **Manage an instance**.
 - Use present tense and active voice. Describe what the product does without
   narrating development work or comparing it with an unfinished design.
 - Start with the reader's task or the component's purpose. Avoid introductions

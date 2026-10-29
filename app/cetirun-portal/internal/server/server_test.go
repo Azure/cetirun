@@ -115,6 +115,22 @@ func TestOwnerSuspensionRoutesRequireAuthenticationAndVersion(t *testing.T) {
 	}
 }
 
+func TestRemovedTeamsAppRoutesReturnNotFound(t *testing.T) {
+	mux := New(fstest.MapFS{}, &handler.InstanceHandler{}, &handler.HealthHandler{},
+		&handler.FeaturesHandler{}, &handler.ConfigHandler{}, &handler.MeHandler{},
+		&handler.AdminTeamHandler{}, &handler.AdminInstanceHandler{}, &handler.AdminPolicyHandler{},
+		auth.Middleware(nil), auth.RequireAdmin())
+	for _, path := range []string{"/api/v1/instance/teams-app", "/api/v1/instances/alice/teams-app"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("X-Auth-Request-Email", "alice@example.com")
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Errorf("%s: got %d want 404", path, response.Code)
+		}
+	}
+}
+
 func TestConnectionRoutesAreOptInAndAuthenticated(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		var tools *handler.ToolConnectionsHandler

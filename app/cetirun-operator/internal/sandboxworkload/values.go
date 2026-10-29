@@ -94,7 +94,7 @@ func ValidateReconciledUserValues(values map[string]any, authorizedSecrets []str
 }
 
 func protectedEnvironment(name string) bool {
-	for _, prefix := range []string{"CETIRUN_", "OPENCLAW_", "HERMES_", "AZURE_", "KUBERNETES_", "LD_", "DYLD_", "NODE_", "PYTHON", "GIT_", "NPM_", "TAILSCALE_", "TS_", "TTYD_", "MSTEAMS_"} {
+	for _, prefix := range []string{"CETIRUN_", "OPENCLAW_", "HERMES_", "AZURE_", "KUBERNETES_", "LD_", "DYLD_", "NODE_", "PYTHON", "GIT_", "NPM_", "TAILSCALE_", "TS_", "TTYD_"} {
 		if strings.HasPrefix(name, prefix) {
 			return true
 		}

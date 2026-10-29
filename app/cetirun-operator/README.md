@@ -437,7 +437,7 @@ and budget. Per-Agent Gateway keys are projected through owned Secrets, not
 embedded provider credentials. CIDR denies and supported TCP/UDP destination-port
 denies are compiled into the owned Cilium policy. FQDN rules, internal-network
 exceptions, required mTLS, Kubernetes/identity grants, Copilot sidecars, desktop,
-Tailscale, Teams and arbitrary Agent Helm overrides are rejected before start.
+Tailscale and arbitrary Agent Helm overrides are rejected before start.
 Existing baseline network controls are retained.
 
 Platform registration must state the guarantee it actually provides. A bounded
@@ -1428,7 +1428,7 @@ pool isolation, qualified old-writer fencing, a distinct pre-start enforcement
 acknowledgement and trusted current Pod/node/epoch observations. Neither a
 held expectation nor pool deletion alone supplies those authorities.
 
-Tailscale, Teams, workload identity and policy-bound Custom configurations remain
+Tailscale, workload identity and policy-bound Custom configurations remain
 unsupported by this native path. They retain an explanatory `UnsupportedControl`
 hold and bounded requeue instead of a permanent preparation-error loop. Existing
 grants are revoked if a previously prepared Agent transitions to one of them.

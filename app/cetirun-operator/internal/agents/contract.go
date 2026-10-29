@@ -129,11 +129,6 @@ type Integrations struct {
 	Slack             bool
 	Discord           bool
 	Feishu            bool
-	TeamsApp          bool
-	TeamsTenant       bool
-	TeamsPassword     bool
-	TeamsPort         int32
-	TeamsAuthType     string
 	Tailscale         bool
 }
 

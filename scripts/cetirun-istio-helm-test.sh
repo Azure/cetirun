@@ -83,8 +83,8 @@ grep -Fq 'name:match("^" .. PORTAL_COOKIE_NAME .. "_[%w_%-]*csrf$")' <<< "${outp
   echo "FAIL: ownership filter did not remove OAuth2 Proxy sign-in cookies" >&2
   exit 1
 }
-[[ "$(grep -Ec '^[[:space:]]+strip_portal_session_cookie\(request_handle\)$' <<< "${output}")" == 2 ]] || {
-  echo "FAIL: Portal cookie stripping must run on both owned Agent and webhook routes" >&2
+[[ "$(grep -Ec '^[[:space:]]+strip_portal_session_cookie\(request_handle\)$' <<< "${output}")" == 1 ]] || {
+  echo "FAIL: Portal cookie stripping must run on owned Agent routes" >&2
   exit 1
 }
 grep -Fq 'headers:replace("cookie", table.concat(retained, "; "))' <<< "${output}" || {
@@ -131,12 +131,12 @@ grep -Fq 'key:match("^[A-Za-z0-9_+/=-]+$") ~= nil' <<< "${output}" || {
   echo "FAIL: ownership filter did not accept existing standard Base64 auth keys" >&2
   exit 1
 }
-[[ "$(grep -Fc 'request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)' <<< "${output}")" == 4 ]] || {
-  echo "FAIL: fallback, Portal, webhook, and shared routes must remove the instance auth header" >&2
+[[ "$(grep -Fc 'request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)' <<< "${output}")" == 3 ]] || {
+  echo "FAIL: fallback, Portal, and shared routes must remove the instance auth header" >&2
   exit 1
 }
-[[ "$(grep -Fc 'request_handle:headers():remove(AGENT_API_KEY_HEADER)' <<< "${output}")" == 4 ]] || {
-  echo "FAIL: fallback, Portal, webhook, and shared routes must remove the native Agent API header" >&2
+[[ "$(grep -Fc 'request_handle:headers():remove(AGENT_API_KEY_HEADER)' <<< "${output}")" == 3 ]] || {
+  echo "FAIL: fallback, Portal, and shared routes must remove the native Agent API header" >&2
   exit 1
 }
 grep -Fq -- '- --scope=openid email profile' <<< "${output}" || {
@@ -212,14 +212,10 @@ callback_count="$(grep -Fc '/api/v1/connections/callback' <<< "${policy_output}"
   echo "FAIL: apex callback bypass leaked into a legacy instance-subdomain rule" >&2
   exit 1
 }
-grep -Fq -- '- "/{*}/api/messages"' <<< "${output}" || {
-  echo "FAIL: apex webhook bypass did not use a one-segment URI template" >&2
+if grep -Fq '/api/messages' <<< "${output}"; then
+  echo "FAIL: removed Teams webhook still has special ingress handling" >&2
   exit 1
-}
-grep -Fq 'path:match("^/[^/]+/api/messages$")' <<< "${output}" || {
-  echo "FAIL: ownership filter did not restrict apex webhooks to one instance segment" >&2
-  exit 1
-}
+fi
 grep -Fq 'instance_name = legacy_instance_name(authority)' <<< "${output}" || {
   echo "FAIL: legacy subdomain routes did not derive ownership exclusively from authority" >&2
   exit 1
@@ -244,32 +240,13 @@ grep -Fq 'if request_host(authority) ~= PORTAL_DOMAIN then' <<< "${output}" || {
   echo "FAIL: Portal path exemptions leaked to instance subdomains" >&2
   exit 1
 }
-for header in x-auth-request-user x-auth-request-email x-auth-request-preferred-username; do
-  grep -Fq "headers():remove(\"${header}\")" <<< "${output}" || {
-    echo "FAIL: anonymous webhook did not strip spoofable ${header}" >&2
-    exit 1
-  }
-done
-
-echo "==> helm template cetirun-istio (legacy webhook bypass only)"
-legacy_only_policy=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
+echo "==> helm template cetirun-istio (no callback bypasses)"
+no_callbacks_policy=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   --show-only templates/ingress/authorization-policy.yaml \
-  --set-json 'authPolicy.webhookBypassPaths=[]' \
   --set-json 'authPolicy.apexPostBypassPaths=[]' \
   --set-string 'authPolicy.oauthCallbackPath=')
-[[ "$(grep -Ec '^[[:space:]]+paths:$' <<< "${legacy_only_policy}")" == 1 ]] || {
-  echo "FAIL: legacy-only webhook configuration rendered an empty apex method guard" >&2
-  exit 1
-}
-[[ "$(grep -Fc 'notMethods:' <<< "${legacy_only_policy}")" == 1 ]] || {
-  echo "FAIL: legacy-only webhook configuration rendered the wrong method guards" >&2
-  exit 1
-}
-
-echo "==> reject broad webhook suffix bypass"
-if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
-  --set-json 'authPolicy.webhookBypassPaths=["*/api/messages"]' >/dev/null 2>&1; then
-  echo "FAIL: broad webhook suffix bypass rendered successfully" >&2
+if grep -Eq '^[[:space:]]+(paths|notMethods):' <<< "${no_callbacks_policy}"; then
+  echo "FAIL: disabled callbacks rendered an unused method guard" >&2
   exit 1
 fi
 

@@ -4,20 +4,15 @@
 package main
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -202,12 +197,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Azure config for Teams auto-provisioning (optional — only needed when Teams is enabled).
-	azureSubscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
-	azureResourceGroup := os.Getenv("AZURE_RESOURCE_GROUP")
-	azureBotNamePrefix := os.Getenv("AZURE_BOT_NAME_PREFIX")
-	azureTenantID := os.Getenv("AZURE_TENANT_ID")
-	azureServiceTreeID := os.Getenv("AZURE_SERVICE_TREE_ID")
 	agentIdentityEnabled := strings.EqualFold(os.Getenv("AGENT_ID_ENABLED"), "true")
 	agentIdentityCleanupEnabled := strings.EqualFold(os.Getenv("AGENT_ID_CLEANUP_ENABLED"), "true")
 	agentIdentityTenantID := os.Getenv("AGENT_ID_TENANT_ID")
@@ -228,9 +217,6 @@ func main() {
 			"defaultModel", aiGatewayConfig.DefaultModel, "githubCopilot", aiGatewayConfig.CopilotProxyImage != "",
 			"copilotHealthChecks", aiGatewayConfig.CopilotHealthChecks)
 	}
-
-	// Auto-detect OIDC issuer URL from the cluster.
-	azureOIDCIssuerURL := detectOIDCIssuer(setupLog)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -299,12 +285,6 @@ func main() {
 		ChartRegistry:                      chartRegistry,
 		DefaultModel:                       defaultModel,
 		RegistryCredentialNamespace:        getEnvOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", registryauth.DefaultNamespace),
-		AzureSubscriptionID:                azureSubscriptionID,
-		AzureResourceGroup:                 azureResourceGroup,
-		AzureBotNamePrefix:                 azureBotNamePrefix,
-		AzureTenantID:                      azureTenantID,
-		AzureServiceTreeID:                 azureServiceTreeID,
-		AzureOIDCIssuerURL:                 azureOIDCIssuerURL,
 		AgentIdentityEnabled:               agentIdentityEnabled,
 		AgentIdentityTenantID:              agentIdentityTenantID,
 		AgentIdentityBlueprintClientID:     agentIdentityBlueprintClientID,
@@ -413,81 +393,6 @@ func extractRegistryHost(repoURL string) string {
 		return ""
 	}
 	return parsed.Host
-}
-
-// detectOIDCIssuer queries the in-cluster Kubernetes API server's OIDC discovery
-// endpoint to determine the cluster's OIDC issuer URL. This is used as the issuer
-// when creating Federated Identity Credentials for per-user bot apps.
-// Returns empty string on failure (non-fatal — Teams provisioning will fail later
-// with a clear error if the issuer is needed but not available).
-func detectOIDCIssuer(logger logr.Logger) string {
-	// In-cluster: the API server is at https://kubernetes.default.svc
-	// Load the ServiceAccount CA bundle to verify the API server's TLS cert.
-	caCert, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-	tlsConfig := &tls.Config{}
-	if err != nil {
-		logger.Info("Could not load ServiceAccount CA (non-fatal, using system certs)", "error", err)
-	} else {
-		pool := x509.NewCertPool()
-		if pool.AppendCertsFromPEM(caCert) {
-			tlsConfig.RootCAs = pool
-		} else {
-			logger.Info("Could not parse ServiceAccount CA (non-fatal, using system certs)")
-		}
-	}
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-		},
-	}
-
-	req, err := http.NewRequest(http.MethodGet, "https://kubernetes.default.svc/.well-known/openid-configuration", nil)
-	if err != nil {
-		logger.Info("Failed to create OIDC discovery request (non-fatal)", "error", err)
-		return ""
-	}
-
-	// Some clusters require authentication for the OIDC discovery endpoint.
-	saToken, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	if err == nil && len(saToken) > 0 {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(saToken)))
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		logger.Info("Failed to detect OIDC issuer (non-fatal)", "error", err)
-		return ""
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Info("OIDC discovery returned non-200 (non-fatal)", "status", resp.StatusCode)
-		return ""
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
-	if err != nil {
-		logger.Info("Failed to read OIDC discovery response (non-fatal)", "error", err)
-		return ""
-	}
-
-	var discovery struct {
-		Issuer string `json:"issuer"`
-	}
-	if err := json.Unmarshal(body, &discovery); err != nil {
-		logger.Info("Failed to parse OIDC discovery response (non-fatal)", "error", err)
-		return ""
-	}
-
-	if discovery.Issuer == "" {
-		logger.Info("OIDC discovery response has empty issuer (non-fatal)")
-		return ""
-	}
-
-	logger.Info("Detected OIDC issuer URL", "issuer", discovery.Issuer)
-	return discovery.Issuer
 }
 
 // helmValueKeys returns the top-level keys of a map for logging purposes.

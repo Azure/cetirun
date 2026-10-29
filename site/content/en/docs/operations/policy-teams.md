@@ -316,7 +316,7 @@ support. Members can then create Agents for the Team, as in
 
 ## What changes for Agents
 
-- Tailscale, Microsoft Teams, Agent Identity and custom harnesses are not
+- Tailscale, Agent Identity and custom harnesses are not
   available to Sandbox Agents.
 - Changing a Policy's model access, budget, network or security settings
   restarts its running Agents once. Changing only its request limits does not.

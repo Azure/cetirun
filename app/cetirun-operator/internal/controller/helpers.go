@@ -48,9 +48,6 @@ const (
 	// novncPort is the port noVNC/websockify listens on.
 	novncPort = 6080
 
-	// msteamsWebhookPort is the default port the MS Teams webhook listener runs on.
-	msteamsWebhookPort = 3978
-
 	// Override via spec.helm.values.persistence.storageClass.
 	defaultStorageClass = "default"
 )
@@ -112,27 +109,98 @@ func virtualServiceName(alias string) string {
 // operatorConfigHash returns a short hex hash of operator-level config fields
 // that should trigger a Helm upgrade when changed. This includes the domain
 // suffix, a hash of the gateway Secret contents, the skills storage account
-// override, the chart registry, operator-level helm values, and Azure Teams
-// config so that configuration changes trigger a full reconcile with Helm upgrade.
+// override, the chart registry, and operator-level helm values.
 // Chart version is intentionally excluded: version changes are tracked via
 // spec.helm.version (which bumps the CR generation).
-func operatorConfigHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, azureTeamsConfig ...string) string {
-	var payload string
-	if skillsStorageAccount == "" && cetirunHelmValuesHash == "" && chartRegistry == "" && len(azureTeamsConfig) == 0 {
-		// Legacy format — kept for operatorConfigHash unit tests that call
-		// the function without Azure config args. The reconciler always goes
-		// through configHash() which supplies Azure args, so existing CRs
-		// will see a one-time hash mismatch and reconcile on operator upgrade.
-		payload = domainSuffix + "\x00" + secretHash
-	} else {
-		// Extended format including optional overrides.
-		payload = domainSuffix + "\x00" + secretHash + "\x00" + skillsStorageAccount + "\x00" + cetirunHelmValuesHash + "\x00" + chartRegistry
-		for _, v := range azureTeamsConfig {
+func operatorConfigHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, config ...string) string {
+	payload := domainSuffix + "\x00" + secretHash
+	if skillsStorageAccount != "" || cetirunHelmValuesHash != "" || chartRegistry != "" || len(config) > 0 {
+		payload += "\x00" + skillsStorageAccount + "\x00" + cetirunHelmValuesHash + "\x00" + chartRegistry
+		for _, v := range config {
 			payload += "\x00" + v
 		}
 	}
 	h := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(h[:8]) // 16-char prefix is plenty for this purpose
+}
+
+const agentIdentityRuntimeRevision = "native-mcp-v1"
+
+func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, gwSecretHash, teamRV string) string {
+	config := []string{}
+	if enabled, err := r.connectionsMCPEnabledFor(instance); err != nil {
+		config = append(config, "invalid-connections-mcp-runtime-types", strings.Join(r.ConnectionsMCPRuntimeTypes, ","))
+	} else if enabled {
+		runtimeTypes, _ := normalizeConnectionsMCPRuntimeTypes(r.ConnectionsMCPRuntimeTypes)
+		config = append(config, r.ConnectionsMCPURL, r.ConnectionsMCPAudience, r.ConnectionsMCPCASecretName,
+			string(instance.Spec.Agent.Type), strings.Join(runtimeTypes, ","), agentIdentityRuntimeRevision)
+	}
+	// Avoid rolling unaffected workloads when Agent Identity remains disabled.
+	if r.AgentIdentityEnabled || agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
+		config = append(config, r.AgentIdentityTenantID, r.AgentIdentityBlueprintClientID,
+			r.AgentIdentityNamePrefix, r.AgentIdentityBrokerURL)
+	}
+	if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
+		config = append(config, agentIdentityRuntimeRevision)
+	}
+	// A configured default affects only GitHub Copilot instances without a
+	// per-instance model.
+	if defaultModel := strings.TrimSpace(r.DefaultModel); defaultModel != "" && r.usesDeploymentDefaultModel(instance, team) {
+		config = append(config, defaultModel)
+	}
+	if revision := r.aiGatewayRevision(instance); revision != "" {
+		config = append(config, revision)
+	}
+	config = append(config, teamRV)
+	if r.MemoryEnabled || r.MemoryImage != "" {
+		config = append(config, "memory-context/v2", r.MemoryImage, r.MemoryRegistry)
+	}
+	// Older suspended-state caches must not skip the retention repair.
+	if instance.Spec.Suspended && !sandboxRequested(instance, team) &&
+		(instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeOpenClaw || instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeHermes) {
+		config = append(config, "suspended-home-retention/v1")
+	}
+	// Bind both steady-state and Helm-apply caches to requested restart intent.
+	if instance.Spec.RestartRequestID != "" {
+		config = append(config, "restart-request/v1", instance.Spec.RestartRequestID)
+	}
+	if request := instance.Spec.PlannedMigration; request != nil {
+		config = append(config, "planned-migration/v1", request.RequestID, request.Target.Name, string(request.Target.UID))
+	}
+	return operatorConfigHash(
+		r.DomainSuffix, gwSecretHash, r.SkillsStorageAccount,
+		hashCetiRunHelmValues(r.CetiRunHelmValues), r.ChartRegistry,
+		config...,
+	)
+}
+
+// usesDeploymentDefaultModel reports whether buildHelmValues will render the
+// operator's default model. Keep provider precedence aligned with that function.
+func (r *AgentReconciler) usesDeploymentDefaultModel(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) bool {
+	if strings.TrimSpace(instance.Spec.Model) != "" {
+		return false
+	}
+	provider := "github_copilot"
+	applyProvider := func(value interface{}) {
+		secrets, ok := value.(map[string]interface{})
+		if !ok {
+			return
+		}
+		if configured, ok := secrets["provider"].(string); ok && strings.TrimSpace(configured) != "" {
+			provider = strings.TrimSpace(configured)
+		}
+	}
+	applyProvider(r.CetiRunHelmValues["secrets"])
+	if team != nil && strings.TrimSpace(team.Spec.Defaults.Provider) != "" {
+		provider = strings.TrimSpace(team.Spec.Defaults.Provider)
+	}
+	if raw, ok := instance.Spec.Helm.Values["secrets"]; ok && raw.Raw != nil {
+		var values map[string]interface{}
+		if err := json.Unmarshal(raw.Raw, &values); err == nil {
+			applyProvider(values)
+		}
+	}
+	return provider == "github_copilot"
 }
 
 // hashCetiRunHelmValues returns a stable hash string of the operator-level helm values map.
@@ -316,40 +384,6 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 			"image": map[string]interface{}{
 				"repository": chartRegistry + "/cetirun-desktop",
 			},
-		})
-	}
-
-	// MS Teams integration.
-	// When msteams.Enabled is true, the operator uses workload identity (managed identity)
-	// for bot auth and the webhook port is configured.
-	// Since openclaw 2026.4.11, Teams support is included in the upstream image —
-	// no separate image tag suffix is needed.
-	if spec.MSTeams != nil && spec.MSTeams.Enabled {
-		msteams := spec.MSTeams
-		webhookPort := int32(msteamsWebhookPort)
-		if msteams.WebhookPort > 0 {
-			webhookPort = msteams.WebhookPort
-		}
-		values["msteamsWebhookPort"] = int(webhookPort)
-
-		// Enable workload identity once a non-empty app ID is available. Prefer the
-		// resolved app ID from status for auto-provisioned Teams apps, and fall back
-		// to the spec value when status is not yet populated.
-		values["msteamsAuthType"] = "managedIdentity"
-		azureWorkloadIdentityClientID := msteams.AppID
-		if instance.Status.MSTeams != nil && instance.Status.MSTeams.AppID != "" {
-			azureWorkloadIdentityClientID = instance.Status.MSTeams.AppID
-		}
-		azureWorkloadIdentityEnabled := azureWorkloadIdentityClientID != ""
-		azureWorkloadIdentity := map[string]interface{}{
-			"enabled": azureWorkloadIdentityEnabled,
-		}
-		if azureWorkloadIdentityEnabled {
-			azureWorkloadIdentity["clientId"] = azureWorkloadIdentityClientID
-		}
-		values["azureWorkloadIdentity"] = azureWorkloadIdentity
-		values["serviceAccount"] = deepMerge(values["serviceAccount"], map[string]interface{}{
-			"create": true,
 		})
 	}
 
@@ -798,60 +832,6 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 			},
 		)
 	}
-
-	// MS Teams webhook at POST /<instanceName>/api/messages.
-	//
-	// The gateway AuthorizationPolicy statically bypasses oauth2-proxy for POST
-	// /{*}/api/messages on the apex host, so this exact path is reachable anonymously at
-	// the routing layer. For instances that have a live VirtualService we narrow that
-	// bypass back to Teams-enabled instances here:
-	//   - Teams enabled  → route the webhook POST to the msteams webhook port.
-	//   - Teams disabled → return an explicit 404 so the anonymous POST cannot fall
-	//     through to the instance catch-all (e.g. the Hermes API port).
-	//
-	// This is a routing-layer narrowing, not a complete boundary: it only applies while
-	// this VirtualService exists. A suspended instance (whose VS is deleted, see the
-	// suspend handler in agent_controller.go) or a never-created name has no
-	// route here, so an anonymous POST to its /api/messages still bypasses oauth2-proxy
-	// and falls through to the portal SPA catch-all. The application layer (Bot Framework
-	// JWT validation on a real Teams instance; the portal serving static index.html
-	// otherwise) is the backstop in those windows.
-	//
-	// Either route is prepended so it is first-match within this per-instance
-	// VirtualService. It must never be expressed as a shared/global suffix rule:
-	// cross-VirtualService route precedence on a shared host is not a safe contract and a
-	// global rule could shadow other instances.
-	webhookMatch := []*istioapiv1beta1.HTTPMatchRequest{
-		{
-			Uri:    &istioapiv1beta1.StringMatch{MatchType: &istioapiv1beta1.StringMatch_Exact{Exact: instancePrefix + "/api/messages"}},
-			Method: &istioapiv1beta1.StringMatch{MatchType: &istioapiv1beta1.StringMatch_Exact{Exact: "POST"}},
-		},
-	}
-	var webhookRoute *istioapiv1beta1.HTTPRoute
-	if instance.Spec.MSTeams != nil && instance.Spec.MSTeams.Enabled {
-		port := uint32(msteamsWebhookPort)
-		if instance.Spec.MSTeams.WebhookPort != 0 {
-			port = uint32(instance.Spec.MSTeams.WebhookPort)
-		}
-		webhookRoute = &istioapiv1beta1.HTTPRoute{
-			Match:   webhookMatch,
-			Rewrite: &istioapiv1beta1.HTTPRewrite{Uri: "/api/messages"},
-			Route: []*istioapiv1beta1.HTTPRouteDestination{
-				{Destination: &istioapiv1beta1.Destination{
-					Host: svcHost,
-					Port: &istioapiv1beta1.PortSelector{Number: port},
-				}},
-			},
-		}
-	} else {
-		webhookRoute = &istioapiv1beta1.HTTPRoute{
-			Match: webhookMatch,
-			DirectResponse: &istioapiv1beta1.HTTPDirectResponse{
-				Status: 404,
-			},
-		}
-	}
-	routes = append([]*istioapiv1beta1.HTTPRoute{webhookRoute}, routes...)
 
 	desired := &istiov1beta1.VirtualService{
 		ObjectMeta: metav1.ObjectMeta{

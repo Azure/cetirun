@@ -39,7 +39,7 @@ owned, private Copilot companion Service keeps its own selector and port.
 - Register `"desktop": true` and application port 6080 to retain the existing
   enabled desktop default. The registration must match the rendered desktop
   selection; noVNC is not silently left as a plaintext route.
-- Disable Tailscale, Teams webhooks, arbitrary sidecars/initializers,
+- Disable Tailscale, arbitrary sidecars/initializers,
   and extra mounted volumes for this opt-in. Unsupported surfaces fail rendering;
   they are not silently left outside TLS. Logger and ordinary platform-owned
   initialization remain supported.

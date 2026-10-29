@@ -420,37 +420,11 @@ if grep -q 'runtimeClassName' <<< "$output"; then
   echo "FAIL: runtimeClassName should not appear when set to empty string" >&2; exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Hermes + MS Teams (cetirun_teams plugin) tests
-# ---------------------------------------------------------------------------
-
-# Test variant: Hermes with Teams enabled renders cetirun_teams platform config
-echo "==> helm template ${release_name} ${chart_dir} (agentType=hermes, msteamsWebhookPort=3978)"
-output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
-  --set agentType=hermes \
-  --set msteamsWebhookPort=3978 \
-  --set secrets.msteamsAppId=test-app-id \
-  --set secrets.msteamsTenantId=test-tenant \
-  --set secrets.msteamsAppPassword=test-secret)
-grep -q 'cetirun_teams:' <<< "$output" || { echo "FAIL: cetirun_teams platform not found in hermes-config.yaml" >&2; exit 1; }
-# Verify openclaw.json is NOT rendered for Hermes
-if grep -q 'openclaw.json' <<< "$output"; then
-  echo "FAIL: openclaw.json should not be rendered for Hermes" >&2; exit 1
-fi
-
-# Test variant: Hermes with port but no credentials does NOT render cetirun_teams
-echo "==> helm template ${release_name} ${chart_dir} (agentType=hermes, msteamsWebhookPort=3978, no creds)"
-output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
-  --set agentType=hermes \
-  --set msteamsWebhookPort=3978)
-if grep -q 'cetirun_teams:' <<< "$output"; then
-  echo "FAIL: cetirun_teams should not appear without credentials" >&2; exit 1
-fi
-
-# Test variant: Hermes without Teams does NOT render cetirun_teams
-echo "==> helm template ${release_name} ${chart_dir} (agentType=hermes, no Teams)"
-output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
-  --set agentType=hermes)
-if grep -q 'cetirun_teams:' <<< "$output"; then
-  echo "FAIL: cetirun_teams should not appear when Teams is not enabled" >&2; exit 1
-fi
+# Both built-in harnesses render without a Teams listener or channel.
+for agent_type in openclaw hermes; do
+  output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+    --set "agentType=${agent_type}" --set secrets.openclawGatewayToken=test-token)
+  if grep -Ei 'msteams|cetirun_teams|MSTEAMS_|containerPort: 3978' <<< "$output"; then
+    echo "FAIL: ${agent_type} rendered removed Teams integration" >&2; exit 1
+  fi
+done

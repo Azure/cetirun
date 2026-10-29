@@ -243,11 +243,6 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		Slack:             present(secrets["slackBotToken"]) && present(secrets["slackAppToken"]),
 		Discord:           present(secrets["discordBotToken"]),
 		Feishu:            present(secrets["feishuAppId"]) && present(secrets["feishuAppSecret"]),
-		TeamsApp:          present(secrets["msteamsAppId"]),
-		TeamsTenant:       present(secrets["msteamsTenantId"]),
-		TeamsPassword:     present(secrets["msteamsAppPassword"]),
-		TeamsPort:         number(values["msteamsWebhookPort"]),
-		TeamsAuthType:     text(values["msteamsAuthType"]),
 		Tailscale:         request.TailscaleEnabled || present(secrets["tailscaleAuthKey"]),
 	}
 	provider := text(secrets["provider"])
@@ -318,9 +313,6 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 			agents.PortBinding{Name: "vnc", Number: 5900},
 			agents.PortBinding{Name: "desktop", Number: 6080},
 			agents.PortBinding{Name: "browser", Number: 18800})
-	}
-	if integrations.TeamsPort > 0 {
-		bindings.ReservedPorts = append(bindings.ReservedPorts, agents.PortBinding{Name: "teams", Number: integrations.TeamsPort})
 	}
 	contribution, err := harness.Build(resolved, bindings)
 	if err != nil {
