@@ -11,12 +11,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
 	BasePath = "/term"
-	ExecRole = "cetirun-terminal-exec"
+	ExecRole = terminalpolicy.ExecRole
 )
 
 type Config struct {

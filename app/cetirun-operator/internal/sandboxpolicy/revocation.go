@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 )
 
 // RevokeBindings deletes only the exact owned per-Agent bindings in inventory.
@@ -193,6 +194,11 @@ func ownedBindingInventory(ctx context.Context, c client.Reader, agentName strin
 			relevant = relevant || owner.UID == agentUID
 		}
 		if !relevant {
+			return nil
+		}
+		if terminal, err := terminalpolicy.OwnedBinding(ctx, c, object, agentName, agentUID); err != nil {
+			return fmt.Errorf("%w: terminal access binding is not confirmed: %w", ErrOwnership, err)
+		} else if terminal {
 			return nil
 		}
 		if !bindingOwned(object, agentName, agentUID) || len(subjects) != 1 ||

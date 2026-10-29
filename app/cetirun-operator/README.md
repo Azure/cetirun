@@ -2037,6 +2037,11 @@ preserve shared roles/accounts. Held and common controllers use
 [`GrantJournalStore`](internal/sandboxpolicy/journal.go) to persist both workload
 and admission-source bindings before writes, record their UIDs, and integrate
 retryable revocation into hold, suspension and deletion paths. Its protected
+inventory is separate from the platform terminal's fixed own-Pod and own-Agent
+read/exec bindings. Only exact terminal names, subjects, ownership and current
+read-role rules qualify for that separation; a terminal label alone does not.
+Terminal shutdown and namespace/owner cleanup retain their existing lifecycle.
+The journal's protected
 ConfigMap survives foreground owner deletion, uses resourceVersion CAS, and is
 bounded to 1,024 references and 512 KiB. Discovering visible bindings is never
 treated as complete cleanup inventory. Current common Pod admission additionally
