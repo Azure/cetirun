@@ -59,11 +59,13 @@ class HermesIngressTests(unittest.TestCase):
         self.env_file.write_text(
             "API_SERVER_HOST=0.0.0.0\nAPI_SERVER_PORT=18084\nAPI_SERVER_ENABLED=false\n"
             "USER_SETTING=retained=value\nHERMES_DASHBOARD_HOST=0.0.0.0\n"
+            "HERMES_DASHBOARD_PUBLIC_URL=https://other.example.com/wrong\n"
             "HERMES_DASHBOARD_PORT=18085\nTTYD_PORT=18086\nTTYD_BIND_ARGS=--interface 0.0.0.0\n"
         )
         self.process_env = dict(
             os.environ, CETIRUN_INGRESS_MTLS="true", API_SERVER_ENABLED="true",
             API_SERVER_HOST="127.0.0.1", API_SERVER_PORT="8642",
+            HERMES_DASHBOARD_PUBLIC_URL="https://example.com/ui/example",
         )
 
     def run_apply(self, *arguments, environment=None):
@@ -90,7 +92,7 @@ class HermesIngressTests(unittest.TestCase):
         self.assertEqual(config["gateway"]["unrelated"], {"retained": True})
         self.assertEqual(json.loads(self.legacy.read_text())["legacy_preference"], "retained")
         env = self.env_file.read_text()
-        for name in ("API_SERVER_HOST=", "API_SERVER_PORT=", "API_SERVER_ENABLED="):
+        for name in ("API_SERVER_HOST=", "API_SERVER_PORT=", "API_SERVER_ENABLED=", "HERMES_DASHBOARD_PUBLIC_URL="):
             self.assertNotIn(name, env)
         for line in ("USER_SETTING=retained=value", "HERMES_DASHBOARD_HOST=0.0.0.0",
                      "HERMES_DASHBOARD_PORT=18085", "TTYD_PORT=18086", "TTYD_BIND_ARGS=--interface 0.0.0.0"):
@@ -113,6 +115,7 @@ class HermesIngressTests(unittest.TestCase):
         self.assertIn("API_SERVER_HOST=0.0.0.0", self.env_file.read_text())
         self.assertIn("API_SERVER_PORT=18080", self.env_file.read_text())
         self.assertIn("API_SERVER_ENABLED=false", self.env_file.read_text())
+        self.assertIn("HERMES_DASHBOARD_PUBLIC_URL=https://other.example.com/wrong", self.env_file.read_text())
 
     def test_supervised_restart_reasserts_authority_without_resetting_model_or_user_data(self):
         self.env_file.write_text(self.env_file.read_text() + "# User comment\n\nKEEP_FORMAT=  retained value  \n")

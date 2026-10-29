@@ -61,6 +61,11 @@ var laterAdditions = map[string][]string{
                         }
                     }
                 },
+`, `                        },
+                        "HERMES_DASHBOARD_PUBLIC_URL": {
+                            "type": "string",
+                            "description": "Operator-owned external Dashboard URL including its instance prefix",
+                            "default": ""
 `},
 }
 

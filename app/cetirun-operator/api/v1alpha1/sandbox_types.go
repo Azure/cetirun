@@ -10,12 +10,14 @@ import (
 )
 
 // SandboxType selects a prepared runtime.
-// +kubebuilder:validation:Enum=kata;gvisor
+// +kubebuilder:validation:Enum=kata;gvisor;container
 type SandboxType string
 
 const (
 	SandboxKata   SandboxType = "kata"
 	SandboxGVisor SandboxType = "gvisor"
+	// SandboxContainer uses ordinary containers sharing the node kernel, not VM isolation.
+	SandboxContainer SandboxType = "container"
 )
 
 // SandboxSpec defines reusable runtime, resource and private-storage settings.
