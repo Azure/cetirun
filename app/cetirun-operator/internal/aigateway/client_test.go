@@ -109,6 +109,35 @@ func TestGetKeyNotFoundIsNil(t *testing.T) {
 	}
 }
 
+func TestGetKeyDistinguishesDeletionArchives(t *testing.T) {
+	for _, test := range []struct {
+		name, deletedAt string
+		absent, invalid bool
+	}{
+		{"active", "null", false, false},
+		{"archived", `"2026-01-02T03:04:05.123456Z"`, true, false},
+		{"invalid timestamp", `"not-a-time"`, false, true},
+		{"invalid type", "123", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, requests := testServer(t, func(recordedRequest) (int, string) {
+				return http.StatusOK, `{"info":{"key_alias":"cetirun-example","models":["example-model"],"spend":1.25,"blocked":false,"deleted_at":` + test.deletedAt + `}}`
+			})
+			key, err := client.GetKey(context.Background(), "example-token-hash")
+			if test.invalid {
+				if err == nil || key != nil {
+					t.Fatalf("malformed deletion metadata must fail, got key=%v error=%v", key, err)
+				}
+			} else if err != nil || (key == nil) != test.absent {
+				t.Fatalf("GetKey archive handling: key=%v error=%v want absent=%t", key, err, test.absent)
+			}
+			if len(*requests) != 1 || (*requests)[0].method != http.MethodGet {
+				t.Fatal("reading key state must not delete an archive or change a key")
+			}
+		})
+	}
+}
+
 func TestGenerateKeySendsRestrictedKey(t *testing.T) {
 	client, requests := testServer(t, func(recordedRequest) (int, string) { return 200, `{}` })
 	err := client.GenerateKey(context.Background(), GenerateRequest{
