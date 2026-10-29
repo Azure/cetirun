@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { useMemo, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Title2,
@@ -14,6 +16,9 @@ import {
   TableCell,
   Badge,
   Text,
+  Input,
+  Field,
+  Select,
 } from "@fluentui/react-components";
 import { listAllInstances, type AdminInstanceSummary } from "../../api/adminInstance";
 import { agentTypeLabel } from "../../utils/instance";
@@ -33,18 +38,46 @@ function formatAge(createdAt?: string): string {
 }
 
 export function InstanceListPage() {
+  const location = useLocation();
+  const [nameFilter, setNameFilter] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState("");
+  const [teamFilter, setTeamFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [phaseFilter, setPhaseFilter] = useState("");
   const { data, isLoading, error } = useQuery<AdminInstanceSummary[], Error>({
     queryKey: ["admin", "instances"],
     queryFn: listAllInstances,
     refetchInterval: 30_000,
   });
+  const agents = useMemo(() => (data || []).filter((instance) => {
+    const name = nameFilter.trim().toLowerCase();
+    const owner = ownerFilter.trim().toLowerCase();
+    const team = teamFilter.trim().toLowerCase();
+    return (!name || instance.name.toLowerCase().includes(name)) &&
+      (!owner || instance.alias.toLowerCase().includes(owner) || instance.email?.toLowerCase().includes(owner)) &&
+      (!team || instance.team?.toLowerCase().includes(team)) &&
+      (!typeFilter || instance.agent.type === typeFilter) &&
+      (!phaseFilter || instance.phase === phaseFilter);
+  }), [data, nameFilter, ownerFilter, teamFilter, typeFilter, phaseFilter]);
+  const types = useMemo(() => [...new Set((data || []).map((instance) => instance.agent.type))].sort(), [data]);
+  const phases = useMemo(() => [...new Set((data || []).map((instance) => instance.phase).filter(Boolean))].sort(), [data]);
 
   return (
     <div>
       <Title2 style={{ marginBottom: 16 }}>All agents</Title2>
+      {location.state?.deletedAgent && <MessageBar intent="success">Agent {location.state.deletedAgent} has been deleted.</MessageBar>}
+      {location.state?.missingAgent && <MessageBar intent="info">Agent {location.state.missingAgent} no longer exists.</MessageBar>}
       {isLoading && <Spinner label="Loading agents..." />}
       {error && <MessageBar intent="error">Failed to load: {error.message}</MessageBar>}
       {data && (
+        <>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 16 }}>
+          <Field label="Name"><Input value={nameFilter} onChange={(_, value) => setNameFilter(value.value)} /></Field>
+          <Field label="Owner"><Input value={ownerFilter} onChange={(_, value) => setOwnerFilter(value.value)} /></Field>
+          <Field label="Team"><Input value={teamFilter} onChange={(_, value) => setTeamFilter(value.value)} /></Field>
+          <Field label="Type"><Select aria-label="Type" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">All types</option>{types.map((type) => <option key={type} value={type}>{agentTypeLabel(type)}</option>)}</Select></Field>
+          <Field label="Phase"><Select aria-label="Phase" value={phaseFilter} onChange={(event) => setPhaseFilter(event.target.value)}><option value="">All phases</option>{phases.map((phase) => <option key={phase} value={phase}>{phase}</option>)}</Select></Field>
+        </div>
         <Table aria-label="All agents">
           <TableHeader>
             <TableRow>
@@ -55,19 +88,20 @@ export function InstanceListPage() {
               <TableHeaderCell>Agent</TableHeaderCell>
               <TableHeaderCell>Phase</TableHeaderCell>
               <TableHeaderCell>Age</TableHeaderCell>
+              <TableHeaderCell>Actions</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.length === 0 && (
+            {agents.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7}>
-                  <Text>No agents.</Text>
+                <TableCell colSpan={8}>
+                  <Text>{data.length === 0 ? "No agents." : "No agents match the filters."}</Text>
                 </TableCell>
               </TableRow>
             )}
-            {data.map((ins) => (
+            {agents.map((ins) => (
               <TableRow key={ins.name}>
-                <TableCell>{ins.name}</TableCell>
+                <TableCell><Link to={`/admin/instances/${encodeURIComponent(ins.name)}`}>{ins.name}</Link></TableCell>
                 <TableCell>{ins.alias}</TableCell>
                 <TableCell>{ins.displayName || "—"}</TableCell>
                 <TableCell>{ins.team || "—"}</TableCell>
@@ -82,10 +116,12 @@ export function InstanceListPage() {
                   </Badge>
                 </TableCell>
                 <TableCell>{formatAge(ins.createdAt)}</TableCell>
+                <TableCell><Link to={`/admin/instances/${encodeURIComponent(ins.name)}`}>View details</Link></TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
+        </>
       )}
     </div>
   );
