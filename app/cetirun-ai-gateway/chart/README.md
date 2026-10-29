@@ -37,8 +37,22 @@ providerCredentials:
   existingSecret: gateway-provider-keys
 ```
 
-`<registry>` is where the CetiRun images and charts are published. The master
-key, salt key and console password are generated; see [Credentials](#credentials).
+`<registry>` is the registry you publish the chart and its image to, and
+`<version>` their version. Build and push both from a clone of the repository,
+on a machine with Docker Buildx and Helm, after signing in to the registry with
+`docker login` and `helm registry login`:
+
+```bash
+REGISTRY=<registry> PUSH=true bash scripts/ai-gateway-docker-build.sh
+REGISTRY=<registry> bash scripts/ai-gateway-helm-release.sh
+```
+
+Both take `<version>` from the repository's release version unless `VERSION`
+is set, and the chart runs the image of its own version.
+`make publish REGISTRY=<registry>` publishes them together with every other
+CetiRun image and chart. The master key, salt key and console password are
+generated; see [Credentials](#credentials). To call the Gateway, see
+[Calling the Gateway](#calling-the-gateway).
 
 The model list can be empty. Standalone Gateways can add models through the
 console later. CetiRun AgentPolicy shared-model grants require chart-configured
@@ -75,8 +89,9 @@ model name adds or removes a group; when its catalog refresh sees that, the
 Operator updates the keys of Agents with shared models, and re-projects only
 the policy-bound Agents whose AgentPolicy allows that name. A name a policy
 does not allow changes nothing for its Agents; before, any new name re-projected
-every policy-bound Agent, which stops a running native Sandbox Agent for good
-(measured on a Kubernetes 1.37 cluster).
+every policy-bound Agent, which held a running native Sandbox Agent with a
+single-start record until it was recreated (measured on a Kubernetes 1.37
+cluster).
 
 The Operator trusts a group only while every deployment carrying it is
 configured in this chart rather than added through the console, has a unique
@@ -93,9 +108,14 @@ the model until the Operator granted the new one. Upgrading changes every
 group once. Upgrade this chart together with the Operator, as the platform
 chart does: the Operator trusts only groups of the current form. It updates
 the keys of Agents with shared models when its catalog refresh sees the new
-groups, and re-projects policy-bound Agents once. Native Sandbox Agents are
-single-start, so they stay held after that re-projection until they are
-recreated.
+groups, and re-projects policy-bound Agents once. How a running native Sandbox
+Agent takes that re-projection depends on the record it was started with: one
+started by the Operator's common executor restarts once, while one that still
+has a single-start record stays held until it is recreated. Measured on a
+Kubernetes 1.37 cluster: an OpenClaw Agent started before the common executor
+stayed held after the upgrade, and Agents started by it, OpenClaw and Hermes,
+restarted once for each re-projection, Hermes in about two to three minutes,
+OpenClaw in about eight to ten.
 
 This behavior is opt-in. Standalone Gateways retain their existing model list
 and custom deployment IDs unchanged when `operatorIntegration` is false. The
@@ -894,7 +914,8 @@ different strings that are not blank, as LiteLLM 1.105.1 requires; the chart
 rejects anything else rather than let the proxy refuse to start.
 
 **The agent keeps its conversation and its limits.** Unless a router sets them,
-the chart changes three of LiteLLM 1.105.1's router defaults:
+the chart changes three of LiteLLM 1.105.1's router defaults, and a fourth for
+a router with `classifier_type: jev`:
 
 - `context_compaction: false`. LiteLLM would otherwise rewrite the
   conversation history near the chosen model's input limit, with extra model
@@ -907,6 +928,17 @@ the chart changes three of LiteLLM 1.105.1's router defaults:
   it, and the provider would refuse it. LiteLLM moves it to the lowest tier
   with a model whose declared window fits; set `max_input_tokens` in each
   model's `model_info` for that.
+- `classifier_fallback: default_model`, with `classifier_type: jev`. A request
+  the decision model could not classify, for example while it is unavailable,
+  would otherwise be classified by LiteLLM's heuristic scorer, which placed 15
+  of 40 English and 11 of 40 Chinese prompts on the expected tier in our
+  tests. It goes to the router's `complexity_router_default_model` instead;
+  without one, LiteLLM uses the first model of the medium tier, or of the
+  simple tier. It is not moved to another tier, by its length or by the
+  escalation keyword. The response header `x-litellm-complexity-router-cause`
+  and the request log's `routing_cause` say `default_model_fallback`, with no
+  tier. A router that sets `classifier_fallback` keeps its own value; one with
+  its own `tier_definitions` uses its `fallback_tier`, and gets no default.
 
 **A router is granted only with its models.** With `operatorIntegration`, the
 CetiRun operator puts a router on an Agent's key only when the Agent may use
@@ -948,20 +980,32 @@ configured in `models`.
 
 **The tiers decide what a router saves.** Each call is charged at the price of
 the model it picked, and, with a classifier that asks a model, the classifier
-call as well, which reads the conversation and so costs more as it grows. A
-router saves where it sends turns to a model cheaper than the one the
-conversation would otherwise use, so order the tiers by price and keep the top
-tier near the model you would use without the router. Measured with the same 30
-turns (three conversations with a 6,000-token context) on Azure OpenAI:
+call as well, which reads the system prompt and the latest user messages and so
+costs more as they grow. A router saves where it sends turns to a model cheaper
+than the one the conversation would otherwise use, so order the tiers by price
+and keep the top tier near the model you would use without the router. Measured
+with the same 30 turns (three conversations with a 6,000-token context, answers
+of up to 800 tokens), at the models' Azure OpenAI list prices:
 
 | Through | Cost |
 | --- | --- |
-| A router with tiers gpt-5.4-nano, gpt-5.6-terra, gpt-6-sol, gpt-6-astra and the Decision classifier | 0.250 |
-| gpt-6-sol alone | 0.122 |
-| A router with tiers gpt-5.4-nano, gpt-6-sol, gpt-6-sol, gpt-6-sol (estimated from the same turns) | 0.097 |
+| A router with tiers gpt-5.4-nano, gpt-5.6-terra, gpt-6-sol, gpt-6-astra and the Decision classifier | 0.312 |
+| The same router with the default classifier | 0.082 |
+| gpt-6-sol alone | 0.130 |
 
-In the first router gpt-5.6-terra costs more than gpt-6-sol a tier above it,
-and gpt-6-astra five times as much. Classifier calls were 3.4% of its cost.
+These turns were sent with a CetiRun Agent's key, so the Agent's own GitHub
+Copilot route answered its gpt-5.6-terra and gpt-6-astra turns, charged at the
+same prices (see [Serving CetiRun Agents](#serving-cetirun-agents)).
+In that router gpt-5.6-terra costs more than gpt-6-sol a tier above it, and
+gpt-6-astra almost six times as much, where the Decision classifier sent every
+reasoning turn. Its classifier calls were 2.7% of its cost. With the tiers in
+price order, gpt-5.4-nano, gpt-6-sol, gpt-6-sol and gpt-6-sol, and answers of
+up to 6,000 tokens, the same 30 turns cost 0.194 with the Decision classifier
+and 0.099 with the default one, against 0.215 through gpt-6-sol alone. The
+default classifier saved more by sending 24 of the 30 turns to gpt-5.4-nano,
+hard ones included: judged by gpt-6-sol against its own answers, 3 of those 24
+answers were clearly worse, against 2 of the 14 turns the Decision classifier
+sent there.
 
 Each model keeps its own prompt cache. A turn on a model the conversation has
 not used yet pays the full input price for the whole conversation; a later
@@ -973,12 +1017,21 @@ largest single charge, there and on gpt-6-astra alone, was gpt-6-astra's first
 read of the conversation. Providers keep a cache for minutes of inactivity, so
 a model used rarely may find it gone.
 
-Check a classifier with prompts in the languages your users write. Of 24
-prompts, eight each in Chinese, Chinese mixed with English, and English, the
-default classifier sent all eight Chinese ones to the simple tier, proofs and
-system designs included (6 of 24 on the expected tier); the Decision
-classifier placed 8 of 8 English, 6 of 8 mixed and 3 of 8 Chinese prompts on
-the expected tier, sending hard Chinese prompts to the simple one.
+Check a classifier with prompts like your users'. The default classifier scores
+English keywords and the prompt's length. Of 40 prompts, ten for each tier, it
+placed 15 on the expected tier and 11 of their Chinese translations, never
+chose the complex or reasoning tier, and sent 37 of the Chinese ones to the
+simple tier. The Decision classifier placed 39 of the 40 in each language, each
+translation on the same tier as its original.
+
+The Decision classifier sees the caller's whole system prompt, which LiteLLM
+does not shorten, and the latest user messages. Microsoft-Decision-1 refuses a
+request that does not fit its context of 32,768 tokens: measured directly, an
+English prompt of 32,065 tokens was classified, and one 1,000 words longer was
+refused. With a system prompt of about 40,000 tokens, every classification
+failed and the router used the default classifier instead, without an error.
+Only the response header `x-litellm-complexity-router-cause` and the request
+log's `routing_cause` (`heuristic_scorer` instead of `jev_classifier`) show it.
 
 **A conversation can change model.** Each request is classified on its own, so
 one conversation can move between tiers. On the same Azure OpenAI resource that
@@ -997,8 +1050,10 @@ user_turn`) only for clients that send a session ID it recognizes; OpenClaw
 `classifier_type: capability`, `classifier_type: llm_v2`, and its own
 `tier_definitions` or classifier prompt (`classifier_llm_config.system_prompt`,
 `classification_prompt` or `classification_examples`, with a classifier that
-calls a model). With two in one class, the proxy refused to start; the chart
-rejects the second. One router in each class is accepted.
+calls a model, or `jev_classifier_config.instructions` other than LiteLLM's
+own). With two in one class, the proxy refused to start; the chart rejects the
+second, counting any `jev_classifier_config.instructions`. One router in each
+class is accepted.
 
 The request log line of a routed call carries the router's name as `model`, the
 model it picked as `provider_model`, and `routing_tier`, `routing_cause`,
@@ -1006,6 +1061,88 @@ model it picked as `provider_model`, and `routing_tier`, `routing_cause`,
 length moved it up a tier, and, with a model classifier, `classifier_model` and
 `classifier_cost`. [Measuring the routers](#measuring-the-routers) has queries
 over them.
+
+#### Choosing a classifier
+
+`complexity_router_config.classifier_type` sets what decides the tier:
+
+| `classifier_type` | Decides by | Set |
+| --- | --- | --- |
+| `heuristic`, the default | Scoring English keywords and the request's length, without a model call | Nothing |
+| `llm` | Asking a chat model configured here to pick the tier | `classifier_llm_config.model` |
+| `jev` | Asking a decision model configured here, such as Microsoft-Decision-1, to pick the tier | `jev_classifier_config.deployment_name` |
+
+A model classifier makes one call for each request, which the request waits
+for and which is charged to the caller's key; the request log records it as a
+line of its own. A small, fast chat model is enough for `llm`:
+
+```yaml
+  - model_name: auto-llm
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        classifier_type: llm
+        classifier_llm_config:
+          model: gpt-mini
+        tiers:
+          SIMPLE: gpt-mini
+          MEDIUM: gpt-main
+          COMPLEX: gpt-main
+          REASONING: gpt-main
+      complexity_router_default_model: gpt-main
+```
+
+A decision model is a model entry of its own whose `model_info.mode` is
+`evaluation`. LiteLLM calls it through its Decisions API, the operator offers
+it to no Agent, and the guard refuses a request that asks it for a
+conversation (see [The guard callback](#the-guard-callback)).
+Microsoft-Decision-1 is deployed in an Azure AI Foundry resource, not an Azure
+OpenAI one, and LiteLLM reaches it with the `azure_ai` provider at the
+resource's endpoint. It needs a price like any model; `base_model` names
+LiteLLM's:
+
+```yaml
+  - model_name: decision-1
+    litellm_params:
+      model: azure_ai/my-decision-deployment
+      api_base: https://example.services.ai.azure.com
+      api_key: os.environ/AZURE_AI_FOUNDRY_KEY
+    model_info:
+      mode: evaluation
+      base_model: azure_ai/Microsoft-Decision-1
+  - model_name: auto-decision
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        classifier_type: jev
+        jev_classifier_config:
+          deployment_name: decision-1
+        tiers:
+          SIMPLE: gpt-mini
+          MEDIUM: gpt-main
+          COMPLEX: gpt-main
+          REASONING: gpt-main
+      complexity_router_default_model: gpt-main
+```
+
+Measured with this pair and a Microsoft-Decision-1 deployment, classifier calls
+took about half a second and cost a few millionths of a dollar each with a
+short prompt; they grow with the caller's system prompt, which the classifier
+reads whole. Keep LiteLLM's own instructions for it: a router that sets
+`jev_classifier_config.instructions` has a classifier prompt of its own, which
+LiteLLM limits; see "One router per licensed capability" above.
+
+When a model classifier fails, or does not answer within its `timeout_ms`,
+3000 by default, the router classifies the request with `heuristic` instead,
+without an error, and after a timeout skips the classifier for 30 seconds.
+`routing_cause` in the request log and the response header
+`x-litellm-complexity-router-cause` show which one decided: `llm_classifier`
+or `jev_classifier`, against `heuristic_scorer` or `reasoning_override` for
+the local scorer.
 
 #### A router across providers
 
@@ -1232,6 +1369,42 @@ the sign-in endpoint still answers: posting the master key to `/login` returned
 a console session. That grants nothing the master key does not already grant,
 so treat the setting as hiding the console rather than removing it.
 
+### Calling the Gateway
+
+Clients in the cluster reach the Gateway at its Service,
+`http://<release>-cetirun-ai-gateway.<namespace>.svc:4000`. The chart creates
+no Ingress or load balancer: expose the Service yourself, with TLS, to clients
+outside the cluster. For a first test, the port-forward above is enough.
+
+Give each client a virtual key of its own, created with the master key, with
+the models it may use and a budget; see
+[Give agent keys model routes only](#give-agent-keys-model-routes-only) for
+`allowed_routes`. For a release called `gateway`:
+
+```bash
+MASTER_KEY="$(kubectl get secret gateway-cetirun-ai-gateway-auth \
+  -o jsonpath='{.data.master-key}' | base64 -d)"
+curl -s http://localhost:4000/key/generate \
+  -H "Authorization: Bearer ${MASTER_KEY}" -H 'Content-Type: application/json' \
+  -d '{"models": ["auto", "gpt-4o"], "max_budget": 20,
+       "allowed_routes": ["llm_api_routes", "/v1/models", "/models"]}'
+```
+
+The response's `key` is the client's key. An OpenAI-compatible client takes the
+Gateway's address with `/v1` and the key, for example as `OPENAI_BASE_URL` and
+`OPENAI_API_KEY`, and names a model from `models`, a router included:
+
+```bash
+curl -si http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer ${CLIENT_KEY}" -H 'Content-Type: application/json' \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
+```
+
+A response through a router carries how it was routed:
+`x-litellm-complexity-router-tier` names the tier, `-cause` what decided it,
+and `-score` the heuristic score, where there is one. The request log has the
+model that answered; see [Smart routing](#smart-routing).
+
 ### Revoking a key takes up to a minute to reach every replica
 
 A deleted virtual key is refused at once by the replica that handled the
@@ -1393,6 +1566,26 @@ the console cannot remove it. It:
   router classifying with it used its default classifier, for every caller.
   The Decisions API and a router's own classifier calls reach the model as
   before; a key the operator issued keeps the 403 above;
+- shortens the request a router with a jev classifier sends its decision model
+  to as many bytes as the model takes tokens: the smallest
+  `model_info.max_input_tokens` of the decision model's deployments, or 32,768
+  when none sets it, less the questions LiteLLM asks and 512 bytes for the
+  service's own template. LiteLLM sends the classifier the caller's whole
+  system prompt and its latest user messages, however long they are.
+  Microsoft-Decision-1 takes 32,768 tokens and refused a longer request with a
+  422; the router then classified the request with its fallback, without an
+  error. Each token of a decision model stands for at least one byte of text,
+  so the shortened request fits in any language. It keeps the newest user
+  message whole where it fits, and the beginning and the end of the rest; a
+  newest message that does not fit keeps its beginning and its end. The
+  Gateway logs a warning with the decision model and the sizes, not the
+  content. A client's own calls to the Decisions API are left as they are.
+  Measured on LiteLLM 1.105.1 with Microsoft-Decision-1: requests with a
+  system prompt of 40,000 English words or 60,000 Chinese characters, or with
+  a 120 KB log as the message, were shortened to 31.7 KB, which
+  Microsoft-Decision-1 counted at 5,687 to 13,300 tokens, and the decision
+  model classified each; without the guard it refused each, and the heuristic
+  scorer classified them;
 - keeps a key the CetiRun operator issued from listing what it cannot talk to:
   `GET /v1/models` (and `/model/info`) leaves out the key's access groups that
   LiteLLM lists as if they were models, such as an Agent's Copilot group before
@@ -1436,7 +1629,7 @@ the console cannot remove it. It:
   Gateway's own log and the request log keep the full message.
 
 With `operatorIntegration` off, the guard's request fields, its decision model
-rule, its parameter changes and its error messages apply all the same; a
+rules, its parameter changes and its error messages apply all the same; a
 standalone Gateway has no `cetirun-copilot-` groups for it to separate, and no
 keys the operator issued.
 

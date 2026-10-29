@@ -329,7 +329,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		"container quotas":  func(c *Capabilities) { c.PerContainerResourceLimits = true },
 		"FQDN support":      func(c *Capabilities) { c.BlockedFQDNs = true },
 		"admin support":     func(c *Capabilities) { c.KubernetesAccess = true },
-		"Entra support":     func(c *Capabilities) { c.EntraID = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			capabilities := nativeCapabilities()

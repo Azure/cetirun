@@ -279,11 +279,12 @@ router's limits include the route's, as the instance's entry for that shared
 model does; the same holds for a router configured in the Gateway.
 
 Each request is charged to the instance's key at the price of the tier model it
-is sent to, and a model classifier's calls are charged too; the router's own
-price in the Gateway only satisfies the check for unpriced models. The key's
-budget applies as usual. A per-model rate limit is matched against the model
-name the instance requests, the router's internal name, so a per-model limit on
-a tier model does not apply to requests that go through a router.
+is sent to, and the calls of an `llm` or `jev` classifier are charged too; the
+router's own price in the Gateway only satisfies the check for unpriced models.
+The key's budget applies as usual. A per-model rate limit is matched against
+the model name the instance requests, the router's internal name, so a
+per-model limit on a tier model does not apply to requests that go through a
+router.
 
 An instance that cannot use one of its Team's routers shows why on its page:
 for example, the Policy does not list the router, a tier uses a model the

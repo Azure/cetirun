@@ -41,6 +41,10 @@ and `nodeResourceGroup`. Keep `resourceGroupName` aligned with the helper's
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
 | Monitoring | Container Insights and Prometheus enabled |
 
+Agents of Teams created in the Portal run in a Sandbox, which needs Kubernetes
+1.37 or later: set `kubernetesVersion` to such a version in your parameter
+file. See [Policy-bound Teams](../policy-teams/).
+
 The initial pool counts total **20 nodes**, not a small demonstration cluster.
 The system pool has `CriticalAddonsOnly=true:NoSchedule`; both agent pools
 request `workloadRuntime: KataVmIsolation`. Check the installed

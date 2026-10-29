@@ -16,6 +16,7 @@ import { SandboxListPage } from "./pages/admin/SandboxListPage";
 import { SandboxEditPage } from "./pages/admin/SandboxEditPage";
 import { PolicyEditPage } from "./pages/admin/PolicyEditPage";
 import { InstanceListPage as AdminInstanceListPage } from "./pages/admin/InstanceListPage";
+import { InstanceDetailPage as AdminInstanceDetailPage } from "./pages/admin/InstanceDetailPage";
 import "./components/Layout.css";
 
 export default function App() {
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="sandboxes/new" element={<SandboxEditPage />} />
               <Route path="sandboxes/:name/edit" element={<SandboxEditPage />} />
               <Route path="instances" element={<AdminInstanceListPage />} />
+              <Route path="instances/:name" element={<AdminInstanceDetailPage />} />
             </Route>
           </Route>
         </Routes>

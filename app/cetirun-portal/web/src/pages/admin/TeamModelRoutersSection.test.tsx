@@ -30,7 +30,8 @@ beforeEach(() => {
   vi.mocked(teams.updateTeam).mockResolvedValue(team);
   vi.mocked(policies.listPolicies).mockResolvedValue([{ name: "standard", uid: "policy-uid", resourceVersion: "1", harnesses: { allowed: ["hermes"] } }]);
   vi.mocked(sandboxes.listSandboxes).mockResolvedValue([{ name: "small", deleting: false } as sandboxes.SandboxDTO]);
-  vi.mocked(gateway.getAIGatewayCatalog).mockResolvedValue({ known: true, sharedModels: [{ name: "small-model" }, { name: "large-model" }], githubCopilot: true, agentTypes: ["hermes"] });
+  vi.mocked(gateway.getAIGatewayCatalog).mockResolvedValue({ known: true, sharedModels: [{ name: "small-model" }, { name: "large-model" }],
+    decisionModels: ["decision-1"], githubCopilot: true, agentTypes: ["hermes"] });
 });
 
 function renderEditor() {
@@ -61,6 +62,56 @@ it("shows a router's status and saves added routers with the Team", async () => 
   ]);
 });
 
+it("saves a router that classifies with a decision model", async () => {
+  const user = userEvent.setup(); renderEditor();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Add smart-routing model" }));
+  const added = screen.getByRole("group", { name: "Smart-routing model 2" });
+  await user.type(within(added).getByRole("textbox", { name: "Model name" }), "auto-decision");
+  await user.selectOptions(within(added).getByRole("combobox", { name: "Classifier" }), "jev");
+  await waitFor(() => expect(within(added).getByRole("option", { name: "decision-1" })).toBeInTheDocument());
+  await user.selectOptions(within(added).getByRole("combobox", { name: "Classifier model" }), "decision-1");
+  await user.type(within(added).getByRole("combobox", { name: "Simple tier" }), "small-model");
+  await user.type(within(added).getByRole("combobox", { name: "Medium tier" }), "large-model");
+  await user.type(within(added).getByRole("combobox", { name: "Complex tier" }), "large-model");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(teams.updateTeam).toHaveBeenCalledOnce());
+  expect(vi.mocked(teams.updateTeam).mock.calls[0][1].modelRouters).toEqual([
+    { name: "auto", classifier: "heuristic", simple: "small-model", medium: "medium-model", complex: "large-model" },
+    { name: "auto-decision", classifier: "jev", classifierModel: "decision-1", simple: "small-model", medium: "large-model", complex: "large-model" },
+  ]);
+});
+
+it("offers the decision classifier the decision models only", async () => {
+  vi.mocked(gateway.getAIGatewayCatalog).mockResolvedValue({ known: true, githubCopilot: true, agentTypes: ["hermes"], decisionModels: ["decision-1"],
+    sharedModels: [{ name: "small-model" }, { name: "gateway-auto", routerModels: ["small-model"] }] });
+  const user = userEvent.setup(); renderEditor();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Add smart-routing model" }));
+  const added = screen.getByRole("group", { name: "Smart-routing model 2" });
+  const offered = () => Array.from((within(added).getByRole("combobox", { name: "Classifier model" }) as HTMLSelectElement).options)
+    .map((option) => option.textContent);
+  await user.selectOptions(within(added).getByRole("combobox", { name: "Classifier" }), "llm");
+  await waitFor(() => expect(offered()).toEqual(["Choose a shared model", "small-model"]));
+  await user.selectOptions(within(added).getByRole("combobox", { name: "Classifier model" }), "small-model");
+  // A shared model is no decision model: the switch drops it.
+  await user.selectOptions(within(added).getByRole("combobox", { name: "Classifier" }), "jev");
+  expect((within(added).getByRole("combobox", { name: "Classifier model" }) as HTMLSelectElement).value).toBe("");
+  expect(offered()).toEqual(["Choose a decision model", "decision-1"]);
+  expect(within(added).queryByText("The AI Gateway offers no decision model.")).not.toBeInTheDocument();
+});
+
+it("shows a decision model the Gateway does not offer", async () => {
+  vi.mocked(gateway.getAIGatewayCatalog).mockResolvedValue({ known: true, sharedModels: [{ name: "small-model" }], githubCopilot: true, agentTypes: ["hermes"] });
+  vi.mocked(teams.getTeam).mockResolvedValue({ ...team, modelRouterStatus: [],
+    modelRouters: [{ name: "auto", classifier: "jev", classifierModel: "decision-1", simple: "small-model", medium: "medium-model", complex: "large-model" }] });
+  renderEditor();
+  const router = await screen.findByRole("group", { name: "Smart-routing model 1" });
+  expect(await within(router).findByText("The AI Gateway offers no decision model.")).toBeInTheDocument();
+  expect(within(router).getByRole("option", { name: "decision-1 (not a decision model)" })).toBeInTheDocument();
+  expect((within(router).getByRole("combobox", { name: "Classifier model" }) as HTMLSelectElement).value).toBe("decision-1");
+});
+
 it("does not save an incomplete router", async () => {
   const user = userEvent.setup(); renderEditor();
   await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
@@ -89,16 +140,22 @@ it("checks routers the way the Team API does", () => {
   expect(modelRouterProblem([router, router])).toMatch(/defined twice/);
   expect(modelRouterProblem([{ ...router, classifier: "llm" }])).toMatch(/needs a shared model/);
   expect(modelRouterProblem([{ ...router, classifier: "llm", classifierModel: "copilot/x" }])).toMatch(/needs a shared model/);
+  expect(modelRouterProblem([{ ...router, classifier: "jev" }])).toBe("Smart-routing model auto: the decision classifier needs a decision model.");
+  expect(modelRouterProblem([{ ...router, classifier: "jev", classifierModel: "copilot/decision-1" }])).toMatch(/needs a decision model/);
+  expect(modelRouterProblem([{ ...router, classifier: "jev", classifierModel: " decision-1 " }])).toBeNull();
   expect(modelRouterProblem(Array.from({ length: 11 }, (_, i) => ({ ...router, name: `auto-${i}` })))).toMatch(/at most 10/);
   expect(toModelRouterRequests([{ ...router, name: " auto ", classifierModel: "x", reasoning: " " }])).toEqual([
     { name: "auto", classifier: "heuristic", simple: "a", medium: "b", complex: "c" },
+  ]);
+  expect(toModelRouterRequests([{ ...router, classifier: "jev", classifierModel: " decision-1 " }])).toEqual([
+    { name: "auto", classifier: "jev", classifierModel: "decision-1", simple: "a", medium: "b", complex: "c" },
   ]);
 });
 
 it("offers no router of the Gateway as a tier or classifier model", async () => {
   vi.mocked(gateway.getAIGatewayCatalog).mockResolvedValue({ known: true, githubCopilot: true, agentTypes: ["hermes"], sharedModels: [
     { name: "small-model" }, { name: "gateway-auto", routerModels: ["small-model"] }, { name: "gateway-plugin", routerUnverifiable: true },
-  ] });
+  ], decisionModels: ["decision-1"] });
   const user = userEvent.setup(); renderEditor();
   await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
   await user.click(screen.getByRole("button", { name: "Add smart-routing model" }));
@@ -108,6 +165,8 @@ it("offers no router of the Gateway as a tier or classifier model", async () => 
   const offered = within(added).getAllByRole("option").map((option) => option.textContent);
   expect(offered).not.toContain("gateway-auto");
   expect(offered).not.toContain("gateway-plugin");
+  // A decision model only classifies: neither a tier nor the model classifier is offered one.
+  expect(offered).not.toContain("decision-1");
   const suggested = Array.from(document.querySelectorAll("datalist option")).map((option) => option.getAttribute("value"));
   expect(suggested).toEqual(["small-model"]);
 });

@@ -12,10 +12,17 @@ export interface TeamSkillStorage {
   mountPath?: string;
 }
 
+/**
+ * How a router classifies requests: locally (heuristic), with a shared model (llm), or with a
+ * shared decision model such as Microsoft-Decision-1 (jev).
+ */
+export type TeamModelRouterClassifier = "heuristic" | "llm" | "jev";
+
 /** One smart-routing model of a Team. Tiers name shared models, or copilot/<model> for GitHub Copilot models. */
 export interface TeamModelRouter {
   name: string;
-  classifier?: "heuristic" | "llm";
+  classifier?: TeamModelRouterClassifier;
+  /** The shared model of the llm classifier, or the decision model of the jev classifier. */
   classifierModel?: string;
   simple: string;
   medium: string;

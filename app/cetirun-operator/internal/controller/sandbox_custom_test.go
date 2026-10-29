@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -123,6 +124,30 @@ func TestCommonCustomRetainedLifecycle(t *testing.T) {
 			t.Run("deletion", func(t *testing.T) {
 				testReconciledSandboxDeletionForHarnesses(t, []string{"custom"}, setup...)
 			})
+		})
+	}
+}
+
+func TestCommonCustomKeepsUnsupportedEntraHeld(t *testing.T) {
+	for _, mode := range []string{"headless", "chat"} {
+		t.Run(mode, func(t *testing.T) {
+			f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "custom", true, false,
+				withCommonCustom(t, mode), withReconciledCoordination(t), withNativeEntra(t))
+			_, err := f.r.resolvePolicy(context.Background(), f.current(t))
+			if err == nil || !strings.Contains(err.Error(), "native Entra projection does not yet support the Custom runtime contract") {
+				t.Fatal("managed Entra support changed the unsupported Custom boundary:", err)
+			}
+			for range 3 {
+				f.reconcileOK(t)
+			}
+			f.assertNotReady(t)
+			var workloads appsv1.StatefulSetList
+			if err := f.kube.List(context.Background(), &workloads); err != nil || len(workloads.Items) != 0 {
+				t.Fatal("unsupported Custom identity created compute:", err)
+			}
+			if f.installer.stages != 0 {
+				t.Fatal("unsupported Custom identity used a fallback executor")
+			}
 		})
 	}
 }

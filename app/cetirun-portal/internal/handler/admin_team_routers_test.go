@@ -54,7 +54,9 @@ func TestAdminTeamKeepsModelRoutersAndReportsTheirStatus(t *testing.T) {
 	// them stores the change.
 	current, _ := h.Kube.GetTeam(context.Background(), "research")
 	routers := append(got.ModelRouters, TeamModelRouterDTO{Name: "auto-llm", Classifier: "llm", ClassifierModel: "small-model",
-		Simple: "small-model", Medium: "medium-model", Complex: "large-model", Reasoning: "copilot/reasoning-model"})
+		Simple: "small-model", Medium: "medium-model", Complex: "large-model", Reasoning: "copilot/reasoning-model"},
+		TeamModelRouterDTO{Name: "auto-decision", Classifier: "jev", ClassifierModel: " decision-model ",
+			Simple: "small-model", Medium: "medium-model", Complex: "large-model"})
 	body, _ := json.Marshal(TeamUpsertRequest{Role: "new", UID: string(current.UID), ResourceVersion: current.ResourceVersion,
 		AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard", ModelRouters: routers})
 	req = httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/research", bytes.NewReader(body))
@@ -65,9 +67,36 @@ func TestAdminTeamKeepsModelRoutersAndReportsTheirStatus(t *testing.T) {
 		t.Fatalf("status %d, body=%s", w.Code, w.Body.String())
 	}
 	stored, _ := h.Kube.GetTeam(context.Background(), "research")
-	if len(stored.Spec.ModelRouters) != 2 || stored.Spec.ModelRouters[1].Classifier.Type != "llm" ||
+	if len(stored.Spec.ModelRouters) != 3 || stored.Spec.ModelRouters[1].Classifier.Type != "llm" ||
 		stored.Spec.ModelRouters[1].Classifier.Model != "small-model" || stored.Spec.ModelRouters[1].Tiers.Reasoning != "copilot/reasoning-model" {
 		t.Fatalf("stored routers = %+v", stored.Spec.ModelRouters)
+	}
+	// The decision classifier keeps its decision model, and reads back as it
+	// was saved.
+	if classifier := stored.Spec.ModelRouters[2].Classifier; classifier.Type != cetirunv1alpha1.ModelRouterClassifierJev || classifier.Model != "decision-model" {
+		t.Fatalf("stored jev classifier = %+v", classifier)
+	}
+	if dto := toTeamDTO(stored).ModelRouters[2]; dto.Classifier != "jev" || dto.ClassifierModel != "decision-model" {
+		t.Fatalf("jev router DTO = %+v", dto)
+	}
+}
+
+// The model of a classifier is kept for the llm and jev classifiers only.
+func TestTeamModelRoutersKeepTheClassifierModelOfModelClassifiers(t *testing.T) {
+	for classifier, model := range map[string]string{"": "", "heuristic": "", "llm": "small-model", "jev": "decision-model"} {
+		router := testModelRouterDTO("auto")
+		router.Classifier, router.ClassifierModel = classifier, " "+model+" "
+		if model == "" {
+			router.ClassifierModel = "leftover-model"
+		}
+		spec := toTeamSpec(TeamUpsertRequest{ModelRouters: []TeamModelRouterDTO{router}}).ModelRouters[0].Classifier
+		want := classifier
+		if want == "" {
+			want = cetirunv1alpha1.ModelRouterClassifierHeuristic
+		}
+		if spec.Type != want || spec.Model != model {
+			t.Errorf("classifier %q: stored %+v, want type %q model %q", classifier, spec, want, model)
+		}
 	}
 }
 
@@ -76,6 +105,12 @@ func TestAdminTeamRejectsInvalidModelRouters(t *testing.T) {
 	llmWithoutModel.Classifier = "llm"
 	copilotClassifier := testModelRouterDTO("auto")
 	copilotClassifier.Classifier, copilotClassifier.ClassifierModel = "llm", "copilot/small-model"
+	jevWithoutModel := testModelRouterDTO("auto")
+	jevWithoutModel.Classifier = "jev"
+	copilotDecision := testModelRouterDTO("auto")
+	copilotDecision.Classifier, copilotDecision.ClassifierModel = "jev", "copilot/decision-model"
+	spacedDecision := testModelRouterDTO("auto")
+	spacedDecision.Classifier, spacedDecision.ClassifierModel = "jev", "decision model"
 	missingTier := testModelRouterDTO("auto")
 	missingTier.Medium = ""
 	spacedTier := testModelRouterDTO("auto")
@@ -95,9 +130,12 @@ func TestAdminTeamRejectsInvalidModelRouters(t *testing.T) {
 		{[]TeamModelRouterDTO{testModelRouterDTO("auto"), testModelRouterDTO("auto")}, "defined twice"},
 		{[]TeamModelRouterDTO{llmWithoutModel}, "needs a shared model"},
 		{[]TeamModelRouterDTO{copilotClassifier}, "needs a shared model"},
+		{[]TeamModelRouterDTO{jevWithoutModel}, "the decision classifier needs a shared decision model"},
+		{[]TeamModelRouterDTO{copilotDecision}, "the decision classifier needs a shared decision model"},
+		{[]TeamModelRouterDTO{spacedDecision}, "the decision classifier needs a shared decision model"},
 		{[]TeamModelRouterDTO{missingTier}, "the medium tier"},
 		{[]TeamModelRouterDTO{spacedTier}, "the simple tier"},
-		{[]TeamModelRouterDTO{licensed}, "heuristic or llm"},
+		{[]TeamModelRouterDTO{licensed}, "the classifier must be heuristic, llm or jev"},
 		{tooMany, "at most 10"},
 	} {
 		h := newAdminTeamHandler()
@@ -108,6 +146,13 @@ func TestAdminTeamRejectsInvalidModelRouters(t *testing.T) {
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tc.want) {
 			t.Errorf("routers %+v: status %d body %s, want %q", tc.routers, w.Code, w.Body.String(), tc.want)
 		}
+	}
+	// A jev router with a decision model is accepted; whether the model is
+	// one is the operator's to check.
+	jev := testModelRouterDTO("auto")
+	jev.Classifier, jev.ClassifierModel = "jev", "decision-model"
+	if message := validateTeamModelRouters([]TeamModelRouterDTO{jev}); message != "" {
+		t.Fatalf("a jev router with a model is refused: %s", message)
 	}
 }
 

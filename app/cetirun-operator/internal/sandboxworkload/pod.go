@@ -27,6 +27,9 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 		return fmt.Errorf("native Pod lifetime protection differs from the bundle")
 	}
 	spec := &template.Spec
+	if err := b.ValidateIdentityProjection(*spec); err != nil {
+		return err
+	}
 	for key, value := range b.input.Controls.PodLabels {
 		if template.Labels[key] != value {
 			return fmt.Errorf("Pod labels do not match the compiler's Agent UID selector")

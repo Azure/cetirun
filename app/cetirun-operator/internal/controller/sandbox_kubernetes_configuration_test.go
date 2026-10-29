@@ -629,6 +629,12 @@ func TestKubernetesSandboxConfigurationSourceRejectsInconsistentIdentities(t *te
 		{"missing client", func(p *sandboxpolicy.Platform) { p.Identities[0].Entra.ClientID = "" }},
 		{"missing directory", func(p *sandboxpolicy.Platform) { p.Identities[0].Entra.TenantID = "" }},
 		{"duplicate Agent", func(p *sandboxpolicy.Platform) { p.Identities = append(p.Identities, p.Identities[0]) }},
+		{"borrowed ServiceAccount", func(p *sandboxpolicy.Platform) {
+			other := p.Identities[0]
+			other.AgentUID = "another-agent-uid"
+			p.Identities = append(p.Identities, other)
+		}},
+		{"control character in identity", func(p *sandboxpolicy.Platform) { p.Identities[0].Entra.ClientID = "example\nclient" }},
 		{"no identity authorization", func(p *sandboxpolicy.Platform) {
 			p.Identities[0].Entra = nil
 			p.Identities[0].Kubernetes = false

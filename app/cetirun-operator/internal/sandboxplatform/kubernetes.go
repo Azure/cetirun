@@ -321,22 +321,18 @@ func validateSandboxPlatformConfiguration(document Configuration) error {
 }
 
 func validateSandboxPlatformIdentities(platform sandboxpolicy.Platform, capabilities sandbox.Capabilities) error {
+	if err := sandboxpolicy.ValidateIdentityApprovals(platform.Identities); err != nil {
+		return err
+	}
 	if len(platform.Grants) != 0 && !capabilities.KubernetesAccess {
 		return fmt.Errorf("%w: grants require declared Kubernetes access support", sandboxpolicy.ErrUnapprovedGrant)
 	}
-	seen := map[types.UID]bool{}
 	for _, identity := range platform.Identities {
-		if !sandboxPlatformUID(identity.AgentUID) || seen[identity.AgentUID] ||
-			len(validation.IsDNS1123Label(identity.Namespace)) != 0 ||
-			len(validation.IsDNS1123Subdomain(identity.ServiceAccountName)) != 0 || identity.ServiceAccountName == "default" ||
-			!sandboxPlatformValue(identity.Revision) || (!identity.Kubernetes && identity.Entra == nil) ||
-			(identity.Kubernetes && !capabilities.KubernetesAccess) {
-			return fmt.Errorf("%w: identity approvals must be complete, unique and consistent with declared capabilities", sandboxpolicy.ErrUnapprovedGrant)
+		if identity.Kubernetes && !capabilities.KubernetesAccess {
+			return fmt.Errorf("%w: identity approval requires declared Kubernetes access support", sandboxpolicy.ErrUnapprovedGrant)
 		}
-		seen[identity.AgentUID] = true
-		if identity.Entra != nil && (!capabilities.EntraID ||
-			!sandboxPlatformValue(identity.Entra.ClientID) || !sandboxPlatformValue(identity.Entra.TenantID)) {
-			return fmt.Errorf("%w: Entra identity approval is incomplete or unsupported", sandboxpolicy.ErrUnapprovedGrant)
+		if identity.Entra != nil && !capabilities.EntraID {
+			return fmt.Errorf("%w: Entra identity approval requires declared support", sandboxpolicy.ErrUnapprovedGrant)
 		}
 	}
 	if platform.TokenExpirationSeconds != 0 && (platform.TokenExpirationSeconds < 600 || platform.TokenExpirationSeconds > 3600) {

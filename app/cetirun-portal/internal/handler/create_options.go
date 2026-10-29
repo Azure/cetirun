@@ -78,6 +78,9 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 	}
 	if h.Config.AIGatewayEnabled {
 		options.Gateway = h.sharedModelCatalog(r.Context())
+		// Decision models only classify a Team router's requests; no Agent
+		// is created with one.
+		options.Gateway.DecisionModels = nil
 		options.ModelRouters = teamModelRouterNames(team, nil)
 	}
 	block := func(code, message string) (*creationOptions, error) {

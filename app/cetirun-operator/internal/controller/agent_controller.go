@@ -301,10 +301,24 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// recovery can make compute available.
 	policy, err := r.reconcilePolicy(ctx, instance)
 	if policy.dependencyUnavailable {
+		if reconciledSandbox && instance.Spec.Suspended && policy.identityPending {
+			// Shutdown and revocation were verified above. A new identity is
+			// bootstrapped only after resume, not by changing the stopped state.
+			instance.Status.Phase = cetirunv1alpha1.PhaseSuspended
+			instance.Status.AccessURL = ""
+			instance.Status.ObservedGeneration = instance.Generation
+			for _, condition := range []string{cetirunv1alpha1.ConditionReady, cetirunv1alpha1.ConditionPodReady,
+				cetirunv1alpha1.ConditionSandboxReady, cetirunv1alpha1.ConditionIngressReady} {
+				setCondition(&instance.Status.Conditions, condition, metav1.ConditionFalse,
+					"Suspended", "Suspension is confirmed; identity preparation waits for resume")
+			}
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, stderrors.Join(err, r.updateStatus(ctx, instance))
+		}
 		// A transient Team, policy, or Gateway catalog failure cannot prove a
 		// denial. Preserve the key identity and spend record, but block it and
 		// stop compute until fresh authorization evidence is available.
 		bootstrapErr := r.bootstrapPendingIngressMTLS(ctx, instance, policy.ingressMTLSPending)
+		bootstrapErr = stderrors.Join(bootstrapErr, r.bootstrapPendingIdentity(ctx, instance, policy.identityPending))
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
 		return result, stderrors.Join(err, bootstrapErr, holdErr)
 	} else if err != nil {

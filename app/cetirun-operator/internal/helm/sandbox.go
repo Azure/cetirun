@@ -183,8 +183,9 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 			Agent:           sandboxworkload.ObjectIdentity{Name: input.AgentName, UID: input.Resolution.Binding.AgentUID},
 			AgentGeneration: input.AgentGeneration, Namespace: input.Namespace,
 			Binding: input.Controls.Binding, Revision: input.Controls.Revision,
-			Home:     sandboxworkload.ObjectIdentity{Name: input.Home.Name, UID: input.Home.UID},
-			Controls: slices.Clone(input.Controls.Objects),
+			Home:                   sandboxworkload.ObjectIdentity{Name: input.Home.Name, UID: input.Home.UID},
+			Controls:               slices.Clone(input.Controls.Objects),
+			IdentityServiceAccount: input.Controls.ServiceAccountSource,
 		}
 		terminalValues := object(object(p.Values[sandboxworkload.ValuesKey])["terminal"])
 		if terminal := input.Terminal; terminal != nil && terminalValues["enabled"] == true {

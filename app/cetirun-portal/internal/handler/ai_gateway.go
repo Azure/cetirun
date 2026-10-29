@@ -70,6 +70,9 @@ type AIGatewayCatalogResponse struct {
 	// Known is false until the operator has published the catalog.
 	Known        bool                                    `json:"known"`
 	SharedModels []cetirunv1alpha1.AIGatewayCatalogModel `json:"sharedModels"`
+	// DecisionModels are the shared decision models a Team router's jev
+	// classifier may use; no Agent is configured with them.
+	DecisionModels []string `json:"decisionModels,omitempty"`
 	// GitHubCopilot reports whether the deployment offers GitHub Copilot to
 	// Agents.
 	GitHubCopilot bool `json:"githubCopilot"`
@@ -150,7 +153,8 @@ func (h *InstanceHandler) sharedModelCatalog(ctx context.Context) AIGatewayCatal
 		// Null while the operator has not read its default agent chart.
 		agentTypes = catalog.Routing.AgentTypes
 	}
-	return AIGatewayCatalogResponse{Known: known, SharedModels: catalog.SharedModels, GitHubCopilot: catalog.GitHubCopilot, AgentTypes: agentTypes}
+	return AIGatewayCatalogResponse{Known: known, SharedModels: catalog.SharedModels, DecisionModels: catalog.DecisionModels,
+		GitHubCopilot: catalog.GitHubCopilot, AgentTypes: agentTypes}
 }
 
 // GetAIGatewayCatalog handles GET /api/v1/ai-gateway/catalog: the shared

@@ -143,6 +143,7 @@ type CompileInput struct {
 	Namespace       string
 	ServiceName     string
 	Platform        Platform
+	IdentityPin     *IdentityPin
 	// CustomIngress is an operator-derived Custom Harness HTTP contract. It is
 	// deliberately separate from AgentPolicy so callers cannot request a port
 	// or peer through an Agent-owned object.
@@ -164,6 +165,13 @@ type IngressCaller struct {
 }
 type TerminalIngress struct {
 	Port int32 `json:"port"`
+}
+
+// IdentityPin is supplied from protected bootstrap readback, never policy input.
+type IdentityPin struct {
+	Name         string
+	UID          types.UID
+	BootstrapUID types.UID
 }
 
 // Plan contains desired resources, never observed status. Render Resources
@@ -198,6 +206,7 @@ type IdentityPlan struct {
 	VolumeMounts                 []corev1.VolumeMount        `json:"volumeMounts,omitempty"`
 	Env                          []corev1.EnvVar             `json:"env,omitempty"`
 	ServiceAccount               *corev1.ServiceAccount      `json:"serviceAccount,omitempty"`
+	BootstrapServiceAccount      bool                        `json:"bootstrapServiceAccount,omitempty"`
 	RoleBindings                 []rbacv1.RoleBinding        `json:"roleBindings,omitempty"`
 	ClusterRoleBindings          []rbacv1.ClusterRoleBinding `json:"clusterRoleBindings,omitempty"`
 	Bindings                     []BindingReference          `json:"bindings,omitempty"`

@@ -178,11 +178,13 @@ func Compile(input CompileInput) (*Plan, error) {
 	}
 	if plan.Identity.ServiceAccount != nil {
 		plan.Identity.ServiceAccount.Annotations[RevisionAnnotation] = plan.Revision
-		resource, err = manifest(plan.Identity.ServiceAccount)
-		if err != nil {
-			return nil, err
+		if !plan.Identity.BootstrapServiceAccount {
+			resource, err = manifest(plan.Identity.ServiceAccount)
+			if err != nil {
+				return nil, err
+			}
+			plan.Resources = append(plan.Resources, resource)
 		}
-		plan.Resources = append(plan.Resources, resource)
 	}
 	for i := range plan.Identity.RoleBindings {
 		plan.Identity.RoleBindings[i].Annotations[RevisionAnnotation] = plan.Revision

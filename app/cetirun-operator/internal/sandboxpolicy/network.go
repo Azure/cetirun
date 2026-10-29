@@ -108,9 +108,21 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
 			return platform, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
 		}
-		if len(platform.Grants) != 0 || len(platform.Identities) != 0 ||
-			platform.KubernetesAudience != "" || platform.TokenExpirationSeconds != 0 {
-			return platform, fmt.Errorf("%w: native single-start does not support identity or token grants", ErrUnsupportedControl)
+		if len(platform.Grants) != 0 {
+			return platform, fmt.Errorf("%w: native execution does not support Kubernetes grants", ErrUnsupportedControl)
+		}
+		if len(platform.Identities) != 0 || platform.KubernetesAudience != "" || platform.TokenExpirationSeconds != 0 {
+			if !capabilities.EntraID {
+				return platform, fmt.Errorf("%w: native identity requires explicit Entra support", ErrUnsupportedControl)
+			}
+			if err := ValidateIdentityApprovals(platform.Identities); err != nil {
+				return platform, err
+			}
+			for _, identity := range platform.Identities {
+				if identity.Kubernetes || identity.Entra == nil {
+					return platform, fmt.Errorf("%w: native identity registration is Entra-only", ErrUnsupportedControl)
+				}
+			}
 		}
 	} else if adapter.Name != AzureCNIOverlayCilium || !adapter.Qualified || adapter.Revision == "" {
 		return platform, fmt.Errorf("%w: no qualified candidate adapter registration", ErrUnsupportedControl)
