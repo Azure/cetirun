@@ -94,7 +94,7 @@ func TestEnsureGatewayTokenOpenClawCreatesCetiRunAuthKey(t *testing.T) {
 	}
 }
 
-func TestEnsureGatewayTokenHermesRetiresDirectModelEnvAndPreservesServerToken(t *testing.T) {
+func TestEnsureGatewayTokenHermesPreservesServerAndToolCredentials(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -113,11 +113,7 @@ func TestEnsureGatewayTokenHermesRetiresDirectModelEnvAndPreservesServerToken(t 
 			"OPENCLAW_GATEWAY_TOKEN": []byte("gateway-token"),
 			"CETIRUN_AUTH_KEY":       []byte("existing-auth-key"),
 			"API_SERVER_KEY":         []byte("api-key"),
-			"MODEL_API_KEY":          []byte("legacy-model-key"),
-			"OPENAI_API_KEY":         []byte("legacy-openai-key"),
-			"ANTHROPIC_API_KEY":      []byte("legacy-anthropic-key"),
-			"COPILOT_GITHUB_TOKEN":   []byte("legacy-copilot-token"),
-			"hermes.env":             []byte("COPILOT_GITHUB_TOKEN=old-copilot-token\nBRAVE_API_KEY=tool-key\n"),
+			"hermes.env":             []byte("BRAVE_API_KEY=tool-key\n"),
 		},
 	}
 	instance := hermesSecretTestInstance("bob")
@@ -140,14 +136,6 @@ func TestEnsureGatewayTokenHermesRetiresDirectModelEnvAndPreservesServerToken(t 
 	hermesEnv := string(updated.Data["hermes.env"])
 	if !strings.Contains(hermesEnv, "API_SERVER_KEY=api-key\n") {
 		t.Fatalf("hermes.env does not preserve API_SERVER_KEY: %q", hermesEnv)
-	}
-	for _, key := range []string{"MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "COPILOT_GITHUB_TOKEN"} {
-		if _, exists := updated.Data[key]; exists {
-			t.Fatalf("runtime Secret retains direct model credential %s", key)
-		}
-		if strings.Contains(hermesEnv, key+"=") {
-			t.Fatalf("hermes.env retains direct model credential %s", key)
-		}
 	}
 	if !strings.Contains(hermesEnv, "BRAVE_API_KEY=tool-key\n") {
 		t.Fatal("Hermes tool credential was lost")

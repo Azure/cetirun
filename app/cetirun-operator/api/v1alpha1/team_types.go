@@ -37,11 +37,6 @@ type TeamSpec struct {
 	// +optional
 	MemberContext TeamContextSpec `json:"memberContext,omitempty"`
 
-	// Defaults retains the removed provider field solely to reject old configuration.
-	// Model routing is managed by the platform AI Gateway.
-	// +optional
-	Defaults TeamDefaultsSpec `json:"defaults,omitempty"`
-
 	// Skills is the list of default skills for all team members.
 	// Each entry is a ClawHub package ID (e.g. "@anthropic/mcp-server-fetch")
 	// or an npm package prefixed with "npm:" (e.g. "npm:@openclaw/matrix").
@@ -111,14 +106,6 @@ type TeamContextSpec struct {
 	// +kubebuilder:validation:MaxItems=20
 	// +optional
 	Description []string `json:"description,omitempty"`
-}
-
-// TeamDefaultsSpec rejects the removed direct-provider setting.
-type TeamDefaultsSpec struct {
-	// Provider is no longer supported; configure upstream providers in the AI Gateway.
-	// +kubebuilder:validation:MaxLength=0
-	// +optional
-	Provider string `json:"provider,omitempty"`
 }
 
 // TeamStatus defines the observed state of Team.

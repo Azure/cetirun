@@ -9,11 +9,10 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 )
 
-func TestCustomRejectsImageManagedAuthentication(t *testing.T) {
+func TestCustomRequiresGatewayAuthentication(t *testing.T) {
 	for _, port := range []any{nil, 8080} {
 		input := customInput(port)
 		b := input["customBindings"].(runtimebindings.Custom)
-		b.AgentManagedModel = true
 		b.Model = runtimebindings.ModelAccess{}
 		b.Network.Gateway = runtimebindings.Peer{}
 		b.Network.GatewayPort = 0

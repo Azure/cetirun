@@ -175,13 +175,8 @@ Kubernetes provider prepares the namespace, HOME claim template and canonical
 context, and coordinates Pod replacements, including approved image updates.
 The runtime Chart retains and reuses the same HOME claim. Every approved Custom
 image receives only its own Virtual Key and the Gateway API base for
-platform-provided model access. If an existing Custom workload still has a
-direct platform model configuration, the operator stops it before chart or
-Gateway configuration lookup, retains its HOME and key, and reports the
-migration requirement. Once the old Pods have stopped and Gateway bindings
-and a compatible chart are available, reconciliation starts it again.
-Unconfirmed ownership or orphaned Pods require operator recovery. This does
-not restrict arbitrary outbound connections made by user code in the image.
+platform-provided model access. This does not restrict arbitrary outbound
+connections made by user code in the image.
 
 For Gateway-backed Custom Agents, the existing Portal Overview provides the
 platform Copilot sign-in. A compatible runtime chart marked

@@ -152,21 +152,8 @@ func TestAIGatewayChartWiring(t *testing.T) {
 	// once, after doctor imported the auth profile files of earlier versions.
 	containers := openClawInitContainers(t, rendered)
 	var names []string
-	var retire *corev1.Container
 	for i := range containers {
 		names = append(names, containers[i].Name)
-		if containers[i].Name == "retire-copilot-sign-in" {
-			retire = &containers[i]
-		}
-	}
-	if doctor, retirement := slices.Index(names, "doctor"), slices.Index(names, "retire-copilot-sign-in"); doctor < 0 || retirement != doctor+1 {
-		t.Fatalf("the retirement must run right after doctor, init containers %v", names)
-	}
-	if !slices.Equal(retire.Command, []string{"/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"}) {
-		t.Fatalf("retirement command %v", retire.Command)
-	}
-	if !strings.Contains(rendered["cetirun/templates/configmap.yaml"], "retire-copilot-sign-in.sh: |") {
-		t.Fatal("the retirement script is not in the ConfigMap")
 	}
 	env := openAIKeyEnv(t, rendered)
 	if env == nil || env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
@@ -432,37 +419,6 @@ func TestAIGatewayChartRestartsTheProxyForANewSignIn(t *testing.T) {
 	}
 	if _, err := render("not a generation"); err == nil {
 		t.Fatal("a generation that is not hexadecimal must be rejected")
-	}
-}
-
-// The in-agent model sign-in helper is served exactly where the harness
-// exposes its port: Hermes keeps it, and OpenClaw in a chart with the
-// per-Agent Copilot proxy carries none, whether or not it uses the Gateway.
-func TestPreparedReleaseServesSignInHelper(t *testing.T) {
-	chrt, err := loader.Load("../../../cetirun-chart")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name  string
-		input map[string]any
-		want  bool
-	}{
-		{name: "Hermes through the Gateway", input: aiGatewayInput("hermes", "openai"), want: false},
-		{name: "OpenClaw through the Gateway", input: aiGatewayInput("openclaw", "openai"), want: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			prepared, err := PrepareChart(chrt, tc.input)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := prepared.ServesSignInHelper(); got != tc.want {
-				t.Fatalf("ServesSignInHelper() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-	if (*PreparedRelease)(nil).ServesSignInHelper() {
-		t.Fatal("no release serves no helper")
 	}
 }
 

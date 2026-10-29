@@ -46,7 +46,7 @@ func (c providerTestClient) Create(ctx context.Context, obj client.Object, opts 
 func providerFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	t.Helper()
 	image := "registry.example.com/pi@sha256:" + strings.Repeat("a", 64)
-	cfg := CustomRuntimeConfig{Enabled: true, AgentManagedModel: false, ApprovedImages: []string{image},
+	cfg := CustomRuntimeConfig{Enabled: true, ApprovedImages: []string{image},
 		StorageClass: "test-storage", StorageSize: "20Gi", AccessMode: "ReadWriteMany", FSGroup: 1024,
 		Context: map[string]string{"AGENTS.md": "approved context", "skills/cetirun-memory/SKILL.md": "approved memory"}}
 	data, _ := json.Marshal(cfg)
@@ -89,7 +89,7 @@ func readyProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.AgentManagedModel || b.Model.Name != "" || b.Network.GatewayPort != 0 {
+	if b.Model.Name != "" || b.Network.GatewayPort != 0 {
 		t.Fatal("provider must wait for the controller Gateway binding")
 	}
 	secrets := &corev1.SecretList{}
@@ -151,7 +151,7 @@ func pendingHomeProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	if defaults.Enabled || defaults.StorageClass != "default" || defaults.StorageSize != "100Gi" || defaults.AccessMode != "ReadWriteOnce" {
 		t.Fatalf("unexpected Custom HOME defaults: %+v", defaults)
 	}
-	defaults.Enabled, defaults.AgentManagedModel, defaults.ApprovedImages = true, false, p.config.ApprovedImages
+	defaults.Enabled, defaults.ApprovedImages = true, p.config.ApprovedImages
 	p = NewKubernetesCustomBindings(p.reconciler, defaults)
 	ctx := context.Background()
 	if _, err := p.Resolve(ctx, instance, nil); err == nil || !strings.Contains(err.Error(), "ownership recorded") {
@@ -558,17 +558,4 @@ func bindProviderTestModel(t *testing.T, p *KubernetesCustomBindings, instance *
 		t.Fatal(err)
 	}
 	b.Model = runtimebindings.ModelAccess{ObjectReference: objectReference(secret), Key: aiGatewayKeySecretField, BaseURL: testAIGatewayURL + "/v1"}
-}
-
-func TestCustomRuntimeLegacyModelModeNormalizesToGateway(t *testing.T) {
-	p, instance := providerFixture(t)
-	p.config.AgentManagedModel = true
-	raw, _ := json.Marshal(p.config)
-	cfg, err := ParseCustomRuntimeConfig(string(raw))
-	if err != nil || cfg.AgentManagedModel {
-		t.Fatalf("legacy configuration must allow Gateway-only migration: %v", err)
-	}
-	if !NewKubernetesCustomBindings(p.reconciler, cfg).UsesAIGateway(instance) {
-		t.Fatal("old mode selected direct access")
-	}
 }

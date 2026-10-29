@@ -81,13 +81,11 @@ type Custom struct {
 	ApprovedType     string          `json:"approvedType"`
 	ApprovedImage    string          `json:"approvedImage"`
 	PolicyRevision   string          `json:"policyRevision"`
-	// Only a trusted platform provider can approve image-owned authentication.
-	AgentManagedModel bool          `json:"agentManagedModel,omitempty"`
-	Model             ModelAccess   `json:"model"`
-	Copilot           *CopilotProxy `json:"copilot,omitempty"`
-	Home              Home          `json:"home"`
-	Context           Context       `json:"context"`
-	Network           Network       `json:"network"`
+	Model            ModelAccess     `json:"model"`
+	Copilot          *CopilotProxy   `json:"copilot,omitempty"`
+	Home             Home            `json:"home"`
+	Context          Context         `json:"context"`
+	Network          Network         `json:"network"`
 	// Only the Registry synchronizer supplies this stable, namespace-local name.
 	PullSecretName string         `json:"pullSecretName,omitempty"`
 	Memory         *Memory        `json:"memory,omitempty"`
@@ -95,11 +93,9 @@ type Custom struct {
 }
 
 func (b Custom) HarnessBindings() agents.Bindings {
-	bindings := agents.Bindings{AgentManagedModel: b.AgentManagedModel, ContextRevision: b.Context.Revision,
+	bindings := agents.Bindings{ContextRevision: b.Context.Revision,
 		WebBasePath: "/ui/" + b.AgentName + "/", WebInstance: b.AgentUID}
-	if !b.AgentManagedModel {
-		bindings.Model = agents.ModelBinding{BaseURL: b.Model.BaseURL, CredentialSlot: "model", Revision: b.Model.Revision}
-	}
+	bindings.Model = agents.ModelBinding{BaseURL: b.Model.BaseURL, CredentialSlot: "model", Revision: b.Model.Revision}
 	return bindings
 }
 
@@ -137,12 +133,7 @@ func (b Custom) Validate(agent agents.ResolvedAgent) error {
 		b.ApprovedType != "custom" || b.ApprovedImage != agent.Image || b.PolicyRevision == "" {
 		return fmt.Errorf("PolicyBindingPending: exact Agent and image approval is required")
 	}
-	if b.AgentManagedModel {
-		if b.Model != (ModelAccess{}) || b.Copilot != nil || b.Network.Gateway.Namespace != "" ||
-			len(b.Network.Gateway.PodLabels) != 0 || b.Network.GatewayPort != 0 {
-			return fmt.Errorf("ModelBindingInvalid: agent-managed access cannot inherit Gateway credentials or peers")
-		}
-	} else if !validReference(b.Model.ObjectReference) || len(validation.IsConfigMapKey(b.Model.Key)) != 0 {
+	if !validReference(b.Model.ObjectReference) || len(validation.IsConfigMapKey(b.Model.Key)) != 0 {
 		return fmt.Errorf("ModelBindingPending: versioned instance Secret reference is required")
 	}
 	if proxy := b.Copilot; proxy != nil {
@@ -173,7 +164,7 @@ func (b Custom) Validate(agent agents.ResolvedAgent) error {
 		return err
 	}
 	if b.Network.Revision == "" || !validPeer(b.Network.DNS) ||
-		(!b.AgentManagedModel && (!validPeer(b.Network.Gateway) || b.Network.GatewayPort < 1 || b.Network.GatewayPort > 65535)) {
+		!validPeer(b.Network.Gateway) || b.Network.GatewayPort < 1 || b.Network.GatewayPort > 65535 {
 		return fmt.Errorf("NetworkBindingPending: approved Gateway and DNS peers are required")
 	}
 	for _, peer := range b.Network.Callers {

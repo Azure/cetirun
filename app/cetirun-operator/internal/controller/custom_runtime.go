@@ -478,15 +478,13 @@ func (r *AgentReconciler) validateCustomObjects(ctx context.Context, instance *a
 	key := func(name string) types.NamespacedName {
 		return types.NamespacedName{Namespace: b.Namespace.Name, Name: name}
 	}
-	if !b.AgentManagedModel {
-		secret := &corev1.Secret{}
-		if err := r.customReader().Get(ctx, key(b.Model.Name), secret); err != nil || !referenceMatches(secret, b.Model.ObjectReference) ||
-			secret.Type != corev1.SecretTypeOpaque || len(secret.Data) != 1 || len(secret.Data[b.Model.Key]) == 0 {
-			return false, fmt.Errorf("ModelBindingInvalid: dedicated instance model Secret is unavailable or changed")
-		}
-		if !hasAgentOwner(secret, instance) {
-			return false, fmt.Errorf("ModelBindingInvalid: Secret owner does not match Agent UID")
-		}
+	secret := &corev1.Secret{}
+	if err := r.customReader().Get(ctx, key(b.Model.Name), secret); err != nil || !referenceMatches(secret, b.Model.ObjectReference) ||
+		secret.Type != corev1.SecretTypeOpaque || len(secret.Data) != 1 || len(secret.Data[b.Model.Key]) == 0 {
+		return false, fmt.Errorf("ModelBindingInvalid: dedicated AI Gateway key Secret is unavailable or changed")
+	}
+	if !hasAgentOwner(secret, instance) {
+		return false, fmt.Errorf("ModelBindingInvalid: Secret owner does not match Agent UID")
 	}
 	home := &corev1.PersistentVolumeClaim{}
 	homeBound := false

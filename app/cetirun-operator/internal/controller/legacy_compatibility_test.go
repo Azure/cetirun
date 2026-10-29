@@ -13,8 +13,6 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,28 +32,6 @@ func legacyGatewayFixture(t *testing.T) (*AgentReconciler, *api.Agent, *fakeAIGa
 		t.Fatal(err)
 	}
 	return r, agent, gateway
-}
-
-// legacyGatewayWorkload models a standalone workload which was already
-// rendered with the platform Gateway. Lifecycle tests can then exercise their
-// intended status/registry paths without presenting an old direct Pod to the
-// migration boundary.
-func legacyGatewayWorkload(agent *api.Agent, replicas int32) *appsv1.StatefulSet {
-	return &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instanceServiceName(agent.Name),
-			Namespace: instanceNamespace(agent.Name),
-			Labels:    map[string]string{"app.kubernetes.io/managed-by": "Helm"},
-			Annotations: map[string]string{
-				"meta.helm.sh/release-name":      helmReleaseName(agent.Name),
-				"meta.helm.sh/release-namespace": instanceNamespace(agent.Name),
-			},
-		},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas: ptr.To(replicas),
-			Template: corev1.PodTemplateSpec{Spec: gatewayRuntimePod(agent.Spec.Agent.Type)},
-		},
-	}
 }
 
 func TestLegacyGatewayPreservesModelsBudgetAndKeyIdentity(t *testing.T) {

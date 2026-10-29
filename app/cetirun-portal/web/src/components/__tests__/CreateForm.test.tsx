@@ -35,8 +35,8 @@ vi.mock("../../hooks/useInstance", () => ({
 
 const mockTeams = vi.hoisted(() => ({
   data: [
-    { name: "platform", role: "", provider: "github_copilot" },
-    { name: "security", role: "", provider: "anthropic" },
+    { name: "platform", role: "" },
+    { name: "security", role: "" },
   ],
 }));
 
@@ -45,8 +45,6 @@ vi.mock("../../hooks/useTeams", async (importOriginal) => {
   return {
     ...actual,
     useTeams: () => ({ data: mockTeams.data, isLoading: false }),
-    useEffectiveTeamProvider: (teamName: string) =>
-      mockTeams.data.find((team) => team.name === teamName)?.provider || "github_copilot",
   };
 });
 

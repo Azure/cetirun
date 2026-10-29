@@ -237,11 +237,6 @@ The chart enables the OpenClaw doctor init step through `openclaw.doctor.enabled
 It runs `openclaw doctor --fix --non-interactive --yes` on the persistent home;
 this is a startup mutation, not a read-only diagnostic. The `doctor.enabled`
 alias must also be true for it to run. Hermes does not run this init container.
-For an OpenClaw instance on the AI Gateway, the `retire-copilot-sign-in` init
-step follows doctor: once per HOME, it removes the GitHub Copilot sign-in that
-the earlier in-agent helper left there, as [Model selection](../../guides/models/)
-describes. A Hermes instance on the Gateway does the same in its
-`init-home-data` step.
 `openclaw.acpx` configures the installed agent communication plugin; review its
 permissions, allowed adapters, and optional command overrides before use.
 

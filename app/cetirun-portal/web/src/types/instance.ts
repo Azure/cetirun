@@ -6,7 +6,6 @@ import type { AgentPolicyRateLimits } from "./rateLimits";
 export interface TeamSummary {
   name: string;
   role: string;
-  provider: string;
 }
 
 export type AgentType = "openclaw" | "hermes" | "custom";
@@ -61,8 +60,6 @@ export interface Instance extends InstanceVersion {
   webUIUrl?: string;
   gatewayToken?: string;           // Token for gateway access, returned separately when available
   apiServerKey?: string;           // Hermes API server key, returned separately when available
-  /** @deprecated In-agent Copilot sign-in is no longer supported. */
-  cetirunAuthKey?: string;
   tailscaleAuthKey?: string;       // Tailscale auth key, returned when Tailscale is enabled
   conditions?: ConditionStatus[];
   createdAt: string;

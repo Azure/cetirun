@@ -171,10 +171,7 @@ func TestReconcileConnectionsMCPBrokerRejectsUnverifiableNamespaceWithoutMutatio
 			setConnectionsMCPBrokerRecoveryHash(t, kube, instance, reconciler, "")
 			if test.getErr != nil {
 				reconciler.Client = &connectionsMCPBrokerNamespaceGetErrorClient{Client: kube, err: test.getErr}
-				// The migration guard needs a trustworthy workload inventory before
-				// Broker RBAC is reached. Keep it on the uncached reader so this
-				// case exercises the intended Broker namespace-read failure.
-				reconciler.APIReader = kube
+
 			}
 
 			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {

@@ -30,7 +30,6 @@ Licensed under the MIT License.
 {{- if or (not $r.agent.image) (not $r.agent.home) (not $r.bindings.home.name) (not $r.bindings.home.claim) (not $r.bindings.context.name) (not $r.bindings.model.name) (not $r.bindings.model.key) (not $r.planHash) -}}
 {{- fail "Custom requires image, model, HOME and context bindings" -}}
 {{- end -}}
-{{- if $r.bindings.agentManagedModel -}}{{- fail "Custom direct model access is no longer supported; use the AI Gateway binding" -}}{{- end -}}
 {{- if ne $r.bindings.namespace.name .Release.Namespace -}}{{- fail "Custom binding namespace mismatch" -}}{{- end -}}
 {{- if or .Values.agentIdentity.enabled $r.bindings.agentIdentity -}}{{- fail "Custom does not support Agent Identity" -}}{{- end -}}
 {{- if .Values.connectionsMCP.enabled -}}{{- fail "Custom does not support CetiRun Connections MCP" -}}{{- end -}}

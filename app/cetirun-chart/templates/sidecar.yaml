@@ -33,9 +33,7 @@ spec:
         - {{ . | quote }}
         {{- end }}
         {{- with (.Values.runtime | default dict).bindings }}
-        {{- if not .agentManagedModel }}
         - {{ printf "%s/*" .network.gateway.namespace | quote }}
-        {{- end }}
         {{- end }}
 {{- end }}
 {{- end }}

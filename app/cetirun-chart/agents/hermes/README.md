@@ -57,10 +57,8 @@ CetiRun keeps these layers on top of the upstream source:
   `API_SERVER_KEY` is the password, and `CETIRUN_AUTH_KEY` signs Dashboard
   sessions.
 
-The Chart supplies the Dashboard settings explicitly. For older Charts, the
-entrypoint supplies the same defaults from the existing keys without
-overriding explicit settings. Missing keys do not disable upstream
-authentication.
+The Chart supplies the Dashboard settings explicitly. Missing keys do not
+disable upstream authentication.
 
 Charts that disable the AI Gateway are unsupported. The runtime rejects them
 before initialization instead of offering an in-Agent model sign-in path.

@@ -121,10 +121,8 @@ configuration command. Save dirty model configuration before doing so.
 
 Empty catalogs, denied requests and invalid configuration report a setup warning;
 they do not enable a GitHub login fallback. Partial Gateway environment bindings
-fail startup. The legacy `agentManagedModel` value is accepted during an
-upgrade and ignored so the Operator can stop and migrate old workloads; new
-platform model access always uses the Gateway. Existing browser
-credentials/configuration are not deleted when switching modes; use a separate
+fail startup. Platform model access uses the Gateway. Existing browser
+credentials/configuration are not managed by this example; use a separate
 profile for a different mode.
 
 BYOK covers Chat, local Agent workflows and utility tasks. It does **not** supply

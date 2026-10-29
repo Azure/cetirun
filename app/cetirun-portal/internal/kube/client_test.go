@@ -712,9 +712,7 @@ func TestTeamCRUD(t *testing.T) {
 	// Create
 	created, err := c.CreateTeam(ctx, &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks", UID: "team-uid"},
-		Spec: cetirunv1alpha1.TeamSpec{
-			Defaults: cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
-		},
+		Spec:       cetirunv1alpha1.TeamSpec{},
 	})
 	if err != nil {
 		t.Fatalf("CreateTeam: %v", err)
@@ -728,10 +726,6 @@ func TestTeamCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTeam: %v", err)
 	}
-	if got.Spec.Defaults.Provider != "github_copilot" {
-		t.Errorf("provider = %q", got.Spec.Defaults.Provider)
-	}
-
 	// List
 	list, err := c.ListTeams(ctx)
 	if err != nil {
@@ -751,10 +745,6 @@ func TestTeamCRUD(t *testing.T) {
 	if updated.Spec.MemberContext.Role != "AKS Engineer" {
 		t.Errorf("role = %q", updated.Spec.MemberContext.Role)
 	}
-	if updated.Spec.Defaults.Provider != "" {
-		t.Errorf("expected provider cleared after spec replace, got %q", updated.Spec.Defaults.Provider)
-	}
-
 	// Delete
 	if err := c.DeleteTeam(ctx, "aks", ConfigurationVersion{UID: updated.UID, ResourceVersion: updated.ResourceVersion}); err != nil {
 		t.Fatalf("DeleteTeam: %v", err)

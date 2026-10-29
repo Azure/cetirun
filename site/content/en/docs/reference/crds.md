@@ -143,7 +143,6 @@ check does not prove that an override will reconcile successfully.
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
 | `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions; for GitHub Copilot, each registered model's Gateway name (`copilot.routes`) and the models left out for lack of a price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`); `modelRouters` lists the Team's smart-routing models and, for an instance with an Agent Policy, the routers configured in the Gateway that the Policy lists, each with `granted`, the `model` name it sends when granted (a Team router's internal name, or a Gateway router's own name), a Team router's configured limits, or the `reason` it is not granted |
-| `signInHelper` | Compatibility field; the Operator records `false` because model sign-in uses the Portal and AI Gateway |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
 | `policy` | Resolved effective policy plus desired Sandbox, Gateway, and credential revisions |
@@ -205,7 +204,6 @@ not material to paste into a public bug report.
 | `defaultSandboxRef` | Listed creation default; required for a policy-enabled Team, not a later implicit reselection |
 | `memberContext.role` | Role rendered into runtime-specific team context |
 | `memberContext.description` | Context lines, at most 20 |
-| `defaults.provider` | Removed; non-empty values are rejected. Configure upstream providers in the AI Gateway |
 | `skills` | Default identifiers, at most 20 |
 | `skillStorage.resourceGroup` | Required when `skillStorage` is present; existing storage resource group |
 | `skillStorage.storageAccount` | Required when `skillStorage` is present; existing Blob account |

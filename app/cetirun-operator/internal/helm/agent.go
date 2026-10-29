@@ -118,28 +118,6 @@ func declaresValuePath(values map[string]any, path []string) bool {
 	return false
 }
 
-// signInHelperPort names the runtime port of the in-agent model sign-in
-// helper. A built-in harness exposes it only when its chart carries the
-// helper and the Agent's models do not come through the AI Gateway.
-const signInHelperPort = "cetirun-auth"
-
-// ServesSignInHelper reports whether the prepared workload exposes the
-// in-agent model sign-in helper, which the /<name>/cetirun-auth/ route and
-// the Portal's in-agent Copilot sign-in reach.
-func (p *PreparedRelease) ServesSignInHelper() bool {
-	if p == nil {
-		return false
-	}
-	runtime, _ := p.Values["runtime"].(map[string]any)
-	ports, _ := runtime["ports"].([]any)
-	for _, item := range ports {
-		if port, ok := item.(map[string]any); ok && port["name"] == signInHelperPort {
-			return true
-		}
-	}
-	return false
-}
-
 // Rebuild uses the same loaded chart after platform integration bindings have
 // been resolved. It never pulls a second, potentially changed chart.
 func (p *PreparedRelease) Rebuild(input map[string]any) (*PreparedRelease, error) {

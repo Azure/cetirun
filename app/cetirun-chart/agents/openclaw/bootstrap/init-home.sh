@@ -124,24 +124,6 @@ agent_apply_config() (
   if [ -f "$health_record" ]; then rm -f "$health_record"; fi
 )
 
-remove_native_provider_environment() (
-  set -e
-  [ "${CETIRUN_NATIVE_SANDBOX:-false}" = true ] || exit 0
-  env_file=$(home_path .openclaw/.env)
-  [ ! -e "$env_file" ] || [ -f "$env_file" ] ||
-    { init_error "OpenClawEnvironmentInvalid"; exit 1; }
-  [ -f "$env_file" ] || exit 0
-  temp=$(mktemp "${env_file}.tmp.XXXXXX")
-  trap 'rm -f "$temp"' 0
-  # Persisted dotenv settings must not replace the native Gateway binding.
-  keys='(OPENAI_.*|ANTHROPIC_.*|AZURE_OPENAI_.*|AZURE_AI_.*|COHERE_.*|DEEPSEEK_.*|FIREWORKS_.*|GEMINI_.*|GOOGLE_AI_.*|GROQ_.*|HUGGINGFACE_.*|MISTRAL_.*|OLLAMA_.*|OPENROUTER_.*|PERPLEXITY_.*|TOGETHER_.*|VERTEX_AI_.*|XAI_.*|MODEL_API_KEY|LLM_API_KEY|LLM_BASE_URL|LLM_ENDPOINT|COPILOT_GITHUB_TOKEN|OPENCLAW_GITHUB_TOKEN)'
-  result=0
-  grep -Ev "^[[:space:]]*(export[[:space:]]+)?${keys}[[:space:]]*=" "$env_file" > "$temp" || result=$?
-  [ "$result" -le 1 ] || { init_error "OpenClawEnvironmentApplyFailed"; exit 1; }
-  chmod 600 "$temp"
-  mv -f "$temp" "$env_file"
-)
-
 prepare_plugin_link() {
   source=$SOURCE_HOME/.openclaw/npm
   parent=$(home_path .openclaw)
@@ -212,22 +194,10 @@ SCRIPT
 )
 
 agent_prepare_integrations() {
-  remove_native_provider_environment
   prepare_plugin_link
   sync_managed_image_skills
   install_image_skills
-  remove_retired_copilot_helper
   setup_azdevops_git_credential
-}
-
-# Models come through the platform AI Gateway, and GitHub Copilot sign-in
-# moved to the Portal. Remove the retired in-agent helper earlier releases
-# installed, so it does not suggest a login that no longer applies.
-remove_retired_copilot_helper() {
-  helper=$(home_path .local/bin/copilot-auth)
-  if [ -f "$helper" ] && [ ! -L "$helper" ] && grep -q 'Authenticate GitHub Copilot for OpenClaw' "$helper"; then
-    rm -f "$helper"
-  fi
 }
 
 agent_verify() {

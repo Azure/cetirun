@@ -45,7 +45,6 @@ func TestAdminTeam_List(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 		Spec: cetirunv1alpha1.TeamSpec{
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
-			Defaults:      cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
 			Skills:        []string{"@anthropic/mcp-server-fetch"},
 		},
 	}
@@ -109,18 +108,8 @@ func TestAdminTeam_Create(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Name != "sre" || got.DefaultProvider != "" {
+	if got.Name != "sre" {
 		t.Errorf("unexpected DTO: %+v", got)
-	}
-}
-
-func TestAdminTeam_CreateRejectsDirectProvider(t *testing.T) {
-	h := newAdminTeamHandler()
-	body, _ := json.Marshal(TeamUpsertRequest{Name: "sre", DefaultProvider: "anthropic"})
-	w := httptest.NewRecorder()
-	h.CreateTeam(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body)))
-	if w.Code != http.StatusBadRequest || errorCode(t, w) != "direct_provider_unsupported" {
-		t.Fatalf("status %d body=%s", w.Code, w.Body.String())
 	}
 }
 

@@ -57,13 +57,11 @@ spec:
   # -- Egress: default deny-all with explicit allows
   egress:
     {{- with (.Values.runtime | default dict).bindings }}
-    {{- if not .agentManagedModel }}
     - to:
         - {{ include "cetirun.custom.peer" .network.gateway | nindent 10 | trim }}
       ports:
         - protocol: TCP
           port: {{ .network.gatewayPort }}
-    {{- end }}
     {{- end }}
     # 1. DNS — allow kube-dns for name resolution
     - to:

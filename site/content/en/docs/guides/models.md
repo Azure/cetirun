@@ -117,12 +117,10 @@ model to use: shared models while at least one is offered, or
 GitHub Copilot while the deployment offers it. GitHub Copilot stays on while
 shared models are off or none is offered, and shared models stay on without
 GitHub Copilot. With neither source, the portal creates no Agent and asks for a
-shared model. It reads the sources from the catalog the operator
-publishes, so it also waits until the catalog exists. The catalog also lists
-the agent types the operator's default agent chart routes through the Gateway:
-an earlier chart may not route every harness, and the portal then creates no
-Agent of that harness until the agent chart is upgraded. Until the operator has
-read that chart, the portal creates no new Agent. A Team remains optional; when
+shared model. It reads the sources from the catalog the operator publishes, so
+it also waits until the catalog exists. The catalog lists the agent types the
+selected runtime chart routes through the Gateway. The portal creates an Agent
+only after it has read a compatible chart. A Team remains optional; when
 selected, its Agent Policy further restricts the model sources.
 
 To add Copilot models, open the instance and choose **Sign in with GitHub**. The
@@ -138,63 +136,15 @@ after storing its token, the instance offers no Copilot models and reports
 restarts the proxy: it otherwise keeps the Copilot token it exchanged until
 that token expires, so another GitHub account would take effect only then.
 
-## Migrating direct model configuration
+## Runtime configuration
 
-Before enabling a Gateway-only chart, suspend Agents that still use a direct
-provider, configure their model sources in the AI Gateway, and then resume or
-redeploy them. Suspending preserves HOME. On upgrade, the controller also
-stops positively owned direct workloads before preparing their replacement,
-keeps HOME, Gateway keys, and accounting, and waits for the old Pods to stop.
-An unconfirmed owner or orphaned Pod requires operator recovery before the
-migration can continue. CetiRun does not copy provider keys or in-agent
-Copilot sign-ins into the Gateway; owners sign in again through the Portal when
-GitHub Copilot is selected. The legacy `agentManagedModel` setting is accepted
-and ignored during this upgrade so old configuration does not strand a
-workload. Old direct-provider chart values are rejected for new
-platform-managed Agents. This routing change does not prevent an arbitrary user
-image from making its own outbound network connection; apply network policy
-separately when that control is required.
-
-After an upgrade from a version whose portal did not yet record completed
-sign-ins, a sign-in that portal finished has a generation but no completion.
-At the instance's next verification, within ten minutes of the upgrade, the
-operator removes its Copilot routes and reports `SignInIncomplete`. Shared
-models stay, but an instance with only GitHub Copilot has no models until its
-owner chooses **Sign in with GitHub** again on the instance overview.
-
-An instance that signed in to GitHub Copilot inside the agent, before it took
-its models from the Gateway, still has that sign-in in its HOME, where the agent
-can read it. On its first start through the Gateway, after `doctor`, the
-`retire-copilot-sign-in` init container removes it and keeps every other
-credential. Through the OpenClaw CLI, it removes the `github-copilot:github`
-auth profile and the `GITHUB_COPILOT_TOKEN*` secret-store entries of OpenClaw's
-device login, overwriting each entry first because a removed entry keeps its
-value for 30 days, and then compacts OpenClaw's databases. It also removes the
-`COPILOT_GITHUB_TOKEN` and `OPENCLAW_GITHUB_TOKEN` lines of `~/.openclaw/.env`,
-and the profile from the `auth-profiles.json` files of earlier OpenClaw
-versions and the copies `doctor` archived after importing them. A step that
-fails is logged with OpenClaw's reason and tried again at the next start; it
-does not keep the instance from starting. Once every step has succeeded, the
-HOME is marked, and later starts leave it alone. With `doctor` turned off,
-OpenClaw refuses its auth store while earlier profile files wait for import,
-so the profile goes at a start after the import. The token is not carried
-over: the owner signs in again with **Sign in with GitHub**.
-
-A Hermes instance on the Gateway takes its models through a provider named
-`cetirun-gateway` in `~/.hermes/config.yaml`. The chart replaces that provider
-and the model choice at every start, so a model the Gateway stops offering
-leaves the list. Hermes reads the instance's key from `CETIRUN_GATEWAY_API_KEY`,
-which the chart sets from the key Secret; the key is in neither file. Because
-Hermes loads `~/.hermes/.env` over its environment, a value of that variable
-saved there is removed. On every start, init also removes the legacy
-`MODEL_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and
-`COPILOT_GITHUB_TOKEN` variables from that file. The Operator removes these
-retired direct-model fields from the native runtime Secret without touching
-Gateway virtual keys or Copilot proxy credentials. Hermes' old Copilot token
-cache is retired once per HOME. Unrelated credentials, such as `GITHUB_TOKEN`,
-stay. Hermes' auxiliary tasks, such as context compression, use the instance's
-model unless configured otherwise. Instances pinned to a chart without Gateway
-support remain stopped until their chart and model bindings are ready.
+OpenClaw and Hermes receive their model list and virtual key from the AI
+Gateway on every start. Hermes writes the Gateway provider as
+`cetirun-gateway` in `~/.hermes/config.yaml` and reads its key from
+`CETIRUN_GATEWAY_API_KEY`; the key is in neither HOME file. A model removed from
+the Gateway no longer appears in the Agent configuration. This routing does not
+prevent arbitrary user code in a Custom image from making its own outbound
+network connection; use network policy when that control is required.
 
 Each instance has its own virtual key with a monthly budget. The instance page
 lists its models and sets the default; saving a new default restarts the

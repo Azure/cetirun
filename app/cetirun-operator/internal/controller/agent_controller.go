@@ -339,14 +339,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 	}
 
-	// Preserve the existing policy revocation/hold boundary before migrating
-	// standalone direct runtimes. This still precedes Team/config/Chart lookup.
-	if !reconciledSandbox && !sandboxRequested(instance, nil) && !instance.Spec.Suspended {
-		if allowed, result, err := r.migrateDirectGatewayRuntime(ctx, instance); !allowed {
-			return result, err
-		}
-	}
-
 	if sandboxRequested(instance, nil) && !reconciledSandbox {
 		return r.reconcileRecordedNativeSandbox(ctx, instance)
 	}
@@ -838,7 +830,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		// Keep an already routed workload through a transient management outage.
-		// The early migration guard has separately stopped any old direct Pod.
 		aiGatewayRequeueAfter = 30 * time.Second
 	} else if copilot := instance.Status.AIGateway.Copilot; copilot != nil &&
 		(copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseStarting) {
@@ -965,7 +956,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		return r.holdPolicyDenied(ctx, instance)
 	}
-	r.recordSignInHelper(instance, prepared.ServesSignInHelper())
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Agent Harness configuration resolved")
 	helmValues = prepared.Values
@@ -1706,20 +1696,6 @@ func (r *AgentReconciler) newGatewayTokenSecret(instance *cetirunv1alpha1.Agent)
 }
 
 func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger logr.Logger, instance *cetirunv1alpha1.Agent, secret *corev1.Secret) error {
-	// Retire only the direct model fields formerly consumed by the platform.
-	// The separate AI Gateway virtual-key and Copilot proxy Secrets are untouched.
-	retired := false
-	for _, key := range []string{"MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "COPILOT_GITHUB_TOKEN"} {
-		if _, exists := secret.Data[key]; exists {
-			delete(secret.Data, key)
-			retired = true
-		}
-	}
-	if retired {
-		if err := r.Update(ctx, secret); err != nil {
-			return fmt.Errorf("retire direct model fields from runtime Secret: %w", err)
-		}
-	}
 	if err := r.ensureCetiRunAuthKey(ctx, logger, secret); err != nil {
 		return err
 	}
@@ -1730,7 +1706,7 @@ func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger
 }
 
 // ensureCetiRunAuthKey preserves the runtime key used by Hermes Dashboard
-// sessions and compatible readers of older operator-managed Secrets.
+// sessions.
 func (r *AgentReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.Logger, secret *corev1.Secret) error {
 	if secret.Data == nil {
 		secret.Data = map[string][]byte{}

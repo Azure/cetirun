@@ -38,10 +38,6 @@ const (
 	// hermesDashboardPort is the port the native Hermes Dashboard listens on.
 	hermesDashboardPort = 9119
 
-	// cetirunAuthPort is the port the in-pod CetiRun auth helper service listens on.
-	// It exposes /v1/login/* and /v1/status for the Portal "Copilot Auth" UI.
-	cetirunAuthPort = 18790
-
 	// ttydPort is the port ttyd web terminal listens on.
 	ttydPort = 7681
 
@@ -750,10 +746,6 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
 			makeRoute(uiPrefix+descriptor.HealthPath, descriptor.HealthPath, primaryPort, 0),
 		)
-		// The route exists exactly where the workload serves the helper.
-		if servesSignInHelper(instance) {
-			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
-		}
 		routes = append(routes,
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),
@@ -772,10 +764,6 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		// on that exact path directly to the gateway because WebSockets cannot
 		// follow a 301 redirect.
 		routes = append([]*istioapiv1beta1.HTTPRoute{makeWebSocketRoute(uiPrefix, primaryPort)}, routes...)
-		// The route exists exactly where the workload serves the helper.
-		if servesSignInHelper(instance) {
-			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
-		}
 		routes = append(routes,
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),

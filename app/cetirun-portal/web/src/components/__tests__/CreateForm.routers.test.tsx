@@ -14,8 +14,6 @@ vi.mock("../../hooks/useFeatures", () => ({
   useFeatures: () => ({ data: { aiGatewayEnabled: true, agentIdentityEnabled: false, allowedAgentTypes: ["hermes", "openclaw"] }, isLoading: false }),
 }));
 vi.mock("../../hooks/useTeams", () => ({
-  GITHUB_COPILOT_PROVIDER: "github_copilot",
-  useEffectiveTeamProvider: () => "github_copilot",
   useTeams: () => ({ data: [{ name: "research" }], isLoading: false }),
 }));
 

@@ -9,9 +9,8 @@ the CetiRun AI Gateway provider replace the saved ones instead of merging into
 them, so a model the Gateway no longer offers leaves Hermes' list. The variable
 that carries the Agent's key is reserved: Hermes loads its .env over the
 process environment, so no assignment of it stays in .env, neither a saved one
-nor one in the generated file. Direct model credential variables are removed
-on every start. The old GitHub Copilot token cache is retired once per HOME.
-The Gateway is required; direct provider selection is not supported.
+nor one in the generated file. The Gateway is required; direct provider
+selection is not supported.
 """
 
 from __future__ import annotations
@@ -30,16 +29,7 @@ import yaml
 
 # The provider the chart renders for the platform AI Gateway.
 GATEWAY_PROVIDER = "cetirun-gateway"
-# Written once the in-agent GitHub Copilot sign-in is removed from a HOME.
-COPILOT_RETIRED_MARKER = Path(".hermes/.cetirun-copilot-sign-in-retired")
-# Where the in-agent sign-in kept its GitHub token, and Hermes the Copilot
-# token it exchanged for it.
-COPILOT_TOKEN_ENV = "COPILOT_GITHUB_TOKEN"
-COPILOT_TOKEN_CACHE = Path(".hermes/.copilot_jwt.json")
-RESERVED_ENV = (
-    "CETIRUN_AI_GATEWAY", "MODEL_API_KEY", "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY", COPILOT_TOKEN_ENV,
-)
+RESERVED_ENV = ("CETIRUN_AI_GATEWAY",)
 INGRESS_ENV = ("API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT", "HERMES_DASHBOARD_PUBLIC_URL")
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 
@@ -188,28 +178,6 @@ def without_ingress_environment(text: str) -> str:
     )
 
 
-def copilot_sign_in_pending(root: Path) -> bool:
-    """Whether this HOME's in-agent GitHub Copilot sign-in is still to be removed."""
-    try:
-        return not check_destination(root, COPILOT_RETIRED_MARKER).exists()
-    except ValueError:
-        print("[agent-init] HermesCopilotSignInNotRetired: the marker is not a regular file", file=sys.stderr)
-        return False
-
-
-def retire_copilot_sign_in(root: Path) -> None:
-    """Remove the cached Copilot token and mark the HOME. The GitHub token left
-    .env with the rewrite. A failure leaves the HOME unmarked, for the next
-    start to try again, without keeping the Agent from starting."""
-    try:
-        cache = check_destination(root, COPILOT_TOKEN_CACHE)
-        if cache.exists():
-            cache.unlink()
-        replace_file(check_destination(root, COPILOT_RETIRED_MARKER), "retired\n")
-    except (OSError, ValueError):
-        print("[agent-init] HermesCopilotSignInNotRetired: tried again at the next start", file=sys.stderr)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, required=True)
@@ -267,14 +235,6 @@ def main() -> int:
         desired_config = merge(existing_config, generated)
         reconcile_memory_lists(existing_config, generated, desired_config)
         desired_config = apply_gateway(desired_config, generated)
-        # The owner signs in to GitHub Copilot through the Portal. The
-        # generated environment, which carries a token from the instance
-        # Secret, brings none into .env, so the sign-in removed once
-        # cannot come back at this or a later start.
-        generated_env.pop(COPILOT_TOKEN_ENV, None)
-        retire = copilot_sign_in_pending(root)
-        if retire:
-            existing_env.pop(COPILOT_TOKEN_ENV, None)
         for key, value in generated_env.items():
             if value or key not in existing_env:
                 existing_env[key] = value
@@ -290,8 +250,6 @@ def main() -> int:
         replace_file(env_path, env_text)
         if legacy != existing_legacy:
             replace_file(legacy_path, json.dumps(legacy, indent=2) + "\n")
-        if retire:
-            retire_copilot_sign_in(root)
         return 0
     except (OSError, ValueError, yaml.YAMLError):
         # Parser diagnostics can contain credential values. Do not echo them.

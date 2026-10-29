@@ -85,7 +85,7 @@ func TestReconciledSandboxHelperResources(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{"doctor", "retire-copilot-sign-in", "retire-direct-model-auth"} {
+			for _, name := range []string{"doctor"} {
 				if !slices.ContainsFunc(template.Spec.InitContainers, func(container corev1.Container) bool {
 					return container.Name == name
 				}) {

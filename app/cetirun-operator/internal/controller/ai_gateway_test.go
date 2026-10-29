@@ -2144,56 +2144,12 @@ func hasSignInHelperRoute(agent *cetirunv1alpha1.Agent) bool {
 	return false
 }
 
-// With the Gateway disabled, an OpenClaw chart that carries no in-agent
-// sign-in helper must not get a route to one, and the Agent must report why
-// it has no model sign-in.
-func legacyReconcileWithoutTheGatewayRoutesToNoMissingSignInHelper(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
-	r.AIGateway.Enabled = false
-	chart := &chartHelm{}
-	r.HelmClient = chart
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	for i := 0; i < 3 && chart.installs == 0; i++ {
-		if _, err := r.Reconcile(context.Background(), req); err != nil {
-			t.Fatalf("reconcile %d: %v", i, err)
-		}
-	}
-	if chart.installs == 0 {
-		t.Fatal("the Agent was never installed")
-	}
-	if len(gateway.generated) != 0 {
-		t.Fatal("a disabled Gateway issues no key")
-	}
-	for _, port := range chart.lastValues["runtime"].(map[string]any)["ports"].([]any) {
-		if port.(map[string]any)["name"] == "cetirun-auth" {
-			t.Fatal("this OpenClaw chart carries no in-agent sign-in helper")
-		}
-	}
-	current := &cetirunv1alpha1.Agent{}
-	if err := kube.Get(context.Background(), req.NamespacedName, current); err != nil {
-		t.Fatal(err)
-	}
-	if current.Status.SignInHelper == nil || *current.Status.SignInHelper {
-		t.Fatalf("recorded sign-in helper %v, want false", current.Status.SignInHelper)
-	}
-	if hasSignInHelperRoute(current) {
-		t.Fatal("the VirtualService must not route to a helper the workload does not serve")
-	}
-	condition := meta.FindStatusCondition(current.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady)
-	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != aiGatewayReasonDisabled {
-		t.Fatalf("the Agent must report that its models need the Gateway, got %+v", condition)
-	}
-}
-
-// Retained status from an old direct release must not re-enable model login.
 func TestSignInHelperRouteIsRemovedForEveryAgent(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	without, with := false, true
-	for _, recorded := range []*bool{nil, &without, &with} {
-		agent.Status.SignInHelper = recorded
+	for _, kind := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom} {
+		agent := aiGatewayTestAgent(testAIGatewayTeam)
+		agent.Spec.Agent.Type = kind
 		if hasSignInHelperRoute(agent) {
-			t.Fatal("in-Agent model login must not be routed")
+			t.Fatalf("%s must not route in-Agent model login", kind)
 		}
 	}
 }
@@ -2239,9 +2195,6 @@ func legacyReconcileRoutesAgentWithProxyAndRevokesOnDelete(t *testing.T) {
 	}
 	if current.Status.AIGateway == nil || !current.Status.AIGateway.Routed || current.Status.AIGateway.Phase != cetirunv1alpha1.AIGatewayPhaseReady {
 		t.Fatalf("persisted status %+v", current.Status.AIGateway)
-	}
-	if current.Status.SignInHelper == nil || *current.Status.SignInHelper {
-		t.Fatalf("an Agent on the Gateway serves no in-agent sign-in helper, recorded %v", current.Status.SignInHelper)
 	}
 	vs := buildVirtualService(current, "example.com", "")
 	for _, route := range vs.Spec.Http {

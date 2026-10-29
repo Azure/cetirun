@@ -145,7 +145,7 @@ func (c *registryAuditClient) Create(ctx context.Context, object client.Object, 
 
 func (c *registryAuditClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
 	switch list.(type) {
-	case *api.AgentList, *appsv1.StatefulSetList, *rbacv1.RoleList, *rbacv1.ClusterRoleList, *rbacv1.RoleBindingList, *rbacv1.ClusterRoleBindingList:
+	case *api.AgentList, *corev1.PodList, *appsv1.StatefulSetList, *rbacv1.RoleList, *rbacv1.ClusterRoleList, *rbacv1.RoleBindingList, *rbacv1.ClusterRoleBindingList:
 		c.inventories.Add(1)
 	}
 	return c.Client.List(ctx, list, options...)

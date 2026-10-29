@@ -508,7 +508,6 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Team.Spec = api.TeamSpec{
 		SandboxRefs: []string{fixture.Sandbox.Name, f.spare.Name}, DefaultSandboxRef: fixture.Sandbox.Name,
 		AgentPolicyRef: fixture.Policy.Name,
-		Defaults:       api.TeamDefaultsSpec{Provider: "github_copilot"},
 	}
 	h.create(t, fixture.Team)
 	fixture.Agent.Spec.Team, fixture.Agent.Spec.SandboxRef = fixture.Team.Name, fixture.Sandbox.Name

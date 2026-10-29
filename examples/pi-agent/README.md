@@ -122,9 +122,7 @@ empty model list means model access is still pending, not successful inference.
 
 Missing or failed Gateway configuration never selects native login
 automatically. Partial Gateway environment variables fail startup. For a
-direct-model migration, suspend the old Agent, keep its HOME, configure the
-Gateway, and resume it only after the compatible chart is available. Existing
-private credentials are not copied, imported or removed by this example.
+platform-managed Agent, all model access uses the Gateway.
 
 The Operator prepares the namespace, canonical context and HOME claim template
 in one Chart installation. The StatefulSet creates the PVC and Pod; a

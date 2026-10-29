@@ -1254,17 +1254,6 @@ func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *ceti
 	return errors.Join(failures...)
 }
 
-// recordSignInHelper keeps the legacy status field for compatible readers.
-// Model sign-in is now owned by the Portal and AI Gateway for every harness.
-func (r *AgentReconciler) recordSignInHelper(instance *cetirunv1alpha1.Agent, _ bool) {
-	serves := false
-	instance.Status.SignInHelper = &serves
-}
-
-func servesSignInHelper(_ *cetirunv1alpha1.Agent) bool {
-	return false
-}
-
 // applyAIGatewayPreflightValues supplies a syntactically complete, inert
 // Gateway binding while the selected chart is loaded. It is only used before
 // the first Gateway projection; the controller rebuilds the release with

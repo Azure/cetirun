@@ -84,21 +84,11 @@ agent_apply_config() {
 
 # The in-agent GitHub Copilot helper that charts before the Gateway installed.
 # Only a file carrying the helper's own text is removed.
-remove_copilot_helper() (
-  set -e
-  helper=$(home_path .local/bin/copilot-auth)
-  [ -f "$helper" ] || exit 0
-  if grep -q -e 'Authenticate GitHub Copilot for Hermes' -e 'Keep the helper path used by older Charts' "$helper"; then
-    rm -f "$helper"
-  fi
-)
-
 agent_prepare_integrations() {
   . "$CETIRUN_BUILTIN_SKILL_SYNC"
   cetirun_sync_builtin_skills \
     "$SOURCE_HOME/.hermes/skills" \
     "$(home_path .hermes/skills)"
-  remove_copilot_helper
   team=$(home_path .hermes/memories/TEAM.md)
   if [ -s "$CETIRUN_CONFIG_DIR/hermes-team.md" ]; then
     home_atomic_copy "$CETIRUN_CONFIG_DIR/hermes-team.md" .hermes/memories/TEAM.md

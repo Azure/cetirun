@@ -297,7 +297,6 @@ def workflow_gate(root):
 
 def python_tests(root):
     for source in (
-        "app/cetirun-chart/tests/test_auth_service.py",
         "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/test_adapter.py",
         "scripts/ci/python_safety.py",
     ):

@@ -259,10 +259,13 @@ describe("Agent identities", () => {
 
   it("cancel never restores a disabled binding or creates Agent access", async () => {
     api.listConnectionBindings.mockResolvedValue({ bindings: [{ ...appBinding, enabled: false }], readOnly: false });
-    const user = userEvent.setup(); renderUI(); await open(user); await user.click(screen.getByRole("button", { name: "Continue" }));
+    const user = userEvent.setup(); renderUI();
+    const addIdentity = await screen.findByRole("button", { name: "Add identity" });
+    await open(user); await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(api.createConnectionBinding).not.toHaveBeenCalled(); expect(api.updateConnectionBinding).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Add identity" })).toHaveFocus());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(addIdentity).toHaveFocus());
   });
 
   it("isolates drafts and caches when the same Agent name gets a new UID", async () => {

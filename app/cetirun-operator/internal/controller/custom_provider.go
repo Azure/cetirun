@@ -29,16 +29,13 @@ import (
 
 // This is operator configuration, never a tenant Agent/Helm override.
 type CustomRuntimeConfig struct {
-	Enabled           bool     `json:"enabled"`
-	AgentManagedModel bool     `json:"agentManagedModel"`
-	ApprovedImages    []string `json:"approvedImages"`
-	// GatewayImages is accepted for upgrade compatibility; every approved image uses the Gateway.
-	GatewayImages []string          `json:"gatewayImages,omitempty"`
-	StorageClass  string            `json:"storageClass"`
-	StorageSize   string            `json:"storageSize"`
-	AccessMode    string            `json:"accessMode"`
-	FSGroup       int64             `json:"fsGroup"`
-	Context       map[string]string `json:"context"`
+	Enabled        bool              `json:"enabled"`
+	ApprovedImages []string          `json:"approvedImages"`
+	StorageClass   string            `json:"storageClass"`
+	StorageSize    string            `json:"storageSize"`
+	AccessMode     string            `json:"accessMode"`
+	FSGroup        int64             `json:"fsGroup"`
+	Context        map[string]string `json:"context"`
 }
 
 func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
@@ -53,21 +50,13 @@ func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
 	if !cfg.Enabled {
 		return cfg, nil
 	}
-	// Accept the old deployment field so the Operator can start and stop old
-	// direct workloads during upgrade. It no longer selects a runtime mode.
-	cfg.AgentManagedModel = false
-	if len(cfg.ApprovedImages) == 0 || len(cfg.ApprovedImages) > 64 || len(cfg.GatewayImages) > 64 {
+	if len(cfg.ApprovedImages) == 0 || len(cfg.ApprovedImages) > 64 {
 		return cfg, fmt.Errorf("Custom provisioning requires approved image digests")
 	}
 	digest := regexp.MustCompile(`^[^[:space:]]+@sha256:[a-f0-9]{64}$`)
 	for _, image := range cfg.ApprovedImages {
 		if !digest.MatchString(image) {
 			return cfg, fmt.Errorf("Custom approvedImages must use immutable sha256 references")
-		}
-	}
-	for _, image := range cfg.GatewayImages {
-		if !slices.Contains(cfg.ApprovedImages, image) {
-			return cfg, fmt.Errorf("Custom gatewayImages must be a subset of approvedImages")
 		}
 	}
 	if cfg.FSGroup < 1 || cfg.FSGroup > 2147483647 {
@@ -205,8 +194,8 @@ func (p *KubernetesCustomBindings) Resolve(ctx context.Context, instance *api.Ag
 	}
 	b = runtimebindings.Custom{AgentName: instance.Name, AgentUID: string(instance.UID), Generation: instance.Generation,
 		Namespace: objectReference(ns), ApprovedType: "custom", ApprovedImage: *instance.Spec.Agent.Image,
-		PolicyRevision: p.revision, AgentManagedModel: false,
-		Home: homeBinding,
+		PolicyRevision: p.revision,
+		Home:           homeBinding,
 		Network: runtimebindings.Network{Revision: p.revision,
 			DNS: runtimebindings.Peer{Namespace: "kube-system", PodLabels: map[string]string{"k8s-app": "kube-dns"}}}}
 	// Record ownership before Helm so failed installations can still be cleaned up.

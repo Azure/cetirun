@@ -237,9 +237,7 @@ Portal routes retain the Portal cookie. The filter does not compare a subdomain
 with an owner alias. The portal namespace requires actual sidecar injection, enforced
 NetworkPolicy, and its chart's authorization policy.
 
-Model sign-in uses the Portal and AI Gateway. The Operator no longer routes
-`/<instance>/cetirun-auth/*`; the gateway filter retains its legacy header
-handling for upgrade compatibility. Hermes native API clients carry
+Model sign-in uses the Portal and AI Gateway. Hermes native API clients carry
 `API_SERVER_KEY` in `X-CetiRun-Agent-API-Key`; after the ownership check, the
 filter converts it to a bearer credential only for the owned
 `/ui/<instance>/v1/models` and `/ui/<instance>/v1/chat/completions` routes (and

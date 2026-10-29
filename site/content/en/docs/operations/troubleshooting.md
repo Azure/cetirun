@@ -35,7 +35,6 @@ and [reconciler]({{< repo "app/cetirun-operator/internal/controller/agent_contro
 | Image pull failure | Actual image reference/digest, node registry permissions, namespace-local pull Secret |
 | Missing Secret key / container configuration error | Gateway Secret key names, agent type, controller enrichment; do not dump values |
 | Init container fails | `init-home-data` permissions/mounts, OpenClaw `doctor`, or npm `init-skills` registry/package access |
-| Earlier GitHub Copilot sign-in still in an OpenClaw HOME | `retire-copilot-sign-in` init container log: each step that failed, with OpenClaw's reason; it tries again at every start |
 | `HomeSeedStateUnknown` or `HomeSeedImageUnconfirmed` | Existing HOME and initialization records, interrupted-copy source image; do not clear the PVC or delete records to retry |
 | Native configuration apply fails | JSON/YAML or environment-file syntax, destination permissions and symlinks; the initializer preserves failed files |
 | `PodReady` is false | StatefulSet rollout generation, ready/updated replicas, probes, desktop dependencies |

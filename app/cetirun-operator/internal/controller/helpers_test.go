@@ -1809,9 +1809,6 @@ func TestBuildHelmValues_WithTeam(t *testing.T) {
 	}
 	team := &cetirunv1alpha1.Team{
 		Spec: cetirunv1alpha1.TeamSpec{
-			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
-				Provider: "anthropic",
-			},
 			MemberContext: cetirunv1alpha1.TeamContextSpec{
 				Role:        "Platform Engineer",
 				Description: []string{"Owns infra layer"},
@@ -1823,10 +1820,6 @@ func TestBuildHelmValues_WithTeam(t *testing.T) {
 				ContainerName:  "skills",
 			},
 		},
-	}
-
-	if _, err := buildHelmValues(inst, team, "example.com", "", nil, ""); err == nil {
-		t.Fatal("team defaults must not inject a direct provider model")
 	}
 
 	vals, err := buildHelmValues(newTestInstance("alice", "Alice", "", "gateway-token"), team, "example.com", "", nil, "")
@@ -1951,7 +1944,7 @@ func TestBuildHelmValues_SkillOverrides(t *testing.T) {
 	}
 }
 
-// TestBuildHelmValues_WithTeam_Hermes verifies that team defaults, memberContext
+// TestBuildHelmValues_WithTeam_Hermes verifies that Team context
 // and skills propagate into helm values even when the instance uses agentType=hermes.
 // The chart consumes these values agent-agnostically (USER.md / TEAM.md / skills.external_dirs),
 // so the operator must not branch on agentType when applying team data.
@@ -1960,9 +1953,6 @@ func TestBuildHelmValues_WithTeam_Hermes(t *testing.T) {
 	inst.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 	team := &cetirunv1alpha1.Team{
 		Spec: cetirunv1alpha1.TeamSpec{
-			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
-				Provider: "anthropic",
-			},
 			MemberContext: cetirunv1alpha1.TeamContextSpec{
 				Role:        "SRE",
 				Description: []string{"On-call rotation B", "Owns ingest pipeline"},

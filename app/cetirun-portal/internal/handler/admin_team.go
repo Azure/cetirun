@@ -32,7 +32,7 @@ var teamNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // Only expose known field paths, never arbitrary map keys or admission messages.
 var teamValidationFieldPattern = regexp.MustCompile(`^(metadata\.name|spec(\.(agentPolicyRef|defaultSandboxRef|` +
 	`sandboxRefs(\[[0-9]+\])?|skills(\[[0-9]+\])?|memberContext(\.(role|description(\[[0-9]+\])?))?|` +
-	`defaults(\.provider)?|skillStorage(\.(resourceGroup|storageAccount|containerName|storageClassName|storageSize|mountPath))?|` +
+	`skillStorage(\.(resourceGroup|storageAccount|containerName|storageClassName|storageSize|mountPath))?|` +
 	`modelRouters(\[[0-9]+\](\.(name|classifier(\.(type|model))?|tiers(\.(simple|medium|complex|reasoning))?))?)?))?)$`)
 
 func teamValidationMessage(err error) string {
@@ -93,7 +93,6 @@ type TeamDTO struct {
 	Name              string               `json:"name"`
 	Role              string               `json:"role,omitempty"`
 	Description       []string             `json:"description,omitempty"`
-	DefaultProvider   string               `json:"defaultProvider,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
 	SkillStorage      *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
 	CreatedAt         string               `json:"createdAt,omitempty"`
@@ -115,7 +114,6 @@ type TeamUpsertRequest struct {
 	Name              string               `json:"name,omitempty"`
 	Role              string               `json:"role,omitempty"`
 	Description       []string             `json:"description,omitempty"`
-	DefaultProvider   string               `json:"defaultProvider,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
 	SkillStorage      *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
 	ModelRouters      []TeamModelRouterDTO `json:"modelRouters,omitempty"`
@@ -125,12 +123,11 @@ func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 	dto := TeamDTO{
 		UID: string(t.UID), ResourceVersion: t.ResourceVersion,
 		AgentPolicyRef: t.Spec.AgentPolicyRef, SandboxRefs: append([]string{}, t.Spec.SandboxRefs...), DefaultSandboxRef: t.Spec.DefaultSandboxRef,
-		Name:            t.Name,
-		Role:            t.Spec.MemberContext.Role,
-		Description:     t.Spec.MemberContext.Description,
-		DefaultProvider: t.Spec.Defaults.Provider,
-		Skills:          t.Spec.Skills,
-		CreatedAt:       t.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		Name:        t.Name,
+		Role:        t.Spec.MemberContext.Role,
+		Description: t.Spec.MemberContext.Description,
+		Skills:      t.Spec.Skills,
+		CreatedAt:   t.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	dto.ModelRouters, dto.ModelRouterStatus = toTeamModelRouterDTOs(t)
 	if t.Spec.SkillStorage != nil {
@@ -153,9 +150,6 @@ func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
 			Role:        req.Role,
 			Description: req.Description,
 		},
-		Defaults: cetirunv1alpha1.TeamDefaultsSpec{
-			Provider: req.DefaultProvider,
-		},
 		Skills:       req.Skills,
 		ModelRouters: toTeamModelRouters(req.ModelRouters),
 	}
@@ -170,13 +164,6 @@ func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
 		}
 	}
 	return spec
-}
-
-func validateDeprecatedTeamProvider(provider string) string {
-	if strings.TrimSpace(provider) != "" {
-		return "defaultProvider is no longer supported; configure model access through the AI Gateway"
-	}
-	return ""
 }
 
 // validateSkillStorage returns a non-empty error message when the optional
@@ -248,10 +235,6 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
 	}
-	if msg := validateDeprecatedTeamProvider(req.DefaultProvider); msg != "" {
-		writeError(w, http.StatusBadRequest, "direct_provider_unsupported", msg)
-		return
-	}
 	if !h.validateTeamBindings(w, r, req) {
 		return
 	}
@@ -286,10 +269,6 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	if msg := validateSkillStorage(req.SkillStorage); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
-		return
-	}
-	if msg := validateDeprecatedTeamProvider(req.DefaultProvider); msg != "" {
-		writeError(w, http.StatusBadRequest, "direct_provider_unsupported", msg)
 		return
 	}
 	version, valid := configurationVersion(req.UID, req.ResourceVersion)

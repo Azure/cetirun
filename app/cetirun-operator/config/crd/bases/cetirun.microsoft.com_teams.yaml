@@ -71,17 +71,6 @@ spec:
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                 type: string
-              defaults:
-                description: |-
-                  Defaults retains the removed provider field solely to reject old configuration.
-                  Model routing is managed by the platform AI Gateway.
-                properties:
-                  provider:
-                    description: Provider is no longer supported; configure upstream
-                      providers in the AI Gateway.
-                    maxLength: 0
-                    type: string
-                type: object
               memberContext:
                 description: MemberContext defines the team context injected into
                   USER.md for every member instance.

@@ -250,7 +250,7 @@ func TestInitRuntimeWiring(t *testing.T) {
 		}
 		want := []string{"memory-assets", "init-home-data", "init-skills"}
 		if typ == "openclaw" {
-			want = []string{"memory-assets", "init-home-data", "doctor", "retire-copilot-sign-in", "init-skills"}
+			want = []string{"memory-assets", "init-home-data", "doctor", "init-skills"}
 		}
 		if !reflect.DeepEqual(names, want) {
 			t.Fatalf("%s init order: %v", typ, names)
