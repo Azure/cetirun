@@ -353,6 +353,24 @@ func TestBuildHelmValues_HermesDoesNotSetOpenClawControlUIBasePath(t *testing.T)
 	}
 }
 
+func TestBuildHelmValues_HermesDashboardPublicURL(t *testing.T) {
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
+	instance.Name = "alice-work"
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.Helm.Values["hermes"] = runtime.RawExtension{
+		Raw: []byte(`{"env":{"HERMES_DASHBOARD_PUBLIC_URL":"https://other.example.com/wrong"}}`),
+	}
+	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hermes := values["hermes"].(map[string]interface{})
+	env := hermes["env"].(map[string]interface{})
+	if got := env["HERMES_DASHBOARD_PUBLIC_URL"]; got != "https://example.com/ui/alice-work" {
+		t.Fatalf("Dashboard public URL = %v", got)
+	}
+}
+
 // TestBuildHelmValues_NoApiKeyOrBase verifies that apiKey and apiBase are not set
 // (GitHub Copilot uses OAuth device flow, not API keys).
 func TestBuildHelmValues_NoApiKeyOrBase(t *testing.T) {
