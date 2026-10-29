@@ -650,19 +650,14 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   namespace status/finalize updates). These are isolated API-server tests, not
   runtime/Cilium/CSI qualification or permission to lift the execution hold.
   The focused `make -C app/cetirun-operator test-sandbox-integration` target
-  exercises the native Sandbox/AgentPolicy controller preparation chain with
-  synthetic platform inventory, real API object identities/defaulting and held
-  admission expectations. It also checks current grant-journal and owned
-  ControllerRevision pins, API resource-version conflicts, post-write source
-  races and restart without adding another receipt/history format.
-  The ControllerRevision producer is synthetic, not a running StatefulSet
-  controller. It stages OpenClaw/Hermes resources at zero replicas;
-  it does not start containers, install a production provider, or deploy to an
-  existing cluster. These tests inject their platform and fencing dependencies.
-  Their results do not qualify the opt-in Kubernetes-backed sources or a
-  production writer-exclusion adapter. Stock startup leaves writer exclusion
-  unavailable, so enabling sources alone cannot finish held preparation or
-  lift execution holds.
+  checks protected namespace/HOME bootstrap, published skills ownership and
+  Gateway-only rejection of unsupported held profiles against an isolated API
+  server. Repeated reconciliation and controller restart must not create a
+  workload, publish a route or mark those profiles ready. The valid Gateway
+  start paths are covered by the native and common-executor controller tests
+  described below. These tests use synthetic platform observations; they do
+  not start containers, install a production provider, qualify storage or
+  authorize deployment to an existing cluster.
   Normal unit tests also cover stale inputs, metadata-only
   refresh/reauthorization, partial writes, restart, grant revocation, suspension
   and ordered cleanup. Regression tests count read/write requests for unchanged
@@ -727,13 +722,14 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   journal readers before issuing new metadata. Real API cases exercise UID/version
   conflicts, replacement protection, served deletion admission and independent
   finalizer cleanup; no live cluster or physical writer is involved.
-  Running-input tests additionally check a synthetic held-to-running handoff
-  against real Pod creation, API binding/defaulting and final-Pod admission.
-  They contain no scheduler, kubelet or guest-external runtime observer. Run the
-  focused API test with `go test -tags=envtest ./test/integration -run
-  '^TestSandboxRunningInputs$' -count=1` from the Operator module, with the same
-  explicit local envtest assets. Its synthetic enrollment is not a runnable
-  activation procedure.
+  Native-start and common-executor tests check Gateway-backed handoff, Pod
+  admission and authenticated ingress using isolated API servers. Run
+  `go test -tags=envtest ./internal/controller -run
+  '^(TestNativeSandboxStartAPIServer|TestReconciledSandboxIngressMTLSAPIServer)$'
+  -count=1` from the Operator module, with the same explicit local envtest
+  assets. The common-executor ingress cases cover OpenClaw and Hermes. These
+  tests contain no scheduler, kubelet or guest-external runtime observer;
+  their synthetic enrollment is not a runnable activation procedure.
 - Helm files under `templates/` are source templates. Rendered Kubernetes
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's
