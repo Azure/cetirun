@@ -57,10 +57,21 @@ chatAccess:
 ```
 
 Use the actual Portal Pod labels. Enabling Chat adds Portal read access to
-Services, NetworkPolicies and private VirtualServices; Chat itself reads no Secrets and performs no exec
-or workload writes. Operator configures the private caller through the existing
-Custom bindings. It does not publish the Chat port on the public gateway.
-Changing only the caller does not require replacing the Agent Pod.
+Services, NetworkPolicies, CiliumNetworkPolicies and private VirtualServices;
+Chat itself reads no Secrets and performs no exec or workload writes.
+For governed Custom, `chat.sandboxStateNamespace` selects the Operator namespace
+(by default the configured Gateway catalog namespace, normally `cetirun-system`)
+and grants read-only access to its execution ConfigMaps.
+Portal verifies the current Agent intent, owned namespace/workload/Service,
+complete API-defaulted workload template, applied Cilium caller rule and private
+route before forwarding. Held, stale or mismatched execution cannot use the
+non-Sandbox Chat path as a fallback.
+
+Operator configures the private caller through the common policy compiler or,
+without Sandbox selection, the existing Custom bindings. It does not publish the
+Chat port on the public gateway. A common-policy caller change participates in
+normal policy reprojection; non-Sandbox binding-only caller changes do not
+replace an unchanged Agent Pod.
 
 Portal and Agent Web UIs can use paths on the same hostname. Account and Agent
 UID partitions prevent normal Chat operations from mixing records, but paths

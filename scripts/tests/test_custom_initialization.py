@@ -108,6 +108,23 @@ class CustomInitializationTests(unittest.TestCase):
         self.assertIn("ContextBindingPending", result.stderr)
         self.assertEqual(list(self.target.iterdir()), [])
 
+    def test_common_context_view_accepts_agents_without_memory(self):
+        shutil.rmtree(self.context / "skills")
+        view = self.root / "common-context"
+        view.mkdir()
+        self.env["CETIRUN_CONTEXT_VIEW"] = str(view)
+        result = self.run_init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((view / "current/AGENTS.md").read_text(), "synthetic canonical contract")
+        self.assertFalse((view / "current/skills/cetirun-memory").exists())
+
+    def test_legacy_context_still_requires_canonical_memory_skill(self):
+        (self.context / "skills/cetirun-memory/SKILL.md").unlink()
+        result = self.run_init()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ContextBindingPending", result.stderr)
+        self.assertEqual(list(self.target.iterdir()), [])
+
     @unittest.skipIf(os.geteuid() == 0, "requires a non-root test process")
     def test_unwritable_home_fails_without_permission_repair(self):
         self.target.chmod(0o500)

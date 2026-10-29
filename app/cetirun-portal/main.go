@@ -98,6 +98,7 @@ func main() {
 
 	// Create handlers.
 	kubeClient := kube.NewClient(k8sClient)
+	kubeClient.SetSandboxStateNamespace(cfg.SandboxStateNamespace)
 	if cfg.ConfigurationCoordinationName != "" || cfg.ConfigurationCoordinationNamespace != "" || cfg.ConfigurationCoordinationUID != "" {
 		coordination, err := configurationcoordination.New(k8sClient, k8sClient, configurationcoordination.Authority{
 			Namespace: cfg.ConfigurationCoordinationNamespace,

@@ -18,9 +18,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func reconciledRegistryFixture(t *testing.T, kind string) (*nativeSandboxFixture, *corev1.Secret) {
+func reconciledRegistryFixture(t *testing.T, kind string, setup ...func(*AgentReconciler, client.Client)) (*nativeSandboxFixture, *corev1.Secret) {
 	t.Helper()
-	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false)
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false, setup...)
 	ctx := context.Background()
 	agent := f.current(t)
 	agent.Spec.Agent.RegistrySecretRef = &api.RegistrySecretRef{Name: "registry-source-example"}

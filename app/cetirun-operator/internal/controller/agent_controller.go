@@ -285,6 +285,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		result, holdErr := r.holdReconciledSandbox(ctx, instance)
 		return result, stderrors.Join(err, holdErr)
 	}
+	commonCustom := reconciledSandbox && instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom
 	if allowed, result, err := r.reconcileMigration(ctx, instance, reconciledSandbox); !allowed {
 		return result, err
 	}
@@ -356,13 +357,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return r.holdSandbox(ctx, instance)
 	}
 
-	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended {
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && !commonCustom {
 		return r.suspendCustom(ctx, instance)
 	}
 	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && registryManaged(instance) {
 		return r.suspendRegistryBuiltin(ctx, instance)
 	}
-	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !commonCustom {
 		if err := r.retryCustomCompletion(ctx, instance); err != nil {
 			return r.customWaiting(ctx, instance, "CustomCompletionPending", "Waiting to acknowledge the previous apply outcome")
 		}
@@ -418,7 +419,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return ctrl.Result{}, fmt.Errorf("get Team %s: %w", instance.Spec.Team, teamErr)
 	}
 
-	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !commonCustom {
 		return r.reconcileCustom(ctx, instance, team)
 	}
 
@@ -440,7 +441,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 
 	if instance.Spec.Agent.RegistrySecretRef != nil && instance.Spec.Agent.Image != nil && !instance.Spec.Suspended &&
-		(!reconciledSandbox || instance.Spec.Agent.Port != nil) {
+		(!reconciledSandbox || instance.Spec.Agent.Port != nil || commonCustom) {
 		// Owned bootstrap needs the runtime pins defaulted below. Registry sync
 		// must not create a namespace that protected bootstrap cannot adopt.
 		if reconciledSandbox {
@@ -450,13 +451,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			}
 		}
 		// Credential rotation must not pull the runtime chart or enter Helm.
-		values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
-		if err != nil {
-			return r.registryWaiting(ctx, instance, "RegistryRuntimeConfigRejected")
-		}
-		sa, err := registryServiceAccount(values, instanceServiceName(instance.Name))
-		if err != nil {
-			return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
+		sa := "default"
+		if !commonCustom {
+			values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
+			if err != nil {
+				return r.registryWaiting(ctx, instance, "RegistryRuntimeConfigRejected")
+			}
+			sa, err = registryServiceAccount(values, instanceServiceName(instance.Name))
+			if err != nil {
+				return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
+			}
 		}
 		if _, err := r.syncRegistryCredentials(ctx, instance, sa); err != nil {
 			return r.registryWaiting(ctx, instance, err.Error())
@@ -464,7 +468,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 
 	var prepared *helm.PreparedRelease
-	if instance.Spec.Agent.Image == nil || instance.Spec.Agent.Port == nil {
+	if !commonCustom && (instance.Spec.Agent.Image == nil || instance.Spec.Agent.Port == nil) {
 		var err error
 		prepared, err = r.prepareAgent(instance, team)
 		if err != nil {
@@ -598,7 +602,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 	}
 
-	if prepared == nil {
+	if prepared == nil && !commonCustom {
 		var err error
 		prepared, err = r.prepareAgent(instance, team)
 		if err != nil {
@@ -679,6 +683,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", namespaceErr))
 	}
+	if commonCustom {
+		if err := r.ensureCommonCustomRuntimeAuthentication(ctx, instance, logger); err != nil {
+			return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure Custom runtime authentication: %v", err))
+		}
+	}
 
 	// 6a. Ensure namespaced Role + RoleBinding so the operator's access to Secrets,
 	// ConfigMaps, Services, StatefulSets, PVCs, and ServiceAccounts is scoped to
@@ -696,33 +705,35 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance)); err != nil {
 		return r.failWith(ctx, instance, "BrokerStorageAccessFailed", fmt.Sprintf("Broker storage access setup failed: %v", err))
 	}
-	// 7. Ensure gateway token secret.
-	logger.V(1).Info("Ensuring gateway token secret", "alias", alias)
-	if err := r.ensureGatewayToken(ctx, instance); err != nil {
-		logger.Error(err, "failed to ensure gateway token", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-			metav1.ConditionFalse, "GatewayTokenError", err.Error())
-		_ = r.updateStatus(ctx, instance)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
+	if !commonCustom {
+		// 7. Ensure gateway token secret.
+		logger.V(1).Info("Ensuring gateway token secret", "alias", alias)
+		if err := r.ensureGatewayToken(ctx, instance); err != nil {
+			logger.Error(err, "failed to ensure gateway token", "alias", alias)
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+				metav1.ConditionFalse, "GatewayTokenError", err.Error())
+			_ = r.updateStatus(ctx, instance)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 
-	// 8. Ensure Tailscale auth key is in the gateway token Secret (if configured).
-	// The operator uses secrets.existingSecret, so the chart's Secret template is skipped.
-	// We must patch the auth key directly into the gateway token Secret for the StatefulSet
-	// to find TAILSCALE_AUTH_KEY via its secretKeyRef.
-	if err := r.ensureTailscaleAuthKey(ctx, instance); err != nil {
-		logger.Error(err, "failed to ensure Tailscale auth key", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
-			metav1.ConditionFalse, "TailscaleAuthKeyFailed", err.Error())
-		_ = r.updateStatus(ctx, instance)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
-	if instance.Spec.Tailscale != nil {
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
-			metav1.ConditionTrue, "TailscaleAuthKeyReady", "Tailscale auth key written to gateway Secret")
-	} else {
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
-			metav1.ConditionFalse, "TailscaleDisabled", "Tailscale is not configured")
+		// 8. Ensure Tailscale auth key is in the gateway token Secret (if configured).
+		// The operator uses secrets.existingSecret, so the chart's Secret template is skipped.
+		// We must patch the auth key directly into the gateway token Secret for the StatefulSet
+		// to find TAILSCALE_AUTH_KEY via its secretKeyRef.
+		if err := r.ensureTailscaleAuthKey(ctx, instance); err != nil {
+			logger.Error(err, "failed to ensure Tailscale auth key", "alias", alias)
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
+				metav1.ConditionFalse, "TailscaleAuthKeyFailed", err.Error())
+			_ = r.updateStatus(ctx, instance)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		if instance.Spec.Tailscale != nil {
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
+				metav1.ConditionTrue, "TailscaleAuthKeyReady", "Tailscale auth key written to gateway Secret")
+		} else {
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
+				metav1.ConditionFalse, "TailscaleDisabled", "Tailscale is not configured")
+		}
 	}
 
 	// 8a. Reconcile Teams integration (Azure AD app, FIC, Bot Service, Teams channel).
@@ -785,7 +796,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// workload: an Agent routed through the Gateway needs its key at startup.
 	var aiGatewayRequeueAfter time.Duration
 	if r.AIGateway.Enabled {
-		chartSupported := aiGatewayChartSupports(prepared, instance.Spec.Agent.Type)
+		chartSupported := commonCustom || aiGatewayChartSupports(prepared, instance.Spec.Agent.Type)
 		if err := r.reconcileAIGateway(ctx, instance, chartSupported); err != nil {
 			logger.Error(err, "AI Gateway virtual key reconciliation failed", "instance", instance.Name)
 			_ = r.updateStatus(ctx, instance)
@@ -840,7 +851,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// have guaranteed the Secret exists and may have modified its content.
 	{
 		gwSecret := &corev1.Secret{}
-		gwSecretKey := types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}
+		gwSecretKey := types.NamespacedName{Namespace: ns, Name: sandboxRuntimeSecretName(instance)}
 		if err := r.Get(ctx, gwSecretKey, gwSecret); err != nil {
 			if !errors.IsNotFound(err) {
 				return ctrl.Result{}, fmt.Errorf("re-read gateway Secret for operator hash: %w", err)
@@ -853,71 +864,67 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	alreadyDeployed := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
 		instance.Status.ObservedGeneration == instance.Generation &&
 		instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
-	// Teams may have resolved its application ID and Tailscale its auth key.
-	// Rebuild from current bindings without reloading the versioned chart.
-	helmValues, err := buildHelmValuesWithAgentIdentity(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel, AgentIdentityHelmConfig{
-		Enabled:                    r.AgentIdentityEnabled,
-		BrokerURL:                  r.AgentIdentityBrokerURL,
-		ConnectionsMCPURL:          r.ConnectionsMCPURL,
-		ConnectionsMCPAudience:     r.ConnectionsMCPAudience,
-		ConnectionsMCPCASecretName: r.ConnectionsMCPCASecretName,
-		ConnectionsMCPRuntimeTypes: r.ConnectionsMCPRuntimeTypes,
-	})
-	if err != nil {
-		return r.rejectAgentConfig(ctx, instance, err)
-	}
-	if err := r.applyAIGatewayValues(helmValues, instance); err != nil {
-		return r.rejectAgentConfig(ctx, instance, err)
-	}
-	helmValues["memoryOptions"] = r.memoryOptions()
-	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartResponsesValue) {
-		r.applyCopilotResponsesModels(helmValues, instance)
-	}
-	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartProxyKeyValue) {
-		applyCopilotProxyKeyID(helmValues, instance)
-	}
-	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartSignInValue) {
-		applyCopilotSignInGeneration(helmValues, instance)
-	}
-	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, "replicaCount") {
-		gateway, _ := helmValues[aiGatewayChartValue].(map[string]any)
-		if proxy, ok := gateway[aiGatewayChartCopilotValue].(map[string]any); ok && proxy["enabled"] == true {
-			proxy["replicaCount"] = 1
-			if instance.Spec.Suspended {
-				proxy["replicaCount"] = 0
-			}
+	var helmValues map[string]any
+	if commonCustom {
+		if !sandboxGatewayProjectionReadyForLifecycle(instance) {
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 		}
-	}
-	{
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}, secret); err != nil {
-			return ctrl.Result{}, fmt.Errorf("read native integration bindings: %w", err)
-		}
-		helmValues["agentRequest"].(map[string]any)["tailscaleEnabled"] = len(secret.Data["TAILSCALE_AUTH_KEY"]) > 0
-	}
-	if gatewaySecretResourceVersion != "" {
-		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{
-			gatewaySecretResourceVersionAnnotation: gatewaySecretResourceVersion,
-		})
-	}
-	if connectionsCAHash != "" && reconciledSandbox {
-		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
-	}
-	if reconciledSandbox {
-		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, helmValues)
-	} else {
-		prepared, err = r.HelmClient.Refresh(prepared, helmValues)
-	}
-	if err != nil {
-		if reconciledSandbox && stderrors.Is(err, errSandboxIngressMTLS) {
-			result, holdErr := r.holdReconciledSandbox(ctx, instance)
-			return result, stderrors.Join(err, holdErr)
-		}
-		if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
+		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, nil)
+		if err != nil {
 			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
 			return result, stderrors.Join(err, holdErr)
 		}
-		return r.rejectAgentConfig(ctx, instance, err)
+		helmValues = prepared.Values
+	} else {
+		// Teams may have resolved its application ID and Tailscale its auth key.
+		// Rebuild from current bindings without reloading the versioned chart.
+		helmValues, err = buildHelmValuesWithAgentIdentity(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel, AgentIdentityHelmConfig{
+			Enabled:                    r.AgentIdentityEnabled,
+			BrokerURL:                  r.AgentIdentityBrokerURL,
+			ConnectionsMCPURL:          r.ConnectionsMCPURL,
+			ConnectionsMCPAudience:     r.ConnectionsMCPAudience,
+			ConnectionsMCPCASecretName: r.ConnectionsMCPCASecretName,
+			ConnectionsMCPRuntimeTypes: r.ConnectionsMCPRuntimeTypes,
+		})
+		if err != nil {
+			return r.rejectAgentConfig(ctx, instance, err)
+		}
+		if err := r.applyAIGatewayValues(helmValues, instance); err != nil {
+			return r.rejectAgentConfig(ctx, instance, err)
+		}
+		helmValues["memoryOptions"] = r.memoryOptions()
+		r.applyCopilotChartValues(helmValues, instance, prepared)
+		{
+			secret := &corev1.Secret{}
+			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}, secret); err != nil {
+				return ctrl.Result{}, fmt.Errorf("read native integration bindings: %w", err)
+			}
+			helmValues["agentRequest"].(map[string]any)["tailscaleEnabled"] = len(secret.Data["TAILSCALE_AUTH_KEY"]) > 0
+		}
+		if gatewaySecretResourceVersion != "" {
+			helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{
+				gatewaySecretResourceVersionAnnotation: gatewaySecretResourceVersion,
+			})
+		}
+		if connectionsCAHash != "" && reconciledSandbox {
+			helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
+		}
+		if reconciledSandbox {
+			prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, helmValues)
+		} else {
+			prepared, err = r.HelmClient.Refresh(prepared, helmValues)
+		}
+		if err != nil {
+			if reconciledSandbox && stderrors.Is(err, errSandboxIngressMTLS) {
+				result, holdErr := r.holdReconciledSandbox(ctx, instance)
+				return result, stderrors.Join(err, holdErr)
+			}
+			if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
+				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+				return result, stderrors.Join(err, holdErr)
+			}
+			return r.rejectAgentConfig(ctx, instance, err)
+		}
 	}
 	if instance.Spec.Suspended {
 		if err := validateSuspendedHome(prepared.Values); err != nil {
@@ -933,7 +940,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	r.recordSignInHelper(instance, prepared.ServesSignInHelper())
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
-		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
+		metav1.ConditionTrue, "AgentConfigResolved", "Agent Harness configuration resolved")
 	helmValues = prepared.Values
 	if connectionsCAHash != "" && !reconciledSandbox {
 		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
@@ -1120,37 +1127,47 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 	}
 
-	// 10a. Ensure VirtualService (non-suspended path).
-	// TODO: VirtualService failure should block Ready (return error, set phase=Failed).
-	// Currently best-effort because Istio is not installed on all test clusters.
-	// When Istio is guaranteed to be present, change this block to:
-	//   if err != nil { return r.failWith(ctx, instance, "VirtualServiceFailed", err.Error()) }
-	logger.V(1).Info("Ensuring VirtualService", "alias", alias)
-	if result, err := r.ensureVirtualService(ctx, instance); err != nil {
-		logger.Error(err, "VirtualService creation/update failed (best-effort)", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
-			metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
-		if reconciledSandbox {
-			instance.Status.AccessURL = ""
-			instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+	if commonCustom {
+		if err := r.configureReconciledCustomRuntime(ctx, instance, prepared); err != nil {
+			logger.Error(err, "Common Custom access configuration failed", "alias", alias)
 			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-				metav1.ConditionFalse, "VirtualServiceFailed", "Current Sandbox ingress is not established")
+				metav1.ConditionFalse, "CustomAccessUnavailable", err.Error())
+			instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
 			return ctrl.Result{RequeueAfter: 15 * time.Second}, stderrors.Join(err, r.updateStatus(ctx, instance))
 		}
 	} else {
-		logger.V(1).Info("VirtualService ensured", "alias", alias, "result", result)
-		ingress := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady)
-		if !reconciledSandbox || ingress == nil || ingress.Reason != "IngressDisabled" {
-			instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
+		// 10a. Ensure VirtualService (non-suspended path).
+		// TODO: VirtualService failure should block Ready (return error, set phase=Failed).
+		// Currently best-effort because Istio is not installed on all test clusters.
+		// When Istio is guaranteed to be present, change this block to:
+		//   if err != nil { return r.failWith(ctx, instance, "VirtualServiceFailed", err.Error()) }
+		logger.V(1).Info("Ensuring VirtualService", "alias", alias)
+		if result, err := r.ensureVirtualService(ctx, instance); err != nil {
+			logger.Error(err, "VirtualService creation/update failed (best-effort)", "alias", alias)
 			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
-				metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
+				metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
+			if reconciledSandbox {
+				instance.Status.AccessURL = ""
+				instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+				setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+					metav1.ConditionFalse, "VirtualServiceFailed", "Current Sandbox ingress is not established")
+				return ctrl.Result{RequeueAfter: 15 * time.Second}, stderrors.Join(err, r.updateStatus(ctx, instance))
+			}
+		} else {
+			logger.V(1).Info("VirtualService ensured", "alias", alias, "result", result)
+			ingress := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady)
+			if !reconciledSandbox || ingress == nil || ingress.Reason != "IngressDisabled" {
+				instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
+				setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+					metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
+			}
+			if result != controllerutil.OperationResultNone {
+				r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "IngressConfigured",
+					"Istio VirtualService %s, instance accessible at %s", result, accessURLPathBased(instance.Name, r.DomainSuffix))
+			}
 		}
-		if result != controllerutil.OperationResultNone {
-			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "IngressConfigured",
-				"Istio VirtualService %s, instance accessible at %s", result, accessURLPathBased(instance.Name, r.DomainSuffix))
-		}
-	}
 
+	}
 	// 11. Verify StatefulSet pod readiness before marking Ready.
 	prerequisitesComplete = true
 	setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,

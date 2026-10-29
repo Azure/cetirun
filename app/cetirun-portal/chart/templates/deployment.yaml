@@ -64,6 +64,8 @@ spec:
               value: {{ include "cetirun-portal.selectorLabels" . | fromYaml | toJson | quote }}
             - name: REGISTRY_CREDENTIAL_NAMESPACE
               value: {{ default .Values.registryCredentials.namespace .Values.global.registryCredentialNamespace | quote }}
+            - name: SANDBOX_STATE_NAMESPACE
+              value: {{ default .Values.aiGateway.catalogNamespace .Values.chat.sandboxStateNamespace | quote }}
             {{- if .Values.istio.host }}
             - name: PORTAL_ORIGIN
               value: {{ printf "https://%s" .Values.istio.host | quote }}

@@ -13,6 +13,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -43,6 +44,46 @@ type addressGrant struct {
 
 // Cilium validates both allow and deny toPorts[].ports arrays against this limit.
 const maxPortsPerRule = 40
+
+func canonicalCustomIngress(input *CustomIngress) (*CustomIngress, error) {
+	if input == nil {
+		return nil, nil
+	}
+	if input.Port < 1 || input.Port > 65535 || (!input.WebUI && len(input.ChatCallers) == 0) {
+		return nil, fmt.Errorf("%w: Custom ingress requires a typed HTTP port and an exposure mode", ErrUnsupportedControl)
+	}
+	copy := *input
+	copy.ChatCallers = nil
+	for _, caller := range input.ChatCallers {
+		if len(validation.IsDNS1123Label(caller.Namespace)) != 0 || len(caller.PodLabels) == 0 || len(caller.PodLabels) > 16 {
+			return nil, fmt.Errorf("%w: Custom Chat callers require a bounded namespace and Pod selector", ErrUnsupportedControl)
+		}
+		labels := make(map[string]string, len(caller.PodLabels))
+		for key, value := range caller.PodLabels {
+			if len(validation.IsQualifiedName(key)) != 0 || len(validation.IsValidLabelValue(value)) != 0 || value == "" || key == "io.kubernetes.pod.namespace" {
+				return nil, fmt.Errorf("%w: Custom Chat caller selector is invalid", ErrUnsupportedControl)
+			}
+			labels[key] = value
+		}
+		copy.ChatCallers = append(copy.ChatCallers, IngressCaller{Namespace: caller.Namespace, PodLabels: labels})
+	}
+	var err error
+	copy.ChatCallers, err = canonicalObjects(copy.ChatCallers)
+	if err != nil {
+		return nil, err
+	}
+	return &copy, nil
+}
+
+func canonicalTerminalIngress(input *TerminalIngress) (*TerminalIngress, error) {
+	if input == nil {
+		return nil, nil
+	}
+	if input.Port < 1024 || input.Port > 65535 {
+		return nil, fmt.Errorf("%w: Custom terminal requires an unprivileged TCP port", ErrUnsupportedControl)
+	}
+	return &TerminalIngress{Port: input.Port}, nil
+}
 
 func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platform, error) {
 	var platform Platform
@@ -465,6 +506,15 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 		EnableDefaultDeny: DefaultDeny{Ingress: true, Egress: true},
 		Ingress:           []IngressRule{}, IngressDeny: []IngressRule{}, Egress: []EgressRule{}, EgressDeny: []EgressRule{},
 	}
+	// The terminal has the same Agent and namespace labels as the primary
+	// workload. Exclude it from this policy when its isolated policy exists,
+	// otherwise Cilium unions the main workload's model and internet grants into
+	// the terminal's default-deny policy.
+	if input.TerminalIngress != nil {
+		spec.EndpointSelector.MatchExpressions = []metav1.LabelSelectorRequirement{{
+			Key: "k8s:cetirun.microsoft.com/terminal", Operator: metav1.LabelSelectorOpDoesNotExist,
+		}}
+	}
 	budget := networkRuleBudget{}
 	// Public-internet egress is intentionally permitted except for explicit
 	// exclusions/denies below. Default-deny is not an internet allow-list; only
@@ -602,12 +652,35 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 				}
 			}
 			ingressPeers = append(ingressPeers, destination.Peer)
+			ports := destination.Ports
+			if custom := input.CustomIngress; custom != nil && custom.WebUI {
+				ports = append(slices.Clone(ports), api.AgentPolicyPort{Port: custom.Port, Protocol: corev1.ProtocolTCP})
+				ports, err = canonicalObjects(ports)
+				if err != nil {
+					return plan, err
+				}
+			}
 			selector := []metav1.LabelSelector{peerSelector(destination.Peer)}
-			if err := budget.ingress(&spec.Ingress, IngressRule{FromEndpoints: selector, ToPorts: portRules(destination.Ports)}); err != nil {
+			if err := budget.ingress(&spec.Ingress, IngressRule{FromEndpoints: selector, ToPorts: portRules(ports)}); err != nil {
 				return plan, err
 			}
-			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: selector, ToPorts: deniedPorts(destination.Ports)}); err != nil {
+			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: selector, ToPorts: deniedPorts(ports)}); err != nil {
 				return plan, err
+			}
+		}
+		if custom := input.CustomIngress; custom != nil {
+			for index, caller := range custom.ChatCallers {
+				peer := Peer{Name: fmt.Sprintf("portal-chat-%d", index), UID: types.UID(fmt.Sprintf("portal-chat-%d", index)),
+					Namespace: caller.Namespace, PodSelector: caller.PodLabels}
+				ingressPeers = append(ingressPeers, peer)
+				selector := []metav1.LabelSelector{peerSelector(peer)}
+				ports := []api.AgentPolicyPort{{Port: custom.Port, Protocol: corev1.ProtocolTCP}}
+				if err := budget.ingress(&spec.Ingress, IngressRule{FromEndpoints: selector, ToPorts: portRules(ports)}); err != nil {
+					return plan, err
+				}
+				if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: selector, ToPorts: deniedPorts(ports)}); err != nil {
+					return plan, err
+				}
 			}
 		}
 		selectors, err := excludingPeers(ingressPeers)
@@ -648,7 +721,103 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 		TypeMeta:   metav1.TypeMeta{APIVersion: "cilium.io/v2", Kind: "CiliumNetworkPolicy"},
 		ObjectMeta: metadata, Spec: spec,
 	}
+	if terminal := input.TerminalIngress; terminal != nil {
+		policy, err := compileTerminalNetwork(input, *terminal)
+		if err != nil {
+			return plan, err
+		}
+		plan.TerminalPolicy = policy
+	}
 	return plan, validateNetworkPolicySize(plan.Policy)
+}
+
+// compileTerminalNetwork gives the isolated terminal no model, Agent, or
+// internet authority. Its sole peers are registered DNS, the Kubernetes API,
+// and the authenticated ingress endpoints on its fixed TCP listener.
+func compileTerminalNetwork(input CompileInput, terminal TerminalIngress) (*CiliumNetworkPolicy, error) {
+	topology := input.Platform.Topology
+	// The terminal needs its narrowly scoped API connection to use the
+	// controller-issued ServiceAccount token. Do not render a terminal policy
+	// until the platform snapshot has explicitly resolved that destination.
+	if len(topology.KubernetesAPI) == 0 {
+		return nil, fmt.Errorf("%w: terminal requires resolved Kubernetes API destinations", ErrUnavailable)
+	}
+	spec := CiliumPolicySpec{
+		EndpointSelector: metav1.LabelSelector{MatchLabels: map[string]string{
+			"k8s:cetirun.microsoft.com/terminal": "true",
+			"k8s:" + AgentUIDLabel:               string(input.Resolution.Binding.AgentUID),
+			"k8s:io.kubernetes.pod.namespace":    input.Namespace,
+		}},
+		EnableDefaultDeny: DefaultDeny{Ingress: true, Egress: true},
+		Ingress:           []IngressRule{}, IngressDeny: []IngressRule{}, Egress: []EgressRule{}, EgressDeny: []EgressRule{},
+	}
+	dnsPorts := portRules([]api.AgentPolicyPort{{Port: 53, Protocol: corev1.ProtocolTCP}, {Port: 53, Protocol: corev1.ProtocolUDP}})
+	for _, peer := range topology.DNS {
+		if err := appendTerminalEgress(&spec, peer, dnsPorts); err != nil {
+			return nil, err
+		}
+	}
+	for _, destination := range topology.KubernetesAPI {
+		if err := appendTerminalEgress(&spec, destination.Peer, portRules(destination.Ports)); err != nil {
+			return nil, err
+		}
+	}
+	if input.Resolution.AgentPolicy.Network.Ingress.Mode != api.AgentPolicyIngressDisabled {
+		ports := portRules([]api.AgentPolicyPort{{Port: terminal.Port, Protocol: corev1.ProtocolTCP}})
+		for _, destination := range topology.Ingress {
+			if destination.Peer.Namespace != "" {
+				spec.Ingress = append(spec.Ingress, IngressRule{FromEndpoints: []metav1.LabelSelector{peerSelector(destination.Peer)}, ToPorts: ports})
+				continue
+			}
+			cidrs := peerCIDRs(destination.Peer)
+			if len(cidrs) == 0 {
+				return nil, fmt.Errorf("%w: terminal ingress requires resolved Gateway addresses", ErrUnavailable)
+			}
+			spec.Ingress = append(spec.Ingress, IngressRule{FromCIDRSet: cidrRules(cidrs), ToPorts: ports})
+		}
+	}
+	var err error
+	for _, rules := range []*[]EgressRule{&spec.Egress, &spec.EgressDeny} {
+		*rules, err = canonicalObjects(*rules)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, rules := range []*[]IngressRule{&spec.Ingress, &spec.IngressDeny} {
+		*rules, err = canonicalObjects(*rules)
+		if err != nil {
+			return nil, err
+		}
+	}
+	name, err := digest(string(input.Resolution.Binding.AgentUID) + "/terminal")
+	if err != nil {
+		return nil, err
+	}
+	metadata, err := ownedMetadata(input, "sandbox-terminal-"+name[:24], input.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	policy := &CiliumNetworkPolicy{TypeMeta: metav1.TypeMeta{APIVersion: "cilium.io/v2", Kind: "CiliumNetworkPolicy"}, ObjectMeta: metadata, Spec: spec}
+	if err := validateNetworkPolicySize(*policy); err != nil {
+		return nil, err
+	}
+	return policy, nil
+}
+
+func appendTerminalEgress(spec *CiliumPolicySpec, peer Peer, ports []PortRule) error {
+	if len(ports) == 0 {
+		return fmt.Errorf("terminal egress requires resolved peers and ports")
+	}
+	if peer.Namespace != "" {
+		spec.Egress = append(spec.Egress, EgressRule{ToEndpoints: []metav1.LabelSelector{peerSelector(peer)}, ToPorts: ports})
+		return nil
+	}
+	cidrs := peerCIDRs(peer)
+	if len(cidrs) == 0 {
+		return fmt.Errorf("terminal egress requires resolved peers and ports")
+	}
+	spec.Egress = append(spec.Egress, EgressRule{ToCIDRSet: cidrRules(cidrs), ToPorts: ports})
+	return nil
 }
 
 func parsePrefix(raw string, capabilities sandbox.Capabilities) (netip.Prefix, error) {

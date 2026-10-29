@@ -13,11 +13,13 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	strictjson "sigs.k8s.io/json"
 )
@@ -42,6 +44,14 @@ type ReconcileExpectation struct {
 	Sources         []SourceReference           `json:"sources"`
 	SourceDigests   map[string]string           `json:"sourceDigests"`
 	Controls        []unstructured.Unstructured `json:"controls"`
+	Terminal        *TerminalTarget             `json:"terminal,omitempty"`
+}
+
+// TerminalTarget is the controller-owned CONNECT target, never caller input.
+type TerminalTarget struct {
+	ServiceAccountName string `json:"serviceAccountName"`
+	TargetWorkload     string `json:"targetWorkload"`
+	Container          string `json:"container"`
 }
 
 type RenderedWorkload struct {
@@ -141,6 +151,18 @@ func (e ReconcileExpectation) Validate() error {
 	if main == nil {
 		return fmt.Errorf("Sandbox has no retained HOME workload")
 	}
+	if terminal := e.Terminal; terminal != nil {
+		if len(validation.IsDNS1123Label(terminal.ServiceAccountName)) != 0 ||
+			terminal.ServiceAccountName != terminalpolicy.WorkloadName(main.Identity.Name) ||
+			terminal.TargetWorkload != main.Identity.Name || terminal.Container != "cetirun" {
+			return fmt.Errorf("Sandbox terminal target is invalid")
+		}
+		if !slices.ContainsFunc(e.Workloads, func(workload RenderedWorkload) bool {
+			return workload.Kind == "Deployment" && workload.Identity.Name == terminal.ServiceAccountName && workload.Replicas == 1
+		}) {
+			return fmt.Errorf("Sandbox terminal workload is absent")
+		}
+	}
 	sources := map[string]bool{}
 	required := map[string]bool{}
 	effective := 0
@@ -205,6 +227,10 @@ func (e ReconcileExpectation) Validate() error {
 		}
 		controls[key] = true
 		switch object.GetAPIVersion() + "/" + object.GetKind() {
+		case "rbac.authorization.k8s.io/v1/RoleBinding":
+			if e.Terminal == nil {
+				return fmt.Errorf("Sandbox RoleBindings require a terminal target")
+			}
 		case "v1/ConfigMap", "v1/Service", "v1/ServiceAccount", "networking.k8s.io/v1/NetworkPolicy", "cilium.io/v2/CiliumNetworkPolicy",
 			"networking.istio.io/v1beta1/DestinationRule":
 		default:
@@ -215,6 +241,17 @@ func (e ReconcileExpectation) Validate() error {
 	for _, kind := range []string{"ServiceAccount", "CiliumNetworkPolicy"} {
 		if !required[kind] {
 			return fmt.Errorf("Sandbox control inventory is missing %s", kind)
+		}
+	}
+	if terminal := e.Terminal; terminal != nil {
+		for _, source := range []SourceReference{
+			{APIVersion: "v1", Kind: "ServiceAccount", Namespace: e.Namespace.Name, Name: terminal.ServiceAccountName},
+			{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding", Namespace: e.Namespace.Name, Name: terminal.ServiceAccountName},
+			{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding", Namespace: e.Namespace.Name, Name: terminal.ServiceAccountName + "-exec"},
+		} {
+			if !controls[SourceKey(source)] {
+				return fmt.Errorf("Sandbox terminal identity controls are absent")
+			}
 		}
 	}
 	for _, workload := range e.Workloads {
@@ -337,7 +374,7 @@ func ValidateRenderedPod(pod *corev1.Pod, workload RenderedWorkload, owner metav
 	return nil
 }
 
-func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, image string) error {
+func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, image string, memoryEnabled bool) error {
 	spec := template.Spec
 	if err := b.validateIngressTemplate(spec); err != nil {
 		return err
@@ -403,14 +440,18 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 	for _, group := range [][]corev1.Container{spec.Containers, spec.InitContainers} {
 		for _, container := range group {
 			sc := container.SecurityContext
+			imageUser := b.input.CustomAgent != nil && sc != nil && sc.RunAsUser == nil && spec.SecurityContext.RunAsUser == nil
 			if sc == nil || ptr.Deref(sc.Privileged, false) || ptr.Deref(sc.AllowPrivilegeEscalation, true) ||
 				!ptr.Deref(sc.RunAsNonRoot, ptr.Deref(spec.SecurityContext.RunAsNonRoot, false)) ||
-				ptr.Deref(sc.RunAsUser, ptr.Deref(spec.SecurityContext.RunAsUser, 0)) <= 0 ||
+				!imageUser && ptr.Deref(sc.RunAsUser, ptr.Deref(spec.SecurityContext.RunAsUser, 0)) <= 0 ||
 				sc.Capabilities == nil || len(sc.Capabilities.Add) != 0 || !slices.Contains(sc.Capabilities.Drop, corev1.Capability("ALL")) ||
 				!ptr.Deref(sc.ReadOnlyRootFilesystem, false) && *b.input.Resolution.AgentPolicy.Security.ReadOnlyRootFilesystem {
 				return fmt.Errorf("reconciled Sandbox container violates the selected security constraints")
 			}
 		}
+	}
+	if b.input.CustomAgent != nil {
+		return b.validateCustomReconciledTemplate(&spec, memoryEnabled)
 	}
 	return nil
 }

@@ -33,9 +33,10 @@ all: build
 build:
 	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/manager ./cmd/main.go
 
-## Build the independent Custom terminal entrypoint
+## Build the independent Custom terminal and static HTTP probe
 build-terminal:
 	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -o bin/terminal ./cmd/terminal
+	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -o bin/loopback-probe ./cmd/loopback-probe
 
 ## Build the standalone opt-in node guard prototype; not part of operator startup
 build-node-guard:

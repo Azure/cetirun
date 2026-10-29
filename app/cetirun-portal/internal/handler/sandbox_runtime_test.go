@@ -33,6 +33,32 @@ func TestSandboxCreatePinsRuntimeBeforeFirstWrite(t *testing.T) {
 	}
 }
 
+func TestSandboxCreatePreservesCustomContracts(t *testing.T) {
+	for _, endpoint := range []string{"", `,"port":8080`, `,"port":8080,"webUI":true`} {
+		team, policy := creationPolicy()
+		policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeCustom}
+		h, _ := creationPolicyHandler(team, policy)
+		h.Config.SandboxRuntimes = nil
+		h.Config.SandboxControllerDefaults = true
+		w := httptest.NewRecorder()
+		h.CreateInstance(w, managementRequest(http.MethodPost,
+			`{"agent":{"type":"custom","image":"registry.example.com/custom@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`+
+				endpoint+`},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("Custom create: %d %s", w.Code, w.Body.String())
+		}
+		agent, err := h.Kube.GetInstance(context.Background(), "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if agent.Spec.Agent.Type != api.AgentTypeCustom || agent.Spec.Agent.Image == nil ||
+			agent.Spec.SandboxRef != team.Spec.DefaultSandboxRef || agent.Spec.GatewayTokenSecretRef != "" ||
+			(endpoint == "") != (agent.Spec.Agent.Port == nil) {
+			t.Fatal("Portal changed the Custom contract or lost policy selection")
+		}
+	}
+}
+
 func TestSandboxCreateUsesCommonControllerDefaults(t *testing.T) {
 	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes} {
 		t.Run(string(kind), func(t *testing.T) {

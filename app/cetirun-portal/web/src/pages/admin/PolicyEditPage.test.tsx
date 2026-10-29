@@ -59,6 +59,17 @@ describe("PolicyEditPage", () => {
     vi.mocked(policyAPI.updatePolicy).mockReset();
   });
 
+  it("preserves Custom policy permission and supports explicit removal", async () => {
+    const policy: policyAPI.AgentPolicyDTO = { ...cachedPolicy, harnesses: { allowed: ["custom"] } };
+    expect(toPolicyRequest(fromPolicyDTO(policy)).harnesses.allowed).toEqual(["custom"]);
+    renderCachedPolicy(policy);
+    const custom = screen.getByRole("switch", { name: "Custom" });
+    expect(custom).toBeChecked();
+    expect(screen.getByRole("switch", { name: "OpenClaw" })).not.toBeChecked();
+    await userEvent.setup().click(custom);
+    expect(custom).not.toBeChecked();
+  });
+
   it("shows one-per-line examples for list fields", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(

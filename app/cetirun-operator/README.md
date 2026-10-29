@@ -316,8 +316,8 @@ and their cleanup; it does not remove an existing destination pin.
 This scope requires one bound filesystem CSI `ReadWriteOncePod` or `ReadWriteOnce` HOME,
 with no other PVC mounts, a CSI driver that requires attachment, and a healthy
 source on a different Node. It preserves Agent, namespace, StatefulSet, HOME
-PVC/PV, chart pin, Gateway key and spending identities. It does not support
-Custom or retained single-start lifetimes, shared-volume migration,
+PVC/PV, chart pin, Gateway key and spending identities. Governed Custom uses
+the same common migration path. It does not support retained single-start lifetimes, shared-volume migration,
 cross-cluster moves, forced deletion/detach, or unavailable-source recovery.
 Use an explicitly authorized environment and qualify the actual runtime/CSI
 artifact set before enabling this feature.
@@ -1053,7 +1053,8 @@ Setting any Team policy/Sandbox field opts that Team into the full binding
 contract: one policy, permitted Sandboxes, and a creation default. Partial
 configuration is not a legacy fallback. Policy-bound Agents must explicitly
 request model sources. They require a permitted Sandbox and current
-authorization, and Custom remains unsupported in that policy contract.
+authorization. Custom requires the common executor and an explicitly
+Gateway-qualified image; see the [Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
 Portal creation accepts legacy Teams without a default Sandbox. With the
 Gateway disabled, it also accepts no Team, as before. With the Gateway enabled,
 it still requires an existing Team and supported model routing. Portal support
@@ -1286,7 +1287,8 @@ The preparation chain is `sandboxbinding.Read` -> `sandbox.Resolve` ->
 Hermes; it does not introduce another runtime renderer. Generic user values are
 validated before merging, and the protected bundle is applied last. The
 `sandboxWorkload` chart values are compiler-owned outputs, not a user activation
-switch. Policy-bound Custom rendering is explicitly unsupported by this slice.
+switch. Custom joins the common reconciled renderer; the retained held-only
+preparation path does not support Custom.
 
 Prepared manifests protect resource accounting (including init/helper containers
 and RuntimeClass overhead), runtime/security settings, owned HOME, read-only
@@ -1427,8 +1429,9 @@ pool isolation, qualified old-writer fencing, a distinct pre-start enforcement
 acknowledgement and trusted current Pod/node/epoch observations. Neither a
 held expectation nor pool deletion alone supplies those authorities.
 
-Tailscale, Teams, workload identity and policy-bound Custom configurations remain
-unsupported by this native path. They retain an explanatory `UnsupportedControl`
+Tailscale, Teams and workload identity remain unsupported by this native path.
+Custom requires common reconciliation rather than retained single-start execution.
+Unsupported requests retain an explanatory `UnsupportedControl`
 hold and bounded requeue instead of a permanent preparation-error loop. Existing
 grants are revoked if a previously prepared Agent transitions to one of them.
 Unqualified platform controls also retain the bounded `UnsupportedControl`

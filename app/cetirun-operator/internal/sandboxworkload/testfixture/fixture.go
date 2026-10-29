@@ -60,6 +60,9 @@ func New(agentType string) Fixture {
 			Network:  api.AgentPolicyNetwork{Ingress: api.AgentPolicyIngress{Mode: api.AgentPolicyIngressDisabled}},
 		},
 	}
+	if agentType == "custom" {
+		policy.Spec.Harnesses.Allowed = append(policy.Spec.Harnesses.Allowed, api.AgentTypeCustom)
+	}
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-example", UID: "team-uid", ResourceVersion: "1", Generation: 1},
 		Spec:       api.TeamSpec{SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name, AgentPolicyRef: policy.Name},

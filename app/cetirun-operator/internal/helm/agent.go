@@ -162,13 +162,13 @@ func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) 
 	if input[sandboxworkload.ValuesKey] != nil {
 		return nil, fmt.Errorf("sandboxWorkload is reserved for the protected Sandbox renderer")
 	}
+	if input["runtime"] != nil {
+		return nil, fmt.Errorf("runtime is reserved for the platform")
+	}
 	return prepareRuntimeChart(chrt, input, validateRender)
 }
 
 func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender bool) (*PreparedRelease, error) {
-	if input["runtime"] != nil {
-		return nil, fmt.Errorf("runtime is reserved for the platform")
-	}
 	var request AgentRequest
 	requestJSON, err := json.Marshal(input["agentRequest"])
 	if err != nil {
@@ -185,10 +185,14 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		return nil, err
 	}
 	descriptor := harness.Describe()
-	if descriptor.Type == "custom" {
+	if descriptor.Type == "custom" && input[sandboxworkload.ValuesKey] == nil {
 		return prepareCustomChart(chrt, input, request, validateRender)
 	}
-	if memory, configured, err := resolveMemory(input, chrt, "/home/vibe"); err != nil {
+	memoryHome := "/home/vibe"
+	if descriptor.Type == "custom" {
+		memoryHome = text(object(object(input["runtime"])["agent"])["home"])
+	}
+	if memory, configured, err := resolveMemory(input, chrt, memoryHome); err != nil {
 		return nil, err
 	} else if configured {
 		inputCopy := make(map[string]any, len(input))
@@ -201,6 +205,9 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 			inputCopy["memoryContext"] = memory.Values()
 		}
 		input = inputCopy
+	}
+	if descriptor.Type == "custom" {
+		return prepareSandboxCustomChart(chrt, input)
 	}
 	profile, err := loadRuntimeProfile(chrt, descriptor, request.Registry)
 	if err != nil {

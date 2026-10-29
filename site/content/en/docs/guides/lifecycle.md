@@ -46,7 +46,7 @@ HOME or Gateway key, reset spending history, or create another lifecycle operati
 
 | Current Agent | Suspend | Resume |
 | --- | --- | --- |
-| Ordinary OpenClaw, Hermes or Custom; common-executor Sandbox built-ins | Allowed when the current owned workload has confirmed PVC-backed HOME, including while provisioning or recovering | Allowed when suspension is requested |
+| Ordinary OpenClaw, Hermes or Custom; common-executor Sandbox Agents | Allowed when the current owned workload has confirmed PVC-backed HOME, including while provisioning or recovering | Allowed when suspension is requested |
 | Ephemeral HOME or unverified/missing workload storage | Unavailable; no retained suspension is accepted | Existing resume intent remains available |
 | Pending restart or administrator migration | Suspension takes precedence | Continue the original operation, retaining its request ID and controller safeguards |
 | Recorded legacy single-start Sandbox lifetime | Rejected; no lifetime conversion | Rejected |
@@ -167,8 +167,9 @@ Pod or recording its readiness does not request another apply.
 Suspension and deletion take precedence; restart cannot resume a suspended
 Agent. Current policy and runtime checks still apply. Earlier single-start
 Sandbox lifetimes reject this operation rather than converting their records.
-Custom Agents use their existing approved shutdown and apply path, not a new
-executor. The Operator renders their restart marker through the existing
+Governed Custom uses the common Sandbox restart path. Custom without Sandbox
+selection retains its approved shutdown and apply path. The Operator renders
+the Custom restart marker through the existing
 `podAnnotations` chart contract, so approved older Custom chart pins do not need
 an upgrade to restart, stop or resume. The marker remains controller-owned;
 caller-supplied values are rejected. Use Operator, Portal and CRD versions that
@@ -183,13 +184,13 @@ storage-failover qualification.
 ## Planned node migration
 
 Platform administrators can opt in to planned cold migration for common-executor
-OpenClaw/Hermes Agents with one filesystem CSI HOME using `ReadWriteOncePod`
+OpenClaw, Hermes and governed Custom Agents with one filesystem CSI HOME using `ReadWriteOncePod`
 (RWOP) or `ReadWriteOnce` (RWO), explicitly supported by the selected Kata or container platform
 registration. This is a Kubernetes
 API, not a Portal migration button. The deployment must enable
 `sandboxSources.plannedMigration` after all readers have upgraded. Qualify the
 actual AKS, runtime and CSI artifacts in an authorized test environment first.
-Custom, retained single-start, additional PVCs, unavailable sources and
+Non-Sandbox Custom, retained single-start, additional PVCs, unavailable sources and
 cross-cluster moves are outside this initial scope.
 
 Both HOME modes use the same restart, retained stop/resume and migration
@@ -287,7 +288,7 @@ without a recognized record fails safely; interrupted seeding requires the
 same immutable source image. Review the recorded state, existing files and
 recovery copies before performing explicit maintenance.
 
-Custom updates use a separate `OnDelete` path. They require approved model,
+Custom without Sandbox selection uses a separate `OnDelete` update path. It requires approved model,
 HOME and context bindings plus an explicit storage/lifecycle handoff. The old
 StatefulSet must be stopped and no active Pod may still reference HOME before
 the new plan is applied. The configured binding provider coordinates this
@@ -297,14 +298,18 @@ with one replica. It does not use the built-in orphan-delete hook or replace
 the HOME claim. Model Key and context revision changes go through the same
 gate; process environment does not refresh in place.
 
-The default operator has no production Custom binding provider and reports
-`CustomBindingsPending`. A Custom process has no native UI URL, including when
-its internal HTTP Service exists. See [Agent Harness](../../reference/agent-harness/#custom-runtime)
-for the implementation boundary and synthetic qualification tests.
+The default installation does not enable Custom provisioning. The opt-in
+non-Sandbox provider reports `CustomBindingsPending` until its prerequisites are
+available. Governed Custom instead requires current common-executor registration
+and Gateway-qualified image approval. Chat/headless instances have no public
+Agent UI URL; a declared Web UI uses its authenticated route.
+See [Agent Harness](../../reference/agent-harness/#custom-runtime) for the
+implementation boundary and offline qualification tests.
 
 ## Delete only with a recovery plan
 
-Custom cleanup requires the Operator's durable ownership receipt. A never-bound
+Governed Custom cleanup uses the common bootstrap ownership and grant journal;
+non-Sandbox Custom requires its separate durable ownership receipt. A never-bound
 Custom does not delete resources merely because their names match. For a bound
 Custom, cleanup verifies the recorded namespace UID before deletion and waits
 for it to disappear; it does not execute Helm uninstall hooks. Missing records

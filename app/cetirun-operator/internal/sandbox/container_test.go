@@ -30,7 +30,7 @@ func containerResolveInput() ResolveInput {
 }
 
 func TestContainerRuntimeResolution(t *testing.T) {
-	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes} {
+	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes, api.AgentTypeCustom} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteOncePod} {
 			t.Run(string(kind)+"/"+string(mode), func(t *testing.T) {
 				input := containerResolveInput()
@@ -64,7 +64,7 @@ func TestContainerRuntimeFailsClosed(t *testing.T) {
 		"missing registration": func(i *ResolveInput) { delete(i.Registrations, api.SandboxContainer) },
 		"no AgentPolicy":       func(i *ResolveInput) { delete(i.Resources.AgentPolicies, "normal") },
 		"unauthorized binding": func(i *ResolveInput) { i.AuthorizedBinding.AgentPolicyUID = "another-policy" },
-		"Custom harness":       func(i *ResolveInput) { i.Agent.Spec.Agent.Type = api.AgentTypeCustom },
+		"unknown harness":      func(i *ResolveInput) { i.Agent.Spec.Agent.Type = api.AgentType("unknown") },
 		"unregistered HOME mode": func(i *ResolveInput) {
 			i.Resources.Sandboxes["standard"].Spec.Storage.Home.AccessMode = corev1.ReadWriteOnce
 		},

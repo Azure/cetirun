@@ -20,6 +20,8 @@ replicaCount: 2
 chat:
   enabled: false
   identityRealm: ""
+  # Empty uses aiGateway.catalogNamespace, the operator namespace.
+  sandboxStateNamespace: ""
 
 # -- Portal container image.
 image:
