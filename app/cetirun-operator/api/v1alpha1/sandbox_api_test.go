@@ -263,7 +263,7 @@ func TestGeneratedSandboxValidationMarkers(t *testing.T) {
 		enum     []string
 		rules    int
 	}{
-		{plural: "sandboxes", path: []string{"spec", "type"}, enum: []string{"kata", "gvisor"}},
+		{plural: "sandboxes", path: []string{"spec", "type"}, enum: []string{"kata", "gvisor", "container"}},
 		{plural: "sandboxes", path: []string{"spec", "resources"}, required: []string{"agent", "helpers"}},
 		{plural: "sandboxes", path: []string{"spec", "resources", "agent"}, required: []string{"requests", "limits"}, rules: 1},
 		{plural: "sandboxes", path: []string{"spec", "resources", "helpers"}, required: []string{"requests", "limits"}, rules: 1},

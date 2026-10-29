@@ -449,15 +449,15 @@ func TestReconciledSandboxSteadyStateDoesNotRewriteStatus(t *testing.T) {
 }
 
 func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
-	testReconciledSandboxSuspensionKeepsHomeAndKey(t)
+	testReconciledSandboxSuspension(t)
 }
 
-func testReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
+func testReconciledSandboxSuspension(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
-				options := append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)
-				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, options...)
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true,
+					append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)...)
 				ctx := context.Background()
 				initial := reconciledExpectationForTest(t, f)
 				keyID := f.current(t).Status.AIGateway.KeyID
@@ -506,15 +506,15 @@ func testReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T, setup ...func(
 }
 
 func TestReconciledSandboxRetainedRestartUsesCommonApply(t *testing.T) {
-	testReconciledSandboxRetainedRestartUsesCommonApply(t)
+	testReconciledSandboxRetainedRestart(t)
 }
 
-func testReconciledSandboxRetainedRestartUsesCommonApply(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
+func testReconciledSandboxRetainedRestart(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
-				options := append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)
-				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, options...)
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false,
+					append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)...)
 				assertNativeHomeAccessMode(t, f, mode)
 				ctx := context.Background()
 				initial := reconciledExpectationForTest(t, f)

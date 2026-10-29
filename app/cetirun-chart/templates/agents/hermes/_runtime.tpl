@@ -166,6 +166,10 @@ Hermes container env vars (agent-specific only)
   {{- end }}
 - name: HERMES_DASHBOARD_PORT
   value: "9119"
+{{- with .Values.hermes.env.HERMES_DASHBOARD_PUBLIC_URL }}
+- name: HERMES_DASHBOARD_PUBLIC_URL
+  value: {{ . | quote }}
+{{- end }}
 - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
   value: "cetirun"
 - name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD

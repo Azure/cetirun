@@ -4,6 +4,60 @@ This example exercises one OpenClaw Agent with a Kata Sandbox and a
 shared AI Gateway model. New Agents use the explicitly enabled common executor,
 not a production failover or complete AgentPolicy conformance test.
 
+## Ordinary-container backend
+
+For a deliberately non-VM backend, [container.yaml](container.yaml) provides an
+explicit `container` Sandbox and an illustrative runc RuntimeClass. The Agent
+and its same-Pod helpers share the node kernel. Kata is still the default for
+omitted/null runtime types, and the existing gVisor scope is unchanged.
+
+This is configuration, **not** runtime installation or qualification. Before
+using the example on a separately authorized target:
+
+1. Verify that the target CRI has the named `runc` handler and that selected nodes
+   support it. Replace the example node selector with verified eligible-node
+   scheduling constraints. Do not rename a Kata/gVisor class or rely on whatever
+   node runtime happens to be the default.
+2. Register `container` in both `registrations` and `platforms` in the existing
+   trusted `platform.json`. Set `Capabilities.profile` to `native-single-start`
+   and `Capabilities.runtimeClassName` to the actual ordinary-container class.
+   Pin that class's current UID and handler in `runtimeClasses`. A missing class,
+   mismatched handler/UID, absent registration or `Available: false` prevents
+   execution. Set `Available: true` only after actual runtime validation.
+3. Declare `hostResourceLimits` and `perContainerResourceLimits` only after
+   verifying normal per-container CPU/memory/ephemeral-storage behavior.
+   Container requires both; `requirePerContainerResourceLimits` can also be
+   true. Do not copy Kata VM overhead. Only actual overhead declared by the
+   approved RuntimeClass participates in Kubernetes effective Pod accounting;
+   the example intentionally has none.
+4. Supply the same complete, revisioned Cilium/DNS/Gateway/ingress topology and
+   verified network capabilities used by the common executor, under
+   `platforms.container`. Register the actual CSI StorageClass UID/provisioner
+   and only the tested `homeAccessModes` (`ReadWriteOncePod`, `ReadWriteOnce`, or
+   both). RWO alone is not a single-writer guarantee.
+5. Use the matching CRDs, Portal, Operator/admission and runtime chart. Enable
+   the common executor/admission settings below, then create a Team binding the
+   new Sandbox to its AgentPolicy. Create a new OpenClaw or Hermes Agent with
+   that selection. This does not add online runtime conversion for an existing
+   Agent or HOME.
+
+The common pipeline still owns authorization, final-Pod checks, retained HOME,
+restart/suspend/resume, Gateway key/budget/spend and Cilium policies. Opt-in
+healthy-source CSI migration uses the same acknowledged shutdown/detach path,
+not physical failover fencing. Separate platform auxiliary Deployments retain
+their existing role-specific contracts. Container supports the same opt-in
+[managed ingress mTLS](../../site/content/en/docs/guides/agent-ingress-mtls.md)
+as Kata: register `Capabilities.mutualTLS: true` and the approved endpoint,
+Gateway and per-Agent certificate identities under `platforms.container.ingressMTLS`.
+Missing or changed approvals fail closed. This does **not** add FQDN blocking,
+Entra identity or Kubernetes grants: keep those capability flags false,
+along with `enforcementObservation` and `restrictiveFailure`.
+
+The [offline checks](../../DEVELOPMENT.md) use synthetic platform observations.
+Live Kata and ordinary-container acceptance, CSI file retention, actual Gateway
+spend and Cilium traffic tests remain separate target-specific qualification.
+The `local/` Kata qualification tools below are not a container runtime installer.
+
 ## Prepare one authorized target
 
 Start with the [development checks](../../DEVELOPMENT.md). Installation,

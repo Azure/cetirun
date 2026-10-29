@@ -204,6 +204,7 @@ spec:
                 enum:
                 - kata
                 - gvisor
+                - container
                 type: string
             required:
             - resources

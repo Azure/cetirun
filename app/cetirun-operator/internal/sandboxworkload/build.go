@@ -57,8 +57,12 @@ func Build(input Input) (*Bundle, error) {
 	if errs := sandbox.CheckCompatibility(input.Resolution.Sandbox, input.Resolution.AgentPolicy, input.Resolution.Capabilities); len(errs) != 0 {
 		return nil, errs.ToAggregate()
 	}
+	if input.Resolution.Sandbox.Type == api.SandboxContainer && !input.Reconciled {
+		return nil, fmt.Errorf("container Sandbox requires the common executor; held or single-start rendering is unsupported")
+	}
 	if input.RuntimeClass == nil || input.RuntimeClass.UID == "" || !input.RuntimeClass.DeletionTimestamp.IsZero() ||
-		input.RuntimeClass.Name != input.Resolution.Capabilities.RuntimeClassName {
+		input.RuntimeClass.Name != input.Resolution.Capabilities.RuntimeClassName ||
+		len(validation.IsDNS1123Label(input.RuntimeClass.Handler)) != 0 {
 		return nil, fmt.Errorf("the current registered RuntimeClass is required")
 	}
 	if input.RuntimeClass.Overhead != nil {

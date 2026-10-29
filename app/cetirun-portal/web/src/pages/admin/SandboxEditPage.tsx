@@ -50,11 +50,13 @@ export function SandboxEditPage() {
   return (
     <form onSubmit={submit} style={{ maxWidth: 720, display: "flex", flexDirection: "column", gap: 16 }}>
       <Title2>{isCreate ? "New Sandbox" : `Sandbox: ${name}`}</Title2>
-      <Text>A Sandbox defines reusable runtime, resource and storage settings. The selected runtime and StorageClass must already be available in the cluster.</Text>
+      <Text>A Sandbox defines reusable runtime, resource and storage settings. The selected runtime requires an explicitly registered RuntimeClass and verified handler; the StorageClass must also be approved.</Text>
       <Field label="Name" required><Input value={form.name || ""} disabled={!isCreate} onChange={(_, data) => setForm({ ...form, name: data.value })} placeholder="e.g. standard" required /></Field>
       <Field label="Runtime" required><Select value={form.type} onChange={event => setForm({ ...form, type: event.target.value as SandboxSpec["type"] })}>
-        <option value="kata">Kata</option><option value="gvisor">gVisor</option>
+        <option value="kata">Kata</option><option value="gvisor">gVisor</option><option value="container">Container (runc, shared node kernel)</option>
       </Select></Field>
+      {form.type === "container" && <MessageBar intent="warning">Ordinary containers share the node kernel and do not provide Kata VM isolation. AgentPolicy, HOME ownership and lifecycle controls still apply. Resource limits are per container; no VM overhead is added automatically.</MessageBar>}
+      {!isCreate && <Text size={300}>Changing this configuration does not convert a running Agent to another runtime. Use a separate Sandbox and a new Agent for a different backend.</Text>}
       {(["agent", "helpers"] as const).map(container => <div key={container} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <Divider />
         <Text weight="semibold">{container === "agent" ? "Agent resources" : "Resources per helper container"}</Text>

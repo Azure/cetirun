@@ -35,9 +35,9 @@ func NormalizeSandbox(spec v1alpha1.SandboxSpec) (v1alpha1.SandboxSpec, field.Er
 	path := field.NewPath("spec")
 	var errs field.ErrorList
 	switch normalized.Type {
-	case v1alpha1.SandboxKata, v1alpha1.SandboxGVisor:
+	case v1alpha1.SandboxKata, v1alpha1.SandboxGVisor, v1alpha1.SandboxContainer:
 	default:
-		errs = append(errs, field.NotSupported(path.Child("type"), normalized.Type, []string{"kata", "gvisor"}))
+		errs = append(errs, field.NotSupported(path.Child("type"), normalized.Type, []string{"kata", "gvisor", "container"}))
 	}
 
 	errs = append(errs, normalizeContainerResources(&normalized.Resources.Agent, path.Child("resources", "agent"))...)

@@ -194,11 +194,11 @@ func TestNativeConnectionsUsesExistingCurrentSASource(t *testing.T) {
 }
 
 func TestNativeConnectionsSuspensionKeepsHomeAndKey(t *testing.T) {
-	testReconciledSandboxSuspensionKeepsHomeAndKey(t, withNativeConnections(t))
+	testReconciledSandboxSuspension(t, withNativeConnections(t))
 }
 
 func TestNativeConnectionsRetainedRestartKeepsCurrentBindings(t *testing.T) {
-	testReconciledSandboxRetainedRestartUsesCommonApply(t, withNativeConnections(t))
+	testReconciledSandboxRetainedRestart(t, withNativeConnections(t))
 }
 
 func TestNativeConnectionsPreservesRuntimeAllowlist(t *testing.T) {
