@@ -400,9 +400,9 @@ type AgentIdentityStatus struct {
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
-	// CredentialPolicyRevision is reserved for a future typed credential
-	// service read-back. The legacy bearer issuer must leave it empty and cannot
-	// satisfy aggregate Policy application readiness.
+	// CredentialPolicyRevision identifies a current, owned Broker enforcement
+	// record read back independently of its application. It binds the policy,
+	// owner and canonical Agent Identity; token issuance is not applied evidence.
 	// +optional
 	CredentialPolicyRevision string `json:"credentialPolicyRevision,omitempty"`
 }

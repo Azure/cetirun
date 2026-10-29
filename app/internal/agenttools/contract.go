@@ -6,7 +6,7 @@ package agenttools
 
 import "time"
 
-const ContractVersion = "2026-10-19"
+const ContractVersion = "2026-10-28"
 
 // Service fixes the token destination and audience. Workloads cannot override it.
 // Request paths are relative to BasePath, with a leading slash.
@@ -119,12 +119,13 @@ type Binding struct {
 }
 
 type Request struct {
-	CallerProof        string  `json:"callerProof"`
-	ConnectionID       string  `json:"connectionId"`
-	Service            string  `json:"service"`
-	BindingRevision    *uint64 `json:"bindingRevision,omitempty"`
-	ConnectionRevision *uint64 `json:"connectionRevision,omitempty"`
-	ContractVersion    string  `json:"contractVersion"`
+	CredentialPolicy   *CredentialPolicyReference `json:"credentialPolicy,omitempty"`
+	CallerProof        string                     `json:"callerProof"`
+	ConnectionID       string                     `json:"connectionId"`
+	Service            string                     `json:"service"`
+	BindingRevision    *uint64                    `json:"bindingRevision,omitempty"`
+	ConnectionRevision *uint64                    `json:"connectionRevision,omitempty"`
+	ContractVersion    string                     `json:"contractVersion"`
 }
 
 type ListResponse struct {
@@ -135,6 +136,7 @@ type ListResponse struct {
 }
 
 type CheckResponse struct {
+	CredentialPolicy *CredentialPolicyReference `json:"credentialPolicy,omitempty"`
 	// Stable provider account ID, only included in internal check/issue responses.
 	ExecutorAccountID string     `json:"executorAccountId,omitempty"`
 	InstanceUID       string     `json:"instanceUid"`

@@ -17,6 +17,20 @@ spec:
         - protocol: TCP
           port: 8443
   egress:
+    {{- if .Values.nativeSandbox.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.nativeSandbox.operatorNamespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cetirun-sandbox-admission
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 9443
+    {{- end }}
     - to:
         - namespaceSelector:
             matchLabels:

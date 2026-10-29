@@ -56,6 +56,13 @@ func (s *Server) bindingAgent(w http.ResponseWriter, r *http.Request) (Owner, Ag
 		writeAPIError(w, http.StatusForbidden, "forbidden", "The instance owner binding is invalid", correlationID(r))
 		return Owner{}, Agent{}, false
 	}
+	if agent.PolicyManaged && (r.Method == http.MethodPost || r.Method == http.MethodPut) {
+		agent, err = s.store.qualifyNativeAgent(r.Context(), agent, nil)
+		if err != nil {
+			writeAPIError(w, http.StatusConflict, "identity_not_ready", "Current native workload identity is not ready", correlationID(r))
+			return Owner{}, Agent{}, false
+		}
+	}
 	return owner, agent, true
 }
 

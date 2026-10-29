@@ -5,6 +5,12 @@ metadata:
   labels:
     {{- include "cetirun-connections-mcp.labels" . | nindent 4 }}
 rules:
+  {{- if .Values.nativeSandbox.enabled }}
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingwebhookconfigurations"]
+    resourceNames: ["cetirun-sandbox-pods"]
+    verbs: ["get"]
+  {{- end }}
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
     verbs: ["create"]

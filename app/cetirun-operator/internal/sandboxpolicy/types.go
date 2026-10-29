@@ -136,6 +136,7 @@ type Platform struct {
 }
 
 type CompileInput struct {
+	ConnectionsMCP  *Destination
 	NativeExecution bool
 	Resolution      sandbox.Resolution
 	AgentName       string

@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 var errConflict = errors.New("record update conflict")
@@ -129,20 +131,24 @@ type tokenReview struct {
 }
 
 type workloadIdentity struct {
-	Agent  Agent
-	PodUID string
-	SAUID  string
+	CredentialPolicy *agenttools.CredentialPolicyReference
+	Agent            Agent
+	PodUID           string
+	SAUID            string
 }
 
 type kubeClient struct {
-	recordNamespaceDeleting bool
-	agentNamespaces         bool
-	recordAgent             *Agent
-	baseURL                 string
-	namespace               string
-	tokenFile               string
-	client                  *http.Client
-	wrapper                 keyWrapper
+	nativeOperatorNamespace  string
+	nativeAudience           string
+	nativeAdmissionTransport http.RoundTripper
+	recordNamespaceDeleting  bool
+	agentNamespaces          bool
+	recordAgent              *Agent
+	baseURL                  string
+	namespace                string
+	tokenFile                string
+	client                   *http.Client
+	wrapper                  keyWrapper
 }
 
 func newKubeClient(cfg Config, wrapper keyWrapper) (*kubeClient, error) {
@@ -164,10 +170,12 @@ func newKubeClient(cfg Config, wrapper keyWrapper) (*kubeClient, error) {
 		return nil, errors.New("Kubernetes service CA is invalid")
 	}
 	return &kubeClient{
-		baseURL:         "https://" + host + ":" + port,
-		agentNamespaces: true,
-		namespace:       cfg.StoreNamespace,
-		tokenFile:       tokenFile,
+		nativeOperatorNamespace: cfg.OperatorNamespace,
+		nativeAudience:          cfg.WorkloadTokenAudience,
+		baseURL:                 "https://" + host + ":" + port,
+		agentNamespaces:         true,
+		namespace:               cfg.StoreNamespace,
+		tokenFile:               tokenFile,
 		client: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			RootCAs:    pool,
@@ -248,7 +256,7 @@ func (k *kubeClient) getAgent(ctx context.Context, name string) (Agent, error) {
 }
 
 func (k *kubeClient) getAgentByWorkload(ctx context.Context, namespace, serviceAccount string) (Agent, error) {
-	if !dnsLabel(namespace) || !dnsLabel(serviceAccount) {
+	if !dnsLabel(namespace) || !agenttools.ValidDNSSubdomainName(serviceAccount) {
 		return Agent{}, errors.New("workload identity is invalid")
 	}
 	var ns struct {
@@ -277,7 +285,8 @@ func (k *kubeClient) getAgentByWorkload(ctx context.Context, namespace, serviceA
 	if err != nil {
 		return Agent{}, err
 	}
-	if agent.Name != owner.Name || agent.UID != owner.UID || agent.Namespace != namespace || workloadServiceAccount(agent.Name) != serviceAccount {
+	if agent.Name != owner.Name || agent.UID != owner.UID || agent.Namespace != namespace ||
+		(!agent.PolicyManaged && workloadServiceAccount(agent.Name) != serviceAccount) {
 		return Agent{}, errNotFound
 	}
 	return agent, nil
@@ -321,13 +330,13 @@ func (k *kubeClient) verifyWorkloadProof(ctx context.Context, proof, audience st
 		return workloadIdentity{}, errWorkloadProofInvalid
 	}
 	parts := strings.Split(review.Status.User.Username, ":")
-	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" || !dnsLabel(parts[2]) || !dnsLabel(parts[3]) {
+	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" || !dnsLabel(parts[2]) || !agenttools.ValidDNSSubdomainName(parts[3]) {
 		return workloadIdentity{}, errWorkloadProofInvalid
 	}
 	saUID := review.Status.User.UID
 	podUID := firstExtra(review.Status.User.Extra, "authentication.kubernetes.io/pod-uid")
 	podName := firstExtra(review.Status.User.Extra, "authentication.kubernetes.io/pod-name")
-	if saUID == "" || podUID == "" || podName == "" || !dnsLabel(podName) {
+	if saUID == "" || podUID == "" || podName == "" || !agenttools.ValidDNSSubdomainName(podName) {
 		return workloadIdentity{}, errWorkloadProofInvalid
 	}
 	var serviceAccount struct {
@@ -352,6 +361,10 @@ func (k *kubeClient) verifyWorkloadProof(ctx context.Context, proof, audience st
 		Spec struct {
 			ServiceAccountName string `json:"serviceAccountName"`
 		} `json:"spec"`
+		Status struct {
+			Phase      string                          `json:"phase"`
+			Conditions []struct{ Type, Status string } `json:"conditions"`
+		} `json:"status"`
 	}
 	if _, err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(parts[2])+"/pods/"+url.PathEscape(podName), nil, &pod); err != nil {
 		if errors.Is(err, errNotFound) {
@@ -371,6 +384,22 @@ func (k *kubeClient) verifyWorkloadProof(ctx context.Context, proof, audience st
 	if !agent.WorkloadReady || !uuidPattern.MatchString(agent.UID) {
 		return workloadIdentity{}, errWorkloadProofInvalid
 	}
+	if agent.PolicyManaged {
+		ready := false
+		for _, condition := range pod.Status.Conditions {
+			ready = ready || condition.Type == "Ready" && condition.Status == "True"
+		}
+		if pod.Status.Phase != "Running" || !ready {
+			return workloadIdentity{}, errWorkloadProofInvalid
+		}
+		agent, err = k.qualifyNativeAgent(ctx, agent, &agenttools.NativePodIdentity{
+			AgentUID: agent.UID, Namespace: parts[2], PodName: podName, PodUID: podUID,
+			ServiceAccountName: parts[3], ServiceAccountUID: saUID,
+		})
+		if err != nil {
+			return workloadIdentity{}, err
+		}
+	}
 	return workloadIdentity{Agent: agent, PodUID: podUID, SAUID: saUID}, nil
 }
 
@@ -380,7 +409,8 @@ func tokenReviewAudienceAccepted(audiences []string, expected string) bool {
 
 func agentFromDocument(document agentDocument) Agent {
 	agent := Agent{
-		Deleting: document.Metadata.DeletionTimestamp != nil, RuntimeType: document.Spec.Agent.Type,
+		PolicyManaged: agentDocumentSandboxRequested(document),
+		Deleting:      document.Metadata.DeletionTimestamp != nil, RuntimeType: document.Spec.Agent.Type,
 		Name:               document.Metadata.Name,
 		UnsupportedRuntime: agentDocumentSandboxRequested(document) || (document.Spec.Agent.Type != "hermes" && document.Spec.Agent.Type != "openclaw"),
 		UID:                document.Metadata.UID,

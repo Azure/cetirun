@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-connections-mcp/internal/tools/providers"
 	"github.com/Azure/CetiRun/app/internal/agenttools"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +37,14 @@ func (f *fakeBroker) Issue(ctx context.Context, r brokerclient.Request) (brokerc
 	if r.BindingRevision == nil || *r.BindingRevision != f.check.Binding.Revision || r.ConnectionRevision == nil || *r.ConnectionRevision != f.check.Connection.Revision {
 		panic("revision not forwarded")
 	}
+	if !reflect.DeepEqual(r.CredentialPolicy, f.check.CredentialPolicy) {
+		panic("credential policy revision not forwarded")
+	}
 	response := brokerclient.IssueResponse{CheckResponse: f.check, AccessToken: "synthetic-private-token", ExpiresAt: time.Now().Add(time.Minute).Format(time.RFC3339)}
+	if f.check.CredentialPolicy != nil {
+		policy := *f.check.CredentialPolicy
+		response.CredentialPolicy = &policy
+	}
 	if f.issueChange != nil {
 		f.issueChange(&response)
 	}

@@ -84,7 +84,7 @@ func ValidateReconciledUserValues(values map[string]any, authorizedSecrets []str
 			if err := ValidateUserValues(map[string]any{name: value}, authorizedSecrets); err != nil {
 				return err
 			}
-		case ValuesKey, "runtime", "runtimeClassName", "replicaCount", "serviceAccount", "azureWorkloadIdentity", "agentIdentity",
+		case ValuesKey, "runtime", "runtimeClassName", "replicaCount", "serviceAccount", "azureWorkloadIdentity", "agentIdentity", "connectionsMCP",
 			"persistence", "resources", "securityContext", "podSecurityContext", "networkPolicy", "sidecarScope",
 			"autoscaling", "ingress", "execRestriction":
 			return fmt.Errorf("Sandbox Helm value %q is controlled by the selected Sandbox or AgentPolicy", name)
@@ -235,6 +235,15 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
 	}
 	if b.input.Reconciled {
+		if err := b.input.ConnectionsMCP.Validate(); err != nil {
+			return nil, err
+		}
+		if endpoint := b.input.ConnectionsMCP; endpoint != nil {
+			overlay["connectionsMCP"] = map[string]any{
+				"enabled": true, "url": endpoint.URL, "audience": endpoint.Audience,
+				"caSecretName": endpoint.CASecretName, "namespace": endpoint.Namespace,
+			}
+		}
 		overlay["replicaCount"] = 1
 		if value, present := out["replicaCount"]; present {
 			overlay["replicaCount"] = value

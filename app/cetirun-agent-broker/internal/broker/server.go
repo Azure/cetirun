@@ -53,6 +53,9 @@ func (s *Server) routes() {
 	// Provider availability is checked by the relevant request, not Pod readiness.
 	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	s.mux.HandleFunc("DELETE /operator/v1/instances/{uid}/authorization", s.operatorDeleteAuthorization)
+	s.mux.HandleFunc("PUT /operator/v1/instances/{uid}/credential-policy", s.operatorCredentialPolicy)
+	s.mux.HandleFunc("GET /operator/v1/instances/{uid}/credential-policy", s.operatorCredentialPolicy)
+	s.mux.HandleFunc("DELETE /operator/v1/instances/{uid}/credential-policy", s.operatorCredentialPolicy)
 	s.mux.Handle("GET /v1/connections", s.portalOnly(s.connectionsList))
 	s.mux.Handle("POST /v1/connections/start", s.portalOnly(s.connectionStart))
 	s.mux.Handle("GET /v1/connections/github-app/config", s.portalOnly(s.githubAppConfig))
@@ -122,6 +125,10 @@ func (s *Server) operatorDeleteAuthorization(w http.ResponseWriter, r *http.Requ
 	}
 	auditTarget(r, "", agent.UID, "")
 	auditMutation(r)
+	if err := s.store.deleteCredentialPolicy(r.Context(), agent); err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Credential policy cleanup is pending", correlationID(r))
+		return
+	}
 	if err := s.store.deleteAgentRecords(r.Context(), agent); err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Binding state could not be revoked", correlationID(r))
 		return

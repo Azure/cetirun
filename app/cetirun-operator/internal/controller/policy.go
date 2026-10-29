@@ -67,6 +67,11 @@ func (r *AgentReconciler) holdPolicyReprojection(ctx context.Context, agent *api
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, err
 	}
+	if agentIdentityRequested(agent) || !credentialPolicyVerified(agent, "") {
+		if err := r.reconcileAgentIdentity(ctx, agent); err != nil {
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, errors.Join(err, r.updateStatus(ctx, agent))
+		}
+	}
 	if err := r.updateStatus(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -110,6 +115,10 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 			identityPending:       errors.Is(err, errSandboxIdentityPending),
 		}
 		return result, r.recordPolicy(ctx, agent, nil, err)
+	}
+	if err := r.reconcileCredentialPolicy(ctx, agent, resolution); err != nil {
+		return policyReconcileResult{authorized: true, dependencyUnavailable: true},
+			errors.Join(err, r.recordPolicy(ctx, agent, resolution, nil))
 	}
 	result := policyReconcileResult{
 		authorized:          true,
@@ -347,9 +356,15 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		PolicyUID types.UID                    `json:"policyUID"`
 		Enabled   bool                         `json:"enabled"`
 		Identity  api.AgentPolicyAgentIdentity `json:"identity"`
-	}{"credential-policy-v2", policy.UID, agent.Spec.AgentIdentity != nil && agent.Spec.AgentIdentity.Enabled, policy.Spec.AgentIdentity})
+	}{"credential-policy-v2", policy.UID, agentIdentityRequested(agent), policy.Spec.AgentIdentity})
 	if err != nil {
 		return nil, err
+	}
+	// Only an active credential projection needs identity/owner-bound evidence.
+	// Keep the existing inactive-domain input hash so enabling this executor
+	// does not reproject unrelated identity-free workloads.
+	if agentIdentityRequested(agent) {
+		credentialRevision = credentialPolicyProjection(agent, team, policy).Revision()
 	}
 	sandboxRevision, err := r.desiredSandboxPolicyRevision(ctx, agent, team)
 	if err != nil {
@@ -454,7 +469,12 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 			return "", policyDependency("%w: %w", errSandboxIdentityPending, err)
 		}
 	}
+	connections, _, err := r.nativeConnectionsDestination(ctx, agent, platform)
+	if err != nil {
+		return "", policyDependency("resolve native Connections destination: %w", err)
+	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
+		ConnectionsMCP:  connections,
 		NativeExecution: r.SandboxPreparation.NativeExecution,
 		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name),
 		ServiceName: instanceServiceName(agent.Name), Platform: platform,
@@ -551,6 +571,10 @@ func (r *AgentReconciler) recordPolicy(ctx context.Context, agent *api.Agent, re
 	before := agent.Status.DeepCopy()
 	status := &api.PolicyStatus{ObservedGeneration: agent.Generation}
 	if resolutionErr != nil {
+		if agent.Status.AgentIdentity != nil {
+			agent.Status.AgentIdentity.CredentialPolicyRevision = ""
+			setCredentialPolicyCondition(agent, metav1.ConditionFalse, "PolicyUnresolved")
+		}
 		if isPolicyDependencyError(resolutionErr) {
 			if agent.Status.Policy != nil {
 				status = agent.Status.Policy.DeepCopy()
@@ -601,13 +625,13 @@ func policyEnforcementVerified(agent *api.Agent, resolution *policyResolution) b
 	if needsModels && (agent.Status.AIGateway == nil || agent.Status.AIGateway.Phase != api.AIGatewayPhaseReady || !agent.Status.AIGateway.Routed || agent.Status.AIGateway.PolicyRevision != resolution.gatewayRevision) {
 		return false
 	}
-	// Agent ID currently has a legacy bearer issuance path. It can receive a
-	// policy projection but must not make aggregate Policy application ready until a
-	// typed credential-service executor supplies equivalent evidence.
-	if agent.Spec.AgentIdentity != nil && agent.Spec.AgentIdentity.Enabled {
-		return false
+	if agentIdentityRequested(agent) {
+		projection := credentialPolicyProjection(agent, resolution.team, resolution.policy)
+		if !projection.ValidApplied() || projection.Revision() != resolution.credentialRevision {
+			return false
+		}
 	}
-	return resolution != nil
+	return credentialPolicyVerified(agent, resolution.credentialRevision)
 }
 
 // policyReprojectionMustHold detects a change away from a projection that
