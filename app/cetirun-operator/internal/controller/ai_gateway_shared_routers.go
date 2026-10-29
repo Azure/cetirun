@@ -63,7 +63,7 @@ func aiGatewayRouterFingerprint(routers map[string]aigateway.Router) string {
 
 // aiGatewaySharedRouterView is one listing's shared routers, with what the
 // rule reads besides them: the shared models, and each router name's managed
-// groups.
+// groups. The rule of a Team's routers (planModelRouters) reads the same view.
 type aiGatewaySharedRouterView struct {
 	known   bool
 	routers map[string]aigateway.Router
@@ -71,19 +71,22 @@ type aiGatewaySharedRouterView struct {
 	// nonChat are the shared models that answer no conversation: a router
 	// may classify requests with one, but not send it requests to answer.
 	nonChat map[string]bool
-	groups  map[string][]string
+	// decision are the shared models that are decision models, which a
+	// Team router's jev classifier may name; they are among nonChat.
+	decision map[string]bool
+	groups   map[string][]string
 }
 
 // sharedRouters returns the shared routers of the last listing. It knows none
-// without a listing: a catalog seeded from the published one names shared
-// models only.
+// without a listing: a catalog seeded from the published one names shared and
+// decision models only.
 func (c *aiGatewayCatalog) sharedRouters() aiGatewaySharedRouterView {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	// update replaces c.routers and c.nonChat rather than changing them, so
-	// they can be shared.
+	// update replaces c.routers, c.nonChat and c.decision rather than
+	// changing them, so they can be shared.
 	view := aiGatewaySharedRouterView{known: c.known, routers: c.routers, shared: map[string]bool{}, nonChat: c.nonChat,
-		groups: map[string][]string{}}
+		decision: c.decision, groups: map[string][]string{}}
 	for _, model := range c.sharedSet {
 		view.shared[model.Name] = true
 	}
@@ -91,6 +94,19 @@ func (c *aiGatewayCatalog) sharedRouters() aiGatewaySharedRouterView {
 		view.groups[name] = slices.Clone(c.modelGroups[name])
 	}
 	return view
+}
+
+// decisionModels are the decision models' names, in order, for the published
+// catalog; nil without any.
+func (v aiGatewaySharedRouterView) decisionModels() []string {
+	var names []string
+	for name, isDecision := range v.decision {
+		if isDecision && v.shared[name] {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // describe returns the shared models with the models each router among them

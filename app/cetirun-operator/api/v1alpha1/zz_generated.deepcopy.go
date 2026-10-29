@@ -20,6 +20,11 @@ func (in *AIGatewayCatalog) DeepCopyInto(out *AIGatewayCatalog) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.DecisionModels != nil {
+		in, out := &in.DecisionModels, &out.DecisionModels
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Routing != nil {
 		in, out := &in.Routing, &out.Routing
 		*out = new(AIGatewayRouting)

@@ -914,7 +914,8 @@ different strings that are not blank, as LiteLLM 1.105.1 requires; the chart
 rejects anything else rather than let the proxy refuse to start.
 
 **The agent keeps its conversation and its limits.** Unless a router sets them,
-the chart changes three of LiteLLM 1.105.1's router defaults:
+the chart changes three of LiteLLM 1.105.1's router defaults, and a fourth for
+a router with `classifier_type: jev`:
 
 - `context_compaction: false`. LiteLLM would otherwise rewrite the
   conversation history near the chosen model's input limit, with extra model
@@ -927,6 +928,17 @@ the chart changes three of LiteLLM 1.105.1's router defaults:
   it, and the provider would refuse it. LiteLLM moves it to the lowest tier
   with a model whose declared window fits; set `max_input_tokens` in each
   model's `model_info` for that.
+- `classifier_fallback: default_model`, with `classifier_type: jev`. A request
+  the decision model could not classify, for example while it is unavailable,
+  would otherwise be classified by LiteLLM's heuristic scorer, which placed 15
+  of 40 English and 11 of 40 Chinese prompts on the expected tier in our
+  tests. It goes to the router's `complexity_router_default_model` instead;
+  without one, LiteLLM uses the first model of the medium tier, or of the
+  simple tier. It is not moved to another tier, by its length or by the
+  escalation keyword. The response header `x-litellm-complexity-router-cause`
+  and the request log's `routing_cause` say `default_model_fallback`, with no
+  tier. A router that sets `classifier_fallback` keeps its own value; one with
+  its own `tier_definitions` uses its `fallback_tier`, and gets no default.
 
 **A router is granted only with its models.** With `operatorIntegration`, the
 CetiRun operator puts a router on an Agent's key only when the Agent may use
@@ -1554,6 +1566,26 @@ the console cannot remove it. It:
   router classifying with it used its default classifier, for every caller.
   The Decisions API and a router's own classifier calls reach the model as
   before; a key the operator issued keeps the 403 above;
+- shortens the request a router with a jev classifier sends its decision model
+  to as many bytes as the model takes tokens: the smallest
+  `model_info.max_input_tokens` of the decision model's deployments, or 32,768
+  when none sets it, less the questions LiteLLM asks and 512 bytes for the
+  service's own template. LiteLLM sends the classifier the caller's whole
+  system prompt and its latest user messages, however long they are.
+  Microsoft-Decision-1 takes 32,768 tokens and refused a longer request with a
+  422; the router then classified the request with its fallback, without an
+  error. Each token of a decision model stands for at least one byte of text,
+  so the shortened request fits in any language. It keeps the newest user
+  message whole where it fits, and the beginning and the end of the rest; a
+  newest message that does not fit keeps its beginning and its end. The
+  Gateway logs a warning with the decision model and the sizes, not the
+  content. A client's own calls to the Decisions API are left as they are.
+  Measured on LiteLLM 1.105.1 with Microsoft-Decision-1: requests with a
+  system prompt of 40,000 English words or 60,000 Chinese characters, or with
+  a 120 KB log as the message, were shortened to 31.7 KB, which
+  Microsoft-Decision-1 counted at 5,687 to 13,300 tokens, and the decision
+  model classified each; without the guard it refused each, and the heuristic
+  scorer classified them;
 - keeps a key the CetiRun operator issued from listing what it cannot talk to:
   `GET /v1/models` (and `/model/info`) leaves out the key's access groups that
   LiteLLM lists as if they were models, such as an Agent's Copilot group before
@@ -1597,7 +1629,7 @@ the console cannot remove it. It:
   Gateway's own log and the request log keep the full message.
 
 With `operatorIntegration` off, the guard's request fields, its decision model
-rule, its parameter changes and its error messages apply all the same; a
+rules, its parameter changes and its error messages apply all the same; a
 standalone Gateway has no `cetirun-copilot-` groups for it to separate, and no
 keys the operator issued.
 
