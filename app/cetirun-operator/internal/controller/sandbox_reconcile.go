@@ -823,6 +823,14 @@ func (r *AgentReconciler) holdReconciledPolicyChange(ctx context.Context, agent 
 	return errors.Join(holdErr, blockErr, stopErr, auxiliaryErr, r.updateStatus(ctx, agent))
 }
 
+func (r *AgentReconciler) reconciledSandboxFailure(ctx context.Context, agent *api.Agent, cause error) (ctrl.Result, error) {
+	if errors.Is(cause, errMigrationIntentChanged) {
+		return ctrl.Result{}, cause
+	}
+	result, holdErr := r.holdPolicyDependencyUnavailable(ctx, agent)
+	return result, errors.Join(cause, holdErr)
+}
+
 func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
 	var failures []error
 	if !controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) {

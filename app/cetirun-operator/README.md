@@ -332,6 +332,9 @@ authorization; leaving that request present cannot retain revoked access.
 After a recorded migration, keep the destination rather than removing the field.
 Portal has no migration action in this increment and rejects new owner restarts
 while a migration is pending.
+An obsolete reconciliation cannot turn a newer migration request into a
+dependency hold. A detected intent/checkpoint change is retried from fresh state
+without stopping that request's source; actual authorization outages still hold.
 
 The controller persists `status.plannedMigration` before side effects:
 

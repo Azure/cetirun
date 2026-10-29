@@ -27,6 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
+var errMigrationIntentChanged = errors.New("migration intent changed")
+
 func (r *AgentReconciler) migrationCheckpoint(ctx context.Context, agent *api.Agent, phase string) error {
 	agent.Status.PlannedMigration.Phase = phase
 	return r.migrationWaiting(ctx, agent, nil)
@@ -56,16 +58,19 @@ func (r *AgentReconciler) checkMigrationIntent(ctx context.Context, agent *api.A
 	if current.UID != agent.UID || current.Generation != agent.Generation ||
 		current.Spec.PlannedMigration == nil || agent.Spec.PlannedMigration == nil ||
 		*current.Spec.PlannedMigration != *agent.Spec.PlannedMigration {
-		return fmt.Errorf("migration intent changed before its side effect")
+		return fmt.Errorf("%w before its side effect", errMigrationIntentChanged)
 	}
 	if agent.MigrationNeedsCapture() && !equality.Semantic.DeepEqual(current.Status.PlannedMigration, agent.Status.PlannedMigration) {
-		return fmt.Errorf("migration checkpoint changed before source recovery")
+		return fmt.Errorf("%w: checkpoint changed before source recovery", errMigrationIntentChanged)
 	}
 	return nil
 }
 
 func (r *AgentReconciler) authorizeMigrationSource(ctx context.Context, agent *api.Agent) error {
 	if err := r.reconcileMigrationSourceAccess(ctx, agent); err != nil {
+		if errors.Is(err, errMigrationIntentChanged) {
+			return err
+		}
 		_, holdErr := r.holdSandbox(ctx, agent)
 		return errors.Join(err, holdErr)
 	}
@@ -216,6 +221,9 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 		return done, wait, err
 	}
 	block := func(err error) (bool, ctrl.Result, error) {
+		if errors.Is(err, errMigrationIntentChanged) {
+			return false, ctrl.Result{}, err
+		}
 		if state != nil && state.Phase == api.MigrationProtecting {
 			// Preserve source observations without retaining an obsolete grant.
 			if agent.Spec.Suspended {

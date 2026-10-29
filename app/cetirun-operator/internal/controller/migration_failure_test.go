@@ -727,6 +727,44 @@ func TestPlannedMigrationProtectionAccessFailureRetries(t *testing.T) {
 	}
 }
 
+func TestPlannedMigrationStalePreparationDoesNotHoldNewRequest(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			f := newMigrationFixture(t, kind, true)
+			completeMigration(t, f, "migration-00000001", "node-b")
+			stale := f.current(t)
+			requestMigration(t, f, "migration-00000002", "node-a")
+			current := f.current(t)
+			workload := f.workload(t)
+			before := workload.DeepCopy()
+			keyID := current.Status.AIGateway.KeyID
+			cause := f.r.checkMigrationApply(ctx, stale, &workload.Spec.Template.Spec)
+			if cause == nil {
+				t.Fatal("stale migration intent did not stop preparation")
+			}
+			if _, err := f.r.reconciledSandboxFailure(ctx, stale, cause); err == nil {
+				t.Fatal("stale preparation error was hidden")
+			}
+			after := f.workload(t)
+			if !reflect.DeepEqual(before.Spec, after.Spec) || after.ResourceVersion != before.ResourceVersion ||
+				f.current(t).Generation != current.Generation || f.current(t).Status.AIGateway.KeyID != keyID {
+				t.Fatal("stale preparation changed the newer request's source workload or identity")
+			}
+			for _, key := range f.gateway.keys {
+				if key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+					t.Fatal("stale preparation changed retained Gateway authority")
+				}
+			}
+			f.reconcileOK(t)
+			if migration := f.current(t).Status.PlannedMigration; migration.RequestID != "migration-00000002" ||
+				migration.Phase != api.MigrationProtecting {
+				t.Fatal("new migration could not capture its still-ready source")
+			}
+		})
+	}
+}
+
 func TestPlannedMigrationPreCaptureHoldRecoversSource(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, dependency := range []string{"Team", "AgentPolicy", "catalog"} {
