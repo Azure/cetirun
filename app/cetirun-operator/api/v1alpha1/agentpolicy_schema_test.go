@@ -16,8 +16,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Validate the generated schemas, rather than the Go markers: flattening a
-// shared enum previously admitted Custom policies despite their item marker.
+// Validate the generated schemas rather than only the Go markers.
 func TestGeneratedPolicyHarnessSchema(t *testing.T) {
 	for _, directory := range []string{"config/crd/bases", "chart/templates/crds"} {
 		t.Run(directory, func(t *testing.T) {
@@ -30,8 +29,9 @@ func TestGeneratedPolicyHarnessSchema(t *testing.T) {
 				{"openclaw", []any{"openclaw"}, true},
 				{"hermes", []any{"hermes"}, true},
 				{"both", []any{"openclaw", "hermes"}, true},
-				{"custom", []any{"custom"}, false},
-				{"mixed custom", []any{"hermes", "custom"}, false},
+				{"custom", []any{"custom"}, true},
+				{"mixed custom", []any{"hermes", "custom"}, true},
+				{"unknown", []any{"unknown"}, false},
 				{"empty", []any{}, false},
 			} {
 				t.Run(test.name, func(t *testing.T) {

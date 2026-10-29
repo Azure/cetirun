@@ -527,6 +527,20 @@ func newNativeStartAPIHarnessWithRuntime(t *testing.T, admissionNative, coordina
 	if kind == "hermes" {
 		agent.Spec.Agent.Port = ptr.To[int32](8642)
 	}
+	if kind == "custom" {
+		agent.Spec.GatewayTokenSecretRef = ""
+		agent.Spec.Agent.Image = ptr.To("registry.example.com/custom-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		agent.Spec.Agent.Port = ptr.To[int32](8080)
+		r.CustomBindings = NewKubernetesCustomBindings(r, CustomRuntimeConfig{
+			Enabled: true, ApprovedImages: []string{*agent.Spec.Agent.Image}, GatewayImages: []string{*agent.Spec.Agent.Image},
+		})
+		r.CetiRunHelmValues = map[string]any{"ttyd": map[string]any{
+			"enabled": false, "image": map[string]any{
+				"repository": "registry.example.com/cetirun-terminal",
+				"digest":     "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			},
+		}}
+	}
 	var lastErr error
 	if err := wait.PollUntilContextTimeout(h.ctx, 100*time.Millisecond, 20*time.Second, true, func(ctx context.Context) (bool, error) {
 		probe := agent.DeepCopy()

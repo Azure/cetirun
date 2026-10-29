@@ -12,6 +12,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	appsv1 "k8s.io/api/apps/v1"
@@ -28,6 +29,39 @@ import (
 func customTerminalRequested(values map[string]any) bool {
 	settings, _ := values["ttyd"].(map[string]any)
 	return settings["enabled"] != false
+}
+
+func (r *AgentReconciler) ensureCommonTerminalReaderBinding(ctx context.Context, instance *api.Agent) error {
+	if err := r.checkAgentGeneration(ctx, instance); err != nil {
+		return err
+	}
+	_, reader := terminal.ReadRoles(instanceNamespace(instance.Name), instanceServiceName(instance.Name), instance.Name, string(instance.UID))
+	desired := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: *reader.ObjectMeta.DeepCopy(),
+		Subjects: []rbacv1.Subject{{
+			Kind: "ServiceAccount", Namespace: instanceNamespace(instance.Name),
+			Name: terminalpolicy.WorkloadName(instanceServiceName(instance.Name)),
+		}},
+		RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: reader.Name},
+	}
+	current := &rbacv1.ClusterRoleBinding{}
+	err := r.customReader().Get(ctx, client.ObjectKeyFromObject(desired), current)
+	if apierrors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	if !hasAgentOwner(current, instance) || current.Annotations[customAgentUID] != string(instance.UID) ||
+		current.RoleRef != desired.RoleRef || !current.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("terminal Agent reader binding ownership or role is not confirmed")
+	}
+	if equality.Semantic.DeepEqual(current.Subjects, desired.Subjects) {
+		return nil
+	}
+	before := current.DeepCopy()
+	current.Subjects = desired.Subjects
+	return r.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 }
 
 func (r *AgentReconciler) ensureTerminalReadRoles(ctx context.Context, instance *api.Agent) error {
@@ -164,7 +198,12 @@ func (r *AgentReconciler) stopCustomTerminal(ctx context.Context, instance *api.
 		}
 		return err
 	}
-	if !hasCustomWorkloadOwner(deployment, instance) || deployment.Annotations[customAgentUID] != string(instance.UID) {
+	common, err := r.recordedReconciledSandbox(ctx, instance)
+	if err != nil {
+		return err
+	}
+	if (common && !commonCustomTerminalOwned(deployment, instance)) ||
+		(!common && (!hasCustomWorkloadOwner(deployment, instance) || deployment.Annotations[customAgentUID] != string(instance.UID))) {
 		return fmt.Errorf("Custom terminal owner is not confirmed")
 	}
 	if ptr.Deref(deployment.Spec.Replicas, 0) == 0 {
@@ -184,10 +223,33 @@ func (r *AgentReconciler) customTerminalReady(ctx context.Context, instance *api
 		}
 		return false, err
 	}
-	if !hasAgentOwner(deployment, instance) || deployment.Annotations[customAgentUID] != string(instance.UID) {
+	common, err := r.recordedReconciledSandbox(ctx, instance)
+	if err != nil {
+		return false, err
+	}
+	if common {
+		if !commonCustomTerminalOwned(deployment, instance) {
+			return false, fmt.Errorf("Custom terminal owner is not confirmed")
+		}
+		_, expected, err := r.readReconciledSandboxExpectation(ctx, instance)
+		if err != nil {
+			return false, err
+		}
+		if expected.Terminal == nil || expected.Terminal.ServiceAccountName != deployment.Name || expected.Binding.AgentUID != instance.UID {
+			return false, fmt.Errorf("Custom terminal common Sandbox expectation is not confirmed")
+		}
+	} else if !hasAgentOwner(deployment, instance) || deployment.Annotations[customAgentUID] != string(instance.UID) {
 		return false, fmt.Errorf("Custom terminal owner is not confirmed")
 	}
 	return deployment.DeletionTimestamp.IsZero() && ptr.Deref(deployment.Spec.Replicas, 0) == 1 &&
 		deployment.Status.ObservedGeneration >= deployment.Generation &&
 		deployment.Status.AvailableReplicas > 0, nil
+}
+
+func commonCustomTerminalOwned(deployment *appsv1.Deployment, instance *api.Agent) bool {
+	return deployment != nil && instance != nil && sandboxBuiltinOwned(deployment, instance) &&
+		deployment.Name == terminalpolicy.WorkloadName(instanceServiceName(instance.Name)) &&
+		deployment.Namespace == instanceNamespace(instance.Name) &&
+		deployment.Labels[sandboxpolicy.AgentUIDLabel] == string(instance.UID) &&
+		deployment.Labels["cetirun.microsoft.com/terminal"] == "true"
 }

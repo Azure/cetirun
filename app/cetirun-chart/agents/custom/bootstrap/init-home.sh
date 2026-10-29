@@ -22,11 +22,15 @@ agent_check_requirements() {
     init_error "ImageAgentsPathInvalid"
     return 1
   fi
-  [ -r "${CETIRUN_CONTEXT_DIR:-/etc/cetirun-context}/AGENTS.md" ] &&
-    [ -r "${CETIRUN_CONTEXT_DIR:-/etc/cetirun-context}/skills/cetirun-memory/SKILL.md" ] || {
+  [ -r "${CETIRUN_CONTEXT_DIR:-/etc/cetirun-context}/AGENTS.md" ] || {
       init_error "ContextBindingPending"
       return 1
     }
+  if [ -z "${CETIRUN_CONTEXT_VIEW:-}" ] &&
+    [ ! -r "${CETIRUN_CONTEXT_DIR:-/etc/cetirun-context}/skills/cetirun-memory/SKILL.md" ]; then
+    init_error "ContextBindingPending"
+    return 1
+  fi
 }
 
 agent_prepare_home() {

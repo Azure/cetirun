@@ -140,6 +140,24 @@ node --test app/cetirun-operator/internal/terminal/reconnect.test.cjs
 make -C app/cetirun-operator build-terminal
 ```
 
+The same build target also produces `bin/loopback-probe`, the static HTTP probe
+packaged with the terminal image for governed Custom HTTP workloads. Focused
+common Custom checks are:
+
+```bash
+go -C app/cetirun-operator test ./cmd/loopback-probe ./internal/helm ./internal/sandboxpolicy ./internal/controller -run 'TestCommonCustom|TestCustomSandbox|TestCompileCustom|TestProbe' -count=1 -timeout=20m
+python3 -B -m unittest discover -s scripts/tests -p test_custom_initialization.py -v
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestCommonCustom(Terminal)?APIServer$' -count=1 -timeout=20m
+```
+
+These cover both registered backends, all three Custom endpoint modes, the
+generated policy schema, current source RBAC, final-Pod admission, retained
+restart/suspend/resume/migration and isolated terminal authority. API-server
+tests use synthetic scheduler/kubelet/Gateway observations, not live model,
+tool, Cilium, CSI, identity-provider or image qualification. Run the normal
+Portal backend, frontend and chart checks when changing Custom owner access.
+
 Image building is a separate step and can download pinned base images and Go
 dependencies:
 

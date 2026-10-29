@@ -478,7 +478,11 @@ func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
 }
 
 func testReconciledSandboxSuspension(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
-	for _, kind := range []string{"openclaw", "hermes"} {
+	testReconciledSandboxSuspensionForHarnesses(t, []string{"openclaw", "hermes"}, setup...)
+}
+
+func testReconciledSandboxSuspensionForHarnesses(t *testing.T, harnesses []string, setup ...func(*AgentReconciler, client.Client)) {
+	for _, kind := range harnesses {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
 				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true,
@@ -535,7 +539,11 @@ func TestReconciledSandboxRetainedRestartUsesCommonApply(t *testing.T) {
 }
 
 func testReconciledSandboxRetainedRestart(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
-	for _, kind := range []string{"openclaw", "hermes"} {
+	testReconciledSandboxRetainedRestartForHarnesses(t, []string{"openclaw", "hermes"}, setup...)
+}
+
+func testReconciledSandboxRetainedRestartForHarnesses(t *testing.T, harnesses []string, setup ...func(*AgentReconciler, client.Client)) {
+	for _, kind := range harnesses {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
 				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false,
@@ -1141,12 +1149,16 @@ func TestReconciledSandboxDeletionCancelsBeforeFirstApply(t *testing.T) {
 }
 
 func TestReconciledSandboxDeletionReleasesGrantJournal(t *testing.T) {
-	for _, kind := range []string{"openclaw", "hermes"} {
+	testReconciledSandboxDeletionForHarnesses(t, []string{"openclaw", "hermes"})
+}
+
+func testReconciledSandboxDeletionForHarnesses(t *testing.T, harnesses []string, setup ...func(*AgentReconciler, client.Client)) {
+	for _, kind := range harnesses {
 		for _, foreground := range []bool{false, true} {
 			for _, sourcesEnabled := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/foreground=%t/sources=%t", kind, foreground, sourcesEnabled), func(t *testing.T) {
 					ctx := context.Background()
-					f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true)
+					f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, setup...)
 					agent := f.current(t)
 					journal := &corev1.ConfigMap{}
 					journalKey := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: sandboxpolicy.GrantJournalName(agent.UID)}

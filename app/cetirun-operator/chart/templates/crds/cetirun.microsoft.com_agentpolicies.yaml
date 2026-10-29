@@ -80,17 +80,15 @@ spec:
                 description: Harnesses limits runtimes that can receive this policy.
                 properties:
                   allowed:
-                    description: |-
-                      Policy has typed Gateway and Sandbox enforcement adapters only for
-                      the built-in harnesses. Custom workloads cannot be granted a policy.
-                      Keep the enum on each field: a type-level AgentType enum overrides the
-                      narrower item enum when controller-gen flattens the schema.
+                    description: Custom execution additionally requires an approved
+                      Gateway-qualified image.
                     items:
                       description: AgentType identifies a built-in integration or
                         a user-supplied image.
                       enum:
                       - openclaw
                       - hermes
+                      - custom
                       type: string
                     minItems: 1
                     type: array

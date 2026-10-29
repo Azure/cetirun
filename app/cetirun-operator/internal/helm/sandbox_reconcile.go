@@ -46,7 +46,8 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			stateful.Spec.ServiceName != stateful.Name || stateful.Spec.Selector == nil {
 			return fmt.Errorf("reconciled Sandbox must use the owned Agent workload and existing HOME")
 		}
-		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image); err != nil {
+		memory, _ := p.Values["memoryContext"].(map[string]any)
+		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image, memory["enabled"] == true); err != nil {
 			return err
 		}
 		if request := input.PlannedMigration; request != nil {
@@ -89,7 +90,12 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			len(spec.Containers) == 0 || deployment.Spec.Selector == nil {
 			return fmt.Errorf("Sandbox auxiliary workload has unapproved host or identity access")
 		}
-		if err := w.ValidateReconciledVolumes(spec, nil, nil, input.Resolution.Sandbox.Storage.Scratch.SizeLimit); err != nil {
+		terminal := input.Terminal != nil && deployment.Name == input.Terminal.ServiceAccountName
+		if terminal {
+			if err := p.validateTerminalDeployment(&deployment); err != nil {
+				return err
+			}
+		} else if err := w.ValidateReconciledVolumes(spec, nil, nil, input.Resolution.Sandbox.Storage.Scratch.SizeLimit); err != nil {
 			return err
 		}
 		for _, source := range w.PodSourceReferences(spec, input.Namespace.Name) {
@@ -114,6 +120,9 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			Kind: "Deployment", Identity: w.ObjectIdentity{Name: deployment.Name},
 			Replicas: ptr.Deref(deployment.Spec.Replicas, 1), Template: deployment.Spec.Template,
 		}
+		if terminal {
+			workload.Overhead = p.sandboxBundle.Overhead()
+		}
 	case "v1/Service":
 		var service corev1.Service
 		if err := decodeObject(object.Object, &service); err != nil {
@@ -136,6 +145,10 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			if err := unstructured.SetNestedMap(object.Object, spec, "spec"); err != nil {
 				return err
 			}
+		}
+	case "rbac.authorization.k8s.io/v1/RoleBinding":
+		if err := p.validateTerminalRoleBinding(object); err != nil {
+			return err
 		}
 	case "v1/ConfigMap", "v1/ServiceAccount", "networking.k8s.io/v1/NetworkPolicy",
 		"networking.istio.io/v1beta1/Sidecar", "security.istio.io/v1beta1/AuthorizationPolicy",

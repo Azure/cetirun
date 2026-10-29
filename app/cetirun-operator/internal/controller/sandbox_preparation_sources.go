@@ -39,7 +39,7 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 	if inputs.AgentUID != agent.UID || inputs.AgentGeneration != agent.Generation || inputs.Revision == "" ||
 		inputs.ChartVersion == "" || (agent.Spec.Helm.Version != "" && agent.Spec.Helm.Version != inputs.ChartVersion) ||
 		inputs.NamespaceUID == "" || inputs.RuntimeSecret.Name == "" || inputs.RuntimeSecret.UID == "" ||
-		agent.Spec.GatewayTokenSecretRef != inputs.RuntimeSecret.Name {
+		sandboxRuntimeSecretName(agent) != inputs.RuntimeSecret.Name {
 		return fmt.Errorf("Sandbox prerequisites must authorize this Agent generation, chart and runtime Secret")
 	}
 	namespace := &corev1.Namespace{}
@@ -118,6 +118,11 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		Home:      home, Skills: skills, SkillsMode: inputs.SkillsMode, RuntimeClass: runtimeClass,
 		Helpers: inputs.Helpers, AuthorizedSecrets: []string{inputs.RuntimeSecret.Name},
 	}
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		if err := r.configureCustomSandboxInput(ctx, attempt); err != nil {
+			return err
+		}
+	}
 	if state := agent.Status.PlannedMigration; state.CanStart() {
 		attempt.input.PlannedMigration = &state.PlannedMigrationRequest
 	}
@@ -135,11 +140,7 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 	)
 	attempt.sources = append(attempt.sources, inputs.PublicationSources...)
 	if config.NativeExecution {
-		suspendedProjection := attempt.reconciled && agent.Spec.Suspended && agent.Status.AIGateway != nil &&
-			agent.Status.Policy != nil && agent.Status.AIGateway.Phase == api.AIGatewayPhaseReady &&
-			agent.Status.AIGateway.Blocked && agent.Status.AIGateway.Reason == aiGatewayReasonSuspended &&
-			agent.Status.AIGateway.PolicyRevision == agent.Status.Policy.Enforcement.Gateway.DesiredRevision
-		if !sandboxGatewayProjectionReady(agent) && !suspendedProjection {
+		if !sandboxGatewayProjectionReady(agent) && !(attempt.reconciled && sandboxGatewayProjectionReadyForLifecycle(agent)) {
 			return fmt.Errorf("%w: current Gateway projection is required for native execution", sandboxpolicy.ErrUnavailable)
 		}
 		key := &corev1.Secret{}

@@ -55,11 +55,30 @@ class PortalChatChartTests(unittest.TestCase):
         self.assertEqual(role["rules"], [
             {"apiGroups": [""], "resources": ["services"], "verbs": ["get"]},
             {"apiGroups": ["networking.k8s.io"], "resources": ["networkpolicies"], "verbs": ["get"]},
+            {"apiGroups": ["cilium.io"], "resources": ["ciliumnetworkpolicies"], "verbs": ["get"]},
             {"apiGroups": ["networking.istio.io"], "resources": ["virtualservices"], "verbs": ["get"]},
         ])
         binding = next(value for value in objects if value["kind"] == "ClusterRoleBinding" and value["metadata"]["name"] == "cetirun-portal-chat")
         self.assertEqual(binding["roleRef"]["name"], role["metadata"]["name"])
         self.assertEqual(binding["subjects"], [{"kind": "ServiceAccount", "name": "cetirun-portal", "namespace": "test-platform"}])
+        state_role = next(value for value in objects if value["kind"] == "Role" and value["metadata"]["name"] == "cetirun-portal-chat-sandbox-state")
+        self.assertEqual(state_role["metadata"]["namespace"], "cetirun-system")
+        self.assertEqual(state_role["rules"], [{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get"]}])
+        state_binding = next(value for value in objects if value["kind"] == "RoleBinding" and value["metadata"]["name"] == state_role["metadata"]["name"])
+        self.assertEqual(state_binding["metadata"]["namespace"], "cetirun-system")
+        self.assertEqual(state_binding["subjects"], binding["subjects"])
+        self.assertEqual(env["SANDBOX_STATE_NAMESPACE"], "cetirun-system")
+
+    def test_explicit_state_namespace_is_bound_in_rbac_and_environment(self):
+        objects = self.render(ROOT / "app/cetirun-portal/chart", {
+            "istio": {"host": "portal.example.com"},
+            "chat": {"enabled": True, "identityRealm": "synthetic", "sandboxStateNamespace": "operator-state"},
+        })
+        env = self.deployment_env(objects, "cetirun-portal")
+        self.assertEqual(env["SANDBOX_STATE_NAMESPACE"], "operator-state")
+        readers = [value for value in objects if value["kind"] in {"Role", "RoleBinding"} and value["metadata"]["name"] == "cetirun-portal-chat-sandbox-state"]
+        self.assertEqual(len(readers), 2)
+        self.assertTrue(all(value["metadata"]["namespace"] == "operator-state" for value in readers))
 
     def test_enabled_portal_requires_identity_realm(self):
         error = self.render(ROOT / "app/cetirun-portal/chart", {"istio": {"host": "portal.example.com"}, "chat": {"enabled": True}}, success=False)
@@ -78,6 +97,7 @@ class PortalChatChartTests(unittest.TestCase):
                 "cetirun-portal": {"istio": {"host": "portal.example.com"}, "aiGateway": {"catalogNamespace": "test-platform"}},
             })
             portal = self.deployment_env(objects, "cetirun-portal")
+            self.assertEqual(portal["SANDBOX_STATE_NAMESPACE"], "test-platform")
             operator = self.deployment_env(objects, "cetirun-operator")
             access = json.loads(operator["CETIRUN_CHAT_ACCESS"])
             self.assertTrue(access["enabled"])

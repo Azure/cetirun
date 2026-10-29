@@ -121,6 +121,9 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw {
 		source.Helpers.Doctor = false
 	}
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		source.Helpers = sandboxworkload.Helpers{}
+	}
 	if reconciled {
 		if _, err := semver.StrictNewVersion(agent.Spec.Helm.Version); err != nil {
 			return empty, fmt.Errorf("Sandbox reconciliation requires a pinned native chart version")
@@ -132,7 +135,7 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 	}
 	namespaceName := instanceNamespace(agent.Name)
 	if len(validation.IsDNS1123Label(namespaceName)) != 0 ||
-		len(validation.IsDNS1123Subdomain(agent.Spec.GatewayTokenSecretRef)) != 0 {
+		len(validation.IsDNS1123Subdomain(sandboxRuntimeSecretName(agent))) != 0 {
 		return empty, fmt.Errorf("Sandbox prerequisites require a valid derived namespace and explicit runtime Secret name")
 	}
 
@@ -217,7 +220,7 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 		return empty, fmt.Errorf("Sandbox skills require a distinct current filesystem PVC without foreign ownership")
 	}
 	secret := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}}
-	if err := source.readPrerequisite(ctx, client.ObjectKey{Namespace: namespace.Name, Name: agent.Spec.GatewayTokenSecretRef}, secret); err != nil {
+	if err := source.readPrerequisite(ctx, client.ObjectKey{Namespace: namespace.Name, Name: sandboxRuntimeSecretName(agent)}, secret); err != nil {
 		return empty, err
 	}
 	if !sandboxBuiltinOwned(secret, agent) || !sandboxPrerequisiteOwnersMatch(secret, agent, nil) {

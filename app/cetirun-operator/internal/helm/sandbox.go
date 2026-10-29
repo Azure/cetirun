@@ -192,6 +192,12 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 		if input.Suspended {
 			p.sandboxReconcile.Controls = slices.DeleteFunc(p.sandboxReconcile.Controls, sandboxworkload.KubernetesBindingResource)
 		}
+		terminalValues := object(object(p.Values[sandboxworkload.ValuesKey])["terminal"])
+		if terminal := input.Terminal; terminal != nil && terminalValues["enabled"] == true {
+			p.sandboxReconcile.Terminal = &sandboxworkload.TerminalTarget{
+				ServiceAccountName: terminal.ServiceAccountName, TargetWorkload: input.WorkloadName, Container: "cetirun",
+			}
+		}
 	}
 	values, err := chartutil.ToRenderValues(p.chart, p.Values, chartutil.ReleaseOptions{
 		Name: input.ReleaseName, Namespace: input.Namespace.Name, IsInstall: true, Revision: 1,
@@ -284,7 +290,7 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 				if err := validate(object); err != nil {
 					return err
 				}
-				if input.Reconciled && (object.GetKind() == "ConfigMap" || object.GetKind() == "ServiceAccount" || object.GetKind() == "NetworkPolicy" || object.GetKind() == "Service") {
+				if input.Reconciled && (object.GetKind() == "ConfigMap" || object.GetKind() == "ServiceAccount" || object.GetKind() == "NetworkPolicy" || object.GetKind() == "Service" || object.GetKind() == "RoleBinding") {
 					p.sandboxReconcile.Controls = append(p.sandboxReconcile.Controls, *object.DeepCopy())
 				}
 				native[object.GetKind()] = true

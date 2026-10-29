@@ -6,12 +6,9 @@ package sandboxworkload
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 )
 
@@ -44,31 +41,12 @@ func AgentSourceReference(agent *api.Agent) (SourceReference, error) {
 	if agent.Generation < 1 || agent.ResourceVersion == "" {
 		return SourceReference{}, fmt.Errorf("Sandbox Agent intent requires a persisted generation and resource version")
 	}
-	annotations := make(map[string]string, 2)
-	for _, key := range []string{sandboxbinding.AuthorizationAnnotation, sandboxbinding.ReauthorizeAnnotation} {
-		if value, found := agent.Annotations[key]; found {
-			annotations[key] = value
-		}
-	}
-	intent := struct {
-		Spec         api.AgentSpec
-		Annotations  map[string]string
-		Held         bool
-		Prepared     bool
-		Bootstrapped bool `json:",omitempty"`
-	}{
-		Spec: agent.Spec, Annotations: annotations,
-		Held:         slices.Contains(agent.Finalizers, sandbox.HoldFinalizer),
-		Prepared:     slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer),
-		Bootstrapped: slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer),
-	}
-	raw, err := json.Marshal(intent)
+	digest, err := agent.SandboxExecutionIntentDigest()
 	if err != nil {
-		return SourceReference{}, fmt.Errorf("encode Sandbox Agent intent: %w", err)
+		return SourceReference{}, err
 	}
-	digest := sha256.Sum256(raw)
 	return SourceReference{
 		APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID,
-		Generation: agent.Generation, IntentDigest: hex.EncodeToString(digest[:]),
+		Generation: agent.Generation, IntentDigest: digest,
 	}, nil
 }
