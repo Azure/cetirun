@@ -22,6 +22,20 @@
                 "contractVersion": {"const": "v1"},
                 "executionHeld": {"type": "boolean"},
                 "reconciled": {"const": true},
+                "context": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {"name": {"type": "string", "minLength": 1}, "files": {"type": "object", "additionalProperties": false, "properties": {"AGENTS.md": {"const": "AGENTS.md"}}, "required": ["AGENTS.md"]}},
+                    "required": ["name", "files"]
+                },
+                "loopbackProbe": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {"image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"}}, "required": ["image"]
+                },
+                "terminal": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {"enabled": {"type": "boolean"}, "image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"}, "port": {"type": "integer", "minimum": 1024, "maximum": 65535}, "sessionSeconds": {"type": "integer", "minimum": 60, "maximum": 3600}, "serviceAccountName": {"type": "string", "minLength": 1}},
+                    "required": ["enabled", "image", "port", "sessionSeconds", "serviceAccountName"]
+                },
                 "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
                 "skillsMode": {
                     "const": "empty",
@@ -1639,7 +1653,7 @@
             },
             "then": {
                 "properties": {
-                    "agentType": {"enum": ["openclaw", "hermes"]},
+                    "agentType": {"enum": ["openclaw", "hermes", "custom"]},
                     "aiGateway": {
                         "properties": {"enabled": {"const": true}},
                         "required": ["enabled"]

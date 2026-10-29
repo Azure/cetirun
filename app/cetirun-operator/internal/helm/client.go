@@ -246,11 +246,14 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 		return sandboxworkload.ErrExecutionHeld
 	}
 	if prepared.sandboxReconcile != nil {
+		if prepared.sandboxBundle == nil || namespace != prepared.sandboxBundle.Identity().Namespace.Name ||
+			releaseName != prepared.sandboxBundle.Identity().ReleaseName {
+			return fmt.Errorf("Sandbox namespace or release mismatch")
+		}
 		if err := prepared.CheckSandboxApply(context.Background()); err != nil {
 			return err
 		}
-	}
-	if err := prepared.ValidateCustom(namespace, releaseName); err != nil {
+	} else if err := prepared.ValidateCustom(namespace, releaseName); err != nil {
 		return err
 	}
 	if prepared.custom && !prepared.apiValidated {

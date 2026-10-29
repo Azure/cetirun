@@ -1,6 +1,6 @@
 # CetiRun agent chart
 
-The chart deploys an OpenClaw or Hermes instance. Read the
+The chart deploys an OpenClaw, Hermes or approved Custom instance. Read the
 [Helm configuration reference](../../site/content/en/docs/reference/helm.md)
 for settings and defaults, and the
 [local checks guide](../../site/content/en/docs/getting-started/local-checks.md)
@@ -33,10 +33,18 @@ original per-Agent overrides **before** merging, then applies the complete
 protected bundle last. `sandboxWorkload` is an internal chart contract, not a
 tenant override or a way to enable Sandbox execution.
 
-This path supports OpenClaw and Hermes. It renders zero replicas and the Helm
-client refuses to apply the prepared Sandbox release. Governed Custom runtimes
-and the separate platform Copilot helper are explicitly unsupported; neither
-falls back to an ungoverned runtime.
+Common reconciliation supports OpenClaw, Hermes and Gateway-qualified Custom.
+The retained preparation-only path still renders zero replicas and does not
+authorize execution; Custom requires the common executor and never falls back
+to an ungoverned runtime.
+
+Custom preserves its approved image entrypoint and inherited numeric non-root
+identity, reuses the existing HOME claim, and projects immutable canonical
+context at its actual HOME. HTTP modes use the static probe packaged in the
+approved terminal image; headless mode has no probes. The optional isolated
+terminal is separately rendered, resource-bounded and policy-controlled.
+See the [governed Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution)
+for registration, artifact pins and unsupported combinations.
 
 The protected inventory includes:
 

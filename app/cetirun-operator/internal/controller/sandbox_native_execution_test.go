@@ -751,6 +751,11 @@ func newUnreconciledSandboxRuntimeFixture(t *testing.T, native bool, skills []st
 	if kind == "hermes" {
 		input.Agent.Spec.Agent.Port = ptr.To[int32](8642)
 	}
+	if kind == "custom" {
+		input.Agent.Spec.Agent.Image = ptr.To("registry.example.com/custom-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		input.Agent.Spec.Agent.Port = ptr.To[int32](8080)
+		input.Agent.Spec.GatewayTokenSecretRef = ""
+	}
 	input.Agent.Status.Policy = &api.PolicyStatus{}
 	input.Team.Status = api.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{
 		Type: api.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1,

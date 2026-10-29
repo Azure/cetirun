@@ -51,11 +51,8 @@ type AgentPolicySpec struct {
 
 type AgentPolicyHarnesses struct {
 	// +kubebuilder:validation:MinItems=1
-	// Policy has typed Gateway and Sandbox enforcement adapters only for
-	// the built-in harnesses. Custom workloads cannot be granted a policy.
-	// Keep the enum on each field: a type-level AgentType enum overrides the
-	// narrower item enum when controller-gen flattens the schema.
-	// +kubebuilder:validation:items:Enum=openclaw;hermes
+	// Custom execution additionally requires an approved Gateway-qualified image.
+	// +kubebuilder:validation:items:Enum=openclaw;hermes;custom
 	// +listType=set
 	Allowed []AgentType `json:"allowed"`
 }

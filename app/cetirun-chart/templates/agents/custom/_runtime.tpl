@@ -23,7 +23,7 @@ Licensed under the MIT License.
 {{/* Agent HTTP callers are bound separately; the gateway exposes only platform services. */}}
 {{- end }}
 
-{{- define "cetirun.custom.validate" -}}
+{{- define "cetirun.custom.legacyValidate" -}}
 {{- if not .Values.runtime -}}{{- fail "Custom requires a platform-prepared runtime plan" -}}{{- end -}}
 {{- $r := .Values.runtime -}}
 {{- if or (ne $r.contractVersion "v1") (ne $r.agent.type "custom") -}}{{- fail "Invalid Custom runtime contract" -}}{{- end -}}
@@ -57,7 +57,7 @@ podSelector:
     {{- toYaml .podLabels | nindent 4 }}
 {{- end }}
 
-{{- define "cetirun.custom.runtime" -}}
+{{- define "cetirun.custom.legacyRuntime" -}}
 {{- include "cetirun.custom.validate" . -}}
 {{- $r := .Values.runtime -}}
 {{- $b := $r.bindings -}}

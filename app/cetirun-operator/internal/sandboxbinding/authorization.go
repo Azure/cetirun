@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	AuthorizationAnnotation = "cetirun.microsoft.com/sandbox-authorization"
-	ReauthorizeAnnotation   = "cetirun.microsoft.com/sandbox-reauthorize"
+	AuthorizationAnnotation = api.AnnotationSandboxAuthorization
+	ReauthorizeAnnotation   = api.AnnotationSandboxReauthorize
 	recordVersion           = "v1"
 )
 

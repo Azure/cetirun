@@ -30,7 +30,7 @@ func Build(input Input) (*Bundle, error) {
 	if binding.AgentUID == "" || binding.TeamUID == "" || binding.SandboxUID == "" || binding.AgentPolicyUID == "" {
 		return nil, fmt.Errorf("the resolved UID binding is incomplete")
 	}
-	if input.AgentType != "openclaw" && input.AgentType != "hermes" {
+	if input.AgentType != "openclaw" && input.AgentType != "hermes" && input.AgentType != "custom" {
 		return nil, fmt.Errorf("policy-bound %q rendering is unsupported; legacy fallback is forbidden", input.AgentType)
 	}
 	if input.ConnectionsMCP != nil {
@@ -40,6 +40,12 @@ func Build(input Input) (*Bundle, error) {
 		if err := input.ConnectionsMCP.Validate(); err != nil {
 			return nil, err
 		}
+	}
+	if err := validateCustomAgent(input); err != nil {
+		return nil, err
+	}
+	if err := validateTerminal(input); err != nil {
+		return nil, err
 	}
 	if request := input.PlannedMigration; request != nil && (!input.Reconciled ||
 		!api.ValidRestartRequestID(request.RequestID) || request.Target.UID == "" ||
@@ -94,7 +100,7 @@ func Build(input Input) (*Bundle, error) {
 		return nil, err
 	}
 	if tls := input.Controls.IngressMTLS; tls != nil {
-		if !input.Reconciled || tls.AgentUID != binding.AgentUID || tls.Namespace != input.Namespace.Name ||
+		if input.AgentType == "custom" || !input.Reconciled || tls.AgentUID != binding.AgentUID || tls.Namespace != input.Namespace.Name ||
 			tls.Harness != input.AgentType || slices.Contains(input.AuthorizedSecrets, tls.ServerSecret.Name) ||
 			(input.ImagePullSecret != nil && input.ImagePullSecret.Name == tls.ServerSecret.Name) ||
 			tls.ServiceHost != input.WorkloadName+"."+input.Namespace.Name+".svc.cluster.local" {
@@ -141,10 +147,13 @@ func Build(input Input) (*Bundle, error) {
 		spec.Containers = append(spec.Containers, corev1.Container{Resources: b.helperResources()})
 	}
 	spec.InitContainers = []corev1.Container{{Resources: b.helperResources()}}
+	if input.CustomAgent != nil && input.CustomAgent.HTTP != nil {
+		spec.InitContainers = append(spec.InitContainers, corev1.Container{Resources: b.helperResources()})
+	}
 	if input.Helpers.Doctor {
 		spec.InitContainers = append(spec.InitContainers, corev1.Container{Resources: b.helperResources()})
 	}
-	if input.GatewayKey != nil {
+	if input.GatewayKey != nil && input.AgentType != "custom" {
 		spec.InitContainers = append(spec.InitContainers,
 			corev1.Container{Resources: b.helperResources()}, corev1.Container{Resources: b.helperResources()})
 	}
@@ -204,7 +213,7 @@ func validateControls(input Input) error {
 	}
 	volumes := map[string]bool{}
 	for _, volume := range c.Volumes {
-		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills", "empty-skills"}, volume.Name) {
+		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills", "empty-skills", "context", "context-view", "memory-assets", "loopback-probe"}, volume.Name) {
 			return fmt.Errorf("identity volumes conflict with protected mounts")
 		}
 		volumes[volume.Name] = true
