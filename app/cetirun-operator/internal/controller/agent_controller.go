@@ -117,6 +117,7 @@ type AgentReconciler struct {
 	ConnectionsMCPRuntimeTypes         []string
 	ConnectionsMCPBrokerNamespace      string
 	ConnectionsMCPBrokerServiceAccount string
+	ConnectionsMCPNativeEnabled        bool
 	// agentIdentityGraphClientFactory is test-only dependency injection. A nil
 	// factory constructs the deployment's workload-identity-backed Graph client.
 	agentIdentityGraphClientFactory func() (agentIdentityDirectoryClient, error)
@@ -427,6 +428,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if agentIdentityRequested(instance) && (instance.Status.AgentIdentity == nil || instance.Status.AgentIdentity.ObservedGeneration != instance.Generation) {
 		status := ensureAgentIdentityStatus(instance)
 		status.Phase = cetirunv1alpha1.AgentIdentityPhaseProvisioning
+		status.CredentialPolicyRevision = ""
 		status.ObservedGeneration = instance.Generation
 		status.Reason = ""
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
@@ -501,7 +503,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
 	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
-		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team))
+		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance))
 		namespaceMissing := stderrors.Is(brokerRBACErr, errConnectionsMCPBrokerNamespaceMissing)
 		if brokerRBACErr != nil && !namespaceMissing {
 			logger.Error(brokerRBACErr, "Broker storage access setup failed", "instance", instance.Name)
@@ -691,7 +693,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 	}
 
-	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
+	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance)); err != nil {
 		return r.failWith(ctx, instance, "BrokerStorageAccessFailed", fmt.Sprintf("Broker storage access setup failed: %v", err))
 	}
 	// 7. Ensure gateway token secret.
@@ -769,6 +771,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
 			now := metav1.Now()
 			instance.Status.AgentIdentity.LastVerifiedTime = &now
+		}
+		if instance.Status.Policy != nil {
+			// Broker readback uses the persisted canonical identity, never the
+			// in-memory result of a directory request.
+			if err := r.updateStatus(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -891,6 +900,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			gatewaySecretResourceVersionAnnotation: gatewaySecretResourceVersion,
 		})
 	}
+	if connectionsCAHash != "" && reconciledSandbox {
+		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
+	}
 	if reconciledSandbox {
 		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, helmValues)
 	} else {
@@ -923,7 +935,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
 	helmValues = prepared.Values
-	if connectionsCAHash != "" {
+	if connectionsCAHash != "" && !reconciledSandbox {
 		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
 	}
 	if reconciledSandbox {

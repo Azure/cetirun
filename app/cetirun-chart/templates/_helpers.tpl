@@ -166,16 +166,19 @@ Validate Azure Workload Identity prerequisites
 {{- if eq .Values.agentType "custom" -}}
 {{- fail "Custom runtimes do not support CetiRun Connections MCP" -}}
 {{- end -}}
-{{- if .Values.sandboxWorkload -}}
-{{- fail "Connections MCP requires an executable protected workload identity contract; Sandbox execution remains held" -}}
+{{- if and .Values.sandboxWorkload (not (.Values.sandboxWorkload.reconciled | default false)) -}}
+{{- fail "Connections MCP requires the current common-executor workload identity contract" -}}
 {{- end -}}
 {{- if not (regexMatch "^https://[a-z0-9-]+\\.[a-z0-9-]+\\.svc\\.cluster\\.local(:[0-9]+)?/mcp$" .Values.connectionsMCP.url) -}}
 {{- fail "connectionsMCP.url must be an in-cluster HTTPS MCP endpoint" -}}
 {{- end -}}
-{{- if or (not .Values.serviceAccount.create) (not .Values.serviceAccount.name) (gt (len .Values.serviceAccount.name) 63) (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
+{{- if or (and (not .Values.sandboxWorkload) (or (not .Values.serviceAccount.create) (gt (len .Values.serviceAccount.name) 63))) (not .Values.serviceAccount.name) (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
 {{- fail "Connections MCP requires a dedicated explicitly named ServiceAccount without automount" -}}
 {{- end -}}
-{{- if or (not .Values.networkPolicy.enabled) (not .Values.sidecarScope.enabled) (not .Values.connectionsMCP.audience) (not .Values.connectionsMCP.caSecretName) -}}
+{{- if and .Values.sandboxWorkload (or (gt (len .Values.serviceAccount.name) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" .Values.serviceAccount.name))) -}}
+{{- fail "Connections MCP requires a valid Kubernetes ServiceAccount name" -}}
+{{- end -}}
+{{- if or (not .Values.networkPolicy.enabled) (and (not .Values.sandboxWorkload) (not .Values.sidecarScope.enabled)) (not .Values.connectionsMCP.audience) (not .Values.connectionsMCP.caSecretName) -}}
 {{- fail "Connections MCP requires protected network controls and a token audience" -}}
 {{- end -}}
 {{- range .Values.extraEnv -}}

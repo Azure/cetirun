@@ -13,6 +13,7 @@ import (
 const DefaultAudience = "cetirun-connections-mcp"
 
 type Config struct {
+	OperatorNamespace     string
 	ListenAddress         string
 	TLSCertFile           string
 	TLSKeyFile            string
@@ -48,6 +49,7 @@ func Load() (Config, error) {
 		return Config{}, errors.New("TLS_CERT_FILE and TLS_KEY_FILE are required")
 	}
 	return Config{
+		OperatorNamespace:     os.Getenv("OPERATOR_NAMESPACE"),
 		ListenAddress:         listen,
 		TLSCertFile:           certFile,
 		TLSKeyFile:            keyFile,

@@ -72,6 +72,7 @@ type Helpers struct {
 }
 
 type Input struct {
+	ConnectionsMCP    *ConnectionsMCP `json:",omitempty"`
 	Reconciled        bool
 	PlannedMigration  *api.PlannedMigrationRequest `json:",omitempty"`
 	Resolution        *sandbox.Resolution

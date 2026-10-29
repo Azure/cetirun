@@ -370,7 +370,14 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 	if !foundHome {
 		return fmt.Errorf("reconciled Sandbox must retain its owned HOME")
 	}
-	if err := ValidateReconciledVolumes(spec, []string{b.input.Home.Name, skillsIdentity(b.input.Skills).Name}, b.input.Controls.Volumes,
+	projections := slices.Clone(b.input.Controls.Volumes)
+	if b.input.ConnectionsMCP != nil {
+		projections = append(projections, b.input.ConnectionsMCP.TokenVolume())
+		if err := b.input.ConnectionsMCP.ValidatePod(spec); err != nil {
+			return err
+		}
+	}
+	if err := ValidateReconciledVolumes(spec, []string{b.input.Home.Name, skillsIdentity(b.input.Skills).Name}, projections,
 		b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit); err != nil {
 		return err
 	}

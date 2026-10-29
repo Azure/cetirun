@@ -5,9 +5,20 @@ metadata:
   labels:
     {{- include "cetirun-agent-broker.labels" . | nindent 4 }}
 rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    resourceNames: ["cetirun-agent-tools-broker"]
+    verbs: ["get"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingwebhookconfigurations"]
+    resourceNames: ["cetirun-sandbox-pods"]
+    verbs: ["get"]
   - apiGroups: ["cetirun.microsoft.com"]
     resources: ["agents"]
     verbs: ["get", "list"]
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["teams", "agentpolicies"]
+    verbs: ["get"]
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
     verbs: ["create"]

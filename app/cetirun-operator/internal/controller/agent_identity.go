@@ -107,6 +107,12 @@ func setAgentIdentityState(instance *cetirunv1alpha1.Agent, phase, reason string
 	status.Phase = phase
 	status.ObservedGeneration = instance.Generation
 	status.Reason = reason
+	if phase != cetirunv1alpha1.AgentIdentityPhaseReady {
+		status.CredentialPolicyRevision = ""
+		if instance.Status.Policy != nil {
+			setCredentialPolicyCondition(instance, metav1.ConditionFalse, "IdentityPending")
+		}
+	}
 	return status
 }
 
@@ -223,6 +229,7 @@ func (r *AgentReconciler) reconcileAgentIdentity(ctx context.Context, instance *
 		status.ObjectID = ""
 		status.DisplayName = ""
 		status.CreationAttempted = false
+		status.CredentialPolicyRevision = ""
 		return nil
 	}
 	if !r.AgentIdentityEnabled {
@@ -377,9 +384,13 @@ func (r *AgentReconciler) deleteAgentIdentity(ctx context.Context, instance *cet
 	if instance.Status.AgentIdentity == nil {
 		instance.Status.AgentIdentity = &cetirunv1alpha1.AgentIdentityStatus{}
 	}
-	if instance.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseDeleting {
+	if instance.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseDeleting || instance.Status.AgentIdentity.CredentialPolicyRevision != "" {
 		instance.Status.AgentIdentity.Phase = cetirunv1alpha1.AgentIdentityPhaseDeleting
+		instance.Status.AgentIdentity.CredentialPolicyRevision = ""
 		instance.Status.AgentIdentity.ObservedGeneration = instance.Generation
+		if instance.Status.Policy != nil {
+			setCredentialPolicyCondition(instance, metav1.ConditionFalse, "CredentialCleanupPending")
+		}
 		if err := r.updateStatus(ctx, instance); err != nil {
 			return fmt.Errorf("persist Agent Identity deletion gate: %w", err)
 		}

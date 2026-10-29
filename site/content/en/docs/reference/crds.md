@@ -464,9 +464,10 @@ Agent Identity, Entra ID, blocked FQDNs, and ingress mTLS are read-only in this
 editor. Existing values remain visible and are preserved when other fields are
 saved. FQDN blocking lacks supported enforcement; ingress mTLS requires the
 separate [administrator-registered managed endpoint](../../guides/agent-ingress-mtls/),
-not a Portal toggle. Agent Identity lacks
-the credential-service evidence needed for aggregate `PolicyApplied`. Other
-controls also depend on the selected execution profile and platform capabilities.
+not a Portal toggle. Broker-backed Agent Identity requires current credential-policy
+readback for aggregate `PolicyApplied`; common-executor workloads also require the
+registered native Connections integration. Other controls depend on the selected
+execution profile and platform capabilities.
 New common-executor Kata lifetimes support internal CIDR grants and SCTP port
 rules only with the corresponding explicit platform registration. SCTP internal
 grants are limited to direct endpoints, excluding registered Service and
