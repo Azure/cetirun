@@ -125,6 +125,9 @@ audience override. Protected Pod admission permits only this owned terminal's
 current named target, main container and shell protocol; it rechecks the
 execution sources and non-stopping reservation. It mounts neither HOME nor model
 credentials. Suspension stops both workloads before acknowledging completion.
+For bound workloads, admission accepts Kubernetes' copied region/zone labels only
+when they match a fresh read of the assigned Node. This applies to terminal
+CONNECT and ordinary Pod updates; other labels and template inputs remain exact.
 
 Custom receives an immutable, Agent-owned `AGENTS.md` snapshot and a read-only
 `$HOME/.agents` view. Optional Memory/shared skills compose into that view without

@@ -16,6 +16,7 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,10 +43,35 @@ func TestCommonCustomTerminalAPIServer(t *testing.T) {
 			}
 			observed := *h.nativeSandboxFixture
 			observed.kube = h.admin
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "terminal-node",
+				Labels: map[string]string{corev1.LabelTopologyRegion: "example-region", corev1.LabelTopologyZone: "example-zone"}}}
+			h.create(t, node)
 			for _, workload := range expected.Workloads {
 				pod := reconciledPodForTest(t, &observed, workload)
 				pod.Spec.Overhead = nil
 				h.create(t, pod)
+				if err := h.admin.SubResource("binding").Create(h.ctx, pod, &corev1.Binding{
+					ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID},
+					Target:     corev1.ObjectReference{Kind: "Node", Name: node.Name},
+				}); err != nil {
+					t.Fatal("bind approved workload:", err)
+				}
+				if err := h.admin.Get(h.ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+					t.Fatal(err)
+				}
+				for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
+					if pod.Labels[key] != node.Labels[key] {
+						t.Fatal("API-server binding did not apply observed Node topology")
+					}
+				}
+				if err := h.admin.Update(h.ctx, pod.DeepCopy(), client.DryRunAll); err != nil {
+					t.Fatal("current bound workload was rejected:", err)
+				}
+				forged := pod.DeepCopy()
+				forged.Labels[corev1.LabelTopologyZone] = "unapproved-zone"
+				if err := h.admin.Update(h.ctx, forged, client.DryRunAll); err == nil {
+					t.Fatal("forged bound topology was accepted")
+				}
 				if workload.Kind == "Deployment" {
 					if pod.Spec.ServiceAccountName != expected.Terminal.ServiceAccountName ||
 						(backend == api.SandboxKata) != (len(pod.Spec.Overhead) != 0) {
