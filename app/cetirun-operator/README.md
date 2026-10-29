@@ -1967,6 +1967,10 @@ Enabling a new projection while the Agent is stopped leaves its confirmed
 suspension and blocked key intact. Pending identity preparation remains visible
 in policy conditions; it does not create an account or alternate the lifecycle
 back to Pending. An explicit resume starts the approved bootstrap.
+Fresh Entra lifetimes using controller runtime defaults pin omitted chart,
+image and port values from the trusted chart before owned identity bootstrap.
+Explicit coordinates remain unchanged; execution still requires the recorded
+ServiceAccount UID and current approved sources.
 The account name cannot change after it is recorded. Final Agent/namespace
 deletion releases the account through the existing bootstrap cleanup ordering
 after workload shutdown; Helm cannot delete or recreate it.

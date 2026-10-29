@@ -269,6 +269,119 @@ func TestNativeEntraUsesBootstrapSourceBeforeCommonApply(t *testing.T) {
 	}
 }
 
+func TestNativeEntraPinsOmittedRuntimeBeforeBootstrap(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, container := range []bool{false, true} {
+			for _, pinned := range []bool{false, true} {
+				name := kind + "/container=" + map[bool]string{false: "false", true: "true"}[container] +
+					"/explicit-image=" + map[bool]string{false: "false", true: "true"}[pinned]
+				t.Run(name, func(t *testing.T) {
+					ctx := context.Background()
+					options := []func(*AgentReconciler, client.Client){withReconciledCoordination(t), withNativeEntra(t)}
+					if container {
+						options = append(options, withContainerRuntime(t))
+					}
+					f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false, options...)
+					agent := f.current(t)
+					original := agent.DeepCopy()
+					if !pinned {
+						agent.Spec.Helm.Version = ""
+						agent.Spec.Agent.Image = nil
+					}
+					agent.Spec.Agent.Port = nil
+					agent.Generation++
+					if err := f.kube.Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+					for range 6 {
+						current := f.current(t)
+						if current.Spec.Helm.Version == "" || current.Spec.Agent.Image == nil || current.Spec.Agent.Port == nil {
+							if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+								t.Fatal("runtime defaulting bypassed owned namespace bootstrap:", err)
+							}
+							if f.installer.stages != 0 {
+								t.Fatal("missing runtime pins reached workload execution")
+							}
+						}
+						f.reconcileOK(t)
+					}
+					current := f.current(t)
+					if current.Spec.Helm.Version != original.Spec.Helm.Version ||
+						!reflect.DeepEqual(current.Spec.Agent.Image, original.Spec.Agent.Image) ||
+						!reflect.DeepEqual(current.Spec.Agent.Port, original.Spec.Agent.Port) {
+						t.Fatal("trusted runtime defaults were not pinned or replaced explicit coordinates")
+					}
+					_, receipt, err := f.r.readSandboxBootstrap(ctx, current)
+					if err != nil || receipt.ServiceAccount == nil || receipt.ServiceAccount.UID == "" {
+						t.Fatal("defaulted runtime omitted its durable ServiceAccount pin:", err)
+					}
+					expected := reconciledExpectationForTest(t, f)
+					if expected.IdentityServiceAccount == nil || expected.IdentityServiceAccount.UID != receipt.ServiceAccount.UID ||
+						f.installer.stages == 0 || ptr.Deref(f.workload(t).Spec.Replicas, 0) != 1 {
+						t.Fatal("defaulted runtime did not execute with the recorded identity source")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestNativeEntraRuntimeDefaultsWaitForApproval(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "hermes", true, false,
+		withReconciledCoordination(t), withNativeEntra(t))
+	agent := f.current(t)
+	agent.Spec.Helm.Version = ""
+	agent.Spec.Agent.Image, agent.Spec.Agent.Port = nil, nil
+	agent.Generation++
+	if err := f.kube.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	configuration := &corev1.ConfigMap{}
+	if err := f.kube.Get(ctx, client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: "sandbox-platform"}, configuration); err != nil {
+		t.Fatal(err)
+	}
+	approved := configuration.Data[SandboxPlatformConfigurationKey]
+	var document SandboxPlatformConfiguration
+	if err := json.Unmarshal([]byte(approved), &document); err != nil {
+		t.Fatal(err)
+	}
+	platform := document.Platforms[api.SandboxKata]
+	platform.Identities = nil
+	document.Platforms[api.SandboxKata] = platform
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration.Data[SandboxPlatformConfigurationKey] = string(raw)
+	if err := f.kube.Update(ctx, configuration); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		f.reconcileOK(t)
+	}
+	current := f.current(t)
+	if current.Spec.Helm.Version != "" || current.Spec.Agent.Image != nil || current.Spec.Agent.Port != nil ||
+		f.installer.stages != 0 {
+		t.Fatal("missing identity approval allowed runtime defaulting or execution")
+	}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatal("missing identity approval created a namespace:", err)
+	}
+	configuration.Data[SandboxPlatformConfigurationKey] = approved
+	if err := f.kube.Update(ctx, configuration); err != nil {
+		t.Fatal(err)
+	}
+	for range 6 {
+		f.reconcileOK(t)
+	}
+	expected := reconciledExpectationForTest(t, f)
+	if expected.IdentityServiceAccount == nil || expected.IdentityServiceAccount.UID == "" ||
+		ptr.Deref(f.workload(t).Spec.Replicas, 0) != 1 {
+		t.Fatal("supplying approval did not recover the defaulted identity lifetime")
+	}
+}
+
 func TestNativeEntraBootstrapRetriesPreserveFirstUID(t *testing.T) {
 	for _, failure := range []string{"create response lost", "pin write rejected", "pin response lost"} {
 		t.Run(failure, func(t *testing.T) {

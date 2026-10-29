@@ -28,6 +28,39 @@ func (r *AgentReconciler) bootstrapPendingIdentity(ctx context.Context, agent *a
 	if !pending || agent.Spec.Suspended {
 		return nil
 	}
+	common, err := r.usesReconciledSandbox(ctx, agent)
+	if err != nil || !common {
+		return err
+	}
+	if agent.Spec.Helm.Version == "" || agent.Spec.Agent.Image == nil || agent.Spec.Agent.Port == nil {
+		attempt, err := r.resolveSandboxInputs(ctx, agent, false, true)
+		if err != nil {
+			return err
+		}
+		if _, err := r.bootstrapIdentityAccountName(attempt); err != nil {
+			return err
+		}
+		before := agent.DeepCopy()
+		if agent.Spec.Helm.Version == "" {
+			if r.ChartVersion == "" {
+				return fmt.Errorf("Entra bootstrap requires a configured runtime chart version")
+			}
+			agent.Spec.Helm.Version = r.ChartVersion
+		} else {
+			prepared, err := r.prepareAgent(agent, attempt.team)
+			if err != nil {
+				return fmt.Errorf("prepare Entra runtime defaults: %w", err)
+			}
+			if !pinAgentDefaults(&agent.Spec.Agent, prepared.Agent) {
+				return fmt.Errorf("Entra runtime chart did not resolve the omitted image or port")
+			}
+		}
+		// Persist only omitted coordinates; bootstrap observes the new generation.
+		if err := r.Patch(ctx, agent, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("pin Entra runtime defaults: %w", err)
+		}
+		return nil
+	}
 	return r.bootstrapReconciledSandbox(ctx, agent)
 }
 
