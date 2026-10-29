@@ -110,12 +110,13 @@ go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
 
-The Operator's full unit target uses a bounded 20-minute Go per-package timeout.
-The full envtest target uses 30 minutes because it also runs the unit suite
-alongside isolated API-server regressions; together they exceed 20 minutes on
-CI runners. Root Go test gates and CI use the same component targets. Neither
-target filters out tests. These budgets do not change individual test assertions,
-runtime/lifecycle deadlines, or the 60-minute CI job limit.
+The Operator's full unit target uses a bounded 25-minute Go per-package timeout
+because the combined controller regressions exceed 20 minutes on CI runners.
+The full envtest target retains 30 minutes because it also runs the unit suite
+alongside isolated API-server regressions. Root Go test gates and CI use the same
+component targets. Neither target filters out tests. These budgets do not change
+individual test assertions, runtime/lifecycle deadlines, or the 60-minute CI job
+limit.
 
 The build writes `app/cetirun-operator/bin/manager`; it does not start the
 operator. The component's `make test` and `make vet` targets are also available.
