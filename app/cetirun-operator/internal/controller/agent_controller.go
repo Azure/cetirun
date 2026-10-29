@@ -928,7 +928,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			prepared, err = r.HelmClient.Refresh(prepared, helmValues)
 		}
 		if err != nil {
-			if reconciledSandbox && stderrors.Is(err, errMigrationIntentChanged) {
+			if reconciledSandbox && (stderrors.Is(err, errMigrationIntentChanged) || stderrors.Is(err, errSandboxIntentChanged)) {
 				return r.reconciledSandboxFailure(ctx, instance, err)
 			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxIngressMTLS) {

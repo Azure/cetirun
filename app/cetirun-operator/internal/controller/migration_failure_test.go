@@ -16,6 +16,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -760,6 +761,149 @@ func TestPlannedMigrationStalePreparationDoesNotHoldNewRequest(t *testing.T) {
 			if migration := f.current(t).Status.PlannedMigration; migration.RequestID != "migration-00000002" ||
 				migration.Phase != api.MigrationProtecting {
 				t.Fatal("new migration could not capture its still-ready source")
+			}
+		})
+	}
+}
+
+func TestPlannedMigrationLateIntentChangeDoesNotHoldNewRequest(t *testing.T) {
+	for _, scenario := range []struct{ kind, backend string }{
+		{"openclaw", "kata"}, {"hermes", "kata"}, {"custom", "kata"}, {"custom", "container"},
+	} {
+		t.Run(scenario.kind+"/"+scenario.backend, func(t *testing.T) {
+			var setup []func(*AgentReconciler, client.Client)
+			if scenario.kind == "custom" {
+				setup = append(setup, withCommonCustom(t, "chat"))
+			}
+			if scenario.backend == "container" {
+				setup = append(setup, withContainerRuntime(t))
+			}
+			f := newMigrationFixture(t, scenario.kind, true, setup...)
+			completeMigration(t, f, "migration-00000001", "node-b")
+			before := f.workload(t).DeepCopy()
+			keyID := f.current(t).Status.AIGateway.KeyID
+			changed := false
+			f.r.APIReader = interceptor.NewClient(f.kube, interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if err := c.List(ctx, list, opts...); err != nil {
+						return err
+					}
+					if _, attachments := list.(*storagev1.VolumeAttachmentList); attachments && !changed {
+						changed = true
+						requestMigration(t, f, "migration-00000002", "node-a")
+					}
+					return nil
+				},
+			})
+			_, err := f.reconcile()
+			if !changed || err == nil || !strings.Contains(err.Error(), "Sandbox intent changed before resource reconciliation") {
+				t.Fatal("fixture did not change intent after the migration guard and before the Sandbox guard:", err)
+			}
+			after := f.workload(t)
+			if !reflect.DeepEqual(before.Spec, after.Spec) || after.ResourceVersion != before.ResourceVersion ||
+				f.current(t).Status.AIGateway.KeyID != keyID {
+				t.Fatal("late stale preparation changed the newer request's source workload or identity")
+			}
+			for _, key := range f.gateway.keys {
+				if key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+					t.Fatal("late stale preparation changed retained Gateway authority")
+				}
+			}
+			f.reconcileOK(t)
+			if migration := f.current(t).Status.PlannedMigration; migration.RequestID != "migration-00000002" ||
+				migration.Phase != api.MigrationProtecting {
+				t.Fatal("new migration could not capture its still-ready source")
+			}
+		})
+	}
+}
+
+func TestPlannedMigrationLateAgentSourceChangeDoesNotHoldNewRequest(t *testing.T) {
+	for _, backend := range []string{"kata", "container"} {
+		t.Run(backend, func(t *testing.T) {
+			ctx := context.Background()
+			setup := []func(*AgentReconciler, client.Client){withCommonCustom(t, "chat")}
+			if backend == "container" {
+				setup = append(setup, withContainerRuntime(t))
+			}
+			f := newMigrationFixture(t, "custom", true, setup...)
+			completeMigration(t, f, "migration-00000001", "node-b")
+			stale := f.current(t)
+			source, err := w.AgentSourceReference(stale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := f.workload(t).DeepCopy()
+			requestMigration(t, f, "migration-00000002", "node-a")
+			_, cause := f.r.readSandboxSource(ctx, source)
+			if !errors.Is(cause, errSandboxSourceChanged) {
+				t.Fatal("late Agent source guard did not reject the old generation:", cause)
+			}
+			if _, err := f.r.reconciledSandboxFailure(ctx, stale, cause); err == nil {
+				t.Fatal("late Agent source failure was hidden")
+			}
+			after := f.workload(t)
+			if !reflect.DeepEqual(before.Spec, after.Spec) || after.ResourceVersion != before.ResourceVersion ||
+				f.current(t).Status.AIGateway.KeyID != stale.Status.AIGateway.KeyID {
+				t.Fatal("late Agent source failure changed the newer request's source")
+			}
+			for _, key := range f.gateway.keys {
+				if key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+					t.Fatal("late Agent source failure changed retained Gateway authority")
+				}
+			}
+			f.reconcileOK(t)
+			if migration := f.current(t).Status.PlannedMigration; migration.RequestID != "migration-00000002" ||
+				migration.Phase != api.MigrationProtecting {
+				t.Fatal("new migration could not capture its still-ready source")
+			}
+		})
+	}
+}
+
+func TestPlannedMigrationLateBindingChangeStillHoldsSource(t *testing.T) {
+	for _, backend := range []string{"kata", "container"} {
+		t.Run(backend, func(t *testing.T) {
+			setup := []func(*AgentReconciler, client.Client){withCommonCustom(t, "chat")}
+			if backend == "container" {
+				setup = append(setup, withContainerRuntime(t))
+			}
+			f := newMigrationFixture(t, "custom", true, setup...)
+			completeMigration(t, f, "migration-00000001", "node-b")
+			keyID := f.current(t).Status.AIGateway.KeyID
+			changed := false
+			f.r.APIReader = interceptor.NewClient(f.kube, interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if err := c.List(ctx, list, opts...); err != nil {
+						return err
+					}
+					if _, attachments := list.(*storagev1.VolumeAttachmentList); attachments && !changed {
+						changed = true
+						policy := &api.AgentPolicy{}
+						if err := f.kube.Get(ctx, client.ObjectKey{Name: "policy-example"}, policy); err != nil {
+							return err
+						}
+						if err := f.kube.Delete(ctx, policy); err != nil {
+							return err
+						}
+						policy.UID, policy.ResourceVersion = "replacement-policy-uid", ""
+						return f.kube.Create(ctx, policy)
+					}
+					return nil
+				},
+			})
+			_, err := f.reconcile()
+			if !changed || err == nil || errors.Is(err, errSandboxIntentChanged) ||
+				!errors.Is(err, errSandboxSourceChanged) {
+				t.Fatal("a changed current authorization binding was not guarded as a current source failure:", err)
+			}
+			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 || f.current(t).Status.AIGateway.KeyID != keyID {
+				t.Fatal("the current binding change did not hold the source with its retained key")
+			}
+			for _, key := range f.gateway.keys {
+				if !key.Blocked || ptr.Deref(key.Spend, 0) != 3.25 {
+					t.Fatal("the current binding change did not block access while retaining spend")
+				}
 			}
 		})
 	}

@@ -41,6 +41,8 @@ const (
 	sandboxApplyCancelled         = "cancelled"
 )
 
+var errSandboxIntentChanged = errors.New("Sandbox intent changed")
+
 func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
 	if !sandboxRequested(agent, nil) ||
 		r.SandboxPreparation == nil || !r.SandboxPreparation.NativeExecution ||
@@ -284,9 +286,12 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if err != nil {
 			return err
 		}
-		if current.UID != agent.UID || current.Generation != agent.Generation || binding != attempt.resolution.Binding ||
+		if current.UID != agent.UID || current.Generation != agent.Generation ||
 			current.Spec.Suspended != agent.Spec.Suspended || !current.DeletionTimestamp.IsZero() {
-			return fmt.Errorf("Sandbox intent changed before resource reconciliation")
+			return fmt.Errorf("%w before resource reconciliation", errSandboxIntentChanged)
+		}
+		if binding != attempt.resolution.Binding {
+			return fmt.Errorf("Sandbox binding changed before resource reconciliation")
 		}
 		for _, source := range sources {
 			if !w.EffectiveSource(source) {
@@ -824,11 +829,16 @@ func (r *AgentReconciler) holdReconciledPolicyChange(ctx context.Context, agent 
 }
 
 func (r *AgentReconciler) reconciledSandboxFailure(ctx context.Context, agent *api.Agent, cause error) (ctrl.Result, error) {
-	if errors.Is(cause, errMigrationIntentChanged) {
+	if errors.Is(cause, errMigrationIntentChanged) || errors.Is(cause, errSandboxIntentChanged) {
+		return ctrl.Result{}, cause
+	}
+	// A later source read can observe a newer Agent after the intent guards pass.
+	current, currentErr := r.agentIsCurrent(ctx, agent)
+	if currentErr == nil && !current {
 		return ctrl.Result{}, cause
 	}
 	result, holdErr := r.holdPolicyDependencyUnavailable(ctx, agent)
-	return result, errors.Join(cause, holdErr)
+	return result, errors.Join(cause, currentErr, holdErr)
 }
 
 func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
