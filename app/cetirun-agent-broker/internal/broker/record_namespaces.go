@@ -121,8 +121,17 @@ func (k *kubeClient) ownerAgentStores(ctx context.Context, owner Owner) ([]*kube
 	result := []*kubeClient{}
 	for _, document := range agents.Items {
 		a := agentFromDocument(document)
-		if a.UnsupportedRuntime || a.Deleting || a.Namespace == "" || !sameOwner(owner, Owner{a.OwnerTenantID, a.OwnerObjectID}) {
+		if (a.UnsupportedRuntime && !nativeAgentCandidate(a)) || a.Deleting || a.Namespace == "" || !sameOwner(owner, Owner{a.OwnerTenantID, a.OwnerObjectID}) {
 			continue
+		}
+		if nativeAgentCandidate(a) {
+			present, err := k.nativeStorageRecorded(ctx, a)
+			if err != nil {
+				return nil, err
+			}
+			if !present {
+				continue
+			}
 		}
 		target, err := k.recordStoreForAgent(ctx, a)
 		if errors.Is(err, errNotFound) {

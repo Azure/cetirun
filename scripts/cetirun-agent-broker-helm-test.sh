@@ -34,8 +34,8 @@ output="$(helm template broker-test "${chart_dir}" "${values[@]}")"
 import sys
 import yaml
 
-policy = next(doc for doc in yaml.safe_load_all(sys.stdin)
-              if doc and doc.get("kind") == "AuthorizationPolicy")
+documents = [doc for doc in yaml.safe_load_all(sys.stdin) if doc]
+policy = next(doc for doc in documents if doc.get("kind") == "AuthorizationPolicy")
 principal = "cluster.local/ns/portal-example/sa/portal-example"
 paths = [path
          for rule in policy["spec"]["rules"]
@@ -48,6 +48,24 @@ for route in ("/v1/connections/start", "/api/v1/connections/callback",
               "/v1/connection-authorizations/oauth-example"):
     assert any(route.startswith(path[:-1]) if path.endswith("*") else route == path
                for path in paths), f"Portal OAuth route blocked by Istio: {route}"
+operator = "cluster.local/ns/cetirun-system/sa/cetirun-operator-controller-manager"
+operations = [target["operation"]
+              for rule in policy["spec"]["rules"]
+              if any(operator in source["source"].get("principals", [])
+                     for source in rule.get("from", []))
+              for target in rule.get("to", [])]
+assert operations == [{"ports": ["8080"], "methods": ["GET", "PUT", "DELETE"],
+                       "paths": ["/operator/v1/instances/*"]}], operations
+role = next(doc for doc in documents if doc.get("kind") == "ClusterRole")
+configuration = [rule for rule in role["rules"]
+                 if set(rule.get("resources", [])) & {"teams", "agentpolicies"}]
+assert configuration == [{"apiGroups": ["cetirun.microsoft.com"],
+                          "resources": ["teams", "agentpolicies"], "verbs": ["get"]}]
+assert not any("secrets" in rule.get("resources", []) for rule in role["rules"])
+for resource, name in (("validatingwebhookconfigurations", "cetirun-sandbox-pods"),
+                       ("rolebindings", "cetirun-agent-tools-broker")):
+    rules = [rule for rule in role["rules"] if resource in rule.get("resources", [])]
+    assert len(rules) == 1 and rules[0]["resourceNames"] == [name] and rules[0]["verbs"] == ["get"], rules
 ' <<<"${output}"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"

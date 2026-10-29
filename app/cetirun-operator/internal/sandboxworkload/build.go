@@ -36,6 +36,14 @@ func Build(input Input) (*Bundle, error) {
 	if input.Suspended && !input.Reconciled {
 		return nil, fmt.Errorf("suspended rendering requires common Sandbox reconciliation")
 	}
+	if input.ConnectionsMCP != nil {
+		if !input.Reconciled {
+			return nil, fmt.Errorf("Connections proof requires the current common executor")
+		}
+		if err := input.ConnectionsMCP.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	if request := input.PlannedMigration; request != nil && (!input.Reconciled ||
 		!api.ValidRestartRequestID(request.RequestID) || request.Target.UID == "" ||
 		len(validation.IsDNS1123Subdomain(request.Target.Name)) != 0) {

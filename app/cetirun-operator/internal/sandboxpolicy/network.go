@@ -421,6 +421,9 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 		required = append(required, Destination{Peer: peer, Ports: dnsPorts})
 	}
 	required = append(required, topology.Gateway...)
+	if input.ConnectionsMCP != nil {
+		required = append(required, *input.ConnectionsMCP)
+	}
 	if policy.KubernetesAccess != nil {
 		if len(topology.KubernetesAPI) == 0 {
 			return plan, fmt.Errorf("%w: explicit Kubernetes access requires resolved API destinations", ErrUnavailable)

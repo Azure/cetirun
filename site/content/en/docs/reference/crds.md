@@ -457,8 +457,8 @@ Kubernetes access with exact policy-role and per-Agent ServiceAccount approvals.
 The operator projects a bounded, audience-specific token only into the main
 container, pins role UID/version/rules and journals the owned binding UIDs.
 Suspension, grant removal and deletion revoke those bindings; shared ClusterRoles
-are not adopted or deleted. Nil access retains the token-free default identity.
-This does not enable Entra ID or Broker/Connections. See the
+are not adopted or deleted. Nil access grants no Kubernetes API token or permissions.
+Kubernetes access does not enable Entra ID or Broker/Connections. See the
 [administrator setup and validation boundaries](https://github.com/Azure/cetirun/tree/main/examples/native-sandbox#kubernetes-api-access).
 
 The Internal network access editor groups each destination CIDR and its complete
@@ -472,9 +472,10 @@ Agent Identity, Entra ID, blocked FQDNs, and ingress mTLS are read-only in this
 editor. Existing values remain visible and are preserved when other fields are
 saved. FQDN blocking lacks supported enforcement; ingress mTLS requires the
 separate [administrator-registered managed endpoint](../../guides/agent-ingress-mtls/),
-not a Portal toggle. Agent Identity lacks
-the credential-service evidence needed for aggregate `PolicyApplied`. Other
-controls also depend on the selected execution profile and platform capabilities.
+not a Portal toggle. Broker-backed Agent Identity requires current credential-policy
+readback for aggregate `PolicyApplied`; common-executor workloads also require the
+registered native Connections integration. Other controls depend on the selected
+execution profile and platform capabilities.
 New common-executor Kata lifetimes support internal CIDR grants, approved
 Kubernetes access and SCTP port rules with the corresponding explicit platform
 registration and approvals. SCTP internal

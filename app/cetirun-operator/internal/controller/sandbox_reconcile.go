@@ -78,6 +78,14 @@ func (r *AgentReconciler) bootstrapReconciledSandbox(ctx context.Context, agent 
 	if !recorded {
 		return fmt.Errorf("common Sandbox reconciliation requires its recorded bootstrap ownership; existing namespaces are not adopted")
 	}
+	if r.nativeConnectionsRequested(agent) && agent.Status.Namespace != instanceNamespace(agent.Name) {
+		// Namespace ownership is already read back from bootstrap. Publish its
+		// locator before Ready so credential readback cannot cycle on readiness.
+		agent.Status.Namespace = instanceNamespace(agent.Name)
+		if err := r.updateStatus(ctx, agent); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -103,6 +111,10 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	if err := r.sandboxIngressMTLSInputs(ctx, attempt); err != nil {
 		return nil, fmt.Errorf("%w: %w", errSandboxIngressMTLS, err)
+	}
+	connections, err := r.nativeConnectionsInputs(ctx, attempt)
+	if err != nil {
+		return nil, err
 	}
 	if agent.Spec.Agent.RegistrySecretRef != nil {
 		name, err := registryauth.PullSecretName(agent.UID)
@@ -152,6 +164,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		return nil, err
 	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
+		ConnectionsMCP:  connections,
 		NativeExecution: true, Resolution: *attempt.resolution, AgentName: agent.Name,
 		Namespace: attempt.input.Namespace.Name, ServiceName: attempt.input.WorkloadName, Platform: platform,
 	})

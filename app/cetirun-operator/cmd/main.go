@@ -316,6 +316,7 @@ func main() {
 		ConnectionsMCPRuntimeTypes:         connectionsMCPRuntimeTypes,
 		ConnectionsMCPBrokerNamespace:      os.Getenv("CONNECTIONS_MCP_BROKER_NAMESPACE"),
 		ConnectionsMCPBrokerServiceAccount: os.Getenv("CONNECTIONS_MCP_BROKER_SERVICE_ACCOUNT"),
+		ConnectionsMCPNativeEnabled:        strings.EqualFold(os.Getenv("CONNECTIONS_MCP_NATIVE_ENABLED"), "true"),
 		AIGateway:                          aiGatewayConfig,
 	}
 	if customConfig.Enabled {

@@ -12,8 +12,17 @@ import (
 // Shared personal credentials are never owned or deleted by an Agent.
 func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error {
 	stores := []*kubeClient{}
+	if agent.UnsupportedRuntime && nativeAgentCandidate(agent) && agent.Namespace != "" {
+		present, err := k.nativeStorageRecorded(ctx, agent)
+		if err != nil {
+			return err
+		}
+		if !present {
+			return nil
+		}
+	}
 	// Unsupported runtimes rely on namespace/Agent garbage collection.
-	if k.agentNamespaces && agent.Namespace != "" && !agent.UnsupportedRuntime {
+	if k.agentNamespaces && agent.Namespace != "" && (!agent.UnsupportedRuntime || nativeAgentCandidate(agent)) {
 		target, err := k.agentRecordStore(ctx, agent.UID)
 		if err != nil && !errors.Is(err, errNotFound) {
 			return err

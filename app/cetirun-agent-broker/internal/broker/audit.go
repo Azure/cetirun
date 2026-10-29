@@ -72,6 +72,15 @@ func managementOperation(r *http.Request) string {
 		return "credential.check"
 	case path == "/internal/v1/service-credentials/issue":
 		return "credential.issue"
+	case strings.HasPrefix(path, "/operator/v1/instances/") && strings.HasSuffix(path, "/credential-policy"):
+		switch r.Method {
+		case http.MethodGet:
+			return "credential.policy.readback"
+		case http.MethodPut:
+			return "credential.policy.apply"
+		case http.MethodDelete:
+			return "credential.policy.remove"
+		}
 	case path == "/api/v1/connections/callback":
 		return "oauth.complete"
 	case r.Method == "GET":

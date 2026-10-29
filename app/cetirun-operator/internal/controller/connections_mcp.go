@@ -76,7 +76,7 @@ func connectionsMCPRuntimeAllowed(runtimeType api.AgentType, runtimeTypes []stri
 func (r *AgentReconciler) connectionsMCPEnabledFor(instance *api.Agent) (bool, error) {
 	// Sandbox now shares the ordinary reconcile path, but its identity
 	// projections remain exclusively owned by the Sandbox compiler.
-	if r.ConnectionsMCPURL == "" || sandboxRequested(instance, nil) {
+	if r.ConnectionsMCPURL == "" || (sandboxRequested(instance, nil) && !r.nativeConnectionsRequested(instance)) {
 		return false, nil
 	}
 	return connectionsMCPRuntimeAllowed(instance.Spec.Agent.Type, r.ConnectionsMCPRuntimeTypes)

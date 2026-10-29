@@ -119,6 +119,8 @@ spec:
               value: {{ .Values.agentIdentity.enabled | quote }}
             - name: CONNECTIONS_MCP_URL
               value: {{ .Values.connectionsMCP.url | quote }}
+            - name: CONNECTIONS_MCP_NATIVE_ENABLED
+              value: {{ .Values.connectionsMCP.nativeEnabled | quote }}
             - name: WORKLOAD_TOKEN_AUDIENCE
               value: {{ .Values.connectionsMCP.audience | quote }}
             - name: CONNECTIONS_MCP_RUNTIME_TYPES

@@ -34,7 +34,8 @@ trap 'rm -rf "$scratch"' 0
 output=$scratch/output
 errors=$scratch/errors
 export OPENCLAW_CONFIG_PATH="$scratch/openclaw.json"
-printf '{"plugins":{"entries":{}}}\n' > "$OPENCLAW_CONFIG_PATH"
+export NODE_DISABLE_COMPILE_CACHE=1
+printf '{"plugins":{"enabled":false,"entries":{}}}\n' > "$OPENCLAW_CONFIG_PATH"
 
 list_profiles() {
   openclaw models auth list --agent main --json > "$output" 2> "$errors" ||

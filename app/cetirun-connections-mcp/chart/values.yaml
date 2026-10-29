@@ -29,6 +29,12 @@ portal:
 
 workloadTokenAudience: cetirun-connections-mcp
 
+nativeSandbox:
+  enabled: false
+  operatorNamespace: cetirun-system
+  # Exact protected managed-peer UID registered in the Sandbox topology.
+  peerUID: ""
+
 istio:
   enabled: true
   sidecarInjection: false
