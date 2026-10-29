@@ -271,7 +271,7 @@ func (c nativeWebhookConfiguration) endpoint(namespace string) (string, []byte, 
 		service.Name != "cetirun-sandbox-admission" || service.Path != NativePodWebhookPath || service.Port != 443 {
 		return "", nil, false
 	}
-	return "https://" + service.Name + "." + namespace + ".svc.cluster.local" + service.Path, hook.ClientConfig.CABundle, true
+	return "https://" + service.Name + "." + namespace + ".svc" + service.Path, hook.ClientConfig.CABundle, true
 }
 
 type nativeContainer struct {

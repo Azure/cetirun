@@ -5,13 +5,51 @@ package agenttools_test
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/Azure/CetiRun/app/internal/agenttools"
 	"github.com/Azure/CetiRun/app/internal/agenttools/testfixture"
 )
+
+func TestNativeVerifierAuthenticatesDocumentedServiceName(t *testing.T) {
+	for _, scenario := range []string{"documented-SAN-only", "wrong-service-SAN", "untrusted-CA"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := testfixture.NewNative(t)
+			certificate := f.Server.Certificate()
+			if !slices.Equal(certificate.DNSNames, []string{"cetirun-sandbox-admission.operator.svc"}) ||
+				len(certificate.IPAddresses) != 0 {
+				t.Fatal("fixture must present only the documented Service DNS SAN")
+			}
+			transport := f.Transport.(*http.Transport)
+			if transport.TLSClientConfig.InsecureSkipVerify || transport.TLSClientConfig.ServerName != "" {
+				t.Fatal("fixture must verify TLS against the unchanged request hostname")
+			}
+			namespace := "operator"
+			if scenario == "wrong-service-SAN" {
+				namespace = "another-operator"
+				configuration := f.Objects["/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/"+agenttools.NativePodWebhookConfiguration].(map[string]any)
+				hook := configuration["webhooks"].([]any)[0].(map[string]any)
+				hook["clientConfig"].(map[string]any)["service"].(map[string]any)["namespace"] = namespace
+			} else if scenario == "untrusted-CA" {
+				transport.TLSClientConfig.RootCAs = x509.NewCertPool()
+			}
+			verifier := agenttools.NativeVerifier{Get: f.Get, OperatorNamespace: namespace,
+				Audience: "cetirun-connections-mcp", Transport: transport}
+			err := verifier.Verify(context.Background(), f.Identity)
+			if scenario == "documented-SAN-only" {
+				if err != nil || f.Calls != 1 {
+					t.Fatalf("documented admission certificate was rejected: %v; calls=%d", err, f.Calls)
+				}
+			} else if !errors.Is(err, agenttools.ErrNativeUnavailable) || f.Calls != 0 {
+				t.Fatalf("invalid TLS identity reached admission: %v; calls=%d", err, f.Calls)
+			}
+		})
+	}
+}
 
 func TestNativeVerifierChecksCurrentPurposeAndAuthority(t *testing.T) {
 	for _, scenario := range []string{"valid", "trusted-init", "denied", "missing-authority", "recreated-sa", "recreated-pod", "recreated-agent",

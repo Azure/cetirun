@@ -154,6 +154,9 @@ The common OpenClaw/Hermes executor has an explicit Connections opt-in:
   available. Broker and MCP receive only named read access to
   `cetirun-sandbox-pods`; MCP also needs its normal workload reads and
   TokenReview permission. They receive no Pod write permission.
+  Admission TLS verifies `cetirun-sandbox-admission.<operatorNamespace>.svc`
+  against that CA; a certificate containing only this documented Service SAN
+  is sufficient.
 
 The Operator derives the required TCP destination from the current registered
 MCP Service, including its numeric backend port. Deny rules still take

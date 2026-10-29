@@ -7,14 +7,21 @@ package testfixture
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"testing"
+	"time"
 
 	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
@@ -27,10 +34,6 @@ type Native struct {
 	Calls     int
 	Identity  agenttools.NativePodIdentity
 }
-
-type transportFunc func(*http.Request) (*http.Response, error)
-
-func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func NewNative(t testing.TB) *Native {
 	t.Helper()
@@ -71,7 +74,7 @@ func NewNative(t testing.TB) *Native {
 		"metadata": meta("agent", "", f.Identity.AgentUID), "spec": map[string]any{},
 		"status": map[string]any{"namespace": "agents", "phase": "Ready"},
 	}
-	f.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.Calls++
 		var review struct {
 			Request struct {
@@ -90,6 +93,24 @@ func NewNative(t testing.TB) *Native {
 		_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": "admission.k8s.io/v1", "kind": "AdmissionReview",
 			"response": map[string]any{"uid": review.Request.UID, "allowed": f.Allowed}})
 	}))
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), DNSNames: []string{"cetirun-sandbox-admission.operator.svc"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true,
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, certificate, certificate, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Server.TLS = &tls.Config{MinVersion: tls.VersionTLS12,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	f.Server.StartTLS()
 	t.Cleanup(f.Server.Close)
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.Server.Certificate().Raw})
 	f.Objects["/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/"+agenttools.NativePodWebhookConfiguration] = map[string]any{
@@ -102,12 +123,17 @@ func NewNative(t testing.TB) *Native {
 			}},
 		}},
 	}
-	f.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
-		target, _ := url.Parse(f.Server.URL)
-		copy := r.Clone(r.Context())
-		copy.URL.Scheme, copy.URL.Host, copy.Host = target.Scheme, target.Host, target.Host
-		return f.Server.Client().Transport.RoundTrip(copy)
-	})
+	roots := x509.NewCertPool()
+	roots.AddCert(f.Server.Certificate())
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, f.Server.Listener.Addr().String())
+		},
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	f.Transport = transport
 	return f
 }
 
