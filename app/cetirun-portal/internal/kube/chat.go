@@ -60,9 +60,10 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 		}
 		team = observed
 	}
-	if agent.Spec.SandboxRef != "" || agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil ||
+	common := commonChatCandidate(agent, team)
+	if (agent.Spec.SandboxRef != "" || agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil ||
 		slices.Contains(agent.Finalizers, "cetirun.microsoft.com/sandbox-hold") || slices.Contains(agent.Finalizers, "cetirun.microsoft.com/sandbox-preparation") ||
-		team.Spec.PolicyConfigured() {
+		team.Spec.PolicyConfigured()) && !common {
 		target.Reason = "sandbox_held"
 		return target, nil
 	}
@@ -99,7 +100,21 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 	}
 	owner := metav1.GetControllerOf(sts)
 	if owner == nil || owner.Kind != "Agent" || owner.UID != agent.UID || sts.UID == "" || !sts.DeletionTimestamp.IsZero() || ptr.Deref(sts.Spec.Replicas, 0) != 1 ||
-		sts.Annotations[chataccess.AgentUIDAnnotation] != string(agent.UID) || sts.Annotations[chataccess.WorkloadAnnotation] == "" || sts.Spec.Selector == nil || len(sts.Spec.Selector.MatchLabels) == 0 || len(sts.Spec.Selector.MatchExpressions) != 0 {
+		sts.Spec.Selector == nil || len(sts.Spec.Selector.MatchLabels) == 0 || len(sts.Spec.Selector.MatchExpressions) != 0 {
+		return target, nil
+	}
+	var commonExpectation commonChatExpectation
+	if common {
+		var verified bool
+		var err error
+		commonExpectation, verified, err = c.verifyCommonChatExpectation(ctx, agent, ns, sts, caller)
+		if err != nil {
+			return target, err
+		}
+		if !verified {
+			return target, nil
+		}
+	} else if sts.Annotations[chataccess.AgentUIDAnnotation] != string(agent.UID) || sts.Annotations[chataccess.WorkloadAnnotation] == "" {
 		return target, nil
 	}
 	pod := &corev1.Pod{}
@@ -107,7 +122,10 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 		return target, err
 	}
 	owner = metav1.GetControllerOf(pod)
-	if owner == nil || owner.Kind != "StatefulSet" || owner.UID != sts.UID || pod.UID == "" || !pod.DeletionTimestamp.IsZero() || pod.Annotations[chataccess.WorkloadAnnotation] != sts.Annotations[chataccess.WorkloadAnnotation] {
+	if owner == nil || owner.Kind != "StatefulSet" || owner.UID != sts.UID || pod.UID == "" || !pod.DeletionTimestamp.IsZero() ||
+		(!common && pod.Annotations[chataccess.WorkloadAnnotation] != sts.Annotations[chataccess.WorkloadAnnotation]) ||
+		(common && (pod.Annotations[commonReconciledAnnotation] != "true" || pod.Annotations[commonWorkloadRevisionAnnotation] != commonExpectation.Revision ||
+			pod.Annotations[chataccess.AgentUIDAnnotation] != string(agent.UID))) {
 		return target, nil
 	}
 	ready := false
@@ -152,7 +170,8 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 		return target, err
 	}
 	if svc.UID == "" || !svc.DeletionTimestamp.IsZero() || svc.Spec.Type != corev1.ServiceTypeClusterIP || net.ParseIP(svc.Spec.ClusterIP) == nil ||
-		svc.Spec.ExternalName != "" || len(svc.Spec.ExternalIPs) != 0 || !maps.Equal(svc.Spec.Selector, sts.Spec.Selector.MatchLabels) || !chatReleaseOwned(svc, agent) {
+		svc.Spec.ExternalName != "" || len(svc.Spec.ExternalIPs) != 0 || !maps.Equal(svc.Spec.Selector, sts.Spec.Selector.MatchLabels) ||
+		(!common && !chatReleaseOwned(svc, agent)) || (common && !commonChatOwned(svc, agent)) {
 		return target, nil
 	}
 	for k, v := range svc.Spec.Selector {
@@ -169,13 +188,19 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 	if !portFound {
 		return target, nil
 	}
-	policy := &networkv1.NetworkPolicy{}
-	if err := c.client.Get(ctx, key, policy); err != nil {
-		return target, err
-	}
 	target.Reason = "network_unavailable"
-	if !policy.DeletionTimestamp.IsZero() || !chatReleaseOwned(policy, agent) || !maps.Equal(policy.Spec.PodSelector.MatchLabels, svc.Spec.Selector) || len(policy.Spec.PodSelector.MatchExpressions) != 0 || !slices.Contains(policy.Spec.PolicyTypes, networkv1.PolicyTypeIngress) || !chataccess.Allows(policy, caller, *agent.Spec.Agent.Port) {
-		return target, nil
+	var network any
+	if common {
+		network = commonExpectation.Revision
+	} else {
+		policy := &networkv1.NetworkPolicy{}
+		if err := c.client.Get(ctx, key, policy); err != nil {
+			return target, err
+		}
+		if !policy.DeletionTimestamp.IsZero() || !chatReleaseOwned(policy, agent) || !maps.Equal(policy.Spec.PodSelector.MatchLabels, svc.Spec.Selector) || len(policy.Spec.PodSelector.MatchExpressions) != 0 || !slices.Contains(policy.Spec.PolicyTypes, networkv1.PolicyTypeIngress) || !chataccess.Allows(policy, caller, *agent.Spec.Agent.Port) {
+			return target, nil
+		}
+		network = policy.Spec
 	}
 	route := &unstructured.Unstructured{}
 	route.SetGroupVersionKind(chataccess.RouteGVK)
@@ -190,9 +215,9 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 		Route                                       types.UID
 		Container, Workload                         string
 		Restarts, Port                              int32
-		Network                                     networkv1.NetworkPolicySpec
+		Network                                     any
 		RouteSpec                                   any
-	}{agent.UID, ns.UID, svc.UID, sts.UID, pod.UID, route.GetUID(), containerID, sts.Annotations[chataccess.WorkloadAnnotation], restartCount, *agent.Spec.Agent.Port, policy.Spec, route.Object["spec"]})
+	}{agent.UID, ns.UID, svc.UID, sts.UID, pod.UID, route.GetUID(), containerID, sts.Annotations[chataccess.WorkloadAnnotation], restartCount, *agent.Spec.Agent.Port, network, route.Object["spec"]})
 	target.BaseURL = "http://" + net.JoinHostPort(name+"."+namespace+".svc.cluster.local", strconv.Itoa(int(*agent.Spec.Agent.Port)))
 	target.Available = true
 	target.Reason = "ready"

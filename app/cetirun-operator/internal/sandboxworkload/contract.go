@@ -83,6 +83,8 @@ type Input struct {
 	AgentName         string
 	AgentGeneration   int64
 	AgentType         string
+	CustomAgent       *CustomAgent `json:",omitempty"`
+	GatewayAPIBase    string       `json:",omitempty"`
 	Namespace         ObjectIdentity
 	WorkloadName      string
 	ReleaseName       string
@@ -95,6 +97,9 @@ type Input struct {
 	AuthorizedSecrets []string
 	GatewayKey        *ObjectIdentity
 	ImagePullSecret   *ObjectIdentity `json:",omitempty"`
+	Context           *Context        `json:",omitempty"`
+	Terminal          *Terminal       `json:",omitempty"`
+	LoopbackProbe     *LoopbackProbe  `json:",omitempty"`
 }
 
 // Accounting uses Kubernetes effective init/sidecar accounting. Pod contains

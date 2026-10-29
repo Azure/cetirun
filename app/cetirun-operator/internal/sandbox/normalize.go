@@ -210,11 +210,9 @@ func normalizePolicyConstraints(policy *v1alpha1.AgentPolicySpec, path *field.Pa
 		policy.Harnesses.Allowed = slices.Compact(policy.Harnesses.Allowed)
 		for i, harness := range policy.Harnesses.Allowed {
 			switch harness {
-			case v1alpha1.AgentTypeOpenClaw, v1alpha1.AgentTypeHermes:
-			case v1alpha1.AgentTypeCustom:
-				errs = append(errs, field.NotSupported(harnessPath.Index(i), harness, []string{string(v1alpha1.AgentTypeOpenClaw), string(v1alpha1.AgentTypeHermes)}))
+			case v1alpha1.AgentTypeOpenClaw, v1alpha1.AgentTypeHermes, v1alpha1.AgentTypeCustom:
 			default:
-				errs = append(errs, field.NotSupported(harnessPath.Index(i), harness, []string{string(v1alpha1.AgentTypeOpenClaw), string(v1alpha1.AgentTypeHermes)}))
+				errs = append(errs, field.NotSupported(harnessPath.Index(i), harness, []string{string(v1alpha1.AgentTypeOpenClaw), string(v1alpha1.AgentTypeHermes), string(v1alpha1.AgentTypeCustom)}))
 			}
 		}
 	}

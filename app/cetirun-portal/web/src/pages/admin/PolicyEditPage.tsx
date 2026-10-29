@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Switch, Text, Textarea, Title2 } from "@fluentui/react-components";
 import {
   createPolicy, getPolicy, updatePolicy, PolicyConflictError, type AgentPolicyDTO,
-  type AgentPolicyPort, type AgentPolicyProtocol, type AgentPolicyUpsertRequest,
+  type AgentPolicyPort, type AgentPolicyProtocol, type AgentPolicyUpsertRequest, type PolicyHarness,
 } from "../../api/adminPolicy";
 import {
   emptyRateLimitForm,
@@ -21,14 +21,14 @@ import {
 import { InternalNetworkRules, formatInternalNetworkRules, parseInternalNetworkRules, validCIDR, type InternalNetworkRule } from "./InternalNetworkRules";
 
 export interface PolicyFormState {
-  name: string; uid: string; resourceVersion: string; openclaw: boolean; hermes: boolean; skills: string;
+  name: string; uid: string; resourceVersion: string; openclaw: boolean; hermes: boolean; custom: boolean; skills: string;
   copilot: boolean; sharedModels: string; budgetEnabled: boolean; defaultMonthlyUSD: string; maxMonthlyUSD: string;
   allowMultiple: boolean; readOnlyRootFilesystem: boolean; blockedCIDRs: string; blockedPorts: AgentPolicyPort[];
   allowedInternalCIDRs: InternalNetworkRule[]; ingressMode: "authenticated" | "disabled"; limits: RateLimitForm;
 }
 
 const emptyForm: PolicyFormState = {
-  name: "", uid: "", resourceVersion: "", openclaw: true, hermes: false, skills: "", copilot: false,
+  name: "", uid: "", resourceVersion: "", openclaw: true, hermes: false, custom: false, skills: "", copilot: false,
   sharedModels: "", budgetEnabled: false, defaultMonthlyUSD: "", maxMonthlyUSD: "", allowMultiple: false,
   readOnlyRootFilesystem: true, blockedCIDRs: "", blockedPorts: [], allowedInternalCIDRs: [], ingressMode: "authenticated", limits: emptyRateLimitForm,
 };
@@ -39,6 +39,7 @@ export function fromPolicyDTO(policy: AgentPolicyDTO): PolicyFormState {
   return {
     name: policy.name, uid: policy.uid, resourceVersion: policy.resourceVersion,
     openclaw: policy.harnesses.allowed.includes("openclaw"), hermes: policy.harnesses.allowed.includes("hermes"),
+    custom: policy.harnesses.allowed.includes("custom"),
     skills: (policy.skills?.allowed || []).join("\n"), copilot: !!policy.modelAccess?.copilot?.allowed,
     sharedModels: (policy.modelAccess?.sharedModels?.allowed || []).join("\n"), budgetEnabled: !!policy.modelAccess?.gatewayBudget,
     defaultMonthlyUSD: policy.modelAccess?.gatewayBudget?.defaultMonthlyUSD || "", maxMonthlyUSD: policy.modelAccess?.gatewayBudget?.maxMonthlyUSD || "",
@@ -50,9 +51,10 @@ export function fromPolicyDTO(policy: AgentPolicyDTO): PolicyFormState {
 }
 
 export function toPolicyRequest(form: PolicyFormState, baseline?: PolicyFormState): AgentPolicyUpsertRequest {
-  const allowed = [] as ("openclaw" | "hermes")[];
+  const allowed: PolicyHarness[] = [];
   if (form.openclaw) allowed.push("openclaw");
   if (form.hermes) allowed.push("hermes");
+  if (form.custom) allowed.push("custom");
   const request: AgentPolicyUpsertRequest = {
     name: form.name.trim(), uid: form.uid || undefined, resourceVersion: form.resourceVersion || undefined,
     harnesses: { allowed }, skills: { allowed: lines(form.skills) },
@@ -189,6 +191,7 @@ export function PolicyEditPage() {
     <Divider /><Text weight="semibold">Allowed harnesses</Text>
     <Switch checked={form.openclaw} label="OpenClaw" onChange={(_, data) => setForm({ ...form, openclaw: data.checked })} />
     <Switch checked={form.hermes} label="Hermes" onChange={(_, data) => setForm({ ...form, hermes: data.checked })} />
+    <Switch checked={form.custom} label="Custom" onChange={(_, data) => setForm({ ...form, custom: data.checked })} />
     <Field label="Allowed skills" hint="Enter one skill identifier per line; commas are not separators. Leave empty to allow no Team or Agent skills."><Textarea rows={4} value={form.skills} onChange={(_, data) => setForm({ ...form, skills: data.value })} placeholder={"skill-a\nnpm:@scope/skill-b\nskill-c@1.2.0"} /></Field>
     <Divider /><Text weight="semibold">AI Gateway</Text>
     <Switch checked={form.copilot} label="Allow GitHub Copilot" onChange={(_, data) => {

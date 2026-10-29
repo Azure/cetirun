@@ -127,6 +127,7 @@ type Client struct {
 	chartVersionExp             time.Time
 	operatorDomain              string
 	registryCredentialNamespace string
+	sandboxStateNamespace       string
 }
 
 // ConfigurationCoordination serializes writes protected by the optional
@@ -139,7 +140,14 @@ type ConfigurationCoordination interface {
 
 // NewClient creates a new kube Client.
 func NewClient(c client.Client) *Client {
-	return &Client{client: c}
+	return &Client{client: c, sandboxStateNamespace: "cetirun-system"}
+}
+
+// SetSandboxStateNamespace selects the operator-owned common execution state.
+func (c *Client) SetSandboxStateNamespace(namespace string) {
+	if namespace != "" {
+		c.sandboxStateNamespace = namespace
+	}
 }
 
 // SetConfigurationCoordination enables coordinated Team, Sandbox and

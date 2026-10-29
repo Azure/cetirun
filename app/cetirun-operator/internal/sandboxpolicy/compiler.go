@@ -82,6 +82,15 @@ func Compile(input CompileInput) (*Plan, error) {
 		}
 		input.ConnectionsMCP = &Destination{Peer: *found, Ports: ports}
 	}
+	customIngress, err := canonicalCustomIngress(input.CustomIngress)
+	if err != nil {
+		return nil, err
+	}
+	terminalIngress, err := canonicalTerminalIngress(input.TerminalIngress)
+	if err != nil {
+		return nil, err
+	}
+	input.Resolution, input.Platform, input.CustomIngress, input.TerminalIngress = resolution, platform, customIngress, terminalIngress
 	var mtls *ingressmtls.Plan
 	if resolution.AgentPolicy.Network.Ingress.RequireMTLS {
 		if !input.NativeExecution || platform.IngressMTLS == nil {
@@ -134,26 +143,28 @@ func Compile(input CompileInput) (*Plan, error) {
 	revisionNetwork := network
 	revisionNetwork.TrustedProxyIPs = nil
 	plan.Revision, err = digest(struct {
-		Version      string
-		Binding      sandbox.Binding
-		AgentName    string
-		Namespace    string
-		Sandbox      api.SandboxSpec
-		Policy       sandbox.PolicyProjection
-		Capabilities sandbox.Capabilities
-		Adapter      AdapterRegistration
-		Topology     Topology
-		Grants       []ApprovedGrant
-		Approval     *ApprovedIdentity
-		Identity     IdentityPlan
-		Network      NetworkPlan
-		IngressMTLS  *ingressmtls.Plan   `json:",omitempty"`
-		EgressSNI    *egresscapture.Plan `json:",omitempty"`
-		ProxyDigest  string              `json:",omitempty"`
+		Version         string
+		Binding         sandbox.Binding
+		AgentName       string
+		Namespace       string
+		Sandbox         api.SandboxSpec
+		Policy          sandbox.PolicyProjection
+		Capabilities    sandbox.Capabilities
+		Adapter         AdapterRegistration
+		Topology        Topology
+		Grants          []ApprovedGrant
+		Approval        *ApprovedIdentity
+		Identity        IdentityPlan
+		Network         NetworkPlan
+		CustomIngress   *CustomIngress      `json:"customIngress,omitempty"`
+		TerminalIngress *TerminalIngress    `json:"terminalIngress,omitempty"`
+		IngressMTLS     *ingressmtls.Plan   `json:",omitempty"`
+		EgressSNI       *egresscapture.Plan `json:",omitempty"`
+		ProxyDigest     string              `json:",omitempty"`
 	}{
 		"sandbox-controls-v1", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
-		platform.Topology, grants, approval, identity, revisionNetwork, mtls, egress, proxyDigest,
+		platform.Topology, grants, approval, identity, revisionNetwork, input.CustomIngress, input.TerminalIngress, mtls, egress, proxyDigest,
 	})
 	if err != nil {
 		return nil, err
@@ -167,6 +178,17 @@ func Compile(input CompileInput) (*Plan, error) {
 		return nil, err
 	}
 	plan.Resources = append(plan.Resources, resource)
+	if plan.Network.TerminalPolicy != nil {
+		plan.Network.TerminalPolicy.Annotations[RevisionAnnotation] = plan.Revision
+		if err := validateNetworkPolicySize(*plan.Network.TerminalPolicy); err != nil {
+			return nil, err
+		}
+		resource, err = manifest(*plan.Network.TerminalPolicy)
+		if err != nil {
+			return nil, err
+		}
+		plan.Resources = append(plan.Resources, resource)
+	}
 	if mtls != nil || egress != nil {
 		resources, err := ManagedProxyResources(input, mtls, egress, plan.Revision)
 		if err != nil {

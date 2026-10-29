@@ -283,13 +283,18 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if !slices.Contains(policy.Spec.Harnesses.Allowed, agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q is not allowed by policy", agent.Spec.Agent.Type)
 	}
-	// A Custom workload has a typed Gateway binding, but not the protected
-	// Sandbox preparation/execution adapter required for complete Policy
-	// enforcement. Keep it held until every required domain has an adapter.
 	if agent.Spec.Agent.Type == api.AgentTypeCustom {
-		return nil, fmt.Errorf("Agent harness %q has no typed Sandbox execution adapter", agent.Spec.Agent.Type)
+		if r.SandboxPreparation == nil || !r.SandboxPreparation.NativeExecution || !r.customGatewaySelected(agent) {
+			return nil, fmt.Errorf("Custom policy execution requires the common executor and a Gateway-qualified image")
+		}
+		if policy.Spec.Network.Ingress.RequireMTLS {
+			return nil, fmt.Errorf("managed ingress mTLS does not yet support the Custom endpoint contract")
+		}
+		if policy.Spec.EntraID.Enabled {
+			return nil, fmt.Errorf("native Entra projection does not yet support the Custom runtime contract")
+		}
 	}
-	if !aiGatewayHarnessSupported(agent.Spec.Agent.Type) {
+	if !aiGatewayHarnessSupported(agent.Spec.Agent.Type) && !r.customGatewaySelected(agent) {
 		return nil, fmt.Errorf("Agent harness %q has no typed AI Gateway enforcement adapter", agent.Spec.Agent.Type)
 	}
 	if !r.AIGateway.Enabled || !r.AIGateway.configured() {
@@ -473,11 +478,25 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 	if err != nil {
 		return "", policyDependency("resolve native Connections destination: %w", err)
 	}
+	var customIngress *sandboxpolicy.CustomIngress
+	var terminalIngress *sandboxpolicy.TerminalIngress
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		values, user, err := r.sandboxHelmValues(agent, team)
+		if err != nil {
+			return "", err
+		}
+		terminal, err := customSandboxTerminalInput(values, user, instanceServiceName(agent.Name))
+		if err != nil {
+			return "", err
+		}
+		customIngress, terminalIngress = r.customSandboxIngress(agent), terminalSandboxIngress(terminal)
+	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		ConnectionsMCP:  connections,
 		NativeExecution: r.SandboxPreparation.NativeExecution,
 		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name),
 		ServiceName: instanceServiceName(agent.Name), Platform: platform,
+		CustomIngress: customIngress, TerminalIngress: terminalIngress,
 		IdentityPin: identityPin,
 	})
 	if err != nil {
