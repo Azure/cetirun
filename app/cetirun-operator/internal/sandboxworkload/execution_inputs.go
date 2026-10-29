@@ -214,6 +214,7 @@ func controlMetadata(values map[string]string) map[string]string {
 			"cetirun.microsoft.com/", "sandbox.cetirun.microsoft.com/", "meta.helm.sh/", "app.kubernetes.io/",
 			"istio.io/", "sidecar.istio.io/", "security.istio.io/", "networking.istio.io/",
 			"pod-security.kubernetes.io/", "cilium.io/", "io.cilium.",
+			"azure.workload.identity/",
 		} {
 			if strings.HasPrefix(key, prefix) {
 				result[key] = value

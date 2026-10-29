@@ -113,6 +113,22 @@ func TestContainerRuntimeMTLSRequiresDeclaredCapability(t *testing.T) {
 	}
 }
 
+func TestContainerRuntimeEntraRequiresDeclaredCapability(t *testing.T) {
+	input := containerResolveInput()
+	input.Resources.AgentPolicies["normal"].Spec.EntraID.Enabled = true
+	if _, err := Resolve(input); err == nil {
+		t.Fatal("Entra intent was accepted without declared runtime support")
+	}
+	registration := input.Registrations[api.SandboxContainer]
+	registration.Capabilities.EntraID = true
+	input.Registrations[api.SandboxContainer] = registration
+	resolved := mustResolve(t, input)
+	if resolved.Sandbox.Type != api.SandboxContainer || !resolved.Capabilities.EntraID ||
+		!resolved.Capabilities.PerContainerResourceLimits || !resolved.AgentPolicy.EntraID.Enabled {
+		t.Fatal("container resolution lost its resource semantics or declared Entra intent")
+	}
+}
+
 func TestContainerRuntimeCapabilities(t *testing.T) {
 	for name, mutate := range map[string]func(*Capabilities){
 		"missing RuntimeClass":     func(c *Capabilities) { c.RuntimeClassName = "" },
@@ -121,7 +137,6 @@ func TestContainerRuntimeCapabilities(t *testing.T) {
 		"missing container limits": func(c *Capabilities) { c.PerContainerResourceLimits = false },
 		"qualified profile":        func(c *Capabilities) { c.Profile = "" },
 		"FQDN claim":               func(c *Capabilities) { c.BlockedFQDNs = true },
-		"Entra claim":              func(c *Capabilities) { c.EntraID = true },
 		"Kubernetes claim":         func(c *Capabilities) { c.KubernetesAccess = true },
 		"external observer claim":  func(c *Capabilities) { c.EnforcementObservation = true },
 		"physical fencing claim":   func(c *Capabilities) { c.RestrictiveFailure = true },

@@ -148,6 +148,43 @@ func TestNativeConnectionsDestinationPortBounds(t *testing.T) {
 	}
 }
 
+func TestNativeConnectionsComposeWithEntraIdentityPin(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			f := nativeEntraFixture(t, kind, withNativeConnections(t))
+			current := f.current(t)
+			expected := reconciledExpectationForTest(t, f)
+			workload := f.workload(t)
+			if workload.Spec.Template.Spec.ServiceAccountName != "example-entra" {
+				t.Fatal("Connections replaced the approved Entra ServiceAccount")
+			}
+			entra := false
+			for _, volume := range workload.Spec.Template.Spec.Volumes {
+				if volume.Projected == nil {
+					continue
+				}
+				for _, source := range volume.Projected.Sources {
+					if token := source.ServiceAccountToken; token != nil && token.Audience == "api://AzureADTokenExchange" {
+						entra = true
+					}
+				}
+			}
+			if !entra {
+				t.Fatal("Connections removed the independent Entra projection")
+			}
+			contract := &w.ConnectionsMCP{URL: f.r.ConnectionsMCPURL, Namespace: "cetirun-tools",
+				Audience: f.r.ConnectionsMCPAudience, CASecretName: f.r.ConnectionsMCPCASecretName}
+			if err := contract.ValidatePod(workload.Spec.Template.Spec); err != nil {
+				t.Fatal("combined workload lost the Connections purpose proof:", err)
+			}
+			policy, err := f.r.resolvePolicy(context.Background(), current)
+			if err != nil || policy.sandboxRevision != expected.Revision {
+				t.Fatal("desired policy and applied compilation disagree on Entra/Connections inputs:", err)
+			}
+		})
+	}
+}
+
 func TestNativeConnectionsUsesExistingCurrentSASource(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		t.Run(kind, func(t *testing.T) {
