@@ -11,10 +11,14 @@ authorize access to another user's instance. Portal administrators can manage
 teams; instance owners can select a team.
 
 In the Portal, create an **Agent Policy** and a **Sandbox** under **Admin**
-first. A Sandbox selects Kata or gVisor, CPU/memory/ephemeral-storage requests
+first. A Sandbox selects Kata (the default), gVisor, or ordinary Container,
+CPU/memory/ephemeral-storage requests
 and limits for the Agent and each helper, a HOME StorageClass and size, and a
 scratch size limit. The runtime and StorageClass must already be available;
 creating this configuration does not install them.
+Container shares the node kernel rather than providing Kata VM isolation. It
+requires an explicitly registered RuntimeClass/handler and the common
+AgentPolicy execution path; it does not bypass policy or HOME ownership.
 
 Then choose **Admin → Teams → New Team**. Select the Agent Policy, one or more
 allowed Sandboxes, and a default Sandbox from that set. Portal-created Teams

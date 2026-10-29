@@ -449,10 +449,15 @@ func TestReconciledSandboxSteadyStateDoesNotRewriteStatus(t *testing.T) {
 }
 
 func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
+	testReconciledSandboxSuspension(t)
+}
+
+func testReconciledSandboxSuspension(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
-				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true, withNativeHomeAccessMode(t, mode))
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true,
+					append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)...)
 				ctx := context.Background()
 				initial := reconciledExpectationForTest(t, f)
 				keyID := f.current(t).Status.AIGateway.KeyID
@@ -501,10 +506,15 @@ func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
 }
 
 func TestReconciledSandboxRetainedRestartUsesCommonApply(t *testing.T) {
+	testReconciledSandboxRetainedRestart(t)
+}
+
+func testReconciledSandboxRetainedRestart(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 			t.Run(fmt.Sprintf("%s/%s", kind, mode), func(t *testing.T) {
-				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, withNativeHomeAccessMode(t, mode))
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false,
+					append([]func(*AgentReconciler, client.Client){withNativeHomeAccessMode(t, mode)}, setup...)...)
 				assertNativeHomeAccessMode(t, f, mode)
 				ctx := context.Background()
 				initial := reconciledExpectationForTest(t, f)
