@@ -63,9 +63,10 @@ func TestCustomRecordedDeletionAndNamespaceReplacement(t *testing.T) {
 	for _, replaceNamespace := range []bool{false, true} {
 		cr, b, objects := customFixture("example", nil)
 		scheme := testScheme()
-		c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()
+		c := provisioningClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()}
 		r := &controller.AgentReconciler{Client: c, Scheme: scheme, HelmClient: &fakeHelmClient{useHarness: true},
 			CustomBindings: &customProvider{bindings: b}, EventRecorder: record.NewFakeRecorder(100)}
+		controller.ConfigureTestGateway(t, r)
 		ctx, key := context.Background(), types.NamespacedName{Name: cr.Name}
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
 			t.Fatal(err)
@@ -118,7 +119,7 @@ func TestCustomAgentChangesDuringApprovalPreventApply(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			cr, b, objects := customFixture("example", nil)
 			scheme := testScheme()
-			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()
+			c := provisioningClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()}
 			p := &customProvider{bindings: b}
 			p.approve = func(_ *appsv1.StatefulSet) error {
 				current := &api.Agent{}
@@ -142,6 +143,7 @@ func TestCustomAgentChangesDuringApprovalPreventApply(t *testing.T) {
 			}
 			h := &fakeHelmClient{useHarness: true}
 			r := &controller.AgentReconciler{Client: c, Scheme: scheme, HelmClient: h, CustomBindings: p, EventRecorder: record.NewFakeRecorder(100)}
+			controller.ConfigureTestGateway(t, r)
 			_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}})
 			if h.installCalled || len(p.completed) != 1 || p.completed[0] != controller.CustomApplyNotStarted {
 				t.Fatal("stale/revoked approval was applied or not completed")
@@ -153,6 +155,13 @@ func TestCustomAgentChangesDuringApprovalPreventApply(t *testing.T) {
 type failStatusOnceClient struct {
 	client.Client
 	fail bool
+}
+
+func (c *failStatusOnceClient) Create(ctx context.Context, obj client.Object, options ...client.CreateOption) error {
+	if obj.GetUID() == "" {
+		obj.SetUID(types.UID("synthetic-" + obj.GetName()))
+	}
+	return c.Client.Create(ctx, obj, options...)
 }
 
 type failStatusWriter struct {
@@ -176,9 +185,14 @@ func TestCustomSuccessfulApplyRecoversStatusWithoutHandoff(t *testing.T) {
 	requireLegacyCustomRuntime(t)
 	cr, b, objects := customFixture("example", nil)
 	scheme := testScheme()
-	c := &failStatusOnceClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build(), fail: true}
+	c := &failStatusOnceClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()}
 	p, h := &customProvider{bindings: b}, &fakeHelmClient{useHarness: true}
 	r := &controller.AgentReconciler{Client: c, Scheme: scheme, HelmClient: h, CustomBindings: p, EventRecorder: record.NewFakeRecorder(100)}
+	controller.ConfigureTestGateway(t, r)
+	p.approve = func(*appsv1.StatefulSet) error {
+		c.fail = true
+		return nil
+	}
 	ctx, key := context.Background(), types.NamespacedName{Name: cr.Name}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err == nil || !h.installCalled {
 		t.Fatal("expected application success followed by status failure")
@@ -187,6 +201,7 @@ func TestCustomSuccessfulApplyRecoversStatusWithoutHandoff(t *testing.T) {
 	sts.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: cr.Name, UID: cr.UID}}
 	sts.Annotations = map[string]string{"cetirun.microsoft.com/agent-uid": string(cr.UID),
 		"cetirun.microsoft.com/custom-plan-hash": h.lastValues["runtime"].(map[string]any)["workloadHash"].(string)}
+	markGatewayCustomWorkload(sts, r.AIGateway.URL)
 	sts.Status.CurrentRevision, sts.Status.UpdateRevision = "same-plan", "same-plan"
 	if err := c.Create(ctx, sts); err != nil {
 		t.Fatal(err)

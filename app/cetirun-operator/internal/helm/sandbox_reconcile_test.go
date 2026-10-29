@@ -162,7 +162,7 @@ func TestReconciledSandboxStartupWindowAndOverrides(t *testing.T) {
 func TestReconciledSandboxPullSecretIsKubeletOnly(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		t.Run(kind, func(t *testing.T) {
-			fixture := testfixture.New(kind)
+			fixture := gatewayHeldFixture(kind)
 			fixture.Input.Reconciled = true
 			fixture.Input.ImagePullSecret = &w.ObjectIdentity{Name: "registry-pull-exampleuid", UID: "pull-secret-uid"}
 			bundle, err := w.Build(fixture.Input)

@@ -20,7 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -113,11 +112,9 @@ func newDeployedAgent(t *testing.T) *deployedAgent {
 	f := &deployedAgent{r: r, chart: &failingPrepareHelm{}, recorder: record.NewFakeRecorder(100),
 		req: ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}}
 	r.HelmClient, r.EventRecorder = f.chart, f.recorder
-	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
-		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
-		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1},
-	}
+	sts := legacyGatewayWorkload(agent, 1)
+	sts.Generation = 1
+	sts.Status = appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1}
 	if err := r.Create(context.Background(), sts); err != nil {
 		t.Fatal(err)
 	}
@@ -387,16 +384,35 @@ func TestChartUnavailableCannotReadWorkload(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				f.r.Client = unavailableStatefulSetClient{f.r.Client}
+				// A healthy steady-state Agent does not need to read its workload.
+				// Invalidate the apply cache so this case exercises the read that a
+				// chart recovery would require.
+				a.Status.ObservedOperatorHash = ""
+				if err := f.r.Status().Update(ctx, a); err != nil {
+					t.Fatal(err)
+				}
+				unavailable := unavailableStatefulSetClient{f.r.Client}
+				f.r.Client, f.r.APIReader = unavailable, unavailable
 			}
 			_, err := f.r.Reconcile(ctx, f.req)
 			if (err != nil) == missing {
 				t.Fatalf("missing=%t err=%v", missing, err)
 			}
 			a = f.agent(t)
-			if a.Status.Phase != api.PhaseProvisioning || !meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionReady) ||
+			if missing {
+				if a.Status.Phase != api.PhaseProvisioning || !meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionReady) ||
+					!meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionPodReady) || f.chart.installs != 1 {
+					t.Fatalf("missing workload retained readiness: %+v", a.Status)
+				}
+			} else if a.Status.Phase != api.PhasePending || !meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionReady) ||
 				!meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionPodReady) || f.chart.installs != 1 {
-				t.Fatalf("unreadable workload retained readiness: %+v", a.Status)
+				// The early migration guard cannot prove that the current Pod still
+				// carries a Gateway binding when its StatefulSet cannot be read.
+				// Hold execution rather than reporting stale readiness.
+				t.Fatalf("unreadable workload did not enter the Gateway observation hold: %+v", a.Status)
+			} else if condition := meta.FindStatusCondition(a.Status.Conditions, api.ConditionReady); condition == nil ||
+				condition.Reason != "AIGatewayObservationUnavailable" {
+				t.Fatalf("Gateway observation hold condition = %+v", condition)
 			}
 		})
 	}

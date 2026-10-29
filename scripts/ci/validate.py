@@ -39,10 +39,13 @@ CHARTS = (
         (
             "agentType=openclaw",
             "secrets.model=lint-model",
+            "aiGateway.keySecretName=lint-model-key",
+            "secrets.apiBase=http://gateway.example.com/v1",
             "secrets.openclawGatewayToken=lint-token",
         ),
     ),
-    ("app/cetirun-chart", ("agentType=hermes", "secrets.model=lint-model")),
+    ("app/cetirun-chart", ("agentType=hermes", "secrets.model=lint-model",
+        "aiGateway.keySecretName=lint-model-key", "secrets.apiBase=http://gateway.example.com/v1")),
     ("app/cetirun-operator/chart", ()),
     ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",)),
     (

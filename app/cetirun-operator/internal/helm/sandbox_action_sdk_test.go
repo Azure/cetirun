@@ -19,7 +19,6 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/kube"
@@ -241,7 +240,7 @@ func (a *sandboxSDKAPI) object(t *testing.T, kind string) *unstructured.Unstruct
 
 func sandboxSDKKubernetesAccessPlans(t *testing.T) (*PreparedRelease, *PreparedRelease, *unstructured.Unstructured) {
 	t.Helper()
-	fixture := testfixture.New("hermes")
+	fixture := gatewayHeldFixture("openclaw")
 	fixture.Input.Helpers.Desktop = false
 	fixture.Policy.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 		ServiceAccountName: "sandbox-example",
@@ -328,7 +327,7 @@ func sandboxSDKKubernetesAccessPlans(t *testing.T) (*PreparedRelease, *PreparedR
 		if err != nil {
 			t.Fatal(err)
 		}
-		input := sampleInput("hermes", "openai", false)
+		input := sampleInput("openclaw", "openai", false)
 		object(input["secrets"])["existingSecret"] = "runtime-secret"
 		p, err := PrepareSandboxChart(testChart(t), input, nil, bundle)
 		if err != nil {
@@ -421,7 +420,7 @@ func TestSandboxSDKRetiredBindingReplacementIsNeverPruned(t *testing.T) {
 }
 
 func TestSandboxSDKRepairsLivePolicyDrift(t *testing.T) {
-	p, _, _ := sandboxRender(t, "hermes", true, false)
+	p, _, _ := sandboxRender(t, "openclaw", true, false)
 	cfg, api, store := sandboxSDKConfig()
 	if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
 		t.Fatal(err)
@@ -484,7 +483,7 @@ func TestSandboxSDKRepairsLivePolicyDrift(t *testing.T) {
 func TestSandboxSDKRefusesPolicyWriteRaces(t *testing.T) {
 	for _, mode := range []string{"replacement", "concurrent change", "disappeared"} {
 		t.Run(mode, func(t *testing.T) {
-			p, _, _ := sandboxRender(t, "hermes", true, false)
+			p, _, _ := sandboxRender(t, "openclaw", true, false)
 			cfg, api, _ := sandboxSDKConfig()
 			if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
 				t.Fatal(err)
@@ -535,7 +534,7 @@ func TestSandboxSDKRefusesPolicyWriteRaces(t *testing.T) {
 func TestSandboxSDKRejectsFalseSuccessAndUnownedFields(t *testing.T) {
 	for _, mode := range []string{"install lost policy content", "upgrade lost policy content", "unowned policy field"} {
 		t.Run(mode, func(t *testing.T) {
-			p, _, _ := sandboxRender(t, "hermes", true, false)
+			p, _, _ := sandboxRender(t, "openclaw", true, false)
 			cfg, api, _ := sandboxSDKConfig()
 			if !strings.HasPrefix(mode, "install") {
 				if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {

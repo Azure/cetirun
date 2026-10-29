@@ -178,12 +178,8 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	} else if !ready {
 		return r.customWaiting(ctx, instance, "AgentIdentityBindingPending", "The instance Agent Identity binding is not ready")
 	}
-	if r.customGatewaySelected(instance) {
-		if err := r.bindCustomGateway(ctx, instance, &bindings); err != nil {
-			return r.customWaiting(ctx, instance, "AIGatewayBindingPending", "The approved AI Gateway binding is not ready")
-		}
-	} else if instance.Status.AIGateway != nil {
-		return r.customWaiting(ctx, instance, "ModelAccessTransitionRequired", "Gateway model access cannot be changed to image-owned authentication implicitly")
+	if err := r.bindCustomGateway(ctx, instance, &bindings); err != nil {
+		return r.customWaiting(ctx, instance, "AIGatewayBindingPending", "The AI Gateway binding is not ready")
 	}
 	if bindings.Memory != nil {
 		return r.customWaiting(ctx, instance, "MemoryBindingRejected", "Only the Memory asset owner may supply a binding")
@@ -545,6 +541,7 @@ func (r *AgentReconciler) noCustomWriters(ctx context.Context, b runtimebindings
 
 func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent) (ctrl.Result, error) {
 	previous := instance.DeepCopy().Status
+	keyErr := r.suspendGatewayKey(ctx, instance)
 	stopErr := r.stopCustomWorkload(ctx, instance)
 	terminalErr := r.stopCustomTerminal(ctx, instance)
 	if err := r.stopCustomCopilot(ctx, instance); err != nil && terminalErr == nil {
@@ -589,6 +586,9 @@ func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent
 	}
 	if routeErr != nil {
 		return ctrl.Result{}, routeErr
+	}
+	if keyErr != nil {
+		return ctrl.Result{}, keyErr
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }

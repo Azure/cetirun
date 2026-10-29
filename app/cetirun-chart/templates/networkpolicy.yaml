@@ -98,7 +98,7 @@ spec:
           port: 8443
     {{- end }}
 
-    {{- if (.Values.aiGateway | default dict).enabled }}
+    {{- if and (.Values.aiGateway | default dict).enabled (ne (include "cetirun.agent.type" .) "custom") }}
     # Platform AI Gateway: model traffic authorised by this Agent's virtual key.
     - to:
         - namespaceSelector:

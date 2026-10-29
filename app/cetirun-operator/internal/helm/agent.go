@@ -79,7 +79,8 @@ func (p *PreparedRelease) SupportsValuePath(path ...string) bool {
 // ChartValues are the values a chart version declares, for checking what it
 // supports before an Agent uses it.
 type ChartValues struct {
-	values map[string]any
+	values        map[string]any
+	customGateway bool
 }
 
 // NewChartValues describes the values a loaded chart declares.
@@ -87,7 +88,7 @@ func NewChartValues(chrt *chart.Chart) *ChartValues {
 	if chrt == nil {
 		return &ChartValues{}
 	}
-	return &ChartValues{values: chrt.Values}
+	return &ChartValues{values: chrt.Values, customGateway: chrt.Metadata != nil && chrt.Metadata.Annotations["cetirun.microsoft.com/custom-copilot"] == "v1"}
 }
 
 // SupportsValuePath reports whether the chart declares a nested value.
@@ -471,4 +472,12 @@ func integer(value any) int64 {
 func array(value any) []any {
 	result, _ := value.([]any)
 	return result
+}
+
+// SupportsCustomGateway reports the versioned Custom model-binding and proxy
+// contract. Native aiGateway value paths alone do not establish Custom support.
+func (v *ChartValues) SupportsCustomGateway() bool { return v != nil && v.customGateway }
+
+func (p *PreparedRelease) SupportsCustomGateway() bool {
+	return p != nil && p.chart != nil && NewChartValues(p.chart).SupportsCustomGateway()
 }

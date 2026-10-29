@@ -29,11 +29,11 @@ beforeEach(() => { mutation.mutate.mockClear(); mutation.error = null; });
 afterEach(() => vi.unstubAllGlobals());
 
 it("offers the Team's smart-routing models as the default model", async () => {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(options), { status: 200, headers: { "Content-Type": "application/json" } })));
+  vi.stubGlobal("fetch", vi.fn(() => new Response(JSON.stringify(options), { status: 200, headers: { "Content-Type": "application/json" } })));
   const user = userEvent.setup();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><CreateForm /></QueryClientProvider>);
-  await user.selectOptions(screen.getByRole("combobox", { name: "Team" }), "research");
+  await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "research");
   await waitFor(() => expect(screen.queryByText("Loading allowed Agent options...")).not.toBeInTheDocument());
   const models = await screen.findByRole("combobox", { name: /Default model/ });
   expect(within(models).getAllByRole("option").map((option) => option.textContent)).toEqual(["(automatic)", "allowed-model", "auto (smart routing)"]);
@@ -46,11 +46,11 @@ it("offers the Team's smart-routing models as the default model", async () => {
 it("mentions GitHub Copilot models only when the agent may use GitHub Copilot", async () => {
   for (const githubCopilot of [false, true]) {
     const offered = { ...options, gateway: { ...options.gateway, githubCopilot } };
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(offered), { status: 200, headers: { "Content-Type": "application/json" } })));
+    vi.stubGlobal("fetch", vi.fn(() => new Response(JSON.stringify(offered), { status: 200, headers: { "Content-Type": "application/json" } })));
     const user = userEvent.setup();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { unmount } = render(<QueryClientProvider client={client}><CreateForm /></QueryClientProvider>);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Team" }), "research");
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "research");
     await waitFor(() => expect(screen.queryByText("Loading allowed Agent options...")).not.toBeInTheDocument());
     await screen.findByRole("combobox", { name: /Default model/ });
     expect(screen.getByText(/Smart-routing models pick a model/)).toBeInTheDocument();

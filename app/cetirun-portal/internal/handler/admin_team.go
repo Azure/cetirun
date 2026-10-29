@@ -172,6 +172,13 @@ func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
 	return spec
 }
 
+func validateDeprecatedTeamProvider(provider string) string {
+	if strings.TrimSpace(provider) != "" {
+		return "defaultProvider is no longer supported; configure model access through the AI Gateway"
+	}
+	return ""
+}
+
 // validateSkillStorage returns a non-empty error message when the optional
 // skillStorage block is present but missing CRD-required fields. The fields
 // resourceGroup, storageAccount, containerName are marked required in the
@@ -241,6 +248,10 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
 	}
+	if msg := validateDeprecatedTeamProvider(req.DefaultProvider); msg != "" {
+		writeError(w, http.StatusBadRequest, "direct_provider_unsupported", msg)
+		return
+	}
 	if !h.validateTeamBindings(w, r, req) {
 		return
 	}
@@ -275,6 +286,10 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	if msg := validateSkillStorage(req.SkillStorage); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
+		return
+	}
+	if msg := validateDeprecatedTeamProvider(req.DefaultProvider); msg != "" {
+		writeError(w, http.StatusBadRequest, "direct_provider_unsupported", msg)
 		return
 	}
 	version, valid := configurationVersion(req.UID, req.ResourceVersion)

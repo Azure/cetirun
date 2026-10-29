@@ -76,17 +76,18 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 			options.AllowedAgentTypes = append(options.AllowedAgentTypes, kind)
 		}
 	}
-	if h.Config.AIGatewayEnabled {
-		options.Gateway = h.sharedModelCatalog(r.Context())
-		// Decision models only classify a Team router's requests; no Agent
-		// is created with one.
-		options.Gateway.DecisionModels = nil
-		options.ModelRouters = teamModelRouterNames(team, nil)
-	}
 	block := func(code, message string) (*creationOptions, error) {
 		options.Blocked = &ErrorDetail{Code: code, Message: message}
 		return options, nil
 	}
+	if !h.Config.AIGatewayEnabled {
+		return block("gateway_required", "The AI Gateway is required for Agent creation in this deployment")
+	}
+	options.Gateway = h.sharedModelCatalog(r.Context())
+	// Decision models only classify a Team router's requests; no Agent
+	// is created with one.
+	options.Gateway.DecisionModels = nil
+	options.ModelRouters = teamModelRouterNames(team, nil)
 	if team != nil && team.Spec.PolicyConfigured() {
 		policy, err := h.Kube.GetAgentPolicy(r.Context(), team.Spec.AgentPolicyRef)
 		if err != nil {
@@ -124,9 +125,6 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 				return block("policy_skills_conflict", "The Team's default Skills are not allowed by its Agent Policy; ask an administrator to update the Team or Policy")
 			}
 		}
-		if !h.Config.AIGatewayEnabled {
-			return block("policy_gateway_required", "Policy-controlled Agents require the AI Gateway to be enabled")
-		}
 	}
 	if len(options.AllowedAgentTypes) == 0 {
 		return block("agent_type_not_allowed", "No Agent type is allowed by both this deployment and the selected Team's Policy")
@@ -145,14 +143,11 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 	return options, nil
 }
 
-// resolveSelectedTeam preserves optional Team selection for deployments without
-// the Gateway, while rejecting incomplete policy bindings independently of it.
+// resolveSelectedTeam keeps Team selection optional. A selected policy-bound
+// Team must still have its complete policy and Sandbox binding.
 func (h *InstanceHandler) resolveSelectedTeam(r *http.Request, requestedTeam string) (*api.Team, string, error) {
 	name := strings.TrimSpace(requestedTeam)
 	if name == "" {
-		if h.Config.AIGatewayEnabled {
-			return nil, "", &managementError{http.StatusBadRequest, "team_required", "Choose a Team for the agent"}
-		}
 		return nil, "", nil
 	}
 	team, err := h.Kube.GetTeam(r.Context(), name)

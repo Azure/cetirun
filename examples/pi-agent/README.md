@@ -89,8 +89,7 @@ ServiceAccount, restricted exec access, routing and storage. Keep the existing
 gateway configuration; `ttyd.gatewayServiceAccount` must match its identity.
 
 An administrator enables Custom provisioning and approves the exact image.
-Add the same digest to `gatewayImages` to use the platform AI Gateway. This
-selects model access for that image without migrating other approved images.
+Custom platform model access always uses the AI Gateway.
 The Operator provisions the Agent's Virtual Key and private Gateway access;
 the image receives `OPENAI_BASE_URL` and a Secret-backed `OPENAI_API_KEY`.
 Merge these settings into the platform values:
@@ -99,10 +98,7 @@ Merge these settings into the platform values:
 cetirun-operator:
   customRuntime:
     enabled: true
-    agentManagedModel: false
     approvedImages:
-      - mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent@sha256:<published-digest>
-    gatewayImages:
       - mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent@sha256:<published-digest>
     storageClass: default
     storageSize: 100Gi
@@ -124,11 +120,11 @@ separate proxy using a chart marked `cetirun.microsoft.com/custom-copilot: v1`.
 Its token and proxy key never reach the Agent container or HOME. Ready with an
 empty model list means model access is still pending, not successful inference.
 
-To retain the earlier image-owned mode, set `agentManagedModel: true` and omit
-that image from `gatewayImages`. Missing or failed Gateway configuration never
-selects native login automatically. Partial Gateway environment variables fail
-startup. Use a new, qualified image/instance for migration; existing private
-native credentials are not copied, imported or removed by this example.
+Missing or failed Gateway configuration never selects native login
+automatically. Partial Gateway environment variables fail startup. For a
+direct-model migration, suspend the old Agent, keep its HOME, configure the
+Gateway, and resume it only after the compatible chart is available. Existing
+private credentials are not copied, imported or removed by this example.
 
 The Operator prepares the namespace, canonical context and HOME claim template
 in one Chart installation. The StatefulSet creates the PVC and Pod; a

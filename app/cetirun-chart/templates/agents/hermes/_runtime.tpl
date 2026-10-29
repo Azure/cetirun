@@ -333,10 +333,6 @@ Hermes configmap data
 {{ .Files.Get "agents/hermes/bootstrap/hermes-apply-config.py" | indent 4 }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
-  {{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
-  hermes-auth.sh: |
-{{ .Files.Get "agents/hermes/bootstrap/hermes-auth.sh" | indent 4 }}
-  {{- end }}
   session-logger.sh: |
 {{ .Files.Get "configs/session-logger.sh" | indent 4 }}
 {{- end }}
@@ -357,13 +353,6 @@ Receives the standard chart context (.). Uses lookup to find existing secrets.
 
   {{- /* API_SERVER_KEY and hermes.env for Hermes API server. */}}
   API_SERVER_KEY: {{ $apiServerKey | b64enc | quote }}
-  {{- $openaiKey := "" }}
-  {{- $anthropicKey := "" }}
-  {{- if eq (.Values.secrets.provider | default "github_copilot") "openai" }}
-  {{- $openaiKey = .Values.secrets.apiKey | default "" }}
-  {{- else if eq (.Values.secrets.provider | default "github_copilot") "anthropic" }}
-  {{- $anthropicKey = .Values.secrets.apiKey | default "" }}
-  {{- end }}
-  {{- $hermesEnv := printf "API_SERVER_ENABLED=%s\nAPI_SERVER_HOST=%s\nAPI_SERVER_PORT=%s\nAPI_SERVER_KEY=%s\nAPI_SERVER_CORS_ORIGINS=%s\nOPENAI_API_KEY=%s\nANTHROPIC_API_KEY=%s\nBRAVE_API_KEY=%s\nPERPLEXITY_API_KEY=%s\n" (.Values.hermes.env.API_SERVER_ENABLED | toString) (.Values.hermes.env.API_SERVER_HOST | toString) (.Values.hermes.env.API_SERVER_PORT | toString) $apiServerKey (.Values.hermes.env.API_SERVER_CORS_ORIGINS | toString) $openaiKey $anthropicKey (.Values.secrets.braveApiKey | default "") (.Values.secrets.perplexityApiKey | default "") }}
+  {{- $hermesEnv := printf "API_SERVER_ENABLED=%s\nAPI_SERVER_HOST=%s\nAPI_SERVER_PORT=%s\nAPI_SERVER_KEY=%s\nAPI_SERVER_CORS_ORIGINS=%s\nBRAVE_API_KEY=%s\nPERPLEXITY_API_KEY=%s\n" (.Values.hermes.env.API_SERVER_ENABLED | toString) (.Values.hermes.env.API_SERVER_HOST | toString) (.Values.hermes.env.API_SERVER_PORT | toString) $apiServerKey (.Values.hermes.env.API_SERVER_CORS_ORIGINS | toString) (.Values.secrets.braveApiKey | default "") (.Values.secrets.perplexityApiKey | default "") }}
   hermes.env: {{ $hermesEnv | b64enc | quote }}
 {{- end }}

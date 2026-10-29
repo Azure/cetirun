@@ -102,6 +102,17 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	t.Run("GatewayTeamProviderValidation", func(t *testing.T) {
+		// Gateway-only model routing does not make Team policy/Sandbox fields required.
+		team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "gateway-team"}}
+		if err := cl.Create(ctx, team); err != nil {
+			t.Fatal(err)
+		}
+		team.Spec.Defaults.Provider = "openai"
+		if err := cl.Update(ctx, team); !apierrors.IsInvalid(err) {
+			t.Fatalf("removed Team direct-provider setting must be rejected: %v", err)
+		}
+	})
 	userClient := func(name string, status bool) client.Client {
 		user, err := env.AddUser(envtest.User{Name: name}, cfg)
 		if err != nil {

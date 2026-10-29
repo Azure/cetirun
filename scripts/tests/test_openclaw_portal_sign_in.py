@@ -13,7 +13,17 @@ from test_native_gateway_chart import RUNTIME_CHART, native_values, object_of_ki
 def legacy_values(**extra):
     values = {
         "agentType": "openclaw",
-        "secrets": {"openclawGatewayToken": "example-token", "model": "example-model"},
+        "aiGateway": {
+            "enabled": True,
+            "keySecretName": "example-model-key",
+            "models": [{"id": "example-model", "name": "Example model"}],
+        },
+        "secrets": {
+            "openclawGatewayToken": "example-token",
+            "provider": "openai",
+            "model": "example-model",
+            "apiBase": "http://gateway.example-platform.svc.cluster.local:4000/v1",
+        },
     }
     for key, value in extra.items():
         values[key] = {**values.get(key, {}), **value}

@@ -96,9 +96,8 @@ func TestAdminTeam_Create(t *testing.T) {
 	body, _ := json.Marshal(TeamUpsertRequest{
 		Name:           "sre",
 		AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
-		Role:            "SRE",
-		DefaultProvider: "anthropic",
-		Skills:          []string{"npm:@scope/skill"},
+		Role:   "SRE",
+		Skills: []string{"npm:@scope/skill"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -110,8 +109,18 @@ func TestAdminTeam_Create(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Name != "sre" || got.DefaultProvider != "anthropic" {
+	if got.Name != "sre" || got.DefaultProvider != "" {
 		t.Errorf("unexpected DTO: %+v", got)
+	}
+}
+
+func TestAdminTeam_CreateRejectsDirectProvider(t *testing.T) {
+	h := newAdminTeamHandler()
+	body, _ := json.Marshal(TeamUpsertRequest{Name: "sre", DefaultProvider: "anthropic"})
+	w := httptest.NewRecorder()
+	h.CreateTeam(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body)))
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "direct_provider_unsupported" {
+		t.Fatalf("status %d body=%s", w.Code, w.Body.String())
 	}
 }
 

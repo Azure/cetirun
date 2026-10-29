@@ -148,19 +148,21 @@ and [operator metrics configuration](app/cetirun-operator/cmd/main.go).
 
 ## Network and third-party boundaries
 
-- **Models and agent tools.** OpenClaw, Hermes, and the tools they invoke can
-  send prompts, conversation context, file contents, tool output, and
-  authentication information to configured providers or other services.
+- **Models and agent tools.** Platform-provided model requests from OpenClaw,
+  Hermes, and Custom Agents go through the AI Gateway, which forwards prompts,
+  conversation context, file contents, and tool output to configured providers.
+  Agent tools can send data and authentication information to other services.
   Model choice alone does not describe every recipient: skills, plugins,
   command-line tools, browsers, and user-supplied endpoints create additional
   routes. Check the terms, retention, training-use settings, and region of each
   selected service with that service.
-- **GitHub Copilot authentication and model discovery.** The in-pod auth helper
-  contacts GitHub device authorization/token endpoints, exchanges credentials
-  for Copilot access, and retrieves a model catalog from the resolved Copilot
-  API endpoint. Successful login persists provider credentials in the agent's
-  home configuration. These operations are separate from inference requests
-  made by the agent runtime.
+- **GitHub Copilot authentication and model discovery.** The Portal initiates
+  GitHub device authorization and stores the completed credential in an
+  Kubernetes Secret in the Agent's namespace. The Operator provisions each Agent's Copilot
+  proxy and Gateway access; the proxy exchanges the credential and retrieves
+  the Copilot model catalog. New sign-ins do not write provider credentials
+  into Agent HOME. These operations are separate from inference requests
+  routed through the AI Gateway.
 - **Identity and Teams.** The ingress sign-in flow uses Microsoft Entra ID.
   When Teams integration is configured, the operator calls Microsoft Graph
   and Azure Bot Service to manage application, identity, and bot resources.
@@ -192,7 +194,8 @@ allowlist of possible destinations. Do not infer that an unlisted provider,
 website, or telemetry service is unreachable. Validate the deployed network
 controls independently.
 
-Source: [auth helper](app/cetirun-chart/configs/cetirun-auth-service.py),
+Source: [Portal Copilot sign-in](app/cetirun-portal/internal/handler/copilot_login.go),
+[Gateway provisioning](app/cetirun-operator/internal/controller/ai_gateway.go),
 [Graph client](app/cetirun-operator/internal/azure/graphclient.go),
 [Bot Service client](app/cetirun-operator/internal/azure/botservice.go),
 [Teams authentication](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/auth.py),

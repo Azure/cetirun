@@ -165,12 +165,16 @@ func (r *AgentReconciler) stopCustomWorkload(ctx context.Context, instance *api.
 	if !hasCustomWorkloadOwner(current, instance) || current.Annotations[customAgentUID] != string(instance.UID) {
 		return errors.New("Custom workload owner is not confirmed")
 	}
-	if current.Spec.Replicas != nil && *current.Spec.Replicas == 0 {
+	if current.Spec.Replicas != nil && *current.Spec.Replicas == 0 &&
+		(current.Spec.PersistentVolumeClaimRetentionPolicy == nil || current.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled != appsv1.DeletePersistentVolumeClaimRetentionPolicyType) {
 		return nil
 	}
 	before := current.DeepCopy()
 	zero := int32(0)
 	current.Spec.Replicas = &zero
+	if current.Spec.PersistentVolumeClaimRetentionPolicy != nil {
+		current.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled = appsv1.RetainPersistentVolumeClaimRetentionPolicyType
+	}
 	return r.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 }
 

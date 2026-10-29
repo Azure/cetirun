@@ -15,8 +15,6 @@ spec:
     description:
       - "Works on platform infrastructure and developer tooling"
       - "Deals with reliability, deployments, and service operations"
-  defaults:
-    provider: "github_copilot"
   skills:
     - "@anthropic/mcp-server-fetch"
     - "pvc:platform-shared-skills"

@@ -1,6 +1,7 @@
 {{- if .Values.sandboxWorkload -}}
 {{- include "cetirun.sandbox.validate" . -}}
 {{- end -}}
+{{- include "cetirun.validateAIGateway" . -}}
 {{- if eq (include "cetirun.agent.type" .) "custom" -}}
 {{- include "cetirun.validateAgentIdentity" . -}}
 {{- include "cetirun.validateConnectionsMCP" . -}}
@@ -13,7 +14,6 @@
 {{- include "cetirun.validateWorkloadIdentity" . -}}
 {{- include "cetirun.validateAgentIdentity" . -}}
 {{- include "cetirun.validateConnectionsMCP" . -}}
-{{- include "cetirun.validateAIGateway" . -}}
 {{- include "cetirun.validateTtydPort" . -}}
 {{- include "cetirun.validateSkills" . -}}
 {{- include "cetirun.validateDesktopBrowserConfig" . -}}

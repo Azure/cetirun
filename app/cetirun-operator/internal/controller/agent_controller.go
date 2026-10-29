@@ -339,6 +339,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 	}
 
+	// Preserve the existing policy revocation/hold boundary before migrating
+	// standalone direct runtimes. This still precedes Team/config/Chart lookup.
+	if !reconciledSandbox && !sandboxRequested(instance, nil) && !instance.Spec.Suspended {
+		if allowed, result, err := r.migrateDirectGatewayRuntime(ctx, instance); !allowed {
+			return result, err
+		}
+	}
+
 	if sandboxRequested(instance, nil) && !reconciledSandbox {
 		return r.reconcileRecordedNativeSandbox(ctx, instance)
 	}
@@ -374,7 +382,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && !commonCustom {
 		return r.suspendCustom(ctx, instance)
 	}
-	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && registryManaged(instance) {
+	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && !reconciledSandbox {
 		return r.suspendRegistryBuiltin(ctx, instance)
 	}
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !commonCustom {
@@ -435,6 +443,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !commonCustom {
 		return r.reconcileCustom(ctx, instance, team)
+	}
+
+	if !r.AIGateway.Enabled {
+		if reconciledSandbox {
+			return r.holdPolicyDependencyUnavailable(ctx, instance)
+		}
+		return r.gatewayRuntimeWaiting(ctx, instance, "AIGatewayRequired")
 	}
 
 	// Persist the Agent Identity provisioning intent before any workload
@@ -809,27 +824,25 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// Reconcile the Agent's AI Gateway virtual key before rendering the
 	// workload: an Agent routed through the Gateway needs its key at startup.
 	var aiGatewayRequeueAfter time.Duration
-	if r.AIGateway.Enabled {
-		chartSupported := commonCustom || aiGatewayChartSupports(prepared, instance.Spec.Agent.Type)
-		if err := r.reconcileAIGateway(ctx, instance, chartSupported); err != nil {
-			logger.Error(err, "AI Gateway virtual key reconciliation failed", "instance", instance.Name)
-			_ = r.updateStatus(ctx, instance)
-			if r.aiGatewayRequired(instance) && chartSupported && !r.aiGatewayRouted(instance) && !instance.Spec.Suspended {
-				// Never provisioned: do not start an Agent that would be
-				// routed through the Gateway without its key.
-				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-			}
-			// A previously provisioned key keeps working through a Gateway
-			// outage, and unrouted Agents do not depend on the key yet.
-			aiGatewayRequeueAfter = 30 * time.Second
-		} else if copilot := instance.Status.AIGateway.Copilot; copilot != nil &&
-			(copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseStarting) {
-			aiGatewayRequeueAfter = 15 * time.Second
+	chartSupported := commonCustom || aiGatewayChartSupports(prepared, instance.Spec.Agent.Type)
+	if !r.AIGateway.Enabled || !chartSupported {
+		if reconciledSandbox {
+			return r.holdPolicyDependencyUnavailable(ctx, instance)
 		}
-	} else if instance.Status.AIGateway != nil && instance.Status.AIGateway.Routed {
-		// The deployment turned the feature off: stop routing. Existing keys
-		// stay in the Gateway until the Agent is deleted.
-		instance.Status.AIGateway.Routed = false
+		return r.gatewayRuntimeWaiting(ctx, instance, "AIGatewayRequired")
+	}
+	if err := r.reconcileAIGateway(ctx, instance, chartSupported); err != nil {
+		logger.Error(err, "AI Gateway virtual key reconciliation failed", "instance", instance.Name)
+		_ = r.updateStatus(ctx, instance)
+		if !r.aiGatewayRouted(instance) && !instance.Spec.Suspended {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		// Keep an already routed workload through a transient management outage.
+		// The early migration guard has separately stopped any old direct Pod.
+		aiGatewayRequeueAfter = 30 * time.Second
+	} else if copilot := instance.Status.AIGateway.Copilot; copilot != nil &&
+		(copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseStarting) {
+		aiGatewayRequeueAfter = 15 * time.Second
 	}
 	if reconciledSandbox {
 		if err := r.updateStatus(ctx, instance); err != nil {
@@ -1693,6 +1706,20 @@ func (r *AgentReconciler) newGatewayTokenSecret(instance *cetirunv1alpha1.Agent)
 }
 
 func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger logr.Logger, instance *cetirunv1alpha1.Agent, secret *corev1.Secret) error {
+	// Retire only the direct model fields formerly consumed by the platform.
+	// The separate AI Gateway virtual-key and Copilot proxy Secrets are untouched.
+	retired := false
+	for _, key := range []string{"MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "COPILOT_GITHUB_TOKEN"} {
+		if _, exists := secret.Data[key]; exists {
+			delete(secret.Data, key)
+			retired = true
+		}
+	}
+	if retired {
+		if err := r.Update(ctx, secret); err != nil {
+			return fmt.Errorf("retire direct model fields from runtime Secret: %w", err)
+		}
+	}
 	if err := r.ensureCetiRunAuthKey(ctx, logger, secret); err != nil {
 		return err
 	}
@@ -1702,8 +1729,8 @@ func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger
 	return r.ensureHermesSecretKeys(ctx, logger, secret, instance)
 }
 
-// ensureCetiRunAuthKey adds the bearer key used by the in-pod cetirun-auth
-// service to operator-managed Secrets created before that key was introduced.
+// ensureCetiRunAuthKey preserves the runtime key used by Hermes Dashboard
+// sessions and compatible readers of older operator-managed Secrets.
 func (r *AgentReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.Logger, secret *corev1.Secret) error {
 	if secret.Data == nil {
 		secret.Data = map[string][]byte{}
@@ -1764,28 +1791,10 @@ func (r *AgentReconciler) ensureHermesSecretKeys(ctx context.Context, logger log
 }
 
 func renderHermesEnv(data map[string][]byte, apiKey string, corsOrigins string) string {
-	modelAPIKey := secretEnvValue(data, "MODEL_API_KEY")
-	openaiKey := secretEnvValue(data, "OPENAI_API_KEY")
-	if openaiKey == "" {
-		openaiKey = modelAPIKey
-	}
-	anthropicKey := secretEnvValue(data, "ANTHROPIC_API_KEY")
-	if anthropicKey == "" {
-		anthropicKey = modelAPIKey
-	}
 	var buf strings.Builder
 	buf.WriteString("API_SERVER_KEY=" + apiKey + "\n")
 	if corsOrigins != "" {
 		buf.WriteString("API_SERVER_CORS_ORIGINS=" + corsOrigins + "\n")
-	}
-	if v := secretEnvValue(data, "COPILOT_GITHUB_TOKEN"); v != "" {
-		buf.WriteString("COPILOT_GITHUB_TOKEN=" + v + "\n")
-	}
-	if openaiKey != "" {
-		buf.WriteString("OPENAI_API_KEY=" + openaiKey + "\n")
-	}
-	if anthropicKey != "" {
-		buf.WriteString("ANTHROPIC_API_KEY=" + anthropicKey + "\n")
 	}
 	if v := secretEnvValue(data, "BRAVE_API_KEY"); v != "" {
 		buf.WriteString("BRAVE_API_KEY=" + v + "\n")

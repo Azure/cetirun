@@ -45,7 +45,6 @@ interface FormState {
   name: string;
   role: string;
   description: string; // newline-separated
-  defaultProvider: string;
   skills: string; // newline-separated
   storage: TeamSkillStorage;
   storageEnabled: boolean;
@@ -68,7 +67,6 @@ function fromDTO(t: TeamDTO): FormState {
     agentPolicyRef: t.agentPolicyRef, sandboxRefs: t.sandboxRefs, defaultSandboxRef: t.defaultSandboxRef,
     role: t.role || "",
     description: (t.description || []).join("\n"),
-    defaultProvider: t.defaultProvider || "",
     skills: (t.skills || []).join("\n"),
     storage: t.skillStorage || { ...emptyStorage },
     storageEnabled: !!t.skillStorage,
@@ -89,7 +87,6 @@ function toRequest(s: FormState): TeamUpsertRequest {
     agentPolicyRef: s.agentPolicyRef, sandboxRefs: s.sandboxRefs, defaultSandboxRef: s.defaultSandboxRef,
     role: s.role.trim() || undefined,
     description: splitLines(s.description),
-    defaultProvider: s.defaultProvider.trim() || undefined,
     skills: splitLines(s.skills),
   };
   if (s.modelRouters.length > 0) req.modelRouters = toModelRouterRequests(s.modelRouters);
@@ -119,7 +116,6 @@ export function TeamEditPage() {
     uid: "", resourceVersion: "", agentPolicyRef: "", sandboxRefs: [], defaultSandboxRef: "",
     role: "",
     description: "",
-    defaultProvider: "",
     skills: "",
     storage: { ...emptyStorage },
     storageEnabled: false,
@@ -285,17 +281,6 @@ export function TeamEditPage() {
           rows={4}
           value={form.description}
           onChange={(_, data) => setForm({ ...form, description: data.value })}
-        />
-      </Field>
-
-      <Divider />
-      <Text size={400} weight="semibold">Defaults</Text>
-
-      <Field label="Default provider">
-        <Input
-          value={form.defaultProvider}
-          onChange={(_, data) => setForm({ ...form, defaultProvider: data.value })}
-          placeholder="e.g. github_copilot"
         />
       </Field>
 

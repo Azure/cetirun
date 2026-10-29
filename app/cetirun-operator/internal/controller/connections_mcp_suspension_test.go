@@ -12,8 +12,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -25,7 +23,6 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 			t.Run(string(kind)+"/"+failure, func(t *testing.T) {
 				ctx := context.Background()
 				r, agent, _ := legacyGatewayFixture(t)
-				r.AIGateway.Enabled = false
 				agent.Spec.Agent.Type = kind
 				if err := r.Update(ctx, agent); err != nil {
 					t.Fatal(err)
@@ -39,11 +36,9 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 				}
 				chart := &chartHelm{}
 				r.HelmClient = chart
-				sts := &appsv1.StatefulSet{
-					ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
-					Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
-					Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1},
-				}
+				sts := legacyGatewayWorkload(agent, 1)
+				sts.Generation = 1
+				sts.Status = appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1}
 				if err := r.Create(ctx, sts); err != nil {
 					t.Fatal(err)
 				}
@@ -99,8 +94,15 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 				if _, err := r.Reconcile(ctx, req); err != nil {
 					t.Fatal(err)
 				}
-				if current().Status.Phase != api.PhaseSuspended || chart.installs != 2 || chart.lastValues["replicaCount"] != float64(0) {
-					t.Fatalf("CA outage prevented suspension: phase=%s installs=%d replicas=%#v", current().Status.Phase, chart.installs, chart.lastValues["replicaCount"])
+				if current().Status.Phase != api.PhaseSuspended || chart.installs != 1 {
+					t.Fatalf("CA outage prevented suspension: phase=%s installs=%d", current().Status.Phase, chart.installs)
+				}
+				stopped := &appsv1.StatefulSet{}
+				if err := r.Get(ctx, client.ObjectKeyFromObject(sts), stopped); err != nil {
+					t.Fatal(err)
+				}
+				if stopped.Spec.Replicas == nil || *stopped.Spec.Replicas != 0 {
+					t.Fatalf("suspension did not stop the Gateway workload: replicas=%v", stopped.Spec.Replicas)
 				}
 				if caReads != 0 {
 					t.Fatalf("suspension read MCP CA material %d times", caReads)
@@ -113,7 +115,7 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 				if _, err := r.Reconcile(ctx, req); err != nil {
 					t.Fatal(err)
 				}
-				if caReads != 0 || chart.installs != 2 || current().Status.Phase != api.PhaseSuspended {
+				if caReads != 0 || chart.installs != 1 || current().Status.Phase != api.PhaseSuspended {
 					t.Fatal("suspended reconcile depended on CA trust or reinstalled the chart")
 				}
 				// Resuming still requires valid trust before any workload is started.
@@ -124,7 +126,7 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 					t.Fatal(err)
 				}
 				_, _ = r.Reconcile(ctx, req)
-				if current().Status.Phase != api.PhaseFailed || chart.installs != 2 || caReads == 0 {
+				if current().Status.Phase != api.PhaseFailed || chart.installs != 1 || caReads == 0 {
 					t.Fatal("resume bypassed the MCP CA requirement")
 				}
 				if err := r.Get(ctx, routeKey, &istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {

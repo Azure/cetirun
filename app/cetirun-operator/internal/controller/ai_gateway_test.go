@@ -1516,7 +1516,7 @@ func TestApplyAIGatewayValuesOverridesProviderForRoutedAgent(t *testing.T) {
 	}
 }
 
-func TestApplyAIGatewayValuesLeavesUnroutedAgentAlone(t *testing.T) {
+func TestApplyAIGatewayValuesRejectsUnroutedAgent(t *testing.T) {
 	for name, mutate := range map[string]func(*AgentReconciler, *cetirunv1alpha1.Agent){
 		"not routed":       func(_ *AgentReconciler, a *cetirunv1alpha1.Agent) { a.Status.AIGateway.Routed = false },
 		"feature disabled": func(r *AgentReconciler, _ *cetirunv1alpha1.Agent) { r.AIGateway.Enabled = false },
@@ -1527,15 +1527,8 @@ func TestApplyAIGatewayValuesLeavesUnroutedAgentAlone(t *testing.T) {
 			agent := routedAgent()
 			mutate(r, agent)
 			values := map[string]any{"secrets": map[string]any{"provider": "github_copilot", "model": "copilot-model"}}
-			if err := r.applyAIGatewayValues(values, agent); err != nil {
-				t.Fatal(err)
-			}
-			gatewayValues := values["aiGateway"].(map[string]any)
-			if values["secrets"].(map[string]any)["provider"] != "github_copilot" || gatewayValues["enabled"] != false {
-				t.Fatalf("unrouted Agent values changed: %v", values)
-			}
-			if _, ok := gatewayValues["models"]; ok {
-				t.Fatal("charts without model support must not receive the model list")
+			if err := r.applyAIGatewayValues(values, agent); err == nil {
+				t.Fatal("unrouted Agent must not produce an applicable release")
 			}
 		})
 	}
@@ -2193,27 +2186,15 @@ func legacyReconcileWithoutTheGatewayRoutesToNoMissingSignInHelper(t *testing.T)
 	}
 }
 
-// The route follows what the operator recorded at the last render; an Agent
-// not yet recorded keeps the route it had, which ran wherever the Gateway
-// did not replace the helper.
-func TestSignInHelperRouteFollowsTheRecordedWorkload(t *testing.T) {
+// Retained status from an old direct release must not re-enable model login.
+func TestSignInHelperRouteIsRemovedForEveryAgent(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	if !hasSignInHelperRoute(agent) {
-		t.Fatal("an unrouted Agent not yet recorded keeps its helper route")
-	}
-	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Routed: true}
-	if hasSignInHelperRoute(agent) {
-		t.Fatal("a routed Agent not yet recorded has no helper route")
-	}
-	agent.Status.AIGateway = nil
 	without, with := false, true
-	agent.Status.SignInHelper = &without
-	if hasSignInHelperRoute(agent) {
-		t.Fatal("no route to a helper the workload does not serve")
-	}
-	agent.Status.SignInHelper = &with
-	if !hasSignInHelperRoute(agent) {
-		t.Fatal("a workload serving the helper keeps its route")
+	for _, recorded := range []*bool{nil, &without, &with} {
+		agent.Status.SignInHelper = recorded
+		if hasSignInHelperRoute(agent) {
+			t.Fatal("in-Agent model login must not be routed")
+		}
 	}
 }
 
@@ -3440,10 +3421,10 @@ func TestAIGatewayCatalogPublishesTheAgentTypesTheDefaultChartRoutes(t *testing.
 		strip []string
 		want  []cetirunv1alpha1.AgentType
 	}{
-		"current chart":   {want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}},
-		"OpenClaw only":   {strip: []string{"aiGateway", "hermes"}, want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}},
-		"before Gateway":  {strip: []string{"aiGateway"}, want: []cetirunv1alpha1.AgentType{}},
-		"without a proxy": {strip: []string{"aiGateway", "copilotProxy"}, want: []cetirunv1alpha1.AgentType{}},
+		"current chart":   {want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom}},
+		"OpenClaw only":   {strip: []string{"aiGateway", "hermes"}, want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeCustom}},
+		"before Gateway":  {strip: []string{"aiGateway"}, want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeCustom}},
+		"without a proxy": {strip: []string{"aiGateway", "copilotProxy"}, want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeCustom}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			chrt, err := loader.Load("../../../cetirun-chart")
@@ -3479,9 +3460,9 @@ func TestAIGatewayCatalogPublishesTheAgentTypesTheDefaultChartRoutes(t *testing.
 func TestAIGatewayCatalogKeepsItsAgentTypesWhileTheChartCannotBeRead(t *testing.T) {
 	unreadable := &inspectingHelm{err: errors.New("registry unavailable")}
 	identity := unreadable.ChartIdentity("0.1.28")
-	both := []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}
+	both := []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom}
 
-	r, kube, _ := aiGatewayTestReconciler(t, catalogWithRouting(`{"chart":"`+identity+`","agentTypes":["openclaw","hermes"]}`))
+	r, kube, _ := aiGatewayTestReconciler(t, catalogWithRouting(`{"chart":"`+identity+`","agentTypes":["openclaw","hermes","custom"]}`))
 	r.HelmClient = unreadable
 	r.publishAIGatewayCatalog(context.Background(), 0)
 	if got := publishedRouting(t, kube); got == nil || got.Chart != identity || !slices.Equal(got.AgentTypes, both) {

@@ -37,8 +37,8 @@ type TeamSpec struct {
 	// +optional
 	MemberContext TeamContextSpec `json:"memberContext,omitempty"`
 
-	// Defaults sets the default AI provider for all team members.
-	// Per-instance Helm values overrides take precedence when set.
+	// Defaults retains the removed provider field solely to reject old configuration.
+	// Model routing is managed by the platform AI Gateway.
 	// +optional
 	Defaults TeamDefaultsSpec `json:"defaults,omitempty"`
 
@@ -113,9 +113,10 @@ type TeamContextSpec struct {
 	Description []string `json:"description,omitempty"`
 }
 
-// TeamDefaultsSpec sets the default AI provider for team members.
+// TeamDefaultsSpec rejects the removed direct-provider setting.
 type TeamDefaultsSpec struct {
-	// Provider is the default AI provider (e.g. "github_copilot", "anthropic", "openai").
+	// Provider is no longer supported; configure upstream providers in the AI Gateway.
+	// +kubebuilder:validation:MaxLength=0
 	// +optional
 	Provider string `json:"provider,omitempty"`
 }
@@ -147,11 +148,11 @@ const ConditionTeamAccepted = "Accepted"
 // +kubebuilder:resource:path=teams,scope=Cluster,shortName=crt,singular=team
 // +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.memberContext.role`
-// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.defaults.provider`
+// +kubebuilder:printcolumn:name="Policy",type=string,JSONPath=`.spec.agentPolicyRef`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // Team is a cluster-scoped resource that defines team-wide configuration
-// (user context, AI provider defaults, and skills) applied to every Agent that
+// (user context, policy, Sandbox selection, and skills) applied to every Agent that
 // references this team via spec.team.
 type Team struct {
 	metav1.TypeMeta   `json:",inline"`

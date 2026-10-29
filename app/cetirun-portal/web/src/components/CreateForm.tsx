@@ -6,10 +6,8 @@ import { Button, Input, Field, Switch, MessageBar, Select } from "@fluentui/reac
 import { useCreateInstance } from "../hooks/useInstance";
 import { useFeatures } from "../hooks/useFeatures";
 import { useCreateOptions } from "../hooks/useCreateOptions";
-import { GITHUB_COPILOT_PROVIDER, useEffectiveTeamProvider } from "../hooks/useTeams";
 import type { AgentType } from "../types/instance";
 import { TeamPicker } from "./TeamPicker";
-import { CopilotModelPicker } from "./CopilotModelPicker";
 import { RateLimitsSummary } from "./RateLimitsSummary";
 import { CreateInstanceError } from "../api/instance";
 
@@ -32,7 +30,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const [team, setTeam] = useState("");
   const [gatewayToken, setGatewayToken] = useState("");
   const [tailscaleAuthKey, setTailscaleAuthKey] = useState("");
-  const [model, setModel] = useState("");
   const [teamsEnabled, setTeamsEnabled] = useState(false);
   const [agentIdentityEnabled, setAgentIdentityEnabled] = useState(false);
   const [privateRegistry, setPrivateRegistry] = useState(false);
@@ -48,19 +45,17 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const [gatewayModel, setGatewayModel] = useState("");
   const createMutation = useCreateInstance({ onSuccess: onCreated, onSettled: clearRegistryCredentials });
   const { data: features, isLoading: featuresLoading, error: featuresError, refetch: refreshFeatures } = useFeatures();
-  const optionsEnabled = !!features && (!features.aiGatewayEnabled || !!team);
+  const optionsEnabled = !!features;
   const optionsQuery = useCreateOptions(team, optionsEnabled);
   const options = optionsEnabled && optionsQuery.data?.team === team && !optionsQuery.error ? optionsQuery.data : undefined;
   const { refetch: refreshOptions } = optionsQuery;
   useEffect(() => {
     if (createMutation.error) void refreshOptions();
   }, [createMutation.error, refreshOptions]);
-  const effectiveProvider = useEffectiveTeamProvider(team);
   const custom = agentType === "custom";
   const gatewayOn = options?.aiGatewayEnabled ?? !!features?.aiGatewayEnabled;
-  // OpenClaw and Hermes take their models from the AI Gateway.
-  const gatewayModels = gatewayOn && (agentType === "openclaw" || agentType === "hermes");
-  const usesGitHubCopilot = !custom && effectiveProvider === GITHUB_COPILOT_PROVIDER && !gatewayModels;
+  // Every platform-managed harness takes its models from the AI Gateway.
+  const gatewayModels = gatewayOn;
   const catalog = options?.gateway;
   const catalogKnown = !!catalog?.known;
   const routedAgentTypes = catalog?.agentTypes ?? null;
@@ -100,14 +95,9 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       setAgentIdentityEnabled(false);
       setWebUI(false);
       setPort("");
-      setModel("");
       setValidationError("");
     }
   }, [agentType, allowedAgentTypes]);
-
-  useEffect(() => {
-    if (!usesGitHubCopilot) setModel("");
-  }, [usesGitHubCopilot]);
 
   useEffect(() => {
     if (options && !modelRouters.includes(gatewayModel) && (!effectiveShared || !sharedModels.some((m) => m.name === gatewayModel))) setGatewayModel("");
@@ -121,7 +111,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const effectiveIdentity = identitySupported && !!options?.agentIdentity.allowed && (options.agentIdentity.required || agentIdentityEnabled);
   const creationBlocked = createMutation.isPending || featuresLoading || !!featuresError || !options ||
     optionsQuery.isFetching || !!options.blocked || !allowedAgentTypes.includes(agentType) ||
-    (gatewayOn && !team) ||
     (options.agentIdentity.required && (!options.agentIdentity.allowed || !identitySupported)) ||
     (gatewayModels && (!catalogKnown || noModelSource || chartUnsupported || agentTypesUnknown));
 
@@ -153,7 +142,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       team: team || undefined,
       gatewayToken: !custom ? gatewayToken || undefined : undefined,
       tailscaleAuthKey: !custom ? tailscaleAuthKey || undefined : undefined,
-      model: gatewayModels ? gatewayModel || undefined : usesGitHubCopilot ? model.trim() || undefined : undefined,
+      model: gatewayModels ? gatewayModel || undefined : undefined,
       teamsEnabled: !custom ? teamsEnabled || undefined : undefined,
       agentIdentityEnabled: effectiveIdentity || undefined,
       modelAccess: gatewayModels ? { sharedModels: effectiveShared, githubCopilot: effectiveCopilot } : undefined,
@@ -181,7 +170,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         />
       </Field>
 
-      <TeamPicker value={team} onChange={setTeam} required={gatewayOn} />
+      <TeamPicker value={team} onChange={setTeam} />
       {options?.policyName && <p style={{ margin: 0 }}>Agent Policy: {options.policyName}</p>}
       {options?.policyName && (
         <RateLimitsSummary limits={options.rateLimits} intro="The policy limits each Agent's own AI Gateway key:" />
@@ -202,7 +191,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
             setAgentType(event.target.value as AgentType);
             setImage("");
             setPort("");
-            setModel("");
             setGatewayToken("");
             setTailscaleAuthKey("");
             setTeamsEnabled(false);
@@ -221,7 +209,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
 
       {custom && (
         <MessageBar intent="info">
-          Model setup and login remain with the image. Image updates retain HOME and require a compatible image.
+          Image updates retain HOME and require a compatible image. Platform-provided model access uses the AI Gateway.
         </MessageBar>
       )}
       <Field
@@ -268,8 +256,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           </Field>
         </>
       )}
-
-      {usesGitHubCopilot && <CopilotModelPicker value={model} onChange={setModel} />}
 
       {chartUnsupported && (
         <MessageBar intent="error">

@@ -27,9 +27,8 @@ agent_check_requirements() {
     init_error "OpenClawInputMissing: builtin-skill-sync.sh"
     return 1
   }
-  if [ "${CETIRUN_NATIVE_SANDBOX:-false}" = true ] &&
-    [ "${CETIRUN_AI_GATEWAY:-false}" != true ]; then
-    init_error "NativeSandboxRequiresAIGateway"
+  if [ "${CETIRUN_AI_GATEWAY:-false}" != true ]; then
+    init_error "AIGatewayRequired"
     return 1
   fi
 }
@@ -62,23 +61,8 @@ agent_apply_config() (
   fi
   temp=$(mktemp "${dest}.tmp.XXXXXX")
   trap 'rm -f "$temp"' 0
-  # CetiRun owns the model list of an Agent on the platform AI Gateway, which
-  # the chart marks with CETIRUN_AI_GATEWAY, so that list replaces the saved
-  # one instead of accumulating models the Gateway no longer offers. So does
-  # the Gateway provider entry, which binds the Agent's virtual key: a key,
-  # auth mode or request override saved on that provider would otherwise be
-  # sent to the Gateway in its place. The retired in-agent Copilot sign-in
-  # profile is dropped. Any other configuration, other providers and an openai
-  # provider with its own endpoint included, keeps its saved settings on the
-  # legacy path. Native Sandbox model and ingress bindings are platform-owned.
-  # The Portal sign-in mode (gateway.auth trusted-proxy) is the chart's too: it
-  # replaces a saved gateway.auth, a saved token included, which OpenClaw would
-  # refuse in that mode, and is removed again when the chart no longer sets it.
-  if [ "${CETIRUN_AI_GATEWAY:-false}" = true ]; then
-    gateway=true
-  else
-    gateway=false
-  fi
+  # Replace platform-owned model routing on every start. Personal settings
+  # outside model/auth configuration remain in HOME.
   native_gateway=false
   if [ "${CETIRUN_NATIVE_SANDBOX:-false}" = true ]; then
     native_gateway=true
@@ -112,29 +96,26 @@ agent_apply_config() (
         | if (.skills.load.extraDirs | type) == "array" and (($source.skills.load.extraDirs // []) | index("/home/vibe/.agents/skills") | not)
           then .skills.load.extraDirs |= map(select(. != "/home/vibe/.agents/skills")) else . end
       else . end
-    | if $gateway then
-        .agents.defaults.models = ($source.agents.defaults.models // {})
-        | if $native_gateway then
-            .models = ($source.models // {})
-            | .auth = ($source.auth // {"profiles": {}})
-            | .gateway = ($source.gateway // {})
-            | .agents.defaults.model = $source.agents.defaults.model
-            | .agents.defaults.modelPolicy = $source.agents.defaults.modelPolicy
-            | .agents.defaults.utilityModel = $source.agents.defaults.utilityModel
-            | .agents |= del(.list)
-          else
-            if ($source.models.providers.openai | type) == "object" then .models.providers.openai = $source.models.providers.openai else . end
-            | if (.auth.profiles | type) == "object" then .auth.profiles |= del(.["github-copilot:github"]) else . end
-          end
+    | .agents.defaults.models = ($source.agents.defaults.models // {})
+    | .models = ($source.models // {})
+    | .auth = ($source.auth // {"profiles": {}})
+    | .agents.defaults.model = $source.agents.defaults.model
+    | .agents.defaults.modelPolicy = $source.agents.defaults.modelPolicy
+    | .agents.defaults.utilityModel = $source.agents.defaults.utilityModel
+    | if $native_gateway then
+        .agents |= del(.list)
+        | .gateway = ($source.gateway // {})
+      elif (.agents.list | type) == "array" then
+        .agents.list |= map(del(.model))
       else . end
     | if .channels.msteams.enabled then
         .channels.msteams.allowFrom //= ["00000000-0000-0000-0000-000000000000"]
       else . end'
   if [ -f "$dest" ]; then
-    jq -s --argjson gateway "$gateway" --argjson native_gateway "$native_gateway" "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
+    jq -s --argjson native_gateway "$native_gateway" "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }
   else
-    jq -s --argjson gateway "$gateway" --argjson native_gateway "$native_gateway" "$filter" "$source" > "$temp" 2>/dev/null ||
+    jq -s --argjson native_gateway "$native_gateway" "$filter" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }
   fi
   chmod 600 "$temp"

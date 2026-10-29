@@ -31,7 +31,10 @@ import (
 )
 
 func TestReconcileConnectionsMCPBrokerRecoversMissingNamespaceFromSteadyState(t *testing.T) {
-	for _, phase := range []string{api.PhaseReady, api.PhaseSuspended} {
+	// Suspension deliberately never recreates a missing namespace: it must be
+	// able to stop a workload without chart preparation. Namespace recovery is
+	// therefore a Ready-state contract.
+	for _, phase := range []string{api.PhaseReady} {
 		t.Run(string(phase), func(t *testing.T) {
 			instance := connectionsMCPBrokerRecoveryAgent(phase)
 			reconciler, kube := newConnectionsMCPBrokerRecoveryReconciler(t, instance)
@@ -43,13 +46,8 @@ func TestReconcileConnectionsMCPBrokerRecoversMissingNamespaceFromSteadyState(t 
 			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
 				t.Fatalf("Reconcile() error = %v", err)
 			}
-			if !reconciler.HelmClient.(*suspensionHelmClient).installCalled {
+			if reconciler.HelmClient.(*chartHelm).installs == 0 {
 				t.Fatal("missing namespace recovery stopped before the full reconcile applied Helm")
-			}
-			if phase == api.PhaseSuspended {
-				if got, ok := reconciler.HelmClient.(*suspensionHelmClient).lastValues["replicaCount"].(int); !ok || got != 0 {
-					t.Fatalf("suspended recovery replicaCount = %v, want integer 0", reconciler.HelmClient.(*suspensionHelmClient).lastValues["replicaCount"])
-				}
 			}
 
 			namespace := &corev1.Namespace{}
@@ -74,8 +72,36 @@ func TestReconcileConnectionsMCPBrokerRecoversMissingNamespaceFromSteadyState(t 
 	}
 }
 
+func TestReconcileConnectionsMCPBrokerSuspensionDoesNotRecreateMissingNamespace(t *testing.T) {
+	instance := connectionsMCPBrokerRecoveryAgent(api.PhaseSuspended)
+	reconciler, kube := newConnectionsMCPBrokerRecoveryReconciler(t, instance)
+	setConnectionsMCPBrokerRecoveryHash(t, kube, instance, reconciler, "")
+
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if reconciler.HelmClient.(*chartHelm).installs != 0 {
+		t.Fatal("suspension recreated a missing workload through Helm")
+	}
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: instanceNamespace(instance.Name)}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("suspension recreated a missing namespace: %v", err)
+	}
+	current := &api.Agent{}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.Phase != api.PhaseSuspended {
+		t.Fatalf("phase = %s, want Suspended", current.Status.Phase)
+	}
+}
+
 func TestReconcileConnectionsMCPBrokerRepairsOwnedNamespaceAtSteadyState(t *testing.T) {
 	instance := connectionsMCPBrokerRecoveryAgent(api.PhaseReady)
+	now := metav1.Now()
+	instance.Status.AIGateway = &api.AIGatewayStatus{
+		Phase: api.AIGatewayPhaseReady, Routed: true, KeyID: "existing-key", KeySecretName: aiGatewayKeySecretName,
+		LastVerifiedTime: &now,
+	}
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: instanceNamespace(instance.Name), OwnerReferences: connectionsMCPBrokerOwner(instance),
 	}}
@@ -88,7 +114,7 @@ func TestReconcileConnectionsMCPBrokerRepairsOwnedNamespaceAtSteadyState(t *test
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if reconciler.HelmClient.(*suspensionHelmClient).installCalled {
+	if reconciler.HelmClient.(*chartHelm).installs != 0 {
 		t.Fatal("steady-state Broker RBAC repair unexpectedly applied Helm")
 	}
 	for _, object := range []client.Object{
@@ -145,12 +171,16 @@ func TestReconcileConnectionsMCPBrokerRejectsUnverifiableNamespaceWithoutMutatio
 			setConnectionsMCPBrokerRecoveryHash(t, kube, instance, reconciler, "")
 			if test.getErr != nil {
 				reconciler.Client = &connectionsMCPBrokerNamespaceGetErrorClient{Client: kube, err: test.getErr}
+				// The migration guard needs a trustworthy workload inventory before
+				// Broker RBAC is reached. Keep it on the uncached reader so this
+				// case exercises the intended Broker namespace-read failure.
+				reconciler.APIReader = kube
 			}
 
 			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
 				t.Fatalf("Reconcile() error = %v", err)
 			}
-			if reconciler.HelmClient.(*suspensionHelmClient).installCalled {
+			if reconciler.HelmClient.(*chartHelm).installs != 0 {
 				t.Fatal("namespace ownership failure unexpectedly applied Helm")
 			}
 			recorder := reconciler.EventRecorder.(*record.FakeRecorder)
@@ -200,7 +230,7 @@ func TestReconcileConnectionsMCPBrokerRoleNotFoundDoesNotTriggerNamespaceRecover
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if roleReads != 2 || reconciler.HelmClient.(*suspensionHelmClient).installCalled {
+	if roleReads != 2 || reconciler.HelmClient.(*chartHelm).installs != 0 {
 		t.Fatalf("Role NotFound entered the full reconcile: Role reads = %d", roleReads)
 	}
 	stored := &corev1.Namespace{}
@@ -237,16 +267,21 @@ func newConnectionsMCPBrokerRecoveryReconciler(t *testing.T, objects ...client.O
 	utilruntime.Must(api.AddToScheme(operatorScheme))
 	utilruntime.Must(istiov1beta1.AddToScheme(operatorScheme))
 	kube := fake.NewClientBuilder().WithScheme(operatorScheme).WithObjects(objects...).WithStatusSubresource(&api.Agent{}).Build()
-	return &AgentReconciler{
+	reconciler := &AgentReconciler{
 		Client:                             kube,
 		Scheme:                             operatorScheme,
 		EventRecorder:                      record.NewFakeRecorder(10),
-		HelmClient:                         &suspensionHelmClient{},
+		HelmClient:                         &chartHelm{},
 		OperatorNamespace:                  "cetirun-system",
 		OperatorSAName:                     "cetirun-operator-controller-manager",
 		ConnectionsMCPBrokerNamespace:      "cetirun-credentials",
 		ConnectionsMCPBrokerServiceAccount: "cetirun-agent-broker",
-	}, kube
+	}
+	// These cases model a ready standalone runtime. Configure the Gateway
+	// contract rather than relying on the retired direct-provider path to reach
+	// the Broker-RBAC recovery behavior under test.
+	ConfigureTestGateway(t, reconciler)
+	return reconciler, kube
 }
 
 func connectionsMCPBrokerRecoveryAgent(phase string) *api.Agent {
@@ -257,7 +292,7 @@ func connectionsMCPBrokerRecoveryAgent(phase string) *api.Agent {
 		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{
-				Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/hermes:1"), Port: ptr.To[int32](18789),
+				Type: api.AgentTypeHermes, Image: ptr.To("cetirun.azurecr.io/hermes-gateway:0.1.1"), Port: ptr.To[int32](8642),
 			},
 			User:                  api.UserSpec{Alias: "broker-recovery", DisplayName: "Broker Recovery"},
 			GatewayTokenSecretRef: "gateway-token",

@@ -25,7 +25,7 @@ spec:
         {{- if .Values.connectionsMCP.enabled }}
         - "{{ .Values.connectionsMCP.namespace }}/*"
         {{- end }}
-        {{- if (.Values.aiGateway | default dict).enabled }}
+        {{- if and (ne (include "cetirun.agent.type" .) "custom") (.Values.aiGateway | default dict).enabled }}
         # Platform AI Gateway.
         - "{{ .Values.networkPolicy.gatewayNamespace }}/*"
         {{- end }}

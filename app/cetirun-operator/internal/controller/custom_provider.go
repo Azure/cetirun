@@ -29,15 +29,16 @@ import (
 
 // This is operator configuration, never a tenant Agent/Helm override.
 type CustomRuntimeConfig struct {
-	Enabled           bool              `json:"enabled"`
-	AgentManagedModel bool              `json:"agentManagedModel"`
-	ApprovedImages    []string          `json:"approvedImages"`
-	GatewayImages     []string          `json:"gatewayImages,omitempty"`
-	StorageClass      string            `json:"storageClass"`
-	StorageSize       string            `json:"storageSize"`
-	AccessMode        string            `json:"accessMode"`
-	FSGroup           int64             `json:"fsGroup"`
-	Context           map[string]string `json:"context"`
+	Enabled           bool     `json:"enabled"`
+	AgentManagedModel bool     `json:"agentManagedModel"`
+	ApprovedImages    []string `json:"approvedImages"`
+	// GatewayImages is accepted for upgrade compatibility; every approved image uses the Gateway.
+	GatewayImages []string          `json:"gatewayImages,omitempty"`
+	StorageClass  string            `json:"storageClass"`
+	StorageSize   string            `json:"storageSize"`
+	AccessMode    string            `json:"accessMode"`
+	FSGroup       int64             `json:"fsGroup"`
+	Context       map[string]string `json:"context"`
 }
 
 func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
@@ -52,16 +53,16 @@ func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
 	if !cfg.Enabled {
 		return cfg, nil
 	}
+	// Accept the old deployment field so the Operator can start and stop old
+	// direct workloads during upgrade. It no longer selects a runtime mode.
+	cfg.AgentManagedModel = false
 	if len(cfg.ApprovedImages) == 0 || len(cfg.ApprovedImages) > 64 || len(cfg.GatewayImages) > 64 {
-		return cfg, fmt.Errorf("Custom provisioning requires approved image digests and an explicit model access mode")
+		return cfg, fmt.Errorf("Custom provisioning requires approved image digests")
 	}
 	digest := regexp.MustCompile(`^[^[:space:]]+@sha256:[a-f0-9]{64}$`)
 	for _, image := range cfg.ApprovedImages {
 		if !digest.MatchString(image) {
 			return cfg, fmt.Errorf("Custom approvedImages must use immutable sha256 references")
-		}
-		if !cfg.AgentManagedModel && !slices.Contains(cfg.GatewayImages, image) {
-			return cfg, fmt.Errorf("every approved Custom image requires explicit model access")
 		}
 	}
 	for _, image := range cfg.GatewayImages {
@@ -116,15 +117,12 @@ func (p *KubernetesCustomBindings) authorize(instance *api.Agent) error {
 		instance.Spec.Agent.Image == nil || !slices.Contains(p.config.ApprovedImages, *instance.Spec.Agent.Image) {
 		return fmt.Errorf("Custom image is not approved")
 	}
-	if !p.config.AgentManagedModel && !p.UsesAIGateway(instance) {
-		return fmt.Errorf("Custom image has no approved model access mode")
-	}
 	return nil
 }
 
 func (p *KubernetesCustomBindings) UsesAIGateway(instance *api.Agent) bool {
 	return p.config.Enabled && instance.Spec.Agent.Type == api.AgentTypeCustom && instance.Spec.Agent.Image != nil &&
-		slices.Contains(p.config.ApprovedImages, *instance.Spec.Agent.Image) && slices.Contains(p.config.GatewayImages, *instance.Spec.Agent.Image)
+		slices.Contains(p.config.ApprovedImages, *instance.Spec.Agent.Image)
 }
 
 func objectReference(obj client.Object) runtimebindings.ObjectReference {
@@ -207,7 +205,7 @@ func (p *KubernetesCustomBindings) Resolve(ctx context.Context, instance *api.Ag
 	}
 	b = runtimebindings.Custom{AgentName: instance.Name, AgentUID: string(instance.UID), Generation: instance.Generation,
 		Namespace: objectReference(ns), ApprovedType: "custom", ApprovedImage: *instance.Spec.Agent.Image,
-		PolicyRevision: p.revision, AgentManagedModel: !p.UsesAIGateway(instance),
+		PolicyRevision: p.revision, AgentManagedModel: false,
 		Home: homeBinding,
 		Network: runtimebindings.Network{Revision: p.revision,
 			DNS: runtimebindings.Peer{Namespace: "kube-system", PodLabels: map[string]string{"k8s-app": "kube-dns"}}}}

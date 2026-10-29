@@ -46,7 +46,7 @@ func (c providerTestClient) Create(ctx context.Context, obj client.Object, opts 
 func providerFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	t.Helper()
 	image := "registry.example.com/pi@sha256:" + strings.Repeat("a", 64)
-	cfg := CustomRuntimeConfig{Enabled: true, AgentManagedModel: true, ApprovedImages: []string{image},
+	cfg := CustomRuntimeConfig{Enabled: true, AgentManagedModel: false, ApprovedImages: []string{image},
 		StorageClass: "test-storage", StorageSize: "20Gi", AccessMode: "ReadWriteMany", FSGroup: 1024,
 		Context: map[string]string{"AGENTS.md": "approved context", "skills/cetirun-memory/SKILL.md": "approved memory"}}
 	data, _ := json.Marshal(cfg)
@@ -89,15 +89,12 @@ func readyProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !b.AgentManagedModel || b.Model.Name != "" || b.Network.GatewayPort != 0 {
-		t.Fatal("provider invented platform model access")
-	}
-	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || !bound {
-		t.Fatal(err)
+	if b.AgentManagedModel || b.Model.Name != "" || b.Network.GatewayPort != 0 {
+		t.Fatal("provider must wait for the controller Gateway binding")
 	}
 	secrets := &corev1.SecretList{}
 	if err := p.reconciler.List(ctx, secrets); err != nil || len(secrets.Items) != 0 {
-		t.Fatal("image-owned auth created a model Secret")
+		t.Fatal("binding resolution must not create a model Secret")
 	}
 	return p, instance
 }
@@ -154,7 +151,7 @@ func pendingHomeProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	if defaults.Enabled || defaults.StorageClass != "default" || defaults.StorageSize != "100Gi" || defaults.AccessMode != "ReadWriteOnce" {
 		t.Fatalf("unexpected Custom HOME defaults: %+v", defaults)
 	}
-	defaults.Enabled, defaults.AgentManagedModel, defaults.ApprovedImages = true, true, p.config.ApprovedImages
+	defaults.Enabled, defaults.AgentManagedModel, defaults.ApprovedImages = true, false, p.config.ApprovedImages
 	p = NewKubernetesCustomBindings(p.reconciler, defaults)
 	ctx := context.Background()
 	if _, err := p.Resolve(ctx, instance, nil); err == nil || !strings.Contains(err.Error(), "ownership recorded") {
@@ -173,6 +170,7 @@ func TestKubernetesCustomHomeIsCreatedByChart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindProviderTestModel(t, p, instance, &b)
 	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || bound {
 		t.Fatalf("owned pending HOME should allow a consumer, but not report bound: %v %v", bound, err)
 	}
@@ -200,6 +198,7 @@ func TestKubernetesCustomHomeIsCreatedByChart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bound.Model = b.Model
 	if !reflect.DeepEqual(bound.Home, b.Home) || bound.Context.ObjectReference != b.Context.ObjectReference {
 		t.Fatal("CSI binding replaced HOME or context")
 	}
@@ -251,6 +250,7 @@ func TestCustomHomeRejectsForeignOrChangedStorage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			bindProviderTestModel(t, p, instance, &b)
 			home := simulateChartHome(t, p, instance, b, false)
 			switch name {
 			case "wrong class":
@@ -363,6 +363,7 @@ func TestKubernetesCustomHomeIgnoresPVCUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("same-name PVC was rejected by its new UID: %v", err)
 	}
+	bindProviderTestModel(t, p, instance, &first)
 	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, first); err != nil || !bound {
 		t.Fatalf("PVC UID is still enforced: %v", err)
 	}
@@ -529,7 +530,6 @@ func TestKubernetesCustomImageUpgradeRetainsHome(t *testing.T) {
 func TestCustomRuntimeConfigRequiresExplicitApproval(t *testing.T) {
 	p, _ := providerFixture(t)
 	for _, edit := range []func(*CustomRuntimeConfig){
-		func(c *CustomRuntimeConfig) { c.AgentManagedModel = false },
 		func(c *CustomRuntimeConfig) { c.ApprovedImages = []string{"registry.example.com/pi:latest"} },
 		func(c *CustomRuntimeConfig) { c.FSGroup = 0 },
 		func(c *CustomRuntimeConfig) { c.StorageSize = "0" },
@@ -544,5 +544,31 @@ func TestCustomRuntimeConfigRequiresExplicitApproval(t *testing.T) {
 		if _, err := ParseCustomRuntimeConfig(string(data)); err == nil {
 			t.Fatal("invalid provisioning configuration accepted")
 		}
+	}
+}
+
+// Storage-provider tests use a synthetic Gateway Secret; management API behavior
+// is covered independently in custom_gateway_test.go.
+func bindProviderTestModel(t *testing.T, p *KubernetesCustomBindings, instance *api.Agent, b *runtimebindings.Custom) {
+	t.Helper()
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: aiGatewayKeySecretName, Namespace: b.Namespace.Name,
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(instance, api.GroupVersion.WithKind("Agent"))}},
+		Type: corev1.SecretTypeOpaque, Data: map[string][]byte{aiGatewayKeySecretField: []byte("sk-dummy")}}
+	if err := p.reconciler.Create(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	b.Model = runtimebindings.ModelAccess{ObjectReference: objectReference(secret), Key: aiGatewayKeySecretField, BaseURL: testAIGatewayURL + "/v1"}
+}
+
+func TestCustomRuntimeLegacyModelModeNormalizesToGateway(t *testing.T) {
+	p, instance := providerFixture(t)
+	p.config.AgentManagedModel = true
+	raw, _ := json.Marshal(p.config)
+	cfg, err := ParseCustomRuntimeConfig(string(raw))
+	if err != nil || cfg.AgentManagedModel {
+		t.Fatalf("legacy configuration must allow Gateway-only migration: %v", err)
+	}
+	if !NewKubernetesCustomBindings(p.reconciler, cfg).UsesAIGateway(instance) {
+		t.Fatal("old mode selected direct access")
 	}
 }

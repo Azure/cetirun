@@ -145,7 +145,7 @@ func (c *registryAuditClient) Create(ctx context.Context, object client.Object, 
 
 func (c *registryAuditClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
 	switch list.(type) {
-	case *api.AgentList, *corev1.PodList, *appsv1.StatefulSetList, *rbacv1.RoleList, *rbacv1.ClusterRoleList, *rbacv1.RoleBindingList, *rbacv1.ClusterRoleBindingList:
+	case *api.AgentList, *appsv1.StatefulSetList, *rbacv1.RoleList, *rbacv1.ClusterRoleList, *rbacv1.RoleBindingList, *rbacv1.ClusterRoleBindingList:
 		c.inventories.Add(1)
 	}
 	return c.Client.List(ctx, list, options...)
@@ -205,6 +205,7 @@ func TestRegistryBuiltinSteadyReconcileDoesNotRepeatAudit(t *testing.T) {
 		t.Run(string(agentType), func(t *testing.T) {
 			r, agent, _ := registryFixture(t)
 			ctx := context.Background()
+			ConfigureTestGateway(t, r)
 			c := &registryAuditClient{Client: r.Client}
 			r.Client, r.APIReader = c, c
 			r.HelmClient = &registryNamespaceHelm{}
@@ -213,17 +214,32 @@ func TestRegistryBuiltinSteadyReconcileDoesNotRepeatAudit(t *testing.T) {
 			r.DomainSuffix = "agents.example.com"
 			agent.Spec.Agent.Type = agentType
 			agent.Spec.Agent.Port = ptr.To[int32](18080)
+			agent.Spec.GatewayTokenSecretRef = "gateway-token"
 			agent.Spec.Helm.Version = r.ChartVersion
 			agent.Finalizers = []string{api.Finalizer}
 			if err := r.Update(ctx, agent); err != nil {
 				t.Fatal(err)
 			}
+			namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instanceNamespace(agent.Name),
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(agent, api.GroupVersion.WithKind("Agent"))}}}
+			if err := r.Create(ctx, namespace); err != nil {
+				t.Fatal(err)
+			}
+			gatewayToken := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.GatewayTokenSecretRef, Namespace: namespace.Name},
+				Data: map[string][]byte{"API_SERVER_KEY": []byte("synthetic-runtime-token"), "CETIRUN_AUTH_KEY": []byte("synthetic-auth-key")}}
+			if err := r.Create(ctx, gatewayToken); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := r.syncRegistryCredentials(ctx, agent, "default"); err != nil {
 				t.Fatal(err)
 			}
+			now := metav1.Now()
 			agent.Status.Phase = api.PhaseReady
+			setCondition(&agent.Status.Conditions, api.ConditionHelmDeployed, metav1.ConditionTrue, "ChartInstalled", "synthetic steady workload")
+			agent.Status.AIGateway = &api.AIGatewayStatus{Phase: api.AIGatewayPhaseReady, Routed: true,
+				KeyID: "existing-key", KeySecretName: aiGatewayKeySecretName, LastVerifiedTime: &now}
 			agent.Status.ObservedGeneration = agent.Generation
-			agent.Status.ObservedOperatorHash = r.configHash(agent, nil, "", "")
+			agent.Status.ObservedOperatorHash = r.configHash(agent, nil, secretContentHash(gatewayToken.Data), "")
 			if err := r.updateStatus(ctx, agent); err != nil {
 				t.Fatal(err)
 			}
@@ -389,6 +405,7 @@ func TestRegistryPermissionErrorsAreRedacted(t *testing.T) {
 
 func TestMissingRegistrySourceIsHeldBeforeChartResolution(t *testing.T) {
 	r, agent, source := registryFixture(t)
+	ConfigureTestGateway(t, r)
 	ctx := context.Background()
 	agent.Spec.Helm.Version = "0.1.1"
 	agent.Finalizers = []string{api.Finalizer}

@@ -52,12 +52,12 @@ func gatewayCustomFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent, 
 	return p, instance, gateway, b
 }
 
-func TestCustomGatewayExplicitImageSelection(t *testing.T) {
+func TestCustomGatewayRequiredForEveryApprovedImage(t *testing.T) {
 	p, instance := readyProvider(t)
 	p.reconciler.CustomBindings = p
 	p.reconciler.AIGateway.Enabled = true
-	if p.reconciler.aiGatewayRequired(instance) {
-		t.Fatal("platform enablement migrated an image-owned Agent")
+	if !p.reconciler.aiGatewayRequired(instance) || !p.UsesAIGateway(instance) {
+		t.Fatal("all approved Custom images must require Gateway access")
 	}
 	p.config.GatewayImages = []string{*instance.Spec.Agent.Image}
 	p.config.AgentManagedModel = false
@@ -248,7 +248,7 @@ func TestCustomGatewayPublishesWorkloadReadinessBeforeCopilotRetry(t *testing.T)
 					customAgentUID: string(instance.UID),
 					customPlanHash: chart.lastValues["runtime"].(map[string]any)["workloadHash"].(string),
 				},
-			}, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
+			}, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1), Template: corev1.PodTemplateSpec{Spec: gatewayRuntimePod(api.AgentTypeCustom)}},
 				Status: appsv1.StatefulSetStatus{ObservedGeneration: 1, UpdatedReplicas: 1}}
 			if err := r.Create(ctx, workload); err != nil {
 				t.Fatal(err)

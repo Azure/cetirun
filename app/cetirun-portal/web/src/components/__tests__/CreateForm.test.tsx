@@ -311,15 +311,8 @@ describe("CreateForm", () => {
     expect(mockMutate.mock.calls[0][0]).not.toHaveProperty("memory");
   });
 
-  it("only shows Copilot model selection for the effective Copilot provider", async () => {
-    const user = userEvent.setup();
+  it("does not offer the retired direct Copilot model picker", () => {
     renderWithQuery(<CreateForm />);
-
-    expect(screen.getByText("GitHub Copilot model")).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "security");
-    await waitFor(() => expect(screen.queryByText("GitHub Copilot model")).not.toBeInTheDocument());
-
-    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
-    await waitFor(() => expect(screen.getByText("GitHub Copilot model")).toBeInTheDocument());
+    expect(screen.queryByText("GitHub Copilot model")).not.toBeInTheDocument();
   });
 });
