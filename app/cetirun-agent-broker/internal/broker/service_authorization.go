@@ -40,7 +40,7 @@ func serviceAuthorization(identity workloadIdentity, connection *connectionRecor
 	if connectionMode(connection.Connection) == modeInstallation && connection.Connection.GitHub != nil && connection.Connection.GitHub.InstallationID > 0 {
 		executor = "github-installation:" + strconv.FormatInt(connection.Connection.GitHub.InstallationID, 10)
 	}
-	return agenttools.CheckResponse{ExecutorAccountID: executor, InstanceUID: identity.Agent.UID, Connection: connectionView(connection.Connection), Binding: bindingView(binding), Service: service, ContractVersion: agenttools.ContractVersion}
+	return agenttools.CheckResponse{ExecutorAccountID: executor, InstanceUID: identity.Agent.UID, Connection: connectionView(connection.Connection), Binding: bindingView(binding), Service: service, ContractVersion: agenttools.ContractVersion, CredentialPolicy: identity.CredentialPolicy}
 }
 
 func (s *Server) checkServiceAuthorization(ctx context.Context, input serviceRequest, requireVersions bool) (workloadIdentity, *connectionRecord, ConnectionBinding, error) {
@@ -60,6 +60,12 @@ func (s *Server) checkServiceAuthorization(ctx context.Context, input serviceReq
 	service, ok := agenttools.LookupService(input.Service)
 	if !ok || input.ConnectionID == "" {
 		return fail("invalid_request", 400)
+	}
+	if err := s.authorizeCredentialPolicy(ctx, &identity, input.Service, service.Provider); err != nil {
+		return workloadIdentity{}, nil, ConnectionBinding{}, err
+	}
+	if requireVersions && !reflect.DeepEqual(input.CredentialPolicy, identity.CredentialPolicy) {
+		return fail("authorization_changed", 409)
 	}
 	owner := Owner{identity.Agent.OwnerTenantID, identity.Agent.OwnerObjectID}
 	// A same-owner Connection is never sufficient: require its deterministic,
@@ -128,6 +134,8 @@ func (s *Server) toolAuthorizationsList(w http.ResponseWriter, r *http.Request) 
 		writeAPIError(w, 503, "dependency_unavailable", "Binding storage is unavailable", correlationID(r))
 		return
 	}
+	// Discovery reports owned binding metadata. Per-service credential policy
+	// is checked on check/issue, not as a dependency of unrelated connections.
 	result := agenttools.ListResponse{InstanceUID: identity.Agent.UID, Connections: []agenttools.Connection{}, Bindings: []agenttools.Binding{}, ContractVersion: agenttools.ContractVersion}
 	for _, binding := range bindings {
 		if !activeBinding(binding, s.currentTime()) || binding.InstanceUID != identity.Agent.UID || binding.ID != bindingKey(identity.Agent.UID, binding.ConnectionID) || !sameOwner(binding.Owner, owner) {

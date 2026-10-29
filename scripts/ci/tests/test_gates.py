@@ -347,10 +347,14 @@ class WorkflowContractTests(unittest.TestCase):
     def test_operator_suite_budget_is_bounded_and_shared_by_all_entrypoints(self):
         makefile = (validate.ROOT / "app/cetirun-operator/Makefile").read_text()
         self.assertIn("GO_TEST_TIMEOUT := 20m", makefile)
-        for target in ("test", "test-envtest"):
+        self.assertIn("GO_ENVTEST_TIMEOUT := 30m", makefile)
+        for target, timeout in (
+            ("test", "GO_TEST_TIMEOUT"),
+            ("test-envtest", "GO_ENVTEST_TIMEOUT"),
+        ):
             with self.subTest(target=target):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
-                self.assertIn("-timeout=$(GO_TEST_TIMEOUT)", commands)
+                self.assertIn(f"-timeout=$({timeout})", commands)
                 self.assertIn("-count=1", commands)
                 self.assertNotIn("-run", commands)
                 self.assertNotIn("|| true", commands)
@@ -372,6 +376,9 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertNotIn("go test ./...", steps["Run go test"])
                 self.assertNotIn("continue-on-error", steps["Run go test"])
                 self.assertIn("timeout-minutes: 60", text)
+                if name == "operator-ci.yml":
+                    self.assertIn("run: make test-envtest", steps["Test Agent API admission"])
+                    self.assertNotIn("continue-on-error", steps["Test Agent API admission"])
         self.assertIn(
             "go -C ../internal test ./... -v -count=1",
             steps["Run go test"],

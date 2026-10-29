@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Azure/CetiRun/app/cetirun-connections-mcp/internal/config"
@@ -23,8 +24,16 @@ func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 		mutate           func(map[string]any, map[string]any, map[string]any, map[string]any)
 		allowed          bool
 		wantErr          error
+		policyManaged    bool
+		policyRevision   string
 	}{
 		{name: "pod bound without Entra identity", allowed: true},
+		{name: "status policy alone cannot qualify native identity", allowed: false,
+			mutate: func(review, pod, account, agent map[string]any) {
+				status := agent["status"].(map[string]any)
+				status["policy"] = map[string]any{"phase": "Applied"}
+				status["agentIdentity"] = map[string]any{"credentialPolicyRevision": "sha256:" + strings.Repeat("1", 64)}
+			}},
 		{name: "missing namespace owner", namespaceVariant: "missing"},
 		{name: "duplicate namespace owner", namespaceVariant: "duplicate"},
 		{name: "deleting namespace", namespaceVariant: "deleting"},
@@ -114,6 +123,9 @@ func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 			caller, err := client.Authenticate(context.Background(), "caller-proof")
 			if test.allowed && (err != nil || caller.InstanceUID != "instance-uid") {
 				t.Fatalf("valid workload rejected: %v", err)
+			}
+			if test.allowed && (caller.PolicyManaged != test.policyManaged || caller.CredentialPolicyRevision != test.policyRevision) {
+				t.Fatal("credential policy was not bound to the live Agent status")
 			}
 			if !test.allowed {
 				wantErr := test.wantErr

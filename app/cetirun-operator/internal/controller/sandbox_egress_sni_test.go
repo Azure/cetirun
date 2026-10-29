@@ -207,6 +207,57 @@ func updateObservedSNIPolicy(t *testing.T, r *AgentReconciler, kube client.Clien
 	}
 }
 
+func TestReconciledSandboxObservedSNIWithEntraAndConnections(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			f := nativeEntraFixture(t, kind, withObservedSNI(t, kind), withNativeConnections(t))
+			f.reconcileOK(t)
+			current := f.current(t)
+			expected := reconciledExpectationForTest(t, f)
+			state, receipt, err := f.r.readSandboxBootstrap(ctx, current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := expected.IdentityServiceAccount
+			if identity == nil || receipt.ServiceAccount == nil || identity.UID != receipt.ServiceAccount.UID ||
+				identity.Annotations[sandboxBootstrapAnnotation] != string(state.UID) {
+				t.Fatal("observed-SNI controls lost the bootstrap-owned Entra identity source")
+			}
+			workload := f.workload(t)
+			if workload.Spec.Template.Spec.ServiceAccountName != identity.Name ||
+				!slices.ContainsFunc(workload.Spec.Template.Spec.InitContainers, func(container corev1.Container) bool {
+					return container.Name == egresscapture.InitContainerName
+				}) {
+				t.Fatal("combined workload lost the Entra account or observed-SNI capture")
+			}
+			contract := &w.ConnectionsMCP{URL: f.r.ConnectionsMCPURL, Namespace: "cetirun-tools",
+				Audience: f.r.ConnectionsMCPAudience, CASecretName: f.r.ConnectionsMCPCASecretName}
+			if err := contract.ValidatePod(workload.Spec.Template.Spec); err != nil {
+				t.Fatal("combined workload lost the independent Connections proof:", err)
+			}
+			policy, err := f.r.resolvePolicy(ctx, current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if policy.sandboxRevision != expected.Revision {
+				t.Fatal("policy and workload compilation disagree on the combined control inputs")
+			}
+			handler, err := admissionhandler.NewPodHandler(f.kube, admissionhandler.PodConfig{
+				StateNamespace: f.r.OperatorNamespace, CoordinationConfigMapName: f.r.SandboxNativeCoordination.Identity.Name,
+				CoordinationConfigMapUID: string(f.r.SandboxNativeCoordination.Identity.UID),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pod := reconciledPodForTest(t, f, expected.Workloads[0])
+			if response := handler.Validate(ctx, reconciledPodRequest(t, pod)); !response.Allowed {
+				t.Fatal("combined controls failed current Pod admission:", response.Result)
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxObservedSNI(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mtls := range []bool{false, true} {

@@ -49,6 +49,13 @@ data:
       tier model's ceiling, and a request too long for the decided tier's
       models moved to a tier whose models can hold it, rather than refused.
 
+      A router with a jev classifier sends a request it could not classify,
+      for example while the decision model is unavailable, to its default
+      model rather than to LiteLLM's heuristic scorer, unless it sets
+      classifier_fallback itself. A router with its own tier_definitions
+      routes such a request to its fallback_tier, and LiteLLM refuses
+      classifier_fallback default_model next to them.
+
       Added after the ID above, so the binding stays the administrator's
       configuration. */}}
       {{- $params := $model.litellm_params | default dict }}
@@ -65,6 +72,9 @@ data:
       {{- end }}
       {{- if not (hasKey $config "enable_context_window_escalation") }}
       {{- $_ := set $config "enable_context_window_escalation" true }}
+      {{- end }}
+      {{- if and (eq (toString (get $config "classifier_type")) "jev") (not (hasKey $config "classifier_fallback")) (not (kindIs "slice" (get $config "tier_definitions"))) }}
+      {{- $_ := set $config "classifier_fallback" "default_model" }}
       {{- end }}
       {{- $_ := set $params "complexity_router_config" $config }}
       {{- $_ = set $model "litellm_params" $params }}

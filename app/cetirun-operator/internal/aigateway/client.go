@@ -604,6 +604,15 @@ func ChatModel(mode string) bool {
 	return false
 }
 
+// DecisionModel reports whether a deployment of the given mode is a decision
+// model, such as Microsoft-Decision-1: LiteLLM lists it with the evaluation
+// mode and calls it through its Decisions API, where it returns one
+// probability per tier for an auto router's jev classifier. It answers no
+// conversation.
+func DecisionModel(mode string) bool {
+	return mode == "evaluation"
+}
+
 func tokens(value *float64) int64 {
 	if value == nil || *value <= 0 {
 		return 0

@@ -100,7 +100,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 {{- $_ := unset $servers "cetirun-connections" }}
 {{- end }}
 `,
-		"templates/_sandbox.tpl": ".Values.connectionsMCP.enabled ",
+		"templates/_sandbox.tpl": "(and .Values.connectionsMCP.enabled (not $reconciled)) ",
 	} {
 		data, exists := assets[name]
 		if !exists || bytes.Count(*data, []byte(addition)) != 1 {

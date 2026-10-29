@@ -11,11 +11,20 @@ scopes and the connected user's rights. GitHub App connections additionally
 let each Agent select repositories and permissions that narrow its installation
 token. CetiRun binds an Agent to a Connection and selected services.
 
-Hermes and OpenClaw connect natively. Custom and Sandbox runtimes do not support
-this integration. Use a qualified Hermes runtime when OpenClaw is unavailable.
+Hermes and OpenClaw connect natively. Governed common-executor workloads require
+the explicit [native Connections configuration]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-native-workloads).
+Custom runtimes and retained single-start Sandbox lifetimes remain unsupported.
+Use a qualified Hermes runtime when OpenClaw is unavailable.
 Microsoft Entra Agent Identity is required for independent Azure access and the
 Azure/Microsoft delegated flow. GitHub supports personal OAuth and shared App
 connections; Google uses personal connections.
+
+For a policy-governed Agent, directory identity readiness is not aggregate
+`PolicyApplied`. The Operator also requires current, owner- and identity-bound
+credential-service readback; requested or desired revisions are not evidence.
+Native workload authorization additionally verifies the current Pod and protected
+common-executor sources; a stored restriction alone is not sufficient. Generic
+Entra workload projection and Connections' Pod-bound workload proof remain distinct.
 
 Platform administrators prepare these capabilities with
 [Agent Identity setup](../../operations/agent-identity/). The steps below are

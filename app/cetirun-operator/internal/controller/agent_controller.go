@@ -117,6 +117,7 @@ type AgentReconciler struct {
 	ConnectionsMCPRuntimeTypes         []string
 	ConnectionsMCPBrokerNamespace      string
 	ConnectionsMCPBrokerServiceAccount string
+	ConnectionsMCPNativeEnabled        bool
 	// agentIdentityGraphClientFactory is test-only dependency injection. A nil
 	// factory constructs the deployment's workload-identity-backed Graph client.
 	agentIdentityGraphClientFactory func() (agentIdentityDirectoryClient, error)
@@ -299,10 +300,24 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// recovery can make compute available.
 	policy, err := r.reconcilePolicy(ctx, instance)
 	if policy.dependencyUnavailable {
+		if reconciledSandbox && instance.Spec.Suspended && policy.identityPending {
+			// Shutdown and revocation were verified above. A new identity is
+			// bootstrapped only after resume, not by changing the stopped state.
+			instance.Status.Phase = cetirunv1alpha1.PhaseSuspended
+			instance.Status.AccessURL = ""
+			instance.Status.ObservedGeneration = instance.Generation
+			for _, condition := range []string{cetirunv1alpha1.ConditionReady, cetirunv1alpha1.ConditionPodReady,
+				cetirunv1alpha1.ConditionSandboxReady, cetirunv1alpha1.ConditionIngressReady} {
+				setCondition(&instance.Status.Conditions, condition, metav1.ConditionFalse,
+					"Suspended", "Suspension is confirmed; identity preparation waits for resume")
+			}
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, stderrors.Join(err, r.updateStatus(ctx, instance))
+		}
 		// A transient Team, policy, or Gateway catalog failure cannot prove a
 		// denial. Preserve the key identity and spend record, but block it and
 		// stop compute until fresh authorization evidence is available.
 		bootstrapErr := r.bootstrapPendingIngressMTLS(ctx, instance, policy.ingressMTLSPending)
+		bootstrapErr = stderrors.Join(bootstrapErr, r.bootstrapPendingIdentity(ctx, instance, policy.identityPending))
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
 		return result, stderrors.Join(err, bootstrapErr, holdErr)
 	} else if err != nil {
@@ -427,6 +442,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if agentIdentityRequested(instance) && (instance.Status.AgentIdentity == nil || instance.Status.AgentIdentity.ObservedGeneration != instance.Generation) {
 		status := ensureAgentIdentityStatus(instance)
 		status.Phase = cetirunv1alpha1.AgentIdentityPhaseProvisioning
+		status.CredentialPolicyRevision = ""
 		status.ObservedGeneration = instance.Generation
 		status.Reason = ""
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
@@ -501,7 +517,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
 	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
-		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team))
+		brokerRBACErr := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance))
 		namespaceMissing := stderrors.Is(brokerRBACErr, errConnectionsMCPBrokerNamespaceMissing)
 		if brokerRBACErr != nil && !namespaceMissing {
 			logger.Error(brokerRBACErr, "Broker storage access setup failed", "instance", instance.Name)
@@ -691,7 +707,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 	}
 
-	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
+	if err := r.reconcileConnectionsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team) || r.nativeConnectionsRequested(instance)); err != nil {
 		return r.failWith(ctx, instance, "BrokerStorageAccessFailed", fmt.Sprintf("Broker storage access setup failed: %v", err))
 	}
 	// 7. Ensure gateway token secret.
@@ -769,6 +785,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
 			now := metav1.Now()
 			instance.Status.AgentIdentity.LastVerifiedTime = &now
+		}
+		if instance.Status.Policy != nil {
+			// Broker readback uses the persisted canonical identity, never the
+			// in-memory result of a directory request.
+			if err := r.updateStatus(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -891,6 +914,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			gatewaySecretResourceVersionAnnotation: gatewaySecretResourceVersion,
 		})
 	}
+	if connectionsCAHash != "" && reconciledSandbox {
+		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
+	}
 	if reconciledSandbox {
 		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, helmValues)
 	} else {
@@ -923,7 +949,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
 	helmValues = prepared.Values
-	if connectionsCAHash != "" {
+	if connectionsCAHash != "" && !reconciledSandbox {
 		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{"cetirun.microsoft.com/connections-ca-hash": connectionsCAHash})
 	}
 	if reconciledSandbox {

@@ -16,6 +16,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -50,16 +51,28 @@ type sandboxBootstrapObject struct {
 }
 
 type sandboxBootstrapReceipt struct {
-	Reconciled   bool                      `json:"reconciled,omitempty"`
-	Version      string                    `json:"version"`
-	AgentName    string                    `json:"agentName"`
-	AgentUID     types.UID                 `json:"agentUID"`
-	AgentType    api.AgentType             `json:"agentType"`
-	Namespace    string                    `json:"namespace"`
-	Home         runtimebindings.HomeClaim `json:"home"`
-	ChartVersion string                    `json:"chartVersion"`
-	Objects      []sandboxBootstrapObject  `json:"objects"`
-	Skills       *sandboxBootstrapSkills   `json:"skills,omitempty"`
+	Reconciled     bool                      `json:"reconciled,omitempty"`
+	Version        string                    `json:"version"`
+	AgentName      string                    `json:"agentName"`
+	AgentUID       types.UID                 `json:"agentUID"`
+	AgentType      api.AgentType             `json:"agentType"`
+	Namespace      string                    `json:"namespace"`
+	Home           runtimebindings.HomeClaim `json:"home"`
+	ChartVersion   string                    `json:"chartVersion"`
+	Objects        []sandboxBootstrapObject  `json:"objects"`
+	Skills         *sandboxBootstrapSkills   `json:"skills,omitempty"`
+	ServiceAccount *sandboxBootstrapObject   `json:"serviceAccount,omitempty"`
+}
+
+func (receipt *sandboxBootstrapReceipt) inventory() []*sandboxBootstrapObject {
+	items := make([]*sandboxBootstrapObject, 0, len(receipt.Objects)+1)
+	for i := range receipt.Objects {
+		items = append(items, &receipt.Objects[i])
+	}
+	if receipt.ServiceAccount != nil {
+		items = append(items, receipt.ServiceAccount)
+	}
+	return items
 }
 
 func (r *AgentReconciler) sandboxBootstrapKey(agent *api.Agent) client.ObjectKey {
@@ -86,8 +99,10 @@ func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.A
 		(receipt.AgentType != api.AgentTypeOpenClaw && receipt.AgentType != api.AgentTypeHermes) ||
 		receipt.Namespace != instanceNamespace(agent.Name) || receipt.Namespace == r.OperatorNamespace ||
 		len(validation.IsDNS1123Label(receipt.Namespace)) != 0 || receipt.ChartVersion == "" ||
-		!((receipt.Version == "v1" && receipt.Skills == nil && len(receipt.Objects) == 5) ||
-			(receipt.Version == "v2" && receipt.Skills != nil && len(receipt.Objects) == 7)) {
+		!((receipt.Version == "v1" && receipt.ServiceAccount == nil && receipt.Skills == nil && len(receipt.Objects) == 5) ||
+			(receipt.Version == "v2" && receipt.ServiceAccount == nil && receipt.Skills != nil && len(receipt.Objects) == 7) ||
+			(receipt.Version == "v3" && receipt.Reconciled && receipt.ServiceAccount != nil && receipt.Skills == nil && len(receipt.Objects) == 5) ||
+			(receipt.Version == "v4" && receipt.Reconciled && receipt.ServiceAccount != nil && receipt.Skills != nil && len(receipt.Objects) == 7)) {
 		return nil, nil, fmt.Errorf("Sandbox bootstrap ownership receipt is invalid")
 	}
 	size, err := resource.ParseQuantity(receipt.Home.StorageSize)
@@ -111,6 +126,10 @@ func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.A
 	for i, entry := range receipt.Objects {
 		if entry.Kind != kinds[i] || len(validation.IsDNS1123Subdomain(entry.Name)) != 0 {
 			return nil, nil, fmt.Errorf("Sandbox bootstrap resource inventory is invalid")
+		}
+		if account := receipt.ServiceAccount; account != nil && (account.Kind != "ServiceAccount" ||
+			account.Name == "default" || len(validation.IsDNS1123Subdomain(account.Name)) != 0) {
+			return nil, nil, fmt.Errorf("Sandbox bootstrap ServiceAccount inventory is invalid")
 		}
 	}
 	role, binding := r.operatorNamespaceRBAC(receipt.Namespace)
@@ -157,6 +176,10 @@ func (r *AgentReconciler) saveSandboxBootstrap(ctx context.Context, object *core
 
 func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	agent, config := attempt.agent, r.SandboxPreparation.bootstrap
+	accountName, err := r.bootstrapIdentityAccountName(attempt)
+	if err != nil {
+		return err
+	}
 	object, receipt, err := r.readSandboxBootstrap(ctx, agent)
 	if apierrors.IsNotFound(err) {
 		if controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
@@ -213,6 +236,13 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 				sandboxBootstrapObject{Kind: "PersistentVolume", Name: sandboxSkillsVolumeName(agent.UID)})
 			attempt.sources = append(attempt.sources, publication.Catalog)
 		}
+		if accountName != "" {
+			receipt.ServiceAccount = &sandboxBootstrapObject{Kind: "ServiceAccount", Name: accountName}
+			receipt.Version = "v3"
+			if receipt.Skills != nil {
+				receipt.Version = "v4"
+			}
+		}
 		raw, err := json.Marshal(receipt)
 		if err != nil {
 			return err
@@ -242,6 +272,30 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		receipt.AgentType != agent.Spec.Agent.Type || receipt.Reconciled != attempt.reconciled {
 		return fmt.Errorf("%w: changing bootstrap storage, native type, Secret or chart requires an explicit handoff", sandboxworkload.ErrStorageTransitionRequired)
 	}
+	if accountName != "" && receipt.ServiceAccount != nil && receipt.ServiceAccount.Name != accountName {
+		return fmt.Errorf("%w: the recorded ServiceAccount name is immutable for this Agent", sandboxworkload.ErrStorageTransitionRequired)
+	}
+	if accountName != "" && receipt.ServiceAccount == nil &&
+		!slices.ContainsFunc(receipt.Objects, func(entry sandboxBootstrapObject) bool { return entry.UID == "" }) {
+		quiescence := &KubernetesNativeQuiescence{APIReader: r.customReader(), Reconciled: true}
+		if err := quiescence.CheckQuiesced(ctx, agent, SandboxPrerequisites{
+			AgentUID: agent.UID, AgentGeneration: agent.Generation, NamespaceUID: receipt.Objects[0].UID,
+			Home: sandboxworkload.ObjectIdentity{Name: receipt.Objects[3].Name, UID: receipt.Objects[3].UID},
+		}); err != nil {
+			return err
+		}
+		if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+			return err
+		}
+		receipt.ServiceAccount = &sandboxBootstrapObject{Kind: "ServiceAccount", Name: accountName}
+		receipt.Version = "v3"
+		if receipt.Skills != nil {
+			receipt.Version = "v4"
+		}
+		if err := r.saveSandboxBootstrap(ctx, object, receipt); err != nil {
+			return err
+		}
+	}
 	if receipt.Skills != nil {
 		if config.SkillsCatalogConfigMapName != receipt.Skills.Catalog.Name || config.SkillsClaimName != receipt.Objects[5].Name {
 			return fmt.Errorf("%w: recorded skills catalog or claim selection changed; recovery is required", sandboxworkload.ErrStorageTransitionRequired)
@@ -270,7 +324,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 			return err
 		}
 	}
-	for i := range receipt.Objects {
+	for i, entry := range receipt.inventory() {
 		// The static skills PV is created only after its PVC UID is durably recorded.
 		desired := r.sandboxBootstrapObjects(agent, object, receipt)
 		resource := desired[i]
@@ -290,10 +344,10 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		current := resource.DeepCopyObject().(client.Object)
 		err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(resource), current)
 		if apierrors.IsNotFound(err) {
-			if receipt.Objects[i].UID != "" {
-				return fmt.Errorf("recorded Sandbox bootstrap %s is missing; recovery is required", receipt.Objects[i].Kind)
+			if entry.UID != "" {
+				return fmt.Errorf("recorded Sandbox bootstrap %s is missing; recovery is required", entry.Kind)
 			}
-			if receipt.Objects[i].Kind == "Secret" {
+			if entry.Kind == "Secret" {
 				secret, err := r.newGatewayTokenSecret(agent)
 				if err != nil {
 					return err
@@ -307,14 +361,14 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		} else if err != nil {
 			return err
 		}
-		if err := validateSandboxBootstrapObject(current, resource, receipt.Objects[i].UID, false); err != nil {
+		if err := validateSandboxBootstrapObject(current, resource, entry.UID, false); err != nil {
 			return err
 		}
-		if receipt.Objects[i].UID == "" {
+		if entry.UID == "" {
 			if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
 				return err
 			}
-			receipt.Objects[i].UID = current.GetUID()
+			entry.UID = current.GetUID()
 			if err := r.saveSandboxBootstrap(ctx, object, receipt); err != nil {
 				return err
 			}
@@ -401,6 +455,13 @@ func (r *AgentReconciler) sandboxBootstrapObjects(agent *api.Agent, receiptObjec
 	if receipt.Skills != nil {
 		objects = append(objects, sandboxSkillsBootstrapObjects(receipt)...)
 	}
+	if receipt.ServiceAccount != nil {
+		objects = append(objects, &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: receipt.ServiceAccount.Name, Namespace: receipt.Namespace,
+				Labels: map[string]string{sandboxpolicy.AgentUIDLabel: string(agent.UID)}},
+			AutomountServiceAccountToken: ptr.To(false),
+		})
+	}
 	for _, object := range objects {
 		object.SetFinalizers([]string{sandbox.BootstrapFinalizer})
 		object.SetOwnerReferences([]metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)})
@@ -421,6 +482,14 @@ func validateSandboxBootstrapObject(current, desired client.Object, uid types.UI
 	for key, value := range desired.GetAnnotations() {
 		if current.GetAnnotations()[key] != value {
 			return fmt.Errorf("Sandbox bootstrap resource differs from its recorded creation intent")
+		}
+		if _, ok := desired.(*corev1.ServiceAccount); ok {
+			account := current.(*corev1.ServiceAccount)
+			if account.AutomountServiceAccountToken == nil || *account.AutomountServiceAccountToken ||
+				len(account.Secrets)+len(account.ImagePullSecrets) != 0 ||
+				account.Labels[sandboxpolicy.AgentUIDLabel] != desired.GetLabels()[sandboxpolicy.AgentUIDLabel] {
+				return fmt.Errorf("bootstrap ServiceAccount must retain its dedicated unprivileged identity")
+			}
 		}
 	}
 	if expected, ok := desired.(*corev1.PersistentVolume); ok {

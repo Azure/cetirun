@@ -55,6 +55,13 @@ func (s *Server) agentIdentityCreate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusForbidden, "forbidden", "Instance owner binding is invalid", correlation)
 		return
 	}
+	if agent.PolicyManaged {
+		agent, err = s.store.qualifyNativeAgent(r.Context(), agent, nil)
+		if err != nil {
+			writeAPIError(w, http.StatusConflict, "identity_not_ready", "Current native workload identity is not ready", correlation)
+			return
+		}
+	}
 	var input toolIdentityRequest
 	if !decodeJSON(w, r, &input) {
 		return

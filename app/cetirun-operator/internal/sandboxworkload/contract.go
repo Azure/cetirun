@@ -44,21 +44,22 @@ var (
 // This package validates their shape but does not compile network or identity
 // policy. Revision must cover both the resolution and the trusted control inputs.
 type Controls struct {
-	Revision           string
-	ResolutionRevision string
-	Binding            sandbox.Binding
-	DNSIPs             []string
-	TrustedProxyIPs    []string `json:",omitempty"`
-	IngressMode        api.AgentPolicyIngressMode
-	ServiceAccountName string
-	Volumes            []corev1.Volume
-	VolumeMounts       []corev1.VolumeMount
-	Environment        []corev1.EnvVar
-	Objects            []unstructured.Unstructured
-	PodLabels          map[string]string
-	IngressMTLS        *ingressmtls.Plan   `json:",omitempty"`
-	EgressSNI          *egresscapture.Plan `json:",omitempty"`
-	ProxyDigest        string              `json:",omitempty"`
+	Revision             string
+	ResolutionRevision   string
+	Binding              sandbox.Binding
+	DNSIPs               []string
+	TrustedProxyIPs      []string `json:",omitempty"`
+	IngressMode          api.AgentPolicyIngressMode
+	ServiceAccountName   string
+	ServiceAccountSource *corev1.ServiceAccount `json:",omitempty"`
+	Volumes              []corev1.Volume
+	VolumeMounts         []corev1.VolumeMount
+	Environment          []corev1.EnvVar
+	Objects              []unstructured.Unstructured
+	PodLabels            map[string]string
+	IngressMTLS          *ingressmtls.Plan   `json:",omitempty"`
+	EgressSNI            *egresscapture.Plan `json:",omitempty"`
+	ProxyDigest          string              `json:",omitempty"`
 }
 
 type ObjectIdentity struct {
@@ -75,6 +76,7 @@ type Helpers struct {
 }
 
 type Input struct {
+	ConnectionsMCP    *ConnectionsMCP `json:",omitempty"`
 	Reconciled        bool
 	PlannedMigration  *api.PlannedMigrationRequest `json:",omitempty"`
 	Resolution        *sandbox.Resolution

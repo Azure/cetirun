@@ -60,6 +60,7 @@
     pages = [
       "/docs/getting-started/platform",
       "/docs/operations/infrastructure",
+      "/docs/operations/policy-teams",
       "/docs/operations/agent-identity",
     ]
   [[modules.groups]]
@@ -67,6 +68,7 @@
     pages = [
       "/docs/concepts/configuration",
       "/docs/guides/teams",
+      "/docs/operations/smart-routing",
       "/docs/operations/storage",
       "/docs/operations/istio",
       "/docs/guides/agent-ingress-mtls",

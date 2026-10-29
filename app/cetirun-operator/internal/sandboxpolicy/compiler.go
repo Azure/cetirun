@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"slices"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -19,7 +20,6 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/egresscapture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
-	corev1 "k8s.io/api/core/v1"
 )
 
 // Compile has no side effects and never releases an execution hold. Qualified
@@ -59,6 +59,29 @@ func Compile(input CompileInput) (*Plan, error) {
 		return nil, err
 	}
 	input.Resolution, input.Platform = resolution, platform
+	if input.ConnectionsMCP != nil {
+		requested := input.ConnectionsMCP
+		var found *Peer
+		for _, peer := range platform.Topology.Peers {
+			if peer.Name == requested.Peer.Name && peer.Namespace == requested.Peer.Namespace && peer.UID == requested.Peer.UID {
+				copy := peer
+				found = &copy
+			}
+		}
+		if found == nil || found.Namespace == "" || len(found.IPs) == 0 || len(requested.Ports) == 0 {
+			return nil, fmt.Errorf("%w: Connections requires a registered managed destination", ErrUnavailable)
+		}
+		ports, err := canonicalPorts(requested.Ports, resolution.Capabilities)
+		if err != nil {
+			return nil, err
+		}
+		for _, port := range ports {
+			if port.Protocol != corev1.ProtocolTCP || port.Port == 53 {
+				return nil, fmt.Errorf("%w: Connections requires fixed TCP service ports", ErrUnsupportedControl)
+			}
+		}
+		input.ConnectionsMCP = &Destination{Peer: *found, Ports: ports}
+	}
 	var mtls *ingressmtls.Plan
 	if resolution.AgentPolicy.Network.Ingress.RequireMTLS {
 		if !input.NativeExecution || platform.IngressMTLS == nil {
@@ -153,11 +176,13 @@ func Compile(input CompileInput) (*Plan, error) {
 	}
 	if plan.Identity.ServiceAccount != nil {
 		plan.Identity.ServiceAccount.Annotations[RevisionAnnotation] = plan.Revision
-		resource, err = manifest(plan.Identity.ServiceAccount)
-		if err != nil {
-			return nil, err
+		if !plan.Identity.BootstrapServiceAccount {
+			resource, err = manifest(plan.Identity.ServiceAccount)
+			if err != nil {
+				return nil, err
+			}
+			plan.Resources = append(plan.Resources, resource)
 		}
-		plan.Resources = append(plan.Resources, resource)
 	}
 	for i := range plan.Identity.RoleBindings {
 		plan.Identity.RoleBindings[i].Annotations[RevisionAnnotation] = plan.Revision

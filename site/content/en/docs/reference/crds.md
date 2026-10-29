@@ -54,7 +54,7 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.image` | Required for Custom; once set, cannot be cleared. Built-in defaults are pinned from the selected chart |
 | `agent.registrySecretRef.name` | Optional Portal-managed source Secret reference; no namespace, key, or inline credentials |
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
-| `agent.port` | HTTP port, 1ΓÇô65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
+| `agent.port` | HTTP port, 1–65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
 | `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
 | `team` | Optional for legacy Agents; required for policy binding. Portal Gateway creation still requires an existing Team |
 | `sandboxRef` | Opt into a Team-permitted Sandbox; omitted for legacy execution |
@@ -62,7 +62,7 @@ migration. Retention does not protect against a schema downgrade.
 | `modelAccess.sharedModels` | Explicit request for policy-bound Agents; defaults on for legacy Agents |
 | `modelAccess.githubCopilot` | Explicit request for policy-bound Agents; defaults on for legacy Agents when the deployment offers Copilot |
 | `modelAccess.monthlyBudgetUSD` | Optional LiteLLM USD monthly budget override, bounded by the policy maximum |
-| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team Γê¬ add) ΓêÆ remove` |
+| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team ∪ add) − remove` |
 | `helm.version` | Agent chart pin; backfilled from the operator default on first reconciliation |
 | `helm.values` | Map-shaped top-level entries; see admission notes below |
 | `suspended` | Request zero replicas and removal of the instance VirtualService; false when omitted |
@@ -218,9 +218,9 @@ not material to paste into a public bug report.
 | `skillStorage.mountPath` | Optional read-only alias for native Agents; common view at `$HOME/.agents/skills` |
 | `modelRouters` | Smart-routing models, at most 10, keyed by `name`; see [smart routing](../../guides/teams/#smart-routing) |
 | `modelRouters[].name` | Model name instances request: 1 to 64 characters without whitespace or `/`, not starting with `cetirun-` in any letter case |
-| `modelRouters[].classifier.type` | `heuristic` (default) or `llm`; LiteLLM's licence-limited classifier types are not accepted |
-| `modelRouters[].classifier.model` | Shared model that classifies requests, not a router of the Gateway; required for `llm` and not allowed for `heuristic` |
-| `modelRouters[].tiers.simple`, `.medium`, `.complex` | Required model of each tier: a shared model name that is not a router of the Gateway, or `copilot/<model>` for a GitHub Copilot model; `medium` also takes requests that cannot be classified |
+| `modelRouters[].classifier.type` | `heuristic` (default), `llm` or `jev`; LiteLLM's licence-limited classifier types are not accepted |
+| `modelRouters[].classifier.model` | Shared model that classifies requests, not a router of the Gateway: a chat model for `llm`, a decision model (`model_info.mode: evaluation`) for `jev`; required for `llm` and `jev` and not allowed for `heuristic` |
+| `modelRouters[].tiers.simple`, `.medium`, `.complex` | Required model of each tier: the name of a shared model that answers conversations and is not a router of the Gateway, or `copilot/<model>` for a GitHub Copilot model; `medium` also takes requests that cannot be classified |
 | `modelRouters[].tiers.reasoning` | Optional; empty uses the `complex` model |
 
 | Field under `status` | Contract |
@@ -278,7 +278,7 @@ returns these fields along with `uid` and `resourceVersion`; updates and deletes
 must send those two version fields. A stale version returns `409 Conflict`,
 and missing version fields return `428 Precondition Required`.
 
-The **Admin ΓåÆ Sandboxes** pages manage the complete Sandbox configuration:
+The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
 runtime type, Agent and helper resource requests/limits, HOME storage, and
 scratch size. They use these admin-only endpoints:
 
@@ -467,9 +467,10 @@ and trusted capture-init images; it is not full hostname enforcement and
 continues uninspected after the explicit one-second inspection window.
 Ingress mTLS requires the
 separate [administrator-registered managed endpoint](../../guides/agent-ingress-mtls/),
-not a Portal toggle. Agent Identity lacks
-the credential-service evidence needed for aggregate `PolicyApplied`. Other
-controls also depend on the selected execution profile and platform capabilities.
+not a Portal toggle. Broker-backed Agent Identity requires current credential-policy
+readback for aggregate `PolicyApplied`; common-executor workloads also require the
+registered native Connections integration. Other controls depend on the selected
+execution profile and platform capabilities.
 New common-executor Kata lifetimes support internal CIDR grants and SCTP port
 rules only with the corresponding explicit platform registration. SCTP internal
 grants are limited to direct endpoints, excluding registered Service and

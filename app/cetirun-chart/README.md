@@ -183,6 +183,14 @@ single-agent MVP. Legacy bootstrap behavior is unchanged.
 Retirement still reads the auth store on every start and compacts existing
 databases. An initially empty store needs no second expensive CLI read; whenever
 logout removes a profile, successful empty-store readback remains mandatory.
+These auth-store commands use a temporary configuration with plugins disabled,
+avoiding unrelated plugin discovery on every CLI invocation. The Agent's saved
+configuration and the normal doctor and gateway plugin behavior are unchanged.
+Native OpenClaw doctor, auth-retirement and gateway processes also disable
+Node's optional on-disk compile cache. Recreating that cache in ephemeral Pod
+scratch adds startup I/O on virtualized filesystems. This changes neither the
+JavaScript being executed nor plugin selection, resource limits, health checks
+or lifecycle deadlines. Legacy OpenClaw and Hermes keep their existing settings.
 
 The Gateway deployment must enable `operatorIntegration` and configure shared
 models in its chart so the Operator can bind AgentPolicy grants to the

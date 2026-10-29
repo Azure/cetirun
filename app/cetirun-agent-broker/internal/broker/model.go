@@ -123,6 +123,7 @@ type bindingRecord struct {
 }
 
 type Agent struct {
+	PolicyManaged         bool
 	Deleting              bool
 	RuntimeType           string
 	Name                  string

@@ -78,6 +78,14 @@ func (r *AgentReconciler) bootstrapReconciledSandbox(ctx context.Context, agent 
 	if !recorded {
 		return fmt.Errorf("common Sandbox reconciliation requires its recorded bootstrap ownership; existing namespaces are not adopted")
 	}
+	if r.nativeConnectionsRequested(agent) && agent.Status.Namespace != instanceNamespace(agent.Name) {
+		// Namespace ownership is already read back from bootstrap. Publish its
+		// locator before Ready so credential readback cannot cycle on readiness.
+		agent.Status.Namespace = instanceNamespace(agent.Name)
+		if err := r.updateStatus(ctx, agent); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -106,6 +114,10 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	if err := r.sandboxIngressMTLSInputs(ctx, attempt); err != nil {
 		return nil, fmt.Errorf("%w: %w", errSandboxIngressMTLS, err)
+	}
+	connections, err := r.nativeConnectionsInputs(ctx, attempt)
+	if err != nil {
+		return nil, err
 	}
 	if agent.Spec.Agent.RegistrySecretRef != nil {
 		name, err := registryauth.PullSecretName(agent.UID)
@@ -151,11 +163,20 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		return nil, err
 	}
 	platform := attempt.configuration.Platforms[attempt.resolution.Sandbox.Type]
+	identityPin, err := r.sandboxIdentityPin(ctx, attempt)
+	if err != nil {
+		return nil, err
+	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
+		ConnectionsMCP:  connections,
 		NativeExecution: true, Resolution: *attempt.resolution, AgentName: agent.Name,
 		Namespace: attempt.input.Namespace.Name, ServiceName: attempt.input.WorkloadName, Platform: platform,
+		IdentityPin: identityPin,
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := r.syncSandboxIdentity(ctx, attempt); err != nil {
 		return nil, err
 	}
 	attempt.input.Controls, err = w.ControlsFromPlan(*attempt.plan)
@@ -506,6 +527,9 @@ func (r *AgentReconciler) observeReconciledSandbox(ctx context.Context, agent *a
 		current.Revision != expected.Revision || current.AgentGeneration != agent.Generation {
 		return fmt.Errorf("Sandbox desired expectation changed during reconciliation")
 	}
+	if err := r.verifyReconciledIdentity(ctx, current); err != nil {
+		return err
+	}
 	for _, desired := range current.Controls {
 		actual := &unstructured.Unstructured{}
 		actual.SetGroupVersionKind(desired.GroupVersionKind())
@@ -535,6 +559,20 @@ func (r *AgentReconciler) reconciledSandboxApplied(ctx context.Context, agent *a
 	expected, err := prepared.ReconcileExpectation()
 	if err != nil {
 		return false, err
+	}
+	if expected.IdentityServiceAccount != nil {
+		state := &corev1.ConfigMap{}
+		if err := r.customReader().Get(ctx, client.ObjectKey{Namespace: r.OperatorNamespace,
+			Name: w.PodExpectationName(expected.Namespace.Name, expected.Namespace.UID)}, state); err != nil {
+			return false, err
+		}
+		current, err := w.ReadReconcileExpectation(state)
+		if err != nil || current.PlanHash != expected.PlanHash || current.Revision != expected.Revision {
+			return false, fmt.Errorf("current identity expectation changed before apply observation")
+		}
+		if err := r.verifyReconciledIdentity(ctx, current); err != nil {
+			return false, err
+		}
 	}
 	for _, desired := range expected.Controls {
 		current := &unstructured.Unstructured{}

@@ -400,9 +400,9 @@ type AgentIdentityStatus struct {
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
-	// CredentialPolicyRevision is reserved for a future typed credential
-	// service read-back. The legacy bearer issuer must leave it empty and cannot
-	// satisfy aggregate Policy application readiness.
+	// CredentialPolicyRevision identifies a current, owned Broker enforcement
+	// record read back independently of its application. It binds the policy,
+	// owner and canonical Agent Identity; token issuance is not applied evidence.
 	// +optional
 	CredentialPolicyRevision string `json:"credentialPolicyRevision,omitempty"`
 }
@@ -675,6 +675,10 @@ type AIGatewayCatalog struct {
 	// While the Gateway blocks requests for unpriced models, they leave out
 	// the models it would refuse.
 	SharedModels []AIGatewayCatalogModel `json:"sharedModels"`
+	// DecisionModels are the shared decision models, such as
+	// Microsoft-Decision-1, that a Team router's jev classifier may use.
+	// Agents are not configured with them.
+	DecisionModels []string `json:"decisionModels,omitempty"`
 	// GitHubCopilot reports whether the deployment gives Agents a GitHub
 	// Copilot proxy. Without it, an Agent's GitHub Copilot switch adds no
 	// models.

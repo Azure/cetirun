@@ -106,6 +106,9 @@ func TestSandboxCleanupDoesNotRequireLocalSecretAccess(t *testing.T) {
 	f.agent.Spec.SandboxRef = "sandbox"
 	base := f.store.client.Transport
 	f.store.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/apis/rbac.authorization.k8s.io/v1/namespaces/agents/rolebindings/cetirun-agent-tools-broker" {
+			return securityJSONResponse(t, 404, map[string]any{}), nil
+		}
 		if r.URL.Path == "/api/v1/namespaces/agents/secrets" {
 			t.Fatal("Sandbox secret access")
 		}
