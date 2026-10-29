@@ -5,12 +5,14 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -75,6 +77,26 @@ func testRouter(name, simple, medium, complex string) api.TeamModelRouter {
 		Tiers: api.TeamModelRouterTiers{Simple: simple, Medium: medium, Complex: complex}}
 }
 
+// testRouterView is what a listing tells the Team router planner: the given
+// shared chat models, and the given shared routers of the Gateway.
+func testRouterView(chat []string, routers ...string) aiGatewaySharedRouterView {
+	view := aiGatewaySharedRouterView{known: true, routers: map[string]aigateway.Router{}, shared: map[string]bool{},
+		nonChat: map[string]bool{}, decision: map[string]bool{}}
+	for _, name := range chat {
+		view.shared[name] = true
+	}
+	for _, name := range routers {
+		view.shared[name], view.routers[name] = true, aigateway.Router{}
+	}
+	return view
+}
+
+// withDecisionModel adds a shared decision model to the view.
+func withDecisionModel(view aiGatewaySharedRouterView, name string) aiGatewaySharedRouterView {
+	view.shared[name], view.nonChat[name], view.decision[name] = true, true, true
+	return view
+}
+
 func routerTeam(routers ...api.TeamModelRouter) *api.Team {
 	team := aiGatewayTestTeam(testAIGatewayTeam)
 	team.Spec.ModelRouters = routers
@@ -95,13 +117,13 @@ func reconcileRouters(t *testing.T, r *AgentReconciler, kube client.Client, team
 }
 
 func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
-	shared := []aiGatewayCatalogModel{{Name: testSmallModel}, {Name: testSharedModelOne}}
+	view := testRouterView([]string{testSmallModel, testSharedModelOne})
 	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne))
 	team.Spec.ModelRouters = append(team.Spec.ModelRouters, api.TeamModelRouter{
 		Name: "auto-llm", Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: testSmallModel},
 		Tiers: api.TeamModelRouterTiers{Simple: "copilot/fast-1", Medium: testSmallModel, Complex: testSharedModelOne, Reasoning: "copilot/deep-1"},
 	})
-	plans := planModelRouters(team, shared, nil, nil)
+	plans := planModelRouters(team, view, nil)
 	if len(plans) != 2 || plans[0].problem != "" || plans[1].problem != "" {
 		t.Fatalf("plans = %+v", plans)
 	}
@@ -130,6 +152,10 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 	if _, ok := config["classifier_llm_config"]; ok {
 		t.Fatal("a heuristic router names no classifier model")
 	}
+	// A heuristic router keeps LiteLLM's default for a failed classification.
+	if _, ok := config["classifier_fallback"]; ok {
+		t.Fatalf("a heuristic router sets no classifier_fallback: %v", config)
+	}
 	markers := config["reminder_markers"].([]map[string]string)
 	if len(markers) != 2 || markers[0]["open"] != "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" || markers[1]["close"] != "</system-reminder>" {
 		t.Fatalf("reminder markers = %v", markers)
@@ -148,22 +174,114 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 		!slices.Equal(llm.copilot, []string{"copilot/fast-1", "copilot/deep-1"}) || !slices.Equal(llm.shared, []string{testSmallModel, testSharedModelOne}) {
 		t.Fatalf("llm router = %+v, config %v", llm, llmConfig)
 	}
+	// An llm classifier that fails falls back to LiteLLM's heuristic scorer, as before.
+	if _, ok := llmConfig["classifier_fallback"]; ok {
+		t.Fatalf("an llm router sets no classifier_fallback: %v", llmConfig)
+	}
 
 	// The ID follows the configuration; the model name does not.
 	team.Spec.ModelRouters[0].Tiers.Complex = testSmallModel
-	changed := planModelRouters(team, shared, nil, nil)[0]
+	changed := planModelRouters(team, view, nil)[0]
 	if changed.gatewayName != plan.gatewayName || changed.request.ID == plan.request.ID {
 		t.Fatalf("a changed router keeps its name %q and gets a new ID, got %q %q", changed.gatewayName, changed.request.ID, plan.request.ID)
 	}
-	if again := planModelRouters(team, shared, nil, nil)[0]; again.request.ID != changed.request.ID {
+	if again := planModelRouters(team, view, nil)[0]; again.request.ID != changed.request.ID {
 		t.Fatal("the registration ID must be deterministic")
 	}
 }
 
+// The registration IDs of heuristic and llm routers are those the operator
+// computed before the jev classifier, so an upgrade keeps their registrations
+// instead of replacing them. A decision model in the Gateway changes neither.
+func TestPlanModelRoutersKeepsTheRegistrationIDsOfExistingRouters(t *testing.T) {
+	view := withDecisionModel(testRouterView([]string{testSmallModel, testSharedModelOne}), testDecisionModel)
+	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne),
+		api.TeamModelRouter{Name: "auto-llm", Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: testSmallModel},
+			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSharedModelOne, Complex: testSharedModelOne, Reasoning: testSharedModelOne}})
+	// Computed by the planner of main 9ce1379a for the same Team and routers.
+	want := map[string]string{
+		testRouterName: "cetirun-router-6b7afde237469b29-f7804b5a",
+		"auto-llm":     "cetirun-router-696bf59da340065e-b6d8b211",
+	}
+	plans := planModelRouters(team, view, nil)
+	if len(plans) != len(want) {
+		t.Fatalf("plans = %+v", plans)
+	}
+	for _, plan := range plans {
+		if plan.problem != "" || plan.request.ID != want[plan.router.Name] {
+			t.Errorf("router %s: ID %q problem %q, want the ID %q", plan.router.Name, plan.request.ID, plan.problem, want[plan.router.Name])
+		}
+	}
+}
+
+// A jev router asks a shared decision model to pick the tier. It names only
+// the decision model in its jev settings: LiteLLM counts a jev router with its
+// own instructions against its licence limit. A request it fails to classify
+// goes to its default model, the medium tier, not to LiteLLM's heuristic
+// scorer. The classifier is a shared model the router uses, but no tier.
+func TestPlanModelRoutersRegistersAJevClassifier(t *testing.T) {
+	view := withDecisionModel(testRouterView([]string{testSmallModel, testSharedModelOne}), testDecisionModel)
+	team := routerTeam(api.TeamModelRouter{Name: "auto-decision",
+		Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierJev, Model: testDecisionModel},
+		Tiers:      api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSharedModelOne, Complex: testSharedModelOne, Reasoning: "copilot/deep-1"}})
+	plans := planModelRouters(team, view, nil)
+	if len(plans) != 1 || plans[0].problem != "" {
+		t.Fatalf("plans = %+v", plans)
+	}
+	plan := plans[0]
+	body := aigateway.RouterBody(plan.request)
+	config := body["litellm_params"].(map[string]any)["complexity_router_config"].(map[string]any)
+	jev, ok := config["jev_classifier_config"].(map[string]any)
+	if config["classifier_type"] != "jev" || !ok || len(jev) != 1 || jev["deployment_name"] != testDecisionModel {
+		t.Fatalf("config = %+v", config)
+	}
+	if config["classifier_fallback"] != "default_model" {
+		t.Fatalf("a failed classification must go to the default model: %+v", config)
+	}
+	if _, ok := config["classifier_llm_config"]; ok {
+		t.Fatal("a jev router names no llm classifier")
+	}
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), "instructions") {
+		t.Fatalf("the operator must leave LiteLLM's own jev instructions in place: %s", raw)
+	}
+	tiers := config["tiers"].(map[string]any)
+	if tiers["SIMPLE"] != testSmallModel || tiers["MEDIUM"] != testSharedModelOne || tiers["REASONING"] != "deep-1" ||
+		body["litellm_params"].(map[string]any)["complexity_router_default_model"] != testSharedModelOne {
+		t.Fatalf("tiers = %v", tiers)
+	}
+	if !slices.Equal(plan.shared, []string{testSmallModel, testSharedModelOne, testDecisionModel}) ||
+		!slices.Equal(plan.copilot, []string{"copilot/deep-1"}) {
+		t.Fatalf("models used = %v %v", plan.shared, plan.copilot)
+	}
+	// The Team's status lists the tiers, not the classifier.
+	if shared, copilot := plan.tierModels(); !slices.Equal(shared, []string{testSmallModel, testSharedModelOne}) ||
+		!slices.Equal(copilot, []string{"copilot/deep-1"}) {
+		t.Fatalf("tier models = %v %v", shared, copilot)
+	}
+	// Another decision model is another registration.
+	team.Spec.ModelRouters[0].Classifier.Model = "decision-2"
+	other := planModelRouters(team, withDecisionModel(view, "decision-2"), nil)[0]
+	if other.problem != "" || other.request.ID == plan.request.ID || other.gatewayName != plan.gatewayName {
+		t.Fatalf("other decision model: %+v", other)
+	}
+}
+
 func TestPlanModelRoutersReportsMisconfiguration(t *testing.T) {
-	// auto is a router configured in the Gateway, which is a shared model too.
-	shared := []aiGatewayCatalogModel{{Name: testSmallModel}, {Name: testSharedModelOne}, {Name: "auto"}}
-	routers := map[string]bool{"auto": true}
+	// auto is a router configured in the Gateway, which is a shared model too;
+	// decision-1 is a decision model and embedder an embedding model, both
+	// shared models that answer no conversation.
+	view := withDecisionModel(testRouterView([]string{testSmallModel, testSharedModelOne}, "auto"), testDecisionModel)
+	view.shared["embedder"], view.nonChat["embedder"] = true, true
+	jev := func(model string) api.TeamModelRouter {
+		return api.TeamModelRouter{Name: "auto-team", Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierJev, Model: model},
+			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSmallModel, Complex: testSmallModel}}
+	}
+	llm := func(model string) api.TeamModelRouter {
+		router := jev(model)
+		router.Classifier.Type = api.ModelRouterClassifierLLM
+		return router
+	}
 	for _, tc := range []struct {
 		router api.TeamModelRouter
 		want   string
@@ -171,19 +289,36 @@ func TestPlanModelRoutersReportsMisconfiguration(t *testing.T) {
 		{testRouter(testRouterName, testSmallModel, "missing-model", testSharedModelOne), "tier medium names missing-model, which is not a shared model of the AI Gateway"},
 		{testRouter(testRouterName, "copilot/bad/id", testSmallModel, testSharedModelOne), "tier simple names copilot/bad/id, which is not a GitHub Copilot model ID"},
 		{testRouter(testSharedModelOne, testSmallModel, testSmallModel, testSmallModel), "the name gpt-6-sol is also a shared model"},
-		{api.TeamModelRouter{Name: testRouterName, Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: "copilot/fast-1"},
-			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSmallModel, Complex: testSmallModel}}, "the classifier copilot/fast-1 is not a shared model"},
+		// A shared model that answers no conversation is a shared model too.
+		{testRouter(testDecisionModel, testSmallModel, testSmallModel, testSmallModel), "the name decision-1 is also a shared model"},
+		{llm("copilot/fast-1"), "the classifier copilot/fast-1 is not a shared model"},
 		{testRouter(testRouterName, testSmallModel, "other-router", testSmallModel), "tier medium names other-router"},
 		// A router as the classifier would pick a model of its own on the
 		// Agent's behalf, outside its key's checks (review); as a tier, it
 		// picks one too.
-		{api.TeamModelRouter{Name: testRouterName, Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: "auto"},
-			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSmallModel, Complex: testSmallModel}}, "the classifier auto is a router, not a model"},
+		{llm("auto"), "the classifier auto is a router, not a model"},
 		{testRouter(testRouterName, testSmallModel, "auto", testSmallModel), "tier medium names auto, which is a router, not a model"},
+		// A tier answers the request, and an llm classifier is asked in a
+		// chat request: neither can be a model that answers no conversation.
+		{testRouter(testRouterName, testDecisionModel, testSmallModel, testSmallModel), "tier simple names decision-1, which is not a chat model"},
+		{testRouter(testRouterName, testSmallModel, testSmallModel, "embedder"), "tier complex names embedder, which is not a chat model"},
+		{llm(testDecisionModel), "the classifier is decision-1, which is not a chat model"},
+		// A jev classifier needs a decision model of the Gateway.
+		{jev(testSmallModel), "the classifier is gpt-6-nano, which is not a decision model (a shared model whose model_info.mode is evaluation)"},
+		{jev("embedder"), "the classifier is embedder, which is not a decision model (a shared model whose model_info.mode is evaluation)"},
+		{jev("missing-model"), "the classifier missing-model is not a shared model of the AI Gateway"},
+		{jev("copilot/" + testDecisionModel), "the classifier copilot/decision-1 is not a shared model of the AI Gateway"},
+		{jev("auto"), "the classifier auto is a router, not a model"},
 	} {
-		plans := planModelRouters(routerTeam(tc.router), shared, routers, nil)
+		plans := planModelRouters(routerTeam(tc.router), view, nil)
 		if len(plans) != 1 || !strings.Contains(plans[0].problem, tc.want) || !strings.HasPrefix(plans[0].problem, "router "+tc.router.Name+": ") {
 			t.Errorf("router %+v: problem %q, want %q", tc.router, plans[0].problem, tc.want)
+		}
+	}
+	// The same routers with models that fit are registered.
+	for _, router := range []api.TeamModelRouter{jev(testDecisionModel), llm(testSharedModelOne)} {
+		if plans := planModelRouters(routerTeam(router), view, nil); plans[0].problem != "" {
+			t.Errorf("router %+v: problem %q", router, plans[0].problem)
 		}
 	}
 }
@@ -589,6 +724,205 @@ func TestTeamRouterClassifyingWithAGatewayRouterIsRefused(t *testing.T) {
 	}
 	if slices.Contains(lastKeyModels(gateway), modelRouterGatewayName(testAIGatewayTeam, testRouterName)) {
 		t.Fatal("the key must not get the router")
+	}
+}
+
+// jevTestRouter is a Team router that asks the decision model to pick the
+// tier.
+func jevTestRouter(decision string) api.TeamModelRouter {
+	return api.TeamModelRouter{Name: testRouterName,
+		Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierJev, Model: decision},
+		Tiers:      api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSharedModelOne, Complex: testSharedModelOne}}
+}
+
+// A Team router that classifies with a decision model of the Gateway is
+// registered with a jev classifier and granted to an Agent whose policy lists
+// its tiers, not the decision model. The Team's status and the Agent's limits
+// follow the tiers only, and another decision model replaces the registration
+// without changing the Agent's configuration.
+func TestTeamRouterWithAJevClassifierIsRegisteredAndGranted(t *testing.T) {
+	team := routerTeam(jevTestRouter(testDecisionModel))
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	addSmallSharedModel(gateway)
+	// The decision models' limits are smaller than the tiers'; the router's
+	// limits do not follow them.
+	first, second := decisionModel(), decisionModel()
+	first.MaxInputTokens = 64000
+	second.ID, second.ModelName = managedTestDeploymentID("decision-2", 1), "decision-2"
+	second.AccessGroups = []string{aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("decision-2")}
+	gateway.shared = append(gateway.shared, first, second)
+	allowTestPolicyModels(t, kube, testSmallModel, testRouterName)
+	ctx := context.Background()
+
+	current := reconcileRouters(t, r, kube, testAIGatewayTeam)
+	requests := routerRequests(gateway)
+	if len(requests) != 1 {
+		t.Fatalf("registered %+v", requests)
+	}
+	config := aigateway.RouterBody(requests[0])["litellm_params"].(map[string]any)["complexity_router_config"].(map[string]any)
+	jev, _ := config["jev_classifier_config"].(map[string]any)
+	if config["classifier_type"] != "jev" || len(jev) != 1 || jev["deployment_name"] != testDecisionModel ||
+		config["classifier_fallback"] != "default_model" || requests[0].DefaultModel != testSharedModelOne {
+		t.Fatalf("config = %+v, default model %q", config, requests[0].DefaultModel)
+	}
+	if status := current.Status.ModelRouters; len(status) != 1 || !status[0].Ready ||
+		!slices.Equal(status[0].SharedModels, []string{testSmallModel, testSharedModelOne}) || len(status[0].CopilotModels) != 0 {
+		t.Fatalf("the Team lists the tiers, not the classifier: %+v", status)
+	}
+
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	gatewayName := modelRouterGatewayName(testAIGatewayTeam, testRouterName)
+	router := routerStatuses(agent)[testRouterName]
+	if !router.Granted || router.Model != gatewayName || router.ContextWindow != 400000 || router.MaxTokens != 16384 {
+		t.Fatalf("router = %+v", router)
+	}
+	// The classifier call is the router's; the key gets the router only.
+	if !slices.Contains(lastKeyModels(gateway), gatewayName) || slices.Contains(lastKeyModels(gateway), testDecisionGroup) ||
+		slices.Contains(agent.Status.AIGateway.Models, testDecisionModel) {
+		t.Fatalf("key %v models %v", lastKeyModels(gateway), agent.Status.AIGateway.Models)
+	}
+	revision := r.aiGatewayRevision(agent)
+
+	// Another decision model: a new registration under the same name.
+	current.Spec.ModelRouters[0].Classifier.Model = "decision-2"
+	if err := kube.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.ObservedGeneration = current.Generation
+	apimeta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{Type: api.ConditionTeamAccepted, Status: metav1.ConditionTrue, Reason: "Valid", ObservedGeneration: current.Generation})
+	if err := kube.Status().Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	requests = routerRequests(gateway)
+	if len(requests) != 2 || requests[1].ModelName != gatewayName || requests[1].ID == requests[0].ID || !slices.Contains(gateway.deletedModels, requests[0].ID) {
+		t.Fatalf("requests %+v deleted %v", requests, gateway.deletedModels)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !routerStatuses(agent)[testRouterName].Granted || r.aiGatewayRevision(agent) != revision {
+		t.Fatalf("a classifier change must not change the Agent's configuration: %+v", agent.Status.AIGateway.ModelRouters)
+	}
+
+	// The decision model goes: the router is withdrawn.
+	gateway.shared = slices.DeleteFunc(gateway.shared, func(deployment aigateway.Deployment) bool { return deployment.ModelName == "decision-2" })
+	if !r.refreshAIGatewayCatalogWithin(ctx, gateway, 0) {
+		t.Fatal("a decision model that goes is a catalog change")
+	}
+	current = reconcileRouters(t, r, kube, testAIGatewayTeam)
+	if status := current.Status.ModelRouters; len(status) != 1 || status[0].Ready ||
+		status[0].Message != "router auto: the classifier decision-2 is not a shared model of the AI Gateway" {
+		t.Fatalf("router status = %+v", status)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if router := routerStatuses(agent)[testRouterName]; router.Granted || slices.Contains(lastKeyModels(gateway), gatewayName) ||
+		router.Reason != "the router is misconfigured: the classifier decision-2 is not a shared model of the AI Gateway" {
+		t.Fatalf("router %+v key %v", router, lastKeyModels(gateway))
+	}
+}
+
+// A jev classifier is a shared model the router uses even when every tier is
+// a GitHub Copilot model: an Agent without shared models is refused the
+// router, as with an llm classifier.
+func TestJevRouterNeedsSharedModels(t *testing.T) {
+	router := jevTestRouter(testDecisionModel)
+	router.Tiers = api.TeamModelRouterTiers{Simple: "copilot/gpt-5.5", Medium: "copilot/gpt-5.5", Complex: "copilot/gpt-5.5"}
+	plan := planModelRouters(routerTeam(router), withDecisionModel(testRouterView(nil), testDecisionModel), nil)[0]
+	if plan.problem != "" || !slices.Equal(plan.shared, []string{testDecisionModel}) {
+		t.Fatalf("plan = %+v", plan)
+	}
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Spec.ModelAccess = modelAccess(false, true)
+	r, _, _ := aiGatewayTestReconciler(t, agent)
+	if reason := r.modelRouterRefusal(agent, plan, nil, true, map[string]string{"copilot/gpt-5.5": "gpt-5.5"}); reason != "the router uses shared models, which this Agent has turned off" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
+// An operator that starts while the Gateway cannot be listed seeds its catalog
+// from the published one, decision models included. Neither the Team router
+// pass nor an Agent's grant acts on a seeded catalog, so a jev router keeps its
+// registration and its grants, and is not reported misconfigured; a catalog
+// published during the outage keeps its decision models. Once the Gateway is
+// back, nothing is registered again.
+func TestJevRouterSurvivesAStartDuringAGatewayOutage(t *testing.T) {
+	team := routerTeam(jevTestRouter(testDecisionModel))
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	addSmallSharedModel(gateway)
+	gateway.shared = append(gateway.shared, decisionModel())
+	ctx := context.Background()
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	requests := routerRequests(gateway)
+	if len(requests) != 1 || requests[0].Config["classifier_fallback"] != "default_model" {
+		t.Fatalf("registered %+v", requests)
+	}
+	registered := requests[0].ID
+	r.publishAIGatewayCatalog(ctx, 0)
+	published := func() (string, api.AIGatewayCatalog) {
+		t.Helper()
+		configMap := &corev1.ConfigMap{}
+		if err := kube.Get(ctx, types.NamespacedName{Namespace: "cetirun-system", Name: api.AIGatewayCatalogConfigMap}, configMap); err != nil {
+			t.Fatal(err)
+		}
+		var catalog api.AIGatewayCatalog
+		if err := json.Unmarshal([]byte(configMap.Data[api.AIGatewayCatalogKey]), &catalog); err != nil {
+			t.Fatal(err)
+		}
+		return configMap.Data[api.AIGatewayCatalogKey], catalog
+	}
+	before, catalog := published()
+	if !slices.Equal(catalog.DecisionModels, []string{testDecisionModel}) {
+		t.Fatalf("published %s", before)
+	}
+
+	// The operator starts again while the Gateway cannot be listed.
+	r.aiGatewayCatalog = aiGatewayCatalog{}
+	outage := &failingListGateway{fakeAIGateway: gateway}
+	r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return outage, nil }
+	routers := &TeamModelRouterReconciler{Client: kube, Agents: r}
+	if _, err := routers.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: testAIGatewayTeam}}); err == nil {
+		t.Fatal("a pass without a listing must be retried")
+	}
+	if _, kept := gateway.models[registered]; !kept || len(gateway.deletedModels) != 0 {
+		t.Fatalf("the registration must stay: models %v deleted %v", gateway.models, gateway.deletedModels)
+	}
+	current := &api.Team{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testAIGatewayTeam}, current); err != nil {
+		t.Fatal(err)
+	}
+	if status := current.Status.ModelRouters; len(status) != 1 || !strings.Contains(status[0].Message, "cannot be reached") {
+		t.Fatalf("router status = %+v", status)
+	}
+	shared, known := r.aiGatewayCatalog.shared()
+	if !known || len(shared) != 2 || slices.ContainsFunc(shared, func(model aiGatewayCatalogModel) bool { return model.Name == testDecisionModel }) {
+		t.Fatalf("the seeded catalog must configure no Agent with the decision model: %+v", shared)
+	}
+	// The seeded view knows the decision model: read by the planner, it
+	// would plan the same registration.
+	if plan := planModelRouters(current, r.aiGatewayCatalog.sharedRouters(), nil)[0]; plan.problem != "" || plan.request.ID != registered {
+		t.Fatalf("plan on the seeded catalog = %+v", plan)
+	}
+	if groups, statuses := r.aiGatewayModelRouterGrant(ctx, outage, agent, current, nil, false); groups != nil || statuses != nil {
+		t.Fatalf("a seeded catalog grants or refuses no router: %v %+v", groups, statuses)
+	}
+	r.publishAIGatewayCatalog(ctx, 0)
+	if during, _ := published(); during != before {
+		t.Fatalf("the catalog published during the outage changed:\n%s\n%s", before, during)
+	}
+
+	// The Gateway is back: the registration stays as it is.
+	r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return gateway, nil }
+	added := len(gateway.added)
+	current = reconcileRouters(t, r, kube, testAIGatewayTeam)
+	if len(gateway.added) != added || len(gateway.deletedModels) != 0 || len(current.Status.ModelRouters) != 1 || !current.Status.ModelRouters[0].Ready {
+		t.Fatalf("added %v deleted %v status %+v", gateway.added, gateway.deletedModels, current.Status.ModelRouters)
 	}
 }
 

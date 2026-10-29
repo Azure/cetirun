@@ -112,6 +112,7 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 		result := policyReconcileResult{
 			dependencyUnavailable: isPolicyDependencyError(err),
 			ingressMTLSPending:    errors.Is(err, ingressmtls.ErrApprovalPending),
+			identityPending:       errors.Is(err, errSandboxIdentityPending),
 		}
 		return result, r.recordPolicy(ctx, agent, nil, err)
 	}
@@ -172,6 +173,7 @@ type policyReconcileResult struct {
 	reprojectionHold      bool
 	dependencyUnavailable bool
 	ingressMTLSPending    bool
+	identityPending       bool
 }
 
 // policyDependencyError distinguishes an unavailable control-plane read
@@ -451,6 +453,22 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		}
 		return "", err
 	}
+	var identityPin *sandboxpolicy.IdentityPin
+	if (resolution.AgentPolicy.EntraID.Enabled || resolution.AgentPolicy.KubernetesAccess != nil) && r.SandboxPreparation.NativeExecution {
+		common, err := r.usesReconciledSandbox(ctx, agent)
+		if err != nil {
+			return "", policyDependency("read identity lifetime: %w", err)
+		}
+		attempt := &sandboxPreparationAttempt{reconciled: common, agent: agent, team: team,
+			resolution: resolution, configuration: snapshot}
+		identityPin, err = r.sandboxIdentityPin(ctx, attempt)
+		if err != nil {
+			if errors.Is(err, sandboxpolicy.ErrUnapprovedGrant) {
+				return "", err
+			}
+			return "", policyDependency("%w: %w", errSandboxIdentityPending, err)
+		}
+	}
 	connections, _, err := r.nativeConnectionsDestination(ctx, agent, platform)
 	if err != nil {
 		return "", policyDependency("resolve native Connections destination: %w", err)
@@ -460,6 +478,7 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		NativeExecution: r.SandboxPreparation.NativeExecution,
 		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name),
 		ServiceName: instanceServiceName(agent.Name), Platform: platform,
+		IdentityPin: identityPin,
 	})
 	if err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {

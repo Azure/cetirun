@@ -377,6 +377,10 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `image` | Operator image pin; `IfNotPresent`, empty tag falls back to `appVersion` |
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
 | `azure.*` | Optional Teams provisioning configuration |
+| `sandboxAdmission.enabled`, `sandboxAdmission.podsEnabled` | `false`; run the Sandbox admission webhook for configuration and Agent writes, and for Sandbox Pods. Needs Kubernetes 1.37 or later, `tlsSecretName` and an administrator. See [Policy-bound Teams](../../operations/policy-teams/) |
+| `sandboxAdmission.tlsSecretName` | Empty; an existing `kubernetes.io/tls` Secret for `cetirun-sandbox-admission.<namespace>.svc`. The chart issues no certificate |
+| `sandboxAdmission.enforce`, `sandboxAdmission.caBundle` | `false` and empty; make the webhook's refusals binding, with the base64 PEM bundle of the CA that issued its certificate. Not on the first install: turn it on once the webhook answers |
+| `sandboxAdmission.adminUsers`, `sandboxAdmission.adminGroups` | `[]`; the identities that may write policy-bound configuration directly and reauthorize Agents. At least one is required; blanket groups such as `system:authenticated` are refused |
 | `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations for configuration admission and sources for held native Sandbox preparation |
 | `sandboxSources.nativeExecution` | `false`; select common OpenClaw/Hermes reconciliation for new lifetimes with owned bootstrap, enforced admission and the AI Gateway |
 | `sandboxSources.plannedMigration` | `false`; permit new administrator-requested healthy-source moves with one CSI/RWOP HOME. Requires `nativeExecution` and upgraded CRD/Operator/admission/Portal readers; existing checkpoints and cleanup permissions remain when disabled |

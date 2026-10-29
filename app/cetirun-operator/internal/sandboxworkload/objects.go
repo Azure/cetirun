@@ -6,6 +6,7 @@ package sandboxworkload
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -13,6 +14,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -62,7 +64,22 @@ func validateObjects(input Input) error {
 			tlsObjects[key], _ = json.Marshal(object.Object)
 		}
 	}
-	for _, object := range c.Objects {
+	identity := sandboxpolicy.IdentityPlan{
+		ServiceAccountName: c.ServiceAccountName, Volumes: c.Volumes, VolumeMounts: c.VolumeMounts, Env: c.Environment,
+	}
+	inventory := slices.Clone(c.Objects)
+	if account := c.ServiceAccountSource; account != nil {
+		if !input.Reconciled || (!input.Resolution.AgentPolicy.EntraID.Enabled && access == nil) ||
+			account.UID == "" || account.Annotations["cetirun.microsoft.com/sandbox-bootstrap"] == "" {
+			return fmt.Errorf("bootstrap identity source requires a pinned common identity workload")
+		}
+		raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(account)
+		if err != nil {
+			return err
+		}
+		inventory = append(inventory, unstructured.Unstructured{Object: raw})
+	}
+	for _, object := range inventory {
 		kind := object.GetAPIVersion() + "/" + object.GetKind()
 		key := kind + "/" + object.GetNamespace() + "/" + object.GetName()
 		if objects[key] || object.GetName() == "" || !equality.Semantic.DeepEqual(object.GetOwnerReferences(), owner) ||
@@ -106,6 +123,7 @@ func validateObjects(input Input) error {
 				return fmt.Errorf("compiler must emit only the bound dedicated ServiceAccount without implicit token or pull credentials")
 			}
 			serviceAccounts++
+			identity.ServiceAccount = &account
 		case "rbac.authorization.k8s.io/v1/RoleBinding":
 			var grant rbacv1.RoleBinding
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &grant, true); err != nil {
@@ -141,7 +159,7 @@ func validateObjects(input Input) error {
 			return fmt.Errorf("compiler resource inventory omits a requested Kubernetes binding")
 		}
 	}
-	return nil
+	return sandboxpolicy.ValidateIdentityProjection(input.Resolution.AgentPolicy, identity)
 }
 
 func validateGrant(input Input, metadata metav1.ObjectMeta, role rbacv1.RoleRef, subjects []rbacv1.Subject, grants map[grantScope]bool) error {

@@ -143,6 +143,18 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 	if failure := h.validateReconciledKubernetesGrants(ctx, expected, true); failure != nil {
 		return reject(failure)
 	}
+	if desired := expected.IdentityServiceAccount; desired != nil {
+		namespace, account := &corev1.Namespace{}, &corev1.ServiceAccount{}
+		if err := h.reader.Get(ctx, client.ObjectKey{Name: expected.Namespace.Name}, namespace); err != nil {
+			return reject(podReadFailure("IdentityNamespace", err))
+		}
+		if err := h.reader.Get(ctx, client.ObjectKeyFromObject(desired), account); err != nil {
+			return reject(podReadFailure("IdentityServiceAccount", err))
+		}
+		if err := expected.ValidateIdentityBinding(namespace, account, w.ObjectIdentity{Name: desired.Name, UID: desired.UID}); err != nil {
+			return reject(podDenied("IdentityBindingMismatch", "current ServiceAccount differs from the recorded identity binding"))
+		}
+	}
 	for _, desired := range expected.Controls {
 		actual := &unstructured.Unstructured{}
 		actual.SetGroupVersionKind(desired.GroupVersionKind())

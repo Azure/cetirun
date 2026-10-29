@@ -106,7 +106,6 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 		declared bool
 	}{
 		{"blockedFQDNs", capabilities.BlockedFQDNs},
-		{"entraID", capabilities.EntraID},
 		{"enforcementObservation", capabilities.EnforcementObservation},
 		{"restrictiveFailure", capabilities.RestrictiveFailure},
 	} {
@@ -183,16 +182,6 @@ func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 		}
 	}
 	errs = append(errs, CheckNativeNetworkPolicy(policy.Network)...)
-	for _, control := range []struct {
-		path      *field.Path
-		requested bool
-	}{
-		{root.Child("entraID", "enabled"), policy.EntraID.Enabled},
-	} {
-		if control.requested {
-			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
-		}
-	}
 	return errs
 }
 

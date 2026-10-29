@@ -15,6 +15,8 @@ import (
 // TeamModelRouterDTO is one smart-routing model of a Team, as administrators
 // edit it: the name Agents request, the classifier and the model of each tier.
 // A tier names a shared model, or copilot/<model> for a GitHub Copilot model.
+// ClassifierModel is the shared model of the llm classifier, or the shared
+// decision model of the jev classifier.
 type TeamModelRouterDTO struct {
 	Name            string `json:"name"`
 	Classifier      string `json:"classifier,omitempty"`
@@ -62,7 +64,7 @@ func toTeamModelRouters(routers []TeamModelRouterDTO) []cetirunv1alpha1.TeamMode
 			classifier = cetirunv1alpha1.ModelRouterClassifierHeuristic
 		}
 		model := ""
-		if classifier == cetirunv1alpha1.ModelRouterClassifierLLM {
+		if classifier == cetirunv1alpha1.ModelRouterClassifierLLM || classifier == cetirunv1alpha1.ModelRouterClassifierJev {
 			model = strings.TrimSpace(router.ClassifierModel)
 		}
 		out = append(out, cetirunv1alpha1.TeamModelRouter{
@@ -104,15 +106,20 @@ func validateTeamModelRouters(routers []TeamModelRouterDTO) string {
 		}
 		seen[name] = true
 		classifier := strings.TrimSpace(router.Classifier)
+		classifierModel := strings.TrimSpace(router.ClassifierModel)
+		usableClassifierModel := validModel(classifierModel, true) && !strings.HasPrefix(classifierModel, cetirunv1alpha1.AIGatewayCopilotModelPrefix)
 		switch classifier {
 		case "", cetirunv1alpha1.ModelRouterClassifierHeuristic:
 		case cetirunv1alpha1.ModelRouterClassifierLLM:
-			model := strings.TrimSpace(router.ClassifierModel)
-			if model == "" || !validModel(model, true) || strings.HasPrefix(model, cetirunv1alpha1.AIGatewayCopilotModelPrefix) {
+			if !usableClassifierModel {
 				return fmt.Sprintf("Smart-routing model %s: the model classifier needs a shared model", name)
 			}
+		case cetirunv1alpha1.ModelRouterClassifierJev:
+			if !usableClassifierModel {
+				return fmt.Sprintf("Smart-routing model %s: the decision classifier needs a shared decision model", name)
+			}
 		default:
-			return fmt.Sprintf("Smart-routing model %s: the classifier must be heuristic or llm", name)
+			return fmt.Sprintf("Smart-routing model %s: the classifier must be heuristic, llm or jev", name)
 		}
 		for _, tier := range []struct {
 			name, model string

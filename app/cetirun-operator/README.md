@@ -460,7 +460,7 @@ remain required; read-only root and ingress support must match the selected
 policy. The configuration harness allow-list supports `openclaw` and `hermes`;
 the earlier single-start executor itself remains OpenClaw-only.
 For native Kata, `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
-FQDN support and Entra ID flags must be `false`. Kubernetes access may be
+and FQDN support must be `false`. Kubernetes access may be
 explicitly registered for new Kata common-executor lifetimes with exact policy-role
 and per-Agent identity approvals; see the
 [Kubernetes API access example](../../examples/native-sandbox/README.md#kubernetes-api-access).
@@ -469,7 +469,8 @@ Upgrade all Operator/admission readers before activating a shared registration.
 Older readers cannot consume or clean up the new RBAC controls; disabling the
 capability alone does not make a rollback safe. Follow the example's cleanup
 and old-compatible-state prerequisites before downgrading.
-These are not
+Generic Entra projection can be explicitly enabled for common-executor
+lifetimes with the dedicated bootstrap/source contract below. These are not
 physical fencing or guest-external runtime-observation guarantees.
 
 Common-executor Kata and container OpenClaw/Hermes lifetimes can opt in to managed ingress
@@ -515,7 +516,8 @@ different backend; active configuration reservations still reject runtime edits.
 Container uses the same supported CIDR/port/ingress policy subset as native Kata.
 Managed ingress mTLS uses the same approved endpoint and certificate contract
 described above; a runtime or capability flag alone does not authorize it.
-FQDN blocking, Entra ID and Kubernetes grants remain unsupported;
+Generic Entra projection requires the separately approved bootstrap identity
+contract below. FQDN blocking and Kubernetes grants remain unsupported;
 their capability flags must stay `false`, as must `enforcementObservation` and
 `restrictiveFailure`.
 
@@ -1921,6 +1923,114 @@ including fragmented ranges; no entries are truncated.
 Ordinary workloads keep the default ServiceAccount without token automount.
 Approved Kubernetes API and Entra identities use separate audience-bound token
 projections; Entra-only identity does not implicitly authorize Kubernetes access.
+
+#### Entra runtime projection core
+
+`AgentPolicy.spec.entraID.enabled` selects the generic workload token projection,
+not `Agent.spec.agentIdentity` or the Broker's credential-service authorization.
+The compiler requires a current platform approval for the exact Agent UID,
+workload namespace, dedicated non-default ServiceAccount, approval revision,
+client ID and tenant ID. An approval inventory cannot assign one ServiceAccount
+to two Agents in the same namespace. Disabled identity projects nothing;
+Kubernetes-only policy does not inherit an unrequested Entra approval.
+
+The existing compiler and common chart emit a read-only `0440` projected token
+with audience `api://AzureADTokenExchange`, a 600–3600 second lifetime and the
+three explicit `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
+`AZURE_FEDERATED_TOKEN_FILE` settings. Structural validation shares the compiler's
+projection builder and confines identity volumes, mounts and environment to
+the main `cetirun` container, excluding init containers, helpers and ephemeral
+containers. No workload identity webhook injection is enabled. Entra-only
+output creates no Kubernetes RoleBinding or ClusterRoleBinding and requires
+neither Kubernetes RBAC grants nor ingress mTLS. The separately declared
+Kubernetes API audience must differ from the Entra exchange audience; that
+declaration is not an API permission or network grant.
+When Kubernetes access is also supported and requested, both capabilities must
+be explicitly approved on the same ServiceAccount. An unused approval never
+adds a token projection or grants.
+
+Common-executor OpenClaw and Hermes support this projection when the native
+registration explicitly declares `entraID: true`, policy enables it, and the
+platform contains the exact per-Agent approval. The existing configuration
+coordination authority and owned bootstrap must be enabled. Retained single-start
+lifetimes still reject Entra; no generic-profile fallback is used.
+
+Set `registrations.kata.Capabilities.entraID` to `true` and include an approval
+like this in `platforms.kata.identities`, using the actual persisted Agent UID:
+
+```json
+{
+  "agentUID": "example-agent-uid",
+  "namespace": "cetirun-example-agent",
+  "serviceAccountName": "example-agent-entra",
+  "revision": "approved-identity-1",
+  "kubernetes": false,
+  "entra": {
+    "clientID": "00000000-0000-0000-0000-000000000001",
+    "tenantID": "00000000-0000-0000-0000-000000000002"
+  }
+}
+```
+
+Also declare the distinct Kubernetes API audience and optional token lifetime
+in that platform entry. The existing `AgentPolicy.spec.entraID.enabled` switch
+requests use; neither the capability nor an unused approval grants access.
+Create the Agent first to obtain its UID if needed: absent approval keeps it
+held. The operator creates the owned ServiceAccount; do not pre-create it or
+borrow an operator/Broker identity. Cloud federation and Azure permissions must
+be configured and qualified separately for that exact namespace/account subject.
+
+Bootstrap is the **single owner** of the dedicated ServiceAccount. Optional
+receipt versions `v3`/`v4` extend the existing `v1`/`v2` inventory with one retained
+account. Creation intent is persisted first, then API readback records its UID
+using the receipt's existing UID/resource-version CAS. No token-bearing workload
+can be submitted until that pin has been read back. Lost create or pin responses
+reuse the same protected intent; a recorded missing or replaced account is never
+re-created or adopted. Older readers reject the new receipt versions rather than
+ignoring their cleanup obligations.
+
+The ServiceAccount is a source, **not a Helm resource**. Its recorded UID and
+bootstrap authority are part of the compiled revision and protected expectation.
+Source digests include Azure identity annotations. Desired metadata is reconciled
+by bootstrap with UID/resource-version preconditions, only after owned workloads
+are stopped; source readback precedes workload publication.
+[`ValidateIdentityBinding`](internal/sandboxworkload/identity_binding.go), on a
+`Bundle` or existing `ReconcileExpectation`, checks authoritative
+namespace/ServiceAccount readback against the current compiled approval and an
+existing `ObjectIdentity` UID pin. It rejects replacements,
+foreign owners, stale approval metadata and implicit token/credential inheritance;
+it never adopts or records a replacement itself. Apply guards check the pinned
+source and digest; observation and Pod admission additionally check the exact
+identity binding. An expectation cannot omit the identity source or transfer
+ownership to the chart.
+
+Suspension, retained restart and approval refresh preserve the account UID, HOME
+and Gateway key. Disabling Entra removes its projected token/environment but
+retains the account and pin for the Agent lifetime. If Kubernetes access remains
+enabled, bootstrap still owns that account; Helm must not adopt it or erase its
+creation record. Retired Azure identity annotations are removed only after
+quiescence with UID/resource-version checks. Without requested Kubernetes
+access, retaining the account grants no Kubernetes RBAC.
+Enabling a new projection while the Agent is stopped leaves its confirmed
+suspension and blocked key intact. Pending identity preparation remains visible
+in policy conditions; it does not create an account or alternate the lifecycle
+back to Pending. An explicit resume starts the approved bootstrap.
+Fresh Entra lifetimes using controller runtime defaults pin omitted chart,
+image and port values from the trusted chart before owned identity bootstrap.
+Explicit coordinates remain unchanged; execution still requires the recorded
+ServiceAccount UID and current approved sources.
+The account name cannot change after it is recorded. Final Agent/namespace
+deletion releases the account through the existing bootstrap cleanup ordering
+after workload shutdown; Helm cannot delete or recreate it.
+
+Offline tests cover compiler approvals, both built-in chart renderers, current
+binding readback, negative Kubernetes RBAC checks on an isolated API server,
+positive native Pod admission and interrupted-create/replacement/removal behavior.
+They do not exchange tokens with Entra,
+provision federated credentials, verify Azure permissions, run containers or establish
+cloud token revocation. Stopping new projections cannot revoke already-issued
+Azure access tokens. See the [focused commands](../../DEVELOPMENT.md#sandbox-entra-projection-core).
+
 The compiler does not provision or revoke cloud identities. RBAC revocation
 helpers require authoritative UID/ownership checks and confirmed absence, and
 preserve shared roles/accounts. Held and common controllers use

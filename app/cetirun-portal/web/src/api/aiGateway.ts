@@ -20,6 +20,8 @@ export interface AIGatewayCatalog {
   /** False until the operator has published the shared models. */
   known: boolean;
   sharedModels: SharedModel[];
+  /** The shared decision models a Team router's decision classifier may use; no agent is configured with them. */
+  decisionModels?: string[];
   /** Whether the deployment offers GitHub Copilot to agents. */
   githubCopilot: boolean;
   /**

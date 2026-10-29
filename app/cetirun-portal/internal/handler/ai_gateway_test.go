@@ -360,6 +360,9 @@ func TestGetAIGatewayCatalog(t *testing.T) {
 		resp.SharedModels[0].Name != "gpt-6" || resp.SharedModels[0].ContextWindow != 200000 || !resp.GitHubCopilot {
 		t.Fatalf("published: resp %+v err %v", resp, err)
 	}
+	if strings.Contains(w.Body.String(), "decisionModels") {
+		t.Fatalf("a catalog without decision models lists none: %s", w.Body.String())
+	}
 	resp = AIGatewayCatalogResponse{}
 	w = get(gatewayConfig(), publishedCatalog(false, "gpt-6"))
 	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil || !resp.Known || resp.GitHubCopilot {
@@ -380,5 +383,28 @@ func TestGetAIGatewayCatalog(t *testing.T) {
 	w = get(gatewayConfig(), routingCatalog(&cetirunv1alpha1.AIGatewayRouting{Chart: testAgentChart}, true, "gpt-6"))
 	if !strings.Contains(w.Body.String(), `"agentTypes":null`) {
 		t.Fatalf("unread chart: body %s, want null agent types", w.Body.String())
+	}
+
+	// The decision models a Team router's jev classifier may use pass
+	// through apart from the shared models.
+	withDecision := publishedCatalog(true, "gpt-6")
+	var published cetirunv1alpha1.AIGatewayCatalog
+	if err := json.Unmarshal([]byte(withDecision.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &published); err != nil {
+		t.Fatal(err)
+	}
+	published.DecisionModels = []string{"decision-1", "decision-2"}
+	raw, _ := json.Marshal(published)
+	withDecision.Data[cetirunv1alpha1.AIGatewayCatalogKey] = string(raw)
+	resp = AIGatewayCatalogResponse{}
+	w = get(gatewayConfig(), withDecision)
+	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil || !resp.Known ||
+		!slices.Equal(resp.DecisionModels, []string{"decision-1", "decision-2"}) || len(resp.SharedModels) != 1 || resp.SharedModels[0].Name != "gpt-6" {
+		t.Fatalf("decision models: resp %+v err %v", resp, err)
+	}
+	// No Agent is created with a decision model: the create options leave
+	// them out.
+	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(gatewayTeam("research"), withDecision)), Config: gatewayConfig()}
+	if options := readCreateOptions(t, h, "research"); options.Gateway.DecisionModels != nil || len(options.Gateway.SharedModels) != 1 {
+		t.Fatalf("create options: %+v", options.Gateway)
 	}
 }

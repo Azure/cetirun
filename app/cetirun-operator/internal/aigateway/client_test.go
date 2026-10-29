@@ -324,6 +324,13 @@ func TestListModelsReadsTheMode(t *testing.T) {
 			t.Errorf("ChatModel(%q) = %v, want %v", mode, !chat, chat)
 		}
 	}
+	// Only the evaluation mode marks a decision model.
+	for mode, decision := range map[string]bool{"evaluation": true, "": false, "chat": false, "responses": false,
+		"embedding": false, "Evaluation": false} {
+		if DecisionModel(mode) != decision {
+			t.Errorf("DecisionModel(%q) = %v, want %v", mode, !decision, decision)
+		}
+	}
 }
 
 func TestBlockUnpricedModelsReadsTheGatewaysSetting(t *testing.T) {

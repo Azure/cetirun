@@ -78,8 +78,13 @@ type aiGatewayCatalog struct {
 	// such as a decision model an auto router classifies requests with: they
 	// stay shared models, for the routers' rule and the keys' groups, but are
 	// left out of the models Agents are configured with and of the published
-	// catalog.
+	// catalog's shared models.
 	nonChat map[string]bool
+	// decision are the shared models every shared deployment of which is a
+	// decision model (aigateway.DecisionModel), such as Microsoft-Decision-1:
+	// a Team router's jev classifier may name one. They are among nonChat,
+	// and the published catalog lists them apart from the shared models.
+	decision map[string]bool
 	// allowsUnpriced is the Gateway's setting from the last listing. The
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
@@ -94,12 +99,13 @@ type aiGatewayCatalog struct {
 
 // changedBy reports whether a listing would change a view taken from an
 // earlier listing, by the same comparison update makes: the shared models,
-// their bindings and the routers' configurations. Without such a view it
-// reports false: there is nothing to keep.
+// their bindings, which of them answer conversations or decide tiers, and the
+// routers' configurations. Without such a view it reports false: there is
+// nothing to keep.
 func (c *aiGatewayCatalog) changedBy(deployments []aigateway.Deployment, blockUnpriced bool) bool {
 	c.mu.RLock()
 	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, fingerprint: c.fingerprint, routerFingerprint: c.routerFingerprint,
-		nonChat: c.nonChat}
+		nonChat: c.nonChat, decision: c.decision}
 	c.mu.RUnlock()
 	if !scratch.known {
 		return false
@@ -145,6 +151,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	modelGroups := map[string][]string{}
 	merge := newCopilotMergeView()
 	chat := map[string]bool{}
+	// decision is false for a name once one of its shared deployments is not
+	// a decision model.
+	decision := map[string]bool{}
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
 		for _, group := range deployment.AccessGroups {
@@ -185,6 +194,10 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		if aigateway.ChatModel(deployment.Mode) {
 			chat[deployment.ModelName] = true
 		}
+		// A name decides tiers only when every deployment behind it does.
+		if isDecision, seen := decision[deployment.ModelName]; !seen || isDecision {
+			decision[deployment.ModelName] = aigateway.DecisionModel(deployment.Mode)
+		}
 		if policyBoundShared {
 			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
 		}
@@ -197,6 +210,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 			nonChat[name] = true
 		}
 	}
+	maps.DeleteFunc(decision, func(_ string, isDecision bool) bool { return !isDecision })
 	sort.Slice(shared, func(i, j int) bool { return shared[i].Name < shared[j].Name })
 	slices.Sort(unpriced)
 	for name, groups := range modelGroups {
@@ -214,9 +228,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	changed := !(c.known || c.seeded) || !slices.EqualFunc(c.sharedSet, shared, sameCatalogModel) || c.fingerprint != fingerprint ||
-		c.routerFingerprint != routerFingerprint || !maps.Equal(c.nonChat, nonChat)
+		c.routerFingerprint != routerFingerprint || !maps.Equal(c.nonChat, nonChat) || !maps.Equal(c.decision, decision)
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
-	c.routers, c.routerFingerprint, c.nonChat = routers, routerFingerprint, nonChat
+	c.routers, c.routerFingerprint, c.nonChat, c.decision = routers, routerFingerprint, nonChat, decision
 	c.allowsUnpriced = !blockUnpriced
 	c.copilotMerge = merge
 	return changed, skipped, unpriced
@@ -342,9 +356,10 @@ func (c *aiGatewayCatalog) blocksUnpriced() bool {
 	return !c.allowsUnpriced
 }
 
-// seed takes shared models from the published catalog until the Gateway can
-// be listed. It never replaces a listed view.
-func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel) {
+// seed takes shared models, and the decision models published apart from
+// them, from the published catalog until the Gateway can be listed. It never
+// replaces a listed view.
+func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel, decision []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.known || c.seeded {
@@ -354,6 +369,22 @@ func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel) {
 	for i, model := range shared {
 		// Router models are published for the Portal; the listing supplies them here.
 		c.sharedSet[i] = aiGatewayCatalogModel{Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens}
+	}
+	// A decision model is a shared model no Agent is configured with. Seeded
+	// as one, it stays out of the Agents' models, a catalog published again
+	// before the first listing still lists it, and a jev router that
+	// classifies with it is not taken for misconfigured. Nothing is granted
+	// or registered from a seeded view: both wait for a listing.
+	nonChat, decisions := map[string]bool{}, map[string]bool{}
+	for _, name := range decision {
+		if name == "" || slices.ContainsFunc(c.sharedSet, func(model aiGatewayCatalogModel) bool { return model.Name == name }) {
+			continue
+		}
+		c.sharedSet = append(c.sharedSet, aiGatewayCatalogModel{Name: name})
+		nonChat[name], decisions[name] = true, true
+	}
+	if len(decisions) > 0 {
+		c.nonChat, c.decision = nonChat, decisions
 	}
 }
 
@@ -387,9 +418,10 @@ func smallerPositive(current, next int64) int64 {
 	return current
 }
 
-// shared returns the shared models Agents can hold a conversation with: those
-// they are configured with, the published catalog lists, and a Team's router
-// may send requests to.
+// shared returns the shared models Agents can hold a conversation with, with
+// their limits: those they are configured with, the published catalog lists,
+// and whose limits a Team router's limits follow. A Team router is checked
+// against every shared model (sharedRouters).
 func (c *aiGatewayCatalog) shared() ([]aiGatewayCatalogModel, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -607,8 +639,8 @@ func (r *AgentReconciler) refreshAIGatewayCatalogForGrant(ctx context.Context, c
 	return nil
 }
 
-// seedAIGatewayCatalog loads the last published shared models, once, when the
-// Gateway cannot be listed and nothing is known yet.
+// seedAIGatewayCatalog loads the last published shared and decision models,
+// once, when the Gateway cannot be listed and nothing is known yet.
 func (r *AgentReconciler) seedAIGatewayCatalog(ctx context.Context) {
 	if _, known := r.aiGatewayCatalog.shared(); known {
 		return
@@ -622,7 +654,7 @@ func (r *AgentReconciler) seedAIGatewayCatalog(ctx context.Context) {
 	if err := json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &catalog); err != nil {
 		return
 	}
-	r.aiGatewayCatalog.seed(catalog.SharedModels)
+	r.aiGatewayCatalog.seed(catalog.SharedModels, catalog.DecisionModels)
 }
 
 func (r *AgentReconciler) catalogNamespace() string {
@@ -706,7 +738,8 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	if shared == nil {
 		shared = []aiGatewayCatalogModel{}
 	}
-	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: r.aiGatewayCatalog.sharedRouters().describe(shared),
+	view := r.aiGatewayCatalog.sharedRouters()
+	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: view.describe(shared), DecisionModels: view.decisionModels(),
 		GitHubCopilot: r.aiGatewayCopilotOffered()}
 	key := types.NamespacedName{Namespace: namespace, Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
 	configMap := &corev1.ConfigMap{}

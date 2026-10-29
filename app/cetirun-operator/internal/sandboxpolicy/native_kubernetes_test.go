@@ -106,3 +106,58 @@ func TestNativeKubernetesNilAccessRemainsIsolated(t *testing.T) {
 		t.Fatal("nil Kubernetes access acquired API network access or RBAC")
 	}
 }
+
+func TestNativeKubernetesAndEntraPrivilegesRemainIndependent(t *testing.T) {
+	for _, mode := range []string{"neither", "kubernetes", "entra", "combined"} {
+		t.Run(mode, func(t *testing.T) {
+			input := nativeKubernetesFixture()
+			input.Resolution.Capabilities.EntraID = true
+			input.Platform.Identities[0].Entra = &EntraIdentity{ClientID: "example-client", TenantID: "example-tenant"}
+			input.IdentityPin = &IdentityPin{
+				Name: input.Platform.Identities[0].ServiceAccountName, UID: "example-account-uid", BootstrapUID: "example-bootstrap-uid",
+			}
+			kubernetes, entra := mode == "kubernetes" || mode == "combined", mode == "entra" || mode == "combined"
+			if !kubernetes {
+				input.Resolution.AgentPolicy.KubernetesAccess = nil
+			}
+			input.Resolution.AgentPolicy.EntraID.Enabled = entra
+			plan := mustCompile(t, input)
+			if err := ValidateIdentityProjection(input.Resolution.AgentPolicy, plan.Identity); err != nil {
+				t.Fatal(err)
+			}
+			bindings, volumes, environment := 0, 0, 0
+			if kubernetes {
+				bindings, volumes = 2, 1
+			}
+			if entra {
+				volumes++
+				environment = 3
+			}
+			if len(plan.Identity.Bindings) != bindings || len(plan.Identity.Volumes) != volumes ||
+				len(plan.Identity.Env) != environment {
+				t.Fatal("an unrequested registered identity projected privileges")
+			}
+			if kubernetes || entra {
+				if !plan.Identity.BootstrapServiceAccount || plan.Identity.ServiceAccount.UID != input.IdentityPin.UID {
+					t.Fatal("combined registration lost its retained ServiceAccount pin")
+				}
+			}
+			if syntheticEgressAllowed(plan.Network.Policy.Spec, "203.0.113.10", nil, 6443, corev1.ProtocolTCP) != kubernetes {
+				t.Fatal("Entra approval changed the Kubernetes API network grant")
+			}
+			for _, capability := range []string{"kubernetes", "entra"} {
+				t.Run("missing-"+capability+"-capability", func(t *testing.T) {
+					current := input
+					if capability == "kubernetes" {
+						current.Resolution.Capabilities.KubernetesAccess = false
+					} else {
+						current.Resolution.Capabilities.EntraID = false
+					}
+					if _, err := Compile(current); err == nil {
+						t.Fatal("identity inventory was accepted without its corresponding capability")
+					}
+				})
+			}
+		})
+	}
+}

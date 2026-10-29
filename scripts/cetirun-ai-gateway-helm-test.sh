@@ -435,6 +435,40 @@ assert_contains "trigger_ratio: 0.9" "a router's own compaction is kept" "${own_
 assert_contains "max_tokens_from_tier_model: true" "a router's own max_tokens setting is kept" "${own_defaults}"
 assert_contains "enable_context_window_escalation: false" "a router's own escalation setting is kept" "${own_defaults}"
 
+# A jev classifier that fails, as Microsoft-Decision-1 did for a request over
+# its context, leaves the request to LiteLLM's heuristic scorer by default,
+# which placed 11 of 40 Chinese and 15 of 40 English prompts on the expected
+# tier in our tests. The chart sends it to the router's default model instead,
+# unless the router sets classifier_fallback, or defines its own tiers, whose
+# fallback_tier LiteLLM uses and next to which it refuses default_model.
+echo "==> a jev router sends a request it could not classify to its default model"
+assert_absent "classifier_fallback" "a heuristic router keeps LiteLLM's fallback" "${routed}"
+jev_router_config="${default_router_config}
+        classifier_type: jev
+        jev_classifier_config: {deployment_name: decision-model}"
+router_values "${router_dir}/jev.yaml" "${jev_router_config}"
+assert_contains "classifier_fallback: default_model" "a jev router falls back to its default model" \
+  "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/jev.yaml" --set operatorIntegration=true)"
+assert_contains "classifier_fallback: default_model" "also without the operator integration" \
+  "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/jev.yaml" --set operatorIntegration=false)"
+router_values "${router_dir}/jev-own.yaml" "${jev_router_config}
+        classifier_fallback: heuristic"
+jev_own="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/jev-own.yaml")"
+assert_contains "classifier_fallback: heuristic" "a jev router's own fallback is kept" "${jev_own}"
+assert_absent "classifier_fallback: default_model" "and not replaced" "${jev_own}"
+router_values "${router_dir}/llm.yaml" "${default_router_config}
+        classifier_type: llm
+        classifier_llm_config: {model: lint-model}"
+assert_absent "classifier_fallback" "an llm router keeps LiteLLM's fallback" \
+  "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/llm.yaml")"
+router_values "${router_dir}/jev-tiers.yaml" "tiers: {LIGHT: lint-model, HEAVY: big-model}
+        classifier_type: jev
+        jev_classifier_config: {deployment_name: decision-model}
+        tier_definitions: [{name: LIGHT, description: short asks}, {name: HEAVY, description: long work}]
+        fallback_tier: HEAVY"
+assert_absent "classifier_fallback" "a jev router with its own tiers keeps its fallback_tier" \
+  "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/jev-tiers.yaml")"
+
 # OpenClaw sends its own context as the last user message, between markers. A
 # router classifies the newest message a person wrote, so without the markers
 # every OpenClaw request was classified by that block: measured, all of them
@@ -519,6 +553,15 @@ two_routers "${router_dir}/shipped-prompts.yaml" "classifier_type: llm, classifi
   "classifier_type: llm, classifier_llm_config: {model: lint-model}"
 helm template "${release_name}" "${chart_dir}" -f "${router_dir}/shipped-prompts.yaml" > /dev/null \
   || { echo "FAIL: two model classifiers with LiteLLM's own prompt were counted" >&2; exit 1; }
+# A jev classifier claims the classifier prompt only with instructions of its own.
+two_routers "${router_dir}/shipped-jev.yaml" "classifier_type: jev, jev_classifier_config: {deployment_name: lint-model}" \
+  "classifier_type: llm, classifier_llm_config: {model: lint-model, system_prompt: rubric}"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/shipped-jev.yaml" > /dev/null \
+  || { echo "FAIL: a jev classifier with LiteLLM's own instructions was counted" >&2; exit 1; }
+two_routers "${router_dir}/two-jev-instructions.yaml" \
+  "classifier_type: jev, jev_classifier_config: {deployment_name: lint-model, instructions: rubric}" \
+  "classifier_type: jev, jev_classifier_config: {deployment_name: lint-model, instructions: rubric}"
+router_rejected "two jev classifiers with their own instructions" "${router_dir}/two-jev-instructions.yaml"
 
 # ----- Budgets -----
 
