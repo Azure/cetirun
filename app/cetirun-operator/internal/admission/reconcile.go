@@ -223,17 +223,28 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 			return reject(podReadFailure("PreviousPod", err))
 		}
 		if old.UID != pod.UID || old.UID != persisted.UID || pod.ResourceVersion != persisted.ResourceVersion ||
-			old.ResourceVersion != persisted.ResourceVersion || old.Spec.NodeName != persisted.Spec.NodeName {
+			old.ResourceVersion != persisted.ResourceVersion || old.Spec.NodeName != persisted.Spec.NodeName ||
+			pod.Spec.NodeName != persisted.Spec.NodeName {
 			return reject(podDenied("PreviousPodMismatch", "Pod update does not match its persisted identity"))
 		}
-		wanted.Template.Spec.NodeName = persisted.Spec.NodeName
 	}
-	if err := w.ValidateRenderedPod(pod, wanted, owner, revision); err != nil {
+	var validationErr error
+	if request.Operation == admissionv1.Update && pod.Spec.NodeName != "" {
+		node, failure := h.readAssignedNode(ctx, pod)
+		if failure != nil {
+			return reject(failure)
+		}
+		validationErr = w.ValidateRenderedPodOnNode(pod, node, wanted, owner, revision)
+	} else {
+		validationErr = w.ValidateRenderedPod(pod, wanted, owner, revision)
+	}
+	if validationErr != nil {
 		message := "Pod differs from the current authorized chart template"
 		var mismatch *w.PodMismatchError
-		if errors.As(err, &mismatch) {
+		if errors.As(validationErr, &mismatch) {
 			message = mismatch.Error()
 		}
+
 		return reject(podDenied("TemplateMismatch", message))
 	}
 	confirmed := &corev1.ConfigMap{}
@@ -250,6 +261,20 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 		return reject(failure)
 	}
 	return admission.Allowed("Pod matches current authorized common chart output"), true
+}
+
+func (h *PodHandler) readAssignedNode(ctx context.Context, pod *corev1.Pod) (*corev1.Node, *podFailure) {
+	if pod.Spec.NodeName == "" {
+		return nil, podDenied("NodeUnavailable", "the current Pod has no assigned Node")
+	}
+	node := &corev1.Node{}
+	if err := h.reader.Get(ctx, client.ObjectKey{Name: pod.Spec.NodeName}, node); err != nil {
+		return nil, podReadFailure("Node", err)
+	}
+	if node.UID == "" || !node.DeletionTimestamp.IsZero() {
+		return nil, podDenied("NodeUnavailable", "the assigned Node is unavailable")
+	}
+	return node, nil
 }
 
 func controllerRuntimeDefaults(agent, old *api.Agent) bool {

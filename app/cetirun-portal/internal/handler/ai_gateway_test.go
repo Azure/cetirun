@@ -104,8 +104,8 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if created.Spec.Team != "aks" || created.Spec.SandboxRef != "" {
 		t.Fatalf("binding = %q/%q, want aks with no Sandbox binding", created.Spec.Team, created.Spec.SandboxRef)
 	}
-	// A Custom Agent gets a key too, so it needs a Team as well. It is not
-	// routed, so the model switches do not apply to it.
+	// Custom without a Sandbox retains its existing model-selection behavior.
+	// A Team is still required, but the model switches are not persisted.
 	custom := gatewayConfig()
 	custom.AllowedAgentTypes = []string{"openclaw", "custom"}
 	customAgent := `"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"}`

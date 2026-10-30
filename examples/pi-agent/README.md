@@ -178,6 +178,9 @@ metadata:
   name: pi-agent
 spec:
   team: example-team # An existing, approved Team.
+  modelAccess:
+    sharedModels: true
+    githubCopilot: false
   user:
     alias: example-user
     displayName: Example User
