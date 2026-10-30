@@ -50,7 +50,8 @@ coloredlogs==15.0.1
 colorlog==6.10.1
 croniter==6.2.2
 cryptography==50.0.0
-ddtrace==4.11.0
+ddtrace==4.15.6  # GHSA-3633-r77q-h3v3
+ddtrace-internal==0.1.0
 detect-secrets==1.5.0
 distro==1.9.0
 dnspython==2.9.0
