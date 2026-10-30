@@ -58,25 +58,22 @@ func newPodFixture(t *testing.T) podFixture {
 
 func newPodSkillsFixture(t *testing.T, emptySkills bool) podFixture {
 	t.Helper()
-	typ := "hermes"
-	if emptySkills {
-		typ = "openclaw"
-	}
+	typ := "openclaw"
 	fixture := testfixture.New(typ)
 	values := map[string]any{
 		"agentType": typ, "agentRequest": map[string]any{"type": typ},
 		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
 	}
+	fixture.Input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
+	fixture.Input.AuthorizedSecrets = append(fixture.Input.AuthorizedSecrets, "gateway-key")
+	values["aiGateway"] = map[string]any{
+		"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key",
+		"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
+	}
+	values["secrets"].(map[string]any)["apiBase"] = "http://gateway.example-platform.svc.cluster.local:4000/v1"
 	if emptySkills {
 		fixture.Input.Skills, fixture.Input.SkillsMode = nil, w.SkillsModeEmpty
 		fixture.Input.Helpers.Desktop = false
-		fixture.Input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
-		fixture.Input.AuthorizedSecrets = append(fixture.Input.AuthorizedSecrets, "gateway-key")
-		values["aiGateway"] = map[string]any{
-			"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key",
-			"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
-		}
-		values["secrets"].(map[string]any)["apiBase"] = "http://gateway.example-platform.svc.cluster.local:4000/v1"
 	}
 	bundle, err := w.Build(fixture.Input)
 	if err != nil {
@@ -103,6 +100,12 @@ func newPodSkillsFixture(t *testing.T, emptySkills bool) podFixture {
 	// Production rendering remains held and cannot construct an active state.
 	expected.ExecutionHeld, expected.ControllerRevision = false, workload.Status.UpdateRevision
 	expected.SinglePod = emptySkills
+	if !emptySkills {
+		// Preserve compatibility coverage for persisted records from before
+		// native Pod lifetime protection. This fixture does not authorize a start.
+		expected.Template.Finalizers = nil
+		workload.Spec.Template.Finalizers = nil
+	}
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{api.AddToScheme, appsv1.AddToScheme, corev1.AddToScheme, nodev1.AddToScheme} {
 		if err := add(scheme); err != nil {
@@ -120,11 +123,9 @@ func newPodSkillsFixture(t *testing.T, emptySkills bool) podFixture {
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "example-config", Namespace: fixture.Namespace.Name, UID: "config-uid", ResourceVersion: "1"}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "runtime-secret", Namespace: fixture.Namespace.Name, UID: "secret-uid", ResourceVersion: "1"}},
 	)
-	if emptySkills {
-		objects = append(objects, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-			Name: "gateway-key", Namespace: fixture.Namespace.Name, UID: "gateway-key-uid", ResourceVersion: "1",
-		}})
-	}
+	objects = append(objects, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "gateway-key", Namespace: fixture.Namespace.Name, UID: "gateway-key-uid", ResourceVersion: "1",
+	}})
 	for _, object := range objects {
 		if agent, ok := object.(*api.Agent); ok {
 			source, err := w.AgentSourceReference(agent)

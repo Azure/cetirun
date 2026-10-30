@@ -163,10 +163,9 @@ recommend `spec.resources.helpers.limits.memory: 2Gi`, with the memory request
 remaining `128Mi`. OpenClaw 2026.9.6's doctor was observed to be OOMKilled at the
 previous `512Mi` limit; `2Gi` allowed initialization to complete. This is a
 starting recommendation, not a measured minimum or a guarantee for every runtime
-and workload. All init containers, including `doctor`, `retire-copilot-sign-in`
-and `retire-direct-model-auth`, and any Agent sidecars share the Sandbox's
-per-helper resource settings. Include them and RuntimeClass overhead when
-planning the aggregate Pod resource budget.
+and workload. All init containers, including `doctor`, and any Agent sidecars
+share the Sandbox's per-helper resource settings. Include them and RuntimeClass
+overhead when planning the aggregate Pod resource budget.
 
 Existing Sandboxes retain their stored limits. To raise them, use the supported
 [coordinated configuration update](../../app/cetirun-operator/README.md#coordinated-configuration-updates)

@@ -425,6 +425,8 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 	if err := r.checkRegistryIntent(ctx, agent); err != nil {
 		return ctrl.Result{Requeue: true}, nil
 	}
+	beforeStatus := agent.DeepCopy().Status
+	keyErr := r.suspendGatewayKey(ctx, agent)
 	sts := &appsv1.StatefulSet{}
 	key := client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: instanceServiceName(agent.Name)}
 	err := r.customReader().Get(ctx, key, sts)
@@ -461,7 +463,6 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 	if err := r.removeRegistryCredentials(ctx, agent); err != nil {
 		return r.registryWaiting(ctx, agent, err.Error())
 	}
-	before := agent.DeepCopy().Status
 	agent.Status.Phase, agent.Status.AccessURL = api.PhaseSuspended, ""
 	// Invalidate the deployment skip-cache so resume restores one replica even
 	// when the suspend/resume spec round trip left other inputs unchanged.
@@ -469,12 +470,15 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 	for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionIngressReady} {
 		setCondition(&agent.Status.Conditions, condition, metav1.ConditionFalse, "Suspended", "Suspension requested; registry credentials are not required")
 	}
-	if !reflect.DeepEqual(before, agent.Status) {
+	if !reflect.DeepEqual(beforeStatus, agent.Status) {
 		if err := r.updateStatus(ctx, agent); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	return ctrl.Result{RequeueAfter: time.Minute}, nil
+	if beforeStatus.Phase != api.PhaseSuspended && r.EventRecorder != nil {
+		r.EventRecorder.Event(agent, corev1.EventTypeNormal, "InstanceSuspended", "Instance suspended — scaled to zero and ingress removed")
+	}
+	return ctrl.Result{RequeueAfter: time.Minute}, keyErr
 }
 
 // suspendCopilotProxy stops the Agent's GitHub Copilot proxy, which its chart

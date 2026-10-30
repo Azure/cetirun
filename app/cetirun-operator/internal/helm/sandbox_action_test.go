@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/kube"
@@ -42,7 +41,7 @@ import (
 var errSandboxActionTest = errors.New("synthetic held action failure")
 
 func TestSandboxStageDigestIsReadOnlyAndDetectsReleaseDrift(t *testing.T) {
-	prepared, _, _ := sandboxRender(t, "hermes", true, false)
+	prepared, _, _ := sandboxRender(t, "openclaw", true, false)
 	cfg, kubeClient, store := sandboxActionConfig()
 	input := prepared.sandboxBundle.Identity()
 	ctx := context.Background()
@@ -419,7 +418,7 @@ func assertSandboxHeldWrites(t *testing.T, k *sandboxActionKube) {
 }
 
 func TestSandboxStageNativeFrozenInstallAndUpgrade(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
 			p, _, _ := sandboxRender(t, typ, true, true)
 			sealed, err := p.SandboxManifest()
@@ -433,7 +432,7 @@ func TestSandboxStageNativeFrozenInstallAndUpgrade(t *testing.T) {
 			})
 			p.chart.Files = append(p.chart.Files, &chart.File{Name: "crds/late.yaml", Data: []byte("kind: CustomResourceDefinition\n")})
 			cfg, k, store := sandboxActionConfig()
-			fixture := testfixture.New(typ)
+			fixture := gatewayHeldFixture(typ)
 			for _, claim := range []any{fixture.Input.Home, fixture.Input.Skills} {
 				var obj unstructured.Unstructured
 				raw, _ := json.Marshal(claim)
@@ -509,7 +508,7 @@ func TestSandboxStageNativeFrozenInstallAndUpgrade(t *testing.T) {
 func TestSandboxStageRejectsOwnerlessSealedObjectsBeforeWrites(t *testing.T) {
 	for _, kind := range []string{"ConfigMap", "Service"} {
 		t.Run(kind, func(t *testing.T) {
-			p, _, _ := sandboxRender(t, "hermes", true, false)
+			p, _, _ := sandboxRender(t, "openclaw", true, false)
 			objects, err := sandboxStageObjects(p.manifest, sandboxSealIdentity(p.sandboxBundle.Identity()))
 			if err != nil {
 				t.Fatal(err)
@@ -591,7 +590,7 @@ func TestSandboxStageRejectsInvalidPreparationAndGuardBeforeWrites(t *testing.T)
 			}
 		})
 	}
-	p, _, _ := sandboxRender(t, "hermes", true, false)
+	p, _, _ := sandboxRender(t, "openclaw", true, false)
 	if err := (&Client{}).StageSandbox(context.Background(), "cetirun-example", p.releaseName, p, nil); err == nil {
 		t.Fatal("public staging accepted a nil guard")
 	}
@@ -603,7 +602,7 @@ func TestSandboxStageRejectsInvalidPreparationAndGuardBeforeWrites(t *testing.T)
 func TestSandboxStageOwnedFailuresRetryWithoutExecution(t *testing.T) {
 	for _, upgrade := range []bool{false, true} {
 		t.Run(fmt.Sprintf("upgrade=%v", upgrade), func(t *testing.T) {
-			p, _, _ := sandboxRender(t, "hermes", true, true)
+			p, _, _ := sandboxRender(t, "openclaw", true, true)
 			cfg, k, _ := sandboxActionConfig()
 			if upgrade {
 				if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
@@ -667,7 +666,7 @@ func TestSandboxStageDoesNotHideStorageConflictsOrLostStatus(t *testing.T) {
 }
 
 func TestSandboxStageGuardRecheckedAfterAction(t *testing.T) {
-	p, _, _ := sandboxRender(t, "hermes", true, true)
+	p, _, _ := sandboxRender(t, "openclaw", true, true)
 	cfg, k, _ := sandboxActionConfig()
 	changed, checksAfter := false, 0
 	k.afterWrite = func() { changed = true }
@@ -771,7 +770,7 @@ func TestSandboxStageRejectsForeignAndReplacedObjects(t *testing.T) {
 	for _, kind := range []string{"ConfigMap", "Service", "StatefulSet", "CiliumNetworkPolicy"} {
 		for _, mode := range []string{"copied labels", "foreign Agent", "deleting", "replaced between reads"} {
 			t.Run(kind+"/"+mode, func(t *testing.T) {
-				p, _, _ := sandboxRender(t, "hermes", true, false)
+				p, _, _ := sandboxRender(t, "openclaw", true, false)
 				cfg, k, store := sandboxActionConfig()
 				if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
 					t.Fatal(err)
@@ -834,7 +833,7 @@ func TestSandboxStageDoesNotAdoptObjectsWithoutOwnedRelease(t *testing.T) {
 }
 
 func TestSandboxStageRejectsReleaseChangeDuringGuard(t *testing.T) {
-	p, _, _ := sandboxRender(t, "hermes", true, false)
+	p, _, _ := sandboxRender(t, "openclaw", true, false)
 	cfg, k, store := sandboxActionConfig()
 	if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
 		t.Fatal(err)
@@ -881,7 +880,7 @@ func TestSandboxStageValidatesFailedUpgradeBaseline(t *testing.T) {
 }
 
 func TestSandboxStageNoOpRequiresIdenticalLiveObjects(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		for _, defaulted := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/defaulted=%v", typ, defaulted), func(t *testing.T) {
 				p, _, _ := sandboxRender(t, typ, true, false)
@@ -968,7 +967,7 @@ func addSandboxTestAPIDefaults(t *testing.T, k *sandboxActionKube) {
 func TestSandboxStageNoOpDoesNotHideDriftOrMissingObjects(t *testing.T) {
 	for _, kind := range []string{"ConfigMap", "Service", "StatefulSet", "CiliumNetworkPolicy", "missing ConfigMap", "template metadata"} {
 		t.Run(kind, func(t *testing.T) {
-			p, _, _ := sandboxRender(t, "hermes", true, false)
+			p, _, _ := sandboxRender(t, "openclaw", true, false)
 			cfg, k, store := sandboxActionConfig()
 			if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
 				t.Fatal(err)
@@ -1051,7 +1050,7 @@ func TestSandboxStageNoOpDoesNotHideDriftOrMissingObjects(t *testing.T) {
 func TestSandboxStageNoOpFailsOnConcurrentChangeOrGuardFailure(t *testing.T) {
 	for _, mode := range []string{"object version", "object UID", "post-check"} {
 		t.Run(mode, func(t *testing.T) {
-			p, _, _ := sandboxRender(t, "hermes", true, false)
+			p, _, _ := sandboxRender(t, "openclaw", true, false)
 			cfg, k, store := sandboxActionConfig()
 			if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
 				t.Fatal(err)
@@ -1092,12 +1091,12 @@ func TestSandboxStageNoOpFailsOnConcurrentChangeOrGuardFailure(t *testing.T) {
 }
 
 func TestSandboxStageRequiresJournalledRetirementBeforeInventoryChange(t *testing.T) {
-	p, _, _ := sandboxRender(t, "hermes", true, false)
+	p, _, _ := sandboxRender(t, "openclaw", true, false)
 	cfg, k, store := sandboxActionConfig()
 	if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
 		t.Fatal(err)
 	}
-	fixture := testfixture.New("hermes")
+	fixture := gatewayHeldFixture("openclaw")
 	fixture.Input.Helpers.Desktop = false
 	oldPolicy := fixture.Input.Controls.Objects[0].DeepCopy()
 	fixture.Input.Controls.Objects[0].SetName("sandbox-replacement")
@@ -1105,7 +1104,7 @@ func TestSandboxStageRequiresJournalledRetirementBeforeInventoryChange(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := sampleInput("hermes", "openai", false)
+	input := sampleInput("openclaw", "openai", false)
 	object(input["secrets"])["existingSecret"] = "runtime-secret"
 	next, err := PrepareSandboxChart(testChart(t), input, nil, bundle)
 	if err != nil {
@@ -1128,7 +1127,7 @@ func TestSandboxStageRequiresJournalledRetirementBeforeInventoryChange(t *testin
 func TestSandboxStageRespectsCancellationBeforeWrites(t *testing.T) {
 	for _, mode := range []string{"already canceled", "deadline in guard", "API unavailable"} {
 		t.Run(mode, func(t *testing.T) {
-			p, _, _ := sandboxRender(t, "hermes", true, false)
+			p, _, _ := sandboxRender(t, "openclaw", true, false)
 			cfg, k, store := sandboxActionConfig()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 			defer cancel()

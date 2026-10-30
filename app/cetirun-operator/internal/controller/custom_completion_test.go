@@ -124,6 +124,11 @@ func (c *completionClient) Create(ctx context.Context, obj client.Object, option
 		c.failCreate = false
 		return fmt.Errorf("synthetic outbox create failure")
 	}
+	// The Gateway key is a versioned Custom binding. The API server allocates
+	// its UID; mirror that behavior in this fake client before persisting it.
+	if obj.GetUID() == "" {
+		obj.SetUID(types.UID("synthetic-" + obj.GetName()))
+	}
 	return c.Client.Create(ctx, obj, options...)
 }
 
@@ -176,8 +181,14 @@ func newCompletionScenario(t *testing.T) *completionScenario {
 }
 
 func (s *completionScenario) restart() {
+	previous := s.reconciler
 	s.reconciler = &controller.AgentReconciler{Client: s.client, Scheme: testScheme(),
 		HelmClient: s.helm, CustomBindings: s.provider, EventRecorder: record.NewFakeRecorder(100)}
+	if previous == nil {
+		controller.ConfigureTestGateway(s.t, s.reconciler)
+	} else {
+		controller.ReuseTestGateway(s.t, previous, s.reconciler)
+	}
 }
 
 func (s *completionScenario) step() error {
@@ -211,10 +222,21 @@ func (s *completionScenario) observeApplied() {
 	sts.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: s.agent.Name, UID: s.agent.UID}}
 	sts.Annotations = map[string]string{"cetirun.microsoft.com/agent-uid": string(s.agent.UID),
 		"cetirun.microsoft.com/custom-plan-hash": s.helm.lastValues["runtime"].(map[string]any)["workloadHash"].(string)}
+	markGatewayCustomWorkload(sts, s.reconciler.AIGateway.URL)
 	sts.Status.CurrentRevision, sts.Status.UpdateRevision = "applied", "applied"
 	if err := s.client.Create(context.Background(), sts); err != nil {
 		s.t.Fatal(err)
 	}
+}
+
+// markGatewayCustomWorkload represents an already applied Custom template in
+// tests that need to observe it after Gateway-only migration.
+func markGatewayCustomWorkload(sts *appsv1.StatefulSet, gatewayURL string) {
+	sts.Spec.Template.Spec.Containers = []corev1.Container{{Env: []corev1.EnvVar{
+		{Name: "OPENAI_BASE_URL", Value: gatewayURL + "/v1"},
+		{Name: "OPENAI_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "ai-gateway-virtual-key"}, Key: "api-key"}}},
+	}}}
 }
 
 func TestCustomCompletionRetriesAfterRestartWithoutReapplying(t *testing.T) {

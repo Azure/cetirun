@@ -96,7 +96,8 @@ class MemorySandboxBoundaryTests(unittest.TestCase):
                     "memoryContext": {"image": "registry.example.com/memory:1.2.3"},
                     "desktop": {"enabled": False},
                     "openclaw": {"config": {"browser": {"enabled": False}}},
-                    "secrets": {"provider": "openai", "model": "example-model", "existingSecret": "synthetic-agent-secret"},
+                    "secrets": {"provider": "openai", "model": "example-model", "existingSecret": "synthetic-agent-secret", "apiBase": "http://gateway.example.com/v1"},
+                    "aiGateway": {"enabled": True, "keySecretName": "synthetic-model-key"},
                 }
                 objects = render(RUNTIME_CHART, values)
                 pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]

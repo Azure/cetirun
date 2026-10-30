@@ -27,7 +27,7 @@ Licensed under the MIT License.
 {{- if not .Values.runtime -}}{{- fail "Custom requires a platform-prepared runtime plan" -}}{{- end -}}
 {{- $r := .Values.runtime -}}
 {{- if or (ne $r.contractVersion "v1") (ne $r.agent.type "custom") -}}{{- fail "Invalid Custom runtime contract" -}}{{- end -}}
-{{- if or (not $r.agent.image) (not $r.agent.home) (not $r.bindings.home.name) (not $r.bindings.home.claim) (not $r.bindings.context.name) (and (not $r.bindings.agentManagedModel) (not $r.bindings.model.name)) (not $r.planHash) -}}
+{{- if or (not $r.agent.image) (not $r.agent.home) (not $r.bindings.home.name) (not $r.bindings.home.claim) (not $r.bindings.context.name) (not $r.bindings.model.name) (not $r.bindings.model.key) (not $r.planHash) -}}
 {{- fail "Custom requires image, model, HOME and context bindings" -}}
 {{- end -}}
 {{- if ne $r.bindings.namespace.name .Release.Namespace -}}{{- fail "Custom binding namespace mismatch" -}}{{- end -}}

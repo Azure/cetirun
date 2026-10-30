@@ -237,16 +237,12 @@ Portal routes retain the Portal cookie. The filter does not compare a subdomain
 with an owner alias. The portal namespace requires actual sidecar injection, enforced
 NetworkPolicy, and its chart's authorization policy.
 
-Portal calls to an instance's `cetirun-auth` helper use the dedicated
-`X-CetiRun-Auth-Key` browser header because OAuth2 Proxy owns `Authorization`.
-Only after the ownership check succeeds, the filter converts that header to an
-internal bearer credential for `/<instance>/cetirun-auth/*`. It removes the
-dedicated header on Portal, webhook, and other Agent routes. Hermes native API
-clients similarly carry `API_SERVER_KEY` in `X-CetiRun-Agent-API-Key`; the
+Model sign-in uses the Portal and AI Gateway. Hermes native API clients carry
+`API_SERVER_KEY` in `X-CetiRun-Agent-API-Key`; after the ownership check, the
 filter converts it to a bearer credential only for the owned
 `/ui/<instance>/v1/models` and `/ui/<instance>/v1/chat/completions` routes (and
-their legacy instance-subdomain forms). The two transport headers are never
-interchangeable and are removed from every unrelated route.
+their legacy instance-subdomain forms). Transport headers are removed from
+unrelated routes.
 Portal port 8080 uses strict mTLS and gateway service-account identity. Port
 8081 deliberately disables mTLS for the Lua ownership call and relies on the
 gateway-namespace NetworkPolicy restriction; do not describe it as an

@@ -20,16 +20,9 @@ func TestLegacyCreationDoesNotRequireSandboxConfiguration(t *testing.T) {
 		`{"agent":{"type":"openclaw"}}`,
 		`{"agent":{"type":"openclaw"},"team":"example-team"}`,
 	} {
-		response, kube := createAgent(t, config.Config{}, body, team)
-		if response.Code != http.StatusCreated {
-			t.Fatalf("legacy creation was blocked by new policy configuration: status=%d body=%s", response.Code, response.Body.String())
-		}
-		agent := &api.Agent{}
-		if err := kube.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
-			t.Fatal(err)
-		}
-		if agent.Spec.SandboxRef != "" || agent.Status.Policy != nil {
-			t.Fatal("legacy creation manufactured a policy binding")
+		response, _ := createAgent(t, config.Config{}, body, team)
+		if response.Code != http.StatusConflict || errorCode(t, response) != "gateway_required" {
+			t.Fatalf("direct creation was accepted: status=%d body=%s", response.Code, response.Body.String())
 		}
 	}
 }

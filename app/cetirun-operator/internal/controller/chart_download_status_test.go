@@ -387,7 +387,15 @@ func TestChartUnavailableCannotReadWorkload(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				f.r.Client = unavailableStatefulSetClient{f.r.Client}
+				// A healthy steady-state Agent does not need to read its workload.
+				// Invalidate the apply cache so this case exercises the read that a
+				// chart recovery would require.
+				a.Status.ObservedOperatorHash = ""
+				if err := f.r.Status().Update(ctx, a); err != nil {
+					t.Fatal(err)
+				}
+				unavailable := unavailableStatefulSetClient{f.r.Client}
+				f.r.Client, f.r.APIReader = unavailable, unavailable
 			}
 			_, err := f.r.Reconcile(ctx, f.req)
 			if (err != nil) == missing {

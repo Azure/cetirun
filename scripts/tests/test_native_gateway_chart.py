@@ -184,8 +184,6 @@ class NativeGatewayChartTests(unittest.TestCase):
         expected = {
             "init-home-data": ["/bin/sh", "/etc/cetirun/init-home.sh"],
             "doctor": ["openclaw", "doctor", "--fix", "--non-interactive", "--yes"],
-            "retire-copilot-sign-in": ["/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"],
-            "retire-direct-model-auth": ["/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"],
         }
         self.assertEqual({container["name"] for container in pod["initContainers"]}, set(expected))
         for container in pod["initContainers"]:
@@ -414,16 +412,12 @@ class NativeGatewayChartTests(unittest.TestCase):
         })
         self.assertEqual(main["image"], "registry.example.com/openclaw-gateway:example")
         init = pod["initContainers"]
-        self.assertEqual([item["name"] for item in init][-1], "retire-direct-model-auth")
         initializer = next(item for item in init if item["name"] == "init-home-data")
         self.assertIn({"name": "CETIRUN_NATIVE_SANDBOX", "value": "true"}, initializer["env"])
         for container in init:
             self.assertEqual(container["securityContext"], values["sandboxWorkload"]["securityContext"])
             self.assertEqual(container["resources"], values["sandboxWorkload"]["helperResources"])
         data = object_of_kind(objects, "ConfigMap")["data"]
-        self.assertEqual(data["retire-direct-model-auth.sh"], (
-            RUNTIME_CHART / "agents/openclaw/bootstrap/retire-direct-model-auth.sh"
-        ).read_text())
         config = json.loads(data["openclaw.json"])
         self.assertEqual(config["auth"], {"profiles": {}})
         self.assertEqual(list(config["models"]["providers"]), ["openai"])
@@ -452,7 +446,7 @@ class NativeGatewayChartTests(unittest.TestCase):
         values["replicaCount"] = 1
         render(RUNTIME_CHART, values, error="Sandbox render plans must retain the execution hold")
 
-    def test_legacy_gateway_keeps_its_existing_model_and_init_behavior(self):
+    def test_standalone_gateway_replaces_provider_config_and_keeps_init_behavior(self):
         values = native_values()
         values["sandboxWorkload"] = None
         values["sidecarScope"]["enabled"] = True
@@ -460,13 +454,12 @@ class NativeGatewayChartTests(unittest.TestCase):
         pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
         self.assertEqual(pod["containers"][0]["startupProbe"]["failureThreshold"], 30)
         self.assertEqual(pod["containers"][0]["startupProbe"]["periodSeconds"], 10)
-        self.assertNotIn("retire-direct-model-auth", [item["name"] for item in pod["initContainers"]])
         self.assertFalse(any(
             variable["name"] == "CETIRUN_NATIVE_SANDBOX"
             for item in pod["initContainers"] for variable in item.get("env", [])
         ))
         config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
-        self.assertIn("other", config["models"]["providers"])
+        self.assertEqual(list(config["models"]["providers"]), ["openai"])
         self.assertEqual(config["gateway"]["trustedProxies"], ["127.0.0.6"])
         self.assertNotIn("health-probe.cjs", object_of_kind(objects, "ConfigMap")["data"])
         for kind, path in (

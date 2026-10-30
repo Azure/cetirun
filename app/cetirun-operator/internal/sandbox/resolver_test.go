@@ -355,7 +355,6 @@ func TestRevisionIncludesOnlyEffectiveConfiguration(t *testing.T) {
 		}},
 		{"model settings", func(i *ResolveInput) {
 			i.Agent.Spec.Model = "example-model"
-			i.Team.Spec.Defaults.Provider = "example-provider"
 		}},
 		{"unselected policy", func(i *ResolveInput) {
 			i.Resources.AgentPolicies["operations"].Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}

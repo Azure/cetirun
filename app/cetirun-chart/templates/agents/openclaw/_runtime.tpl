@@ -91,14 +91,12 @@ OpenClaw init containers
     - name: AZDEVOPS_GIT_CREDENTIAL_ENABLED
       value: "true"
     {{- end }}
-    {{- if (.Values.aiGateway | default dict).enabled }}
     # The Gateway owns the model list: init replaces the saved one.
     - name: CETIRUN_AI_GATEWAY
       value: "true"
     {{- if .Values.sandboxWorkload }}
     - name: CETIRUN_NATIVE_SANDBOX
       value: "true"
-    {{- end }}
     {{- end }}
   volumeMounts:
     {{- include "cetirun.context.initMounts" . | nindent 4 }}
@@ -154,69 +152,6 @@ OpenClaw init containers
     {{- include "cetirun.context.mount" . | nindent 4 }}
     {{- end }}
 {{- end }}
-{{- if (.Values.aiGateway | default dict).enabled }}
-# The owner signs in to GitHub Copilot through the Portal, and that token
-# stays with the Copilot proxy: remove, once, the sign-in the in-agent helper
-# left in the home. After doctor, which imports the auth profile files of
-# earlier OpenClaw versions.
-- name: retire-copilot-sign-in
-  image: "{{ include "cetirun.image" . }}"
-  imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
-  securityContext:
-    {{- if .Values.sandboxWorkload }}
-    {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
-    {{- else }}
-    runAsUser: 1024
-    runAsNonRoot: true
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop:
-        - ALL
-    seccompProfile:
-      type: RuntimeDefault
-    {{- end }}
-  {{- with .Values.sandboxWorkload }}
-  resources:
-    {{- toYaml .helperResources | nindent 4 }}
-  {{- end }}
-  {{- if .Values.sandboxWorkload }}
-  command: ["/usr/bin/tini", "-g", "--", "/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"]
-  {{- else }}
-  command: ["/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"]
-  {{- end }}
-  env:
-    - name: OPENCLAW_STATE_DIR
-      value: "/home/vibe/.openclaw"
-  volumeMounts:
-    - name: data
-      mountPath: /home/vibe
-    - name: tmp
-      mountPath: /tmp
-    - name: config
-      mountPath: /etc/cetirun
-      readOnly: true
-{{- end }}
-{{- if and .Values.sandboxWorkload (.Values.aiGateway | default dict).enabled }}
-- name: retire-direct-model-auth
-  image: "{{ include "cetirun.image" . }}"
-  imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
-  securityContext:
-    {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
-  resources:
-    {{- toYaml .Values.sandboxWorkload.helperResources | nindent 4 }}
-  command: ["/usr/bin/tini", "-g", "--", "/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"]
-  env:
-    - name: OPENCLAW_STATE_DIR
-      value: "/home/vibe/.openclaw"
-  volumeMounts:
-    - name: data
-      mountPath: /home/vibe
-    - name: tmp
-      mountPath: /tmp
-    - name: config
-      mountPath: /etc/cetirun
-      readOnly: true
-{{- end }}
 {{ include "cetirun.initSkillsContainer" . }}
 {{- end }}
 
@@ -266,27 +201,12 @@ OpenClaw container env vars (agent-specific only)
       name: {{ include "cetirun.secretName" . }}
       key: PERPLEXITY_API_KEY
       optional: true
-{{- if eq (.Values.secrets.provider | default "github_copilot") "openai" }}
 - name: OPENAI_API_KEY
   valueFrom:
     secretKeyRef:
-      {{- if (.Values.aiGateway | default dict).enabled }}
       # This Agent's AI Gateway virtual key, managed by the CetiRun operator.
       name: {{ .Values.aiGateway.keySecretName }}
       key: {{ .Values.aiGateway.keySecretKey | default "api-key" }}
-      {{- else }}
-      name: {{ include "cetirun.secretName" . }}
-      key: MODEL_API_KEY
-      optional: true
-      {{- end }}
-{{- else if eq (.Values.secrets.provider | default "github_copilot") "anthropic" }}
-- name: ANTHROPIC_API_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "cetirun.secretName" . }}
-      key: MODEL_API_KEY
-      optional: true
-{{- end }}
 # Gateway token (required). With Portal sign-in, OpenClaw refuses a token and
 # the same secret becomes the password of clients on loopback.
 {{- if eq (include "cetirun.agent.openclaw.portalSignIn" .) "true" }}
@@ -413,14 +333,6 @@ OpenClaw configmap data
   {{- if .Values.sandboxWorkload }}
   health-probe.cjs: |
 {{ .Files.Get "agents/openclaw/bootstrap/health-probe.cjs" | indent 4 }}
-  {{- end }}
-  {{- if (.Values.aiGateway | default dict).enabled }}
-  retire-copilot-sign-in.sh: |
-{{ .Files.Get "agents/openclaw/bootstrap/retire-copilot-sign-in.sh" | indent 4 }}
-  {{- if .Values.sandboxWorkload }}
-  retire-direct-model-auth.sh: |
-{{ .Files.Get "agents/openclaw/bootstrap/retire-direct-model-auth.sh" | indent 4 }}
-  {{- end }}
   {{- end }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}

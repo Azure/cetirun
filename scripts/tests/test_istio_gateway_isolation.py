@@ -160,8 +160,8 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         cookie_removal = self.source.index(
             "strip_portal_session_cookie(request_handle)", fail_closed
         )
-        helper_auth = self.source.index(
-            "forward_instance_key(request_handle, path_only, authority)", cookie_removal
+        native_api_auth = self.source.index(
+            "forward_native_agent_api_key(request_handle, path_only, authority)", cookie_removal
         )
 
         self.assertLess(token_removal, exempt_branch)
@@ -169,12 +169,9 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         self.assertLess(instance_branch, ownership_check)
         self.assertLess(ownership_check, fail_closed)
         self.assertLess(fail_closed, cookie_removal)
-        self.assertLess(cookie_removal, helper_auth)
+        self.assertLess(cookie_removal, native_api_auth)
 
-    def test_helper_and_native_api_credentials_use_separate_route_bound_headers(self):
-        self.assertIn(
-            'local CETIRUN_AUTH_KEY_HEADER = "x-cetirun-auth-key"', self.source
-        )
+    def test_native_api_credentials_use_a_route_bound_header(self):
         self.assertIn(
             'local AGENT_API_KEY_HEADER = "x-cetirun-agent-api-key"', self.source
         )
@@ -189,12 +186,12 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             self.source,
         )
         self.assertIn(
-            "if is_cetirun_auth_path(path) and valid_instance_key(auth_key) then\n"
-            '                  headers:replace("authorization", "Bearer " .. auth_key)\n'
-            "                elseif is_native_agent_api_path(path, authority) and valid_instance_key(api_key) then\n"
+            "if is_native_agent_api_path(path, authority) and valid_instance_key(api_key) then\n"
             '                  headers:replace("authorization", "Bearer " .. api_key)',
             self.source,
         )
+        self.assertNotIn("CETIRUN_AUTH_KEY_HEADER", self.source)
+        self.assertNotIn("is_cetirun_auth_path", self.source)
         self.assertEqual(
             self.source.count(
                 'request_handle:headers():remove(AGENT_API_KEY_HEADER)'
