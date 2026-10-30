@@ -563,13 +563,24 @@ class NativeGatewayChartTests(unittest.TestCase):
                 self.assertEqual(env["LITELLM_TPM_TOKEN_RESERVATION_ENABLED"], expected)
         render(GATEWAY_CHART, {"models": [MODEL], "tpmReservation": "yes"}, error="tpmReservation")
 
+    def test_spend_log_stores_content_by_default_and_accepts_an_explicit_opt_out(self):
+        for values, expected in (
+            ({}, True),
+            ({"spendLogs": {"storePrompts": True}}, True),
+            ({"spendLogs": {"storePrompts": False}}, False),
+            ({"spendLogs": {"storePrompts": None}}, True),
+        ):
+            with self.subTest(values=values):
+                settings = gateway_general_settings(values)
+                self.assertIs(settings.get("store_prompts_in_spend_logs"), expected)
+
     def test_spend_log_cleanup_runs_every_hour_whenever_a_retention_is_set(self):
         # LiteLLM schedules its cleanup only from a string interval, and its
         # default, a day, outlasts pods that configuration changes replace.
         for values in (
             {},
             {"replicaCount": 1, "redis": {"bundled": {"enabled": False}}},
-            {"spendLogs": {"enabled": False}},
+            {"spendLogs": {"enabled": False, "storePrompts": False}},
             {"spendLogs": {"retention": "1h"}},
         ):
             with self.subTest(values=values):
