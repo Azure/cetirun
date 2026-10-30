@@ -18,8 +18,15 @@ import (
 
 func (b *Bundle) mtlsContainer() corev1.Container {
 	plan := b.input.Controls.IngressMTLS
+	return b.mtlsContainerFor(plan)
+}
+
+func (b *Bundle) mtlsContainerFor(plan *ingressmtls.Plan) corev1.Container {
 	sc := b.SecurityContext()
 	sc.ReadOnlyRootFilesystem = ptr.To(true)
+	if b.input.AgentType == "custom" {
+		sc.RunAsUser, sc.RunAsGroup = ptr.To[int64](65532), ptr.To[int64](65532)
+	}
 	container := corev1.Container{
 		Name: ingressmtls.ContainerName, Image: plan.Image, ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/usr/local/bin/envoy"},
@@ -34,6 +41,17 @@ func (b *Bundle) mtlsContainer() corev1.Container {
 		container.Ports = append(container.Ports, corev1.ContainerPort{Name: "mtls-" + port.Name, ContainerPort: port.TLS, Protocol: corev1.ProtocolTCP})
 	}
 	return container
+}
+
+func (b *Bundle) TerminalTLS() (*corev1.Container, []corev1.Volume) {
+	plan := b.input.Controls.IngressMTLS
+	if plan == nil || plan.Harness != "custom" || !plan.Terminal {
+		return nil, nil
+	}
+	endpoint := plan.TerminalEndpoint()
+	container := b.mtlsContainerFor(&endpoint)
+	container.Args = []string{"--disable-hot-restart", "--concurrency", "2", "--config-path", "/etc/cetirun-ingress/terminal-envoy.json", "--log-level", "warning"}
+	return &container, b.mtlsVolumes()
 }
 
 func (b *Bundle) mtlsVolumes() []corev1.Volume {
@@ -108,6 +126,23 @@ func (b *Bundle) applyIngressMTLS(values map[string]any) error {
 	protected := object(ValuesKey)
 	protected["ingressMTLS"] = true
 	protected["trustedProxyIPs"] = []any{"127.0.0.1"}
+	if b.input.AgentType == "custom" {
+		protected["ingressServerName"] = plan.ServerName
+		if terminal, _ := protected["terminal"].(map[string]any); terminal != nil {
+			container, volumes := b.TerminalTLS()
+			if container != nil {
+				terminal["tlsContainer"], err = jsonValue(container)
+				if err != nil {
+					return err
+				}
+				terminal["tlsVolumes"], err = jsonValue(volumes)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 	native := object(b.input.AgentType)
 	if b.input.AgentType == "openclaw" {
 		config, _ := native["config"].(map[string]any)
@@ -147,7 +182,12 @@ func (b *Bundle) ValidateIngressService(service *corev1.Service) error {
 	if plan == nil {
 		return nil
 	}
-	if service.Name != b.input.WorkloadName || len(service.Spec.Ports) != len(plan.Ports()) {
+	if b.input.Terminal != nil && service.Name == b.input.Terminal.ServiceAccountName {
+		terminal := plan.TerminalEndpoint()
+		plan = &terminal
+	}
+	if (service.Name != b.input.WorkloadName && (b.input.Terminal == nil || service.Name != b.input.Terminal.ServiceAccountName)) ||
+		len(service.Spec.Ports) != len(plan.Ports()) {
 		return fmt.Errorf("mTLS Service inventory differs from approved API/UI/terminal ingress")
 	}
 	seen := map[string]bool{}
@@ -205,7 +245,10 @@ func (b *Bundle) validateIngressTemplate(spec corev1.PodSpec) error {
 			}
 		}
 	}
-	if !found || !slices.Equal(spec.Containers[0].Command, []string{"/bin/bash", "/etc/cetirun/ingress-entrypoint.sh"}) {
+	if !found {
+		return fmt.Errorf("mTLS requires its managed helper")
+	}
+	if b.input.AgentType != "custom" && !slices.Equal(spec.Containers[0].Command, []string{"/bin/bash", "/etc/cetirun/ingress-entrypoint.sh"}) {
 		return fmt.Errorf("mTLS requires a managed helper and current controlled entrypoint")
 	}
 	if desktopFound != b.input.Controls.IngressMTLS.Desktop {
@@ -217,13 +260,16 @@ func (b *Bundle) validateIngressTemplate(spec corev1.PodSpec) error {
 	}) {
 		return fmt.Errorf("mTLS OpenClaw arguments must keep the application on loopback")
 	}
-	if main.ReadinessProbe == nil || main.ReadinessProbe.Exec == nil ||
+	if b.input.AgentType != "custom" && (main.ReadinessProbe == nil || main.ReadinessProbe.Exec == nil ||
 		len(main.ReadinessProbe.Exec.Command) != 5 ||
-		!slices.Equal(main.ReadinessProbe.Exec.Command[:2], []string{"node", "/etc/cetirun/health-probe.cjs"}) {
+		!slices.Equal(main.ReadinessProbe.Exec.Command[:2], []string{"node", "/etc/cetirun/health-probe.cjs"})) {
 		return fmt.Errorf("mTLS requires the certificate-aware native readiness probe")
 	}
 	bindings := map[string]string{
 		"CETIRUN_INGRESS_MTLS": "true", "CETIRUN_INGRESS_SERVER_NAME": b.input.Controls.IngressMTLS.ServerName,
+	}
+	if b.input.AgentType == "custom" {
+		bindings["CETIRUN_BIND_HOST"] = "127.0.0.1"
 	}
 	if b.input.AgentType == "hermes" {
 		bindings["API_SERVER_HOST"], bindings["API_SERVER_PORT"] = "127.0.0.1", strconv.Itoa(int(b.input.Controls.IngressMTLS.Port))

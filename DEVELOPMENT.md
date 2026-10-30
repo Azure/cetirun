@@ -161,9 +161,13 @@ common Custom checks are:
 
 ```bash
 go -C app/cetirun-operator test ./cmd/loopback-probe ./internal/helm ./internal/sandboxpolicy ./internal/controller -run 'TestCommonCustom|TestCustomSandbox|TestCompileCustom|TestProbe' -count=1 -timeout=20m
+go -C app/cetirun-agent-broker test ./internal/broker -run '^TestCustom' -count=1
+npm --prefix examples/pi-agent test
 python3 -B -m unittest discover -s scripts/tests -p test_custom_initialization.py -v
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
   go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestCommonCustom(Terminal)?APIServer$' -count=1 -timeout=20m
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^(TestNativeEntraCommonRuntimeAPIServer|TestNativeConnectionsServedCurrentSourceProof|TestReconciledSandboxIngressMTLSAPIServer)/custom$' -count=1 -timeout=20m
 ```
 
 These cover both registered backends, all three Custom endpoint modes, the
@@ -172,6 +176,18 @@ restart/suspend/resume/migration and isolated terminal authority. API-server
 tests use synthetic scheduler/kubelet/Gateway observations, not live model,
 tool, Cilium, CSI, identity-provider or image qualification. Run the normal
 Portal backend, frontend and chart checks when changing Custom owner access.
+
+Portal mTLS Chat regressions consume synthetic policy-compiler output, not a
+handwritten plaintext network rule. The compiler test checks the fixture on every
+run; regenerate it after an intentional contract change with the pinned Go toolchain:
+
+```bash
+CETIRUN_UPDATE_CHAT_FIXTURE=true go -C app/cetirun-operator test ./internal/sandboxpolicy -run '^TestCustomMTLSPortalFixture$' -count=1
+go -C app/cetirun-portal test ./internal/kube ./internal/handler -run 'TestCommonChat|TestChatOwnerBindingAndForwarding' -count=1
+```
+
+These are offline endpoint/dispatch checks. The Portal transport remains HTTP to
+its local mesh; they do not qualify live Istio/SDS credentials or TLS handshakes.
 
 Image building is a separate step and can download pinned base images and Go
 dependencies:

@@ -653,6 +653,9 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 		var ingressPeers []Peer
 		for _, destination := range topology.Ingress {
 			if len(tlsPlan) != 0 && tlsPlan[0] != nil {
+				if custom := input.CustomIngress; custom != nil {
+					destination.Ports = append(slices.Clone(destination.Ports), api.AgentPolicyPort{Port: custom.Port, Protocol: corev1.ProtocolTCP})
+				}
 				destination, err = mtlsDestination(destination, *tlsPlan[0])
 				if err != nil {
 					return plan, err
@@ -675,7 +678,7 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 			}
 			ingressPeers = append(ingressPeers, destination.Peer)
 			ports := destination.Ports
-			if custom := input.CustomIngress; custom != nil && custom.WebUI {
+			if custom := input.CustomIngress; custom != nil && custom.WebUI && (len(tlsPlan) == 0 || tlsPlan[0] == nil) {
 				ports = append(slices.Clone(ports), api.AgentPolicyPort{Port: custom.Port, Protocol: corev1.ProtocolTCP})
 				ports, err = canonicalObjects(ports)
 				if err != nil {
@@ -697,6 +700,9 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 				ingressPeers = append(ingressPeers, peer)
 				selector := []metav1.LabelSelector{peerSelector(peer)}
 				ports := []api.AgentPolicyPort{{Port: custom.Port, Protocol: corev1.ProtocolTCP}}
+				if len(tlsPlan) != 0 && tlsPlan[0] != nil {
+					ports[0].Port = ingressmtls.APIPort
+				}
 				if err := budget.ingress(&spec.Ingress, IngressRule{FromEndpoints: selector, ToPorts: portRules(ports)}); err != nil {
 					return plan, err
 				}
@@ -744,7 +750,11 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 		ObjectMeta: metadata, Spec: spec,
 	}
 	if terminal := input.TerminalIngress; terminal != nil {
-		policy, err := compileTerminalNetwork(input, *terminal)
+		copy := *terminal
+		if len(tlsPlan) != 0 && tlsPlan[0] != nil {
+			copy.Port = ingressmtls.TerminalPort
+		}
+		policy, err := compileTerminalNetwork(input, copy)
 		if err != nil {
 			return plan, err
 		}
@@ -786,6 +796,10 @@ func compileTerminalNetwork(input CompileInput, terminal TerminalIngress) (*Cili
 	}
 	if input.Resolution.AgentPolicy.Network.Ingress.Mode != api.AgentPolicyIngressDisabled {
 		ports := portRules([]api.AgentPolicyPort{{Port: terminal.Port, Protocol: corev1.ProtocolTCP}})
+		if input.Resolution.AgentPolicy.Network.Ingress.RequireMTLS {
+			spec.IngressDeny = append(spec.IngressDeny, IngressRule{FromEntities: []string{"all"},
+				ToPorts: deniedPorts([]api.AgentPolicyPort{{Port: terminal.Port, Protocol: corev1.ProtocolTCP}})})
+		}
 		for _, destination := range topology.Ingress {
 			if destination.Peer.Namespace != "" {
 				spec.Ingress = append(spec.Ingress, IngressRule{FromEndpoints: []metav1.LabelSelector{peerSelector(destination.Peer)}, ToPorts: ports})

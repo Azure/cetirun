@@ -344,7 +344,7 @@ func Serve(parent context.Context, cfg Config, backend Backend) error {
 
 	var connections sync.Map
 	public := &http.Server{
-		Addr: ":" + strconv.Itoa(cfg.Port), Handler: server,
+		Addr: net.JoinHostPort(cfg.BindHost, strconv.Itoa(cfg.Port)), Handler: server,
 		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 32 * 1024,
 		ConnState: func(connection net.Conn, state http.ConnState) {
 			if state == http.StateClosed {

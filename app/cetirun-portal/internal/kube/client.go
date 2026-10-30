@@ -28,7 +28,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 )
 
-var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Tailscale, or Agent Identity")
+var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Tailscale, or Agent Identity without a governed Sandbox")
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
@@ -178,7 +178,8 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		return nil, err
 	}
 	identityEnabled := len(optional) > 0 && optional[0].AgentIdentityEnabled
-	if agent.Type == cetirunv1alpha1.AgentTypeCustom && (gatewayToken != "" || tailscaleAuthKey != "" || identityEnabled) {
+	if agent.Type == cetirunv1alpha1.AgentTypeCustom &&
+		(gatewayToken != "" || tailscaleAuthKey != "" || identityEnabled && optional[0].SandboxRef == "") {
 		return nil, ErrUnsupportedCustomUpdate
 	}
 	if identityEnabled && (optional[0].OwnerTenantID == "" || optional[0].OwnerObjectID == "") {

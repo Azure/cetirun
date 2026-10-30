@@ -23,6 +23,7 @@ import (
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -471,9 +472,20 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err != nil {
 		return nil, err
 	}
-	tlsRole, tlsBinding, tlsAccess, err := r.sandboxMTLSSourceAccess(attempt)
-	if err != nil {
-		return nil, err
+	type sourceAccess struct {
+		role    *rbacv1.Role
+		binding *rbacv1.RoleBinding
+		ref     sandboxpolicy.BindingReference
+	}
+	var tlsSources []sourceAccess
+	if plan := attempt.input.Controls.IngressMTLS; plan != nil {
+		for _, secret := range plan.ClientSecrets() {
+			role, binding, ref, err := r.sandboxMTLSSourceAccess(attempt, secret)
+			if err != nil {
+				return nil, err
+			}
+			tlsSources = append(tlsSources, sourceAccess{role, binding, ref})
+		}
 	}
 	journal := r.sandboxGrantJournal()
 	previous, err := journal.Read(ctx, agent.Name, agent.UID)
@@ -588,8 +600,8 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 	}
 	accessGrants := []sandboxpolicy.BindingReference{access}
-	if tlsRole != nil {
-		accessGrants = append(accessGrants, tlsAccess)
+	for _, source := range tlsSources {
+		accessGrants = append(accessGrants, source.ref)
 	}
 	desiredGrants = accessGrants
 	if !agent.Spec.Suspended {
@@ -608,8 +620,8 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err := r.applySandboxSourceAccess(ctx, agent, role, binding, access); err != nil {
 		return nil, err
 	}
-	if tlsRole != nil {
-		if err := r.applySandboxSourceAccess(ctx, agent, tlsRole, tlsBinding, tlsAccess); err != nil {
+	for _, source := range tlsSources {
+		if err := r.applySandboxSourceAccess(ctx, agent, source.role, source.binding, source.ref); err != nil {
 			return nil, err
 		}
 	}

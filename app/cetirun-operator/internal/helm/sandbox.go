@@ -192,6 +192,9 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 		if input.Suspended {
 			p.sandboxReconcile.Controls = slices.DeleteFunc(p.sandboxReconcile.Controls, sandboxworkload.KubernetesBindingResource)
 		}
+		if input.AgentType == "custom" {
+			p.sandboxReconcile.CustomIngressTLS = input.Controls.IngressMTLS
+		}
 		terminalValues := object(object(p.Values[sandboxworkload.ValuesKey])["terminal"])
 		if terminal := input.Terminal; terminal != nil && terminalValues["enabled"] == true {
 			p.sandboxReconcile.Terminal = &sandboxworkload.TerminalTarget{

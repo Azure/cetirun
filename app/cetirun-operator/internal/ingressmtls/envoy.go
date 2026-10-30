@@ -22,6 +22,10 @@ func (p Plan) ConfigDigest() (string, error) {
 // stays on loopback; no fallback, transparent capture or outbound proxy exists.
 func (p Plan) Bootstrap() ([]byte, error) {
 	listeners, clusters := []any{}, []any{}
+	clientNames := []any{map[string]any{"san_type": "URI", "matcher": map[string]string{"exact": p.ClientURI}}}
+	for _, client := range p.ChatClients {
+		clientNames = append(clientNames, map[string]any{"san_type": "URI", "matcher": map[string]string{"exact": client.URI}})
+	}
 	for _, port := range p.Ports() {
 		clusters = append(clusters, map[string]any{
 			"name": port.Name, "type": "STATIC", "connect_timeout": "5s",
@@ -51,10 +55,8 @@ func (p Plan) Bootstrap() ([]byte, error) {
 								"private_key":       map[string]string{"filename": TLSPath + "/tls.key"},
 							}},
 							"validation_context": map[string]any{
-								"trusted_ca": map[string]string{"filename": TLSPath + "/ca.crt"},
-								"match_typed_subject_alt_names": []any{map[string]any{
-									"san_type": "URI", "matcher": map[string]string{"exact": p.ClientURI},
-								}},
+								"trusted_ca":                    map[string]string{"filename": TLSPath + "/ca.crt"},
+								"match_typed_subject_alt_names": clientNames,
 							},
 						},
 					},

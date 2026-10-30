@@ -27,6 +27,7 @@ type Config struct {
 	StatefulSet string
 	Container   string
 	Port        int
+	BindHost    string
 	SessionTTL  time.Duration
 }
 
@@ -37,6 +38,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		Namespace:   getenv("CETIRUN_TERMINAL_NAMESPACE"),
 		StatefulSet: getenv("CETIRUN_TERMINAL_STATEFULSET"),
 		Container:   getenv("CETIRUN_TERMINAL_CONTAINER"),
+		BindHost:    getenv("CETIRUN_BIND_HOST"),
 		Port:        7681, SessionTTL: 30 * time.Minute,
 	}
 	if raw := getenv("PORT"); raw != "" {
@@ -65,7 +67,8 @@ func (c Config) Validate() error {
 		len(validation.IsDNS1123Label(c.Namespace)) != 0 ||
 		len(validation.IsDNS1123Subdomain(c.StatefulSet)) != 0 ||
 		len(validation.IsDNS1123Label(c.Container)) != 0 ||
-		c.Port < 1024 || c.Port > 65535 || c.SessionTTL < time.Minute || c.SessionTTL > time.Hour {
+		c.Port < 1024 || c.Port > 65535 || c.SessionTTL < time.Minute || c.SessionTTL > time.Hour ||
+		(c.BindHost != "" && c.BindHost != "127.0.0.1") {
 		return fmt.Errorf("terminal requires a fixed Agent UID, namespace, StatefulSet, container and valid port")
 	}
 	return nil

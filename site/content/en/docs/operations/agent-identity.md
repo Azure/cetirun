@@ -52,9 +52,10 @@ Complete these prerequisites before enabling the Portal feature:
   OAuth2 Proxy must forward its verified ID token to the Portal. The Portal
   checks the token signature, tenant, audience and immutable owner identity;
   email headers alone are insufficient.
-- A supported Hermes or OpenClaw workload and an operational platform. This
-  guide does not enable the separate Sandbox execution pilot or make Custom
-  runtimes eligible for Connections MCP.
+- A supported Hermes or OpenClaw workload and an operational platform, or a
+  governed Custom image implementing the [Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads).
+  Custom additionally requires `custom` in each runtime allowlist below and the
+  native common-executor configuration; changing a type list alone grants nothing.
 - Network access from the Broker to Kubernetes, Entra sign-in, its Key Vault,
   and configured providers; from MCP to Kubernetes, the Broker and the fixed
   provider API origins. DNS, mesh control-plane access and image pulls must

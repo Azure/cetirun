@@ -13,7 +13,10 @@ token. CetiRun binds an Agent to a Connection and selected services.
 
 Hermes and OpenClaw connect natively. Governed common-executor workloads require
 the explicit [native Connections configuration]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-native-workloads).
-Custom runtimes and retained single-start Sandbox lifetimes remain unsupported.
+Custom requires an approved Sandbox image implementing the
+[governed Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads)
+and explicit runtime allowlists in Operator, Broker and Portal.
+Custom without a Sandbox and retained single-start Sandbox lifetimes remain unsupported.
 Use a qualified Hermes runtime when OpenClaw is unavailable.
 Microsoft Entra Agent Identity is required for independent Azure access and the
 Azure/Microsoft delegated flow. GitHub supports personal OAuth and shared App

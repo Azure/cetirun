@@ -6,6 +6,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createExtensionRuntime, createSyntheticSourceInfo, loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 import { memoryResources, memoryBridge } from "./memory-runtime.mjs";
+import { connectionsTools } from "./connections-runtime.mjs";
 
 export function memoryModelRevision(model) {
   const identity = { provider: model?.provider, model: model?.id, api: model?.api, baseUrl: model?.baseUrl,
@@ -24,6 +25,16 @@ export async function approvedResources(home, env = process.env, cwd = path.join
   }
   const memory = await loadMemory(home, env);
   const extensions = { extensions: [], errors: [], runtime: createExtensionRuntime() };
+  const connections = connectionsTools(env);
+  if (connections.length) {
+    const extensionPath = "/etc/cetirun/connections";
+    const sourceInfo = createSyntheticSourceInfo(extensionPath, { source: "cetirun-connections", scope: "temporary" });
+    extensions.extensions.push({
+      path: extensionPath, resolvedPath: extensionPath, sourceInfo,
+      handlers: new Map(), tools: new Map(connections.map(definition => [definition.name, { sourceInfo, definition }])),
+      messageRenderers: new Map(), commands: new Map(), flags: new Map(), shortcuts: new Map(),
+    });
+  }
   let modelRuntime = options.modelRuntime;
   if (memory) {
     const extensionPath = path.join(memory.root, "pi-context");
@@ -132,6 +143,7 @@ export async function approvedResources(home, env = process.env, cwd = path.join
   }
   return {
     memoryEnabled: !!memory,
+    connectionTools: connections.map(tool => tool.name),
     setMemoryModelRuntime: value => { modelRuntime = value; },
     getExtensions: () => extensions,
     getSkills: () => skills,

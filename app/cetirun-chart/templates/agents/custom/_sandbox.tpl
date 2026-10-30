@@ -36,8 +36,8 @@ Licensed under the MIT License.
 {{- if and $r.http (or (not $r.agent.port) (not $s.loopbackProbe) (not $s.loopbackProbe.image)) -}}
 {{- fail "Custom HTTP requires a platform loopback probe image and port" -}}
 {{- end -}}
-{{- if or .Values.agentIdentity.enabled .Values.connectionsMCP.enabled -}}
-{{- fail "Custom Agent Identity and Connections require a qualified credential executor" -}}
+{{- if and .Values.agentIdentity.enabled (not .Values.connectionsMCP.enabled) -}}
+{{- fail "Custom Agent Identity requires governed Connections" -}}
 {{- end -}}
 {{- end -}}
 
@@ -155,6 +155,22 @@ spec:
               {{- end }}
             {{- end }}
             {{- include "cetirun.memory.env" . | nindent 12 }}
+            {{- if $s.ingressMTLS }}
+            - name: CETIRUN_BIND_HOST
+              value: "127.0.0.1"
+            - name: CETIRUN_INGRESS_MTLS
+              value: "true"
+            - name: CETIRUN_INGRESS_SERVER_NAME
+              value: {{ $s.ingressServerName | quote }}
+            {{- end }}
+            {{- if .Values.connectionsMCP.enabled }}
+            - name: CETIRUN_CONNECTIONS_MCP_URL
+              value: {{ .Values.connectionsMCP.url | quote }}
+            - name: CETIRUN_CONNECTIONS_MCP_TOKEN_FILE
+              value: /var/run/cetirun/connections/token
+            - name: CETIRUN_CONNECTIONS_MCP_CA_FILE
+              value: /var/run/cetirun/connections-ca/ca.crt
+            {{- end }}
             {{- with $s.identityEnvironment }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -169,13 +185,13 @@ spec:
           {{- with $r.http }}
           startupProbe:
             exec:
-              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .startupPath | quote }}]
+              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .startupPath | quote }}{{ if $s.ingressMTLS }}, "--mtls-server-name", {{ $s.ingressServerName | quote }}{{ end }}]
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 60
           readinessProbe:
             exec:
-              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .healthPath | quote }}]
+              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .healthPath | quote }}{{ if $s.ingressMTLS }}, "--mtls-server-name", {{ $s.ingressServerName | quote }}{{ end }}]
             periodSeconds: 10
             timeoutSeconds: 3
           {{- end }}
@@ -192,6 +208,14 @@ spec:
             {{- with $s.identityMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- if .Values.connectionsMCP.enabled }}
+            - name: connections-identity
+              mountPath: /var/run/cetirun/connections
+              readOnly: true
+            - name: connections-ca
+              mountPath: /var/run/cetirun/connections-ca
+              readOnly: true
+            {{- end }}
             - name: context-view
               mountPath: {{ printf "%s/.agents" $r.agent.home | quote }}
               subPath: current
@@ -202,6 +226,12 @@ spec:
               readOnly: true
             {{- end }}
             {{- include "cetirun.memory.mounts" . | nindent 12 }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.sidecars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:
@@ -235,6 +265,25 @@ spec:
         {{- include "cetirun.memory.volumes" . | nindent 8 }}
         {{- with $s.identityVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.connectionsMCP.enabled }}
+        - name: connections-identity
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ .Values.connectionsMCP.audience | quote }}
+                  expirationSeconds: 600
+        - name: connections-ca
+          secret:
+            secretName: {{ .Values.connectionsMCP.caSecretName | quote }}
+            items:
+              - key: ca.crt
+                path: ca.crt
         {{- end }}
 {{- if and (not $r.ports) (not .Values.desktop.enabled) }}
 ---

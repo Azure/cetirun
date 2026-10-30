@@ -504,12 +504,15 @@ func (r *AgentReconciler) customSandboxBaseValues(agent *api.Agent, team *api.Te
 	if !r.customGatewaySelected(agent) {
 		return nil, nil, fmt.Errorf("Custom Sandbox execution requires an explicitly Gateway-qualified image")
 	}
-	if _, err := r.customOverrides(agent, team); err != nil {
+	if agentIdentityRequested(agent) && !r.nativeConnectionsRequested(agent) {
+		return nil, nil, fmt.Errorf("Custom Agent Identity requires the governed Connections executor")
+	}
+	if _, err := r.customRuntimeValues(agent, team); err != nil {
 		return nil, nil, err
 	}
 	base := agent.DeepCopy()
 	base.Spec.Helm.Values = nil
-	platform, err := r.customOverrides(base, team)
+	platform, err := r.customRuntimeValues(base, team)
 	if err != nil {
 		return nil, nil, err
 	}

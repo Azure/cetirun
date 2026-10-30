@@ -242,16 +242,24 @@ func tlsRequest(port int, serverName string, root []byte, identity *tls.Certific
 }
 
 func TestEnvoyFinalHopMTLS(t *testing.T) {
-	for _, harness := range []string{"openclaw", "hermes"} {
+	for _, harness := range []string{"openclaw", "hermes", "custom", "custom-terminal"} {
 		t.Run(harness, func(t *testing.T) {
 			ca, foreign := newTestCA(t), newTestCA(t)
 			plan := Plan{Binding: Binding{Harness: harness, Port: 18789, Terminal: true, Desktop: true, ClientURI: "spiffe://example.com/gateway/agent-uid"},
 				ServerName: "agent-uid.example.com"}
+			if harness == "custom" {
+				plan.Desktop = false
+				plan.ChatClients = []ChatClient{{URI: "spiffe://example.com/portal/agent-uid"}}
+			}
+			if harness == "custom-terminal" {
+				plan = plan.TerminalEndpoint()
+			}
 			serverIdentity, cert, key := ca.issue(t, plan.ServerName, false, false)
 			good, _, _ := ca.issue(t, plan.ClientURI, true, false)
 			wrongURI, _, _ := ca.issue(t, "spiffe://example.com/gateway/other-agent", true, false)
 			wrongCA, _, _ := foreign.issue(t, plan.ClientURI, true, false)
 			expired, _, _ := ca.issue(t, plan.ClientURI, true, true)
+			portal, _, _ := ca.issue(t, "spiffe://example.com/portal/agent-uid", true, false)
 			backends := map[string]int{}
 			for _, port := range plan.Ports() {
 				name := port.Name
@@ -274,6 +282,10 @@ func TestEnvoyFinalHopMTLS(t *testing.T) {
 				body, err := tlsRequest(port, plan.ServerName, ca.pem, &good)
 				if err != nil || body != harness+"/"+name {
 					t.Fatalf("%s valid managed peer failed: %v", name, err)
+				}
+				_, portalError := tlsRequest(port, plan.ServerName, ca.pem, &portal)
+				if (portalError == nil) != (harness == "custom") {
+					t.Fatal("Portal client authority escaped its explicitly approved Custom HTTP endpoint:", portalError)
 				}
 				for label, identity := range map[string]*tls.Certificate{
 					"missing": nil, "wrong URI": &wrongURI, "wrong CA": &wrongCA, "expired": &expired,

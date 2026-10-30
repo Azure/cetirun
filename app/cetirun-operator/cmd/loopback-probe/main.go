@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 )
 
 const probeDestination = "/cetirun-probe/http-probe"
@@ -72,10 +74,55 @@ func run(arguments []string) error {
 	flags := flag.NewFlagSet("loopback-probe", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	endpoint := flags.String("url", "", "")
+	serverName := flags.String("mtls-server-name", "", "")
 	if err := flags.Parse(arguments); err != nil || *endpoint == "" || flags.NArg() != 0 {
 		return errors.New("usage: http-probe --url http://127.0.0.1:PORT/PATH")
 	}
-	return probe(*endpoint)
+	if err := probe(*endpoint); err != nil {
+		return err
+	}
+	if *serverName != "" {
+		return probeIngress(*serverName)
+	}
+	if os.Getenv("CETIRUN_INGRESS_MTLS") == "true" {
+		return errors.New("mTLS health requires an explicit approved server name")
+	}
+	return nil
+}
+
+func probeIngress(serverName string) error {
+	read := func(path string) ([]byte, error) {
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		data, err := io.ReadAll(io.LimitReader(file, (64<<10)+1))
+		if err != nil || len(data) > 64<<10 {
+			return nil, fmt.Errorf("invalid public ingress material")
+		}
+		return data, nil
+	}
+	chain, err := read(ingressmtls.PublicPath + "/tls.crt")
+	if err != nil {
+		return err
+	}
+	roots, err := read(ingressmtls.PublicPath + "/ca.crt")
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Get("http://127.0.0.1:15440/certs")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
+	if err != nil || response.StatusCode != http.StatusOK {
+		return fmt.Errorf("active ingress certificate is unavailable")
+	}
+	return ingressmtls.ValidateServingMaterial(serverName, chain, roots, data, time.Now())
 }
 
 func main() {

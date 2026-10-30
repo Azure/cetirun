@@ -486,8 +486,19 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if agent.Type == cetirunv1alpha1.AgentTypeCustom && hasNativeCreateFields(fields) {
-		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token, Tailscale or Agent Identity settings")
+		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token or Tailscale settings")
 		return
+	}
+	if agent.Type == cetirunv1alpha1.AgentTypeCustom && req.AgentIdentityEnabled {
+		options, err := h.resolveCreationOptions(r, req.Team)
+		if err != nil {
+			writeManagementError(w, err)
+			return
+		}
+		if !options.AgentIdentity.CustomAllowed {
+			writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom Agent Identity requires a Sandbox, permitted policy and enabled governed Connections")
+			return
+		}
 	}
 	if err := h.validateAgentType(agent.Type); err != nil {
 		writeManagementError(w, err)
