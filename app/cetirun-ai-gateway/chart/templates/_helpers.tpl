@@ -445,7 +445,7 @@ defaults.
 {{- $podMonitor := $metrics.podMonitor | default dict -}}
 {{- $settings := dict -}}
 {{- $_ := set $settings "requestLog" (dict "enabled" (dig "enabled" true $requestLog)) -}}
-{{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs) "storePrompts" (dig "storePrompts" false $spendLogs) "retention" (dig "retention" "7d" $spendLogs)) -}}
+{{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs) "storePrompts" (dig "storePrompts" true $spendLogs) "retention" (dig "retention" "7d" $spendLogs)) -}}
 {{- $monitor := dict "enabled" (dig "enabled" false $podMonitor) -}}
 {{- $_ = set $monitor "apiVersion" (dig "apiVersion" "azmonitoring.coreos.com/v1" $podMonitor) -}}
 {{- $_ = set $monitor "interval" (dig "interval" "30s" $podMonitor) -}}

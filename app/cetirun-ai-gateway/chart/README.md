@@ -1936,9 +1936,8 @@ This is why the chart writes as little as possible into those blocks.
 ### Values the chart owns
 
 `model_list`; `general_settings.store_model_in_db`, the spend log retention
-and its deletion interval, `general_settings.store_prompts_in_spend_logs` only
-when `spendLogs.storePrompts` is true, and the health check settings when
-`router.healthChecks` is on; in `litellm_settings`,
+and its deletion interval, `general_settings.store_prompts_in_spend_logs`,
+and the health check settings when `router.healthChecks` is on; in `litellm_settings`,
 `num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
 metrics callback and its settings, and, when Redis is configured, the Redis
 cache; and in `router_settings`, Redis when it is configured, the routing
@@ -1966,8 +1965,8 @@ with:
 
 - `requestLog`, `spendLogs` and `metrics`: the request log on, LiteLLM's spend
   log kept, metrics off;
-- `spendLogs.storePrompts`: `false`, so the chart does not request prompt or
-  response storage;
+- `spendLogs.storePrompts`: `true`, so prompts and responses are stored with
+  the call's metadata unless explicitly disabled;
 - `spendLogs.retention`: `7d`, so LiteLLM starts deleting spend log rows older
   than seven days;
 - `router`: `simple-shuffle`, failover and the affinity checks on, no
@@ -2158,33 +2157,34 @@ LiteLLM again without the image's callbacks, the guard included, whatever
 ### LiteLLM's spend log
 
 LiteLLM writes a row per call to `LiteLLM_SpendLogs`, which the console's
-request log pages read. By default, the row holds the call's metadata, not its
-prompt or response. `spendLogs.storePrompts` defaults to `false`; only an
-explicit `true` renders `general_settings.store_prompts_in_spend_logs: true`.
-Enabling Gateway components, metrics, or operator integration does not enable
-content storage.
+request log pages read. By default, the row holds the call's metadata, prompt,
+and response. `spendLogs.storePrompts` defaults to `true`; the chart always
+renders `general_settings.store_prompts_in_spend_logs` with the selected boolean.
+This default applies to new installs and upgrades that have no explicit value
+for `storePrompts`. It can persist sensitive content.
 
-To opt in to storing sensitive prompt and response content in the database:
+To retain call metadata without storing prompts or responses:
 
 ```yaml
 spendLogs:
   enabled: true
-  storePrompts: true
+  storePrompts: false
   retention: 7d
 ```
 
 In the platform umbrella, nest these values under `cetirun-ai-gateway`.
+Metrics and operator integration do not override an explicit `storePrompts: false`.
 `storePrompts` accepts a YAML boolean, not a quoted string. Setting it to `true`
 with `spendLogs.enabled: false` fails rendering. It does not depend on
 `requestLog.enabled` and never adds content to the stdout request log. A change
 updates the configuration checksum, so Helm replaces the Gateway pods.
 
-Setting `storePrompts` to `false` omits the LiteLLM key, restoring its default
-for configuration-file-controlled deployments. It does not erase content
-already stored. A `general_settings` block saved through LiteLLM's console or
-management API can override this setting in either direction, just as it can
-override retention. Check the effective configuration before relying on an
-opt-in or opt-out. The chart does not read or rewrite `LiteLLM_Config` or
+Setting `storePrompts` to `false` writes `store_prompts_in_spend_logs: false`,
+disabling content storage in configuration-file-controlled deployments. It
+does not erase content already stored. A `general_settings` block saved through
+LiteLLM's console or management API can override this setting in either direction,
+just as it can override retention. Check the effective configuration before
+relying on an enable or disable setting. The chart does not read or rewrite `LiteLLM_Config` or
 existing spend logs. See
 [settings saved in the console](#editing-settings-in-the-console-takes-them-out-of-chart-control).
 
@@ -2210,9 +2210,10 @@ the deletion, and a run with nothing to delete costs each replica two indexed
 queries per table. A run deletes 1,000 rows at a time, at most 500 times per
 table and for five minutes, and the next run continues from there.
 
-Measured on LiteLLM 1.105.1 with the request log on: every call, probes
-included, added a row, none with a prompt. With two replicas, and the rendered
-configuration changed to a one-minute retention and a 30-second interval,
+Measured on LiteLLM 1.105.1 with the request log on and prompt storage disabled:
+every call, probes included, added a row, none with a prompt. With two replicas,
+and the rendered configuration changed to a one-minute retention and a 30-second
+interval,
 each replica ran the job on a period of its own, 49 and 83 seconds, the first
 time 75 and 128 seconds after it started; every run took the lock, and the
 runs deleted 88 spend log rows and 11 health check results, all past the
@@ -2222,9 +2223,9 @@ first run 63 and 66 minutes after starting.
 `spendLogs.enabled: false` has LiteLLM write no row per call. It is turned off
 only together with the request log, so no configuration leaves the Gateway
 without a record of each call: `spendLogs.enabled: false` needs
-`requestLog.enabled`, and the image's entrypoint turns the spend log off only
-once it has registered the request log callback. It sets LiteLLM's
-`disable_spend_logs` in the proxy process, not in `general_settings`, so the
+`requestLog.enabled` and `spendLogs.storePrompts: false`. The image's entrypoint
+turns the spend log off only once it has registered the request log callback.
+It sets LiteLLM's `disable_spend_logs` in the proxy process, not in `general_settings`, so the
 setting is not saved with a settings block and does not outlive a rollback; a
 `disable_spend_logs` written in `general_settings` still wins. An image built
 before the request log keeps writing the table.
