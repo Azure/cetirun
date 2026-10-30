@@ -21,6 +21,9 @@ starts its HTTP server on `0.0.0.0:PORT`.
 chat request at a time, with a two-minute deadline and an eight-tool-call
 budget. HTTP history is reconstructed from each request in memory, separate
 from native TUI history. Automatic model retries and compaction are disabled.
+Streaming responses send bounded SSE keepalives every 15 seconds during silent
+model prefill or tool work. The two-minute task deadline, cancellation and output
+limits still apply; keepalives do not extend a task or replay a request.
 See the [Custom Agent contract](../../docs/agent-harness-contract.md) for the
 platform requirements beyond this example.
 
@@ -147,6 +150,9 @@ metadata:
   name: pi-agent
 spec:
   team: example-team # An existing, approved Team.
+  modelAccess:
+    sharedModels: true
+    githubCopilot: false
   user:
     alias: example-user
     displayName: Example User

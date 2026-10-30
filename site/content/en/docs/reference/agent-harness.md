@@ -102,6 +102,15 @@ declared HOME and existing [initialization contract](#initialization). The
 common Pod retains the image user rather than imposing the managed harness UID;
 the registered volume group and filesystem permissions still need qualification.
 
+Sandbox-bound Custom Agents need an explicit model-source selection. Portal
+creation records the sources available under the current Team policy and Gateway
+catalog, or validates the owner's requested `modelAccess` selection. When creating
+an Agent manifest directly, set `spec.modelAccess`, for example
+`sharedModels: true` and `githubCopilot: false`, for a permitted shared model.
+Omitting both switches does not inherit legacy model access: the Agent remains
+held without a model entitlement. Custom without a Sandbox keeps its existing
+model-selection behavior.
+
 Creation, restart, retained suspension/resume, healthy-source migration and
 ordinary deletion use the common execution state, owned HOME and grant journal,
 not the separate Custom apply-completion engine. Kata and ordinary containers
@@ -125,6 +134,9 @@ audience override. Protected Pod admission permits only this owned terminal's
 current named target, main container and shell protocol; it rechecks the
 execution sources and non-stopping reservation. It mounts neither HOME nor model
 credentials. Suspension stops both workloads before acknowledging completion.
+For bound workloads, admission accepts Kubernetes' copied region/zone labels only
+when they match a fresh read of the assigned Node. This applies to terminal
+CONNECT and ordinary Pod updates; other labels and template inputs remain exact.
 
 Custom receives an immutable, Agent-owned `AGENTS.md` snapshot and a read-only
 `$HOME/.agents` view. Optional Memory/shared skills compose into that view without
