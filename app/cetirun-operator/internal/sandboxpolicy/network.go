@@ -108,19 +108,19 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
 			return platform, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
 		}
-		if len(platform.Grants) != 0 {
-			return platform, fmt.Errorf("%w: native execution does not support Kubernetes grants", ErrUnsupportedControl)
+		if !capabilities.KubernetesAccess && len(platform.Grants) != 0 {
+			return platform, fmt.Errorf("%w: native Kubernetes grants require explicitly registered support", ErrUnsupportedControl)
 		}
 		if len(platform.Identities) != 0 || platform.KubernetesAudience != "" || platform.TokenExpirationSeconds != 0 {
-			if !capabilities.EntraID {
-				return platform, fmt.Errorf("%w: native identity requires explicit Entra support", ErrUnsupportedControl)
+			if !capabilities.KubernetesAccess && !capabilities.EntraID {
+				return platform, fmt.Errorf("%w: native identity requires explicitly registered Kubernetes or Entra support", ErrUnsupportedControl)
 			}
 			if err := ValidateIdentityApprovals(platform.Identities); err != nil {
 				return platform, err
 			}
 			for _, identity := range platform.Identities {
-				if identity.Kubernetes || identity.Entra == nil {
-					return platform, fmt.Errorf("%w: native identity registration is Entra-only", ErrUnsupportedControl)
+				if (identity.Kubernetes && !capabilities.KubernetesAccess) || (identity.Entra != nil && !capabilities.EntraID) {
+					return platform, fmt.Errorf("%w: native identity exceeds its registered Kubernetes or Entra support", ErrUnsupportedControl)
 				}
 			}
 		}

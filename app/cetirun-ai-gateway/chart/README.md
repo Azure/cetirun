@@ -1419,6 +1419,12 @@ it. The environment variable `DEFAULT_MANAGEMENT_OBJECT_IN_MEMORY_CACHE_TTL`
 looks like it should control this and does not; LiteLLM passes its own default
 of 60 to the key cache, so the variable is never consulted.
 
+LiteLLM can retain deleted-key archives: `/key/info` may return HTTP 200 with
+`deleted_at` set even though the key is absent from the live `/key/list` results
+and cannot authorize requests. The Operator treats that archive as an absent
+key, not current model/budget evidence. This does not remove accounting history
+or change the replica cache window described above.
+
 ### Give agent keys model routes only
 
 A virtual key created through the management API with default settings cannot

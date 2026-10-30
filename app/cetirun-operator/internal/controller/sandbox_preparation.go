@@ -497,46 +497,57 @@ func sandboxPreparationDigest(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// customSandboxBaseValues resolves configuration before a Gateway key exists.
+// Policy compilation needs terminal settings before it can authorize that key;
+// workload rendering adds the verified Gateway projection in sandboxHelmValues.
+func (r *AgentReconciler) customSandboxBaseValues(agent *api.Agent, team *api.Team) (map[string]any, map[string]any, error) {
+	if !r.customGatewaySelected(agent) {
+		return nil, nil, fmt.Errorf("Custom Sandbox execution requires an explicitly Gateway-qualified image")
+	}
+	if agentIdentityRequested(agent) && !r.nativeConnectionsRequested(agent) {
+		return nil, nil, fmt.Errorf("Custom Agent Identity requires the governed Connections executor")
+	}
+	if _, err := r.customRuntimeValues(agent, team); err != nil {
+		return nil, nil, err
+	}
+	base := agent.DeepCopy()
+	base.Spec.Helm.Values = nil
+	platform, err := r.customRuntimeValues(base, team)
+	if err != nil {
+		return nil, nil, err
+	}
+	platform["secrets"] = deepMerge(platform["secrets"], map[string]any{"existingSecret": sandboxRuntimeSecretName(agent)})
+	platform["agentType"] = "custom"
+	platform["agentRequest"] = runtimeRequest(agent, "")
+	platform["agentRequest"].(map[string]any)["releaseName"] = helmReleaseName(agent.Name)
+	platform["desktop"] = map[string]any{"enabled": false}
+	if agent.Spec.RestartRequestID != "" {
+		platform["podAnnotations"] = deepMerge(platform["podAnnotations"], map[string]any{
+			api.AnnotationRestartRequestID: agent.Spec.RestartRequestID,
+		})
+	}
+	user := map[string]any{}
+	for name, raw := range agent.Spec.Helm.Values {
+		var value any
+		if err := json.Unmarshal(raw.Raw, &value); err != nil {
+			return nil, nil, fmt.Errorf("invalid Custom Sandbox Helm override %q", name)
+		}
+		user[name] = value
+	}
+	if desktop, ok := user["desktop"].(map[string]any); ok && desktop["enabled"] == true {
+		return nil, nil, fmt.Errorf("common Custom desktop requires a qualified helper; use its Web UI, private Chat or terminal")
+	}
+	return platform, user, nil
+}
+
 func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (map[string]any, map[string]any, error) {
 	if agent.Spec.Agent.Type == api.AgentTypeCustom {
-		if !r.customGatewaySelected(agent) {
-			return nil, nil, fmt.Errorf("Custom Sandbox execution requires an explicitly Gateway-qualified image")
-		}
-		if agentIdentityRequested(agent) && !r.nativeConnectionsRequested(agent) {
-			return nil, nil, fmt.Errorf("Custom Agent Identity requires the governed Connections executor")
-		}
-		if _, err := r.customRuntimeValues(agent, team); err != nil {
-			return nil, nil, err
-		}
-		base := agent.DeepCopy()
-		base.Spec.Helm.Values = nil
-		platform, err := r.customRuntimeValues(base, team)
+		platform, user, err := r.customSandboxBaseValues(agent, team)
 		if err != nil {
 			return nil, nil, err
 		}
 		if err := r.applyAIGatewayValues(platform, agent); err != nil {
 			return nil, nil, err
-		}
-		platform["secrets"] = deepMerge(platform["secrets"], map[string]any{"existingSecret": sandboxRuntimeSecretName(agent)})
-		platform["agentType"] = "custom"
-		platform["agentRequest"] = runtimeRequest(agent, "")
-		platform["agentRequest"].(map[string]any)["releaseName"] = helmReleaseName(agent.Name)
-		platform["desktop"] = map[string]any{"enabled": false}
-		if agent.Spec.RestartRequestID != "" {
-			platform["podAnnotations"] = deepMerge(platform["podAnnotations"], map[string]any{
-				api.AnnotationRestartRequestID: agent.Spec.RestartRequestID,
-			})
-		}
-		user := map[string]any{}
-		for name, raw := range agent.Spec.Helm.Values {
-			var value any
-			if err := json.Unmarshal(raw.Raw, &value); err != nil {
-				return nil, nil, fmt.Errorf("invalid Custom Sandbox Helm override %q", name)
-			}
-			user[name] = value
-		}
-		if desktop, ok := user["desktop"].(map[string]any); ok && desktop["enabled"] == true {
-			return nil, nil, fmt.Errorf("common Custom desktop requires a qualified helper; use its Web UI, private Chat or terminal")
 		}
 		return platform, user, nil
 	}

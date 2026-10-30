@@ -393,18 +393,18 @@ func aiGatewayKeyModels(groups []string) []string {
 	return models
 }
 
-// aiGatewayHarnessSupported reports whether the built-in harness is wired to
+// aiGatewayHarnessSupported reports whether the harness is wired to
 // the Gateway: its configuration takes the Gateway endpoint, key, and model
 // list instead of a provider credential or in-agent Copilot login. The pinned
 // chart must declare the harness-specific paths too (aiGatewayChartSupports).
 func aiGatewayHarnessSupported(agentType cetirunv1alpha1.AgentType) bool {
-	return agentType == cetirunv1alpha1.AgentTypeOpenClaw || agentType == cetirunv1alpha1.AgentTypeHermes
+	return agentType == cetirunv1alpha1.AgentTypeOpenClaw || agentType == cetirunv1alpha1.AgentTypeHermes || agentType == cetirunv1alpha1.AgentTypeCustom
 }
 
 // aiGatewayChartValue and aiGatewayChartModelsValue are the agent chart
 // values that wire the key, the model list and the Copilot proxy. Chart
 // versions without them would ignore or reject routing values, so Agents
-// pinned to them are not routed.
+// pinned to them must wait for a compatible Chart.
 const (
 	aiGatewayChartValue        = "aiGateway"
 	aiGatewayChartModelsValue  = "models"
@@ -435,6 +435,10 @@ type chartValuePaths interface {
 // through the Gateway: the key, the model list and the Copilot proxy, and for
 // Hermes the variable that carries the key.
 func aiGatewayChartSupports(prepared chartValuePaths, agentType cetirunv1alpha1.AgentType) bool {
+	if agentType == cetirunv1alpha1.AgentTypeCustom {
+		contract, ok := prepared.(interface{ SupportsCustomGateway() bool })
+		return ok && contract.SupportsCustomGateway()
+	}
 	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) ||
 		!prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue) {
 		return false
@@ -465,7 +469,7 @@ var digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // traffic on the Gateway. Chart support and a provisioned key are checked
 // separately.
 func (r *AgentReconciler) aiGatewayRequired(instance *cetirunv1alpha1.Agent) bool {
-	return r.AIGateway.Enabled && (aiGatewayHarnessSupported(instance.Spec.Agent.Type) || r.customGatewaySelected(instance))
+	return aiGatewayHarnessSupported(instance.Spec.Agent.Type)
 }
 
 // aiGatewayCopilotOffered reports whether the deployment gives Agents a
@@ -1250,36 +1254,32 @@ func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *ceti
 	return errors.Join(failures...)
 }
 
-// recordSignInHelper records whether the Agent's workload serves the in-agent
-// model sign-in helper; the /<name>/cetirun-auth/ route and the Portal's
-// in-agent sign-in follow it. An OpenClaw chart without the helper takes its
-// models only from the AI Gateway, so with the Gateway disabled the Agent
-// reports why it has no model sign-in.
-func (r *AgentReconciler) recordSignInHelper(instance *cetirunv1alpha1.Agent, serves bool) {
-	instance.Status.SignInHelper = &serves
-	if !r.AIGateway.Enabled && !serves && instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeOpenClaw {
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady, metav1.ConditionFalse,
-			aiGatewayReasonDisabled, "This OpenClaw chart takes its models only from the AI Gateway, which the deployment has not enabled")
+// applyAIGatewayPreflightValues supplies a syntactically complete, inert
+// Gateway binding while the selected chart is loaded. It is only used before
+// the first Gateway projection; the controller rebuilds the release with
+// applyAIGatewayValues before it can be applied.
+func (r *AgentReconciler) applyAIGatewayPreflightValues(values map[string]any) error {
+	if _, _, err := aiGatewayEndpoint(r.AIGateway.URL); err != nil {
+		return err
 	}
-}
-
-// servesSignInHelper reports whether the Agent's workload serves the in-agent
-// model sign-in helper, as recorded at its last render. Before the operator
-// recorded it, the helper ran wherever the AI Gateway did not replace it.
-func servesSignInHelper(instance *cetirunv1alpha1.Agent) bool {
-	if instance.Status.SignInHelper != nil {
-		return *instance.Status.SignInHelper
+	const probeModel = "cetirun-preflight"
+	values["secrets"] = deepMerge(values["secrets"], map[string]any{
+		"provider": "openai", "authMode": "api_key", "apiBase": r.AIGateway.URL + "/v1", "apiKey": "", "model": probeModel,
+	})
+	values["aiGateway"] = map[string]any{
+		"enabled": true, "keySecretName": "cetirun-preflight", "keySecretKey": aiGatewayKeySecretField,
+		"models":       []any{map[string]any{"id": probeModel, "name": probeModel}},
+		"copilotProxy": map[string]any{"enabled": false},
 	}
-	return !aiGatewayRoutedStatus(instance)
+	return nil
 }
 
 // applyAIGatewayValues renders the controller-owned model access values. It
 // runs after per-instance Helm values, so a routed Agent cannot select
 // another provider, endpoint, key or proxy.
 func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *cetirunv1alpha1.Agent) error {
-	values["aiGateway"] = map[string]any{"enabled": false, "keySecretName": "", "keySecretKey": aiGatewayKeySecretField}
 	if !r.aiGatewayRouted(instance) {
-		return nil
+		return fmt.Errorf("AI Gateway binding is required before rendering an Agent workload")
 	}
 	namespace, port, err := aiGatewayEndpoint(r.AIGateway.URL)
 	if err != nil {

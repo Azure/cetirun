@@ -22,12 +22,16 @@ for values_file in "${values_files[@]}"; do
     echo "==> helm lint ${chart_dir} -f ${values_file} (agentType=openclaw)"
     helm lint "${chart_dir}" -f "${chart_dir}/${values_file}" \
       --set agentType=openclaw \
+      --set aiGateway.keySecretName=lint-model-key \
+      --set-string secrets.apiBase=http://gateway.example.com/v1 \
       --set-string secrets.model=lint-model \
       --set secrets.openclawGatewayToken=lint-token
 
     echo "==> helm lint ${chart_dir} -f ${values_file} (agentType=hermes)"
     helm lint "${chart_dir}" -f "${chart_dir}/${values_file}" \
       --set agentType=hermes \
+      --set aiGateway.keySecretName=lint-model-key \
+      --set-string secrets.apiBase=http://gateway.example.com/v1 \
       --set-string secrets.model=lint-model
   fi
 done

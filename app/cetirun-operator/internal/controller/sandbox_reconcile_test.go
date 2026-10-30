@@ -56,7 +56,7 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 			return err
 		}
 	}
-	if err := prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+	if err := prepared.AuthorizeSandboxRender(context.Background()); err != nil {
 		return err
 	}
 	manifest, err := prepared.SandboxManifest()
@@ -75,7 +75,7 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 		if len(object.Object) == 0 {
 			continue
 		}
-		if object.GetNamespace() != namespace {
+		if object.GetNamespace() != namespace && !w.KubernetesBindingResource(*object) {
 			expected, err := prepared.ReconcileExpectation()
 			if err != nil || !slices.ContainsFunc(expected.Controls, func(control unstructured.Unstructured) bool {
 				return control.GetAPIVersion() == "networking.istio.io/v1beta1" && control.GetKind() == "DestinationRule" &&
@@ -91,10 +91,26 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 		annotations["meta.helm.sh/release-name"] = releaseName
 		annotations["meta.helm.sh/release-namespace"] = namespace
 		object.SetAnnotations(annotations)
+		if object.GetAPIVersion() == "apps/v1" && (object.GetKind() == "StatefulSet" || object.GetKind() == "Deployment") {
+			if err := prepared.AuthorizeSandboxApply(ctx); err != nil {
+				return err
+			}
+		}
 		current := &unstructured.Unstructured{}
 		current.SetGroupVersionKind(object.GroupVersionKind())
 		if err := i.kube.Get(ctx, client.ObjectKeyFromObject(object), current); apierrors.IsNotFound(err) {
-			if err := i.kube.Create(ctx, object); err != nil {
+			var complete func(error) error
+			if w.KubernetesBindingResource(*object) {
+				complete, err = prepared.AuthorizeSandboxBindingCreate(ctx, *object)
+				if err != nil {
+					return err
+				}
+			}
+			err := i.kube.Create(ctx, object)
+			if complete != nil {
+				err = complete(err)
+			}
+			if err != nil {
 				return err
 			}
 		} else if err != nil {
@@ -117,11 +133,20 @@ func (i *sharedSandboxInstaller) CustomApplied(_, _ string, _ *helm.PreparedRele
 }
 
 func (i *sharedSandboxInstaller) Uninstall(namespace, _ string) error {
-	for _, workload := range []client.Object{
-		&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-example", Namespace: namespace}},
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-example-copilot-proxy", Namespace: namespace}},
-	} {
-		if err := i.kube.Delete(context.Background(), workload); client.IgnoreNotFound(err) != nil {
+	if i.prepared == nil {
+		return nil
+	}
+	expected, err := i.prepared.ReconcileExpectation()
+	if err != nil {
+		return err
+	}
+	for _, workload := range expected.Workloads {
+		object := &unstructured.Unstructured{}
+		object.SetAPIVersion("apps/v1")
+		object.SetKind(workload.Kind)
+		object.SetNamespace(namespace)
+		object.SetName(workload.Identity.Name)
+		if err := i.kube.Delete(context.Background(), object); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}
@@ -1268,7 +1293,12 @@ func TestReconciledSandboxGrantCleanupFailureRetainsFinalizers(t *testing.T) {
 			if !slices.Contains(current.Finalizers, api.Finalizer) || !slices.Contains(current.Finalizers, sandbox.BootstrapFinalizer) {
 				t.Fatal("grant cleanup failure discarded Agent or bootstrap protection")
 			}
-			if ptr.Deref(f.workload(t).Spec.Replicas, -1) != 0 {
+			workload := &appsv1.StatefulSet{}
+			workloadErr := f.kube.Get(ctx, client.ObjectKey{
+				Namespace: instanceNamespace(agent.Name), Name: instanceServiceName(agent.Name),
+			}, workload)
+			if workloadErr != nil && !apierrors.IsNotFound(workloadErr) ||
+				workloadErr == nil && ptr.Deref(workload.Spec.Replicas, -1) != 0 {
 				t.Fatal("grant cleanup failure skipped independent workload shutdown")
 			}
 			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: virtualServiceName(agent.Name)},

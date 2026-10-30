@@ -5,7 +5,11 @@ package handler
 
 import (
 	"context"
+	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -50,4 +54,27 @@ func newFakeClient(objs ...client.Object) client.Client {
 		}
 		return c.Create(ctx, obj, opts...)
 	}}).Build()
+}
+
+// newGatewayFakeClient adds the catalog required by Gateway-only creation
+// tests. Tests of missing or malformed catalogs use newFakeClient directly.
+func newGatewayFakeClient(objs ...client.Object) client.Client {
+	objs = append(objs, catalogConfigMap("gpt-6", "gpt-6-astra"))
+	return newFakeClient(objs...)
+}
+
+func gatewayTestConfig() config.Config {
+	return gatewayConfig()
+}
+
+func replaceTestCatalog(t *testing.T, c client.Client, catalog *corev1.ConfigMap) {
+	t.Helper()
+	current := &corev1.ConfigMap{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(catalog), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Data = catalog.Data
+	if err := c.Update(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
 }

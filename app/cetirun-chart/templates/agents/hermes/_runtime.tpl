@@ -61,15 +61,6 @@ These are called by dispatcher templates in _helpers.tpl based on .Values.agentT
 */}}
 
 {{/*
-Hermes on the platform AI Gateway: its models come from the Gateway, and the
-owner signs in to GitHub Copilot through the Portal instead of the in-agent
-helper. "true" or empty.
-*/}}
-{{- define "cetirun.agent.hermes.gatewayRouted" -}}
-{{- if (.Values.aiGateway | default dict).enabled }}true{{ end -}}
-{{- end }}
-
-{{/*
 Hermes init containers
 */}}
 {{- define "cetirun.agent.hermes.initContainers" -}}
@@ -104,14 +95,11 @@ Hermes init containers
     - name: CETIRUN_INGRESS_MTLS
       value: "true"
     {{- end }}
-    {{- if include "cetirun.agent.hermes.gatewayRouted" . }}
-    # The Gateway owns the model choice: init replaces it, and removes the
-    # in-agent GitHub Copilot sign-in and the helper.
+    # The Gateway owns the model choice.
     - name: CETIRUN_AI_GATEWAY
       value: "true"
     - name: CETIRUN_GATEWAY_KEY_ENV
       value: {{ dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" .Values.aiGateway | quote }}
-    {{- end }}
   volumeMounts:
     {{- include "cetirun.context.initMounts" . | nindent 4 }}
     - name: data
@@ -143,11 +131,6 @@ Hermes container ports (agent-specific only)
 - name: dashboard
   containerPort: 9119
   protocol: TCP
-{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
-- name: cetirun-auth
-  containerPort: 18790
-  protocol: TCP
-{{- end }}
 {{- end }}
 
 {{/*
@@ -200,8 +183,6 @@ Hermes container env vars (agent-specific only)
       key: CETIRUN_AUTH_KEY
 - name: CETIRUN_AGENT_TYPE
   value: "hermes"
-{{- if include "cetirun.agent.hermes.gatewayRouted" . }}
-# The entrypoint runs no in-agent sign-in helper on the Gateway.
 - name: CETIRUN_AI_GATEWAY
   value: "true"
 # This Agent's AI Gateway virtual key, managed by the CetiRun operator.
@@ -210,7 +191,6 @@ Hermes container env vars (agent-specific only)
     secretKeyRef:
       name: {{ .Values.aiGateway.keySecretName }}
       key: {{ .Values.aiGateway.keySecretKey | default "api-key" }}
-{{- end }}
 {{- end }}
 
 {{/*
@@ -266,12 +246,6 @@ Hermes service ports (agent-specific only)
   targetPort: dashboard
   protocol: TCP
   name: dashboard
-{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
-- port: 18790
-  targetPort: cetirun-auth
-  protocol: TCP
-  name: cetirun-auth
-{{- end }}
 {{- end }}
 
 {{/*
@@ -282,10 +256,6 @@ Hermes networkpolicy ingress ports (agent-specific only)
   port: {{ .Values.hermes.env.API_SERVER_PORT }}
 - protocol: TCP
   port: 9119
-{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
-- protocol: TCP
-  port: 18790
-{{- end }}
 {{- end }}
 
 {{/*
@@ -333,10 +303,6 @@ Hermes configmap data
 {{ .Files.Get "agents/hermes/bootstrap/hermes-apply-config.py" | indent 4 }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
-  {{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
-  hermes-auth.sh: |
-{{ .Files.Get "agents/hermes/bootstrap/hermes-auth.sh" | indent 4 }}
-  {{- end }}
   session-logger.sh: |
 {{ .Files.Get "configs/session-logger.sh" | indent 4 }}
 {{- end }}
@@ -357,13 +323,6 @@ Receives the standard chart context (.). Uses lookup to find existing secrets.
 
   {{- /* API_SERVER_KEY and hermes.env for Hermes API server. */}}
   API_SERVER_KEY: {{ $apiServerKey | b64enc | quote }}
-  {{- $openaiKey := "" }}
-  {{- $anthropicKey := "" }}
-  {{- if eq (.Values.secrets.provider | default "github_copilot") "openai" }}
-  {{- $openaiKey = .Values.secrets.apiKey | default "" }}
-  {{- else if eq (.Values.secrets.provider | default "github_copilot") "anthropic" }}
-  {{- $anthropicKey = .Values.secrets.apiKey | default "" }}
-  {{- end }}
-  {{- $hermesEnv := printf "API_SERVER_ENABLED=%s\nAPI_SERVER_HOST=%s\nAPI_SERVER_PORT=%s\nAPI_SERVER_KEY=%s\nAPI_SERVER_CORS_ORIGINS=%s\nOPENAI_API_KEY=%s\nANTHROPIC_API_KEY=%s\nBRAVE_API_KEY=%s\nPERPLEXITY_API_KEY=%s\n" (.Values.hermes.env.API_SERVER_ENABLED | toString) (.Values.hermes.env.API_SERVER_HOST | toString) (.Values.hermes.env.API_SERVER_PORT | toString) $apiServerKey (.Values.hermes.env.API_SERVER_CORS_ORIGINS | toString) $openaiKey $anthropicKey (.Values.secrets.braveApiKey | default "") (.Values.secrets.perplexityApiKey | default "") }}
+  {{- $hermesEnv := printf "API_SERVER_ENABLED=%s\nAPI_SERVER_HOST=%s\nAPI_SERVER_PORT=%s\nAPI_SERVER_KEY=%s\nAPI_SERVER_CORS_ORIGINS=%s\nBRAVE_API_KEY=%s\nPERPLEXITY_API_KEY=%s\n" (.Values.hermes.env.API_SERVER_ENABLED | toString) (.Values.hermes.env.API_SERVER_HOST | toString) (.Values.hermes.env.API_SERVER_PORT | toString) $apiServerKey (.Values.hermes.env.API_SERVER_CORS_ORIGINS | toString) (.Values.secrets.braveApiKey | default "") (.Values.secrets.perplexityApiKey | default "") }}
   hermes.env: {{ $hermesEnv | b64enc | quote }}
 {{- end }}

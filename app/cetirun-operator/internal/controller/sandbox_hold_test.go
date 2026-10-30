@@ -343,6 +343,7 @@ func TestSandboxHoldRetainsHomeForAlreadyScaledWorkload(t *testing.T) {
 
 func TestSandboxNormalDefaultPreservesLegacyReconciliation(t *testing.T) {
 	agent := newCR("alice-work", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
+	agent.Spec.Agent.Image, agent.Spec.Agent.Port = nil, nil
 	scheme := testScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(agent).
 		WithObjects(agent, instanceNamespace(agent.Name), gatewayTokenSecret(agent.Name), statefulSet(agent.Name, 0)).Build()
@@ -352,6 +353,7 @@ func TestSandboxNormalDefaultPreservesLegacyReconciliation(t *testing.T) {
 		OperatorNamespace: "cetirun-system", OperatorSAName: "cetirun-operator-controller-manager",
 		ChartVersion: "0.1.28", DomainSuffix: "example.com", DefaultModel: "test-model",
 	}
+	controller.ConfigureTestGateway(t, reconciler)
 	key := types.NamespacedName{Name: agent.Name}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatal(err)

@@ -182,12 +182,8 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	} else if !ready {
 		return r.customWaiting(ctx, instance, "AgentIdentityBindingPending", "The instance Agent Identity binding is not ready")
 	}
-	if r.customGatewaySelected(instance) {
-		if err := r.bindCustomGateway(ctx, instance, &bindings); err != nil {
-			return r.customWaiting(ctx, instance, "AIGatewayBindingPending", "The approved AI Gateway binding is not ready")
-		}
-	} else if instance.Status.AIGateway != nil {
-		return r.customWaiting(ctx, instance, "ModelAccessTransitionRequired", "Gateway model access cannot be changed to image-owned authentication implicitly")
+	if err := r.bindCustomGateway(ctx, instance, &bindings); err != nil {
+		return r.customWaiting(ctx, instance, "AIGatewayBindingPending", "The AI Gateway binding is not ready")
 	}
 	if bindings.Memory != nil {
 		return r.customWaiting(ctx, instance, "MemoryBindingRejected", "Only the Memory asset owner may supply a binding")
@@ -486,15 +482,13 @@ func (r *AgentReconciler) validateCustomObjects(ctx context.Context, instance *a
 	key := func(name string) types.NamespacedName {
 		return types.NamespacedName{Namespace: b.Namespace.Name, Name: name}
 	}
-	if !b.AgentManagedModel {
-		secret := &corev1.Secret{}
-		if err := r.customReader().Get(ctx, key(b.Model.Name), secret); err != nil || !referenceMatches(secret, b.Model.ObjectReference) ||
-			secret.Type != corev1.SecretTypeOpaque || len(secret.Data) != 1 || len(secret.Data[b.Model.Key]) == 0 {
-			return false, fmt.Errorf("ModelBindingInvalid: dedicated instance model Secret is unavailable or changed")
-		}
-		if !hasAgentOwner(secret, instance) {
-			return false, fmt.Errorf("ModelBindingInvalid: Secret owner does not match Agent UID")
-		}
+	secret := &corev1.Secret{}
+	if err := r.customReader().Get(ctx, key(b.Model.Name), secret); err != nil || !referenceMatches(secret, b.Model.ObjectReference) ||
+		secret.Type != corev1.SecretTypeOpaque || len(secret.Data) != 1 || len(secret.Data[b.Model.Key]) == 0 {
+		return false, fmt.Errorf("ModelBindingInvalid: dedicated AI Gateway key Secret is unavailable or changed")
+	}
+	if !hasAgentOwner(secret, instance) {
+		return false, fmt.Errorf("ModelBindingInvalid: Secret owner does not match Agent UID")
 	}
 	home := &corev1.PersistentVolumeClaim{}
 	homeBound := false
@@ -549,6 +543,7 @@ func (r *AgentReconciler) noCustomWriters(ctx context.Context, b runtimebindings
 
 func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent) (ctrl.Result, error) {
 	previous := instance.DeepCopy().Status
+	keyErr := r.suspendGatewayKey(ctx, instance)
 	stopErr := r.stopCustomWorkload(ctx, instance)
 	terminalErr := r.stopCustomTerminal(ctx, instance)
 	if err := r.stopCustomCopilot(ctx, instance); err != nil && terminalErr == nil {
@@ -593,6 +588,9 @@ func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent
 	}
 	if routeErr != nil {
 		return ctrl.Result{}, routeErr
+	}
+	if keyErr != nil {
+		return ctrl.Result{}, keyErr
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }

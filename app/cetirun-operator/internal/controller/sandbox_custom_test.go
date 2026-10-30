@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -44,7 +45,7 @@ func withCommonCustom(t *testing.T, mode string) func(*AgentReconciler, client.C
 			t.Fatal(err)
 		}
 		r.CustomBindings = NewKubernetesCustomBindings(r, CustomRuntimeConfig{
-			Enabled: true, ApprovedImages: []string{*agent.Spec.Agent.Image}, GatewayImages: []string{*agent.Spec.Agent.Image},
+			Enabled: true, ApprovedImages: []string{*agent.Spec.Agent.Image},
 			StorageClass: "unused-legacy-storage", StorageSize: "1Gi", AccessMode: "ReadWriteOnce", FSGroup: 1024,
 			Context: map[string]string{"AGENTS.md": "unused legacy context", "skills/cetirun-memory/SKILL.md": "synthetic"},
 		})
@@ -57,6 +58,25 @@ func withCommonCustom(t *testing.T, mode string) func(*AgentReconciler, client.C
 		r.ChatAccess = chataccess.Config{Enabled: true, Callers: []chataccess.Caller{{
 			Namespace: "portal-system", PodLabels: map[string]string{"app": "portal"},
 		}}}
+	}
+}
+
+func TestCommonCustomPolicyAuthorizesBeforeGatewayBinding(t *testing.T) {
+	f, input := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "custom", true, false,
+		withCommonCustom(t, "headless"))
+	agent := f.current(t)
+	if f.r.aiGatewayRouted(agent) || len(f.gateway.generated) != 0 {
+		t.Fatal("cold Custom fixture already has a Gateway binding")
+	}
+	if _, err := f.r.resolvePolicy(context.Background(), agent); err != nil {
+		t.Fatal("policy authorization required the key it must authorize:", err)
+	}
+	if _, _, err := f.r.sandboxHelmValues(agent, input.Team); err == nil ||
+		!strings.Contains(err.Error(), "AI Gateway binding is required") {
+		t.Fatal("workload configuration did not require the authorized Gateway binding:", err)
+	}
+	if len(f.gateway.generated) != 0 || f.installer.stages != 0 {
+		t.Fatal("policy resolution provisioned a key or submitted a workload")
 	}
 }
 
@@ -160,11 +180,9 @@ func TestCommonCustomRejectsUnqualifiedInputsWithoutFallback(t *testing.T) {
 	for name, change := range map[string]func(*AgentReconciler, client.Client){
 		"no approval provider": func(r *AgentReconciler, _ client.Client) { r.CustomBindings = nil },
 		"legacy-only executor": func(r *AgentReconciler, _ client.Client) { r.SandboxPreparation.NativeExecution = false },
-		"image-owned model mode": func(r *AgentReconciler, _ client.Client) {
-			r.CustomBindings = NewKubernetesCustomBindings(r, CustomRuntimeConfig{
-				Enabled: true, AgentManagedModel: true,
-				ApprovedImages: []string{"registry.example.com/custom-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-			})
+		"gateway disabled":     func(r *AgentReconciler, _ client.Client) { r.AIGateway.Enabled = false },
+		"unapproved image": func(r *AgentReconciler, _ client.Client) {
+			r.CustomBindings = NewKubernetesCustomBindings(r, CustomRuntimeConfig{Enabled: true})
 		},
 		"desktop": func(_ *AgentReconciler, kube client.Client) {
 			agent := &api.Agent{}

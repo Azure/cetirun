@@ -6,6 +6,7 @@ package helm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -159,6 +160,9 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 		if workload.Replicas < 0 || workload.Replicas > 1 {
 			return fmt.Errorf("Sandbox workloads require at most one active replica")
 		}
+		if input.Suspended && workload.Replicas != 0 {
+			return fmt.Errorf("suspended Sandbox components must remain at zero replicas")
+		}
 		p.sandboxReconcile.Workloads = append(p.sandboxReconcile.Workloads, *workload)
 	}
 	return nil
@@ -169,7 +173,7 @@ type reconciledSandboxRenderer struct {
 }
 
 func (r reconciledSandboxRenderer) Run(_ *bytes.Buffer) (*bytes.Buffer, error) {
-	if err := r.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+	if err := r.prepared.AuthorizeSandboxRender(context.Background()); err != nil {
 		return nil, err
 	}
 	return bytes.NewBuffer(bytes.Clone(r.prepared.manifest)), nil
@@ -184,6 +188,15 @@ func (p *PreparedRelease) CheckSandboxApply(ctx context.Context) error {
 	return p.sandboxPreflight(ctx)
 }
 
+// AuthorizeSandboxRender fences manifest delivery without declaring that a
+// workload write was submitted. Each workload still needs AuthorizeSandboxApply.
+func (p *PreparedRelease) AuthorizeSandboxRender(ctx context.Context) error {
+	if p == nil || p.sandboxReconcile == nil || p.sandboxRenderGuard == nil || p.sealedInput != p.inputDigest() {
+		return fmt.Errorf("Sandbox render requires unchanged current render and controller authority")
+	}
+	return p.sandboxRenderGuard(ctx)
+}
+
 // AuthorizeSandboxApply rechecks authority and records submission intent before
 // an installer may write workloads. A failed or uncertain apply remains submitted.
 func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
@@ -191,4 +204,34 @@ func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
 		return fmt.Errorf("Sandbox apply requires unchanged current render and controller authority")
 	}
 	return p.sandboxGuard(ctx)
+}
+
+// AuthorizeSandboxBindingCreate returns an outcome recorder bound to this
+// submission. Call it with the CREATE result before returning to reconciliation.
+func (p *PreparedRelease) AuthorizeSandboxBindingCreate(ctx context.Context, object unstructured.Unstructured) (func(error) error, error) {
+	if p == nil || p.sandboxReconcile == nil || p.sandboxBindingCreate == nil || p.sealedInput != p.inputDigest() {
+		return nil, fmt.Errorf("Kubernetes grant creation requires current per-binding authority")
+	}
+	if object.GetUID() != "" || object.GetResourceVersion() != "" ||
+		!slices.ContainsFunc(p.sandboxReconcile.Controls, func(expected unstructured.Unstructured) bool {
+			return w.KubernetesBindingResource(expected) && w.ReconciledObjectContentMatches(&object, &expected)
+		}) {
+		return nil, fmt.Errorf("Kubernetes grant creation differs from the sealed control inventory")
+	}
+	rejected, err := p.sandboxBindingCreate(ctx, object)
+	if err != nil {
+		return nil, err
+	}
+	if rejected == nil {
+		return nil, fmt.Errorf("Kubernetes grant creation requires its rejection checkpoint")
+	}
+	return func(createErr error) error {
+		if !sandboxBindingCreateRejected(createErr) {
+			return createErr
+		}
+		if err := rejected(ctx); err != nil {
+			return errors.Join(createErr, fmt.Errorf("record rejected Kubernetes grant creation: %w", err))
+		}
+		return createErr
+	}, nil
 }

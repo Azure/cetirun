@@ -49,7 +49,7 @@ type placementFixture struct {
 
 func newFixture(t *testing.T) *placementFixture {
 	t.Helper()
-	f := &placementFixture{agent: testfixture.New("hermes")}
+	f := &placementFixture{agent: testfixture.New("openclaw")}
 	f.reserved = &corev1.Node{ObjectMeta: metav1.ObjectMeta{
 		Name: "reserved-worker", UID: "reserved-node-uid", ResourceVersion: "1",
 		Labels: map[string]string{"example.com/pool": "sandbox", "example.com/platform": "true"},
@@ -58,6 +58,8 @@ func newFixture(t *testing.T) *placementFixture {
 		Name: "ordinary-worker", UID: "ordinary-node-uid", ResourceVersion: "1",
 		Labels: map[string]string{"example.com/platform": "true"},
 	}, Spec: corev1.NodeSpec{ProviderID: "example://ordinary-worker"}}
+	f.agent.Input.GatewayKey = &sandboxworkload.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
+	f.agent.Input.AuthorizedSecrets = append(f.agent.Input.AuthorizedSecrets, "gateway-key")
 	bundle, err := sandboxworkload.Build(f.agent.Input)
 	if err != nil {
 		t.Fatal(err)
@@ -67,9 +69,10 @@ func newFixture(t *testing.T) *placementFixture {
 		t.Fatal(err)
 	}
 	prepared, err := helm.PrepareSandboxChart(chart, map[string]any{
-		"agentType": "hermes", "agentRequest": map[string]any{"type": "hermes"},
-		"image":   map[string]any{"repository": "registry.example.com/agent/runtime", "tag": "1.0"},
-		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
+		"agentType": "openclaw", "agentRequest": map[string]any{"type": "openclaw"},
+		"image":     map[string]any{"repository": "registry.example.com/agent/runtime", "tag": "1.0"},
+		"secrets":   map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model", "apiBase": "http://gateway.example-platform.svc.cluster.local:4000/v1"},
+		"aiGateway": map[string]any{"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key", "models": []any{map[string]any{"id": "example-model", "name": "Example"}}},
 	}, nil, bundle)
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +86,10 @@ func newFixture(t *testing.T) *placementFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// These generic admission records predate native Pod lifetime protection;
+	// preserve their compatibility checks without authorizing new execution.
+	f.expected.Template.Finalizers = nil
+	f.workload.Spec.Template.Finalizers = nil
 	f.expected.ControllerRevision = f.workload.Status.UpdateRevision
 	f.agentPod = testfixture.Pod(f.expected)
 	f.agentPod.UID, f.agentPod.ResourceVersion = "agent-pod-uid", "1"
@@ -139,6 +146,7 @@ func newFixture(t *testing.T) *placementFixture {
 		f.agent.ServiceAccount, f.agent.Input.Home, f.agent.Input.Skills, f.agent.Input.RuntimeClass, f.workload,
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "example-config", Namespace: f.agent.Namespace.Name, UID: "config-uid", ResourceVersion: "1"}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "runtime-secret", Namespace: f.agent.Namespace.Name, UID: "secret-uid", ResourceVersion: "1"}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-key", Namespace: f.agent.Namespace.Name, UID: "gateway-key-uid", ResourceVersion: "1"}},
 	}
 	for _, object := range sources {
 		if agent, ok := object.(*api.Agent); ok {

@@ -355,4 +355,4 @@ can delete disks when their PVCs are deleted; preserve any required test data.
 | Pod crashes on startup | Check `kubectl describe pod -n cetirun-system`; likely image pull or secret mount issue |
 | `couldn't find key OPENCLAW_GATEWAY_TOKEN in Secret` | The `gateway-token` secret must use `OPENCLAW_GATEWAY_TOKEN` as the key name. If you pre-created the secret manually, recreate it: `kubectl create secret generic gateway-token -n cetirun-<alias> --from-literal=OPENCLAW_GATEWAY_TOKEN=<token>` |
 | CR stuck with finalizer after `kubectl delete` | Check operator logs; if operator is down, manually remove finalizer: `kubectl patch agent <name> -p '{"metadata":{"finalizers":[]}}' --type=merge` |
-| GitHub Copilot auth not working | Each engineer must run `copilot-auth` (or `openclaw models auth login-github-copilot`) inside their OpenClaw pod to authenticate with GitHub Copilot. |
+| GitHub Copilot auth not working | Complete **Sign in with GitHub** from the Portal Overview, then inspect the Agent's Copilot proxy and AI Gateway conditions. |

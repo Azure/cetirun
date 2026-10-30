@@ -289,9 +289,7 @@ func (p *PreparedRelease) customPlatformObjects(namespace string) map[string]pla
 		}
 		hosts = append(hosts, array(scope["additionalEgressHosts"])...)
 		bindings := object(object(p.Values["runtime"])["bindings"])
-		if bindings["agentManagedModel"] != true {
-			hosts = append(hosts, text(object(object(bindings["network"])["gateway"])["namespace"])+"/*")
-		}
+		hosts = append(hosts, text(object(object(bindings["network"])["gateway"])["namespace"])+"/*")
 		objects["Sidecar"] = platformObject{p.sidecarAPIVersion, name, map[string]any{
 			"workloadSelector": map[string]any{"labels": customLabels(p.chart.Name(), p.releaseName)},
 			"egress":           []any{map[string]any{"hosts": hosts}},

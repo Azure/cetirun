@@ -37,11 +37,6 @@ type TeamSpec struct {
 	// +optional
 	MemberContext TeamContextSpec `json:"memberContext,omitempty"`
 
-	// Defaults sets the default AI provider for all team members.
-	// Per-instance Helm values overrides take precedence when set.
-	// +optional
-	Defaults TeamDefaultsSpec `json:"defaults,omitempty"`
-
 	// Skills is the list of default skills for all team members.
 	// Each entry is a ClawHub package ID (e.g. "@anthropic/mcp-server-fetch")
 	// or an npm package prefixed with "npm:" (e.g. "npm:@openclaw/matrix").
@@ -113,13 +108,6 @@ type TeamContextSpec struct {
 	Description []string `json:"description,omitempty"`
 }
 
-// TeamDefaultsSpec sets the default AI provider for team members.
-type TeamDefaultsSpec struct {
-	// Provider is the default AI provider (e.g. "github_copilot", "anthropic", "openai").
-	// +optional
-	Provider string `json:"provider,omitempty"`
-}
-
 // TeamStatus defines the observed state of Team.
 type TeamStatus struct {
 	// Conditions contains the latest available observations of the team's state.
@@ -147,11 +135,11 @@ const ConditionTeamAccepted = "Accepted"
 // +kubebuilder:resource:path=teams,scope=Cluster,shortName=crt,singular=team
 // +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.memberContext.role`
-// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.defaults.provider`
+// +kubebuilder:printcolumn:name="Policy",type=string,JSONPath=`.spec.agentPolicyRef`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // Team is a cluster-scoped resource that defines team-wide configuration
-// (user context, AI provider defaults, and skills) applied to every Agent that
+// (user context, policy, Sandbox selection, and skills) applied to every Agent that
 // references this team via spec.team.
 type Team struct {
 	metav1.TypeMeta   `json:",inline"`

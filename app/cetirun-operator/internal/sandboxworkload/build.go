@@ -33,6 +33,9 @@ func Build(input Input) (*Bundle, error) {
 	if input.AgentType != "openclaw" && input.AgentType != "hermes" && input.AgentType != "custom" {
 		return nil, fmt.Errorf("policy-bound %q rendering is unsupported; legacy fallback is forbidden", input.AgentType)
 	}
+	if input.Suspended && !input.Reconciled {
+		return nil, fmt.Errorf("suspended rendering requires common Sandbox reconciliation")
+	}
 	if input.ConnectionsMCP != nil {
 		if !input.Reconciled {
 			return nil, fmt.Errorf("Connections proof requires the current common executor")

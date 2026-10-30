@@ -80,12 +80,12 @@ func TestConfigHash_IncludesDefaultModelOnlyWhenRendered(t *testing.T) {
 
 	instance.Spec.Model = ""
 	instance.Spec.Helm.Values["secrets"] = runtime.RawExtension{
-		Raw: []byte(`{"provider":"openai","model":"gpt-5.4"}`),
+		Raw: []byte(`{"model":"gpt-5.4"}`),
 	}
 	first = reconciler.configHash(instance, nil, "secret", "")
 	reconciler.DefaultModel = "gpt-6-astra-latest"
-	if second := reconciler.configHash(instance, nil, "secret", ""); first != second {
-		t.Error("deployment default change must not affect a non-Copilot instance")
+	if second := reconciler.configHash(instance, nil, "secret", ""); first == second {
+		t.Error("deployment default change must affect every Agent without spec.model")
 	}
 }
 
@@ -127,6 +127,20 @@ func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1a
 			GatewayTokenSecretRef: gatewaySecret,
 			Helm:                  cetirunv1alpha1.HelmSpec{Values: map[string]runtime.RawExtension{}},
 		},
+	}
+}
+
+// applyGatewayValuesForRender gives direct chart-rendering tests the same
+// verified Gateway projection that reconciliation supplies before Helm apply.
+func applyGatewayValuesForRender(t *testing.T, instance *cetirunv1alpha1.Agent, values map[string]any) {
+	t.Helper()
+	model := instance.Spec.Model
+	instance.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{
+		Phase: cetirunv1alpha1.AIGatewayPhaseReady, Routed: true, KeyID: "test-key", KeySecretName: aiGatewayKeySecretName,
+		Models: []string{model}, DefaultModel: model,
+	}
+	if err := (&AgentReconciler{AIGateway: AIGatewayConfig{Enabled: true, URL: testAIGatewayURL}}).applyAIGatewayValues(values, instance); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -256,8 +270,8 @@ func TestBuildHelmValues_CopilotProvider(t *testing.T) {
 	if !ok {
 		t.Fatal("values[\"secrets\"] missing or wrong type")
 	}
-	if got := secrets["provider"]; got != "github_copilot" {
-		t.Errorf("secrets.provider = %q, want %q", got, "github_copilot")
+	if got := secrets["provider"]; got != "openai" {
+		t.Errorf("secrets.provider = %q, want %q", got, "openai")
 	}
 	if got := secrets["model"]; got != "gpt-5.4" {
 		t.Errorf("secrets.model = %q, want %q", got, "gpt-5.4")
@@ -516,8 +530,8 @@ func TestBuildHelmValues_ProviderDefaults(t *testing.T) {
 	if !ok {
 		t.Fatal("values[\"secrets\"] missing or wrong type")
 	}
-	if got := secrets["provider"]; got != "github_copilot" {
-		t.Errorf("secrets.provider = %q, want %q", got, "github_copilot")
+	if got := secrets["provider"]; got != "openai" {
+		t.Errorf("secrets.provider = %q, want %q", got, "openai")
 	}
 	if got := secrets["model"]; got != "gpt-5.4" {
 		t.Errorf("secrets.model = %q, want %q", got, "gpt-5.4")
@@ -639,7 +653,6 @@ func assertWebhookDenyRoute(t *testing.T, r *istioapiv1beta1.HTTPRoute, wantPath
 // /ui/<instanceName> HTTP → canonical trailing slash redirect,
 // /<instanceName>/desktop → noVNC (port 6080, rewrite to /desktop),
 // /<instanceName>/term → ttyd (port 7681, rewrite to /term),
-// /<instanceName>/cetirun-auth/ → in-pod auth helper (port 18790, rewrite to /),
 // /ui/<instanceName>/ → OpenClaw Gateway (port 18789, URI preserved for basePath).
 func TestBuildVirtualService_Routes(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
@@ -656,9 +669,9 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 	// Routes: 1 webhook deny route (non-Teams instance, prepended first)
 	//       + 1 exact-path WebSocket route for the OpenClaw Control UI
 	//       + 3 redirects (instance root, desktop, term without trailing slash)
-	//       + 4 proxy routes (cetirun-auth, desktop, term, native Control UI)
-	if len(vs.Spec.Http) != 9 {
-		t.Fatalf("expected 9 HTTP routes, got %d", len(vs.Spec.Http))
+	//       + 3 proxy routes (desktop, term, native Control UI)
+	if len(vs.Spec.Http) != 8 {
+		t.Fatalf("expected 8 HTTP routes, got %d", len(vs.Spec.Http))
 	}
 
 	// Route 0: webhook deny — POST /alice/api/messages → direct 404 (Teams disabled).
@@ -689,20 +702,8 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		}
 	}
 
-	// Route 5: /alice/cetirun-auth/ → in-pod auth helper, rewrite to /
-	r5 := vs.Spec.Http[5]
-	if prefix := r5.Match[0].GetUri().GetPrefix(); prefix != "/alice/cetirun-auth/" {
-		t.Errorf("route 5: cetirun-auth prefix = %q, want /alice/cetirun-auth/", prefix)
-	}
-	if r5.Rewrite == nil || r5.Rewrite.GetUri() != "/" {
-		t.Errorf("route 5: rewrite = %v, want /", r5.Rewrite)
-	}
-	if port := r5.Route[0].Destination.Port.Number; port != cetirunAuthPort {
-		t.Errorf("route 5: destination port = %d, want %d", port, cetirunAuthPort)
-	}
-
-	// Route 6: /alice/desktop → noVNC with rewrite to /desktop
-	r6 := vs.Spec.Http[6]
+	// Route 5: /alice/desktop → noVNC with rewrite to /desktop
+	r6 := vs.Spec.Http[5]
 	if prefix := r6.Match[0].GetUri().GetPrefix(); prefix != "/alice/desktop" {
 		t.Errorf("route 6: URI prefix = %q, want %q", prefix, "/alice/desktop")
 	}
@@ -713,8 +714,8 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		t.Errorf("route 6: destination port = %d, want %d", port, novncPort)
 	}
 
-	// Route 7: /alice/term → ttyd with rewrite to /term
-	r7 := vs.Spec.Http[7]
+	// Route 6: /alice/term → ttyd with rewrite to /term
+	r7 := vs.Spec.Http[6]
 	if prefix := r7.Match[0].GetUri().GetPrefix(); prefix != "/alice/term" {
 		t.Errorf("route 7: URI prefix = %q, want %q", prefix, "/alice/term")
 	}
@@ -725,9 +726,9 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 		t.Errorf("route 7: destination port = %d, want %d", port, ttydPort)
 	}
 
-	// Route 8: /ui/alice/ → OpenClaw Control UI. The URI remains prefixed because
+	// Route 7: /ui/alice/ → OpenClaw Control UI. The URI remains prefixed because
 	// the gateway is configured with controlUi.basePath=/ui/alice.
-	r8 := vs.Spec.Http[8]
+	r8 := vs.Spec.Http[7]
 	if prefix := r8.Match[0].GetUri().GetPrefix(); prefix != "/ui/alice/" {
 		t.Errorf("route 8: URI prefix = %q, want %q", prefix, "/ui/alice/")
 	}
@@ -763,9 +764,9 @@ func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
 	// 1 webhook deny route (non-Teams, prepended) + 3 redirects (root, desktop, term)
-	// + 6 proxy routes (v1, health, cetirun-auth, desktop, term, catch-all dashboard)
-	if len(vs.Spec.Http) != 10 {
-		t.Fatalf("expected 10 HTTP routes, got %d", len(vs.Spec.Http))
+	// + 5 proxy routes (v1, health, desktop, term, catch-all dashboard)
+	if len(vs.Spec.Http) != 9 {
+		t.Fatalf("expected 9 HTTP routes, got %d", len(vs.Spec.Http))
 	}
 
 	// Route 0: webhook deny — POST /alice/api/messages → direct 404 (Teams disabled).
@@ -788,27 +789,16 @@ func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 	if port := vs.Spec.Http[5].Route[0].Destination.Port.Number; port != hermesAPIPort {
 		t.Errorf("health route port = %d, want %d", port, hermesAPIPort)
 	}
-	// /cetirun-auth/ → in-pod auth helper service (rewritten to /)
-	authRoute := vs.Spec.Http[6]
-	if prefix := authRoute.Match[0].GetUri().GetPrefix(); prefix != "/alice/cetirun-auth/" {
-		t.Errorf("cetirun-auth prefix = %q, want /alice/cetirun-auth/", prefix)
-	}
-	if rewrite := authRoute.Rewrite.GetUri(); rewrite != "/" {
-		t.Errorf("cetirun-auth rewrite = %q, want /", rewrite)
-	}
-	if port := authRoute.Route[0].Destination.Port.Number; port != cetirunAuthPort {
-		t.Errorf("cetirun-auth port = %d, want %d", port, cetirunAuthPort)
-	}
 	// /desktop → noVNC
-	if port := vs.Spec.Http[7].Route[0].Destination.Port.Number; port != novncPort {
+	if port := vs.Spec.Http[6].Route[0].Destination.Port.Number; port != novncPort {
 		t.Errorf("desktop route port = %d, want %d", port, novncPort)
 	}
 	// /term → ttyd
-	if port := vs.Spec.Http[8].Route[0].Destination.Port.Number; port != ttydPort {
+	if port := vs.Spec.Http[7].Route[0].Destination.Port.Number; port != ttydPort {
 		t.Errorf("term route port = %d, want %d", port, ttydPort)
 	}
 	// catch-all → native Dashboard (must come AFTER /cetirun-auth so it doesn't swallow auth requests)
-	catchAll := vs.Spec.Http[9]
+	catchAll := vs.Spec.Http[8]
 	if prefix := catchAll.Match[0].GetUri().GetPrefix(); prefix != "/ui/alice/" {
 		t.Errorf("catch-all prefix = %q, want /ui/alice/", prefix)
 	}
@@ -1144,9 +1134,9 @@ func TestBuildVirtualService_MSTeamsRoute(t *testing.T) {
 
 	vs := buildVirtualService(instance, domainSuffix, DefaultIstioGateway)
 
-	// Should have 9 routes: msteams webhook + WebSocket route + 3 redirects + cetirun-auth + 3 proxy routes.
-	if len(vs.Spec.Http) != 9 {
-		t.Fatalf("expected 9 HTTP routes, got %d", len(vs.Spec.Http))
+	// Should have 8 routes: msteams webhook + WebSocket route + 3 redirects + 3 proxy routes.
+	if len(vs.Spec.Http) != 8 {
+		t.Fatalf("expected 8 HTTP routes, got %d", len(vs.Spec.Http))
 	}
 
 	// VS must bind to the apex domain
@@ -1172,9 +1162,9 @@ func TestBuildVirtualService_NoMSTeamsRoute(t *testing.T) {
 	instance.Name = "alice"
 	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
-	// Non-Teams instance still gets a prepended webhook deny route (1 + 8 = 9).
-	if len(vs.Spec.Http) != 9 {
-		t.Fatalf("expected 9 HTTP routes (deny + base), got %d", len(vs.Spec.Http))
+	// Non-Teams instance still gets a prepended webhook deny route (1 + 7 = 8).
+	if len(vs.Spec.Http) != 8 {
+		t.Fatalf("expected 8 HTTP routes (deny + base), got %d", len(vs.Spec.Http))
 	}
 
 	// Route 0 must be the deny route, not a proxy/redirect, so the static gateway POST
@@ -1463,6 +1453,7 @@ func TestBuildHelmValues_SuspendedHomeRetention(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
+						applyGatewayValuesForRender(t, instance, values)
 						prepared, err := helm.PrepareChart(chrt, values)
 						if err != nil {
 							t.Fatal(err)
@@ -1558,6 +1549,7 @@ func TestSuspendedHomeChecksEffectiveChartDefaults(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				applyGatewayValuesForRender(t, instance, values)
 				prepared, err := helm.PrepareChart(chrt, values)
 				if err != nil {
 					t.Fatal(err)
@@ -1649,10 +1641,11 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 		t.Errorf("VS hosts = %v, want [%q]", vs.Spec.Hosts, domain)
 	}
 
-	// Must have exactly 9 HTTP routes: 1 webhook deny route (non-Teams, prepended),
-	// 1 exact-path WebSocket route, 3 trailing-slash redirects, cetirun-auth, and 3 proxy routes.
-	if len(vs.Spec.Http) != 9 {
-		t.Fatalf("VS http routes = %d, want 9", len(vs.Spec.Http))
+	// Must have exactly 8 HTTP routes: 1 webhook deny route (non-Teams, prepended),
+	// 1 exact-path WebSocket route, 3 trailing-slash redirects, and 3 proxy routes.
+	// Gateway-only OpenClaw no longer exposes the in-agent cetirun-auth helper.
+	if len(vs.Spec.Http) != 8 {
+		t.Fatalf("VS http routes = %d, want 8", len(vs.Spec.Http))
 	}
 
 	// Route 0: webhook deny — POST /alice-work/api/messages → direct 404.
@@ -1675,43 +1668,34 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 		}
 	}
 
-	// Route 5: /alice-work/cetirun-auth/ → cetirun-auth helper
+	// Route 5: /alice-work/desktop → novnc
 	r5 := vs.Spec.Http[5]
-	if r5.Match[0].Uri.GetPrefix() != "/alice-work/cetirun-auth/" {
-		t.Errorf("route[5] prefix = %q, want %q", r5.Match[0].Uri.GetPrefix(), "/alice-work/cetirun-auth/")
+	if r5.Match[0].Uri.GetPrefix() != "/alice-work/desktop" {
+		t.Errorf("route[5] prefix = %q, want %q", r5.Match[0].Uri.GetPrefix(), "/alice-work/desktop")
 	}
-	if r5.Route[0].Destination.Port.Number != cetirunAuthPort {
-		t.Errorf("route[5] port = %d, want %d", r5.Route[0].Destination.Port.Number, cetirunAuthPort)
+	if r5.Route[0].Destination.Port.Number != novncPort {
+		t.Errorf("route[5] port = %d, want %d", r5.Route[0].Destination.Port.Number, novncPort)
 	}
 
-	// Route 6: /alice-work/desktop → novnc
+	// Route 6: /alice-work/term → ttyd
 	r6 := vs.Spec.Http[6]
-	if r6.Match[0].Uri.GetPrefix() != "/alice-work/desktop" {
-		t.Errorf("route[6] prefix = %q, want %q", r6.Match[0].Uri.GetPrefix(), "/alice-work/desktop")
+	if r6.Match[0].Uri.GetPrefix() != "/alice-work/term" {
+		t.Errorf("route[6] prefix = %q, want %q", r6.Match[0].Uri.GetPrefix(), "/alice-work/term")
 	}
-	if r6.Route[0].Destination.Port.Number != novncPort {
-		t.Errorf("route[6] port = %d, want %d", r6.Route[0].Destination.Port.Number, novncPort)
+	if r6.Route[0].Destination.Port.Number != ttydPort {
+		t.Errorf("route[6] port = %d, want %d", r6.Route[0].Destination.Port.Number, ttydPort)
 	}
 
-	// Route 7: /alice-work/term → ttyd
+	// Route 7: /ui/alice-work/ → native OpenClaw Control UI, with the URI preserved.
 	r7 := vs.Spec.Http[7]
-	if r7.Match[0].Uri.GetPrefix() != "/alice-work/term" {
-		t.Errorf("route[7] prefix = %q, want %q", r7.Match[0].Uri.GetPrefix(), "/alice-work/term")
+	if r7.Match[0].Uri.GetPrefix() != "/ui/alice-work/" {
+		t.Errorf("route[7] prefix = %q, want %q", r7.Match[0].Uri.GetPrefix(), "/ui/alice-work/")
 	}
-	if r7.Route[0].Destination.Port.Number != ttydPort {
-		t.Errorf("route[7] port = %d, want %d", r7.Route[0].Destination.Port.Number, ttydPort)
+	if r7.Rewrite != nil {
+		t.Errorf("route[7] rewrite = %v, want nil", r7.Rewrite)
 	}
-
-	// Route 8: /ui/alice-work/ → native OpenClaw Control UI, with the URI preserved.
-	r8 := vs.Spec.Http[8]
-	if r8.Match[0].Uri.GetPrefix() != "/ui/alice-work/" {
-		t.Errorf("route[8] prefix = %q, want %q", r8.Match[0].Uri.GetPrefix(), "/ui/alice-work/")
-	}
-	if r8.Rewrite != nil {
-		t.Errorf("route[8] rewrite = %v, want nil", r8.Rewrite)
-	}
-	if r8.Route[0].Destination.Port.Number != openclawPort {
-		t.Errorf("route[8] port = %d, want %d", r8.Route[0].Destination.Port.Number, openclawPort)
+	if r7.Route[0].Destination.Port.Number != openclawPort {
+		t.Errorf("route[7] port = %d, want %d", r7.Route[0].Destination.Port.Number, openclawPort)
 	}
 }
 
@@ -1825,9 +1809,6 @@ func TestBuildHelmValues_WithTeam(t *testing.T) {
 	}
 	team := &cetirunv1alpha1.Team{
 		Spec: cetirunv1alpha1.TeamSpec{
-			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
-				Provider: "anthropic",
-			},
 			MemberContext: cetirunv1alpha1.TeamContextSpec{
 				Role:        "Platform Engineer",
 				Description: []string{"Owns infra layer"},
@@ -1839,10 +1820,6 @@ func TestBuildHelmValues_WithTeam(t *testing.T) {
 				ContainerName:  "skills",
 			},
 		},
-	}
-
-	if _, err := buildHelmValues(inst, team, "example.com", "", nil, ""); err == nil {
-		t.Fatal("team defaults must not inject a direct provider model")
 	}
 
 	vals, err := buildHelmValues(newTestInstance("alice", "Alice", "", "gateway-token"), team, "example.com", "", nil, "")
@@ -1930,8 +1907,8 @@ func TestBuildHelmValues_NilTeam_Unchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	secrets := vals["secrets"].(map[string]interface{})
-	if secrets["provider"] != "github_copilot" {
-		t.Errorf("provider = %v, want github_copilot", secrets["provider"])
+	if secrets["provider"] != "openai" {
+		t.Errorf("provider = %v, want openai", secrets["provider"])
 	}
 	user := vals["user"].(map[string]interface{})
 	if _, ok := user["role"]; ok {
@@ -1967,7 +1944,7 @@ func TestBuildHelmValues_SkillOverrides(t *testing.T) {
 	}
 }
 
-// TestBuildHelmValues_WithTeam_Hermes verifies that team defaults, memberContext
+// TestBuildHelmValues_WithTeam_Hermes verifies that Team context
 // and skills propagate into helm values even when the instance uses agentType=hermes.
 // The chart consumes these values agent-agnostically (USER.md / TEAM.md / skills.external_dirs),
 // so the operator must not branch on agentType when applying team data.
@@ -1976,9 +1953,6 @@ func TestBuildHelmValues_WithTeam_Hermes(t *testing.T) {
 	inst.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 	team := &cetirunv1alpha1.Team{
 		Spec: cetirunv1alpha1.TeamSpec{
-			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
-				Provider: "anthropic",
-			},
 			MemberContext: cetirunv1alpha1.TeamContextSpec{
 				Role:        "SRE",
 				Description: []string{"On-call rotation B", "Owns ingest pipeline"},
@@ -2027,7 +2001,7 @@ func TestBuildHelmValues_WithTeam_Hermes(t *testing.T) {
 	}
 
 	secrets := vals["secrets"].(map[string]interface{})
-	if secrets["provider"] != "anthropic" {
-		t.Errorf("provider = %v, want anthropic", secrets["provider"])
+	if secrets["provider"] != "openai" {
+		t.Errorf("provider = %v, want openai", secrets["provider"])
 	}
 }

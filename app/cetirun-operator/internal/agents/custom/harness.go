@@ -42,11 +42,9 @@ func (h Harness) Build(agent agents.ResolvedAgent, bindings agents.Bindings) (ag
 			{Name: "HOME", Value: agent.HomeDir},
 		},
 	}
-	if !bindings.AgentManagedModel {
-		c.Environment = append(c.Environment,
-			agents.EnvironmentValue{Name: "OPENAI_BASE_URL", Value: bindings.Model.BaseURL},
-			agents.EnvironmentValue{Name: "OPENAI_API_KEY", CredentialSlot: "model"})
-	}
+	c.Environment = append(c.Environment,
+		agents.EnvironmentValue{Name: "OPENAI_BASE_URL", Value: bindings.Model.BaseURL},
+		agents.EnvironmentValue{Name: "OPENAI_API_KEY", CredentialSlot: "model"})
 	if agent.Port != nil {
 		c.Environment = append(c.Environment, agents.EnvironmentValue{Name: "PORT", Value: strconv.Itoa(int(*agent.Port))})
 		c.Ports = []agents.PortBinding{{Name: "http", Number: *agent.Port}}

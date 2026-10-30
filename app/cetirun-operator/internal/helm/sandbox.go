@@ -98,22 +98,24 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 func (p *PreparedRelease) ReconcileSandbox(values map[string]any, bundle *sandboxworkload.Bundle,
 	guard func(context.Context) error,
 ) (*PreparedRelease, error) {
-	return p.ReconcileSandboxWithPreflight(values, bundle, guard, guard)
+	return p.ReconcileSandboxWithPreflight(values, bundle, guard, guard, guard, nil)
 }
 
-// ReconcileSandboxWithPreflight separates current authority checks from the
-// submission checkpoint recorded immediately before Helm applies resources.
+// ReconcileSandboxWithPreflight separates preflight and manifest authority
+// from the checkpoint recorded immediately before a workload write.
 func (p *PreparedRelease) ReconcileSandboxWithPreflight(values map[string]any, bundle *sandboxworkload.Bundle,
-	preflight, guard func(context.Context) error,
+	preflight, renderGuard, guard func(context.Context) error,
+	bindingCreate func(context.Context, unstructured.Unstructured) (func(context.Context) error, error),
 ) (*PreparedRelease, error) {
-	if p == nil || p.chart == nil || bundle == nil || !bundle.Identity().Reconciled || preflight == nil || guard == nil {
+	if p == nil || p.chart == nil || bundle == nil || !bundle.Identity().Reconciled || preflight == nil || renderGuard == nil || guard == nil {
 		return nil, fmt.Errorf("Sandbox reconciliation requires a current bundle and guarded apply")
 	}
 	prepared, err := PrepareSandboxChart(p.chart, values, nil, bundle)
 	if err != nil {
 		return nil, err
 	}
-	prepared.sandboxPreflight, prepared.sandboxGuard = preflight, guard
+	prepared.sandboxPreflight, prepared.sandboxRenderGuard, prepared.sandboxGuard = preflight, renderGuard, guard
+	prepared.sandboxBindingCreate = bindingCreate
 	return prepared, nil
 }
 
@@ -186,6 +188,9 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 			Home:                   sandboxworkload.ObjectIdentity{Name: input.Home.Name, UID: input.Home.UID},
 			Controls:               slices.Clone(input.Controls.Objects),
 			IdentityServiceAccount: input.Controls.ServiceAccountSource,
+		}
+		if input.Suspended {
+			p.sandboxReconcile.Controls = slices.DeleteFunc(p.sandboxReconcile.Controls, sandboxworkload.KubernetesBindingResource)
 		}
 		if input.AgentType == "custom" {
 			p.sandboxReconcile.CustomIngressTLS = input.Controls.IngressMTLS
@@ -262,6 +267,11 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 					return fmt.Errorf("rendered compiler resource differs from the approved output")
 				}
 				delete(compiled, key)
+				if input.Suspended && sandboxworkload.KubernetesBindingResource(object) {
+					// Validate the full compiler output, but never recreate
+					// revoked workload grants in a zero-replica suspension.
+					continue
+				}
 			} else {
 				if object.GetNamespace() != input.Namespace.Name {
 					return fmt.Errorf("foreign native Sandbox object")

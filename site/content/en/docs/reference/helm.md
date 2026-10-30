@@ -111,10 +111,7 @@ no port-forward commands for that runtime class.
 | `hermes.env.API_SERVER_PORT` | `8642` |
 | `hermes.gateway.enabled` | `true` |
 
-Agents that run the in-agent sign-in helper expose it on `18790`: Hermes off
-the AI Gateway, and OpenClaw on charts before its per-instance Copilot proxy.
-Agents on the Gateway sign in through the portal and expose no helper. Hermes
-also
+Agents sign in to model sources through the Portal and AI Gateway. Hermes
 exposes its native dashboard on `9119`; the operator routes native UI requests
 to that dashboard, not the Hermes API. These ports are defined in
 [agent helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
@@ -196,9 +193,11 @@ underlying PV's reclaim policy.
 | --- | --- |
 | `secrets.existingSecret` | Empty; otherwise use an existing Secret |
 | `secrets.annotations` | `{}` |
-| `secrets.provider` | `github_copilot`; also `openai`, `anthropic` |
+| `secrets.provider` | `openai`; the Gateway wire protocol |
 | `secrets.model` | Required; no standalone default |
-| `secrets.apiKey`, `secrets.apiBase`, `secrets.authMode` | Provider configuration; empty by default |
+| `secrets.apiKey` | Removed direct credential input; must remain empty |
+| `secrets.apiBase`, `secrets.authMode` | Operator-selected Gateway endpoint and authentication |
+| `aiGateway.enabled`, `aiGateway.keySecretName` | Gateway access is required; the Operator supplies the Agent virtual-key Secret |
 | `secrets.openclawGatewayToken` | Empty; required for standalone OpenClaw without `existingSecret` |
 | `secrets.braveApiKey`, `secrets.perplexityApiKey` | Optional web search provider credentials |
 | `secrets.msteamsAppId`, `msteamsAppPassword`, `msteamsTenantId` | Lower-level Teams chart settings |
@@ -210,8 +209,7 @@ type, and permitted users are not. Use approved secret delivery, not real keys
 in CLI flags. The operator manages an existing gateway Secret for its instances.
 
 `existingSecret` skips [chart-managed Secret creation]({{< repo "app/cetirun-chart/templates/secret.yaml" >}}).
-Values such as `secrets.apiKey` do not populate that external Secret. OpenClaw
-needs `OPENCLAW_GATEWAY_TOKEN` and `CETIRUN_AUTH_KEY`; Hermes needs
+Direct provider keys are no longer accepted. OpenClaw needs `OPENCLAW_GATEWAY_TOKEN` and `CETIRUN_AUTH_KEY`; Hermes needs
 `API_SERVER_KEY` and `CETIRUN_AUTH_KEY` plus its initialization environment.
 The operator creates/enriches these runtime keys and Hermes `hermes.env`, but
 does not authenticate the user to a model provider. With a standalone existing
@@ -227,8 +225,8 @@ application-level gate.
 
 Chart-generated auth keys use live Secret lookup for reuse on upgrade. Offline
 rendering cannot preserve live keys and must not be used to rotate them.
-[Model selection](../../guides/models/) explains provider-specific precedence;
-for OpenAI/Anthropic, configure both the provider's model and credentials.
+[Model selection](../../guides/models/) explains Gateway model selection.
+Configure upstream providers and credentials in the AI Gateway.
 
 ### Agent configuration and health
 
@@ -239,11 +237,6 @@ The chart enables the OpenClaw doctor init step through `openclaw.doctor.enabled
 It runs `openclaw doctor --fix --non-interactive --yes` on the persistent home;
 this is a startup mutation, not a read-only diagnostic. The `doctor.enabled`
 alias must also be true for it to run. Hermes does not run this init container.
-For an OpenClaw instance on the AI Gateway, the `retire-copilot-sign-in` init
-step follows doctor: once per HOME, it removes the GitHub Copilot sign-in that
-the earlier in-agent helper left there, as [Model selection](../../guides/models/)
-describes. A Hermes instance on the Gateway does the same in its
-`init-home-data` step.
 `openclaw.acpx` configures the installed agent communication plugin; review its
 permissions, allowed adapters, and optional command overrides before use.
 

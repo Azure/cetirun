@@ -42,6 +42,8 @@ const (
 	sandboxApplyCancelled         = "cancelled"
 )
 
+var errSandboxIntentChanged = errors.New("Sandbox intent changed")
+
 func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
 	if !sandboxRequested(agent, nil) ||
 		r.SandboxPreparation == nil || !r.SandboxPreparation.NativeExecution ||
@@ -183,6 +185,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		return nil, err
 	}
 	platform := attempt.configuration.Platforms[attempt.resolution.Sandbox.Type]
+	if err := sandboxpolicy.VerifyPolicyGrants(ctx, r.APIReader, attempt.selectedPolicy(), platform.Grants); err != nil {
+		return nil, err
+	}
 	var customIngress *sandboxpolicy.CustomIngress
 	if attempt.input.CustomAgent != nil {
 		customIngress = r.customSandboxIngress(agent)
@@ -201,6 +206,11 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err != nil {
 		return nil, err
 	}
+	roleSources, err := reconciledKubernetesRoleSources(attempt.plan, platform)
+	if err != nil {
+		return nil, err
+	}
+	attempt.sources = append(attempt.sources, roleSources...)
 	if err := r.syncSandboxIdentity(ctx, attempt); err != nil {
 		return nil, err
 	}
@@ -246,6 +256,8 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	var published *corev1.ConfigMap
 	var reservation *sandboxcoordination.NativeTicket
 	var migrationTemplate *corev1.PodSpec
+	var desiredGrants []sandboxpolicy.BindingReference
+	grantsRecorded := false
 	guard := func(ctx context.Context) error {
 		if err := r.checkMigrationApply(ctx, agent, migrationTemplate); err != nil {
 			return err
@@ -281,13 +293,19 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if err != nil || digest != snapshotDigest {
 			return fmt.Errorf("Sandbox platform approvals changed before reconciliation")
 		}
+		if err := sandboxpolicy.VerifyPolicyGrants(ctx, r.APIReader, attempt.selectedPolicy(), platform.Grants); err != nil {
+			return err
+		}
 		current, binding, err := sandboxbinding.Read(ctx, r.customReader(), client.ObjectKeyFromObject(agent))
 		if err != nil {
 			return err
 		}
-		if current.UID != agent.UID || current.Generation != agent.Generation || binding != attempt.resolution.Binding ||
+		if current.UID != agent.UID || current.Generation != agent.Generation ||
 			current.Spec.Suspended != agent.Spec.Suspended || !current.DeletionTimestamp.IsZero() {
-			return fmt.Errorf("Sandbox intent changed before resource reconciliation")
+			return fmt.Errorf("%w before resource reconciliation", errSandboxIntentChanged)
+		}
+		if binding != attempt.resolution.Binding {
+			return fmt.Errorf("Sandbox binding changed before resource reconciliation")
 		}
 		for _, source := range sources {
 			if !w.EffectiveSource(source) {
@@ -304,38 +322,77 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 				return fmt.Errorf("%w: Sandbox input changed before resource reconciliation", errSandboxSourceChanged)
 			}
 		}
+		if grantsRecorded {
+			return r.sandboxGrantJournal().RefreshBindingIntents(ctx, agent.Name, agent.UID, desiredGrants)
+		}
 		return nil
 	}
-	applyGuard := func(ctx context.Context) error {
+	renderGuard := func(ctx context.Context) error {
 		if published == nil || published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyInitializing {
 			return fmt.Errorf("Sandbox apply requires an initialized expectation")
 		}
 		if err := guard(ctx); err != nil {
 			return err
 		}
-		unsubmitted := published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending
 		claimed := published.DeepCopy()
-		// Fence competing renderers before the final authority read. A first
-		// attempt remains pending, and therefore cancellable, until that read passes.
+		// Fence competing renderers without declaring a workload submission.
 		metav1.SetMetaDataAnnotation(&claimed.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
 		if err := r.Patch(ctx, claimed, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("claim Sandbox apply attempt: %w", err)
 		}
 		published = claimed
-		if err := guard(ctx); err != nil {
+		return guard(ctx)
+	}
+	applyGuard := func(ctx context.Context) error {
+		if err := renderGuard(ctx); err != nil {
 			return err
 		}
-		if unsubmitted {
-			submitted := claimed.DeepCopy()
+		if published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending {
+			submitted := published.DeepCopy()
 			submitted.Annotations[sandboxApplyStateAnnotation] = sandboxApplySubmitted
-			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
+			if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
 				return fmt.Errorf("record Sandbox apply submission: %w", err)
 			}
 			published = submitted
 		}
 		return nil
 	}
-	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, applyGuard)
+	bindingGuard := func(ctx context.Context, object unstructured.Unstructured) (func(context.Context) error, error) {
+		if published == nil {
+			return nil, fmt.Errorf("Kubernetes grant creation requires its published expectation")
+		}
+		index := slices.IndexFunc(desiredGrants, func(ref sandboxpolicy.BindingReference) bool {
+			return ref.Kind == object.GetKind() && ref.Namespace == object.GetNamespace() && ref.Name == object.GetName()
+		})
+		if index < 0 {
+			return nil, fmt.Errorf("Kubernetes grant creation has no recorded binding identity")
+		}
+		if err := guard(ctx); err != nil {
+			return nil, err
+		}
+		claimed := published.DeepCopy()
+		metav1.SetMetaDataAnnotation(&claimed.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
+		if err := r.Patch(ctx, claimed, client.MergeFromWithOptions(published, client.MergeFromWithOptimisticLock{})); err != nil {
+			return nil, fmt.Errorf("claim Kubernetes grant creation: %w", err)
+		}
+		published = claimed
+		if err := guard(ctx); err != nil {
+			return nil, err
+		}
+		submitted := claimed.DeepCopy()
+		requested := desiredGrants[index]
+		if err := r.recordReconciledGrantSubmission(ctx, agent, submitted, requested); err != nil {
+			return nil, err
+		}
+		if err := r.Patch(ctx, submitted, client.MergeFromWithOptions(claimed, client.MergeFromWithOptimisticLock{})); err != nil {
+			return nil, fmt.Errorf("record Kubernetes grant submission: %w", err)
+		}
+		published = submitted
+		return func(ctx context.Context) error {
+			return r.rejectReconciledGrantSubmission(ctx, submitted, requested)
+		}, nil
+	}
+	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, renderGuard, applyGuard, bindingGuard)
 	if err != nil {
 		return nil, err
 	}
@@ -382,9 +439,16 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 				return nil, err
 			}
 			defaultAccount := source.Kind == "ServiceAccount" && source.Name == "default"
+			kubernetesCA := source.Kind == "ConfigMap" && source.Name == "kube-root-ca.crt" &&
+				attempt.resolution.AgentPolicy.KubernetesAccess != nil
+			if kubernetesCA {
+				if err := r.validateReconciledKubernetesCA(ctx, source); err != nil {
+					return nil, err
+				}
+			}
 			terminalCA := attempt.input.Terminal != nil && source.Kind == "ConfigMap" &&
 				source.Name == "kube-root-ca.crt" && source.Namespace == expected.Namespace.Name
-			if (!defaultAccount && !terminalCA && !sandboxBuiltinOwned(object, agent)) || !object.DeletionTimestamp.IsZero() {
+			if (!defaultAccount && !kubernetesCA && !terminalCA && !sandboxBuiltinOwned(object, agent)) || !object.DeletionTimestamp.IsZero() {
 				return nil, fmt.Errorf("Sandbox component source is not owned by the current Agent")
 			}
 			source = sandboxSource(object, "v1", source.Kind)
@@ -456,6 +520,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	current := &corev1.ConfigMap{}
 	err = r.customReader().Get(ctx, client.ObjectKeyFromObject(desired), current)
 	if apierrors.IsNotFound(err) {
+		if err := r.confirmReconciledGrantOutcomes(ctx, agent, current, previous); err != nil {
+			return nil, err
+		}
 		// Persist non-submission before the journal so either publication can
 		// retry without losing the proof. Older or lost records stay uncertain.
 		if missingJournal && unobserved {
@@ -470,6 +537,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		}
 		if missingJournal && current.Annotations[sandboxApplyStateAnnotation] != sandboxApplyInitializing {
 			return nil, fmt.Errorf("Sandbox grant authority is missing for an existing execution")
+		}
+		if err := r.confirmReconciledGrantOutcomes(ctx, agent, current, previous); err != nil {
+			return nil, err
 		}
 		switch state := current.Annotations[sandboxApplyStateAnnotation]; state {
 		case sandboxApplyInitializing:
@@ -491,6 +561,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if attempt := current.Annotations[sandboxApplyAttemptAnnotation]; attempt != "" {
 			metav1.SetMetaDataAnnotation(&desired.ObjectMeta, sandboxApplyAttemptAnnotation, attempt)
 		}
+		desired.Annotations[sandboxGrantSubmissionsAnnotation] = "[]"
 		if !reflect.DeepEqual(current.Data, desired.Data) || !reflect.DeepEqual(current.Annotations, desired.Annotations) {
 			base := current.DeepCopy()
 			current.Data, current.Annotations = desired.Data, desired.Annotations
@@ -499,6 +570,13 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	}
 	if err != nil {
 		return nil, err
+	}
+	if _, present := current.Annotations[sandboxGrantSubmissionsAnnotation]; !present {
+		before := current.DeepCopy()
+		metav1.SetMetaDataAnnotation(&current.ObjectMeta, sandboxGrantSubmissionsAnnotation, "[]")
+		if err := r.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+			return nil, fmt.Errorf("initialize Kubernetes grant submission inventory: %w", err)
+		}
 	}
 	initializing := current.Annotations[sandboxApplyStateAnnotation] == sandboxApplyInitializing
 	if missingJournal || initializing {
@@ -518,14 +596,22 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 			return nil, fmt.Errorf("finish Sandbox expectation initialization: %w", err)
 		}
 	}
-	desiredGrants := []sandboxpolicy.BindingReference{access}
+	accessGrants := []sandboxpolicy.BindingReference{access}
 	for _, source := range tlsSources {
-		desiredGrants = append(desiredGrants, source.ref)
+		accessGrants = append(accessGrants, source.ref)
+	}
+	desiredGrants = accessGrants
+	if !agent.Spec.Suspended {
+		desiredGrants = append(desiredGrants, attempt.plan.Identity.Bindings...)
 	}
 	if err := journal.Revoke(ctx, agent.Name, agent.UID, sandboxpolicy.ObsoleteBindings(previous, desiredGrants)); err != nil {
 		return nil, err
 	}
 	if err := journal.Record(ctx, agent.Name, agent.UID, desiredGrants); err != nil {
+		return nil, err
+	}
+	grantsRecorded = true
+	if err := guard(ctx); err != nil {
 		return nil, err
 	}
 	if err := r.applySandboxSourceAccess(ctx, agent, role, binding, access); err != nil {
@@ -536,7 +622,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 			return nil, err
 		}
 	}
-	confirmed, err := r.sandboxBindingUIDs(ctx, desiredGrants)
+	confirmed, err := r.sandboxBindingUIDs(ctx, accessGrants)
 	if err != nil {
 		return nil, err
 	}
@@ -696,6 +782,37 @@ func (r *AgentReconciler) reconciledSandboxApplied(ctx context.Context, agent *a
 	return true, nil
 }
 
+func (r *AgentReconciler) fenceReconciledGrantRevocation(ctx context.Context, state *corev1.ConfigMap) error {
+	before := state.DeepCopy()
+	metav1.SetMetaDataAnnotation(&state.ObjectMeta, sandboxApplyAttemptAnnotation, rand.Text())
+	if err := r.Patch(ctx, state, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("fence unsubmitted Kubernetes grants: %w", err)
+	}
+	return nil
+}
+
+func (r *AgentReconciler) cancelUnsubmittedReconciledApply(ctx context.Context, state *corev1.ConfigMap, expected w.ReconcileExpectation) (bool, error) {
+	applyState := state.Annotations[sandboxApplyStateAnnotation]
+	if applyState != sandboxApplyPending && applyState != sandboxApplyCancelled {
+		return false, nil
+	}
+	if slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
+		return workload.Identity.UID != ""
+	}) {
+		return false, fmt.Errorf("unsubmitted Sandbox expectation has a recorded workload")
+	}
+	if applyState == sandboxApplyPending {
+		// Compete with submission on its resource version; absence alone cannot
+		// cancel an outstanding grant or workload write.
+		before := state.DeepCopy()
+		state.Annotations[sandboxApplyStateAnnotation] = sandboxApplyCancelled
+		if err := r.Patch(ctx, state, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+			return false, fmt.Errorf("cancel unsubmitted Sandbox apply: %w", err)
+		}
+	}
+	return true, nil
+}
+
 func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *api.Agent, ticket sandboxcoordination.NativeTicket) error {
 	intent := ticket.Reservation.Intent
 	state := &corev1.ConfigMap{}
@@ -709,24 +826,11 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 		expected.Home != intent.Home || expected.Binding != intent.Binding {
 		return fmt.Errorf("common Sandbox cleanup differs from its source reservation")
 	}
+	if _, err := r.cancelUnsubmittedReconciledApply(ctx, state, expected); err != nil {
+		return err
+	}
 	applyState := state.Annotations[sandboxApplyStateAnnotation]
-	if applyState == sandboxApplyPending || applyState == sandboxApplyCancelled {
-		if slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
-			return workload.Identity.UID != ""
-		}) {
-			return fmt.Errorf("unsubmitted Sandbox expectation has a recorded workload")
-		}
-		if applyState == sandboxApplyPending {
-			// Compete with submission on the same resource version. A cancelled
-			// snapshot cannot authorize an in-flight or subsequently retried apply.
-			before := state.DeepCopy()
-			state.Annotations[sandboxApplyStateAnnotation] = sandboxApplyCancelled
-			if err := r.Patch(ctx, state, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-				return fmt.Errorf("cancel unsubmitted Sandbox apply: %w", err)
-			}
-			applyState = sandboxApplyCancelled
-		}
-	} else if applyState != "" && applyState != sandboxApplySubmitted {
+	if applyState != sandboxApplyCancelled && applyState != "" && applyState != sandboxApplySubmitted {
 		return fmt.Errorf("Sandbox apply checkpoint is invalid")
 	}
 	for _, desired := range expected.Workloads {
@@ -780,6 +884,9 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 	}); err != nil {
 		return err
 	}
+	if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
+		return err
+	}
 	return r.SandboxNativeCoordination.ReleaseNative(ctx, ticket)
 }
 
@@ -824,6 +931,7 @@ func (r *AgentReconciler) holdReconciledPolicyChange(ctx context.Context, agent 
 		holdErr = r.Patch(ctx, agent, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 	}
 	blockErr := r.beginAIGatewayPolicyReprojection(ctx, agent)
+	revokeErr := r.revokeSandboxPreparationGrants(ctx, agent)
 	auxiliaryErr := r.stopReconciledAuxiliaries(ctx, agent)
 	stopErr := r.stopSandboxBuiltin(ctx, agent)
 	agent.Status.Phase = api.PhaseProvisioning
@@ -832,7 +940,20 @@ func (r *AgentReconciler) holdReconciledPolicyChange(ctx context.Context, agent 
 		setCondition(&agent.Status.Conditions, kind, metav1.ConditionFalse,
 			"PolicyReprojection", "Applying current policy through common reconciliation")
 	}
-	return errors.Join(holdErr, blockErr, stopErr, auxiliaryErr, r.updateStatus(ctx, agent))
+	return errors.Join(holdErr, blockErr, revokeErr, stopErr, auxiliaryErr, r.updateStatus(ctx, agent))
+}
+
+func (r *AgentReconciler) reconciledSandboxFailure(ctx context.Context, agent *api.Agent, cause error) (ctrl.Result, error) {
+	if errors.Is(cause, errMigrationIntentChanged) || errors.Is(cause, errSandboxIntentChanged) {
+		return ctrl.Result{}, cause
+	}
+	// A later source read can observe a newer Agent after the intent guards pass.
+	current, currentErr := r.agentIsCurrent(ctx, agent)
+	if currentErr == nil && !current {
+		return ctrl.Result{}, cause
+	}
+	result, holdErr := r.holdPolicyDependencyUnavailable(ctx, agent)
+	return result, errors.Join(cause, currentErr, holdErr)
 }
 
 func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
@@ -842,6 +963,7 @@ func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.
 		controllerutil.AddFinalizer(agent, sandbox.HoldFinalizer)
 		failures = append(failures, r.Patch(ctx, agent, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})))
 	}
+	failures = append(failures, r.revokeSandboxPreparationGrants(ctx, agent))
 	failures = append(failures, r.stopSandboxBuiltin(ctx, agent))
 	if controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
 		failures = append(failures, r.stopReconciledAuxiliaries(ctx, agent))
@@ -894,13 +1016,14 @@ func (r *AgentReconciler) stopReconciledSandbox(ctx context.Context, agent *api.
 	}
 	// Independent shutdown must precede chart/bootstrap reads and must still
 	// run when Gateway revocation or one component's stop cannot complete.
+	revokeErr := r.revokeSandboxPreparationGrants(ctx, agent)
 	auxiliaryErr := r.stopReconciledAuxiliaries(ctx, agent)
 	stopErr := r.stopSandboxBuiltinWorkload(ctx, agent)
 	if stopErr == nil && finishReservation {
 		stopErr = r.stopNativeSandboxReservation(ctx, agent)
 	}
 	agent.Status.AccessURL = ""
-	if err := errors.Join(blockErr, auxiliaryErr, stopErr); err != nil {
+	if err := errors.Join(blockErr, revokeErr, auxiliaryErr, stopErr); err != nil {
 		agent.Status.Phase = api.PhasePending
 		for _, kind := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionIngressReady} {
 			setCondition(&agent.Status.Conditions, kind, metav1.ConditionFalse,

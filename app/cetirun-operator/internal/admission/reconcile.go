@@ -14,6 +14,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -80,6 +81,22 @@ func (h *PodHandler) validateReconciledSources(ctx context.Context, expected w.R
 	return nil
 }
 
+func (h *PodHandler) validateReconciledKubernetesGrants(ctx context.Context, expected w.ReconcileExpectation, confirmed bool) *podFailure {
+	bindings, err := expected.KubernetesBindings()
+	if err != nil {
+		return podDenied("GrantInventoryInvalid", "current Kubernetes grant inventory is invalid")
+	}
+	journal := sandboxpolicy.GrantJournalStore{APIReader: h.reader, Namespace: h.config.StateNamespace}
+	verify := journal.VerifyKubernetesBindings
+	if !confirmed {
+		verify = journal.VerifyKubernetesBindingIntents
+	}
+	if err := verify(ctx, expected.Agent.Name, expected.Agent.UID, bindings); err != nil {
+		return podDenied("KubernetesGrantsUnconfirmed", "current Kubernetes grants do not match confirmed journal authority")
+	}
+	return nil
+}
+
 func (h *PodHandler) validateReconciledPod(ctx context.Context, request admission.Request, pod *corev1.Pod) (admission.Response, bool) {
 	expected, state, handled, failure := h.reconciledExpectation(ctx, request.Namespace)
 	if !handled {
@@ -121,6 +138,9 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 		return reject(failure)
 	}
 	if failure := h.validateReconciledSources(ctx, expected); failure != nil {
+		return reject(failure)
+	}
+	if failure := h.validateReconciledKubernetesGrants(ctx, expected, true); failure != nil {
 		return reject(failure)
 	}
 	if desired := expected.IdentityServiceAccount; desired != nil {
@@ -257,6 +277,9 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 	if failure := h.validateReconciledSources(ctx, expected); failure != nil {
 		return reject(failure)
 	}
+	if failure := h.validateReconciledKubernetesGrants(ctx, expected, true); failure != nil {
+		return reject(failure)
+	}
 	if failure := checkReservation(); failure != nil {
 		return reject(failure)
 	}
@@ -324,6 +347,9 @@ func (h *Handler) reconciledHoldRelease(ctx context.Context, request admission.R
 		return admission.Denied("hold release requires the current reconciled Sandbox intent"), true
 	}
 	if failure := handler.validateReconciledSources(ctx, record); failure != nil {
+		return rejectPod(ctx, request, failure), true
+	}
+	if failure := handler.validateReconciledKubernetesGrants(ctx, record, false); failure != nil {
 		return rejectPod(ctx, request, failure), true
 	}
 	if _, err := h.platformRegistrations(ctx); err != nil {

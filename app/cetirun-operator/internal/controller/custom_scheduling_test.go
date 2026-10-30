@@ -24,10 +24,11 @@ func TestCustomInvalidPlatformSchedulingCannotReachHandoff(t *testing.T) {
 	} {
 		cr, b, objects := customFixture("example", nil)
 		scheme := testScheme()
-		c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()
+		c := provisioningClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()}
 		p, h := &customProvider{bindings: b}, &fakeHelmClient{useHarness: true}
 		r := &controller.AgentReconciler{Client: c, Scheme: scheme, HelmClient: h, CustomBindings: p,
 			CetiRunHelmValues: defaults, EventRecorder: record.NewFakeRecorder(100)}
+		controller.ConfigureTestGateway(t, r)
 		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}})
 		if err == nil || p.applied || h.installCalled {
 			t.Fatalf("invalid scheduling reached handoff/apply: err=%v approve=%v apply=%v", err, p.applied, h.installCalled)

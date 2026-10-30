@@ -16,6 +16,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 )
 
@@ -31,28 +32,30 @@ type AgentRequest struct {
 }
 
 type PreparedRelease struct {
-	Values            map[string]any
-	Agent             agents.ResolvedAgent
-	ChartVersion      string
-	PlanHash          string
-	WorkloadHash      string
-	basePlanHash      string
-	releaseName       string
-	manifestHash      string
-	manifest          []byte
-	sealedInput       string
-	actionRevision    int
-	custom            bool
-	chart             *chart.Chart
-	sidecarAPIVersion string
-	pdbAPIVersion     string
-	homeRetention     bool
-	apiValidated      bool
-	sandboxBundle     *sandboxworkload.Bundle
-	sandboxTemplate   *corev1.PodTemplateSpec
-	sandboxReconcile  *sandboxworkload.ReconcileExpectation
-	sandboxPreflight  func(context.Context) error
-	sandboxGuard      func(context.Context) error
+	Values               map[string]any
+	Agent                agents.ResolvedAgent
+	ChartVersion         string
+	PlanHash             string
+	WorkloadHash         string
+	basePlanHash         string
+	releaseName          string
+	manifestHash         string
+	manifest             []byte
+	sealedInput          string
+	actionRevision       int
+	custom               bool
+	chart                *chart.Chart
+	sidecarAPIVersion    string
+	pdbAPIVersion        string
+	homeRetention        bool
+	apiValidated         bool
+	sandboxBundle        *sandboxworkload.Bundle
+	sandboxTemplate      *corev1.PodTemplateSpec
+	sandboxReconcile     *sandboxworkload.ReconcileExpectation
+	sandboxPreflight     func(context.Context) error
+	sandboxRenderGuard   func(context.Context) error
+	sandboxGuard         func(context.Context) error
+	sandboxBindingCreate func(context.Context, unstructured.Unstructured) (func(context.Context) error, error)
 }
 
 // CacheKey includes actual rendered output as well as the consumed inputs.
@@ -79,7 +82,8 @@ func (p *PreparedRelease) SupportsValuePath(path ...string) bool {
 // ChartValues are the values a chart version declares, for checking what it
 // supports before an Agent uses it.
 type ChartValues struct {
-	values map[string]any
+	values        map[string]any
+	customGateway bool
 }
 
 // NewChartValues describes the values a loaded chart declares.
@@ -87,7 +91,7 @@ func NewChartValues(chrt *chart.Chart) *ChartValues {
 	if chrt == nil {
 		return &ChartValues{}
 	}
-	return &ChartValues{values: chrt.Values}
+	return &ChartValues{values: chrt.Values, customGateway: chrt.Metadata != nil && chrt.Metadata.Annotations["cetirun.microsoft.com/custom-copilot"] == "v1"}
 }
 
 // SupportsValuePath reports whether the chart declares a nested value.
@@ -113,28 +117,6 @@ func declaresValuePath(values map[string]any, path []string) bool {
 			return false
 		}
 		current = next
-	}
-	return false
-}
-
-// signInHelperPort names the runtime port of the in-agent model sign-in
-// helper. A built-in harness exposes it only when its chart carries the
-// helper and the Agent's models do not come through the AI Gateway.
-const signInHelperPort = "cetirun-auth"
-
-// ServesSignInHelper reports whether the prepared workload exposes the
-// in-agent model sign-in helper, which the /<name>/cetirun-auth/ route and
-// the Portal's in-agent Copilot sign-in reach.
-func (p *PreparedRelease) ServesSignInHelper() bool {
-	if p == nil {
-		return false
-	}
-	runtime, _ := p.Values["runtime"].(map[string]any)
-	ports, _ := runtime["ports"].([]any)
-	for _, item := range ports {
-		if port, ok := item.(map[string]any); ok && port["name"] == signInHelperPort {
-			return true
-		}
 	}
 	return false
 }
@@ -471,4 +453,12 @@ func integer(value any) int64 {
 func array(value any) []any {
 	result, _ := value.([]any)
 	return result
+}
+
+// SupportsCustomGateway reports the versioned Custom model-binding and proxy
+// contract. Native aiGateway value paths alone do not establish Custom support.
+func (v *ChartValues) SupportsCustomGateway() bool { return v != nil && v.customGateway }
+
+func (p *PreparedRelease) SupportsCustomGateway() bool {
+	return p != nil && p.chart != nil && NewChartValues(p.chart).SupportsCustomGateway()
 }

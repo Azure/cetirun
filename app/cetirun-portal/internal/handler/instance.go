@@ -90,8 +90,7 @@ type CreateInstanceRequest struct {
 	Model                string                    `json:"model,omitempty"`
 	TeamsEnabled         bool                      `json:"teamsEnabled,omitempty"`
 	AgentIdentityEnabled bool                      `json:"agentIdentityEnabled,omitempty"`
-	// ModelAccess applies to OpenClaw, Hermes and Sandbox-bound Custom Agents
-	// when the AI Gateway is enabled.
+	// ModelAccess selects Gateway model sources for every Agent harness.
 	ModelAccess *ModelAccessRequest `json:"modelAccess,omitempty"`
 }
 
@@ -120,7 +119,6 @@ type InstanceResponse struct {
 	WebUIURL                    string                      `json:"webUIUrl,omitempty"`
 	GatewayToken                string                      `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
 	APIServerKey                string                      `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
-	CetiRunAuthKey              string                      `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
 	TailscaleAuthKey            string                      `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
 	Conditions                  []ConditionStatus           `json:"conditions,omitempty"`
 	CreatedAt                   string                      `json:"createdAt"`
@@ -151,9 +149,8 @@ type ConditionStatus struct {
 
 // TeamSummary is the JSON response element for GET /api/v1/teams.
 type TeamSummary struct {
-	Name     string `json:"name"`
-	Role     string `json:"role"`
-	Provider string `json:"provider"`
+	Name string `json:"name"`
+	Role string `json:"role"`
 }
 
 // ErrorResponse is the standard error envelope.
@@ -821,17 +818,6 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 				resp.APIServerKey = apiServerKey
 			}
 		}
-		// The cetirun-auth helper service runs in Hermes and OpenClaw pods whose
-		// chart carries it, except where the AI Gateway replaced it with the
-		// Portal sign-in. Without it the in-agent sign-in has no backend.
-		if servesSignInHelper(instance) {
-			authKey, err := h.Kube.GetCetiRunAuthKey(ctx, ns, instance.Spec.GatewayTokenSecretRef)
-			if err != nil {
-				slog.Warn("Failed to get cetirun-auth key", "alias", instance.Spec.User.Alias, "error", err)
-			} else {
-				resp.CetiRunAuthKey = authKey
-			}
-		}
 		// Get tailscale auth key if Tailscale is enabled
 		if instance.Spec.Tailscale != nil {
 			tsKey, err := h.Kube.GetTailscaleAuthKey(ctx, ns, instance.Spec.Tailscale.AuthKeySecretRef)
@@ -1127,9 +1113,8 @@ func (h *InstanceHandler) ListTeams(w http.ResponseWriter, r *http.Request) {
 	result := make([]TeamSummary, len(teams))
 	for i, t := range teams {
 		result[i] = TeamSummary{
-			Name:     t.Name,
-			Role:     t.Spec.MemberContext.Role,
-			Provider: t.Spec.Defaults.Provider,
+			Name: t.Name,
+			Role: t.Spec.MemberContext.Role,
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

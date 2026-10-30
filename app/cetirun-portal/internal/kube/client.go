@@ -348,30 +348,6 @@ func (c *Client) GetAPIServerKey(ctx context.Context, namespace, secretName stri
 	return string(keyBytes), nil
 }
 
-// GetCetiRunAuthKey retrieves the in-pod cetirun-auth bearer key from the
-// instance's Secret. For OpenClaw instances the secret only contains
-// CETIRUN_AUTH_KEY; for older Hermes instances created before the dedicated
-// key was added, fall back to API_SERVER_KEY (which the helper service still
-// accepts as a legacy bearer credential).
-func (c *Client) GetCetiRunAuthKey(ctx context.Context, namespace, secretName string) (string, error) {
-	if secretName == "" {
-		return "", fmt.Errorf("secret name is empty for namespace %q", namespace)
-	}
-
-	secret := &corev1.Secret{}
-	key := client.ObjectKey{Namespace: namespace, Name: secretName}
-	if err := c.client.Get(ctx, key, secret); err != nil {
-		return "", fmt.Errorf("get secret %s/%s: %w", namespace, secretName, err)
-	}
-	if keyBytes, ok := secret.Data["CETIRUN_AUTH_KEY"]; ok && len(keyBytes) > 0 {
-		return string(keyBytes), nil
-	}
-	if keyBytes, ok := secret.Data["API_SERVER_KEY"]; ok && len(keyBytes) > 0 {
-		return string(keyBytes), nil
-	}
-	return "", fmt.Errorf("missing key CETIRUN_AUTH_KEY (and legacy API_SERVER_KEY) in secret %s/%s", namespace, secretName)
-}
-
 // GetTailscaleAuthKey retrieves the Tailscale auth key from the instance's Secret.
 func (c *Client) GetTailscaleAuthKey(ctx context.Context, namespace, secretName string) (string, error) {
 	if secretName == "" {
@@ -622,10 +598,9 @@ func touchSecretAnnotation(instance *cetirunv1alpha1.Agent) {
 //
 // For the "gateway-token" secret, this also ensures an CETIRUN_AUTH_KEY field
 // is present (auto-generated 48-char alphanumeric, preserved across updates).
-// CETIRUN_AUTH_KEY is the bearer key for the in-pod cetirun-auth helper
-// service (Portal "Copilot Auth" UI). The chart cannot manage this field
-// itself because Portal passes the secret in as secrets.existingSecret,
-// which causes the chart's Secret template to be skipped entirely.
+// CETIRUN_AUTH_KEY signs Hermes Dashboard sessions. The chart cannot manage
+// this field itself because Portal passes the secret in as
+// secrets.existingSecret, which skips the chart's Secret template.
 func (c *Client) createOrUpdateSecret(ctx context.Context, ns, name string, data map[string][]byte) error {
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "cetirun",
@@ -637,8 +612,8 @@ func (c *Client) createOrUpdateSecret(ctx context.Context, ns, name string, data
 		// Preserve CETIRUN_AUTH_KEY (and any other chart-managed fields the
 		// caller didn't supply) by merging caller-supplied data over the
 		// in-cluster Secret. Replacing secret.Data outright would rotate the
-		// auth key on every update and 401 every running pod's Portal →
-		// cetirun-auth call, since env-var-mounted secrets don't refresh.
+		// Dashboard session key on every update, since env-var-mounted secrets
+		// do not refresh in running Pods.
 		if secret.Data == nil {
 			secret.Data = map[string][]byte{}
 		}
@@ -670,7 +645,7 @@ func (c *Client) createOrUpdateSecret(ctx context.Context, ns, name string, data
 
 // ensureCetiRunAuthKey injects an CETIRUN_AUTH_KEY into the gateway-token
 // secret if one isn't already present. Preserves any existing value so that
-// subsequent CR/secret updates don't invalidate active Copilot Auth sessions.
+// subsequent CR/secret updates do not invalidate active Dashboard sessions.
 func ensureCetiRunAuthKey(secret *corev1.Secret, name string) error {
 	if name != "gateway-token" {
 		return nil
