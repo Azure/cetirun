@@ -15,8 +15,8 @@ LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.V
 	-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=$(GIT_SHA)
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
-# The combined controller unit regressions exceed 20m on CI runners.
-GO_TEST_TIMEOUT := 25m
+# The full controller suite exceeds 20m on CI runners.
+GO_TEST_TIMEOUT := 30m
 # Envtest also runs the unit suite; the combined regressions exceed 30m in CI.
 GO_ENVTEST_TIMEOUT := 40m
 

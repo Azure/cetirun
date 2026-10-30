@@ -284,6 +284,7 @@ func newNativeStartAPIHarnessWithRuntime(t *testing.T, admissionNative, coordina
 		ControlPlaneStartTimeout: time.Minute, ControlPlaneStopTimeout: 30 * time.Second,
 	}
 	environment.ControlPlane.GetAPIServer().Configure().Set("authorization-mode", "RBAC")
+	environment.ControlPlane.GetAPIServer().Configure().Set("enable-admission-plugins", "PodTopologyLabels")
 	cfg, err := environment.Start()
 	if err != nil {
 		t.Fatal(errors.Join(err, environment.Stop()))

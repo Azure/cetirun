@@ -382,6 +382,17 @@ func ReconciledObjectContentMatches(actual, desired *unstructured.Unstructured) 
 	return true
 }
 
+// ValidateRenderedPodOnNode permits only scheduling and topology additions
+// verified against the assigned Node, retaining the approved template constraints.
+func ValidateRenderedPodOnNode(pod *corev1.Pod, node *corev1.Node, workload RenderedWorkload, owner metav1.OwnerReference, revision string) error {
+	template, err := podTemplateOnNode(pod, node, workload.Template)
+	if err != nil {
+		return err
+	}
+	workload.Template = template
+	return ValidateRenderedPod(pod, workload, owner, revision)
+}
+
 // ValidateRenderedPod checks the current controller-approved template without
 // fixing helper names or permanently consuming one Pod UID.
 func ValidateRenderedPod(pod *corev1.Pod, workload RenderedWorkload, owner metav1.OwnerReference, revision string) error {

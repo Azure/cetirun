@@ -198,17 +198,17 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 	if req.AgentIdentityEnabled && !options.AgentIdentity.Allowed {
 		return reject(http.StatusForbidden, "policy_identity_not_allowed", "Agent Identity is not available to this owner under the selected Team's Policy and deployment settings")
 	}
-	if !options.AIGatewayEnabled || agentType == cetirunv1alpha1.AgentTypeCustom {
+	if !options.AIGatewayEnabled || (agentType == cetirunv1alpha1.AgentTypeCustom && options.sandboxRef == "") {
 		return options.Team, options.sandboxRef, nil, true
 	}
 	catalog := options.Gateway
 	if !catalog.Known {
 		return reject(http.StatusServiceUnavailable, "model_sources_unknown", "The AI Gateway has not published its models yet. Try again in a minute.")
 	}
-	if newAgent && catalog.AgentTypes == nil {
+	if newAgent && agentType != cetirunv1alpha1.AgentTypeCustom && catalog.AgentTypes == nil {
 		return reject(http.StatusServiceUnavailable, "agent_types_unknown", "The operator has not read its agent chart yet. Try again in a minute.")
 	}
-	if newAgent && !slices.Contains(catalog.AgentTypes, agentType) {
+	if newAgent && agentType != cetirunv1alpha1.AgentTypeCustom && !slices.Contains(catalog.AgentTypes, agentType) {
 		return reject(http.StatusConflict, "agent_chart_unsupported", "This deployment's agent chart does not route "+agentTypeNames[agentType]+" agents through the AI Gateway. Ask an administrator to upgrade the agent chart.")
 	}
 	sharedAvailable, copilotAvailable := len(catalog.SharedModels) > 0, catalog.GitHubCopilot

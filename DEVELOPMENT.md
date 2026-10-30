@@ -110,7 +110,7 @@ go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
 
-The Operator's full unit target uses a bounded 25-minute Go per-package timeout
+The Operator's full unit target uses a bounded 30-minute Go per-package timeout
 because the combined controller regressions exceed 20 minutes on CI runners.
 The full envtest target uses 40 minutes because it also runs the unit suite
 alongside isolated API-server regressions; together they exceed 30 minutes on

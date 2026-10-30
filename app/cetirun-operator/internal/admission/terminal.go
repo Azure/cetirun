@@ -166,8 +166,11 @@ func (h *PodHandler) validateTerminalAuthority(ctx context.Context, expected w.R
 		return podDenied("TerminalTargetUnavailable", "terminal target Pod is not the current ready workload Pod")
 	}
 	wanted := expected.Workloads[index]
-	wanted.Template.Spec.NodeName = pod.Spec.NodeName
-	if err := w.ValidateRenderedPod(pod, wanted, podOwner, main.Status.UpdateRevision); err != nil {
+	node, failure := h.readAssignedNode(ctx, pod)
+	if failure != nil {
+		return failure
+	}
+	if err := w.ValidateRenderedPodOnNode(pod, node, wanted, podOwner, main.Status.UpdateRevision); err != nil {
 		return podDenied("TerminalTargetUnavailable", "terminal target Pod differs from the current Sandbox template")
 	}
 	return nil

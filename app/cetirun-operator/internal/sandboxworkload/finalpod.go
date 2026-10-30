@@ -110,12 +110,21 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 // ValidatePodOnNode permits only scheduling and topology labels verified against
 // the assigned Node. It does not supply independent runtime or fencing evidence.
 func ValidatePodOnNode(pod *corev1.Pod, node *corev1.Node, expected Expectation) error {
-	if pod == nil || node == nil || node.Name == "" || pod.Spec.NodeName != node.Name {
-		return &PodMismatchError{[]string{"spec.nodeName"}}
+	template, err := podTemplateOnNode(pod, node, expected.Template)
+	if err != nil {
+		return err
 	}
-	expected.Template = *expected.Template.DeepCopy()
-	if expected.Template.Spec.NodeName == "" {
-		expected.Template.Spec.NodeName = node.Name
+	expected.Template = template
+	return ValidatePod(pod, expected)
+}
+
+func podTemplateOnNode(pod *corev1.Pod, node *corev1.Node, template corev1.PodTemplateSpec) (corev1.PodTemplateSpec, error) {
+	if pod == nil || node == nil || node.Name == "" || pod.Spec.NodeName != node.Name {
+		return corev1.PodTemplateSpec{}, &PodMismatchError{[]string{"spec.nodeName"}}
+	}
+	template = *template.DeepCopy()
+	if template.Spec.NodeName == "" {
+		template.Spec.NodeName = node.Name
 	}
 	for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
 		value, present := pod.Labels[key]
@@ -124,16 +133,16 @@ func ValidatePodOnNode(pod *corev1.Pod, node *corev1.Node, expected Expectation)
 		}
 		current, found := node.Labels[key]
 		if !found || value != current {
-			return &PodMismatchError{[]string{"metadata.labels"}}
+			return corev1.PodTemplateSpec{}, &PodMismatchError{[]string{"metadata.labels"}}
 		}
-		if _, pinned := expected.Template.Labels[key]; !pinned {
-			if expected.Template.Labels == nil {
-				expected.Template.Labels = map[string]string{}
+		if _, pinned := template.Labels[key]; !pinned {
+			if template.Labels == nil {
+				template.Labels = map[string]string{}
 			}
-			expected.Template.Labels[key] = current
+			template.Labels[key] = current
 		}
 	}
-	return ValidatePod(pod, expected)
+	return template, nil
 }
 
 func podDifferencePaths(a, b reflect.Value, path string, fields *[]string) {
