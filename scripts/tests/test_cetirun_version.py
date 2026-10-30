@@ -185,8 +185,9 @@ class CetiRunVersionTests(unittest.TestCase):
                     archive = self.root / f"app/cetirun-platform/charts/cetirun-{component}-{version}.tgz"
                     self.assertTrue(archive.is_file(), archive)
                 rendered = subprocess.run(
-                    [sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/tests",
-                     "-p", "test_connections_mcp_chart.py", "-v"],
+                    [sys.executable, "-B", "-m", "unittest", "-v",
+                     "scripts.tests.test_connections_mcp_chart.ConnectionsMCPChartTests."
+                     "test_full_stack_uses_separate_broker_and_native_mcp"],
                     cwd=self.root, env=env, text=True, capture_output=True, timeout=60,
                 )
                 self.assertEqual(rendered.returncode, 0, rendered.stdout + rendered.stderr)

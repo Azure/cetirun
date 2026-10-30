@@ -12,7 +12,10 @@ RUN chmod 0755 /opt/cetirun-vscode \
 USER 1024:1024
 RUN test "$(id -u):$(id -g)" = "1024:1024" \
     && for source in *.mjs; do node --check "$source" || exit 1; done \
-    && node -e 'const fs = require("node:fs"); for (const entry of fs.readdirSync("gateway-extension", {recursive: true, withFileTypes: true})) { if (entry.isFile()) fs.readFileSync(`${entry.parentPath}/${entry.name}`); }' \
+    && node -e 'const fs = require("node:fs"); \
+      for (const entry of fs.readdirSync("gateway-extension", {recursive: true, withFileTypes: true})) { \
+        if (entry.isFile()) fs.readFileSync(`${entry.parentPath}/${entry.name}`); \
+      }' \
     && node start.mjs --help
 
 FROM ${BASE_IMAGE}
@@ -33,7 +36,10 @@ ENV HOME=/home/vibe VSCODE_SERVER_LICENSE_ACCEPTED=true
 USER 1024:1024
 RUN test "$(id -u):$(id -g)" = "1024:1024" \
     && node start.mjs --help \
-    && node -e 'const fs = require("node:fs"); for (const entry of fs.readdirSync("/opt/vscode/server/extensions/cetirun-gateway-config", {recursive: true, withFileTypes: true})) { if (entry.isFile()) fs.readFileSync(`${entry.parentPath}/${entry.name}`); }'
+    && node -e 'const fs = require("node:fs"); \
+      for (const entry of fs.readdirSync("/opt/vscode/server/extensions/cetirun-gateway-config", {recursive: true, withFileTypes: true})) { \
+        if (entry.isFile()) fs.readFileSync(`${entry.parentPath}/${entry.name}`); \
+      }'
 WORKDIR /home/vibe
 EXPOSE 8080
 ENTRYPOINT ["node", "/opt/cetirun-vscode/start.mjs"]

@@ -156,26 +156,14 @@ node --test examples/vscode-server/test/*.test.mjs
 python3 -B -m unittest discover -s scripts/tests -p test_vscode_example.py -v
 ```
 
-For source-permission checks, select an already-cached image with Node.js and
-a POSIX shell. Replace the example image name before running:
-
-```bash
-CETIRUN_PERMISSIONS_TEST_IMAGE=local/node:24 \
-  python3 -B -m unittest scripts.tests.test_example_image_permissions -v
-```
-
-This builds the actual Pi and VS Code `runtime-source` stages from a context
-created with `umask 077`. It checks non-root access to entrypoints, modules and
-nested extension files, and verifies that inaccessible files fail the build.
-The containers have no network or host mounts and use a read-only root
-filesystem. An unset image variable skips the tests; a missing selected image
-fails without pulling it. These checks do not download or run the official
-VS Code distribution and do not replace validation of a complete approved image.
-
-The adapter tests use loopback servers, synthetic credentials and a simulated VS Code API.
+The tests use loopback servers, synthetic credentials and a simulated VS Code API.
 They cover Gateway discovery, native configuration handoff, secret references,
 restart/key refresh, user-file preservation and the existing Web IDE proxy.
 They do not start VS Code or validate a real Copilot request. Separately qualify
 an approved image with a signed-out browser profile, a native Agent tool task
 and matching Gateway request metadata. Recheck after restart and key rotation.
 Deployment and live model calls require separate authorization.
+
+The shared [source-permission suite](../pi-agent/README.md#source-permissions)
+checks both examples with a selected cached Node image. It tests the actual
+`runtime-source` stage, not the complete VS Code distribution.

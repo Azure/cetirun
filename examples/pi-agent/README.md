@@ -217,22 +217,27 @@ opens a new shell; run `pi-tui` again to reopen a saved session.
 
 ## Validate
 
-To test source permissions with an already-cached image that contains Node.js
-and a POSIX shell, run from the repository root:
+### Source permissions
+
+Select a cached image with Node.js 24 and a POSIX shell, then run from the
+repository root:
 
 ```bash
 CETIRUN_PERMISSIONS_TEST_IMAGE=local/node:24 \
   python3 -B -m unittest scripts.tests.test_example_image_permissions -v
 ```
 
-Replace `local/node:24` with the selected local image. The test builds the real
-Pi and VS Code `runtime-source` stages from `0600` files and `0700` directories.
-It checks non-root reads, executable scripts, and rejection of inaccessible
-files and directories. Builds and containers have no network; containers use a
-read-only root filesystem with no host mounts or injected credentials.
-An unset image variable skips these tests. A missing selected image fails
-without pulling it. This does not build the complete Pi image or validate its
-installed SDK, downloaded tools, or production base image.
+Replace `local/node:24` with that image. The suite builds both Pi and VS Code
+`runtime-source` stages with `umask 077`. It checks non-root reads, executable
+scripts, inaccessible modules and nested extension paths, and unchanged HOME
+permissions. Builds and containers have no network; containers also have a
+read-only root filesystem and no host mounts or injected credentials.
+
+An unset image variable skips the suite; a missing selected image fails without
+pulling it. These source-stage checks do not validate complete Pi or VS Code
+images, their installed SDK or distribution, or their production base image.
+
+### Runtime checks
 
 The Node tests cover the HTTP adapter, CLI entrypoint and real SDK resource
 discovery without OAuth or model calls. In a separately authorized environment,
