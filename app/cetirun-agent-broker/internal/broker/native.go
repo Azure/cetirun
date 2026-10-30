@@ -13,7 +13,7 @@ import (
 )
 
 func nativeAgentCandidate(agent Agent) bool {
-	return agent.PolicyManaged && (agent.RuntimeType == "openclaw" || agent.RuntimeType == "hermes")
+	return agent.PolicyManaged && (agent.RuntimeType == "openclaw" || agent.RuntimeType == "hermes" || agent.RuntimeType == "custom")
 }
 
 func (k *kubeClient) nativeStorageRecorded(ctx context.Context, agent Agent) (bool, error) {

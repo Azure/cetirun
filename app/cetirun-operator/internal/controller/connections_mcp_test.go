@@ -42,7 +42,11 @@ func TestConnectionsMCPRuntimeAllowlistDefaultsAndFailsClosed(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(parsed, []string{"hermes", "openclaw"}) {
 		t.Fatalf("normalized Connections MCP runtime types = %#v, %v", parsed, err)
 	}
-	for _, raw := range []string{"custom", "hermes,unknown", ",;"} {
+	custom, err := ParseConnectionsMCPRuntimeTypes("custom")
+	if err != nil || !reflect.DeepEqual(custom, []string{"custom"}) {
+		t.Fatalf("explicit Custom Connections opt-in = %#v, %v", custom, err)
+	}
+	for _, raw := range []string{"unknown", "hermes,unknown", ",;"} {
 		if _, err := ParseConnectionsMCPRuntimeTypes(raw); err == nil {
 			t.Fatalf("invalid Connections MCP allowlist %q was accepted", raw)
 		}

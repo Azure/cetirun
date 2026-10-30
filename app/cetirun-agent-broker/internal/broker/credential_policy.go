@@ -154,8 +154,8 @@ func (s *Server) currentCredentialPolicy(ctx context.Context, agent Agent) (agen
 	armAvailable := s.cfg.connectionModeEnabled(Connection{Provider: "azure", Mode: modeAgent}) ||
 		s.cfg.connectionModeEnabled(Connection{Provider: "azure", Mode: modeDelegated})
 	if !armAvailable ||
-		(agent.RuntimeType != "hermes" && agent.RuntimeType != "openclaw") ||
-		(s.cfg.ToolRuntimeTypes != nil && !contains(s.cfg.ToolRuntimeTypes, agent.RuntimeType)) {
+		(agent.RuntimeType != "hermes" && agent.RuntimeType != "openclaw" && !(agent.RuntimeType == "custom" && agent.PolicyManaged)) ||
+		((s.cfg.ToolRuntimeTypes != nil || agent.RuntimeType == "custom") && !contains(s.cfg.ToolRuntimeTypes, agent.RuntimeType)) {
 		return fail("dependency_unavailable", 503)
 	}
 	return projection, nil

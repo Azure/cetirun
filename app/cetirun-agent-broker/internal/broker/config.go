@@ -119,8 +119,8 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.DisableAzureAgent, cfg.DisableMicrosoftDelegated = !azureAgent, !microsoftDelegated
 	for _, kind := range cfg.ToolRuntimeTypes {
-		if kind != "hermes" && kind != "openclaw" {
-			return Config{}, errors.New("CONNECTIONS_MCP_RUNTIME_TYPES must list hermes or openclaw")
+		if kind != "hermes" && kind != "openclaw" && kind != "custom" {
+			return Config{}, errors.New("CONNECTIONS_MCP_RUNTIME_TYPES must list hermes, openclaw or governed custom")
 		}
 	}
 	requiredIDs := []string{cfg.TenantID, cfg.EncryptionClientID}

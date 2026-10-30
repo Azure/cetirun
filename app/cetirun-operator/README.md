@@ -112,7 +112,8 @@ Policy/identity drift clears the applied revision. Removing Agent Identity
 does not satisfy the identity-free policy until the existing identity cleanup
 finishes, including Broker revocation before directory deletion.
 
-With `connectionsMCP.nativeEnabled`, the common OpenClaw/Hermes executor can
+With `connectionsMCP.nativeEnabled`, the common OpenClaw/Hermes executor and
+explicitly allowlisted Custom images can
 project a purpose-bound Connections proof on its already-pinned current/default
 ServiceAccount. The registered MCP Service, public CA and exactly Agent-owned
 Broker storage Role/RoleBinding are added to existing Sources. Broker and MCP
@@ -1965,8 +1966,8 @@ When Kubernetes access is also supported and requested, both capabilities must
 be explicitly approved on the same ServiceAccount. An unused approval never
 adds a token projection or grants.
 
-Common-executor OpenClaw and Hermes support this projection when the native
-registration explicitly declares `entraID: true`, policy enables it, and the
+Common-executor OpenClaw, Hermes and approved Custom images support this
+projection when the native registration explicitly declares `entraID: true`, policy enables it, and the
 platform contains the exact per-Agent approval. The existing configuration
 coordination authority and owned bootstrap must be enabled. Retained single-start
 lifetimes still reject Entra; no generic-profile fallback is used.

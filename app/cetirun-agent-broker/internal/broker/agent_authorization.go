@@ -135,7 +135,7 @@ func (s *Server) issueAgentCredential(ctx context.Context, connection Connection
 
 // Deployment qualification is independent of the provider identity mode.
 func (s *Server) connectionMatchesAgent(c Connection, agent Agent) bool {
-	if s.cfg.ToolRuntimeTypes != nil && !contains(s.cfg.ToolRuntimeTypes, agent.RuntimeType) {
+	if (s.cfg.ToolRuntimeTypes != nil || agent.RuntimeType == "custom") && !contains(s.cfg.ToolRuntimeTypes, agent.RuntimeType) {
 		return false
 	}
 	return s.cfg.connectionModeEnabled(c) && connectionMatchesAgent(c, agent, s.cfg.TenantID)

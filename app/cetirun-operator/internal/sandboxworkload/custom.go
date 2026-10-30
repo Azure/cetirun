@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	corev1 "k8s.io/api/core/v1"
@@ -178,11 +179,15 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 	if !slices.Equal(main.Ports, customContainerPorts(custom.Ports)) {
 		return fmt.Errorf("Custom runtime ports differ from the Harness contract")
 	}
+	serverName := ""
+	if plan := b.input.Controls.IngressMTLS; plan != nil {
+		serverName = plan.ServerName
+	}
 	if custom.HTTP == nil {
 		if main.StartupProbe != nil || main.ReadinessProbe != nil || main.LivenessProbe != nil {
 			return fmt.Errorf("headless Custom cannot define HTTP probes")
 		}
-	} else if !customHTTPProbesMatch(main, custom.HTTP, *custom.Port) {
+	} else if !customHTTPProbesMatch(main, custom.HTTP, *custom.Port, serverName) {
 		return fmt.Errorf("Custom probes differ from the Harness contract")
 	}
 	if custom.HTTP != nil {
@@ -208,6 +213,14 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 		mainMounts = append(mainMounts, runtimebindings.MemoryMounts()...)
 	}
 	mainMounts = append(mainMounts, b.input.Controls.VolumeMounts...)
+	if b.input.Controls.IngressMTLS != nil {
+		mainMounts = append(mainMounts, corev1.VolumeMount{Name: "ingress-public", MountPath: ingressmtls.PublicPath, ReadOnly: true})
+	}
+	if b.input.ConnectionsMCP != nil {
+		mainMounts = append(mainMounts,
+			corev1.VolumeMount{Name: "connections-identity", MountPath: "/var/run/cetirun/connections", ReadOnly: true},
+			corev1.VolumeMount{Name: "connections-ca", MountPath: "/var/run/cetirun/connections-ca", ReadOnly: true})
+	}
 	initMounts := []corev1.VolumeMount{
 		{Name: "data", MountPath: "/home-data"}, {Name: "tmp", MountPath: "/tmp"},
 		{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
@@ -228,7 +241,6 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 		initMounts = append(initMounts, runtimebindings.MemoryMounts()...)
 		initEnv = append(initEnv, corev1.EnvVar{Name: "CETIRUN_MEMORY_ASSETS", Value: runtimebindings.MemoryAssetsDir})
 	}
-	initMounts = append(initMounts, b.input.Controls.VolumeMounts...)
 	if !equalCustomMounts(main.VolumeMounts, mainMounts) || !equalCustomMounts(init.VolumeMounts, initMounts) ||
 		!equality.Semantic.DeepEqual(init.Env, initEnv) {
 		return fmt.Errorf("Custom mounts or initialization environment differ from the common contract")
@@ -268,11 +280,16 @@ func customContainerPorts(ports []CustomPort) []corev1.ContainerPort {
 	return result
 }
 
-func customHTTPProbesMatch(container corev1.Container, http *CustomHTTP, port int32) bool {
+func customHTTPProbesMatch(container corev1.Container, http *CustomHTTP, port int32, serverName string) bool {
 	probe := func(path string, period, failures int32) *corev1.Probe {
-		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+		command := []string{
 			"/cetirun-probe/http-probe", "--url", fmt.Sprintf("http://127.0.0.1:%d%s", port, path),
-		}}}, PeriodSeconds: period, TimeoutSeconds: 3, FailureThreshold: failures}
+		}
+		if serverName != "" {
+			command = append(command, "--mtls-server-name", serverName)
+		}
+		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: command}},
+			PeriodSeconds: period, TimeoutSeconds: 3, FailureThreshold: failures}
 	}
 	return container.LivenessProbe == nil && container.StartupProbe != nil && container.ReadinessProbe != nil &&
 		equality.Semantic.DeepEqual(container.StartupProbe, probe(http.StartupPath, 5, 60)) &&

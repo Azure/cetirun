@@ -44,7 +44,7 @@ func normalizeConnectionsMCPRuntimeTypes(runtimeTypes []string) ([]string, error
 	allowed := map[string]struct{}{}
 	for _, runtimeType := range runtimeTypes {
 		runtimeType = strings.ToLower(strings.TrimSpace(runtimeType))
-		if runtimeType != "hermes" && runtimeType != "openclaw" {
+		if runtimeType != "hermes" && runtimeType != "openclaw" && runtimeType != "custom" {
 			return nil, fmt.Errorf("Connections MCP runtime type %q is unsupported", runtimeType)
 		}
 		allowed[runtimeType] = struct{}{}
@@ -76,7 +76,8 @@ func connectionsMCPRuntimeAllowed(runtimeType api.AgentType, runtimeTypes []stri
 func (r *AgentReconciler) connectionsMCPEnabledFor(instance *api.Agent) (bool, error) {
 	// Sandbox now shares the ordinary reconcile path, but its identity
 	// projections remain exclusively owned by the Sandbox compiler.
-	if r.ConnectionsMCPURL == "" || (sandboxRequested(instance, nil) && !r.nativeConnectionsRequested(instance)) {
+	if r.ConnectionsMCPURL == "" ||
+		((sandboxRequested(instance, nil) || instance.Spec.Agent.Type == api.AgentTypeCustom) && !r.nativeConnectionsRequested(instance)) {
 		return false, nil
 	}
 	return connectionsMCPRuntimeAllowed(instance.Spec.Agent.Type, r.ConnectionsMCPRuntimeTypes)

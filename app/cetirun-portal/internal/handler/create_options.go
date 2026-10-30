@@ -33,8 +33,9 @@ type CreateOptionsResponse struct {
 }
 
 type CreateIdentityOptions struct {
-	Allowed  bool `json:"allowed"`
-	Required bool `json:"required"`
+	Allowed       bool `json:"allowed"`
+	Required      bool `json:"required"`
+	CustomAllowed bool `json:"customAllowed,omitempty"`
 }
 
 type creationOptions struct {
@@ -119,7 +120,7 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 		}
 		identity := policy.Spec.AgentIdentity
 		options.AgentIdentity.Required = identity.Required
-		options.AgentIdentity.Allowed = options.AgentIdentity.Allowed && identity.Allowed && policy.Spec.EntraID.Enabled && slices.Contains(identity.CredentialServices, "azure-resource-manager")
+		options.AgentIdentity.Allowed = options.AgentIdentity.Allowed && identity.Allowed && slices.Contains(identity.CredentialServices, "azure-resource-manager")
 		for _, skill := range team.Spec.Skills {
 			if !slices.Contains(policy.Spec.Skills.Allowed, skill) {
 				return block("policy_skills_conflict", "The Team's default Skills are not allowed by its Agent Policy; ask an administrator to update the Team or Policy")
@@ -132,7 +133,9 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 	if options.AgentIdentity.Required && !options.AgentIdentity.Allowed {
 		return block("policy_identity_unavailable", "The Policy requires Agent Identity, but the deployment, Policy capability or verified Microsoft Entra owner identity is unavailable")
 	}
-	if options.AgentIdentity.Required {
+	options.AgentIdentity.CustomAllowed = options.AgentIdentity.Allowed && sandboxRef != "" &&
+		h.Config.AgentToolsEnabled && slices.Contains(h.Config.AgentToolsRuntimeTypes, "custom")
+	if options.AgentIdentity.Required && !options.AgentIdentity.CustomAllowed {
 		options.AllowedAgentTypes = slices.DeleteFunc(options.AllowedAgentTypes, func(kind api.AgentType) bool {
 			return kind == api.AgentTypeCustom
 		})

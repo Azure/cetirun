@@ -103,11 +103,15 @@ func Build(input Input) (*Bundle, error) {
 		return nil, err
 	}
 	if tls := input.Controls.IngressMTLS; tls != nil {
-		if input.AgentType == "custom" || !input.Reconciled || tls.AgentUID != binding.AgentUID || tls.Namespace != input.Namespace.Name ||
+		if !input.Reconciled || tls.AgentUID != binding.AgentUID || tls.Namespace != input.Namespace.Name ||
 			tls.Harness != input.AgentType || slices.Contains(input.AuthorizedSecrets, tls.ServerSecret.Name) ||
 			(input.ImagePullSecret != nil && input.ImagePullSecret.Name == tls.ServerSecret.Name) ||
 			tls.ServiceHost != input.WorkloadName+"."+input.Namespace.Name+".svc.cluster.local" {
 			return nil, fmt.Errorf("mTLS requires the common executor and distinct per-Agent endpoint credentials")
+		}
+		if input.AgentType == "custom" && (input.CustomAgent.HTTP == nil || *input.CustomAgent.Port != tls.Port ||
+			tls.Terminal != (input.Terminal != nil) || input.Terminal != nil && input.Terminal.Port != 7681) {
+			return nil, fmt.Errorf("Custom mTLS requires an approved HTTP endpoint and matching isolated terminal")
 		}
 	}
 	if len(input.AuthorizedSecrets) == 0 {

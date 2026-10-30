@@ -368,6 +368,17 @@ func (h *ToolConnectionsHandler) instanceHeaders(w http.ResponseWriter, r *http.
 }
 
 func (h *ToolConnectionsHandler) runtimeSupported(instance *cetirunv1alpha1.Agent) bool {
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		if instance.Spec.SandboxRef == "" {
+			return false
+		}
+		for _, runtimeType := range h.RuntimeTypes {
+			if runtimeType == "custom" {
+				return true
+			}
+		}
+		return false
+	}
 	if instance.Spec.SandboxRef != "" || (instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeHermes && instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeOpenClaw) {
 		return false
 	}

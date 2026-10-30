@@ -340,7 +340,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
       {gatewayRouted && !instance.suspended && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
 
-      {nativeIntegrations && features?.agentToolsEnabled && <ToolAuthorizationBlock instance={instance} />}
+      {features?.agentToolsEnabled && <ToolAuthorizationBlock instance={instance} />}
 
       {instance.agent.registrySecretRef && <RegistryAuthBlock key={instance.uid || instance.instanceName} instance={instance} />}
 

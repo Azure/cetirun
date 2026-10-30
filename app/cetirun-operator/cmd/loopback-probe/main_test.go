@@ -53,6 +53,17 @@ func TestProbeAcceptsOnlySuccessfulNumericLoopbackHTTP(t *testing.T) {
 	}
 }
 
+func TestProbeDoesNotTreatHTTPOnlyReadinessAsMTLSReadiness(t *testing.T) {
+	t.Setenv("CETIRUN_INGRESS_MTLS", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	if err := run([]string{"--url", server.URL + "/healthz"}); err == nil {
+		t.Fatal("HTTP success alone satisfied the mTLS readiness contract")
+	}
+}
+
 func TestProbeCommandRejectsUnexpectedArgumentsAndDestinations(t *testing.T) {
 	for _, arguments := range [][]string{nil, {"--url"}, {"install", "/tmp/other"}, {"--url", "http://127.0.0.1:8080/healthz", "extra"}} {
 		if err := run(arguments); err == nil {

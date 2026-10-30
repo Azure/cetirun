@@ -104,10 +104,10 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   }, [options, effectiveShared, sharedModels, modelRouters, gatewayModel]);
 
   useEffect(() => {
-    if (options && (!options.agentIdentity.allowed || agentType === "custom")) setAgentIdentityEnabled(false);
+    if (options && (!options.agentIdentity.allowed || agentType === "custom" && !options.agentIdentity.customAllowed)) setAgentIdentityEnabled(false);
   }, [agentType, options]);
 
-  const identitySupported = agentType !== "custom";
+  const identitySupported = agentType !== "custom" || !!options?.agentIdentity.customAllowed;
   const effectiveIdentity = identitySupported && !!options?.agentIdentity.allowed && (options.agentIdentity.required || agentIdentityEnabled);
   const creationBlocked = createMutation.isPending || featuresLoading || !!featuresError || !options ||
     optionsQuery.isFetching || !!options.blocked || !allowedAgentTypes.includes(agentType) ||

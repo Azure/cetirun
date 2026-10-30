@@ -32,7 +32,8 @@ func (r *AgentReconciler) bootstrapPendingIdentity(ctx context.Context, agent *a
 	if err != nil || !common {
 		return err
 	}
-	if agent.Spec.Helm.Version == "" || agent.Spec.Agent.Image == nil || agent.Spec.Agent.Port == nil {
+	if agent.Spec.Helm.Version == "" || agent.Spec.Agent.Image == nil ||
+		agent.Spec.Agent.Type != api.AgentTypeCustom && agent.Spec.Agent.Port == nil {
 		attempt, err := r.resolveSandboxInputs(ctx, agent, false, true)
 		if err != nil {
 			return err

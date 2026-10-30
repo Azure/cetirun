@@ -99,8 +99,8 @@ func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt
 		}
 		endpointSecret := false
 		if plan := attempt.input.Controls.IngressMTLS; plan != nil {
-			if matchesTLSReference(plan.ClientSecret) {
-				continue // The Gateway client key has its own namespace-scoped read grant.
+			if slices.ContainsFunc(plan.ClientSecrets(), matchesTLSReference) {
+				continue // Client credentials have their own namespace-scoped read grants.
 			}
 			endpointSecret = matchesTLSReference(plan.ServerSecret)
 		}

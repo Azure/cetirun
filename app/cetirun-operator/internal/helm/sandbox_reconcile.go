@@ -131,7 +131,7 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 		if service.Spec.Type != corev1.ServiceTypeClusterIP || service.Spec.ExternalName != "" || len(service.Spec.ExternalIPs) != 0 {
 			return fmt.Errorf("Sandbox services must remain private")
 		}
-		if service.Name != input.WorkloadName {
+		if service.Name != input.WorkloadName && (input.Terminal == nil || service.Name != input.Terminal.ServiceAccountName) {
 			break
 		}
 		if err := p.sandboxBundle.ValidateIngressService(&service); err != nil {

@@ -1,6 +1,6 @@
 {{- if empty .Values.connectionsMCP.runtimeTypes }}{{ fail "connectionsMCP.runtimeTypes must include at least one qualified runtime" }}{{ end }}
 {{- range .Values.connectionsMCP.runtimeTypes }}
-{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "connectionsMCP.runtimeTypes supports only hermes and openclaw" }}{{ end }}
+{{- if not (has . (list "hermes" "openclaw" "custom")) }}{{ fail "connectionsMCP.runtimeTypes supports only hermes, openclaw and governed custom" }}{{ end }}
 {{- end }}
 {{- if ne (empty .Values.connectionsMCP.brokerNamespace) (empty .Values.connectionsMCP.brokerServiceAccount) }}{{ fail "connectionsMCP.brokerNamespace and connectionsMCP.brokerServiceAccount must be set together" }}{{ end }}
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}

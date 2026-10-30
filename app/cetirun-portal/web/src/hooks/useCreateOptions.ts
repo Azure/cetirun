@@ -13,7 +13,7 @@ export interface CreateOptions {
   allowedAgentTypes: AgentType[];
   aiGatewayEnabled: boolean;
   gateway: AIGatewayCatalog;
-  agentIdentity: { allowed: boolean; required: boolean };
+  agentIdentity: { allowed: boolean; required: boolean; customAllowed?: boolean };
   /** The Team's smart-routing models the Team's Policy allows, by name. */
   modelRouters?: string[];
   /** AI Gateway limits the Team's policy sets on each Agent's key. */

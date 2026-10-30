@@ -1,6 +1,6 @@
 ---
 title: "Managed Agent ingress mTLS"
-description: "Opt-in Gateway-to-Agent TLS for common-executor Kata and container OpenClaw/Hermes workloads."
+description: "Opt-in TLS for common-executor Kata and container managed or approved Custom HTTP workloads."
 weight: 45
 ---
 
@@ -23,7 +23,8 @@ owned, private Copilot companion Service keeps its own selector and port.
 
 ## Prerequisites and supported surfaces
 
-- Use the common executor, a Kata or container Sandbox, and the built-in OpenClaw or Hermes harness.
+- Use the common executor, a Kata or container Sandbox, and OpenClaw, Hermes,
+  or an approved Custom HTTP harness following the contract below.
   Retained single-start lifetimes do not support this opt-in.
 - Upgrade the Operator, independent admission process, and runtime chart before
   enabling it. An older chart without the protected `ingressMTLS` schema field
@@ -64,6 +65,67 @@ The helper has the selected Sandbox's helper requests and limits, an
 unprivileged identity, dropped capabilities, and a read-only root filesystem.
 Its resources are included in the existing Pod accounting. It receives neither
 HOME nor application/model credentials. Istio injection remains disabled.
+
+## Custom HTTP and terminal
+
+A Custom registration uses `"harness": "custom"`, the exact declared application
+port, `"desktop": false`, and the actual terminal selection. The image must
+honor `CETIRUN_BIND_HOST=127.0.0.1`; CetiRun does not replace its ENTRYPOINT/CMD.
+The unchanged `/healthz` contract is checked by the platform's static probe,
+including current public certificate validity and the active Envoy leaf.
+TLS probes pass an explicit `--mtls-server-name`; older probe binaries reject
+that option rather than silently reporting HTTP-only readiness.
+Upgrade the terminal/probe image together with Operator, admission and runtime
+Chart. The updated Pi image implements the loopback contract.
+
+The application Service retains its declared port but targets Envoy on 15443.
+The optional separate terminal retains port 7681 and targets its own Envoy on
+15445; its process listens only on loopback. Each helper receives only the
+approved TLS/config mounts and Sandbox helper resources. The terminal does not
+receive HOME, Entra/Connections proofs or model credentials. Its existing
+DNS/Kubernetes API egress and CONNECT authorization remain separate.
+Headless images have no application HTTP endpoint and cannot request this
+opt-in; no HTTP port is synthesized. Custom desktop remains unsupported.
+
+For private Portal Chat, approve one additional client per Portal namespace.
+Add `chatClients` to the Custom binding; Web UI-only bindings leave it empty:
+
+```json
+{
+  "chatClients": [{
+    "secret": {
+      "namespace": "portal-system",
+      "name": "custom-chat-client",
+      "uid": "example-chat-secret-uid",
+      "resourceVersion": "100"
+    },
+    "uri": "spiffe://example.com/portal/example-agent-uid",
+    "podLabels": {"app": "cetirun-portal"}
+  }]
+}
+```
+
+This is a synthetic fragment, not a credential or deployment command. The
+namespace/labels must exactly match the Operator's configured Chat callers.
+The URI must end with the actual immutable Agent UID. The Secret contains a
+distinct client certificate/key and a CA trusting the Agent's exact serving
+identity; the Agent server Secret's client trust must cover both approved
+client identities. Never copy the Gateway client key into the Portal.
+
+The Portal must use its existing Istio sidecar and configured SDS credential
+authorization. A per-Agent, workload-selected DestinationRule in the Portal
+namespace originates mTLS for its existing private Chat route. It is exported
+only locally; the Portal process neither reads the key nor changes its HTTP
+protocol. Missing mesh/credentials cannot fall back to reachable plaintext.
+The compiler restricts Cilium to the corresponding TLS listener.
+
+These additional Secret sources use the existing namespace-scoped source-read
+grants and journal. The existing protected execution expectation carries a
+typed Custom TLS plan so that no unrelated cross-namespace control resource
+can be installed or adopted. Upgrade all strict expectation readers before
+enabling it. The stop/change/resume rules below also apply to Portal
+credentials, selectors and approvals. No new CA issuer or hot-rotation control
+plane is introduced.
 
 ## Externally provisioned certificates
 

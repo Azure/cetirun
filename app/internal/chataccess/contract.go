@@ -21,6 +21,7 @@ const (
 	ContractAnnotation = "cetirun.microsoft.com/portal-chat"
 	AgentUIDAnnotation = "cetirun.microsoft.com/agent-uid"
 	WorkloadAnnotation = "cetirun.microsoft.com/custom-plan-hash"
+	MTLSAPIPort        = 15443
 )
 
 type Caller struct {

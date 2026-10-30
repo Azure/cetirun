@@ -47,6 +47,36 @@ type ReconcileExpectation struct {
 	Controls               []unstructured.Unstructured `json:"controls"`
 	IdentityServiceAccount *corev1.ServiceAccount      `json:"identityServiceAccount,omitempty"`
 	Terminal               *TerminalTarget             `json:"terminal,omitempty"`
+	CustomIngressTLS       *ingressmtls.Plan           `json:"customIngressTLS,omitempty"`
+}
+
+func (e ReconcileExpectation) approvedChatTLSControl(object unstructured.Unstructured) bool {
+	plan := e.CustomIngressTLS
+	if plan == nil || plan.Harness != "custom" || plan.AgentUID != e.Agent.UID || plan.Namespace != e.Namespace.Name ||
+		plan.Binding.Validate() != nil || object.GetAPIVersion() != "networking.istio.io/v1beta1" || object.GetKind() != "DestinationRule" {
+		return false
+	}
+	registered := false
+	for _, client := range plan.ChatClients {
+		if client.Secret.Namespace == object.GetNamespace() && slices.ContainsFunc(e.Sources, func(source SourceReference) bool {
+			return source.APIVersion == "v1" && source.Kind == "Secret" && source.Namespace == client.Secret.Namespace &&
+				source.Name == client.Secret.Name && source.UID == client.Secret.UID && source.ResourceVersion == client.Secret.ResourceVersion
+		}) {
+			registered = true
+		}
+	}
+	if !registered {
+		return false
+	}
+	expected, err := sandboxpolicy.IngressMTLSResources(sandboxpolicy.CompileInput{
+		AgentName: e.Agent.Name, Namespace: e.Namespace.Name, Resolution: sandbox.Resolution{Binding: e.Binding},
+	}, *plan, object.GetAnnotations()[sandboxpolicy.RevisionAnnotation])
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(expected, func(want unstructured.Unstructured) bool {
+		return equality.Semantic.DeepEqual(want.Object, object.Object)
+	})
 }
 
 // TerminalTarget is the controller-owned CONNECT target, never caller input.
@@ -153,6 +183,26 @@ func (e ReconcileExpectation) Validate() error {
 	if main == nil {
 		return fmt.Errorf("Sandbox has no retained HOME workload")
 	}
+	if plan := e.CustomIngressTLS; plan != nil {
+		registration := ingressmtls.Registration{Image: plan.Image, Bindings: []ingressmtls.Binding{plan.Binding}}
+		resolved, err := registration.Resolve(e.Agent.UID, e.Namespace.Name, main.Identity.Name)
+		if err != nil || plan.Harness != "custom" || !equality.Semantic.DeepEqual(resolved, plan) {
+			return fmt.Errorf("Custom ingress plan differs from its bound workload identity")
+		}
+		for _, ref := range append([]ingressmtls.Reference{plan.ServerSecret, plan.Gateway}, plan.ClientSecrets()...) {
+			kind := "Secret"
+			apiVersion := "v1"
+			if ref == plan.Gateway {
+				kind, apiVersion = "Gateway", "networking.istio.io/v1beta1"
+			}
+			if !slices.ContainsFunc(e.Sources, func(source SourceReference) bool {
+				return source.APIVersion == apiVersion && source.Kind == kind && source.Namespace == ref.Namespace &&
+					source.Name == ref.Name && source.UID == ref.UID && source.ResourceVersion == ref.ResourceVersion
+			}) {
+				return fmt.Errorf("Custom ingress plan omits an approved source identity")
+			}
+		}
+	}
 	if terminal := e.Terminal; terminal != nil {
 		if len(validation.IsDNS1123Label(terminal.ServiceAccountName)) != 0 ||
 			terminal.ServiceAccountName != terminalpolicy.WorkloadName(main.Identity.Name) ||
@@ -253,10 +303,12 @@ func (e ReconcileExpectation) Validate() error {
 		key := SourceKey(SourceReference{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()})
 		kind := object.GetAPIVersion() + "/" + object.GetKind()
 		kubernetesBinding := kind == "rbac.authorization.k8s.io/v1/RoleBinding" || kind == "rbac.authorization.k8s.io/v1/ClusterRoleBinding"
-		if controls[key] || object.GetName() == "" || (!kubernetesBinding && object.GetNamespace() != e.Namespace.Name) ||
+		if controls[key] || object.GetName() == "" ||
+			(!kubernetesBinding && object.GetNamespace() != e.Namespace.Name && !e.approvedChatTLSControl(object)) ||
 			!equality.Semantic.DeepEqual(object.GetOwnerReferences(), []metav1.OwnerReference{AgentOwner(e.Agent.Name, e.Agent.UID)}) {
 			return fmt.Errorf("Sandbox control inventory has ambiguous or foreign ownership")
 		}
+
 		controls[key] = true
 		switch kind {
 		case "rbac.authorization.k8s.io/v1/RoleBinding":

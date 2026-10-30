@@ -103,6 +103,9 @@ func Compile(input CompileInput) (*Plan, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
 		}
+		if err := validateCustomMTLS(input, mtls); err != nil {
+			return nil, err
+		}
 	}
 	var egress *egresscapture.Plan
 	var proxyDigest string
