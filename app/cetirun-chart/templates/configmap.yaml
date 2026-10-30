@@ -5,6 +5,10 @@ metadata:
   labels:
     {{- include "cetirun.labels" . | nindent 4 }}
 data:
+  {{- if (.Values.sandboxWorkload | default dict).egressSNI }}
+  proxy-health.cjs: |
+{{ .Files.Get "configs/proxy-health.cjs" | indent 4 }}
+  {{- end }}
   {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
   ingress-entrypoint.sh: |
 {{- if eq (include "cetirun.agent.type" .) "hermes" }}

@@ -34,6 +34,17 @@ tool, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
 with open(os.environ["MCP_RELEASE_LOG"], "a") as log:
     log.write(json.dumps([tool, *args]) + "\n")
 component, version = "cetirun-connections-mcp", os.environ["RELEASE_VERSION"]
+if tool == "python3" and args[:1] == ["-B"]:
+    args = args[1:]
+if tool == "python3" and args[:1] == ["scripts/cetirun-release.py"]:
+    if args[1] == "publish-images":
+        with open(os.environ["MCP_RELEASE_LOG"] + ".driver-env", "a") as output:
+            output.write(json.dumps({"license": os.environ.get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")}) + "\n")
+    sys.exit(subprocess.run([sys.executable, *args], env=os.environ).returncode)
+if tool == "bash" and args[0].endswith("-docker-build.sh") and os.environ.get("IMAGE_NAME"):
+    marker = pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".published")
+    with marker.open("a") as output:
+        output.write(os.environ["REGISTRY"] + "/" + os.environ["IMAGE_NAME"] + ":" + version + "\n")
 if tool == "bash" and args == ["scripts/cetirun-connections-mcp-docker-build.sh"]:
     sys.exit(subprocess.run(["/bin/bash", *args], env=os.environ).returncode)
 if tool == "az" and args[:3] == ["acr", "repository", "show-tags"]:
@@ -50,11 +61,20 @@ elif tool == "helm" and args[0] == "package":
     destination.mkdir(parents=True, exist_ok=True)
     if not (name == component and os.environ.get("MCP_SKIP_PACKAGE")):
         (destination / f"{name}-{version}.tgz").touch()
+elif tool == "helm" and args[0] == "pull":
+    destination = pathlib.Path(args[args.index("--destination") + 1])
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / f"{args[1].rsplit('/', 1)[-1]}-{version}.tgz").touch()
 elif tool == "python3" and args[0] == "scripts/verify-mcr-image.py":
     if os.environ.get("MCP_FAIL_VERIFY") and f"/{component}:" in args[args.index("--image") + 1]:
         sys.exit(1)
 elif tool == "docker" and args[:2] == ["image", "inspect"]:
     sys.exit(1)
+elif tool == "docker" and args[:3] == ["buildx", "imagetools", "inspect"] and "/staging/" in args[3]:
+    marker = pathlib.Path(os.environ["MCP_RELEASE_LOG"] + ".published")
+    if not marker.exists() or args[3] not in marker.read_text().splitlines():
+        print("manifest unknown", file=sys.stderr)
+        sys.exit(1)
 '''
 
 
@@ -71,8 +91,9 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             "ACR_NAME": "synthetic", "REPOSITORY_PREFIX": "public/example/cetirun",
             "RELEASE_VERSION": VERSION, "BUILD_ID": "42", "FORCE_PUBLISH": "false",
             "AGENT_TEMPDIRECTORY": str(self.root / "temporary"), "HELM_BIN": str(self.bin),
+            "GIT_SHA": "a" * 40, "ACCEPT_VSCODE_SERVER_LICENSE_TERMS": "true",
         }
-        for name in ("awk", "dirname", "grep", "mkdir", "rm", "tr"):
+        for name in ("awk", "dirname", "grep", "mkdir", "rm", "tr", "cmp"):
             executable = shutil.which(name)
             self.assertIsNotNone(executable, f"requires {name}")
             (self.bin / name).symlink_to(executable)
@@ -89,8 +110,12 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             name = yaml.safe_load(source.read_text())["name"]
             target.write_text(f'name: {name}\nversion: {VERSION}\nappVersion: "{VERSION}"\n')
         (self.root / "scripts").mkdir()
-        shutil.copyfile(ROOT / BUILD_SCRIPT, self.root / BUILD_SCRIPT)
+        inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
+        for path in [entry["script"] for entry in inventory["images"]] + ["scripts/release-artifacts.json", "scripts/cetirun-release.py"]:
+            shutil.copyfile(ROOT / path, self.root / path)
+        (self.root / "scripts/cetirun-version.py").write_text("# Version consistency is exercised separately.\n")
         pipeline = yaml.safe_load((ROOT / ".pipelines/release-mcr.yml").read_text())
+        self.pipeline = pipeline
         self.steps = {step["displayName"]: step for step in pipeline["jobs"][0]["steps"]
                       if "displayName" in step}
         self.repository = f'{self.env["REPOSITORY_PREFIX"]}/{COMPONENT}'
@@ -113,18 +138,40 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
     def commands(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
+    def test_default_tag_run_preserves_configured_ci_license_and_failure_boundaries(self):
+        import re
+        defaults = {parameter["name"]: parameter["default"] for parameter in self.pipeline["parameters"]}
+        self.assertNotIn("acceptVSCodeServerLicenseTerms", defaults)
+        for name in ("Resolve and validate unified release version", BUILD):
+            configured = self.steps[name].get("env", {}).get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
+            self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS", None)
+            if configured is not None:
+                match = re.fullmatch(r"\$\{\{ parameters\.(\w+) }}", configured)
+                self.env["ACCEPT_VSCODE_SERVER_LICENSE_TERMS"] = str(defaults[match[1]] if match else configured).lower()
+            self.env.update(BUILD_SOURCEBRANCH=f"refs/tags/v{VERSION}", BUILD_REASON="IndividualCI",
+                            RELEASE_VERSION_INPUT="", FORCE_PUBLISH_INPUT="false")
+            self.run_step(name)
+        observed = json.loads(Path(str(self.log) + ".driver-env").read_text().splitlines()[-1])
+        self.assertEqual(observed["license"], "true")
+        self.env["FORCE_PUBLISH_INPUT"] = "true"
+        result = self.run_step("Resolve and validate unified release version", success=False)
+        self.assertIn("manual", result.stderr.lower())
+        self.env.update(FORCE_PUBLISH_INPUT="false", RELEASE_VERSION_INPUT="0.0.0")
+        result = self.run_step("Resolve and validate unified release version", success=False)
+        self.assertIn("match tag version", result.stderr)
+
     def test_mcp_follows_the_complete_release_lifecycle(self):
         for name in ("Validate all chart versions", PACKAGE, PREFLIGHT, BUILD, PUBLISH, CLEANUP):
             self.run_step(name)
         commands = self.commands()
         self.assertTrue(self.archive.is_file(), "MCP chart was not packaged")
         for operation in ("lint", "template", "package"):
-            command = next(c for c in commands if c[:2] == ["helm", operation] and CHART in c)
+            command = next(c for c in commands if c[:2] == ["helm", operation] and any(arg.endswith(CHART) for arg in c))
             if operation == "package":
                 self.assertEqual(command[command.index("--version") + 1], VERSION)
                 self.assertEqual(command[command.index("--app-version") + 1], VERSION)
             else:
-                self.assertIn(f"{CHART}/ci/render-values.yaml", command)
+                self.assertTrue(any(arg.endswith(f"{CHART}/ci/render-values.yaml") for arg in command))
         for repository in (self.repository, self.chart_repository):
             self.assertIn(["az", "acr", "repository", "show-tags", "--name", "synthetic",
                            "--repository", repository, "--output", "tsv"], commands)
@@ -154,7 +201,7 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertIn(["az", "acr", "repository", "delete", "--name", "synthetic",
                        "--repository", f'{self.env["REPOSITORY_PREFIX"]}/staging/42/{COMPONENT}',
                        "--yes", "--output", "none"], commands)
-        self.assertEqual(self.steps[CLEANUP]["condition"], "always()")
+        self.assertEqual(self.steps[CLEANUP]["condition"], "and(always(), eq(variables['stagingStarted'], 'true'))")
 
     def test_mcp_chart_version_mismatch_fails_validation(self):
         manifest = self.root / CHART / "Chart.yaml"

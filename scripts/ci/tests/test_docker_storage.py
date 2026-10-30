@@ -322,7 +322,7 @@ class ReleaseStorageContractTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[3]
         pipeline = (root / ".pipelines/release-mcr.yml").read_text()
         prepare = pipeline.index("sudo -n python3 -B scripts/ci/prepare_docker_storage.py")
-        build = pipeline.index("bash scripts/cetirun-docker-build.sh")
+        build = pipeline.index("scripts/cetirun-release.py publish-images")
         self.assertLess(prepare, build)
         self.assertIn("dockerStorageMount: /mnt", pipeline)
         self.assertIn("DOCKER_STORAGE_MOUNT: $(dockerStorageMount)", pipeline)

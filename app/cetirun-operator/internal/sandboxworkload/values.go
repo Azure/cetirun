@@ -378,6 +378,11 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 			return nil, err
 		}
 	}
+	if b.input.Controls.EgressSNI != nil {
+		if err := b.applyEgressSNI(out); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 

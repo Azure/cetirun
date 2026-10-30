@@ -52,6 +52,9 @@ spec:
     spec:
       {{- include "cetirun.platform.podSettings" . | nindent 6 }}
       initContainers:
+        {{- if (.Values.sandboxWorkload | default dict).egressSNI }}
+        {{- toYaml .Values.sandboxWorkload.managedInitContainers | nindent 8 }}
+        {{- end }}
         {{- include "cetirun.memory.init" . | nindent 8 }}
         {{- include "cetirun.agent.initContainers" . | nindent 8 }}
       {{- with .Values.initContainers }}
@@ -86,6 +89,10 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- if (.Values.sandboxWorkload | default dict).egressSNI }}
+            - name: CETIRUN_EGRESS_SNI
+              value: "true"
+            {{- end }}
             {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
             - name: CETIRUN_INGRESS_MTLS
               value: "true"

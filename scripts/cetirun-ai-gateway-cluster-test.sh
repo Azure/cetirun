@@ -348,7 +348,7 @@ forward_pods() {
 # time on purpose: identical requests are what a response cache would answer,
 # so a test built from varied requests cannot notice one being switched on.
 chat() {
-  local port="$1" key="$2" model="$3" content="${4:-test}"
+  local port="$1" key="$2" model="$3" content="${4:-gateway-body-canary}"
   curl -sS -m 60 -o "${work_dir}/last.json" -D "${work_dir}/last.headers" -w '%{http_code}' \
     -X POST "http://127.0.0.1:${port}/v1/chat/completions" \
     -H "Authorization: Bearer ${key}" -H 'Content-Type: application/json' \
@@ -573,6 +573,14 @@ for _ in $(seq 1 30); do
 done
 [ "${recorded}" = "${answered}" ] \
   || fail "LiteLLM_SpendLogs holds ${recorded} successful calls; ${answered} were answered"
+# This namespace and database contain only this run's synthetic requests.
+# Return a count, not stored request or response bodies.
+with_content="$(kubectl exec -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -tAc \
+  "SELECT count(*) FROM \"LiteLLM_SpendLogs\" WHERE status = 'success'
+   AND coalesce(\"proxy_server_request\"::text, '') LIKE '%gateway-body-canary%'
+   AND coalesce(\"response\"::text, '') LIKE '%mock-ok%'")"
+[ "${with_content}" = "${answered}" ] \
+  || fail "${with_content} of ${answered} successful spend-log rows contain the synthetic prompt and response"
 logged=0
 all_lines=""
 for pod in "${pod_names[@]}"; do
@@ -583,11 +591,11 @@ done
 [ "${logged}" = "${answered}" ] || fail "the request log holds ${logged} successful calls; ${answered} were answered"
 grep -q "\"key_hash\":\"[0-9a-f]\{64\}\".*\"user_agent\":\"curl" <<< "${all_lines}" \
   || fail "the request log lines do not carry the caller"
-# The prompt was "test" and every answer "mock-ok". The log never carries content.
-if grep -q 'mock-ok' <<< "${all_lines}"; then
-  fail "the request log carries response content"
+# Stdout must not contain the synthetic prompt or answer stored in the database.
+if grep -Eq 'gateway-body-canary|mock-ok' <<< "${all_lines}"; then
+  fail "the stdout request log carries prompt or response content"
 fi
-pass "${answered} answered calls in the spend log and in the request log, without content"
+pass "${answered} spend-log rows contain prompts and responses; stdout request logs remain metadata-only"
 
 # A model stored in the database is encrypted with the salt key. It is what an
 # upgrade has to preserve. LiteLLM 1.105 keeps a price given through the
@@ -677,12 +685,13 @@ pass "a 45-second request completed while its replica shut down, and the replica
 # model. Offline tests cannot check preservation, because lookup returns
 # nothing under helm template.
 #
-# The upgrade also changes what is recorded, as the cetirun-platform chart
-# does: the metrics are turned on and LiteLLM's spend log off.
+# This upgrade explicitly opts out of database logging while enabling metrics.
+# The normal Chart and platform defaults keep the spend log and its content.
 echo "==> Upgrading ${release_name}"
 spend_logs_before_upgrade="$(spend_log_successes)"
 helm upgrade "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
   --set-string podAnnotations.cluster-test/revision=2 --set metrics.enabled=true --set spendLogs.enabled=false \
+  --set spendLogs.storePrompts=false \
   --wait --timeout 10m >/dev/null \
   || fail "upgrade did not complete"
 pass "upgrade completed"
@@ -953,6 +962,7 @@ SQL
 stop_forwards
 helm upgrade "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
   --set operatorIntegration=true --set metrics.enabled=true --set spendLogs.enabled=false \
+  --set spendLogs.storePrompts=false \
   --wait --timeout 10m >/dev/null || fail "managed authentication upgrade did not complete"
 forward_pods
 port_a="${pod_ports[0]}"
@@ -1021,7 +1031,8 @@ if [ -n "${previous_image_tag}" ]; then
   stop_forwards
   helm upgrade "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
     --set-string image.repository="${previous_image_repository}" --set-string image.tag="${previous_image_tag}" \
-    --set metrics.enabled=true --set spendLogs.enabled=false --wait --timeout 10m >/dev/null \
+    --set metrics.enabled=true --set spendLogs.enabled=false --set spendLogs.storePrompts=false \
+    --wait --timeout 10m >/dev/null \
     || fail "the chart did not start ${previous_image_repository}:${previous_image_tag}"
   forward_pods
   port_a="${pod_ports[0]}"

@@ -17,6 +17,7 @@ spec:
     # Subdomain hosts authenticate unless explicitly exempted.
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               - "*.{{ .Values.domain }}"
             {{- if .Values.authPolicy.authExemptPrefixes }}
@@ -28,6 +29,7 @@ spec:
     # Apex traffic authenticates except health, sign-in, and configured callbacks.
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               - "{{ .Values.domain }}"
             notPaths:
@@ -44,6 +46,7 @@ spec:
     # Apex host method guard: only POST bypasses these paths.
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               - "{{ .Values.domain }}"
             paths:
@@ -56,6 +59,7 @@ spec:
     {{- with .Values.authPolicy.oauthCallbackPath }}
     - to:
         - operation:
+            ports: ["443"]
             hosts: [{{ $.Values.domain | quote }}]
             paths: [{{ . | quote }}]
             notMethods: ["GET", "POST"]

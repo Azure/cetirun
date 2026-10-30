@@ -87,8 +87,13 @@ func (b *Bundle) applyIngressMTLS(values map[string]any) error {
 			return fmt.Errorf("mTLS cannot authorize extra runtime extension paths")
 		}
 	}
+	sidecars, volumes := []corev1.Container{b.mtlsContainer()}, b.mtlsVolumes()
+	if b.input.Controls.EgressSNI != nil {
+		sidecars = []corev1.Container{}
+		volumes = append(volumes, b.egressVolumes()...)
+	}
 	for name, desired := range map[string]any{
-		"sidecars": []corev1.Container{b.mtlsContainer()}, "extraVolumes": b.mtlsVolumes(),
+		"sidecars": sidecars, "extraVolumes": volumes,
 		"extraVolumeMounts": []corev1.VolumeMount{{Name: "ingress-public", MountPath: ingressmtls.PublicPath, ReadOnly: true}},
 	} {
 		encoded, err := jsonValue(desired)
@@ -167,6 +172,10 @@ func (b *Bundle) validateIngressTemplate(spec corev1.PodSpec) error {
 	}
 	helper := b.mtlsContainer()
 	found, desktopFound := false, false
+	if b.input.Controls.EgressSNI != nil {
+		helper = b.proxyContainer()
+		found = len(spec.InitContainers) > 0 && equality.Semantic.DeepEqual(spec.InitContainers[0], helper)
+	}
 	for index, container := range spec.Containers {
 		if container.Name == helper.Name {
 			if found || !equality.Semantic.DeepEqual(container, helper) {
@@ -239,6 +248,9 @@ func (b *Bundle) validateIngressTemplate(spec corev1.PodSpec) error {
 		}
 	}
 	for _, container := range spec.InitContainers {
+		if b.input.Controls.EgressSNI != nil && container.Name == helper.Name {
+			continue
+		}
 		for _, mount := range container.VolumeMounts {
 			if slices.Contains([]string{"ingress-tls", "ingress-public", "ingress-config"}, mount.Name) {
 				return fmt.Errorf("mTLS materials cannot be mounted by initializers")

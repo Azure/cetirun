@@ -450,7 +450,10 @@ or `/SCTP` is specified. Rule changes are submitted when the Policy is saved.
 
 Agent Identity, Entra ID, blocked FQDNs, and ingress mTLS are read-only in this
 editor. Existing values remain visible and are preserved when other fields are
-saved. FQDN blocking lacks supported enforcement; ingress mTLS requires the
+saved. Observed-SNI FQDN filtering requires separately registered controlled Envoy
+and trusted capture-init images; it is not full hostname enforcement and
+continues uninspected after the explicit one-second inspection window.
+Ingress mTLS requires the
 separate [administrator-registered managed endpoint](../../guides/agent-ingress-mtls/),
 not a Portal toggle. Broker-backed Agent Identity requires current credential-policy
 readback for aggregate `PolicyApplied`; common-executor workloads also require the

@@ -6,7 +6,6 @@
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 import unittest
@@ -19,13 +18,11 @@ SCRIPT = ROOT / "scripts/terminal-docker-build.sh"
 class TerminalImageTests(unittest.TestCase):
     def test_mcr_release_builds_and_publishes_terminal(self):
         pipeline = (ROOT / ".pipelines/release-mcr.yml").read_text()
-        self.assertTrue("bash scripts/terminal-docker-build.sh" in pipeline, "MCR release does not build the terminal")
-        publish_inventories = re.findall(r"image_artifacts=\(([^)]+)\)", pipeline)
-        self.assertTrue(publish_inventories, "MCR release has no image inventory")
-        self.assertTrue(
-            all("cetirun-terminal" in inventory.split() for inventory in publish_inventories),
-            "MCR release does not publish the terminal",
-        )
+        inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
+        terminal = next(entry for entry in inventory["images"] if entry["name"] == "cetirun-terminal")
+        self.assertEqual(terminal["script"], "scripts/terminal-docker-build.sh")
+        self.assertIn("scripts/cetirun-release.py publish-images", pipeline)
+        self.assertIn("scripts/cetirun-release.py list images", pipeline)
 
     def test_help_does_not_require_docker_or_network(self):
         result = subprocess.run(

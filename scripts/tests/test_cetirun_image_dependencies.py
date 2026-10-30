@@ -330,7 +330,9 @@ class ImageDependencyTests(unittest.TestCase):
 
     def test_pi_example_preserves_fixed_base_dependencies(self):
         content = (ROOT / "examples/pi-agent/Dockerfile").read_text()
-        install = content.split("RUN ", 1)[1].split("\n\nCOPY ", 1)[0].replace("\\\n", "")
+        anchor = "RUN inherited_undici="
+        self.assertIn(anchor, content)
+        install = "inherited_undici=" + content.split(anchor, 1)[1].split("\n\nCOPY ", 1)[0].replace("\\\n", "")
         for version in ("6.26.0", "6.27.0", "6.28.0", "6.25.0", "7.29.0"):
             with self.subTest(version=version):
                 mocks = (

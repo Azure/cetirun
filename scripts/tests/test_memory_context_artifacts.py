@@ -6,7 +6,6 @@
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
@@ -105,16 +104,16 @@ class MemoryArtifactTests(unittest.TestCase):
 
     def test_memory_image_has_no_standalone_policy_chart(self):
         pipeline = (ROOT / ".pipelines/release-mcr.yml").read_text()
-        self.assertIn("bash scripts/memory-context-docker-build.sh", pipeline)
-        for kind in ("image", "chart"):
-            inventories = re.findall(rf"{kind}_artifacts=\(([^)]+)\)", pipeline)
-            self.assertTrue(inventories)
-            for inventory in inventories:
-                self.assertEqual("cetirun-memory-context" in inventory.split(), kind == "image")
+        inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
+        memory = next(entry for entry in inventory["images"] if entry["name"] == "cetirun-memory-context")
+        self.assertEqual(memory["script"], "scripts/memory-context-docker-build.sh")
+        self.assertNotIn("cetirun-memory-context", [entry["name"] for entry in inventory["charts"]])
+        self.assertIn("scripts/cetirun-release.py publish-images", pipeline)
+        self.assertIn("scripts/cetirun-release.py list images", pipeline)
         self.assertNotIn("app/cetirun-memory-context/chart", pipeline)
         makefile = (ROOT / "Makefile").read_text()
-        self.assertIn("PUSH=false bash scripts/memory-context-docker-build.sh", makefile)
-        self.assertIn("PUSH=true bash scripts/memory-context-docker-build.sh", makefile)
+        self.assertIn("scripts/cetirun-release.py $@", makefile)
+        self.assertIn("build-images publish-images publish-charts publish:", makefile)
         self.assertNotIn("memory-context-helm-release", makefile)
         self.assertFalse((ROOT / "app/cetirun-memory-context/chart/Chart.yaml").exists())
 

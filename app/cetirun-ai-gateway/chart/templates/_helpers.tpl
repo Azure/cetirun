@@ -445,7 +445,7 @@ defaults.
 {{- $podMonitor := $metrics.podMonitor | default dict -}}
 {{- $settings := dict -}}
 {{- $_ := set $settings "requestLog" (dict "enabled" (dig "enabled" true $requestLog)) -}}
-{{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs) "retention" (dig "retention" "7d" $spendLogs)) -}}
+{{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs) "storePrompts" (dig "storePrompts" true $spendLogs) "retention" (dig "retention" "7d" $spendLogs)) -}}
 {{- $monitor := dict "enabled" (dig "enabled" false $podMonitor) -}}
 {{- $_ = set $monitor "apiVersion" (dig "apiVersion" "azmonitoring.coreos.com/v1" $podMonitor) -}}
 {{- $_ = set $monitor "interval" (dig "interval" "30s" $podMonitor) -}}
@@ -642,6 +642,9 @@ keeps the record of each call.
 */}}
 {{- define "cetirun-ai-gateway.validateRequestRecords" -}}
 {{- $settings := include "cetirun-ai-gateway.logsAndMetrics" . | fromJson -}}
+{{- if and $settings.spendLogs.storePrompts (not $settings.spendLogs.enabled) }}
+{{- fail "spendLogs.storePrompts=true requires spendLogs.enabled=true; prompts and responses are stored only in the database spend log." }}
+{{- end }}
 {{- if and (not $settings.spendLogs.enabled) (not $settings.requestLog.enabled) }}
 {{- fail "spendLogs.enabled is false while requestLog.enabled is false, which would leave no record of each call. LiteLLM's spend log is turned off only together with the request log: set requestLog.enabled as well, or keep spendLogs.enabled." }}
 {{- end }}
