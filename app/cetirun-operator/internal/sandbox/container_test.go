@@ -136,8 +136,6 @@ func TestContainerRuntimeCapabilities(t *testing.T) {
 		"missing host limits":      func(c *Capabilities) { c.HostResourceLimits = false },
 		"missing container limits": func(c *Capabilities) { c.PerContainerResourceLimits = false },
 		"qualified profile":        func(c *Capabilities) { c.Profile = "" },
-		"FQDN claim":               func(c *Capabilities) { c.BlockedFQDNs = true },
-		"Kubernetes claim":         func(c *Capabilities) { c.KubernetesAccess = true },
 		"external observer claim":  func(c *Capabilities) { c.EnforcementObservation = true },
 		"physical fencing claim":   func(c *Capabilities) { c.RestrictiveFailure = true },
 	} {
@@ -157,7 +155,7 @@ func TestContainerRuntimeCapabilities(t *testing.T) {
 	}
 }
 
-func TestNativeObservedSNICapabilityIsRuntimeSpecific(t *testing.T) {
+func TestNativeObservedSNICapabilityRequiresExplicitRegistration(t *testing.T) {
 	for _, kind := range []api.SandboxType{api.SandboxKata, api.SandboxContainer} {
 		t.Run(string(kind), func(t *testing.T) {
 			input := resolverFixture()
@@ -172,7 +170,7 @@ func TestNativeObservedSNICapabilityIsRuntimeSpecific(t *testing.T) {
 			for _, registered := range []bool{false, true} {
 				capabilities.BlockedFQDNs = registered
 				errs := CheckCompatibility(box, policy, capabilities)
-				if (len(errs) == 0) != (kind == api.SandboxKata && registered) {
+				if (len(errs) == 0) != registered {
 					t.Fatalf("unexpected observed-SNI compatibility with registered=%t: %v", registered, errs)
 				}
 			}

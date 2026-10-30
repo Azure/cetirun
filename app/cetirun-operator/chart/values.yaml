@@ -332,6 +332,9 @@ skillsStorageAccount: ""
 customRuntime:
   enabled: false
   approvedImages: []
+  # -- Numeric image identities required for approved Custom FQDN capture.
+  # Map each immutable approved image to {uid: N, gid: N}; UID 1337 is reserved.
+  imageUsers: {}
   storageClass: default
   storageSize: 100Gi
   accessMode: ReadWriteOnce

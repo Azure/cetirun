@@ -132,6 +132,7 @@ func (b *Bundle) applyIngressMTLS(values map[string]any) error {
 		if terminal, _ := protected["terminal"].(map[string]any); terminal != nil {
 			container, volumes := b.TerminalTLS()
 			if container != nil {
+				terminal["tlsConfigDigest"] = configDigest
 				terminal["tlsContainer"], err = jsonValue(container)
 				if err != nil {
 					return err

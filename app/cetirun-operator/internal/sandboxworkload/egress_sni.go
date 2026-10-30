@@ -160,10 +160,14 @@ func (b *Bundle) validateEgressTemplate(template *corev1.PodTemplateSpec) error 
 		!slices.ContainsFunc(spec.InitContainers[2:], func(container corev1.Container) bool { return container.Name == "init-home-data" }) {
 		return fmt.Errorf("capture requires the exact managed Envoy then trusted init before runtime initialization")
 	}
+	probeCommand := []string{"node", "/etc/cetirun/health-probe.cjs"}
+	if b.input.AgentType == "custom" {
+		probeCommand = []string{"/cetirun-probe/http-probe"}
+	}
 	if len(spec.Containers) == 0 || spec.Containers[0].ReadinessProbe == nil ||
 		spec.Containers[0].ReadinessProbe.Exec == nil ||
-		!slices.Equal(spec.Containers[0].ReadinessProbe.Exec.Command[:min(2, len(spec.Containers[0].ReadinessProbe.Exec.Command))],
-			[]string{"node", "/etc/cetirun/health-probe.cjs"}) ||
+		!slices.Equal(spec.Containers[0].ReadinessProbe.Exec.Command[:min(len(probeCommand), len(spec.Containers[0].ReadinessProbe.Exec.Command))], probeCommand) ||
+		b.input.AgentType == "custom" && !slices.Contains(spec.Containers[0].ReadinessProbe.Exec.Command, "--egress-sni") ||
 		!slices.Contains(spec.Containers[0].Env, corev1.EnvVar{Name: "CETIRUN_EGRESS_SNI", Value: "true"}) {
 		return fmt.Errorf("capture requires the managed runtime readiness path")
 	}

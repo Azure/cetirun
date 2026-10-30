@@ -88,6 +88,19 @@ func (r *AgentReconciler) configureCustomSandboxInput(ctx context.Context, attem
 		Image: resolved.Image, Username: resolved.Username, Home: resolved.HomeDir, Port: resolved.Port, WebUI: resolved.WebUI,
 		WebBasePath: "/ui/" + agent.Name + "/", WebInstance: string(agent.UID),
 	}
+	if len(attempt.resolution.AgentPolicy.Network.BlockedFQDNs) != 0 {
+		provider, ok := r.CustomBindings.(interface {
+			ImageUser(*api.Agent) (CustomImageUser, error)
+		})
+		if !ok {
+			return fmt.Errorf("Custom FQDN capture requires a qualified image user")
+		}
+		user, err := provider.ImageUser(agent)
+		if err != nil {
+			return err
+		}
+		custom.RunAsUser, custom.RunAsGroup = ptr.To(user.UID), ptr.To(user.GID)
+	}
 	for _, value := range contribution.Environment {
 		custom.Environment = append(custom.Environment, w.CustomEnvironment{
 			Name: value.Name, Value: value.Value, CredentialSlot: value.CredentialSlot,
@@ -116,7 +129,7 @@ func (r *AgentReconciler) configureCustomSandboxInput(ctx context.Context, attem
 	if err != nil {
 		return err
 	}
-	if custom.HTTP != nil {
+	if custom.HTTP != nil || len(attempt.resolution.AgentPolicy.Network.BlockedFQDNs) != 0 {
 		image, err := customSandboxHelperImage(platform)
 		if err != nil {
 			return err

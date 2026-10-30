@@ -42,6 +42,10 @@ func configureReconciledKubernetesAccess(t *testing.T, r *AgentReconciler, autho
 	if err := author.Get(ctx, client.ObjectKey{Name: policyName}, policy); err != nil {
 		t.Fatal(err)
 	}
+	box := &api.Sandbox{}
+	if err := author.Get(ctx, client.ObjectKey{Name: agent.Spec.SandboxRef}, box); err != nil {
+		t.Fatal(err)
+	}
 	if err := author.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "operations"}}); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatal(err)
 	}
@@ -67,10 +71,10 @@ func configureReconciledKubernetesAccess(t *testing.T, r *AgentReconciler, autho
 	if err := json.Unmarshal([]byte(configuration.Data[SandboxPlatformConfigurationKey]), &document); err != nil {
 		t.Fatal(err)
 	}
-	registration := document.Registrations[api.SandboxKata]
+	registration := document.Registrations[box.Spec.Type]
 	registration.Capabilities.KubernetesAccess = true
-	document.Registrations[api.SandboxKata] = registration
-	platform := document.Platforms[api.SandboxKata]
+	document.Registrations[box.Spec.Type] = registration
+	platform := document.Platforms[box.Spec.Type]
 	platform.KubernetesAudience, platform.TokenExpirationSeconds = "https://kubernetes.default.svc", 600
 	platform.Topology.KubernetesAPI = []sandboxpolicy.Destination{{
 		Peer:  sandboxpolicy.Peer{Name: "kubernetes", UID: "synthetic-kubernetes-api", IPs: []string{"10.96.0.1"}},
@@ -92,7 +96,7 @@ func configureReconciledKubernetesAccess(t *testing.T, r *AgentReconciler, autho
 			Revision: "synthetic-kubernetes-approval", Rules: role.DeepCopy().Rules,
 		})
 	}
-	document.Platforms[api.SandboxKata] = platform
+	document.Platforms[box.Spec.Type] = platform
 	raw, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -153,14 +157,16 @@ func installKubernetesFixtureCA(t *testing.T, r *AgentReconciler, author client.
 	})
 }
 
-func newReconciledKubernetesFixture(t *testing.T, kind string, mode corev1.PersistentVolumeAccessMode) *nativeSandboxFixture {
+func newReconciledKubernetesFixture(t *testing.T, kind string, mode corev1.PersistentVolumeAccessMode, setup ...func(*AgentReconciler, client.Client)) *nativeSandboxFixture {
 	t.Helper()
 	fixture := testfixture.New(kind)
-	return newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false,
+	options := []func(*AgentReconciler, client.Client){
 		withNativeHomeAccessMode(t, mode), func(r *AgentReconciler, author client.Client) {
 			configureReconciledKubernetesAccess(t, r, author, fixture.Agent.Name, fixture.Policy.Name)
 			installKubernetesFixtureCA(t, r, author, fixture.Agent.Name)
-		})
+		},
+	}
+	return newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false, append(options, setup...)...)
 }
 
 func assertKubernetesFixtureGrants(t *testing.T, f *nativeSandboxFixture, granted bool) []sandboxpolicy.BindingReference {
@@ -221,10 +227,19 @@ func TestReconciledSandboxKubernetesIngressMTLS(t *testing.T) {
 }
 
 func TestReconciledSandboxKubernetesAccess(t *testing.T) {
+	testReconciledSandboxKubernetesAccess(t)
+}
+
+func TestContainerSandboxKubernetesAccess(t *testing.T) {
+	testReconciledSandboxKubernetesAccess(t, withContainerRuntime(t))
+}
+
+func testReconciledSandboxKubernetesAccess(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
+	t.Helper()
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce, corev1.ReadWriteOncePod} {
 			t.Run(kind+"/"+string(mode), func(t *testing.T) {
-				f := newReconciledKubernetesFixture(t, kind, mode)
+				f := newReconciledKubernetesFixture(t, kind, mode, setup...)
 				f.reconcileOK(t)
 				assertKubernetesFixtureGrants(t, f, true)
 				assertNativeHomeAccessMode(t, f, mode)

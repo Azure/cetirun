@@ -493,7 +493,7 @@ requires the separate registration described below.
 
 ### Ordinary-container backend
 
-An explicit `Sandbox.spec.type: container` runs OpenClaw or Hermes in ordinary
+An explicit `Sandbox.spec.type: container` runs OpenClaw, Hermes or approved Custom images in ordinary
 containers (for example, runc), sharing the node kernel rather than a Kata VM.
 Omitted/null types still default to `kata`; gVisor's existing scope is unchanged.
 Container requires the same opt-in common executor, AgentPolicy/Team binding,
@@ -529,9 +529,11 @@ Container uses the same supported CIDR/port/ingress policy subset as native Kata
 Managed ingress mTLS uses the same approved endpoint and certificate contract
 described above; a runtime or capability flag alone does not authorize it.
 Generic Entra projection requires the separately approved bootstrap identity
-contract below. FQDN blocking and Kubernetes grants remain unsupported;
-their capability flags must stay `false`, as must `enforcementObservation` and
-`restrictiveFailure`.
+contract below. Observed-SNI blocking and Kubernetes grants use the common
+adapters, with their own explicit capability declarations and source approvals;
+neither is enabled merely by selecting container. Kubernetes grants retain the
+exact per-policy role and per-Agent identity checks. Keep
+`enforcementObservation` and `restrictiveFailure` false.
 
 See the [ordinary-container configuration example](../../examples/native-sandbox/README.md#ordinary-container-backend).
 Offline tests exercise the same executor and served admission, not a running
@@ -570,6 +572,21 @@ These controls do not enable live policy rollout: use the ordinary
 stop/change/resume lifecycle for reserved policy or platform changes.
 Registration and policy revisions remain inputs to current Pod admission;
 source drift cannot silently authorize the old running workload.
+
+Custom observed-SNI capture also requires the approved image's numeric UID/GID
+in `customRuntime.imageUsers`. Verify those values against the immutable image
+before approving them. Both must be positive 32-bit integers, and the Agent UID
+must differ from the capture proxy's reserved UID 1337. No numeric identity is
+inferred from an Agent request or from Gateway image approval. Without capture,
+Custom continues to use its image-owned user.
+
+This applies to Custom HTTP Chat, Web UI and headless execution on both Kata
+and container. Pin the platform `ttyd.image` for the static probe even for
+headless capture: headless readiness checks the managed proxy without inventing
+an application HTTP endpoint. HTTP readiness checks both the application and
+proxy. Combining capture with ingress mTLS retains the independently approved
+terminal configuration and its own TLS digest; the terminal gains no Agent
+egress authority.
 
 The empty/omitted capabilities profile retains the existing qualified contract,
 including mandatory `enforcementObservation`, `restrictiveFailure` and the

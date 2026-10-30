@@ -313,8 +313,10 @@ HOME lifecycle, with per-container resource limits and no implicit VM overhead.
 Saving a configuration does not discover or install a handler. Container
 supports the same separately approved [managed ingress mTLS](../../guides/agent-ingress-mtls/)
 as Kata; a capability flag alone does not authorize the endpoint.
-FQDN blocking and Kubernetes grants remain unsupported on this native
-backend. Select a new Sandbox/Agent instead of attempting online runtime conversion.
+Observed-SNI blocking and Kubernetes grants require the same explicit common
+adapter registrations and source approvals as Kata. Neither is inferred from
+the container RuntimeClass. Select a new Sandbox/Agent instead of attempting
+online runtime conversion.
 
 Policy assignment is opt-in, not a prerequisite for legacy deployment.
 An Agent with no Sandbox selection or recorded governed lifetime can use no
@@ -326,9 +328,10 @@ workload may run. Invalid or unavailable authorization is fail-closed.
 The native Sandbox path compiles and stages protected resources at zero
 replicas. Execution remains held unless the separately configured, default-off
 native execution profile is enabled and its supported prerequisites pass.
-Custom has a typed Gateway binding but no typed Sandbox execution adapter;
-policy-bound Custom Agents remain held, while ungoverned Custom Agents retain
-their existing runtime provider path.
+Approved Gateway-backed Custom images use this same common executor, with the
+additional [Custom image and interface contract](../agent-harness/#policy-governed-custom-execution).
+Missing approvals and unsupported combinations remain held; ungoverned Custom
+Agents retain their existing runtime provider path.
 
 The controller records a hold finalizer before changing workloads, so a failed
 status update cannot release the recorded hold. Explicit suspension remains

@@ -316,8 +316,11 @@ support. Members can then create Agents for the Team, as in
 
 ## What changes for Agents
 
-- Tailscale, Microsoft Teams, Agent Identity and custom harnesses are not
-  available to Sandbox Agents.
+- Tailscale and Microsoft Teams are not available to Sandbox Agents.
+- Custom harnesses, Entra projection and Agent Identity/Connections require the
+  separate approved-image and identity setup in the
+  [Custom contract](../../reference/agent-harness/#policy-governed-custom-execution);
+  the basic configuration above does not enable them.
 - Changing a Policy's model access, budget, network or security settings
   restarts its running Agents once. Changing only its request limits does not.
 - An Agent moves to another Team only when an administrator reauthorizes it
