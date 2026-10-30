@@ -104,21 +104,29 @@ func protectedEnvironment(name string) bool {
 }
 
 func (b *Bundle) SecurityContext() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
+	context := &corev1.SecurityContext{
 		RunAsUser: ptr.To(int64(1024)), RunAsGroup: ptr.To(int64(1024)), RunAsNonRoot: ptr.To(true),
 		AllowPrivilegeEscalation: ptr.To(false), Privileged: ptr.To(false),
 		ReadOnlyRootFilesystem: ptr.To(*b.input.Resolution.AgentPolicy.Security.ReadOnlyRootFilesystem),
 		Capabilities:           &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		SeccompProfile:         &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
+	if b.input.CustomAgent != nil {
+		context.RunAsUser, context.RunAsGroup = nil, nil
+	}
+	return context
 }
 
 func (b *Bundle) PodSecurityContext() *corev1.PodSecurityContext {
-	return &corev1.PodSecurityContext{
+	context := &corev1.PodSecurityContext{
 		RunAsUser: ptr.To(int64(1024)), RunAsGroup: ptr.To(int64(1024)), RunAsNonRoot: ptr.To(true),
 		FSGroup: ptr.To(int64(1024)), FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch),
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
+	if b.input.CustomAgent != nil {
+		context.RunAsUser, context.RunAsGroup = nil, nil
+	}
+	return context
 }
 
 func (b *Bundle) DNSConfig() *corev1.PodDNSConfig {
@@ -168,6 +176,12 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	}
 	security, _ := jsonValue(b.SecurityContext())
 	podSecurity, _ := jsonValue(b.PodSecurityContext())
+	if b.input.CustomAgent != nil {
+		for _, context := range []any{security, podSecurity} {
+			values := context.(map[string]any)
+			values["runAsUser"], values["runAsGroup"] = nil, nil
+		}
+	}
 	dnsConfig, _ := jsonValue(b.DNSConfig())
 	agent, _ := jsonValue(b.agentResources())
 	helper, _ := jsonValue(b.helperResources())
@@ -233,6 +247,51 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	}
 	if b.input.GatewayKey != nil {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
+	}
+	if custom := b.input.CustomAgent; custom != nil {
+		terminalEnabled := b.input.Terminal != nil
+		if settings, ok := out["ttyd"].(map[string]any); ok {
+			if enabled, ok := settings["enabled"].(bool); ok {
+				terminalEnabled = terminalEnabled && enabled
+			}
+		}
+		overlay["ttyd"] = map[string]any{"enabled": terminalEnabled}
+		contextFiles := map[string]any{}
+		for destination, source := range b.input.Context.Files {
+			contextFiles[destination] = source
+		}
+		control := overlay[ValuesKey].(map[string]any)
+		control["context"] = map[string]any{"name": b.input.Context.Name, "files": contextFiles}
+		if probe := b.input.LoopbackProbe; probe != nil {
+			control["loopbackProbe"] = map[string]any{"image": probe.Image}
+		}
+		if terminal := b.input.Terminal; terminal != nil {
+			control["terminal"] = map[string]any{
+				"enabled": terminalEnabled, "image": terminal.Image, "port": terminal.Port,
+				"sessionSeconds": terminal.SessionSeconds, "serviceAccountName": terminal.ServiceAccountName,
+			}
+		}
+		port := any(nil)
+		if custom.Port != nil {
+			port = *custom.Port
+		}
+		overlay["runtime"] = map[string]any{
+			"contractVersion": ContractVersion,
+			"agent": map[string]any{
+				"type": "custom", "image": custom.Image, "username": custom.Username,
+				"home": custom.Home, "port": port, "webUI": custom.WebUI,
+				"webBasePath": custom.WebBasePath, "webInstance": custom.WebInstance,
+			},
+			"model": map[string]any{
+				"apiBase": b.input.GatewayAPIBase, "keySecretName": b.input.GatewayKey.Name, "keySecretKey": "api-key",
+			},
+			"environment": customEnvironmentValues(custom.Environment),
+			"ports":       customPortValues(custom.Ports),
+			"http":        customHTTPValues(custom.HTTP),
+		}
+		if secret := b.input.ImagePullSecret; secret != nil {
+			overlay["runtime"].(map[string]any)["imagePullSecrets"] = []any{map[string]any{"name": secret.Name}}
+		}
 	}
 	if b.input.Reconciled {
 		if err := b.input.ConnectionsMCP.Validate(); err != nil {

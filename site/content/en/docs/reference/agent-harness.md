@@ -10,8 +10,10 @@ Agent Harness defines configuration for Hermes, OpenClaw and bring-your-own
 > **Availability:** The CRD accepts the configuration below.
 > Hermes and OpenClaw run through the shared Harness interface. Operator pins
 > their image and port from the selected runtime chart before provisioning.
-> Custom has a separate runtime implementation, but the default operator waits
-> for platform bindings; no production binding provider is wired in.
+> Custom has a typed adapter for the common Sandbox executor on Kata and the
+> explicit ordinary-container backend. It requires platform registration,
+> current Team/AgentPolicy authorization and a Gateway-qualified image.
+> Custom without Sandbox selection retains its opt-in binding provider.
 > Private images use Portal-managed Registry credentials and the Operator's
 > credential synchronizer. Custom supports non-default usernames; built-in
 > profiles still require `vibe`. Portal self-service is also opt-in;
@@ -81,6 +83,77 @@ profile, native provider, configuration template or preferred model name.
 The main container preserves the image's ENTRYPOINT/CMD. Gateway-backed instances
 receive `HOME`, `OPENAI_BASE_URL`, a Secret-backed `OPENAI_API_KEY`, and `PORT`
 when the Agent declares an HTTP port. Init does not receive the model credential.
+
+### Policy-governed Custom execution
+
+Enable the common executor through the Operator's `sandboxSources` configuration,
+including `enabled`, `bootstrapOwnedPrerequisites` and `nativeExecution`, with the
+same registered Sandbox, platform inventory and coordination authority used by
+managed Agents. Permit `custom` in `AgentPolicy.spec.harnesses.allowed` and select
+that policy and a permitted Sandbox through the Team. Portal's policy editor
+supports Custom explicitly; Portal creation must also enable the existing
+`custom` entry in `features.allowedAgentTypes`.
+
+The Operator's existing `customRuntime.enabled`, `approvedImages` and
+`gatewayImages` settings remain the image-approval authority. The selected digest
+must be in both lists. Image-owned model authentication is not a fallback for
+governed Custom. The image must use a numeric, non-root UID/GID and support its
+declared HOME and existing [initialization contract](#initialization). The
+common Pod retains the image user rather than imposing the managed harness UID;
+the registered volume group and filesystem permissions still need qualification.
+
+Sandbox-bound Custom Agents need an explicit model-source selection. Portal
+creation records the sources available under the current Team policy and Gateway
+catalog, or validates the owner's requested `modelAccess` selection. When creating
+an Agent manifest directly, set `spec.modelAccess`, for example
+`sharedModels: true` and `githubCopilot: false`, for a permitted shared model.
+Omitting both switches does not inherit legacy model access: the Agent remains
+held without a model entitlement. Custom without a Sandbox keeps its existing
+model-selection behavior.
+
+Creation, restart, retained suspension/resume, healthy-source migration and
+ordinary deletion use the common execution state, owned HOME and grant journal,
+not the separate Custom apply-completion engine. Kata and ordinary containers
+share this contract; only Kata claims VM-level isolation. Resources, scratch
+bounds, security, DNS, approved peers and the Cilium policy come from the selected
+Sandbox and AgentPolicy. Per-instance resource or scheduling values cannot
+override those controls.
+
+Headless Agents have a portless governing Service and no HTTP probes. HTTP Chat
+and Web UI retain their explicit port and `/healthz` contract. The platform's
+static loopback probe requires no curl, Node or Python in the main image.
+Configure an immutable `ttyd.image` digest in the Operator's `cetirun` runtime
+values for HTTP probing, even if `ttyd.enabled` is false. This helper is packaged
+with `cetirun-terminal`; the image must be available to the target nodes.
+
+The optional terminal uses the same pinned image and the registered
+`topology.kubernetesAPI` destinations. Its separate Cilium selector excludes it
+from the Agent policy: it receives only DNS/API egress and approved gateway
+ingress, not Agent internet/model access. Its own API projection has no explicit
+audience override. Protected Pod admission permits only this owned terminal's
+current named target, main container and shell protocol; it rechecks the
+execution sources and non-stopping reservation. It mounts neither HOME nor model
+credentials. Suspension stops both workloads before acknowledging completion.
+For bound workloads, admission accepts Kubernetes' copied region/zone labels only
+when they match a fresh read of the assigned Node. This applies to terminal
+CONNECT and ordinary Pod updates; other labels and template inputs remain exact.
+
+Custom receives an immutable, Agent-owned `AGENTS.md` snapshot and a read-only
+`$HOME/.agents` view. Optional Memory/shared skills compose into that view without
+changing the native entrypoint or replacing retained user files. The
+controller-only `custom-runtime` authentication Secret is identity-pinned but
+not mounted into the Custom workload.
+
+**Current boundaries:** this common Custom path does not support desktop,
+ingress mTLS, native Entra/Agent Identity or Connections credential execution.
+Explicit unsupported requests fail closed; disabling policy is not a workaround.
+Scoped Kubernetes access and FQDN controls also require their separately
+delivered common adapters. Do not treat template, controller or local API-server
+tests as live image, model/tool, Cilium, CSI, identity-provider or fencing
+qualification. Deploy matching Operator, admission, Portal and runtime chart
+artifacts before enabling the path.
+
+### Custom without Sandbox selection
 
 The operator consumes an internal `CustomBindingProvider`, supplied by the
 platform capability owners. Its receipts identify the exact Agent UID,
@@ -578,7 +651,12 @@ ingress are allowed through the platform gateway; the private Chat port is not
 added to that public route. NetworkPolicy configuration alone does not prove Gateway-only
 model egress or live mesh enforcement.
 
-Custom uses `OnDelete` and excludes the built-in orphan-delete hook.
+Governed Custom uses the common `RollingUpdate` workload with its retained
+existing HOME claim. The common executor coordinates restart, suspension and
+healthy-source migration without resetting Agent, HOME or Gateway accounting
+identity. Unavailable-node fencing is not provided.
+
+Without Sandbox selection, Custom uses `OnDelete` and excludes the built-in orphan-delete hook.
 Changing an image, model/context projection or Pod configuration waits for
 `CustomMaintenancePending` until the platform authorizes handoff, the old
 StatefulSet is stopped and no active Pod still references HOME. The controller

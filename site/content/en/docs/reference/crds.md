@@ -344,10 +344,12 @@ rolling migration between policies is not supported.
 Operator status reports desired per-domain revisions and only marks Policy
 Applied after matching enforcement evidence is current.
 
-AgentPolicy additionally allowlists built-in Harnesses, skills, exact Gateway
+AgentPolicy additionally allowlists Harnesses, skills, exact Gateway
 model names, Copilot, and Agent Identity. A model entitlement requires a native
-LiteLLM default and maximum monthly USD budget. Custom is not an allowed policy
-Harness. Agent Identity cannot complete aggregate `PolicyApplied` until a typed
+LiteLLM default and maximum monthly USD budget. The allowed Harnesses are
+OpenClaw, Hermes and Custom. Custom additionally requires the common executor
+and an approved Gateway-qualified image; policy permission alone does not
+qualify an image or backend. Agent Identity cannot complete aggregate `PolicyApplied` until a typed
 credential-service executor supplies matching read-back evidence.
 
 ### AgentPolicy rate limits

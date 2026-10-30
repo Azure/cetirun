@@ -86,8 +86,8 @@ type CreateInstanceRequest struct {
 	TailscaleAuthKey     string                    `json:"tailscaleAuthKey,omitempty"`
 	Model                string                    `json:"model,omitempty"`
 	AgentIdentityEnabled bool                      `json:"agentIdentityEnabled,omitempty"`
-	// ModelAccess applies to OpenClaw and Hermes Agents when the AI Gateway
-	// is enabled.
+	// ModelAccess applies to OpenClaw, Hermes and Sandbox-bound Custom Agents
+	// when the AI Gateway is enabled.
 	ModelAccess *ModelAccessRequest `json:"modelAccess,omitempty"`
 }
 
@@ -489,7 +489,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if agent.Type == cetirunv1alpha1.AgentTypeCustom && hasNativeCreateFields(fields) {
-		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token, Teams, Tailscale or Agent Identity settings")
+		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token, Tailscale or Agent Identity settings")
 		return
 	}
 	if err := h.validateAgentType(agent.Type); err != nil {

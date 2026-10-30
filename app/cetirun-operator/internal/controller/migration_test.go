@@ -316,7 +316,11 @@ func TestPlannedMigrationRetainsHOMEAcrossRepeatedMoves(t *testing.T) {
 }
 
 func testPlannedMigrationRetainsHOME(t *testing.T, setup ...func(*AgentReconciler, client.Client)) {
-	for _, kind := range []string{"openclaw", "hermes"} {
+	testPlannedMigrationRetainsHOMEForHarnesses(t, []string{"openclaw", "hermes"}, setup...)
+}
+
+func testPlannedMigrationRetainsHOMEForHarnesses(t *testing.T, harnesses []string, setup ...func(*AgentReconciler, client.Client)) {
+	for _, kind := range harnesses {
 		for _, coordinated := range []bool{false, true} {
 			for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
 				t.Run(fmt.Sprintf("%s/coordination=%t/%s", kind, coordinated, mode), func(t *testing.T) {

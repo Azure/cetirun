@@ -144,10 +144,12 @@ function sendMessage(text = "Synthetic question") {
 }
 
 async function afterWindowTeardown(work: () => Promise<void>) {
-  // Let already committed React work finish with a live window. Its queued
-  // passive-effect callback reads window.event even after the root unmounts.
-  // Keep the deferred Chat completion pending until the access trap is armed.
-  await act(async () => {});
+  // An empty act only drains its own queue, not callbacks already scheduled
+  // outside act. Yield to Node's scheduler while window is still available.
+  // Deferred Chat completion stays pending until the access trap is armed.
+  await act(async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   if (!descriptor) throw new Error("The test needs a jsdom window.");
   // Trap stale React dispatches even if their missing-window error is caught.

@@ -28,7 +28,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 )
 
-var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Teams, Tailscale, or Agent Identity")
+var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Tailscale, or Agent Identity")
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
@@ -126,6 +126,7 @@ type Client struct {
 	chartVersionExp             time.Time
 	operatorDomain              string
 	registryCredentialNamespace string
+	sandboxStateNamespace       string
 }
 
 // ConfigurationCoordination serializes writes protected by the optional
@@ -138,7 +139,14 @@ type ConfigurationCoordination interface {
 
 // NewClient creates a new kube Client.
 func NewClient(c client.Client) *Client {
-	return &Client{client: c}
+	return &Client{client: c, sandboxStateNamespace: "cetirun-system"}
+}
+
+// SetSandboxStateNamespace selects the operator-owned common execution state.
+func (c *Client) SetSandboxStateNamespace(namespace string) {
+	if namespace != "" {
+		c.sandboxStateNamespace = namespace
+	}
 }
 
 // SetConfigurationCoordination enables coordinated Team, Sandbox and

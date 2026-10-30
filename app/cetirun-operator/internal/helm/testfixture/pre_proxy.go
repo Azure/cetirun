@@ -41,6 +41,20 @@ var laterAdditions = map[string][]string{
 {{- end }}
 `},
 	"values.schema.json": {`                "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
+`, `                "context": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {"name": {"type": "string", "minLength": 1}, "files": {"type": "object", "additionalProperties": false, "properties": {"AGENTS.md": {"const": "AGENTS.md"}}, "required": ["AGENTS.md"]}},
+                    "required": ["name", "files"]
+                },
+                "loopbackProbe": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {"image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"}}, "required": ["image"]
+                },
+                "terminal": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {"enabled": {"type": "boolean"}, "image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"}, "port": {"type": "integer", "minimum": 1024, "maximum": 65535}, "sessionSeconds": {"type": "integer", "minimum": 60, "maximum": 3600}, "serviceAccountName": {"type": "string", "minLength": 1}},
+                    "required": ["enabled", "image", "port", "sessionSeconds", "serviceAccountName"]
+                },
 `, `                "portalSignIn": {
                     "type": "object",
                     "description": "Sign the owner in to the Control UI with their Portal sign-in (OpenClaw trusted-proxy mode)",
@@ -119,7 +133,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			{"                        \"replicaCount\": {\"type\": [\"integer\", \"null\"], \"minimum\": 0, \"maximum\": 1, \"default\": null},\n", ""},
 			{`"executionHeld": {"type": "boolean"},
                 "reconciled": {"const": true}`, `"executionHeld": {"const": true}`},
-			{`"agentType": {"enum": ["openclaw", "hermes"]}`, `"agentType": {"const": "openclaw"}`},
+			{`"agentType": {"enum": ["openclaw", "hermes", "custom"]}`, `"agentType": {"const": "openclaw"}`},
 			{`"sandboxWorkload": {
                         "anyOf": [
                             {"required": ["podFinalizers"]},
@@ -128,6 +142,10 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
                     }`, `"sandboxWorkload": {"required": ["podFinalizers"]}`},
 		},
 		"templates/_sandbox.tpl": {
+			{`{{- if and (eq (include "cetirun.agent.type" .) "custom") (not $reconciled) -}}
+{{- fail "Custom requires common reconciled Sandbox execution" -}}`,
+				`{{- if eq (include "cetirun.agent.type" .) "custom" -}}
+{{- fail "governed Custom rendering is unsupported" -}}`},
 			{`{{- $reconciled := $s.reconciled | default false -}}
 {{- if or (ne $s.contractVersion "v1") (and (not $reconciled) (or (ne $s.executionHeld true) (ne (int .Values.replicaCount) 0))) (and $reconciled (or $s.executionHeld (gt (int .Values.replicaCount) 1) (lt (int .Values.replicaCount) 0))) -}}`,
 				`{{- if or (ne $s.contractVersion "v1") (ne $s.executionHeld true) (ne (int .Values.replicaCount) 0) -}}`},

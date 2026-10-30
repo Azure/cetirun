@@ -424,7 +424,14 @@ fi
 for agent_type in openclaw hermes; do
   output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
     --set "agentType=${agent_type}" --set secrets.openclawGatewayToken=test-token)
-  if grep -Ei 'msteams|cetirun_teams|MSTEAMS_|containerPort: 3978' <<< "$output"; then
+  # HOME initializers retire saved Teams settings; inspect the remaining
+  # configuration and workload wiring independently of those script bodies.
+  runtime_output=$(awk '
+    /^  (init-home.sh|hermes-apply-config.py): \|/ { skip = 1; next }
+    /^  [^[:space:]]|^---/ { skip = 0 }
+    !skip { print }
+  ' <<< "$output")
+  if grep -Ei 'msteams|cetirun_teams|MSTEAMS_|containerPort: 3978' <<< "$runtime_output"; then
     echo "FAIL: ${agent_type} rendered removed Teams integration" >&2; exit 1
   fi
 done

@@ -96,7 +96,8 @@ func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.A
 		!equality.Semantic.DeepEqual(object.OwnerReferences, owner) ||
 		object.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) ||
 		receipt.AgentName != agent.Name || receipt.AgentUID != agent.UID ||
-		(receipt.AgentType != api.AgentTypeOpenClaw && receipt.AgentType != api.AgentTypeHermes) ||
+		(receipt.AgentType != api.AgentTypeOpenClaw && receipt.AgentType != api.AgentTypeHermes && receipt.AgentType != api.AgentTypeCustom) ||
+		(receipt.AgentType == api.AgentTypeCustom && !receipt.Reconciled) ||
 		receipt.Namespace != instanceNamespace(agent.Name) || receipt.Namespace == r.OperatorNamespace ||
 		len(validation.IsDNS1123Label(receipt.Namespace)) != 0 || receipt.ChartVersion == "" ||
 		!((receipt.Version == "v1" && receipt.ServiceAccount == nil && receipt.Skills == nil && len(receipt.Objects) == 5) ||
@@ -202,11 +203,12 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		return err
 	}
 	if (!attempt.reconciled && agent.Spec.Helm.Version != config.ChartVersion) || agent.Spec.Helm.Version == "" || agent.Spec.Agent.Image == nil || *agent.Spec.Agent.Image == "" ||
-		agent.Spec.Agent.Port == nil || *agent.Spec.Agent.Port < 1 || *agent.Spec.Agent.Port > 65535 {
+		(agent.Spec.Agent.Type != api.AgentTypeCustom && agent.Spec.Agent.Port == nil) ||
+		(agent.Spec.Agent.Port != nil && (*agent.Spec.Agent.Port < 1 || *agent.Spec.Agent.Port > 65535)) {
 		return fmt.Errorf("Sandbox bootstrap requires explicit approved chart version, native image and port; controller spec defaulting is not authorized")
 	}
 	if len(validation.IsDNS1123Label(instanceNamespace(agent.Name))) != 0 || instanceNamespace(agent.Name) == r.OperatorNamespace ||
-		len(validation.IsDNS1123Subdomain(agent.Spec.GatewayTokenSecretRef)) != 0 ||
+		len(validation.IsDNS1123Subdomain(sandboxRuntimeSecretName(agent))) != 0 ||
 		len(validation.IsDNS1123Subdomain(r.OperatorSAName)) != 0 {
 		return fmt.Errorf("Sandbox bootstrap requires valid isolated namespace, runtime Secret and operator identities")
 	}
@@ -222,7 +224,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 				{Kind: "Namespace", Name: instanceNamespace(agent.Name)},
 				{Kind: "Role", Name: role.Name}, {Kind: "RoleBinding", Name: binding.Name},
 				{Kind: "PersistentVolumeClaim", Name: config.HomeClaimName},
-				{Kind: "Secret", Name: agent.Spec.GatewayTokenSecretRef},
+				{Kind: "Secret", Name: sandboxRuntimeSecretName(agent)},
 			},
 		}
 		if config.SkillsCatalogConfigMapName != "" {
@@ -268,7 +270,7 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		return fmt.Errorf("Sandbox bootstrap receipt is no longer protected for writes")
 	}
 	if receipt.Home != profile || receipt.Objects[3].Name != config.HomeClaimName ||
-		receipt.Objects[4].Name != agent.Spec.GatewayTokenSecretRef || (!receipt.Reconciled && receipt.ChartVersion != config.ChartVersion) ||
+		receipt.Objects[4].Name != sandboxRuntimeSecretName(agent) || (!receipt.Reconciled && receipt.ChartVersion != config.ChartVersion) ||
 		receipt.AgentType != agent.Spec.Agent.Type || receipt.Reconciled != attempt.reconciled {
 		return fmt.Errorf("%w: changing bootstrap storage, native type, Secret or chart requires an explicit handoff", sandboxworkload.ErrStorageTransitionRequired)
 	}

@@ -181,12 +181,34 @@ func TestManagementRejectsOldUnknownAndNativeCustomFields(t *testing.T) {
 	}
 }
 
+func TestRetiredTeamsEnabledIsRejectedOnCreate(t *testing.T) {
+	for _, value := range []string{"true", "false", "null"} {
+		t.Run(value, func(t *testing.T) {
+			fc := newFakeClient()
+			h := customManagementHandler()
+			h.Kube = kube.NewClient(fc)
+			w := httptest.NewRecorder()
+			h.CreateInstance(w, managementRequest(http.MethodPost,
+				`{"agent":{"type":"custom","image":"`+managementImage+`"},"teamsEnabled":`+value+`}`))
+			if w.Code != http.StatusBadRequest || errorCode(t, w) != "invalid_body" {
+				t.Fatalf("teamsEnabled=%s: status=%d body=%s", value, w.Code, w.Body.String())
+			}
+			assertNoCreationWrites(t, fc)
+		})
+	}
+}
+
 func TestCustomAgentIdentityIsRejected(t *testing.T) {
 	h := customManagementHandler()
 	h.Config.AgentIdentityEnabled = true
 	response := httptest.NewRecorder()
 	h.CreateInstance(response, managementRequest(http.MethodPost, `{"agent":{"type":"custom","image":"`+managementImage+`"},"agentIdentityEnabled":true}`))
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unsupported_custom_feature") {
+	var payload ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusBadRequest || payload.Error.Code != "unsupported_custom_feature" ||
+		strings.Contains(payload.Error.Message, "Teams") {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }

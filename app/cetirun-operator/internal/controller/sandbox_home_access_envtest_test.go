@@ -40,9 +40,17 @@ func startReconciledAPIHarness(t *testing.T, h *nativeStartAPIHarness) *nativeSt
 				return err
 			}
 			if namespace, ok := object.(*corev1.Namespace); ok {
-				return h.admin.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				if err := h.admin.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 					Namespace: namespace.Name, Name: "default",
-				}})
+				}}); err != nil {
+					return err
+				}
+				if h.agent.Spec.Agent.Type == api.AgentTypeCustom {
+					return h.admin.Create(ctx, &corev1.ConfigMap{
+						ObjectMeta: metav1.ObjectMeta{Namespace: namespace.Name, Name: "kube-root-ca.crt"},
+						Data:       map[string]string{"ca.crt": "synthetic-ca"},
+					})
+				}
 			}
 			return nil
 		},

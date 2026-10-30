@@ -4,7 +4,7 @@
 import { apiFetch } from "./fetch";
 import type { AgentPolicyRateLimits } from "../types/rateLimits";
 
-export type PolicyHarness = "openclaw" | "hermes";
+export type PolicyHarness = "openclaw" | "hermes" | "custom";
 
 export interface AgentPolicyGatewayBudget {
   defaultMonthlyUSD: string;

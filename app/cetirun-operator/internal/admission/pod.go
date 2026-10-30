@@ -131,8 +131,9 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	}
 	if request.Resource.Group == "" && request.Resource.Resource == "pods" && request.Resource.Version == "v1" &&
 		request.Operation == admissionv1.Connect && slices.Contains([]string{"exec", "attach", "portforward"}, request.SubResource) {
-		// CONNECT carries an options object, not a Pod. It must not depend on
-		// workload expectations or inherit a controller/administrator exemption.
+		if request.SubResource == "exec" && terminalConnectPreflight(request) {
+			return h.validateTerminalConnect(ctx, request)
+		}
 		return rejectPod(ctx, request, podDenied("ConnectForbidden", "interactive access to protected Pods is not supported"))
 	}
 	if request.Resource.Group != "" || request.Resource.Resource != "pods" || request.Resource.Version != "v1" ||

@@ -1331,9 +1331,29 @@ func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *
 	return nil
 }
 
-// applyCopilotResponsesModels tells the Agent's Copilot proxy which of its
-// registered models GitHub Copilot serves only through the Responses API, so
-// the proxy bridges the chat completion requests agents send for them.
+func (r *AgentReconciler) applyCopilotChartValues(values map[string]any, instance *cetirunv1alpha1.Agent, prepared chartValuePaths) {
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartResponsesValue) {
+		r.applyCopilotResponsesModels(values, instance)
+	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartProxyKeyValue) {
+		applyCopilotProxyKeyID(values, instance)
+	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartSignInValue) {
+		applyCopilotSignInGeneration(values, instance)
+	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, "replicaCount") {
+		gateway, _ := values[aiGatewayChartValue].(map[string]any)
+		if proxy, ok := gateway[aiGatewayChartCopilotValue].(map[string]any); ok && proxy["enabled"] == true {
+			proxy["replicaCount"] = 1
+			if instance.Spec.Suspended {
+				proxy["replicaCount"] = 0
+			}
+		}
+	}
+}
+
+// applyCopilotResponsesModels tells the proxy which registered models need
+// the Responses API bridge for chat-completion requests.
 func (r *AgentReconciler) applyCopilotResponsesModels(values map[string]any, instance *cetirunv1alpha1.Agent) {
 	gateway, _ := values["aiGateway"].(map[string]any)
 	proxy, _ := gateway["copilotProxy"].(map[string]any)

@@ -27,8 +27,8 @@ Licensed under the MIT License.
 {{- fail "managed ingress mTLS requires common built-in API/UI/terminal/desktop routing without alternate ingress" -}}
 {{- end -}}
 {{- end -}}
-{{- if eq (include "cetirun.agent.type" .) "custom" -}}
-{{- fail "governed Custom rendering is unsupported" -}}
+{{- if and (eq (include "cetirun.agent.type" .) "custom") (not $reconciled) -}}
+{{- fail "Custom requires common reconciled Sandbox execution" -}}
 {{- end -}}
 {{- if or (ne (index .Values.podAnnotations "sidecar.istio.io/inject") "false") .Values.sidecarScope.enabled (not .Values.networkPolicy.enabled) (gt (len .Values.sidecarScope.additionalEgressHosts) 0) -}}
 {{- fail "Sandbox network controls are protected" -}}

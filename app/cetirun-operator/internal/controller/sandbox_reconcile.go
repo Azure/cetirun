@@ -42,7 +42,7 @@ const (
 )
 
 func (r *AgentReconciler) usesReconciledSandbox(ctx context.Context, agent *api.Agent) (bool, error) {
-	if !sandboxRequested(agent, nil) || agent.Spec.Agent.Type == api.AgentTypeCustom ||
+	if !sandboxRequested(agent, nil) ||
 		r.SandboxPreparation == nil || !r.SandboxPreparation.NativeExecution ||
 		controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
 		return false, nil
@@ -109,6 +109,17 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err := r.sandboxPreparationInput(ctx, attempt); err != nil {
 		return nil, err
 	}
+	if attempt.input.Terminal != nil && !attempt.agent.Spec.Suspended {
+		if err := r.ensureTerminalReadRoles(ctx, attempt.agent); err != nil {
+			return nil, err
+		}
+		if err := r.ensureCommonTerminalReaderBinding(ctx, attempt.agent); err != nil {
+			return nil, err
+		}
+	}
+	if attempt.input.CustomAgent != nil {
+		agent = attempt.agent
+	}
 	if err := r.sandboxIngressMTLSInputs(ctx, attempt); err != nil {
 		return nil, fmt.Errorf("%w: %w", errSandboxIngressMTLS, err)
 	}
@@ -137,12 +148,23 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		attempt.input.ImagePullSecret = &w.ObjectIdentity{Name: secret.Name, UID: secret.UID}
 		attempt.sources = append(attempt.sources, sandboxSource(secret, "v1", "Secret"))
 	}
-	_, user, err := r.sandboxHelmValues(agent, attempt.team)
+	platformValues, user, err := r.sandboxHelmValues(agent, attempt.team)
 	if err != nil {
 		return nil, err
 	}
 	if err := w.ValidateReconciledUserValues(user, attempt.input.AuthorizedSecrets); err != nil {
 		return nil, err
+	}
+	if attempt.input.CustomAgent != nil {
+		values = platformValues
+		if len(user) != 0 {
+			values = deepMerge(values, user).(map[string]any)
+		}
+		values["memoryOptions"] = r.memoryOptions()
+		if agent.Spec.Suspended {
+			values["replicaCount"] = 0
+			values["ttyd"] = map[string]any{"enabled": false}
+		}
 	}
 	configuration, ok := r.SandboxPreparation.Configuration.(*sandboxplatform.KubernetesSource)
 	if !ok {
@@ -160,6 +182,10 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		return nil, err
 	}
 	platform := attempt.configuration.Platforms[attempt.resolution.Sandbox.Type]
+	var customIngress *sandboxpolicy.CustomIngress
+	if attempt.input.CustomAgent != nil {
+		customIngress = r.customSandboxIngress(agent)
+	}
 	identityPin, err := r.sandboxIdentityPin(ctx, attempt)
 	if err != nil {
 		return nil, err
@@ -168,6 +194,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		ConnectionsMCP:  connections,
 		NativeExecution: true, Resolution: *attempt.resolution, AgentName: agent.Name,
 		Namespace: attempt.input.Namespace.Name, ServiceName: attempt.input.WorkloadName, Platform: platform,
+		CustomIngress: customIngress, TerminalIngress: terminalSandboxIngress(attempt.input.Terminal),
 		IdentityPin: identityPin,
 	})
 	if err != nil {
@@ -183,6 +210,15 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	bundle, err := w.Build(attempt.input)
 	if err != nil {
 		return nil, err
+	}
+	if prepared == nil {
+		prepared, err = r.SandboxPreparation.Installer.PrepareSandbox(attempt.input.Namespace.Name, values, nil, agent.Spec.Helm.Version, bundle)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if attempt.input.CustomAgent != nil {
+		r.applyCopilotChartValues(values, agent, prepared)
 	}
 	sources := selectedSandboxExecutionSources(attempt.sources, attempt.resolution.Binding)
 	agentSource, err := w.AgentSourceReference(agent)
@@ -345,7 +381,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 				return nil, err
 			}
 			defaultAccount := source.Kind == "ServiceAccount" && source.Name == "default"
-			if (!defaultAccount && !sandboxBuiltinOwned(object, agent)) || !object.DeletionTimestamp.IsZero() {
+			terminalCA := attempt.input.Terminal != nil && source.Kind == "ConfigMap" &&
+				source.Name == "kube-root-ca.crt" && source.Namespace == expected.Namespace.Name
+			if (!defaultAccount && !terminalCA && !sandboxBuiltinOwned(object, agent)) || !object.DeletionTimestamp.IsZero() {
 				return nil, fmt.Errorf("Sandbox component source is not owned by the current Agent")
 			}
 			source = sandboxSource(object, "v1", source.Kind)
@@ -506,6 +544,37 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		reservation = &ticket
 	}
 	return result, guard(ctx)
+}
+
+func (r *AgentReconciler) readReconciledSandboxExpectation(ctx context.Context, agent *api.Agent) (*corev1.ConfigMap, w.ReconcileExpectation, error) {
+	var empty w.ReconcileExpectation
+	namespace := &corev1.Namespace{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		return nil, empty, err
+	}
+	if !sandboxBuiltinOwned(namespace, agent) || !namespace.DeletionTimestamp.IsZero() {
+		return nil, empty, fmt.Errorf("common Sandbox namespace is not current and owned")
+	}
+	state := &corev1.ConfigMap{}
+	if err := r.customReader().Get(ctx, client.ObjectKey{
+		Namespace: r.OperatorNamespace, Name: w.PodExpectationName(namespace.Name, namespace.UID),
+	}, state); err != nil {
+		return nil, empty, err
+	}
+	if state.Annotations[w.AgentUIDAnnotation] != string(agent.UID) ||
+		!reflect.DeepEqual(state.OwnerReferences, []metav1.OwnerReference{w.AgentOwner(agent.Name, agent.UID)}) {
+		return nil, empty, fmt.Errorf("common Sandbox expectation ownership changed")
+	}
+	expected, err := w.ReadReconcileExpectation(state)
+	if err != nil {
+		return nil, empty, err
+	}
+	if expected.Agent != (w.ObjectIdentity{Name: agent.Name, UID: agent.UID}) ||
+		expected.AgentGeneration != agent.Generation ||
+		expected.Namespace != (w.ObjectIdentity{Name: namespace.Name, UID: namespace.UID}) {
+		return nil, empty, fmt.Errorf("common Sandbox expectation differs from the current Agent")
+	}
+	return state, expected, nil
 }
 
 func (r *AgentReconciler) observeReconciledSandbox(ctx context.Context, agent *api.Agent, prepared *helm.PreparedRelease) error {
