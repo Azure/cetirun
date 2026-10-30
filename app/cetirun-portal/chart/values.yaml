@@ -36,14 +36,7 @@ imagePullSecrets: []
 
 # -- Optional notice banner message displayed in the portal UI.
 # Set to a non-empty string to show a dismissible banner. Empty means no banner.
-noticeBanner: >-
-  CetiRun has migrated from OpenClaw to Hermes Agent. Core data and Copilot auth are
-  migrated automatically. If you had custom cron jobs, sub-agents, hooks, MCP servers,
-  or other advanced OpenClaw settings, ask Hermes Agent in chat to migrate them.
-  Prompt: "Please review my old OpenClaw configuration and migrate any custom cron jobs,
-  sub-agents, hooks, MCP servers, approval rules, skills, and other advanced settings to
-  Hermes. Apply safe changes where possible and summarize anything that needs manual
-  setup."
+noticeBanner: ""
 
 # -- Istio ingress configuration.
 istio:
