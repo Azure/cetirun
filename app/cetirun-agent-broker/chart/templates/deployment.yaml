@@ -1,6 +1,6 @@
 {{- if empty .Values.toolService.runtimeTypes }}{{ fail "toolService.runtimeTypes must include at least one qualified runtime" }}{{ end }}
 {{- range .Values.toolService.runtimeTypes }}
-{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "toolService.runtimeTypes supports only hermes and openclaw" }}{{ end }}
+{{- if not (has . (list "hermes" "openclaw" "custom")) }}{{ fail "toolService.runtimeTypes supports only hermes, openclaw and governed custom" }}{{ end }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment

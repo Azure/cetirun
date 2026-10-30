@@ -132,8 +132,43 @@ changing the native entrypoint or replacing retained user files. The
 controller-only `custom-runtime` authentication Secret is identity-pinned but
 not mounted into the Custom workload.
 
-**Current boundaries:** this common Custom path does not support desktop,
-ingress mTLS, native Entra/Agent Identity or Connections credential execution.
+#### Governed identity and transport
+
+Custom can use the same approved Entra workload projection as managed harnesses.
+`AgentPolicy.spec.entraID.enabled` still requires the platform capability and
+an exact per-Agent identity approval. Only the main application receives the
+rotating exchange token and Azure SDK environment. Initializers and the separate
+terminal do not inherit it. The application must implement its own SDK use;
+federation and Azure resource permissions are external prerequisites.
+
+Governed Connections are a separate opt-in. Include `custom` explicitly in the
+Operator's `connectionsMCP.runtimeTypes`, Broker's `toolService.runtimeTypes`,
+and Portal's `agentTools.runtimeTypes`; enable the existing native Connections
+configuration. The defaults remain OpenClaw/Hermes only. The main application
+receives `CETIRUN_CONNECTIONS_MCP_URL`, `CETIRUN_CONNECTIONS_MCP_TOKEN_FILE`, and
+`CETIRUN_CONNECTIONS_MCP_CA_FILE`, pointing to the HTTPS endpoint, rotating
+Pod-bound proof, and public CA. Its MCP client must reread proof and trust for
+new requests, verify TLS, and not replay unknown outcomes. The Pi example
+implements this contract for both HTTP and native TUI sessions.
+
+Agent Identity uses the existing directory lifecycle and credential-policy
+readback. It requires the governed Connections opt-in for Custom; personal
+GitHub/Google connections do not require Agent Identity or generic Entra
+projection. Every provider connection needs an explicit owner binding. Provider
+credentials remain inside Broker/MCP and never enter the Custom workload.
+
+Custom HTTP Chat and Web UI can use approved ingress mTLS on either backend.
+An approved image must honor `CETIRUN_BIND_HOST=127.0.0.1` without replacing its
+entrypoint. Its declared HTTP port and health contract remain unchanged.
+The static probe checks public certificate validity and the active Envoy leaf.
+An enabled terminal uses its own TLS helper and retains only its existing
+DNS/API egress. Private Portal Chat needs its own approved client credential;
+it must not borrow the Gateway private key. See
+[Custom mTLS setup](../../guides/agent-ingress-mtls/#custom-http-and-terminal).
+
+**Current boundaries:** this common Custom path does not support desktop.
+Headless images have no application HTTP endpoint and cannot request ingress
+mTLS; keep ingress disabled when no access surface is needed.
 Explicit unsupported requests fail closed; disabling policy is not a workaround.
 Scoped Kubernetes access and FQDN controls also require their separately
 delivered common adapters. Do not treat template, controller or local API-server

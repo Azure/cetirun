@@ -146,7 +146,7 @@ Validate Azure Workload Identity prerequisites
 {{/* Validate the fixed in-cluster Agent Identity Broker boundary. */}}
 {{- define "cetirun.validateAgentIdentity" -}}
 {{- if .Values.agentIdentity.enabled -}}
-{{- if eq .Values.agentType "custom" -}}
+{{- if and (eq .Values.agentType "custom") (not ((.Values.sandboxWorkload | default dict).reconciled | default false)) -}}
 {{- fail "Custom runtimes do not support Agent Identity with CetiRun Connections MCP" -}}
 {{- end -}}
 {{- if gt (len (include "cetirun.serviceAccountName" .)) 63 -}}
@@ -163,7 +163,7 @@ Validate Azure Workload Identity prerequisites
 
 {{- define "cetirun.validateConnectionsMCP" -}}
 {{- if .Values.connectionsMCP.enabled -}}
-{{- if eq .Values.agentType "custom" -}}
+{{- if and (eq .Values.agentType "custom") (not ((.Values.sandboxWorkload | default dict).reconciled | default false)) -}}
 {{- fail "Custom runtimes do not support CetiRun Connections MCP" -}}
 {{- end -}}
 {{- if and .Values.sandboxWorkload (not (.Values.sandboxWorkload.reconciled | default false)) -}}

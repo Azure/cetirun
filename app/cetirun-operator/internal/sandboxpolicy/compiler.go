@@ -102,6 +102,9 @@ func Compile(input CompileInput) (*Plan, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
 		}
+		if err := validateCustomMTLS(input, mtls); err != nil {
+			return nil, err
+		}
 	}
 	identity, grants, approval, err := compileIdentity(input)
 	if err != nil {

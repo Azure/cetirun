@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -49,16 +50,25 @@ type Registration struct {
 }
 
 type Binding struct {
-	AgentUID     types.UID `json:"agentUID"`
-	Namespace    string    `json:"namespace"`
-	Harness      string    `json:"harness"`
-	Port         int32     `json:"port"`
-	Terminal     bool      `json:"terminal"`
-	Desktop      bool      `json:"desktop,omitempty"`
-	ServerSecret Reference `json:"serverSecret"`
-	ClientSecret Reference `json:"clientSecret"`
-	Gateway      Reference `json:"gateway"`
-	ClientURI    string    `json:"clientURI"`
+	AgentUID     types.UID    `json:"agentUID"`
+	Namespace    string       `json:"namespace"`
+	Harness      string       `json:"harness"`
+	Port         int32        `json:"port"`
+	Terminal     bool         `json:"terminal"`
+	Desktop      bool         `json:"desktop,omitempty"`
+	ServerSecret Reference    `json:"serverSecret"`
+	ClientSecret Reference    `json:"clientSecret"`
+	Gateway      Reference    `json:"gateway"`
+	ClientURI    string       `json:"clientURI"`
+	ChatClients  []ChatClient `json:"chatClients,omitempty"`
+}
+
+// ChatClient approves a Portal mesh workload and its own client credential.
+// Gateway client keys are never shared with the Portal.
+type ChatClient struct {
+	Secret    Reference         `json:"secret"`
+	URI       string            `json:"uri"`
+	PodLabels map[string]string `json:"podLabels"`
 }
 
 type Plan struct {
@@ -100,7 +110,7 @@ func (r Registration) Validate() error {
 			return fmt.Errorf("mTLS Agent bindings must be unique")
 		}
 		agents[binding.AgentUID] = true
-		for _, ref := range []Reference{binding.ServerSecret, binding.ClientSecret} {
+		for _, ref := range append([]Reference{binding.ServerSecret}, binding.ClientSecrets()...) {
 			key := ref.Namespace + "/" + ref.Name
 			if secrets[key] {
 				return fmt.Errorf("mTLS Secret approvals must be distinct and per-Agent")
@@ -114,11 +124,14 @@ func (r Registration) Validate() error {
 func (b Binding) Validate() error {
 	if b.AgentUID == "" || len(validation.IsValidLabelValue(string(b.AgentUID))) != 0 ||
 		len(validation.IsDNS1123Label(b.Namespace)) != 0 ||
-		!slices.Contains([]string{"openclaw", "hermes"}, b.Harness) ||
+		!slices.Contains([]string{"openclaw", "hermes", "custom"}, b.Harness) ||
 		b.Port < 1024 || b.Port > 65535 ||
 		slices.Contains([]int32{AdminPort, APIPort, DashboardPort, TerminalPort, 7681, 9119}, b.Port) ||
 		(b.Desktop && slices.Contains([]int32{DesktopPort, 5900, 6080, 18800}, b.Port)) {
-		return fmt.Errorf("mTLS requires a per-Agent built-in harness and nonconflicting primary port")
+		return fmt.Errorf("mTLS requires a per-Agent supported harness and nonconflicting primary port")
+	}
+	if b.Harness == "custom" && b.Desktop || b.Harness != "custom" && len(b.ChatClients) != 0 || len(b.ChatClients) > 8 {
+		return fmt.Errorf("mTLS Custom supports declared HTTP and terminal endpoints, not desktop or unrelated Chat clients")
 	}
 	for _, ref := range []Reference{b.ServerSecret, b.ClientSecret, b.Gateway} {
 		if err := ref.Validate(); err != nil {
@@ -129,26 +142,73 @@ func (b Binding) Validate() error {
 		b.Gateway.Namespace == b.Namespace {
 		return fmt.Errorf("mTLS server credentials belong to the Agent; client credentials belong only to its external Gateway")
 	}
-	uri, err := url.Parse(b.ClientURI)
-	if err != nil || uri.Scheme != "spiffe" || uri.Host == "" || uri.User != nil ||
-		uri.RawQuery != "" || uri.Fragment != "" || uri.RawPath != "" || uri.Path == "" ||
-		len(b.ClientURI) > 2048 || strings.ContainsAny(b.ClientURI, "*\r\n\t ") ||
-		!strings.HasSuffix(uri.Path, "/"+string(b.AgentUID)) {
-		return fmt.Errorf("mTLS requires one exact Gateway SPIFFE URI SAN ending in the Agent UID")
+	if err := validateClientURI(b.ClientURI, b.AgentUID); err != nil {
+		return err
+	}
+	namespaces, uris := map[string]bool{}, map[string]bool{b.ClientURI: true}
+	for _, client := range b.ChatClients {
+		if err := client.Secret.Validate(); err != nil {
+			return err
+		}
+		if err := validateClientURI(client.URI, b.AgentUID); err != nil {
+			return err
+		}
+		if client.Secret.Namespace == b.Namespace ||
+			namespaces[client.Secret.Namespace] || uris[client.URI] || len(client.PodLabels) == 0 || len(client.PodLabels) > 16 {
+			return fmt.Errorf("mTLS Chat requires distinct per-namespace client identities and explicit Pod selectors")
+		}
+		for key, value := range client.PodLabels {
+			if len(validation.IsQualifiedName(key)) != 0 || value == "" || len(validation.IsValidLabelValue(value)) != 0 {
+				return fmt.Errorf("mTLS Chat client selector is invalid")
+			}
+		}
+		namespaces[client.Secret.Namespace], uris[client.URI] = true, true
 	}
 	return nil
 }
 
+func validateClientURI(value string, agentUID types.UID) error {
+	uri, err := url.Parse(value)
+	if err != nil || uri.Scheme != "spiffe" || uri.Host == "" || uri.User != nil ||
+		uri.RawQuery != "" || uri.Fragment != "" || uri.RawPath != "" || uri.Path == "" ||
+		len(value) > 2048 || strings.ContainsAny(value, "*\r\n\t ") ||
+		!strings.HasSuffix(uri.Path, "/"+string(agentUID)) {
+		return fmt.Errorf("mTLS requires an exact client SPIFFE URI SAN ending in the Agent UID")
+	}
+	return nil
+}
+
+func (b Binding) ClientSecrets() []Reference {
+	refs := []Reference{b.ClientSecret}
+	for _, client := range b.ChatClients {
+		refs = append(refs, client.Secret)
+	}
+	return refs
+}
+
+func (p Plan) TerminalEndpoint() Plan {
+	p.Harness, p.Port, p.Terminal, p.Desktop, p.ChatClients = "custom-terminal", 7681, false, false, nil
+	service, _, _ := strings.Cut(p.ServiceHost, ".")
+	p.ServiceHost = terminalpolicy.WorkloadName(service) + "." + p.Namespace + ".svc.cluster.local"
+	return p
+}
+
 func (p Plan) Ports() []Port {
+	if p.Harness == "custom-terminal" {
+		return []Port{{Name: "terminal", Backend: p.Port, TLS: TerminalPort}}
+	}
 	name := "gateway"
 	if p.Harness == "hermes" {
 		name = "api"
+	}
+	if p.Harness == "custom" {
+		name = "http"
 	}
 	ports := []Port{{Name: name, Backend: p.Port, TLS: APIPort}}
 	if p.Harness == "hermes" {
 		ports = append(ports, Port{Name: "dashboard", Backend: 9119, TLS: DashboardPort})
 	}
-	if p.Terminal {
+	if p.Terminal && p.Harness != "custom" {
 		ports = append(ports, Port{Name: "ttyd", Backend: 7681, TLS: TerminalPort})
 	}
 	if p.Desktop {

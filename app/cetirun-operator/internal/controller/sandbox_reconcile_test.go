@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -75,7 +76,13 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 			continue
 		}
 		if object.GetNamespace() != namespace {
-			return fmt.Errorf("unexpected rendered namespace")
+			expected, err := prepared.ReconcileExpectation()
+			if err != nil || !slices.ContainsFunc(expected.Controls, func(control unstructured.Unstructured) bool {
+				return control.GetAPIVersion() == "networking.istio.io/v1beta1" && control.GetKind() == "DestinationRule" &&
+					reflect.DeepEqual(control.Object, object.Object)
+			}) {
+				return fmt.Errorf("unexpected rendered namespace")
+			}
 		}
 		annotations := object.GetAnnotations()
 		if annotations == nil {

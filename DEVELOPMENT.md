@@ -145,9 +145,13 @@ common Custom checks are:
 
 ```bash
 go -C app/cetirun-operator test ./cmd/loopback-probe ./internal/helm ./internal/sandboxpolicy ./internal/controller -run 'TestCommonCustom|TestCustomSandbox|TestCompileCustom|TestProbe' -count=1 -timeout=20m
+go -C app/cetirun-agent-broker test ./internal/broker -run '^TestCustom' -count=1
+npm --prefix examples/pi-agent test
 python3 -B -m unittest discover -s scripts/tests -p test_custom_initialization.py -v
 KUBEBUILDER_ASSETS=/path/to/local/envtest \
   go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestCommonCustom(Terminal)?APIServer$' -count=1 -timeout=20m
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^(TestNativeEntraCommonRuntimeAPIServer|TestNativeConnectionsServedCurrentSourceProof|TestReconciledSandboxIngressMTLSAPIServer)/custom$' -count=1 -timeout=20m
 ```
 
 These cover both registered backends, all three Custom endpoint modes, the

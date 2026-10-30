@@ -23,19 +23,21 @@ export function createServers(runtime) {
 
 async function main() {
   if (process.argv.includes("--help")) {
-    console.log("Pi HTTP adapter: HOME and PORT are required. API binds 0.0.0.0:PORT; local auth binds 127.0.0.1:9099. Start the native TUI with pi-tui.mjs.");
+    console.log("Pi HTTP adapter: HOME and PORT are required. API binds 0.0.0.0:PORT unless CETIRUN_BIND_HOST=127.0.0.1; local auth binds 127.0.0.1:9099. Start the native TUI with pi-tui.mjs.");
     return;
   }
   const port = Number(process.env.PORT);
   if (!process.env.HOME || !Number.isInteger(port) || port < 1 || port > 65535 || port === 9099) {
     throw new Error("HOME and a valid PORT other than 9099 are required");
   }
+  const bindHost = process.env.CETIRUN_BIND_HOST || "0.0.0.0";
+  if (!["0.0.0.0", "127.0.0.1"].includes(bindHost)) throw new Error("Invalid CETIRUN_BIND_HOST");
   process.umask(0o077);
   process.env.PI_TELEMETRY = "0";
   const { createPiRuntime } = await import("./pi-runtime.mjs");
   const servers = createServers(await createPiRuntime(process.env.HOME));
   try {
-    await listen(servers.api, port, "0.0.0.0");
+    await listen(servers.api, port, bindHost);
     if (!process.env.OPENAI_BASE_URL) await listen(servers.auth, 9099, "127.0.0.1");
   } catch (error) {
     await servers.close();

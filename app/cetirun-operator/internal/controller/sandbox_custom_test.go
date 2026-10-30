@@ -6,7 +6,6 @@ package controller
 import (
 	"context"
 	"reflect"
-	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -128,14 +127,19 @@ func TestCommonCustomRetainedLifecycle(t *testing.T) {
 	}
 }
 
-func TestCommonCustomKeepsUnsupportedEntraHeld(t *testing.T) {
+func TestCommonCustomKeepsUnapprovedEntraHeld(t *testing.T) {
 	for _, mode := range []string{"headless", "chat"} {
 		t.Run(mode, func(t *testing.T) {
 			f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "custom", true, false,
 				withCommonCustom(t, mode), withReconciledCoordination(t), withNativeEntra(t))
+			updateContainerPlatformForTest(t, f.r, f.kube, func(document *SandboxPlatformConfiguration) {
+				platform := document.Platforms[api.SandboxKata]
+				platform.Identities = nil
+				document.Platforms[api.SandboxKata] = platform
+			})
 			_, err := f.r.resolvePolicy(context.Background(), f.current(t))
-			if err == nil || !strings.Contains(err.Error(), "native Entra projection does not yet support the Custom runtime contract") {
-				t.Fatal("managed Entra support changed the unsupported Custom boundary:", err)
+			if err == nil {
+				t.Fatal("Custom Entra was accepted without an identity approval")
 			}
 			for range 3 {
 				f.reconcileOK(t)

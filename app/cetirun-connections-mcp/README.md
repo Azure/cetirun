@@ -193,6 +193,30 @@ Unavailable *workload authority*, however, rejects all workload-authenticated
 requests, including metadata. Owner-side inventory and exact owned cleanup do
 not require a still-running native Pod.
 
+### Governed Custom workloads
+
+Custom uses the same native verification, not a type-only bypass. It remains
+off by default: add `custom` to the Operator `connectionsMCP.runtimeTypes`,
+Broker `toolService.runtimeTypes`, and Portal `agentTools.runtimeTypes` lists,
+and enable the native settings above. Custom without a Sandbox remains
+unsupported. Source or workload outages still reject execution.
+
+The Custom image implements the MCP client contract using
+`CETIRUN_CONNECTIONS_MCP_URL`, `CETIRUN_CONNECTIONS_MCP_TOKEN_FILE` and
+`CETIRUN_CONNECTIONS_MCP_CA_FILE`. The latter two refer to the existing mounted
+proof and CA paths above. Read both on each new request, retain certificate
+verification, and do not retry an unknown effect. Do not make application
+startup/readiness depend on a successful provider call: serving credentials
+requires the Agent and current Pod to be ready first. The
+[Pi adapter](../../examples/pi-agent/connections-runtime.mjs) initializes
+lazily and exposes the four fixed tools to the real SDK.
+
+Custom Agent Identity additionally requires the existing directory configuration,
+policy permission and current credential-policy readback. Generic Entra token
+projection is independent. GitHub/Google connections need neither form of
+Entra identity. Explicit bindings and provider permissions remain mandatory;
+no provider token is projected into any Agent.
+
 ## Offline checks
 
 ```bash

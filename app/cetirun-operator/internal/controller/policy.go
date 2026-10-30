@@ -287,11 +287,8 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		if r.SandboxPreparation == nil || !r.SandboxPreparation.NativeExecution || !r.customGatewaySelected(agent) {
 			return nil, fmt.Errorf("Custom policy execution requires the common executor and a Gateway-qualified image")
 		}
-		if policy.Spec.Network.Ingress.RequireMTLS {
-			return nil, fmt.Errorf("managed ingress mTLS does not yet support the Custom endpoint contract")
-		}
-		if policy.Spec.EntraID.Enabled {
-			return nil, fmt.Errorf("native Entra projection does not yet support the Custom runtime contract")
+		if agentIdentityRequested(agent) && !r.nativeConnectionsRequested(agent) {
+			return nil, fmt.Errorf("Custom Agent Identity requires explicit governed Connections support")
 		}
 	}
 	if !aiGatewayHarnessSupported(agent.Spec.Agent.Type) && !r.customGatewaySelected(agent) {

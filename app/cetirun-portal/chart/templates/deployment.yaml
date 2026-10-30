@@ -1,7 +1,7 @@
 {{- if default false ((.Values.features).agentToolsEnabled) }}
 {{- if empty .Values.agentTools.runtimeTypes }}{{ fail "agentTools.runtimeTypes must not be empty when Agent Tools is enabled" }}{{ end }}
 {{- range .Values.agentTools.runtimeTypes }}
-{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "agentTools.runtimeTypes supports only hermes and openclaw" }}{{ end }}
+{{- if not (has . (list "hermes" "openclaw" "custom")) }}{{ fail "agentTools.runtimeTypes supports only hermes, openclaw and governed custom" }}{{ end }}
 {{- end }}
 {{- end }}
 {{- $sharedChat := .Values.global.portalChat | default dict -}}

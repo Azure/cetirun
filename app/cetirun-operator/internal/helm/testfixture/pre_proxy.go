@@ -41,6 +41,7 @@ var laterAdditions = map[string][]string{
 {{- end }}
 `},
 	"values.schema.json": {`                "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
+`, `                "ingressServerName": {"type": "string", "minLength": 1},
 `, `                "context": {
                     "type": "object", "additionalProperties": false,
                     "properties": {"name": {"type": "string", "minLength": 1}, "files": {"type": "object", "additionalProperties": false, "properties": {"AGENTS.md": {"const": "AGENTS.md"}}, "required": ["AGENTS.md"]}},
@@ -52,7 +53,7 @@ var laterAdditions = map[string][]string{
                 },
                 "terminal": {
                     "type": "object", "additionalProperties": false,
-                    "properties": {"enabled": {"type": "boolean"}, "image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"}, "port": {"type": "integer", "minimum": 1024, "maximum": 65535}, "sessionSeconds": {"type": "integer", "minimum": 60, "maximum": 3600}, "serviceAccountName": {"type": "string", "minLength": 1}},
+                    "properties": {"enabled": {"type": "boolean"}, "image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"}, "port": {"type": "integer", "minimum": 1024, "maximum": 65535}, "sessionSeconds": {"type": "integer", "minimum": 60, "maximum": 3600}, "serviceAccountName": {"type": "string", "minLength": 1}, "tlsContainer": {"type": "object"}, "tlsVolumes": {"type": "array", "items": {"type": "object"}}},
                     "required": ["enabled", "image", "port", "sessionSeconds", "serviceAccountName"]
                 },
 `, `                "portalSignIn": {

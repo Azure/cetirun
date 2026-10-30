@@ -12,7 +12,7 @@ import { gatewayAccess, gatewayConfiguration, gatewayCredentials, GATEWAY_PROVID
 export const PROVIDER = "github-copilot";
 export const PI_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 export function piTools(resources) {
-  return resources.memoryEnabled ? [...PI_TOOLS, "cetirun_memory"] : PI_TOOLS;
+  return [...PI_TOOLS, ...(resources.memoryEnabled ? ["cetirun_memory"] : []), ...(resources.connectionTools ?? [])];
 }
 const HTTP_TOOL_BUDGET = 8;
 

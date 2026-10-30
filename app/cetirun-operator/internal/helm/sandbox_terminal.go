@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -60,6 +61,11 @@ func (p *PreparedRelease) validateTerminalDeployment(deployment *appsv1.Deployme
 		"sandbox.cetirun.microsoft.com/agent-uid": string(input.Resolution.Binding.AgentUID),
 	}
 	spec := deployment.Spec.Template.Spec
+	tlsContainer, tlsVolumes := p.sandboxBundle.TerminalTLS()
+	containerCount := 1
+	if tlsContainer != nil {
+		containerCount++
+	}
 	var selectors map[string]string
 	var tolerations []corev1.Toleration
 	if input.RuntimeClass.Scheduling != nil {
@@ -74,7 +80,7 @@ func (p *PreparedRelease) validateTerminalDeployment(deployment *appsv1.Deployme
 		deployment.Spec.Selector.MatchExpressions != nil || spec.ServiceAccountName != settings.ServiceAccountName ||
 		ptr.Deref(spec.AutomountServiceAccountToken, true) || ptr.Deref(spec.EnableServiceLinks, true) ||
 		ptr.Deref(spec.RuntimeClassName, "") != input.RuntimeClass.Name || spec.DNSPolicy != corev1.DNSNone ||
-		!equality.Semantic.DeepEqual(spec.DNSConfig, p.sandboxBundle.DNSConfig()) || len(spec.InitContainers) != 0 || len(spec.Containers) != 1 ||
+		!equality.Semantic.DeepEqual(spec.DNSConfig, p.sandboxBundle.DNSConfig()) || len(spec.InitContainers) != 0 || len(spec.Containers) != containerCount ||
 		len(spec.ImagePullSecrets) != 0 || !equality.Semantic.DeepEqual(spec.NodeSelector, selectors) ||
 		!equality.Semantic.DeepEqual(spec.Tolerations, tolerations) || !equality.Semantic.DeepEqual(spec.SecurityContext, podSecurity) {
 		return fmt.Errorf("Sandbox terminal runtime, identity or scheduling differs from the platform plan")
@@ -93,11 +99,23 @@ func (p *PreparedRelease) validateTerminalDeployment(deployment *appsv1.Deployme
 		{Name: "CETIRUN_TERMINAL_CONTAINER", Value: "cetirun"},
 		{Name: "CETIRUN_TERMINAL_SESSION_SECONDS", Value: strconv.Itoa(int(settings.SessionSeconds))},
 	}
+	serverName := ""
+	if tlsContainer != nil {
+		serverName = input.Controls.IngressMTLS.ServerName
+		env = append(env, corev1.EnvVar{Name: "CETIRUN_BIND_HOST", Value: "127.0.0.1"},
+			corev1.EnvVar{Name: "CETIRUN_INGRESS_MTLS", Value: "true"},
+			corev1.EnvVar{Name: "CETIRUN_INGRESS_SERVER_NAME", Value: input.Controls.IngressMTLS.ServerName})
+		digest, err := input.Controls.IngressMTLS.ConfigDigest()
+		if err != nil || deployment.Spec.Template.Annotations[ingressmtls.ConfigDigestAnnotation] != digest ||
+			!equality.Semantic.DeepEqual(spec.Containers[1], *tlsContainer) {
+			return fmt.Errorf("Custom terminal TLS helper differs from its approved endpoint")
+		}
+	}
 	if container.Name != "terminal" || container.Image != settings.Image || container.ImagePullPolicy != corev1.PullIfNotPresent ||
 		!slices.Equal(container.Command, []string{"/terminal"}) || !slices.Equal(container.Args, []string{"serve"}) ||
 		!equality.Semantic.DeepEqual(container.SecurityContext, security) || !equality.Semantic.DeepEqual(container.Resources, resources) ||
 		!equality.Semantic.DeepEqual(container.Env, env) || !equality.Semantic.DeepEqual(container.Ports, []corev1.ContainerPort{{Name: "terminal", ContainerPort: settings.Port, Protocol: corev1.ProtocolTCP}}) ||
-		len(container.EnvFrom) != 0 || len(container.VolumeDevices) != 0 || !terminalProbesMatch(container) {
+		len(container.EnvFrom) != 0 || len(container.VolumeDevices) != 0 || !terminalProbesMatch(container, serverName, settings.Port) {
 		return fmt.Errorf("Sandbox terminal container differs from the platform plan")
 	}
 	volumes := []corev1.Volume{
@@ -109,16 +127,27 @@ func (p *PreparedRelease) validateTerminalDeployment(deployment *appsv1.Deployme
 			{DownwardAPI: &corev1.DownwardAPIProjection{Items: []corev1.DownwardAPIVolumeFile{{Path: "namespace", FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.namespace"}}}}},
 		}}}},
 	}
-	if !equality.Semantic.DeepEqual(spec.Volumes, volumes) || !equality.Semantic.DeepEqual(container.VolumeMounts, []corev1.VolumeMount{
+	mounts := []corev1.VolumeMount{
 		{Name: "tmp", MountPath: "/tmp"}, {Name: "api-access", MountPath: "/var/run/secrets/kubernetes.io/serviceaccount", ReadOnly: true},
-	}) {
+	}
+	if tlsContainer != nil {
+		volumes = append(volumes, tlsVolumes...)
+		mounts = append(mounts, corev1.VolumeMount{Name: "ingress-public", MountPath: ingressmtls.PublicPath, ReadOnly: true})
+	}
+	if !equality.Semantic.DeepEqual(spec.Volumes, volumes) || !equality.Semantic.DeepEqual(container.VolumeMounts, mounts) {
 		return fmt.Errorf("Sandbox terminal must only mount its scratch and Kubernetes API projections")
 	}
 	return nil
 }
 
-func terminalProbesMatch(container corev1.Container) bool {
+func terminalProbesMatch(container corev1.Container, serverName string, port int32) bool {
 	probe := func(path string) *corev1.Probe {
+		if serverName != "" {
+			return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+				"/loopback-probe", "--url", fmt.Sprintf("http://127.0.0.1:%d%s", port, path),
+				"--mtls-server-name", serverName,
+			}}}, PeriodSeconds: 5, TimeoutSeconds: 2, FailureThreshold: 3}
+		}
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromString("terminal")}},
 			PeriodSeconds: 5, TimeoutSeconds: 2, FailureThreshold: 3}
 	}

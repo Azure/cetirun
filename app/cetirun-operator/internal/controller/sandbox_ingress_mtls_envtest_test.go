@@ -26,7 +26,7 @@ func TestReconciledSandboxIngressMTLSAPIServer(t *testing.T) {
 
 func testReconciledSandboxIngressMTLSAPIServer(t *testing.T, runtimeType api.SandboxType) {
 	ctrl.SetLogger(logr.Discard())
-	for _, kind := range []string{"openclaw", "hermes"} {
+	for _, kind := range []string{"openclaw", "hermes", "custom"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newNativeStartAPIHarnessWithRuntime(t, true, true, corev1.ReadWriteOnce, kind, runtimeType, nil)
 			installer := &nativeSandboxInstaller{kube: h.kube, chart: h.localHelm.chart}
@@ -42,7 +42,14 @@ func testReconciledSandboxIngressMTLSAPIServer(t *testing.T, runtimeType api.San
 			if err := h.admin.Create(h.ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "platform"}}); client.IgnoreAlreadyExists(err) != nil {
 				t.Fatal(err)
 			}
-			withIngressMTLS(t, kind, true)(h.r, h.admin)
+			if kind == "custom" {
+				h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "portal-system"}})
+				h.create(t, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: instanceNamespace(h.agent.Name)},
+					Data: map[string]string{"ca.crt": "synthetic-ca"}})
+				withCustomMTLS(t, true)(h.r, h.admin)
+			} else {
+				withIngressMTLS(t, kind, true)(h.r, h.admin)
+			}
 			policy := &api.AgentPolicy{}
 			team := &api.Team{}
 			if err := h.admin.Get(h.ctx, client.ObjectKey{Name: h.agent.Spec.Team}, team); err != nil {

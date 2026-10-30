@@ -117,9 +117,16 @@ func enableServedBrokerIdentity(t *testing.T, h *nativeStartAPIHarness) {
 }
 
 func TestNativeConnectionsServedCurrentSourceProof(t *testing.T) {
-	for _, kind := range []string{"openclaw", "hermes"} {
+	for _, kind := range []string{"openclaw", "hermes", "custom"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newNativeStartAPIHarnessConfigured(t, true, true, corev1.ReadWriteOnce, kind, nil)
+			if kind == "custom" {
+				h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-tools"}})
+				h.create(t, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "connections", Namespace: "cetirun-tools"},
+					Spec: corev1.ServiceSpec{Selector: map[string]string{sandboxpolicy.PeerUIDLabel: "connections-peer"},
+						Ports: []corev1.ServicePort{{Name: "https", Protocol: corev1.ProtocolTCP, Port: 443, TargetPort: intstr.FromInt32(8443)}}}})
+				withCustomConnections(t)(h.r, h.admin)
+			}
 			enableServedBrokerIdentity(t, h)
 			var nativeVerifier *agenttools.NativeVerifier
 			var nativeIdentity agenttools.NativePodIdentity
@@ -143,11 +150,13 @@ func TestNativeConnectionsServedCurrentSourceProof(t *testing.T) {
 				t.Fatal(err)
 			}
 			h.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: instanceNamespace(h.agent.Name)}})
-			h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-tools"}})
-			h.create(t, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "connections", Namespace: "cetirun-tools"},
-				Spec: corev1.ServiceSpec{Selector: map[string]string{sandboxpolicy.PeerUIDLabel: "connections-peer"},
-					Ports: []corev1.ServicePort{{Name: "https", Protocol: corev1.ProtocolTCP, Port: 443, TargetPort: intstr.FromInt32(8443)}}}})
-			withNativeConnections(t)(h.r, h.admin)
+			if kind != "custom" {
+				h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-tools"}})
+				h.create(t, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "connections", Namespace: "cetirun-tools"},
+					Spec: corev1.ServiceSpec{Selector: map[string]string{sandboxpolicy.PeerUIDLabel: "connections-peer"},
+						Ports: []corev1.ServicePort{{Name: "https", Protocol: corev1.ProtocolTCP, Port: 443, TargetPort: intstr.FromInt32(8443)}}}})
+				withNativeConnections(t)(h.r, h.admin)
+			}
 			role := &rbacv1.ClusterRole{}
 			if err := h.admin.Get(h.ctx, client.ObjectKey{Name: "cetirun-sandbox-admission"}, role); err != nil {
 				t.Fatal(err)

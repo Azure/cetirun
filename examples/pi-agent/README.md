@@ -9,7 +9,8 @@ The demo image and package are named `cetirun-pi-agent`.
 ## HTTP interfaces
 
 Set `spec.agent.port: 8080`. The platform passes that value as `PORT`; the image
-starts its HTTP server on `0.0.0.0:PORT`.
+starts its HTTP server on `0.0.0.0:PORT`, or `127.0.0.1:PORT` when the
+approved Custom mTLS contract supplies `CETIRUN_BIND_HOST=127.0.0.1`.
 
 | Interface | Implementation |
 | --- | --- |
@@ -35,6 +36,7 @@ platform requirements beyond this example.
 | [agent-api.mjs](agent-api.mjs) | HTTP contract, input validation, streaming, limits and cancellation. |
 | [pi-runtime.mjs](pi-runtime.mjs) | Pi SDK sessions, model discovery and tool execution. |
 | [gateway-runtime.mjs](gateway-runtime.mjs) | Model discovery and requests through the platform AI Gateway, with memory-only credentials and no automatic retries. |
+| [connections-runtime.mjs](connections-runtime.mjs) | Lazy native MCP client with rotating workload proof, explicit TLS trust, bounded requests and no automatic replay. |
 | [pi-resources.mjs](pi-resources.mjs) | Load the common `$HOME/.agents` view and connect Memory through the Pi SDK. |
 | [pi-tui.mjs](pi-tui.mjs) | Start Pi's native interactive mode with the same context and private auth directory. |
 | [auth-api.mjs](auth-api.mjs), [copilot-auth.mjs](copilot-auth.mjs) | Loopback-only login/status/cancel API and its operations CLI. |
@@ -46,6 +48,32 @@ through a Service or ingress. From an approved operations channel inside the
 Agent container, `node /opt/cetirun-pi/copilot-auth.mjs --help` describes its CLI.
 Credentials stay in `$HOME/.pi/agent/auth.json` and are not returned by the API
 or copied from another Agent. Do not disable exec restrictions to reach it.
+
+## Governed Connections and identity
+
+On an explicitly enabled common Sandbox, Pi registers `connections_status`,
+`connections_start_link`, `services_list` and `service_request` with the real
+SDK. The HTTP and TUI paths share these tools. The client uses the platform's
+`CETIRUN_CONNECTIONS_MCP_URL`, `CETIRUN_CONNECTIONS_MCP_TOKEN_FILE` and
+`CETIRUN_CONNECTIONS_MCP_CA_FILE`; partial configuration fails rather than
+falling back to a personal token. Workload proof and trust are reread per
+request. Neither these proofs nor provider credentials are stored in HOME,
+tool definitions, prompts or tool results.
+
+The first tool call performs MCP initialization; process readiness does not
+call the provider or depend on a Ready Agent. Requests have a 30-second bound,
+no redirects or automatic retries, and bounded output. An unknown outcome
+requires independent provider-state inspection before considering a repeat.
+Tool calls count toward the HTTP adapter's existing eight-call/two-minute
+budget. Removing the connection or suspending the Agent is enforced by the
+platform on subsequent calls, not by trusting a local client flag.
+
+Use the existing [Connections setup](../../app/cetirun-connections-mcp/README.md#governed-custom-workloads)
+and explicit owner bindings. Azure Agent Identity, generic Entra workload SDK
+projection, and personal GitHub/Google connections remain distinct. This
+example does not provision cloud identities, federation, OAuth applications,
+role assignments or certificates. Those require separately authorized setup
+and real provider validation.
 
 ## Build the image
 

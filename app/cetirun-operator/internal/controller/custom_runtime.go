@@ -82,11 +82,15 @@ func (r *AgentReconciler) customWaiting(ctx context.Context, instance *api.Agent
 }
 
 func (r *AgentReconciler) customOverrides(instance *api.Agent, team *api.Team) (map[string]any, error) {
-	if instance.Spec.GatewayTokenSecretRef != "" || instance.Spec.Tailscale != nil || instance.Spec.MSTeams != nil {
-		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support native credentials, Tailscale or Teams")
-	}
 	if agentIdentityRequested(instance) {
 		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support Agent Identity")
+	}
+	return r.customRuntimeValues(instance, team)
+}
+
+func (r *AgentReconciler) customRuntimeValues(instance *api.Agent, team *api.Team) (map[string]any, error) {
+	if instance.Spec.GatewayTokenSecretRef != "" || instance.Spec.Tailscale != nil || instance.Spec.MSTeams != nil {
+		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support native credentials, Tailscale or Teams")
 	}
 	if err := runtimebindings.ValidateOverrides(r.CetiRunHelmValues); err != nil {
 		return nil, fmt.Errorf("CETIRUN_HELM_VALUES platform configuration: %w", err)

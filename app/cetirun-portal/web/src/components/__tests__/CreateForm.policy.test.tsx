@@ -143,6 +143,21 @@ describe("Policy-controlled Agent creation", () => {
     expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ agentIdentityEnabled: undefined, agent: expect.objectContaining({ type: "custom" }) }));
   });
 
+  it("offers required Identity to explicitly qualified governed Custom", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond(options("restricted", {
+      allowedAgentTypes: ["custom"], agentIdentity: { allowed: true, required: true, customAllowed: true },
+    }))));
+    const user = userEvent.setup(); renderForm(); await selectTeam(user);
+    await user.type(screen.getByLabelText(/Agent Image/), "registry.example.com/assistant:1");
+    const identity = screen.getByRole("switch", { name: /Entra Agent Identity/ });
+    expect(identity).toBeChecked();
+    expect(identity).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({
+      agentIdentityEnabled: true, agent: expect.objectContaining({ type: "custom" }),
+    }));
+  });
+
   it("shows the Team policy's per-Agent Gateway limits read-only", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond(options("restricted", { rateLimits: { rpm: 30, tpm: 100000 } }))));
     const user = userEvent.setup(); renderForm(); await selectTeam(user);

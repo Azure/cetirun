@@ -26,7 +26,7 @@ func TestNativeEntraCommonRuntimeAPIServer(t *testing.T) {
 	for _, tc := range []struct {
 		kind string
 		mode corev1.PersistentVolumeAccessMode
-	}{{"openclaw", corev1.ReadWriteOnce}, {"hermes", corev1.ReadWriteOncePod}} {
+	}{{"openclaw", corev1.ReadWriteOnce}, {"hermes", corev1.ReadWriteOncePod}, {"custom", corev1.ReadWriteOnce}} {
 		t.Run(tc.kind, func(t *testing.T) {
 			h := newNativeStartAPIHarnessConfigured(t, true, true, tc.mode, tc.kind,
 				func(caps *sandbox.Capabilities) { caps.EntraID = true })

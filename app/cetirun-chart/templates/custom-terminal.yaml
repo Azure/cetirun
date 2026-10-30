@@ -92,6 +92,9 @@ spec:
     metadata:
       annotations:
         sidecar.istio.io/inject: "false"
+        {{- if $terminal.tlsContainer }}
+        cetirun.microsoft.com/ingress-mtls-config: {{ index .Values.podAnnotations "cetirun.microsoft.com/ingress-mtls-config" | quote }}
+        {{- end }}
       labels:
         {{- toYaml $labels | nindent 8 }}
     spec:
@@ -138,6 +141,14 @@ spec:
               value: {{ .Chart.Name | quote }}
             - name: CETIRUN_TERMINAL_SESSION_SECONDS
               value: {{ $terminal.sessionSeconds | quote }}
+            {{- if $terminal.tlsContainer }}
+            - name: CETIRUN_BIND_HOST
+              value: "127.0.0.1"
+            - name: CETIRUN_INGRESS_MTLS
+              value: "true"
+            - name: CETIRUN_INGRESS_SERVER_NAME
+              value: {{ $s.ingressServerName | quote }}
+            {{- end }}
           securityContext:
             runAsUser: 65532
             runAsGroup: 65532
@@ -151,16 +162,26 @@ spec:
           resources:
             {{- toYaml $s.helperResources | nindent 12 }}
           readinessProbe:
+            {{- if $terminal.tlsContainer }}
+            exec:
+              command: ["/loopback-probe", "--url", {{ printf "http://127.0.0.1:%v/healthz" $terminal.port | quote }}, "--mtls-server-name", {{ $s.ingressServerName | quote }}]
+            {{- else }}
             httpGet:
               path: /healthz
               port: terminal
+            {{- end }}
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 3
           livenessProbe:
+            {{- if $terminal.tlsContainer }}
+            exec:
+              command: ["/loopback-probe", "--url", {{ printf "http://127.0.0.1:%v/livez" $terminal.port | quote }}, "--mtls-server-name", {{ $s.ingressServerName | quote }}]
+            {{- else }}
             httpGet:
               path: /livez
               port: terminal
+            {{- end }}
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 3
@@ -170,6 +191,14 @@ spec:
             - name: api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
+            {{- if $terminal.tlsContainer }}
+            - name: ingress-public
+              mountPath: /var/run/cetirun/ingress-public
+              readOnly: true
+            {{- end }}
+        {{- with $terminal.tlsContainer }}
+        {{- toYaml (list .) | nindent 8 }}
+        {{- end }}
       volumes:
         - name: tmp
           emptyDir:
@@ -192,6 +221,9 @@ spec:
                       fieldRef:
                         apiVersion: v1
                         fieldPath: metadata.namespace
+        {{- with $terminal.tlsVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 {{- end }}
 {{- else if and (eq (include "cetirun.agent.type" .) "custom") .Values.ttyd.enabled }}
 {{- if not .Values.runtime.terminalResources }}

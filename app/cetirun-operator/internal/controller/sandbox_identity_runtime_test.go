@@ -199,6 +199,11 @@ func restartEntraReconciler(r *AgentReconciler) *AgentReconciler {
 		MemoryRegistry: r.MemoryRegistry, SkillsStorageAccount: r.SkillsStorageAccount,
 		SandboxPreparation: r.SandboxPreparation, SandboxNativeCoordination: r.SandboxNativeCoordination,
 		AIGateway: r.AIGateway, AIGatewayHTTPClient: r.AIGatewayHTTPClient, aiGatewayClientFactory: r.aiGatewayClientFactory,
+		CustomBindings: r.CustomBindings, ChatAccess: r.ChatAccess,
+		ConnectionsMCPNativeEnabled: r.ConnectionsMCPNativeEnabled, ConnectionsMCPURL: r.ConnectionsMCPURL,
+		ConnectionsMCPRuntimeTypes: r.ConnectionsMCPRuntimeTypes, ConnectionsMCPAudience: r.ConnectionsMCPAudience,
+		ConnectionsMCPCASecretName: r.ConnectionsMCPCASecretName, ConnectionsMCPBrokerNamespace: r.ConnectionsMCPBrokerNamespace,
+		ConnectionsMCPBrokerServiceAccount: r.ConnectionsMCPBrokerServiceAccount,
 	}
 }
 
