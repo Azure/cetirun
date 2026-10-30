@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
@@ -1014,6 +1016,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 				metav1.ConditionFalse, "HelmInstallFailed", err.Error())
 			_ = r.updateStatus(ctx, instance)
+			if reconciledSandbox {
+				expected, expectationErr := prepared.ReconcileExpectation()
+				if expectationErr != nil || slices.ContainsFunc(expected.Controls, sandboxworkload.KubernetesBindingResource) {
+					result, holdErr := r.holdReconciledSandbox(ctx, instance)
+					return result, stderrors.Join(err, expectationErr, holdErr)
+				}
+			}
 			return ctrl.Result{RequeueAfter: 60 * time.Second}, err
 		}
 		logger.Info("Helm chart installed/upgraded successfully", "release", releaseName)
@@ -1030,6 +1039,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			"Helm chart openclaw installed in namespace %s", ns)
 	} else {
 		logger.V(1).Info("Skipping Helm install, already deployed at current generation", "release", releaseName)
+	}
+	if reconciledSandbox {
+		if err := r.confirmReconciledKubernetesGrants(ctx, instance, prepared); err != nil {
+			result, holdErr := r.holdReconciledSandbox(ctx, instance)
+			return result, stderrors.Join(err, holdErr)
+		}
 	}
 	if registryManaged(instance) {
 		if err := r.cleanupRegistryCredentials(ctx, instance, false); err != nil {
@@ -1347,6 +1362,9 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	// Remove finalizer.
 	before := instance.DeepCopy()
 	controllerutil.RemoveFinalizer(instance, cetirunv1alpha1.Finalizer)
+	if reconciledSandbox {
+		controllerutil.RemoveFinalizer(instance, sandbox.HoldFinalizer)
+	}
 	logger.V(1).Info("Removing finalizer", "alias", alias)
 	if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		if errors.IsNotFound(err) {

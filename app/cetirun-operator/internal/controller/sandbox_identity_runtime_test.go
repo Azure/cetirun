@@ -106,6 +106,80 @@ func nativeEntraFixture(t *testing.T, kind string, configure ...func(*AgentRecon
 	return f
 }
 
+func TestNativeEntraCombinedKubernetesRuntime(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			f := nativeEntraFixture(t, kind, func(r *AgentReconciler, kube client.Client) {
+				configureReconciledKubernetesAccess(t, r, kube, "example", "policy-example")
+				config := &corev1.ConfigMap{}
+				if err := kube.Get(ctx, client.ObjectKey{Namespace: r.OperatorNamespace, Name: "sandbox-platform"}, config); err != nil {
+					t.Fatal(err)
+				}
+				var document SandboxPlatformConfiguration
+				if err := json.Unmarshal([]byte(config.Data[SandboxPlatformConfigurationKey]), &document); err != nil {
+					t.Fatal(err)
+				}
+				platform := document.Platforms[api.SandboxKata]
+				platform.Identities[0].Entra = &sandboxpolicy.EntraIdentity{ClientID: "example-client", TenantID: "example-tenant"}
+				document.Platforms[api.SandboxKata] = platform
+				raw, err := json.Marshal(document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				config.Data[SandboxPlatformConfigurationKey] = string(raw)
+				if err := kube.Update(ctx, config); err != nil {
+					t.Fatal(err)
+				}
+				installKubernetesFixtureCA(t, r, kube, "example")
+				refreshKubernetesFixturePolicy(t, r, "policy-example")
+			})
+			for range 2 {
+				f.reconcileOK(t)
+			}
+			initial := reconciledExpectationForTest(t, f)
+			source := initial.IdentityServiceAccount
+			if source == nil || source.Name != kubernetesFixtureAccount || source.UID == "" {
+				t.Fatal("combined identity lost the approved bootstrap-owned ServiceAccount")
+			}
+			assertKubernetesFixtureGrants(t, f, true)
+			spec := f.workload(t).Spec.Template.Spec
+			audiences := map[string]string{}
+			for _, volume := range spec.Volumes {
+				if volume.Projected == nil {
+					continue
+				}
+				for _, projection := range volume.Projected.Sources {
+					if projection.ServiceAccountToken != nil {
+						audiences[volume.Name] = projection.ServiceAccountToken.Audience
+					}
+				}
+			}
+			if len(audiences) != 2 || audiences["sandbox-kubernetes-api"] != "https://kubernetes.default.svc" ||
+				audiences["sandbox-entra-exchange"] != sandboxpolicy.EntraAudience || spec.ServiceAccountName != source.Name {
+				t.Fatal("combined identity did not retain separate bounded audience projections")
+			}
+			for _, suspended := range []bool{true, false} {
+				agent := f.current(t)
+				agent.Spec.Suspended = suspended
+				agent.Generation++
+				if err := f.kube.Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				for range 4 {
+					f.reconcileOK(t)
+				}
+				assertKubernetesFixtureGrants(t, f, !suspended)
+				current := reconciledExpectationForTest(t, f)
+				if current.IdentityServiceAccount == nil || current.IdentityServiceAccount.UID != source.UID ||
+					current.Home != initial.Home || current.Namespace != initial.Namespace || current.Agent != initial.Agent {
+					t.Fatal("combined identity lifecycle replaced its retained identity or HOME")
+				}
+			}
+		})
+	}
+}
+
 func TestNativeEntraIndependentKubernetesApproval(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

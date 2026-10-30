@@ -8,6 +8,11 @@ import (
 	"encoding/hex"
 )
 
+const (
+	WorkloadLabel = "cetirun.microsoft.com/terminal"
+	ExecRole      = "cetirun-terminal-exec"
+)
+
 func WorkloadName(agentWorkload string) string {
 	if len(agentWorkload) <= 54 {
 		return agentWorkload + "-terminal"

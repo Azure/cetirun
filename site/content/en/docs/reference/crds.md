@@ -318,7 +318,7 @@ HOME lifecycle, with per-container resource limits and no implicit VM overhead.
 Saving a configuration does not discover or install a handler. Container
 supports the same separately approved [managed ingress mTLS](../../guides/agent-ingress-mtls/)
 as Kata; a capability flag alone does not authorize the endpoint.
-FQDN blocking, Entra ID and Kubernetes grants remain unsupported on this native
+FQDN blocking and Kubernetes grants remain unsupported on this native
 backend. Select a new Sandbox/Agent instead of attempting online runtime conversion.
 
 Policy assignment is opt-in, not a prerequisite for legacy deployment.
@@ -454,6 +454,14 @@ The summary shows any requested ServiceAccount and namespace or cluster-wide per
 Policy. Platform administrators manage this configuration outside the Portal;
 authorization requires separately approved platform grants. Saving other Policy
 fields preserves the existing Kubernetes access configuration.
+New common-executor Kata OpenClaw/Hermes Agents can use explicitly registered
+Kubernetes access with exact policy-role and per-Agent ServiceAccount approvals.
+The operator projects a bounded, audience-specific token only into the main
+container, pins role UID/version/rules and journals the owned binding UIDs.
+Suspension, grant removal and deletion revoke those bindings; shared ClusterRoles
+are not adopted or deleted. Nil access grants no Kubernetes API token or permissions.
+Kubernetes access does not enable Entra ID or Broker/Connections. See the
+[administrator setup and validation boundaries](https://github.com/Azure/cetirun/tree/main/examples/native-sandbox#kubernetes-api-access).
 
 The Internal network access editor groups each destination CIDR and its complete
 port list into one rule card, matching one `allowedInternalCIDRs` entry. Edit rule
@@ -470,11 +478,14 @@ not a Portal toggle. Broker-backed Agent Identity requires current credential-po
 readback for aggregate `PolicyApplied`; common-executor workloads also require the
 registered native Connections integration. Other controls depend on the selected
 execution profile and platform capabilities.
-New common-executor Kata lifetimes support internal CIDR grants and SCTP port
-rules only with the corresponding explicit platform registration. SCTP internal
+New common-executor Kata lifetimes support internal CIDR grants, approved
+Kubernetes access and SCTP port rules with the corresponding explicit platform
+registration and approvals. SCTP internal
 grants are limited to direct endpoints, excluding registered Service and
 Kubernetes API destinations. Retained version-1 native single-start lifetimes
-still reject internal grants and SCTP requests. See the
+still reject internal grants, Kubernetes access, Entra projection and SCTP requests.
+Common-executor Entra projection requires explicit platform approval and a pinned
+bootstrap-owned ServiceAccount; it does not grant Kubernetes access. See the
 [native SCTP usage and qualification boundary]({{< repo "examples/native-sandbox/README.md" >}}#governed-sctp-egress);
 an accepted API value does not qualify the actual network path.
 

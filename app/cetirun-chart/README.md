@@ -103,6 +103,17 @@ projected; it is not copied into an Agent-owned CA resource. Metadata-only reads
 still require ordinary resource `get` permission, so do not grant cluster-wide
 Secret access.
 
+For common-executor Kata lifetimes, the controller records workload binding
+intents before this chart is applied and confirms their live UIDs afterward.
+Current Pod admission requires those confirmed grants and exact ClusterRole
+source pins. A suspended common render validates the compiler output but omits
+workload RoleBindings/ClusterRoleBindings and requires every component to have
+zero replicas; it cannot recreate revoked access during suspension.
+Kubernetes identity volumes and mounts must be present unchanged on the main
+container and cannot be added to helpers. See the
+[administrator setup](../../examples/native-sandbox/README.md#kubernetes-api-access);
+this chart does not approve roles or enable capabilities.
+
 Offline regression checks include:
 
 ```bash

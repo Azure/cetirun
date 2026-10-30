@@ -18,6 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/internal/chataccess"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 )
 
 func revocationFixture(t *testing.T) (*Plan, client.Client) {
@@ -46,6 +48,60 @@ func revocationFixture(t *testing.T) (*Plan, client.Client) {
 		objects = append(objects, object)
 	}
 	return plan, fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+}
+
+func TestOwnedBindingInventoryKeepsTerminalAuthoritySeparate(t *testing.T) {
+	for _, invalid := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fixed terminal", true: "broadened terminal"}[invalid], func(t *testing.T) {
+			plan, kube := revocationFixture(t)
+			ctx := context.Background()
+			role, reader := terminalpolicy.ReadRoles("cetirun-"+plan.AgentName,
+				chataccess.ServiceName(plan.AgentName), plan.AgentName, string(plan.Binding.AgentUID))
+			role.UID, reader.UID = "terminal-role-uid", "terminal-reader-uid"
+			for _, object := range []client.Object{role, reader} {
+				if err := kube.Create(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+			}
+			meta := *role.ObjectMeta.DeepCopy()
+			meta.UID, meta.ResourceVersion = "terminal-binding-uid", ""
+			meta.Name += "-exec"
+			meta.Labels[terminalpolicy.WorkloadLabel] = "true"
+			exec := &rbacv1.RoleBinding{ObjectMeta: meta,
+				Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: role.Namespace, Name: role.Name}},
+				RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: terminalpolicy.ExecRole}}
+			readerMeta := *reader.ObjectMeta.DeepCopy()
+			readerMeta.UID, readerMeta.ResourceVersion = "terminal-reader-binding-uid", ""
+			readerBinding := &rbacv1.ClusterRoleBinding{ObjectMeta: readerMeta, Subjects: exec.Subjects,
+				RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: reader.Name}}
+			if invalid {
+				exec.RoleRef.Name = "cluster-admin"
+			}
+			for _, object := range []client.Object{exec, readerBinding} {
+				if err := kube.Create(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+			}
+			inventory, err := OwnedBindingInventory(ctx, kube, plan.AgentName, plan.Binding.AgentUID)
+			if invalid {
+				if !errors.Is(err, ErrOwnership) {
+					t.Fatal("terminal marker concealed an unapproved grant:", err)
+				}
+				return
+			}
+			if err != nil || len(inventory) != 2 {
+				t.Fatal("terminal access entered the Agent grant cleanup inventory:", err)
+			}
+			if err := RevokeBindings(ctx, kube, inventory); err != nil {
+				t.Fatal(err)
+			}
+			for _, object := range []client.Object{exec, readerBinding} {
+				if err := kube.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+					t.Fatal("Agent grant revocation deleted the separate terminal authority:", err)
+				}
+			}
+		})
+	}
 }
 
 func TestRevokeOwnedBindingsIsIdempotentAndPreservesSharedResources(t *testing.T) {

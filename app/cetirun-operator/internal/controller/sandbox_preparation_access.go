@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -34,7 +35,8 @@ func (r *AgentReconciler) sandboxPreparationStateNeeded(agent *api.Agent) bool {
 	cleanupPending := !agent.DeletionTimestamp.IsZero() &&
 		(controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) || controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer))
 	return controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) ||
-		(r.OperatorNamespace != "" && (r.SandboxPreparation != nil || cleanupPending))
+		(r.OperatorNamespace != "" && (r.SandboxPreparation != nil || cleanupPending ||
+			controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer)))
 }
 
 func (r *AgentReconciler) revokeSandboxPreparationGrants(ctx context.Context, agent *api.Agent) error {
@@ -56,13 +58,23 @@ func (r *AgentReconciler) revokeSandboxPreparationGrants(ctx context.Context, ag
 	}
 	bindings, err := read(ctx, agent.Name, agent.UID)
 	if apierrors.IsNotFound(err) && !controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
-		return nil
+		return r.checkMissingReconciledGrantJournal(ctx, agent)
 	}
 	if err != nil {
 		return fmt.Errorf("Sandbox grant cleanup inventory is unavailable: %w", err)
 	}
 	if len(bindings) == 0 {
 		return nil
+	}
+	if err := r.prepareReconciledGrantRevocation(ctx, agent, bindings); err != nil {
+		confirmed, readErr := read(ctx, agent.Name, agent.UID)
+		if readErr != nil {
+			return errors.Join(err, readErr)
+		}
+		confirmed = slices.DeleteFunc(confirmed, func(ref sandboxpolicy.BindingReference) bool {
+			return ref.RoleRef.Kind == "ClusterRole" && ref.UID == ""
+		})
+		return errors.Join(err, journal.Revoke(ctx, agent.Name, agent.UID, confirmed))
 	}
 	return journal.Revoke(ctx, agent.Name, agent.UID, bindings)
 }

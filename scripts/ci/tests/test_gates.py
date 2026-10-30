@@ -347,7 +347,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_operator_suite_budget_is_bounded_and_shared_by_all_entrypoints(self):
         makefile = (validate.ROOT / "app/cetirun-operator/Makefile").read_text()
         self.assertIn("GO_TEST_TIMEOUT := 30m", makefile)
-        self.assertIn("GO_ENVTEST_TIMEOUT := 30m", makefile)
+        self.assertIn("GO_ENVTEST_TIMEOUT := 40m", makefile)
         for target, timeout in (
             ("test", "GO_TEST_TIMEOUT"),
             ("test-envtest", "GO_ENVTEST_TIMEOUT"),
@@ -383,6 +383,59 @@ class WorkflowContractTests(unittest.TestCase):
             "go -C ../internal test ./... -v -count=1",
             steps["Run go test"],
         )
+
+    def test_operator_go_check_requires_both_bounded_workers(self):
+        text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
+        jobs = dict(re.findall(
+            r"(?ms)^  ([a-z][\w-]*):\n(.*?)(?=^  [a-z][\w-]*:|\Z)", text
+        ))
+        aggregate = jobs["go-build-test"]
+        self.assertIn("name: Operator Go checks\n", aggregate)
+        self.assertIn("needs: [go-unit-tests, go-api-tests]", aggregate)
+        self.assertIn("if: ${{ always() }}", aggregate)
+        self.assertIn("timeout-minutes: 5", aggregate)
+        self.assertIn("UNIT_RESULT: ${{ needs.go-unit-tests.result }}", aggregate)
+        self.assertIn("API_RESULT: ${{ needs.go-api-tests.result }}", aggregate)
+        self.assertNotIn("continue-on-error", aggregate)
+        for job in ("go-unit-tests", "go-api-tests"):
+            with self.subTest(job=job):
+                self.assertIn("timeout-minutes: 60", jobs[job])
+                self.assertIn("working-directory: app/cetirun-operator", jobs[job])
+                self.assertIn("go-version-file: .go-version", jobs[job])
+                self.assertIn("persist-credentials: false", jobs[job])
+                self.assertNotIn("needs:", jobs[job])
+                self.assertNotIn("if:", jobs[job])
+                self.assertNotIn("continue-on-error", jobs[job])
+        for step in ("Run go test", "Run go vet", "Run go build",
+                     "Check shared internal packages", "Test terminal reconnect client",
+                     "Check reachable Go vulnerabilities"):
+            self.assertIn(f"- name: {step}\n", jobs["go-unit-tests"])
+            self.assertNotIn(f"- name: {step}\n", jobs["go-api-tests"])
+        for step in ("Download Operator API test modules", "Verify generated API artifacts",
+                     "Test Agent API admission", "Download Portal API test modules",
+                     "Test Portal lifecycle and Sandbox API contracts"):
+            self.assertIn(f"- name: {step}\n", jobs["go-api-tests"])
+            self.assertNotIn(f"- name: {step}\n", jobs["go-unit-tests"])
+        self.assertIn("go -C ../internal mod download", jobs["go-api-tests"])
+        self.assertLess(
+            jobs["go-api-tests"].index("- name: Download Operator API test modules"),
+            jobs["go-api-tests"].index("- name: Test Agent API admission"),
+        )
+        script = textwrap.dedent(aggregate.split("        run: |\n", 1)[1])
+        results = ("success", "failure", "cancelled", "skipped", "")
+        for unit in results:
+            for api in results:
+                with self.subTest(unit=unit, api=api):
+                    run = subprocess.run(
+                        ["bash", "-e", "-o", "pipefail", "-c", script],
+                        env={**os.environ, "UNIT_RESULT": unit, "API_RESULT": api},
+                        text=True, capture_output=True, timeout=5,
+                    )
+                    self.assertEqual(
+                        run.returncode == 0, unit == api == "success", run.stdout + run.stderr
+                    )
+                    if run.returncode:
+                        self.assertIn("::error::Operator Go jobs did not both succeed", run.stdout)
 
     def test_operator_envtest_and_helm_use_manifest_installer_without_duplicate_pins(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()

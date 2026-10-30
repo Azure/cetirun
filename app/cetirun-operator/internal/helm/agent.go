@@ -16,6 +16,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 )
 
@@ -31,28 +32,30 @@ type AgentRequest struct {
 }
 
 type PreparedRelease struct {
-	Values            map[string]any
-	Agent             agents.ResolvedAgent
-	ChartVersion      string
-	PlanHash          string
-	WorkloadHash      string
-	basePlanHash      string
-	releaseName       string
-	manifestHash      string
-	manifest          []byte
-	sealedInput       string
-	actionRevision    int
-	custom            bool
-	chart             *chart.Chart
-	sidecarAPIVersion string
-	pdbAPIVersion     string
-	homeRetention     bool
-	apiValidated      bool
-	sandboxBundle     *sandboxworkload.Bundle
-	sandboxTemplate   *corev1.PodTemplateSpec
-	sandboxReconcile  *sandboxworkload.ReconcileExpectation
-	sandboxPreflight  func(context.Context) error
-	sandboxGuard      func(context.Context) error
+	Values               map[string]any
+	Agent                agents.ResolvedAgent
+	ChartVersion         string
+	PlanHash             string
+	WorkloadHash         string
+	basePlanHash         string
+	releaseName          string
+	manifestHash         string
+	manifest             []byte
+	sealedInput          string
+	actionRevision       int
+	custom               bool
+	chart                *chart.Chart
+	sidecarAPIVersion    string
+	pdbAPIVersion        string
+	homeRetention        bool
+	apiValidated         bool
+	sandboxBundle        *sandboxworkload.Bundle
+	sandboxTemplate      *corev1.PodTemplateSpec
+	sandboxReconcile     *sandboxworkload.ReconcileExpectation
+	sandboxPreflight     func(context.Context) error
+	sandboxRenderGuard   func(context.Context) error
+	sandboxGuard         func(context.Context) error
+	sandboxBindingCreate func(context.Context, unstructured.Unstructured) (func(context.Context) error, error)
 }
 
 // CacheKey includes actual rendered output as well as the consumed inputs.

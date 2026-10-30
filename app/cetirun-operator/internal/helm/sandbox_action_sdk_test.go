@@ -86,6 +86,8 @@ type sandboxSDKAPI struct {
 	requests []sandboxSDKRequest
 	sequence int
 	before   func(sandboxSDKRequest)
+	respond  func(sandboxSDKRequest) (*http.Response, error)
+	fail     func(sandboxSDKRequest) error
 	stored   func(*unstructured.Unstructured)
 }
 
@@ -159,6 +161,17 @@ func (a *sandboxSDKAPI) request(request *http.Request) (*http.Response, error) {
 	a.requests = append(a.requests, call)
 	if a.before != nil {
 		a.before(call)
+	}
+	if a.respond != nil {
+		response, err := a.respond(call)
+		if response != nil || err != nil {
+			return response, err
+		}
+	}
+	if a.fail != nil {
+		if err := a.fail(call); err != nil {
+			return nil, err
+		}
 	}
 	current := a.objects[call.path]
 	switch call.method {

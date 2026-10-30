@@ -248,7 +248,7 @@ Removed or never-created auxiliary Deployments still require their ReplicaSets
 and namespace Pods to be absent. Their absence does not replace the main HOME
 workload's acknowledged shutdown.
 A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
-StatefulSet shutdown acknowledgement, but only before any apply is submitted and
+StatefulSet shutdown acknowledgement, but only before any workload write is submitted and
 after ordinary namespace/Pod cleanup checks. Its expectation is first persisted
 as initializing, before the grant journal, and becomes pending only after the
 empty journal is confirmed. Publication retries, including lost acknowledgements,
@@ -259,15 +259,17 @@ through a conditional state update. Submitted, uncertain or older unmarked
 checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
 Helm configuration and history reads recheck current authority without marking
-submission. The post-renderer records submission before resource writes, so a
-first-install history read failure can cancel a still-pending expectation and
-recover through normal retry or deletion. It cannot reset a previously submitted
-or uncertain checkpoint merely because the workload is absent.
-Final apply claims the expectation resource version before its last authority
-read. First attempts stay pending throughout those reads; a CAS records submitted
-only immediately before manifest delivery. Competing claims fence stale writers,
-while lost submission acknowledgements and previously submitted work remain
-uncertain and require shutdown evidence.
+submission. The post-renderer claims the expectation resource version and
+rechecks authority, but leaves a first workload pending. Helm's guarded writer
+records submission immediately before each StatefulSet or Deployment CREATE,
+or before an update batch containing workloads. A first-install binding rejection
+before that boundary can therefore cancel the pending workload and recover through
+normal retry or deletion. Grant submissions remain independently tracked: an
+uncertain binding CREATE still blocks cleanup even when no workload was submitted.
+Cancellation and workload submission compete through conditional state writes;
+no missing-resource observation can reset a submitted or older uncertain record.
+Competing claims fence stale writers, while lost workload-submission
+acknowledgements and previously submitted work retain their shutdown requirements.
 The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
 retains this read/list permission when new native starts are disabled so existing
 lifetimes can finish cleanup.
@@ -466,8 +468,16 @@ remain required; read-only root and ingress support must match the selected
 policy. The configuration harness allow-list supports `openclaw` and `hermes`;
 the earlier single-start executor itself remains OpenClaw-only.
 For native Kata, `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
-FQDN support and Kubernetes access flags must be
-`false`. Generic Entra projection can be explicitly enabled for common-executor
+and FQDN support must be `false`. Kubernetes access may be
+explicitly registered for new Kata common-executor lifetimes with exact policy-role
+and per-Agent identity approvals; see the
+[Kubernetes API access example](../../examples/native-sandbox/README.md#kubernetes-api-access).
+Retained single-start lifetimes continue to reject Kubernetes access.
+Upgrade all Operator/admission readers before activating a shared registration.
+Older readers cannot consume or clean up the new RBAC controls; disabling the
+capability alone does not make a rollback safe. Follow the example's cleanup
+and old-compatible-state prerequisites before downgrading.
+Generic Entra projection can be explicitly enabled for common-executor
 lifetimes with the dedicated bootstrap/source contract below. These are not
 physical fencing or guest-external runtime-observation guarantees.
 
@@ -514,7 +524,8 @@ different backend; active configuration reservations still reject runtime edits.
 Container uses the same supported CIDR/port/ingress policy subset as native Kata.
 Managed ingress mTLS uses the same approved endpoint and certificate contract
 described above; a runtime or capability flag alone does not authorize it.
-FQDN blocking, Entra ID and Kubernetes grants remain unsupported;
+Generic Entra projection requires the separately approved bootstrap identity
+contract below. FQDN blocking and Kubernetes grants remain unsupported;
 their capability flags must stay `false`, as must `enforcementObservation` and
 `restrictiveFailure`.
 
@@ -2033,13 +2044,32 @@ Azure access tokens. See the [focused commands](../../DEVELOPMENT.md#sandbox-ent
 
 The compiler does not provision or revoke cloud identities. RBAC revocation
 helpers require authoritative UID/ownership checks and confirmed absence, and
-preserve shared roles/accounts. The held controller uses
+preserve shared roles/accounts. Held and common controllers use
 [`GrantJournalStore`](internal/sandboxpolicy/journal.go) to persist both workload
 and admission-source bindings before writes, record their UIDs, and integrate
 retryable revocation into hold, suspension and deletion paths. Its protected
+inventory is separate from the platform terminal's fixed own-Pod and own-Agent
+read/exec bindings. Only exact terminal names, subjects, ownership and current
+read-role rules qualify for that separation; a terminal label alone does not.
+Terminal shutdown and namespace/owner cleanup retain their existing lifecycle.
+The journal's protected
 ConfigMap survives foreground owner deletion, uses resourceVersion CAS, and is
 bounded to 1,024 references and 512 KiB. Discovering visible bindings is never
-treated as complete cleanup inventory. This does not provide cloud-identity
+treated as complete cleanup inventory. Current common Pod admission additionally
+requires confirmed workload binding UIDs and exact live binding contents. A
+lost apply acknowledgement retains the write-ahead cleanup obligation; it does
+not authorize a Pod from an unconfirmed intent. Common suspension renders zero
+replicas without recreating revoked workload bindings, while preserving the
+requested identity for a subsequently authorized resume.
+Each binding CREATE has its own submission checkpoint. A definitive API
+rejection records a non-creation outcome against that submission's exact
+expectation UID and resource version, allowing ordinary grant cleanup and retry.
+It cannot clear a newer submission or replace the workload's shutdown evidence.
+Binding CREATEs do not follow HTTP Retry-After responses: an uncertain first write
+must not be hidden by a later rejection. Timeouts, lost responses and failed
+outcome writes retain the confirmation barrier; a missing binding alone is
+never proof of non-creation.
+This does not provide cloud-identity
 revocation or authorize execution. Recording unchanged canonical inventory uses
 one authoritative read and no write or confirming read; real changes retain the
 write-and-confirm path and never discard an already recorded binding UID.
@@ -2048,14 +2078,15 @@ Each approved grant must carry the live ClusterRole UID, resource version and
 normalized rules; the approval's `Revision` is a separate administrative
 revision, not a substitute for an API observation. Configuration assessment
 calls [`VerifyPolicyGrants`](internal/sandboxpolicy/grants.go) through the
-authoritative reader for only the requesting policy's grants. Held preparation,
-its mutation guards and future workload application boundaries must also verify
-immediately before consuming requested grants,
+authoritative reader for only the requesting policy's grants. Held preparation and common reconciliation, their apply guards and current Pod
+admission also verify immediately before consuming requested grants,
 invalidate changed observations and coordinate revocation on drift. The
 compiler remains a pure transformation and cannot detect a later role edit.
 Explicitly approved wildcard or Secret access is not silently rewritten.
-The operator gains only `get` access to ClusterRoles for this check, not
-role editing, binding or escalation authority.
+The approval check itself needs only `get` access to ClusterRoles. It adds no
+role editing, blanket binding or escalation authority. Kubernetes still requires
+the operator to hold a role's permissions or an administrator-provided `bind`
+permission for that exact ClusterRole before creating its bindings.
 
 The operator registers Sandbox and AgentPolicy configuration reconcilers.
 Sandbox `Ready` describes prerequisites; AgentPolicy `Accepted` describes

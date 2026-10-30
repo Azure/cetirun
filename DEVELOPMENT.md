@@ -110,12 +110,19 @@ go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
 
-The Operator's full unit and envtest targets use a bounded 30-minute Go
-per-package timeout. The expanded controller unit suite exceeds 20 minutes on
-CI runners; envtest also runs that suite alongside isolated API-server
-regressions. Root Go test gates and CI use the same component targets. Neither
-target filters out tests. These budgets do not change individual test assertions,
-runtime/lifecycle deadlines, or the 60-minute CI job limit.
+The Operator's full unit target uses a bounded 30-minute Go per-package timeout
+because the combined controller regressions exceed 20 minutes on CI runners.
+The full envtest target uses 40 minutes because it also runs the unit suite
+alongside isolated API-server regressions; together they exceed 30 minutes on
+CI runners. Root Go test gates and CI use the same component targets. Neither
+target filters out tests. These budgets do not change individual test assertions
+or runtime/lifecycle deadlines.
+
+Operator CI runs unit/build checks and API admission checks in separate,
+independent jobs, each retaining a 60-minute limit. The existing `Operator Go checks`
+status aggregates both and fails unless both succeed, including when a job fails,
+is skipped or is cancelled. This avoids sharing one job deadline between the
+two full suites without dropping generated-API, Portal, build or vulnerability checks.
 
 The build writes `app/cetirun-operator/bin/manager`; it does not start the
 operator. The component's `make test` and `make vet` targets are also available.
@@ -318,6 +325,37 @@ boundaries, managed-peer isolation, deny precedence and grant removal for
 OpenClaw/Hermes with RWO/RWOP. These are offline checks, not Cilium dataplane
 qualification; use the [internal-egress example](examples/native-sandbox/README.md#scoped-internal-egress)
 for the separate authorized live witnesses.
+
+Kata Kubernetes access has a focused served-API regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxKubernetes(Access|PostSubmitRecovery|RejectedGrantRecovery|FirstInstallRejection)APIServer$' -count=1
+```
+
+It uses real API RBAC and admission for OpenClaw and Hermes, including
+administrator-approved namespace and cluster-wide grants, token projection
+validation, role-version drift, access withdrawal and journal/finalizer cleanup
+after restart with new starts disabled. Unit tests additionally cover missing
+and foreign approvals, unconfirmed or shared bindings, lost apply
+acknowledgements, suspension/resume and nil-access isolation. First-install
+recovery tests inject a failed final authority read before Helm receives its
+manifest: a first attempt stays pending until a workload write is authorized, so retry and
+deletion can conditionally cancel it without downgrading a submitted record.
+A served-API regression verifies the cancellation and retry with real
+conditional writes. Previously authorized applies, competing claims and unconfirmed
+cancellations retain their shutdown requirements. Rejected-grant tests resume
+stopped Agents with temporarily missing binding authority, then verify retry and
+normal deletion. First-install rejection tests also verify cancellation before
+any workload write, unchanged lifetime identities on retry, and normal deletion.
+Helm SDK tests check submission immediately before workload CREATEs or update
+batches, including first-install adoption, grant rejection, uncertain responses
+and disabled HTTP retries. Controller tests fence delayed rejection receipts and
+cover failed/lost outcome writes and independent uncertain-grant cleanup barriers.
+All fixtures are
+synthetic; kubelet token rotation, Kubernetes client requests from a running
+Agent and Cilium dataplane enforcement require separately authorized live
+validation. See the [administrator setup](examples/native-sandbox/README.md#kubernetes-api-access).
 
 Registered Kata SCTP rules have a focused served-API regression using the same
 local assets:

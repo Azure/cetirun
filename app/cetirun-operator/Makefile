@@ -17,8 +17,8 @@ CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
 # The full controller suite exceeds 20m on CI runners.
 GO_TEST_TIMEOUT := 30m
-# Envtest also runs the unit suite alongside isolated API-server regressions.
-GO_ENVTEST_TIMEOUT := 30m
+# Envtest also runs the unit suite; the combined regressions exceed 30m in CI.
+GO_ENVTEST_TIMEOUT := 40m
 
 .PHONY: all build build-terminal build-node-guard build-sandbox-config-change test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
