@@ -62,17 +62,42 @@ type commonChatSource struct {
 	IntentDigest    string    `json:"intentDigest,omitempty"`
 }
 
+type commonChatIngressTLS struct {
+	AgentUID    types.UID `json:"agentUID"`
+	Namespace   string    `json:"namespace"`
+	Harness     string    `json:"harness"`
+	Port        int32     `json:"port"`
+	ServerName  string    `json:"serverName"`
+	ServiceHost string    `json:"serviceHost"`
+}
+
 type commonChatExpectation struct {
-	Version         string                      `json:"version"`
-	Agent           commonChatIdentity          `json:"agent"`
-	AgentGeneration int64                       `json:"agentGeneration"`
-	Namespace       commonChatIdentity          `json:"namespace"`
-	Binding         commonChatBinding           `json:"binding"`
-	Revision        string                      `json:"revision"`
-	PlanHash        string                      `json:"planHash"`
-	Workloads       []commonChatWorkload        `json:"workloads"`
-	Sources         []commonChatSource          `json:"sources"`
-	Controls        []unstructured.Unstructured `json:"controls"`
+	Version          string                      `json:"version"`
+	Agent            commonChatIdentity          `json:"agent"`
+	AgentGeneration  int64                       `json:"agentGeneration"`
+	Namespace        commonChatIdentity          `json:"namespace"`
+	Binding          commonChatBinding           `json:"binding"`
+	Revision         string                      `json:"revision"`
+	PlanHash         string                      `json:"planHash"`
+	Workloads        []commonChatWorkload        `json:"workloads"`
+	Sources          []commonChatSource          `json:"sources"`
+	Controls         []unstructured.Unstructured `json:"controls"`
+	CustomIngressTLS *commonChatIngressTLS       `json:"customIngressTLS,omitempty"`
+}
+
+func (e commonChatExpectation) chatPort(agent *api.Agent) (int32, bool) {
+	if e.CustomIngressTLS == nil {
+		return *agent.Spec.Agent.Port, true
+	}
+	plan := e.CustomIngressTLS
+	host := chataccess.ServiceName(agent.Name) + "." + e.Namespace.Name + ".svc.cluster.local"
+	hash := sha256.Sum256([]byte(agent.UID))
+	if plan.AgentUID != agent.UID || plan.Namespace != e.Namespace.Name || plan.Harness != "custom" ||
+		plan.Port != *agent.Spec.Agent.Port || plan.ServiceHost != host ||
+		plan.ServerName != "agent-"+hex.EncodeToString(hash[:16])+"."+host {
+		return 0, false
+	}
+	return chataccess.MTLSAPIPort, true
 }
 
 func commonExpectationName(namespace string, uid types.UID) string {
@@ -143,8 +168,12 @@ func (c *Client) verifyCommonChatExpectation(ctx context.Context, agent *api.Age
 	}) {
 		return expected, false, nil
 	}
+	port, valid := expected.chatPort(agent)
+	if !valid {
+		return expected, false, nil
+	}
 	for _, control := range expected.Controls {
-		if !commonChatCiliumAllows(control, agent, namespace.Name, caller, *agent.Spec.Agent.Port) {
+		if !commonChatCiliumAllows(control, agent, namespace.Name, caller, port) {
 			continue
 		}
 		actual := &unstructured.Unstructured{}

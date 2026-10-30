@@ -26,7 +26,18 @@ type chatTransport func(*http.Request) (*http.Response, error)
 func (f chatTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestChatOwnerBindingAndForwarding(t *testing.T) {
+	for _, mtls := range []bool{false, true} {
+		t.Run(map[bool]string{false: "legacy", true: "common-mTLS"}[mtls], func(t *testing.T) {
+			testChatOwnerBindingAndForwarding(t, mtls)
+		})
+	}
+}
+
+func testChatOwnerBindingAndForwarding(t *testing.T, mtls bool) {
 	agent, objects := chattest.Objects()
+	if mtls {
+		agent, objects = chattest.MTLSObjects(t)
+	}
 	k := kube.NewClient(newFakeClient(objects...))
 	target, err := k.ResolveChat(context.Background(), agent, chattest.Caller)
 	if err != nil || !target.Available {
@@ -67,7 +78,14 @@ func TestChatOwnerBindingAndForwarding(t *testing.T) {
 		r.Header.Set("X-Envoy-Max-Retries", "9")
 		return r.WithContext(auth.NewContext(r.Context(), auth.Claims{Alias: "alice", Subject: "subject-alice"}))
 	}
+	models := makeRequest()
+	models.Method, models.URL.Path, models.Body = http.MethodGet, "/api/v1/instances/chat-example/chat/v1/models", nil
 	w := httptest.NewRecorder()
+	h.Models(w, models)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "example-agent") || posts.Load() != 0 {
+		t.Fatalf("models: %d %s posts=%d", w.Code, w.Body.String(), posts.Load())
+	}
+	w = httptest.NewRecorder()
 	h.Complete(w, makeRequest())
 	if w.Code != 200 || posts.Load() != 1 || !strings.Contains(w.Body.String(), "synthetic result") {
 		t.Fatalf("completion: %d %s posts=%d", w.Code, w.Body.String(), posts.Load())

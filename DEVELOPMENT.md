@@ -177,6 +177,18 @@ tests use synthetic scheduler/kubelet/Gateway observations, not live model,
 tool, Cilium, CSI, identity-provider or image qualification. Run the normal
 Portal backend, frontend and chart checks when changing Custom owner access.
 
+Portal mTLS Chat regressions consume synthetic policy-compiler output, not a
+handwritten plaintext network rule. The compiler test checks the fixture on every
+run; regenerate it after an intentional contract change with the pinned Go toolchain:
+
+```bash
+CETIRUN_UPDATE_CHAT_FIXTURE=true go -C app/cetirun-operator test ./internal/sandboxpolicy -run '^TestCustomMTLSPortalFixture$' -count=1
+go -C app/cetirun-portal test ./internal/kube ./internal/handler -run 'TestCommonChat|TestChatOwnerBindingAndForwarding' -count=1
+```
+
+These are offline endpoint/dispatch checks. The Portal transport remains HTTP to
+its local mesh; they do not qualify live Istio/SDS credentials or TLS handshakes.
+
 Image building is a separate step and can download pinned base images and Go
 dependencies:
 
