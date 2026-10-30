@@ -151,17 +151,24 @@ describe("Policy-controlled Agent creation", () => {
   });
 
   it("offers required Identity to explicitly qualified governed Custom", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond(options("restricted", {
-      allowedAgentTypes: ["custom"], agentIdentity: { allowed: true, required: true, customAllowed: true },
-    }))));
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(respond(options("restricted", {
+      allowedAgentTypes: ["custom"],
+      gateway: { known: true, agentTypes: ["custom"], sharedModels: [{ name: "allowed-model" }], githubCopilot: false },
+      agentIdentity: { allowed: true, required: true, customAllowed: true },
+    })))));
     const user = userEvent.setup(); renderForm(); await selectTeam(user);
+    expect(screen.getByRole("combobox", { name: "Agent Type" })).toHaveValue("custom");
     await user.type(screen.getByLabelText(/Agent Image/), "registry.example.com/assistant:1");
     const identity = screen.getByRole("switch", { name: /Entra Agent Identity/ });
     expect(identity).toBeChecked();
     expect(identity).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    const create = screen.getByRole("button", { name: "Create Agent" });
+    expect(create).toBeEnabled();
+    await user.click(create);
+    expect(mutation.mutate).toHaveBeenCalledTimes(1);
     expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({
       agentIdentityEnabled: true, agent: expect.objectContaining({ type: "custom" }),
+      modelAccess: { sharedModels: true, githubCopilot: false },
     }));
   });
 
