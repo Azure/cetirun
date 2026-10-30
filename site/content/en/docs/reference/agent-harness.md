@@ -102,6 +102,15 @@ declared HOME and existing [initialization contract](#initialization). The
 common Pod retains the image user rather than imposing the managed harness UID;
 the registered volume group and filesystem permissions still need qualification.
 
+Sandbox-bound Custom Agents need an explicit model-source selection. Portal
+creation records the sources available under the current Team policy and Gateway
+catalog, or validates the owner's requested `modelAccess` selection. When creating
+an Agent manifest directly, set `spec.modelAccess`, for example
+`sharedModels: true` and `githubCopilot: false`, for a permitted shared model.
+Omitting both switches does not inherit legacy model access: the Agent remains
+held without a model entitlement. Custom without a Sandbox keeps its existing
+model-selection behavior.
+
 Creation, restart, retained suspension/resume, healthy-source migration and
 ordinary deletion use the common execution state, owned HOME and grant journal,
 not the separate Custom apply-completion engine. Kata and ordinary containers
