@@ -34,6 +34,12 @@ For a custom `BASE_IMAGE`, provide Node.js 24, Git, Python with tarfile's `data`
 extraction filter, and the CetiRun HOME initializer's tools. The example is not
 included in platform image publishing. Deploy an approved image by digest.
 
+The `runtime-source` stage gives copied JavaScript modules mode `0644` and
+application directories mode `0755`. It also makes the bundled Gateway
+extension readable and traversable while preserving executable scripts.
+The build checks these files as UID/GID `1024:1024`, including the installed
+extension copy in the final stage. HOME and user credentials are not changed.
+
 ## Deploy
 
 Use matching Operator, CRD, runtime chart and Portal versions with Custom Web UI
@@ -150,7 +156,23 @@ node --test examples/vscode-server/test/*.test.mjs
 python3 -B -m unittest discover -s scripts/tests -p test_vscode_example.py -v
 ```
 
-The tests use loopback servers, synthetic credentials and a simulated VS Code API.
+For source-permission checks, select an already-cached image with Node.js and
+a POSIX shell. Replace the example image name before running:
+
+```bash
+CETIRUN_PERMISSIONS_TEST_IMAGE=local/node:24 \
+  python3 -B -m unittest scripts.tests.test_example_image_permissions -v
+```
+
+This builds the actual Pi and VS Code `runtime-source` stages from a context
+created with `umask 077`. It checks non-root access to entrypoints, modules and
+nested extension files, and verifies that inaccessible files fail the build.
+The containers have no network or host mounts and use a read-only root
+filesystem. An unset image variable skips the tests; a missing selected image
+fails without pulling it. These checks do not download or run the official
+VS Code distribution and do not replace validation of a complete approved image.
+
+The adapter tests use loopback servers, synthetic credentials and a simulated VS Code API.
 They cover Gateway discovery, native configuration handoff, secret references,
 restart/key refresh, user-file preservation and the existing Web IDE proxy.
 They do not start VS Code or validate a real Copilot request. Separately qualify

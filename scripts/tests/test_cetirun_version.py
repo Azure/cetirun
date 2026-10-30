@@ -142,12 +142,29 @@ class CetiRunVersionTests(unittest.TestCase):
             name: value for name, value in os.environ.items()
             if name not in {"MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES", "MAKEFILES", "VERSION"}
         }
-        for relative in ("Makefile", "scripts/cetirun-version.py", "scripts/cetirun-release-metadata.sh"):
+        env.update({
+            "KUBECONFIG": os.devnull,
+            "HELM_REGISTRY_CONFIG": os.devnull,
+            "HELM_REPOSITORY_CONFIG": os.devnull,
+        })
+        for relative in (
+            "Makefile", "scripts/cetirun-version.py", "scripts/cetirun-release-metadata.sh",
+            "scripts/tests/test_connections_mcp_chart.py",
+        ):
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, destination)
+        for relative in (
+            "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
+            "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
+            "cetirun-agent-broker/chart",
+        ):
+            shutil.copytree(
+                ROOT / "app" / relative, self.root / "app" / relative,
+                dirs_exist_ok=True, ignore=shutil.ignore_patterns("charts"),
+            )
         for version in (
-            "0.1.0-alpha.1", "0.1.0-beta.2", "0.1.0-dev.20260927.gabcdef0", "0.1.0", "0.1.2",
+            "0.1.0-alpha.1", "0.1.0-beta.2", "0.1.1-dev.20261029.gc5f0eb8", "0.1.0", "0.1.2",
         ):
             with self.subTest(version=version):
                 for target in ("set-version", "version-check"):
@@ -161,12 +178,18 @@ class CetiRunVersionTests(unittest.TestCase):
                 MODULE.check_version(version)
                 lint = subprocess.run(
                     ["helm", "lint", "infra/istio"], cwd=self.root,
-                    text=True, capture_output=True, timeout=30
+                    env=env, text=True, capture_output=True, timeout=30
                 )
                 self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
-                for component in ("operator", "portal", "ai-gateway"):
+                for component in ("operator", "portal", "ai-gateway", "connections-mcp"):
                     archive = self.root / f"app/cetirun-platform/charts/cetirun-{component}-{version}.tgz"
                     self.assertTrue(archive.is_file(), archive)
+                rendered = subprocess.run(
+                    [sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/tests",
+                     "-p", "test_connections_mcp_chart.py", "-v"],
+                    cwd=self.root, env=env, text=True, capture_output=True, timeout=60,
+                )
+                self.assertEqual(rendered.returncode, 0, rendered.stdout + rendered.stderr)
 
     def test_set_synchronizes_broker_chart_and_app_versions(self):
         MODULE.set_version("0.1.2")

@@ -68,6 +68,12 @@ at build time. It declares `USER 1024:1024`, `HOME=/home/vibe`, and keeps the
 application outside the HOME mount at `/opt/cetirun-pi`. Telemetry and automatic
 Pi catalog/update checks are disabled; explicit OAuth and model calls still work.
 
+The `runtime-source` build stage sets copied JavaScript modules to `0644` and
+the application directory and `pi-tui.mjs` to `0755`, even when the build context
+was created with `umask 077`. Both build stages check the entrypoints as
+UID/GID `1024:1024`; the final stage also imports the installed Pi runtime.
+These permission changes do not touch HOME or user credentials.
+
 To adapt this example, keep that image layout, the three HTTP routes and a
 runnable shell/TUI command. Do not add ttyd or Kubernetes credentials to the
 Agent image. A different base image must satisfy the initializer contract and
@@ -210,6 +216,23 @@ so an empty or shell-only session is not a persistence test. Pod replacement
 opens a new shell; run `pi-tui` again to reopen a saved session.
 
 ## Validate
+
+To test source permissions with an already-cached image that contains Node.js
+and a POSIX shell, run from the repository root:
+
+```bash
+CETIRUN_PERMISSIONS_TEST_IMAGE=local/node:24 \
+  python3 -B -m unittest scripts.tests.test_example_image_permissions -v
+```
+
+Replace `local/node:24` with the selected local image. The test builds the real
+Pi and VS Code `runtime-source` stages from `0600` files and `0700` directories.
+It checks non-root reads, executable scripts, and rejection of inaccessible
+files and directories. Builds and containers have no network; containers use a
+read-only root filesystem with no host mounts or injected credentials.
+An unset image variable skips these tests. A missing selected image fails
+without pulling it. This does not build the complete Pi image or validate its
+installed SDK, downloaded tools, or production base image.
 
 The Node tests cover the HTTP adapter, CLI entrypoint and real SDK resource
 discovery without OAuth or model calls. In a separately authorized environment,
