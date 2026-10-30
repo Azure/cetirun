@@ -30,7 +30,7 @@ func reconciledGrantSDKPlan(t *testing.T, source *PreparedRelease, beforeCreate 
 		t.Fatal(err)
 	}
 	guard := func(context.Context) error { return nil }
-	values := sampleInput("hermes", "openai", false)
+	values := sampleInput(input.AgentType, "openai", false)
 	object(values["secrets"])["existingSecret"] = "runtime-secret"
 	prepared, err := source.ReconcileSandboxWithPreflight(values, bundle, guard, guard, guard, beforeCreate)
 	if err != nil {
