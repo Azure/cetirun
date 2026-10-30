@@ -5,6 +5,7 @@
 
 import argparse
 import base64
+from collections import Counter
 import copy
 from datetime import datetime, timezone
 import importlib.util
@@ -113,8 +114,8 @@ def configuration(path):
         required(config, field)
     RELEASE.coordinates(argparse.Namespace(registry=config["release"]["registry"], version=config["release"]["version"],
                                            git_sha=config["release"]["gitSHA"], chart_namespace="helm"))
-    if not re.fullmatch(r"https://[^\s/?#]+", config["target"]["server"]):
-        raise ValueError("target.server must be an explicit HTTPS Kubernetes API origin")
+    if not re.fullmatch(r"https://[^\s/?#@]+", config["target"]["server"]):
+        raise ValueError("target.server must be an HTTPS Kubernetes API origin without embedded credentials")
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.[a-z0-9-]+", config["domain"]):
         raise ValueError("domain must be a hostname, without a scheme or path")
     for name in CHARTS:
@@ -238,8 +239,7 @@ def configuration(path):
     required(values["broker"], "tls.secretName")
     for field in ("tls.secretName", "broker.clientTLSSecretName"):
         required(mcp, field)
-    for field in ("sandboxAdmission.tlsSecretName", "sandboxAdmission.caBundle", "connectionsMCP.caSecretName",
-                  "azure.clientId", "customRuntime.storageClass", "customRuntime.storageSize", "customRuntime.accessMode"):
+    for field in ("sandboxAdmission.tlsSecretName", "sandboxAdmission.caBundle", "connectionsMCP.caSecretName", "azure.clientId"):
         required(operator, field)
     if not operator["sandboxAdmission"]["adminUsers"] and not operator["sandboxAdmission"]["adminGroups"]:
         raise ValueError("Explicit Kubernetes admission administrators are required")
@@ -253,8 +253,7 @@ def configuration(path):
         required(skills, field)
     operator["cetirun"]["helmValues"]["skills"] = {**skills, "shared": True}
     for field in ("providerCredentials.existingSecret", "auth.masterKey.existingSecret", "auth.saltKey.existingSecret",
-                  "auth.adminUI.passwordSecret.existingSecret", "redis.passwordSecret.existingSecret",
-                  "postgresql.bundled.persistence.storageClass", "postgresql.bundled.persistence.size"):
+                  "auth.adminUI.passwordSecret.existingSecret", "redis.passwordSecret.existingSecret"):
         required(ai, field)
     if ai["providerCredentials"].get("inline"):
         raise ValueError("Provider credentials must use an existing Secret")
@@ -449,7 +448,8 @@ class Deployment:
                                 client_uri=f"spiffe://cluster.local/ns/{b['toolService']['namespace']}/sa/{b['toolService']['serviceAccount']}")
         ingress = self.scratch / "ingress-public.pem"
         ingress.write_text(self.public_certificate(c["istio"]["ingressNamespace"], "cetirun-tls", "tls.crt"))
-        checked = self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-checkend", "0", "-checkhost", c["domain"]])
+        self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-checkend", "0"])
+        checked = self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-checkhost", c["domain"]])
         if f"Hostname {c['domain']} does match certificate" not in checked.splitlines():
             raise ValueError("The ingress certificate does not cover the configured domain")
         starts = self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-startdate"])
@@ -484,7 +484,7 @@ class Deployment:
                         'go-template={{with .spec}}{{if or .agentPolicyRef .sandboxRefs .defaultSandboxRef}}protected{{end}}{{end}}').strip()
                 if team_policy[team]:
                     continue
-            raise ValueError(f"Agent {name}: MCP would replace its ServiceAccount/API token settings; CetiAdmin ServiceAccount/token coexistence (item 2) needs a separate approved change")
+            raise ValueError(f"Agent {name}: MCP would replace its ServiceAccount/API token settings; CetiAdmin ServiceAccount/token coexistence needs a separate approved change")
 
     def current_control(self, name, container, environment):
         namespace = self.config["platform"]["namespace"]
@@ -683,7 +683,8 @@ class Deployment:
             label = (metadata or {}).get("labels", {}).get("istio.io/rev")
             if name != "istio" and label and label != c["istio"]["revision"]:
                 raise ValueError(f"{section['namespace']} uses another Istio revision; refusing to replace it")
-            releases = json.loads(self.helm("list", "--all", "--namespace", section["namespace"], "--filter", f"^{section['release']}$", "-o", "json"))
+            releases = json.loads(self.helm("list", "--deployed", "--failed", "--pending", "--uninstalling", "--uninstalled", "--superseded",
+                                            "--namespace", section["namespace"], "--filter", f"^{section['release']}$", "-o", "json"))
             if releases:
                 if releases[0]["status"].startswith("pending-"):
                     raise ValueError(f"Release {section['release']} has an unfinished operation")
@@ -809,7 +810,9 @@ class Deployment:
         print("Not qualified by this check: model calls, OAuth login, native Sandbox execution/physical fencing, or CetiAdmin token coexistence.")
 
     def plan(self):
-        return {"target": self.config["target"], "release": self.config["release"],
+        references = {(kind, namespace, name) for kind, namespace, name, _ in self.references()}
+        return {"target": {key: self.config["target"][key] for key in ("context", "cluster", "server", "clusterUID")},
+                "release": {key: self.config["release"][key] for key in ("registry", "version", "gitSHA")},
                 "stages": ["verify target, managed Istio, references, ownership and all artifacts",
                            "CetiRun Istio/OAuth2 release and mesh provider", "isolated Broker/Auth SDK release",
                            "platform data services, Operator, Portal Chat, MCP, Custom/terminal and Memory bindings",
@@ -818,7 +821,7 @@ class Deployment:
                                      "workloads": [doc["metadata"]["name"] for doc in docs if doc["kind"] in ("Deployment", "StatefulSet")]}
                              for name, docs in self.documents.items()},
                 "artifacts": {kind: [entry["name"] for entry in entries] for kind, entries in RELEASE.inventory().items() if kind in ("images", "charts")},
-                "references": [{"kind": kind, "namespace": namespace, "name": name, "key": key} for kind, namespace, name, key in self.references()],
+                "referenceCounts": dict(Counter(kind for kind, _, _ in references)),
                 "preserves": ["existing Agents", "HOME/PVCs", "OAuth cookie and database keys", "other Helm releases"],
                 "notQualified": ["native Sandbox execution and physical fencing", "CetiAdmin token coexistence", "live model/OAuth calls"]}
 
@@ -837,7 +840,12 @@ def main(argv=None):
                 print(json.dumps(deployment.plan(), indent=2))
             else:
                 deployment.execute()
-    except (ValueError, KeyError, TypeError, OSError, RuntimeError, yaml.YAMLError) as error:
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        location = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        print(f"ERROR: Invalid YAML{location}; input contents withheld", file=sys.stderr)
+        return 1
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     return 0

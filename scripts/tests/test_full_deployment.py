@@ -5,6 +5,7 @@
 import copy
 import base64
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
@@ -218,8 +219,90 @@ class DeploymentFixture:
         return DEPLOY.configuration(path)
 
 
+class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
+    def test_invalid_yaml_does_not_echo_credentials(self):
+        marker = "sk-synthetic-marker"
+        path = self.root / "malformed.yaml"
+        path.write_text("providerKey: '" + marker + "\n")
+        result = subprocess.run(
+            [sys.executable, "-B", str(ROOT / "scripts/cetirun_platform_deploy.py"), "--config", str(path), "--plan"],
+            env={"PATH": "/no-tools"}, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(marker, result.stdout + result.stderr)
+        self.assertIn("YAML", result.stderr)
+
+    def test_invalid_rendered_yaml_does_not_echo_values(self):
+        marker = "sk-rendered-marker"
+        with self.assertRaises(yaml.YAMLError) as failure:
+            yaml.safe_load("api_key: '" + marker)
+        with patch.object(DEPLOY.Deployment, "render", side_effect=failure.exception), \
+                patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+                patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(DEPLOY.main(["--config", str(FIXTURE), "--plan"]), 1)
+        self.assertNotIn(marker, stdout.getvalue() + stderr.getvalue())
+        self.assertIn("YAML", stderr.getvalue())
+
+    def test_target_server_rejects_embedded_credentials_before_tools(self):
+        for authority in ("user@kubernetes.example.invalid", "user:password@kubernetes.example.invalid"):
+            with self.subTest(authority=authority):
+                config = copy.deepcopy(self.config)
+                config["target"]["server"] = "https://" + authority
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                    with self.assertRaisesRegex(ValueError, "target.server"):
+                        self.configure(config)
+
+    def test_cli_failure_has_nonzero_status_and_no_success_message(self):
+        file = self.root / "invalid.yaml"
+        file.write_text("target: {}\n")
+        result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/cetirun_platform_deploy.py"), "--config", str(file)],
+                                env={"PATH": "/no-tools"}, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("target.context", result.stderr)
+        self.assertNotIn("ready", result.stdout)
+
+
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
 class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
+
+    def test_plan_omits_credential_references_and_extra_input_fields(self):
+        marker = "private-provider-reference"
+        self.config["platform"]["values"]["cetirun-ai-gateway"]["providerCredentials"]["existingSecret"] = marker
+        self.config["target"]["credential"] = "private-target-value"
+        self.config["release"]["credential"] = "private-release-value"
+        deployment = self.deployment()
+        plan = deployment.plan()
+        encoded = json.dumps(plan)
+        for private in (marker, "private-target-value", "private-release-value"):
+            self.assertNotIn(private, encoded)
+        self.assertEqual(set(plan["target"]), {"context", "cluster", "server", "clusterUID"})
+        self.assertEqual(set(plan["release"]), {"registry", "version", "gitSHA"})
+        self.assertGreater(plan["referenceCounts"]["Secret"], 0)
+        self.assertGreater(plan["referenceCounts"]["StorageClass"], 0)
+        self.assertEqual(deployment.writes, [])
+
+    def test_release_query_flags_are_accepted_by_local_helm(self):
+        deployment = self.deployment()
+        deployment.preflight()
+        queries = [command for command in deployment.commands if command[:4] == ["helm", "--kube-context", "example-context", "list"]]
+        self.assertEqual(len(queries), 3)
+        for command in queries:
+            result = subprocess.run([*command, "--help"], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--pending", command)
+        self.assertEqual(deployment.writes, [])
+
+    def test_pending_release_stops_before_writes(self):
+        deployment = self.deployment()
+        original = deployment.run
+        def run(command, **kwargs):
+            if command[:4] == ["helm", "--kube-context", "example-context", "list"]:
+                return json.dumps([{"name": "cetirun-istio", "status": "pending-upgrade"}])
+            return original(command, **kwargs)
+        deployment.run = run
+        with self.assertRaisesRegex(ValueError, "unfinished operation"):
+            deployment.execute()
+        self.assertEqual(deployment.writes, [])
 
     def external_deployment(self, name):
         deployment = self.deployment(name=name)
@@ -452,15 +535,6 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
             deployment.execute()
         self.assertEqual(deployment.writes, [])
 
-    def test_cli_failure_has_nonzero_status_and_no_success_message(self):
-        file = self.root / "invalid.yaml"
-        file.write_text("target: {}\n")
-        result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/cetirun_platform_deploy.py"), "--config", str(file)],
-                                env={"PATH": "/no-tools"}, capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("target.context", result.stderr)
-        self.assertNotIn("ready", result.stdout)
-
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
 class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
@@ -538,8 +612,9 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "CetiAdmin.*ServiceAccount|ServiceAccount.*CetiAdmin"):
                     deployment.execute()
                 self.assertEqual(deployment.writes, [])
-                reads = [command for command in deployment.commands if "agents.cetirun.microsoft.com" in command]
-                self.assertTrue(reads)
+                reads = [command for command in deployment.commands if command[0] == "kubectl"
+                         and command[4:6] == ["get", "agents.cetirun.microsoft.com"]]
+                self.assertEqual(len(reads), 1)
                 self.assertFalse(any(".spec.user" in part or part == "json" for command in reads for part in command))
 
     def test_consistent_hermes_only_preserves_openclaw_account(self):
@@ -888,6 +963,23 @@ class PublicTLSPreflightTests(unittest.TestCase):
         deployment.public_certificate = lambda *_args: leaf
         deployment.verify_certificate = lambda *_args, **_kwargs: None
         with self.assertRaisesRegex(ValueError, "does not cover"):
+            deployment.check_tls()
+        self.assertEqual(deployment.writes, [])
+
+    def test_current_matching_ingress_certificate_is_accepted(self):
+        deployment = self.deployment("valid-ingress")
+        leaf = self.certificate(host=deployment.config["domain"])
+        deployment.public_certificate = lambda *_args: leaf
+        deployment.verify_certificate = lambda *_args, **_kwargs: None
+        deployment.check_tls()
+        self.assertEqual(deployment.writes, [])
+
+    def test_expired_ingress_certificate_is_rejected(self):
+        deployment = self.deployment("expired-ingress")
+        leaf = self.certificate(host=deployment.config["domain"], days="0")
+        deployment.public_certificate = lambda *_args: leaf
+        deployment.verify_certificate = lambda *_args, **_kwargs: None
+        with self.assertRaisesRegex(ValueError, "openssl x509 failed"):
             deployment.check_tls()
         self.assertEqual(deployment.writes, [])
 

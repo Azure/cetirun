@@ -106,9 +106,6 @@ platform:
           persistence:
             storageClass: example-database
             size: 100Gi
-      # No prompt/response bodies are collected by default.
-      spendLogs:
-        storePrompts: false
       models:
         - model_name: gpt-mini
           litellm_params:

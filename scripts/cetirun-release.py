@@ -90,7 +90,6 @@ def preflight(args, data, kinds):
 
 
 def build_images(args, data, push):
-    require_license()
     for entry in data["images"]:
         reference = f"{args.registry}/{entry['name']}:{args.version}"
         print(f"==> {'Publish' if push else 'Build'} {reference} (source {args.git_sha})", flush=True)

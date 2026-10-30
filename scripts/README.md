@@ -16,12 +16,10 @@ publication, or end-to-end scripts.
 
 ## Default platform deployment and release
 
-`cetirun-platform-deploy.sh --config /path/to/environment.yaml` is the full
-default deployment entry point. It manages the separate Istio/OAuth2 Proxy,
-Broker/Auth SDK, and platform releases. It requires the complete environment
-configuration and never creates Agent instances or cloud identities.
-`--plan` performs local input validation and Helm rendering only. The root
-`make deploy` and `make deploy-plan` targets pass `DEPLOY_CONFIG` to this helper.
+`cetirun-platform-deploy.sh --config /path/to/environment.yaml` manages the
+separate Istio, Broker, and platform releases. `--plan` validates inputs and
+renders charts locally. The root `make deploy` and `make deploy-plan` targets
+pass `DEPLOY_CONFIG` to this helper.
 See [the platform guide](../app/cetirun-platform/README.md#deploy-the-platform)
 for the input shape, certificate ownership modes, staged admission, and the
 remaining identity/runtime qualification boundary.
@@ -40,9 +38,7 @@ make artifact-check
 python3 -B -m unittest scripts.tests.test_release_inventory scripts.tests.test_full_deployment -v
 ```
 
-The offline tests replace external mutations with command doubles and use
-real local Helm rendering/packaging. They do not prove a running deployment,
-cloud authorization, a model request, or storage qualification.
+Tests use command doubles and local Helm. They do not deploy or publish.
 
 ## CetiRun Connections MCP artifacts
 

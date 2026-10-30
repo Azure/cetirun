@@ -1,17 +1,16 @@
 # CetiRun Platform chart
 
-The normal deployment entry point is `make deploy DEPLOY_CONFIG=/path/to/environment.yaml`.
+Deploy with `make deploy DEPLOY_CONFIG=/path/to/environment.yaml`.
 It manages the CetiRun Istio/OAuth2 Proxy release, the Broker and Auth SDK in a
 private credential namespace, and the platform release. The platform includes
 the Operator, admission server, Portal, AI Gateway, PostgreSQL, Valkey, and
 Connections MCP. The same configuration enables Portal Chat and supplies
 Custom runtime, terminal, Memory, and shared Skills/HOME references.
 
-The `cetirun-platform` Helm chart is the lower-level umbrella for the last
-group. Its component switches remain available for chart consumers, but the
-normal deployment entry point requires the full set. There is no `--full` mode.
-It does not create cloud identities, issue certificates, enroll a Sandbox
-platform, or create Agent instances.
+The `cetirun-platform` Helm chart packages the platform components. Its switches
+remain available to chart consumers. The deployment script requires the full
+set without a `--full` option. Cloud identities, certificates, Sandbox enrollment,
+and Agent creation are outside this entry point.
 
 ## Deploy the platform
 
@@ -42,8 +41,7 @@ checks its cluster name, API origin, and cluster UID before a write.
 
 Use the existing Helm values under each release's `values` field. The helper
 connects component URLs, namespaces, image coordinates, and identity fields from
-the common inputs. Keep deployment-specific overrides in this file. Custom
-images require digest-pinned `approvedImages`, an explicit model-access mode,
+the common inputs. Custom images require digest-pinned `approvedImages`, an explicit model-access mode,
 and the storage settings whose UID/GID behavior you qualified. An image being
 published does not establish that qualification.
 
@@ -65,11 +63,12 @@ Run the offline plan first:
 make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 ```
 
-This command checks required inputs and renders real local charts in a temporary
-directory. It prints releases, workloads, all 13 image/8 chart artifacts, and
-external reference names. It does not contact a cluster or registry and cannot
-verify live TLS, credentials, storage, identity federation, or model availability.
-Python with PyYAML and Helm must already be installed.
+The plan validates inputs and renders local charts in a temporary directory.
+Its JSON lists the target, releases, workloads, all 13 images and 8 charts, and
+`referenceCounts` by resource kind. Reference names, Secret keys, and extra input
+fields are omitted. YAML errors report their position without echoing contents.
+The plan does not contact a cluster or registry. Python, PyYAML, and Helm must
+already be installed.
 
 After the target deployment is authorized, run:
 
@@ -109,13 +108,10 @@ server-side dry-run of a Team creation checks the served admission path without
 persisting a Team. Any failed read, render, upgrade, rollout, or dry-run returns
 a nonzero exit status. There is no automatic rollback or ownership transfer.
 
-Before an upgrade, the helper extracts selected existing deployment control
-fields and the standard admission webhooks. It refuses to remove Pod admission,
-replace strict validation with compatible validation, change an existing
-coordination authority, or reset active native execution settings through
-defaults. The environment file must preserve those controls. An existing
-admission server must expose its control configuration. Unreadable observations
-or externally referenced control values stop the upgrade. Changes to these protections need a separate approved
+Upgrades require existing admission administrators, Team assignments, Pod and
+strict validation settings, coordination authority, and active native execution
+controls to be preserved. Unreadable or externally referenced control values
+stop the upgrade. Changes to these protections need a separate approved
 procedure; the helper does not migrate arbitrary stored Helm values.
 
 The Operator's `connectionsMCP.runtimeTypes`, the Portal's
@@ -148,9 +144,8 @@ The offline render uses synthetic cookie/TLS values only in a separate temporary
 render file. The helper never applies that manifest. Actual upgrades use the
 normal charts and their server-side Secret lookup. Missing retained cookie or
 database Secrets fail before writes; they are not replaced with new keys.
-The helper never deletes Agents or HOME/PVCs, creates canary workloads, rotates
-user keys, or adopts resources owned by another release. Repeating the command
-reconciles the same releases and preserves existing admission enforcement.
+Existing Agents, HOME/PVCs, and user keys remain in place. Repeating the command
+reconciles the same releases without disabling admission enforcement.
 Verify actual cookie, certificate, and database continuity in a separately
 authorized environment test.
 
@@ -170,8 +165,7 @@ qualification inputs. The deployment does not add CetiAdmin assets or resolve
 CetiAdmin ServiceAccount/token coexistence with MCP. An existing ordinary
 Agent with that conflict stops deployment before writes and names the remaining
 dependency. The helper does not silently remove OpenClaw from the allowlist.
-Requests to create
-instances through this file fail explicitly; existing instances are preserved.
+Instance creation requests in this file are rejected.
 
 ## Use the component chart directly
 
