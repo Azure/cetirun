@@ -165,8 +165,8 @@ includes an external IPv4 rule without port restrictions, excluding configured
 blocked ranges. Defaults exclude private ranges and IMDS, with explicit internal
 exceptions. It is not HTTPS-only. Review the deployment-specific internal
 exception list before use. The
-[Istio ServiceEntries and blacklist settings]({{< repo "infra/istio/values.yaml" >}})
-are not a complete destination allowlist. Source configuration and access logs
+[Istio ServiceEntries and access-log settings]({{< repo "infra/istio/values.yaml" >}})
+are audit configuration, not a destination allowlist. Source configuration and access logs
 do not prove that unlisted destinations are blocked.
 
 ## Documentation site privacy

@@ -2717,9 +2717,9 @@ The result is **NO-GO for exact-hostname blocking through DNS-to-CIDR denies**:
 This is not Cilium [`toFQDNs`](https://docs.cilium.io/en/stable/security/policy/layer3/#dns-based):
 those rules generate additive IP **allows**, not hostname denies, and do not
 remove the compiler's public-egress allowance. Nor is this the shared
-[Istio sidecar SNI blacklist](../../infra/istio/templates/egress/blacklist.yaml):
-that filter matches a TLS requested server name, not a guest-external control
-covering arbitrary traffic. This experiment does not enable the separately
+Istio sidecar SNI blacklist, which has been retired in favor of the scoped
+AgentPolicy controls. That filter was not a guest-external control covering
+arbitrary traffic. This experiment does not enable the separately
 registered observed-SNI path below or establish full hostname enforcement.
 Passing the DNS-projection experiment is not M3 completion.
 
