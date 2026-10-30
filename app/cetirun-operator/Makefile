@@ -15,8 +15,8 @@ LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.V
 	-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=$(GIT_SHA)
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
-# The full controller suite exceeds Go's default 10m package timeout.
-GO_TEST_TIMEOUT := 20m
+# The full controller suite exceeds 20m on CI runners.
+GO_TEST_TIMEOUT := 30m
 # Envtest also runs the unit suite alongside isolated API-server regressions.
 GO_ENVTEST_TIMEOUT := 30m
 

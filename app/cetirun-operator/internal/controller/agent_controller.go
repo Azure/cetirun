@@ -885,8 +885,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, nil)
 		if err != nil {
-			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-			return result, stderrors.Join(err, holdErr)
+			return r.reconciledSandboxFailure(ctx, instance, err)
 		}
 		helmValues = prepared.Values
 	} else {
@@ -929,13 +928,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			prepared, err = r.HelmClient.Refresh(prepared, helmValues)
 		}
 		if err != nil {
+			if reconciledSandbox && (stderrors.Is(err, errMigrationIntentChanged) || stderrors.Is(err, errSandboxIntentChanged)) {
+				return r.reconciledSandboxFailure(ctx, instance, err)
+			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxIngressMTLS) {
 				result, holdErr := r.holdReconciledSandbox(ctx, instance)
 				return result, stderrors.Join(err, holdErr)
 			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
-				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-				return result, stderrors.Join(err, holdErr)
+				return r.reconciledSandboxFailure(ctx, instance, err)
 			}
 			return r.rejectAgentConfig(ctx, instance, err)
 		}
@@ -966,8 +967,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if alreadyDeployed {
 			alreadyDeployed, err = r.reconciledSandboxApplied(ctx, instance, prepared)
 			if err != nil {
-				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-				return result, stderrors.Join(err, holdErr)
+				return r.reconciledSandboxFailure(ctx, instance, err)
 			}
 		}
 		held := !instance.Spec.Suspended && controllerutil.ContainsFinalizer(instance, sandbox.HoldFinalizer)
@@ -1136,8 +1136,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			return workloadResult, stderrors.Join(err, r.updateStatus(ctx, instance))
 		}
 		if err := r.observeReconciledSandbox(ctx, instance, prepared); err != nil {
-			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-			return result, stderrors.Join(err, holdErr)
+			return r.reconciledSandboxFailure(ctx, instance, err)
 		}
 	}
 

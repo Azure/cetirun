@@ -332,6 +332,14 @@ authorization; leaving that request present cannot retain revoked access.
 After a recorded migration, keep the destination rather than removing the field.
 Portal has no migration action in this increment and rejects new owner restarts
 while a migration is pending.
+An obsolete reconciliation cannot turn a newer migration request into a
+dependency hold. A detected intent/checkpoint change is retried from fresh state
+without stopping that request's source; actual authorization outages still hold.
+This includes intent changes after the migration check but before the common
+Sandbox guard's later Agent read; a changed current binding is not exempted.
+Other common preparation failures recheck the Agent revision before holding it,
+so a later stale source read cannot stop a newer request's source. An unavailable
+current-version read still follows the dependency hold and reports the read error.
 
 The controller persists `status.plannedMigration` before side effects:
 
