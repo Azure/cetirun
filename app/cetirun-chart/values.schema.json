@@ -259,7 +259,8 @@
             "properties": {
                 "enabled": {
                     "type": "boolean",
-                    "default": false
+                    "const": true,
+                    "default": true
                 },
                 "keySecretName": {
                     "type": "string",
@@ -975,13 +976,9 @@
                 },
                 "provider": {
                     "type": "string",
-                    "description": "Model provider: github_copilot, openai, or anthropic",
-                    "enum": [
-                        "github_copilot",
-                        "openai",
-                        "anthropic"
-                    ],
-                    "default": "github_copilot"
+                    "description": "AI Gateway protocol; upstream providers are managed by the platform",
+                    "enum": ["openai"],
+                    "default": "openai"
                 },
                 "model": {
                     "type": "string",
@@ -990,7 +987,8 @@
                 },
                 "apiKey": {
                     "type": "string",
-                    "description": "API key for openai/anthropic providers (not needed for github_copilot)",
+                    "description": "Removed direct credentials; use the AI Gateway",
+                    "const": "",
                     "default": ""
                 },
                 "apiBase": {
@@ -1080,7 +1078,8 @@
         },
         "litellm": {
             "type": "object",
-            "description": "LiteLLM sidecar configuration",
+            "description": "The removed per-Agent model proxy is unsupported; use the platform AI Gateway.",
+            "not": {},
             "properties": {
                 "enabled": {
                     "type": "boolean",

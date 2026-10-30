@@ -22,9 +22,18 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+// The historical held renderer supports the OpenClaw Gateway key contract.
+// Common-executor Hermes rendering is covered in sandbox_reconcile_test.go.
+func gatewayHeldFixture(typ string) testfixture.Fixture {
+	fixture := testfixture.New(typ)
+	fixture.Input.GatewayKey = &w.ObjectIdentity{Name: "ai-gateway-virtual-key", UID: "model-key-uid"}
+	fixture.Input.AuthorizedSecrets = append(fixture.Input.AuthorizedSecrets, fixture.Input.GatewayKey.Name)
+	return fixture
+}
+
 func sandboxRender(t *testing.T, typ string, readOnly, desktop bool) (*PreparedRelease, *w.Bundle, w.Expectation) {
 	t.Helper()
-	fixture := testfixture.New(typ)
+	fixture := gatewayHeldFixture(typ)
 	fixture.Input.Helpers.Desktop = desktop
 	fixture.Input.Resolution.AgentPolicy.Security.ReadOnlyRootFilesystem = ptr.To(readOnly)
 	bundle, err := w.Build(fixture.Input)
@@ -46,12 +55,13 @@ func sandboxRender(t *testing.T, typ string, readOnly, desktop bool) (*PreparedR
 	if err != nil {
 		t.Fatal(err)
 	}
+	expected.SinglePod = true
 	expected.ControllerRevision = workload.Status.UpdateRevision
 	return prepared, bundle, expected
 }
 
 func TestSandboxNativeProtectedRendering(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		for _, readOnly := range []bool{true, false} {
 			t.Run(typ+map[bool]string{true: "/readonly", false: "/writable-root"}[readOnly], func(t *testing.T) {
 				prepared, bundle, expected := sandboxRender(t, typ, readOnly, true)
@@ -97,7 +107,7 @@ func TestSandboxNativeProtectedRendering(t *testing.T) {
 }
 
 func TestSandboxDesktopScratchIsolation(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		for _, readOnly := range []bool{true, false} {
 			for _, desktop := range []bool{true, false} {
 				name := typ + map[bool]string{true: "/readonly", false: "/writable-root"}[readOnly] +
@@ -151,15 +161,16 @@ func TestSandboxDesktopScratchIsolation(t *testing.T) {
 }
 
 func TestSandboxAllowsModelAndAuthorizedSecretWithoutOverrides(t *testing.T) {
-	fixture := testfixture.New("hermes")
+	fixture := gatewayHeldFixture("openclaw")
 	bundle, err := w.Build(fixture.Input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := sampleInput("hermes", "openai", false)
+	input := sampleInput("openclaw", "openai", false)
+	input["aiGateway"].(map[string]any)["models"] = []any{map[string]any{"id": "chosen-model", "name": "Chosen model"}}
 	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
 	user := map[string]any{
-		"secrets":  map[string]any{"existingSecret": "runtime-secret", "provider": "anthropic", "model": "chosen-model"},
+		"secrets":  map[string]any{"existingSecret": "runtime-secret", "model": "chosen-model"},
 		"extraEnv": []any{map[string]any{"name": "EXAMPLE_SETTING", "value": "allowed"}},
 	}
 	prepared, err := PrepareSandboxChart(testChart(t), input, user, bundle)
@@ -167,10 +178,11 @@ func TestSandboxAllowsModelAndAuthorizedSecretWithoutOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if object(prepared.Values["secrets"])["model"] != "chosen-model" ||
-		object(prepared.Values["secrets"])["provider"] != "anthropic" {
+		object(prepared.Values["secrets"])["provider"] != "openai" {
 		t.Fatal("allowed model inputs were overwritten")
 	}
 	for _, malicious := range []map[string]any{
+		{"secrets": map[string]any{"provider": "anthropic"}},
 		{"podAnnotations": map[string]any{"sidecar.istio.io/inject": "true"}},
 		{"resources": map[string]any{}}, {"secrets": map[string]any{"existingSecret": "foreign"}},
 		{"dnsPolicy": "Default"},
@@ -305,7 +317,7 @@ func TestSandboxFinalPodRejectsInjectedPaths(t *testing.T) {
 }
 
 func TestSandboxFinalPodRequiresProtectedExpectedDNS(t *testing.T) {
-	_, _, expected := sandboxRender(t, "hermes", true, true)
+	_, _, expected := sandboxRender(t, "openclaw", true, true)
 	for name, mutate := range map[string]func(*corev1.PodSpec){
 		"default policy": func(spec *corev1.PodSpec) { spec.DNSPolicy = corev1.DNSClusterFirst },
 		"missing config": func(spec *corev1.PodSpec) { spec.DNSConfig = nil },
@@ -328,7 +340,7 @@ func TestSandboxFinalPodRequiresProtectedExpectedDNS(t *testing.T) {
 }
 
 func TestSandboxRejectsUnsupportedEnvironmentSourcesAtBothBoundaries(t *testing.T) {
-	prepared, bundle, _ := sandboxRender(t, "hermes", true, true)
+	prepared, bundle, _ := sandboxRender(t, "openclaw", true, true)
 	template, err := prepared.SandboxTemplate()
 	if err != nil {
 		t.Fatal(err)
@@ -345,7 +357,7 @@ func TestSandboxRejectsUnsupportedEnvironmentSourcesAtBothBoundaries(t *testing.
 			t.Fatal("rendered template accepted an unsupported environment source")
 		}
 	}
-	input := sampleInput("hermes", "openai", false)
+	input := sampleInput("openclaw", "openai", false)
 	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
 	for _, reference := range []map[string]any{
 		{"configMapKeyRef": map[string]any{"name": "unapproved", "key": "example"}},
@@ -370,9 +382,9 @@ func TestSandboxRejectsUnsupportedEnvironmentSourcesAtBothBoundaries(t *testing.
 }
 
 func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
-			fixture := testfixture.New(typ)
+			fixture := gatewayHeldFixture(typ)
 			fixture.Policy.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 				ServiceAccountName:  "sandbox-example",
 				RoleBindings:        []api.AgentPolicyRoleBinding{{Namespace: "approved-tools", ClusterRoleName: "example-reader"}},
@@ -504,6 +516,7 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			expectation.SinglePod = true
 			pod := testfixture.Pod(expectation)
 			if err := w.ValidatePod(pod, expectation); err != nil {
 				t.Fatal(err)
@@ -622,12 +635,12 @@ func testCompilerResourceMutations(t *testing.T, input w.Input, plan *sandboxpol
 }
 
 func TestSandboxChartCannotInventHelperOrMount(t *testing.T) {
-	fixture := testfixture.New("hermes")
+	fixture := gatewayHeldFixture("openclaw")
 	bundle, err := w.Build(fixture.Input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := sampleInput("hermes", "openai", false)
+	input := sampleInput("openclaw", "openai", false)
 	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
 	for _, change := range [][2]string{
 		{"- name: logger", "- name: copilot-helper"},

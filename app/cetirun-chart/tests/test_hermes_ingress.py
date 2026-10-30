@@ -31,7 +31,21 @@ class HermesIngressTests(unittest.TestCase):
         self.legacy = self.home / ".hermes/gateway.json"
         self.generated = self.root / "generated.yaml"
         self.generated_env = self.root / "generated.env"
-        self.generated.write_text("model:\n  provider: openai\n  default: synthetic-model\n")
+        self.generated.write_text(
+            "model:\n"
+            "  provider: cetirun-gateway\n"
+            "  default: synthetic-model\n"
+            "providers:\n"
+            "  cetirun-gateway:\n"
+            "    name: CetiRun AI Gateway\n"
+            "    api: http://gateway.example.invalid/v1\n"
+            "    key_env: CETIRUN_GATEWAY_API_KEY\n"
+            "    transport: chat_completions\n"
+            "    default_model: synthetic-model\n"
+            "    discover_models: false\n"
+            "    models:\n"
+            "      synthetic-model: {}\n"
+        )
         self.generated_env.write_text("API_SERVER_KEY=sk-dummy\nAPI_SERVER_HOST=0.0.0.0\nAPI_SERVER_PORT=18080\n")
         self.saved = {
             "model": {"provider": "openai", "default": "saved-model"},

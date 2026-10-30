@@ -143,6 +143,20 @@ func (r *AgentReconciler) prepareAgent(instance *api.Agent, team *api.Team) (*he
 	if err != nil {
 		return nil, err
 	}
+	// Prepare only establishes the pinned chart contract. The first Gateway
+	// projection is reconciled later in this pass, so Hermes still needs a
+	// syntactically complete Gateway binding to render its native profile here.
+	// The probe is never installed: the release is rebuilt from the verified
+	// projection before any Sandbox or Helm apply.
+	if r.AIGateway.Enabled {
+		if r.aiGatewayRouted(instance) {
+			if err := r.applyAIGatewayValues(values, instance); err != nil {
+				return nil, err
+			}
+		} else if err := r.applyAIGatewayPreflightValues(values); err != nil {
+			return nil, err
+		}
+	}
 	values["memoryOptions"] = r.memoryOptions()
 	return r.HelmClient.Prepare(instanceNamespace(instance.Name), values, instance.Spec.Helm.Version)
 }

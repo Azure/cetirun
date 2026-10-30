@@ -1,6 +1,6 @@
 ---
 title: "Configure a team"
-description: "Apply shared context and provider defaults with Team."
+description: "Apply shared context, policies, and skills with Team."
 weight: 50
 ---
 
@@ -77,8 +77,6 @@ spec:
     role: Engineer
     description:
       - Review changes before applying them.
-  defaults:
-    provider: github_copilot
 ```
 
 An instance references the team with `spec.team: platform`. The team must exist:
@@ -98,14 +96,14 @@ names. Install and verify each skill's external dependencies separately.
 The shared storage account/container and CSI prerequisites must already exist;
 the team resource does not provision cloud storage.
 
-The team supplies a provider, not a model ID or API credential. Instance Helm
-provider settings take precedence, and OpenAI/Anthropic need an explicit model
-and separately prepared credentials. Effective skill IDs are
+The team supplies context, policy, and skills; it does not select a model
+provider or hold API credentials. Model access is configured through the AI
+Gateway. Effective skill IDs are
 `(team skills ∪ add) − remove`; removal wins, but does not enforce a prohibition
 against separate Helm configuration or user-installed files.
 
-Applying a team or editing its provider/context triggers reconciliation of
-member instances. Review the affected users before applying a change.
+Applying a team or editing its context triggers reconciliation of member
+instances. Review the affected users before applying a change.
 Deleting a referenced team is not a cascade-delete or safe detach. Move
 references deliberately before deleting a team; configuration admission
 continues to enforce its consumer and cleanup requirements.

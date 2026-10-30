@@ -18,7 +18,9 @@ fi
 # scenario, including expected-failure cases, must therefore supply a model so
 # that each test exercises its intended validation path.
 helm_template() {
-  helm template "$@" --set-string secrets.model=lint-model
+  helm template --set aiGateway.keySecretName=lint-model-key \
+    --set-string secrets.apiBase=http://gateway.example.com/v1 \
+    "$@" --set-string secrets.model=lint-model
 }
 
 values_files=(

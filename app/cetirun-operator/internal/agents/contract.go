@@ -67,7 +67,6 @@ type Bindings struct {
 	ConfigTemplate    string
 	ReservedPorts     []PortBinding
 	ContextRevision   string
-	AgentManagedModel bool
 	MemoryEnabled     bool
 	DesktopEnabled    bool
 	WebBasePath       string

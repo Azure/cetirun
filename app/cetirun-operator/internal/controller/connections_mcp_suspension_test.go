@@ -25,7 +25,6 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 			t.Run(string(kind)+"/"+failure, func(t *testing.T) {
 				ctx := context.Background()
 				r, agent, _ := legacyGatewayFixture(t)
-				r.AIGateway.Enabled = false
 				agent.Spec.Agent.Type = kind
 				if err := r.Update(ctx, agent); err != nil {
 					t.Fatal(err)
@@ -99,8 +98,15 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 				if _, err := r.Reconcile(ctx, req); err != nil {
 					t.Fatal(err)
 				}
-				if current().Status.Phase != api.PhaseSuspended || chart.installs != 2 || chart.lastValues["replicaCount"] != float64(0) {
-					t.Fatalf("CA outage prevented suspension: phase=%s installs=%d replicas=%#v", current().Status.Phase, chart.installs, chart.lastValues["replicaCount"])
+				if current().Status.Phase != api.PhaseSuspended || chart.installs != 1 {
+					t.Fatalf("CA outage prevented suspension: phase=%s installs=%d", current().Status.Phase, chart.installs)
+				}
+				stopped := &appsv1.StatefulSet{}
+				if err := r.Get(ctx, client.ObjectKeyFromObject(sts), stopped); err != nil {
+					t.Fatal(err)
+				}
+				if stopped.Spec.Replicas == nil || *stopped.Spec.Replicas != 0 {
+					t.Fatalf("suspension did not stop the Gateway workload: replicas=%v", stopped.Spec.Replicas)
 				}
 				if caReads != 0 {
 					t.Fatalf("suspension read MCP CA material %d times", caReads)
@@ -113,7 +119,7 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 				if _, err := r.Reconcile(ctx, req); err != nil {
 					t.Fatal(err)
 				}
-				if caReads != 0 || chart.installs != 2 || current().Status.Phase != api.PhaseSuspended {
+				if caReads != 0 || chart.installs != 1 || current().Status.Phase != api.PhaseSuspended {
 					t.Fatal("suspended reconcile depended on CA trust or reinstalled the chart")
 				}
 				// Resuming still requires valid trust before any workload is started.
@@ -124,7 +130,7 @@ func TestConnectionsMCPCAOutageDoesNotBlockSuspension(t *testing.T) {
 					t.Fatal(err)
 				}
 				_, _ = r.Reconcile(ctx, req)
-				if current().Status.Phase != api.PhaseFailed || chart.installs != 2 || caReads == 0 {
+				if current().Status.Phase != api.PhaseFailed || chart.installs != 1 || caReads == 0 {
 					t.Fatal("resume bypassed the MCP CA requirement")
 				}
 				if err := r.Get(ctx, routeKey, &istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {

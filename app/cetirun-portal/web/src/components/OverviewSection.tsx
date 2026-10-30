@@ -35,12 +35,9 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useDeleteInstanceByName, useUpdateInstanceByName, useUpgradeInstanceByName, useInstanceStatusByNameQuery } from "../hooks/useInstance";
 import { useFeatures } from "../hooks/useFeatures";
-import { GITHUB_COPILOT_PROVIDER, useEffectiveTeamProvider } from "../hooks/useTeams";
 import type { Instance, InstanceVersion, UpdateInstanceRequest } from "../types/instance";
-import { agentTypeLabel, agentUIUrl, phaseBadgeColor } from "../utils/instance";
+import { agentTypeLabel, phaseBadgeColor } from "../utils/instance";
 import { StatusTab } from "./StatusTab";
-import { CopilotAuthBlock } from "./CopilotAuthBlock";
-import { CopilotModelPicker } from "./CopilotModelPicker";
 import { ToolAuthorizationBlock } from "./ToolAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
 import { AIGatewayBlock } from "./AIGatewayBlock";
@@ -69,18 +66,13 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const [editTeam, setEditTeam] = useState(instance.team);
   const [editGatewayToken, setEditGatewayToken] = useState("");
   const [editTailscaleAuthKey, setEditTailscaleAuthKey] = useState("");
-  const [editModel, setEditModel] = useState(instance.model ?? "");
   const [disableTailscale, setDisableTailscale] = useState(false);
   const [editSnapshot, setEditSnapshot] = useState<Instance | null>(null);
   const [editImage, setEditImage] = useState("");
   const [editPort, setEditPort] = useState("");
   const [editWebUI, setEditWebUI] = useState(false);
   const [editValidationError, setEditValidationError] = useState("");
-  const effectiveEditProvider = useEffectiveTeamProvider(editTeam);
-  // An Agent routed through the AI Gateway picks its default model from its
-  // Gateway models instead.
   const gatewayRouted = !!instance.aiGateway?.routed;
-  const editUsesGitHubCopilot = effectiveEditProvider === GITHUB_COPILOT_PROVIDER && !gatewayRouted;
 
   useEffect(() => {
     return () => {
@@ -128,14 +120,9 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     setEditTeam(instance.team);
     setEditGatewayToken("");
     setEditTailscaleAuthKey("");
-    setEditModel(instance.model ?? "");
     setDisableTailscale(false);
     setEditOpen(true);
   };
-
-  useEffect(() => {
-    if (!editUsesGitHubCopilot) setEditModel("");
-  }, [editUsesGitHubCopilot]);
 
   const handleEditSave = () => {
     const original = editSnapshot ?? instance;
@@ -161,7 +148,6 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     if (image !== (original.agent.image ?? "")) agent.image = image;
     if (Object.keys(agent).length) req.agent = agent;
     if (editDisplayName.trim() !== original.displayName) req.displayName = editDisplayName.trim();
-    if (nativeIntegrations && editUsesGitHubCopilot && editModel.trim() !== (original.model ?? "")) req.model = editModel.trim();
     if (nativeIntegrations) {
       if (editGatewayToken) req.gatewayToken = editGatewayToken;
       if (disableTailscale) { req.tailscaleAuthKey = ""; } else if (editTailscaleAuthKey) { req.tailscaleAuthKey = editTailscaleAuthKey; }
@@ -169,8 +155,6 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     if (Object.keys(req).length === 2) { setEditOpen(false); return; }
     updateMutation.mutate(req, { onSuccess: () => setEditOpen(false) });
   };
-
-  const nativeAgentUIUrl = agentUIUrl(instance);
 
   return (
     <div style={{ padding: 24, overflowY: "auto", flex: 1, minWidth: 0 }}>
@@ -232,10 +216,6 @@ export function OverviewSection({ instance }: { instance: Instance }) {
           <Button appearance="subtle" size="small" icon={showTailscaleKey ? <EyeOff20Regular /> : <Eye20Regular />} onClick={() => setShowTailscaleKey(!showTailscaleKey)} aria-label={showTailscaleKey ? "Hide Tailscale auth key" : "Show Tailscale auth key"} />
           <Button appearance="subtle" size="small" icon={copiedTailscaleKey ? <Checkmark20Regular /> : <Copy20Regular />} onClick={handleCopyTailscaleKey} aria-label="Copy Tailscale auth key" />
         </div>
-      )}
-
-      {nativeIntegrations && nativeAgentUIUrl && !instance.suspended && instance.phase !== "Suspended" && (
-        <CopilotAuthBlock instance={instance} />
       )}
 
       {gatewayRouted && !instance.suspended && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
@@ -311,7 +291,6 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                 <Field label={editWebUI ? "Web UI Port" : "HTTP Port (optional)"} required={editWebUI} hint={portHint}>
                   <Input type="number" min={1} max={65535} step={1} value={editPort} onChange={(_, data) => setEditPort(data.value)} />
                 </Field>
-                {nativeIntegrations && editUsesGitHubCopilot && <CopilotModelPicker instance={instance} value={editModel} onChange={setEditModel} allowDefault />}
                 {nativeIntegrations && <Field label="Gateway Token">
                   <Input type="password" autoComplete="off" value={editGatewayToken} onChange={(_, data) => setEditGatewayToken(data.value)} placeholder="Leave empty to keep unchanged" />
                 </Field>}

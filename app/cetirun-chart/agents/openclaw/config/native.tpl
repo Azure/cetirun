@@ -48,39 +48,13 @@ Licensed under the MIT License.
       "deviceAutoApprove" (dict "enabled" true))) }}
 {{- $_ := set $config "gateway" $gateway }}
 {{- end }}
-{{- /* Model provider auth profile and default model.
-   Supports: github_copilot (token-based), openai (api-key), anthropic (api-key). */}}
-{{- $provider := .Values.secrets.provider | default "github_copilot" }}
-{{- $model := required "secrets.model must be set by the CetiRun operator or Helm values" .Values.secrets.model }}
-{{- $gatewayRouted := and (dig "enabled" false (.Values.aiGateway | default dict)) (eq $provider "openai") }}
-{{- $nativeGateway := and $gatewayRouted .Values.sandboxWorkload }}
-{{- $authMode := .Values.secrets.authMode }}
-{{- $authProfileMode := $authMode }}
-{{- if eq $authProfileMode "api-key" }}
-{{- $authProfileMode = "api_key" }}
-{{- end }}
-{{- $auth := dig "auth" (dict) $config }}
-{{- if $nativeGateway }}
-{{- $auth = dict "profiles" (dict) }}
-{{- else if eq $provider "github_copilot" }}
-{{- $_ := set $auth "profiles" (dict "github-copilot:github" (dict "provider" "github-copilot" "mode" "token")) }}
-{{- else if eq $provider "openai" }}
-{{- $profile := dict "provider" "openai" }}
-{{- if $authProfileMode }}
-{{- $_ := set $profile "mode" $authProfileMode }}
-{{- end }}
-{{- $_ := set $auth "profiles" (dict "openai:default" $profile) }}
-{{- else if eq $provider "anthropic" }}
-{{- $profile := dict "provider" "anthropic" }}
-{{- if $authProfileMode }}
-{{- $_ := set $profile "mode" $authProfileMode }}
-{{- end }}
-{{- $_ := set $auth "profiles" (dict "anthropic:default" $profile) }}
-{{- end }}
-{{- $_ := set $config "auth" $auth }}
-{{- /* Compose full model identifier as <provider>/<model> */}}
-{{- $providerPrefix := $provider | replace "_" "-" }}
-{{- $modelFull := printf "%s/%s" $providerPrefix $model }}
+{{- /* The AI Gateway is the only platform model provider. */}}
+{{- $model := required "secrets.model must be set by the CetiRun operator" .Values.secrets.model }}
+{{- $gatewayRouted := true }}
+{{- $nativeGateway := true }}
+{{- $_ := set $config "auth" (dict "profiles" (dict)) }}
+{{- $providerPrefix := "openai" }}
+{{- $modelFull := printf "openai/%s" $model }}
 {{- /* Models the platform AI Gateway offers this Agent. Each becomes a model
    of the Gateway provider, with its limits, and is allowed; the rest of the
    configuration keeps naming the default model. */}}
@@ -94,16 +68,7 @@ Licensed under the MIT License.
 {{- $agentsCurrent := dig "agents" (dict) $config }}
 {{- $defaultsCurrent := dig "defaults" (dict) $agentsCurrent }}
 {{- $_ := set $defaultsCurrent "compaction" $compaction }}
-{{- if eq $provider "github_copilot" }}
-{{- $fallbacks := list }}
-{{- $_ := set $defaultsCurrent "model" (dict "primary" $modelFull "fallbacks" $fallbacks) }}
-{{- $modelsDict := dict $modelFull $modelConfig }}
-{{- range $fallbacks }}
-{{- $_ := set $modelsDict . (dict) }}
-{{- end }}
-{{- $_ := set $defaultsCurrent "models" $modelsDict }}
-{{- $_ := set $defaultsCurrent "modelPolicy" (dict "allow" (concat (list $modelFull) $fallbacks)) }}
-{{- else if $gatewayModels }}
+{{- if $gatewayModels }}
 {{- $modelsDict := dict }}
 {{- $allow := list }}
 {{- range $gatewayModels }}
@@ -134,7 +99,7 @@ Licensed under the MIT License.
 {{- $_ := set $agentsCurrent "defaults" $defaultsCurrent }}
 {{- $_ := set $config "agents" $agentsCurrent }}
 {{- /* Custom API base URL → models.providers.<provider>.baseUrl */}}
-{{- if and (ne $provider "github_copilot") .Values.secrets.apiBase }}
+{{- if .Values.secrets.apiBase }}
 {{- $providerModels := list }}
 {{- $listed := false }}
 {{- range $gatewayModels }}

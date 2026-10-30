@@ -110,7 +110,7 @@ func TestToInstanceResponse_TailscaleLogging(t *testing.T) {
 				if resp.TailscaleAuthKey != tt.wantKey {
 					t.Errorf("TailscaleAuthKey = %q, want %q", resp.TailscaleAuthKey, tt.wantKey)
 				}
-				if resp.GatewayToken != "gateway-token-test" || resp.CetiRunAuthKey != "cetirun-auth-test" {
+				if resp.GatewayToken != "gateway-token-test" {
 					t.Error("unrelated credentials changed")
 				}
 				if resp.AccessURL != instance.Status.AccessURL {
@@ -188,7 +188,7 @@ func TestToInstanceResponseBeforeTheNamespaceIsRecorded(t *testing.T) {
 			if secretReads != 0 {
 				t.Errorf("read %d Secrets before the namespace was recorded", secretReads)
 			}
-			if resp.GatewayToken != "" || resp.APIServerKey != "" || resp.CetiRunAuthKey != "" || resp.TailscaleAuthKey != "" {
+			if resp.GatewayToken != "" || resp.APIServerKey != "" || resp.TailscaleAuthKey != "" {
 				t.Errorf("credentials returned without a namespace: %+v", resp)
 			}
 			if resp.Phase != "Provisioning" {

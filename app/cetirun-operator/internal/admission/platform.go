@@ -16,6 +16,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+type nativePolicyGrantCheck struct {
+	policy *api.AgentPolicy
+	kind   api.SandboxType
+}
+
 // Snapshot state belongs to one request. Cleanup and unrelated legacy requests
 // never consult the platform source; policy compatibility checks load it lazily.
 func (h *Handler) withPlatformSnapshot(ctx context.Context, request admission.Request,
@@ -23,6 +28,7 @@ func (h *Handler) withPlatformSnapshot(ctx context.Context, request admission.Re
 ) admission.Response {
 	current := *h
 	current.platformSnapshot = nil
+	current.nativeGrantChecks = nil
 	ctx, cancel := context.WithTimeout(ctx, h.requestTimeout)
 	defer cancel()
 	response := handle(&current, ctx, request)
@@ -65,7 +71,7 @@ func (h *Handler) checkTeamExecutionProfiles(ctx context.Context, spec api.TeamS
 		if err := sandbox.CheckExecutionProfile(registrations[selected.Type].Capabilities, h.config.NativeExecution); err != nil {
 			return err
 		}
-		if err := h.checkNativeNetworkBinding(ctx, selected.Type, resources.AgentPolicies[spec.AgentPolicyRef],
+		if err := h.checkNativePolicyBinding(ctx, selected.Type, resources.AgentPolicies[spec.AgentPolicyRef],
 			registrations[selected.Type].Capabilities); err != nil {
 			return err
 		}
@@ -73,22 +79,22 @@ func (h *Handler) checkTeamExecutionProfiles(ctx context.Context, spec api.TeamS
 	return nil
 }
 
-func (h *Handler) checkNativeNetworkBinding(ctx context.Context, kind api.SandboxType, policy *api.AgentPolicy, capabilities sandbox.Capabilities) error {
+func (h *Handler) checkNativePolicyBinding(ctx context.Context, kind api.SandboxType, policy *api.AgentPolicy, capabilities sandbox.Capabilities) error {
 	if capabilities.Profile != sandbox.ProfileNativeSingleStart {
 		return nil
 	}
 	if policy == nil {
-		return fmt.Errorf("native network validation requires the selected AgentPolicy")
+		return fmt.Errorf("native policy validation requires the selected AgentPolicy")
 	}
 	if len(policy.Spec.Network.BlockedCIDRs) == 0 && len(policy.Spec.Network.BlockedPorts) == 0 &&
-		len(policy.Spec.Network.AllowedInternalCIDRs) == 0 {
+		len(policy.Spec.Network.AllowedInternalCIDRs) == 0 && policy.Spec.KubernetesAccess == nil {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if h.platformSnapshot == nil {
-		return fmt.Errorf("%w: native network restrictions require a current platform topology", sandboxpolicy.ErrUnavailable)
+		return fmt.Errorf("%w: native policy controls require a current platform topology and approvals", sandboxpolicy.ErrUnavailable)
 	}
 	platform, ok := h.platformSnapshot.Platforms[kind]
 	if !ok {
@@ -96,6 +102,12 @@ func (h *Handler) checkNativeNetworkBinding(ctx context.Context, kind api.Sandbo
 	}
 	if err := sandboxpolicy.ValidatePolicyConfiguration(policy, capabilities, platform); err != nil {
 		return err
+	}
+	if policy.Spec.KubernetesAccess != nil {
+		if err := sandboxpolicy.VerifyPolicyGrants(ctx, h.reader, policy, platform.Grants); err != nil {
+			return err
+		}
+		h.nativeGrantChecks = append(h.nativeGrantChecks, nativePolicyGrantCheck{policy: policy.DeepCopy(), kind: kind})
 	}
 	return ctx.Err()
 }
@@ -118,6 +130,11 @@ func (h *Handler) verifyPlatformSnapshot(ctx context.Context) error {
 	previous.ObservedAt, current.ObservedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(previous, current) {
 		return fmt.Errorf("%w: Sandbox admission platform changed during validation", sandboxplatform.ErrSourceChanged)
+	}
+	for _, check := range h.nativeGrantChecks {
+		if err := sandboxpolicy.VerifyPolicyGrants(ctx, h.reader, check.policy, current.Platforms[check.kind].Grants); err != nil {
+			return err
+		}
 	}
 	return ctx.Err()
 }

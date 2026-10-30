@@ -15,10 +15,11 @@ CETIRUN_BUILTIN_SKILL_SYNC=${CETIRUN_BUILTIN_SKILL_SYNC:-/usr/local/share/cetiru
 LEGACY_HOME_MARKER=.hermes/.initialized
 PYTHON_BIN=${HERMES_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}
 if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi
-# On the platform AI Gateway, the Gateway owns the model choice and the owner
-# signs in to GitHub Copilot through the Portal: no in-agent helper.
-ON_GATEWAY=
-if [ "${CETIRUN_AI_GATEWAY:-}" = "true" ]; then ON_GATEWAY=true; fi
+# Every managed Harness uses the platform AI Gateway.
+if [ "${CETIRUN_AI_GATEWAY:-}" != true ]; then
+  echo "AI Gateway is required" >&2
+  exit 1
+fi
 . "$CETIRUN_CONFIG_DIR/init-home-common.sh"
 
 agent_check_requirements() {
@@ -28,7 +29,6 @@ agent_check_requirements() {
       return 1
     }
   required="hermes-config.yaml hermes-apply-config.py"
-  if [ -z "$ON_GATEWAY" ]; then required="$required hermes-auth.sh"; fi
   for file in $required; do
     [ -f "$CETIRUN_CONFIG_DIR/$file" ] || { init_error "HermesInputMissing: $file"; return 1; }
   done
@@ -75,9 +75,7 @@ agent_apply_config() {
   set -- --home "$TARGET_HOME" \
     --config "$CETIRUN_CONFIG_DIR/hermes-config.yaml" \
     --env "$CETIRUN_SECRET_DIR/hermes.env"
-  if [ -n "$ON_GATEWAY" ]; then
-    set -- "$@" --gateway-key-env "${CETIRUN_GATEWAY_KEY_ENV:-CETIRUN_GATEWAY_API_KEY}"
-  fi
+  set -- "$@" --gateway-key-env "${CETIRUN_GATEWAY_KEY_ENV:-CETIRUN_GATEWAY_API_KEY}"
   if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
     set -- "$@" --ingress-mtls
   fi
@@ -86,25 +84,11 @@ agent_apply_config() {
 
 # The in-agent GitHub Copilot helper that charts before the Gateway installed.
 # Only a file carrying the helper's own text is removed.
-remove_copilot_helper() (
-  set -e
-  helper=$(home_path .local/bin/copilot-auth)
-  [ -f "$helper" ] || exit 0
-  if grep -q -e 'Authenticate GitHub Copilot for Hermes' -e 'Keep the helper path used by older Charts' "$helper"; then
-    rm -f "$helper"
-  fi
-)
-
 agent_prepare_integrations() {
   . "$CETIRUN_BUILTIN_SKILL_SYNC"
   cetirun_sync_builtin_skills \
     "$SOURCE_HOME/.hermes/skills" \
     "$(home_path .hermes/skills)"
-  if [ -n "$ON_GATEWAY" ]; then
-    remove_copilot_helper
-  else
-    home_atomic_copy "$CETIRUN_CONFIG_DIR/hermes-auth.sh" .local/bin/copilot-auth 755
-  fi
   team=$(home_path .hermes/memories/TEAM.md)
   if [ -s "$CETIRUN_CONFIG_DIR/hermes-team.md" ]; then
     home_atomic_copy "$CETIRUN_CONFIG_DIR/hermes-team.md" .hermes/memories/TEAM.md
@@ -119,10 +103,6 @@ agent_verify() {
     set -- "$@" --ingress-mtls
   fi
   "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" "$@"
-  if [ -z "$ON_GATEWAY" ]; then
-    helper=$(home_path .local/bin/copilot-auth)
-    [ -x "$helper" ] || { init_error "HermesAuthHelperUnavailable"; return 1; }
-  fi
   home_write_marker "$LEGACY_HOME_MARKER" initialized-v1
 }
 

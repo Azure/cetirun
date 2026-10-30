@@ -72,7 +72,6 @@ not proof that ingress works.
 | --- | --- |
 | `/ui/<instance>/` | OpenClaw Control UI/gateway on 18789, or Hermes Dashboard on 9119 |
 | `/ui/<instance>/v1...` and `/ui/<instance>/health...` for Hermes | Hermes API on 8642, with the UI prefix removed |
-| `/<instance>/cetirun-auth/` | In-pod authentication helper on 18790, with this prefix removed |
 | `/<instance>/term/` | ttyd on 7681 |
 | `/<instance>/desktop/` | noVNC on 6080 |
 

@@ -94,12 +94,11 @@ that policy and a permitted Sandbox through the Team. Portal's policy editor
 supports Custom explicitly; Portal creation must also enable the existing
 `custom` entry in `features.allowedAgentTypes`.
 
-The Operator's existing `customRuntime.enabled`, `approvedImages` and
-`gatewayImages` settings remain the image-approval authority. The selected digest
-must be in both lists. Image-owned model authentication is not a fallback for
-governed Custom. The image must use a numeric, non-root UID/GID and support its
-declared HOME and existing [initialization contract](#initialization). The
-common Pod retains the image user rather than imposing the managed harness UID;
+The Operator's `customRuntime.enabled` and `approvedImages` settings control
+image approval. The selected digest must be approved, and every Custom image
+must use the platform Gateway for model access. The image must use a numeric,
+non-root UID/GID and support its declared HOME and existing
+[initialization contract](#initialization). The common Pod retains the image user rather than imposing the managed harness UID;
 the registered volume group and filesystem permissions still need qualification.
 
 Sandbox-bound Custom Agents need an explicit model-source selection. Portal
@@ -173,12 +172,10 @@ Administrators can explicitly enable `customRuntime` in the Operator chart for
 qualified image digests. This
 Kubernetes provider prepares the namespace, HOME claim template and canonical
 context, and coordinates Pod replacements, including approved image updates.
-The runtime Chart retains and reuses the same HOME claim. The `gatewayImages`
-setting is a subset of `approvedImages` qualified for platform model access.
-Those images receive only their own Virtual Key and the Gateway API base.
-Other approved images require `agentManagedModel: true` and retain image-owned
-authentication. Enabling the Gateway does not migrate them automatically, and
-missing Gateway bindings never select native login as a fallback.
+The runtime Chart retains and reuses the same HOME claim. Every approved Custom
+image receives only its own Virtual Key and the Gateway API base for
+platform-provided model access. This does not restrict arbitrary outbound
+connections made by user code in the image.
 
 For Gateway-backed Custom Agents, the existing Portal Overview provides the
 platform Copilot sign-in. A compatible runtime chart marked

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -180,14 +181,31 @@ type preparationFixture struct {
 	now        time.Time
 }
 
-func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
+const legacyHeldChartSHA256 = "b4916f6e804d0d56cc137799934fce17eebc6b70b87ef0d38680a319f39a79e2"
+
+// legacyHeldChart is used only by the deprecated held-runtime preparation
+// suite. Reconciled and common-executor fixtures continue to load the working
+// chart from the repository.
+func legacyHeldChart(t *testing.T) *chart.Chart {
 	t.Helper()
-	f := testfixture.New(typ)
-	f.Team.Spec.Defaults.Provider = "github_copilot"
-	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-chart"))
+	archive, err := os.ReadFile(filepath.Join("testdata", "legacy-held-chart-cfdf7c55.tgz"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if fmt.Sprintf("%x", sha256.Sum256(archive)) != legacyHeldChartSHA256 {
+		t.Fatal("legacy held chart checksum mismatch")
+	}
+	loaded, err := loader.LoadArchive(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
+func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
+	t.Helper()
+	f := testfixture.New(typ)
+	chrt := legacyHeldChart(t)
 	scheme := testScheme()
 	cilium := schema.GroupVersion{Group: "cilium.io", Version: "v2"}
 	scheme.AddKnownTypeWithName(cilium.WithKind("CiliumNetworkPolicy"), &unstructured.Unstructured{})

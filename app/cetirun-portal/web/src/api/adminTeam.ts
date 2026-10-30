@@ -45,7 +45,6 @@ export interface TeamDTO {
   name: string;
   role?: string;
   description?: string[];
-  defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
   createdAt?: string;
@@ -62,7 +61,6 @@ export interface TeamUpsertRequest {
   name?: string;
   role?: string;
   description?: string[];
-  defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
   modelRouters?: TeamModelRouter[];

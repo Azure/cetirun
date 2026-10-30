@@ -35,13 +35,12 @@ and [reconciler]({{< repo "app/cetirun-operator/internal/controller/agent_contro
 | Image pull failure | Actual image reference/digest, node registry permissions, namespace-local pull Secret |
 | Missing Secret key / container configuration error | Gateway Secret key names, agent type, controller enrichment; do not dump values |
 | Init container fails | `init-home-data` permissions/mounts, OpenClaw `doctor`, or npm `init-skills` registry/package access |
-| Earlier GitHub Copilot sign-in still in an OpenClaw HOME | `retire-copilot-sign-in` init container log: each step that failed, with OpenClaw's reason; it tries again at every start |
 | `HomeSeedStateUnknown` or `HomeSeedImageUnconfirmed` | Existing HOME and initialization records, interrupted-copy source image; do not clear the PVC or delete records to retry |
 | Native configuration apply fails | JSON/YAML or environment-file syntax, destination permissions and symlinks; the initializer preserves failed files |
 | `PodReady` is false | StatefulSet rollout generation, ready/updated replicas, probes, desktop dependencies |
 | `IngressReady` is false | Instance VirtualService and shared gateway |
 | Login loop or 403 | OAuth callback/TLS, groups, sidecar injection, ownership |
-| Agent opens but model fails | Provider login, selected model entitlement, DNS and egress; readiness does not test inference |
+| Agent opens but model fails | AI Gateway conditions, Portal sign-in, selected model entitlement, DNS and egress; readiness does not test inference |
 
 The controller can mark the overall instance `Ready` even when
 VirtualService reconciliation failed. Read `IngressReady` and verify access
@@ -94,7 +93,6 @@ exemptions.
 | --- | --- |
 | OpenClaw gateway | `18789` |
 | Hermes API / native dashboard | `8642` / `9119` |
-| CetiRun provider-login helper, both agents | `18790` |
 | Desktop noVNC / Chrome debugging | `6080` / `18800` |
 | ttyd terminal | `7681` |
 

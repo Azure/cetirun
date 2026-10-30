@@ -48,10 +48,14 @@ chart_archive="${package_dir}/${chart_name}-${chart_version}.tgz"
 
 if [ -f "${values_file}" ]; then
   echo "==> Linting Helm chart with ${values_file}"
-  helm lint "${chart_dir}" -f "${values_file}" --set secrets.openclawGatewayToken=lint-token --set secrets.model=lint-model
+  helm lint "${chart_dir}" -f "${values_file}" \
+    --set secrets.openclawGatewayToken=lint-token --set secrets.model=lint-model \
+    --set aiGateway.keySecretName=lint-model-key --set-string secrets.apiBase=http://gateway.example.com/v1
 else
   echo "==> Linting Helm chart"
-  helm lint "${chart_dir}" --set secrets.openclawGatewayToken=lint-token --set secrets.model=lint-model
+  helm lint "${chart_dir}" \
+    --set secrets.openclawGatewayToken=lint-token --set secrets.model=lint-model \
+    --set aiGateway.keySecretName=lint-model-key --set-string secrets.apiBase=http://gateway.example.com/v1
 fi
 
 echo "==> Packaging Helm chart (${chart_name} v${chart_version})"

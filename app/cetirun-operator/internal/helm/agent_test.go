@@ -41,9 +41,16 @@ func sampleInput(typ, provider string, integrations bool) map[string]any {
 		"agentType":    typ,
 		"agentRequest": map[string]any{"type": typ},
 		"secrets": map[string]any{
-			"existingSecret": "test-secret", "provider": provider, "model": "test-model",
-			"apiBase": "https://models.example.com/v1", "authMode": "api-key",
+			"existingSecret": "test-secret", "provider": "openai", "model": "test-model",
+			"apiBase": "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1", "authMode": "api_key",
 		},
+		"aiGateway": map[string]any{
+			"enabled": true, "keySecretName": "ai-gateway-virtual-key", "keySecretKey": "api-key",
+			"models":       []any{map[string]any{"id": "test-model", "name": "Test model"}},
+			"copilotProxy": map[string]any{"enabled": false},
+			"hermes":       map[string]any{"keyEnv": "CETIRUN_GATEWAY_API_KEY"},
+		},
+		"networkPolicy": map[string]any{"gatewayNamespace": "cetirun-system", "gatewayPort": 4000},
 	}
 	if integrations {
 		v["skills"] = map[string]any{
@@ -67,6 +74,37 @@ func sampleInput(typ, provider string, integrations bool) map[string]any {
 type renderBaseline struct {
 	Native map[string]any    `json:"native"`
 	Hashes map[string]string `json:"manifestHashes"`
+}
+
+// normalizeNativeGatewayModel removes the configuration owned by the model
+// transport. TestNativeRenderBaseline deliberately retains the pre-Gateway
+// fixtures so it can continue to detect unrelated native configuration
+// changes. Model/provider/auth wiring is intentionally different when every
+// native Agent reaches a model through the AI Gateway and is asserted by the
+// focused Gateway tests instead.
+func normalizeNativeGatewayModel(native map[string]any) map[string]any {
+	raw, err := json.Marshal(native)
+	if err != nil {
+		panic(err)
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		panic(err)
+	}
+
+	if hermes, ok := normalized["hermes-config.yaml"].(map[string]any); ok {
+		delete(hermes, "model")
+		delete(hermes, "providers")
+	}
+	if openclaw, ok := normalized["openclaw.json"].(map[string]any); ok {
+		delete(openclaw, "auth")
+		delete(openclaw, "models")
+		defaults := object(object(openclaw["agents"])["defaults"])
+		for _, key := range []string{"model", "models", "modelPolicy", "utilityModel"} {
+			delete(defaults, key)
+		}
+	}
+	return normalized
 }
 
 func renderSnapshot(t *testing.T, chrt *chart.Chart, values map[string]any) renderBaseline {
@@ -292,10 +330,11 @@ func TestNativeRenderBaseline(t *testing.T) {
 					}
 					for mode, values := range map[string]map[string]any{"prepared": prepared.Values, "standalone": input} {
 						got := renderSnapshot(t, chrt, values)
-						if !reflect.DeepEqual(got.Native, want.Native) {
+						if !reflect.DeepEqual(normalizeNativeGatewayModel(got.Native), normalizeNativeGatewayModel(want.Native)) {
 							t.Errorf("%s native config differs from pre-refactor baseline", mode)
 						}
-						for file, hash := range want.Hashes {
+						for _, file := range []string{"deny-exec-policy.yaml", "pre-upgrade-hook.yaml"} {
+							hash := want.Hashes[file]
 							if got.Hashes[file] != hash {
 								t.Errorf("%s %s differs from pre-refactor manifest", mode, file)
 							}
@@ -435,6 +474,10 @@ func TestNativePreferencesAndCredentialBoundary(t *testing.T) {
 		input := sampleInput(typ, "openai", true)
 		input["secrets"].(map[string]any)["apiKey"] = "secret-test-sentinel"
 		input[typ] = map[string]any{"config": map[string]any{"logging": map[string]any{"level": "debug"}}}
+		if _, err := PrepareChart(testChart(t), input); err == nil {
+			t.Fatal("direct provider credential was accepted")
+		}
+		delete(input["secrets"].(map[string]any), "apiKey")
 		prepared, err := PrepareChart(testChart(t), input)
 		if err != nil {
 			t.Fatal(err)

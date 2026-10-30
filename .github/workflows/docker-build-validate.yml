@@ -109,15 +109,6 @@ jobs:
             PYPI_INDEX_URL=${{ env.PYPI_INDEX_URL }}
           tags: hermes-gateway:validation
 
-      # Only Hermes still carries the in-agent GitHub Copilot sign-in helper.
-      - name: Test the sign-in helper in the Hermes image
-        run: |
-          docker run --rm \
-            --entrypoint /usr/local/lib/hermes-agent/venv/bin/python \
-            -v "${{ github.workspace }}/app/cetirun-chart/tests:/tests:ro" \
-            -v "${{ github.workspace }}/app/cetirun-chart/configs/cetirun-auth-service.py:/configs/cetirun-auth-service.py:ro" \
-            hermes-gateway:validation -m unittest discover -s /tests -p test_auth_service.py -v
-
       - name: Build desktop sidecar image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

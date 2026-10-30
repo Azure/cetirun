@@ -285,7 +285,7 @@ func TestProtectedOverridesBeforeMerge(t *testing.T) {
 		}
 	}
 	allowed := map[string]any{
-		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "anthropic", "model": "chosen-model"},
+		"secrets": map[string]any{"existingSecret": "runtime-secret", "model": "chosen-model"},
 		"extraEnv": []any{
 			map[string]any{"name": "EXAMPLE_SETTING", "value": "value"},
 			map[string]any{"name": "EXAMPLE_KEY", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "runtime-secret", "key": "EXAMPLE_KEY"}}},
@@ -293,6 +293,21 @@ func TestProtectedOverridesBeforeMerge(t *testing.T) {
 	}
 	if err := w.ValidateUserValues(allowed, []string{"runtime-secret"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGatewayProviderOverridesAreRejectedBeforeMerge(t *testing.T) {
+	for name, validate := range map[string]func(map[string]any, []string) error{
+		"native": w.ValidateUserValues, "reconciled": w.ValidateReconciledUserValues,
+	} {
+		for _, provider := range []string{"github_copilot", "openai", "anthropic"} {
+			t.Run(name+"/"+provider, func(t *testing.T) {
+				values := map[string]any{"secrets": map[string]any{"provider": provider}}
+				if err := validate(values, nil); err == nil || !strings.Contains(err.Error(), "secrets.provider is protected") {
+					t.Fatalf("expected a protected provider error before chart rendering, got %v", err)
+				}
+			})
+		}
 	}
 }
 

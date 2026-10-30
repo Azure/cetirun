@@ -106,7 +106,6 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 		declared bool
 	}{
 		{"blockedFQDNs", capabilities.BlockedFQDNs},
-		{"kubernetesAccess", capabilities.KubernetesAccess},
 		{"enforcementObservation", capabilities.EnforcementObservation},
 		{"restrictiveFailure", capabilities.RestrictiveFailure},
 	} {
@@ -135,6 +134,9 @@ func CheckRuntimeCapabilities(kind cetirunv1alpha1.SandboxType, capabilities Cap
 	case cetirunv1alpha1.SandboxContainer:
 		if capabilities.Profile != ProfileNativeSingleStart {
 			errs = append(errs, field.Forbidden(root.Child("profile"), "container requires the native common executor"))
+		}
+		if capabilities.KubernetesAccess {
+			errs = append(errs, field.Forbidden(root.Child("kubernetesAccess"), "Kubernetes access is unsupported by the container backend"))
 		}
 		if !capabilities.PerContainerResourceLimits {
 			errs = append(errs, field.Required(root.Child("perContainerResourceLimits"), "container requires ordinary per-container resource limits"))
@@ -180,16 +182,6 @@ func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 		}
 	}
 	errs = append(errs, CheckNativeNetworkPolicy(policy.Network)...)
-	for _, control := range []struct {
-		path      *field.Path
-		requested bool
-	}{
-		{root.Child("kubernetesAccess"), policy.KubernetesAccess != nil},
-	} {
-		if control.requested {
-			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
-		}
-	}
 	return errs
 }
 

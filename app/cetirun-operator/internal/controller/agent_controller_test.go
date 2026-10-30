@@ -89,7 +89,7 @@ func TestReconcileBuiltinHarnessPinsThenDeploys(t *testing.T) {
 		t.Run(string(typ), func(t *testing.T) {
 			cr := newCR("example", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
 			cr.UID = "example-agent-uid"
-			cr.Spec.Agent.Type = typ
+			cr.Spec.Agent = cetirunv1alpha1.HarnessSpec{Type: typ}
 			scheme := testScheme()
 			client := fake.NewClientBuilder().WithScheme(scheme).
 				WithStatusSubresource(&cetirunv1alpha1.Agent{}).WithObjects(cr).Build()
@@ -98,6 +98,7 @@ func TestReconcileBuiltinHarnessPinsThenDeploys(t *testing.T) {
 				Client: client, Scheme: scheme, HelmClient: hc, DefaultModel: "test-model",
 				EventRecorder: record.NewFakeRecorder(100), DomainSuffix: "example.com", IstioRevision: "test",
 			}
+			controller.ConfigureTestGateway(t, r)
 			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}}
 			result, err := r.Reconcile(context.Background(), req)
 			if err != nil || !result.Requeue || hc.installCalled {
@@ -153,6 +154,7 @@ func TestReconcileInvalidHarnessPreservesWorkload(t *testing.T) {
 			Client: client, Scheme: scheme, HelmClient: hc, DefaultModel: "test-model",
 			EventRecorder: record.NewFakeRecorder(100),
 		}
+		controller.ConfigureTestGateway(t, r)
 		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}})
 		if err == nil || !strings.Contains(err.Error(), "AgentConfigInvalid") {
 			t.Fatalf("expected explicit configuration rejection, got %v", err)
@@ -204,7 +206,8 @@ func testScheme() *runtime.Scheme {
 }
 
 // newCR builds a minimal Agent for tests. The finalizer is pre-set
-// so the reconciler does not spend a loop adding it.
+// so the reconciler does not spend a loop adding it. Runtime pins describe a
+// previously prepared Agent; pinning itself is tested separately.
 func newCR(alias string, phase string, conditions []metav1.Condition, generation int64, observedGen int64, observedHash string) *cetirunv1alpha1.Agent {
 	cr := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
@@ -214,7 +217,10 @@ func newCR(alias string, phase string, conditions []metav1.Condition, generation
 			Finalizers: []string{cetirunv1alpha1.Finalizer},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			Agent: cetirunv1alpha1.HarnessSpec{
+				Type:  cetirunv1alpha1.AgentTypeOpenClaw,
+				Image: ptr.To("cetirun.azurecr.io/openclaw-gateway:0.1.1"), Port: ptr.To[int32](18789),
+			},
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: "Test User",
@@ -253,6 +259,9 @@ func instanceNamespace(alias string) *corev1.Namespace {
 	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "cetirun-" + alias,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: cetirunv1alpha1.GroupVersion.String(), Kind: "Agent", Name: alias, UID: types.UID("agent-" + alias),
+			}},
 		},
 	}
 }
@@ -268,9 +277,20 @@ func statefulSetFull(alias string, readyReplicas, updatedReplicas int32, generat
 			Name:       "openclaw-" + alias + "-cetirun",
 			Namespace:  "cetirun-" + alias,
 			Generation: generation,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: cetirunv1alpha1.GroupVersion.String(), Kind: "Agent", Name: alias, UID: types.UID("agent-" + alias),
+			}},
 		},
 		Spec: appsv1.StatefulSetSpec{
 			Replicas: &replicas,
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Env: []corev1.EnvVar{
+					{Name: "CETIRUN_AI_GATEWAY", Value: "true"},
+					{Name: "OPENAI_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "ai-gateway-virtual-key"}, Key: "api-key"}}},
+				}}},
+				InitContainers: []corev1.Container{{Name: "init-home-data", Env: []corev1.EnvVar{{Name: "CETIRUN_AI_GATEWAY", Value: "true"}}}},
+			}},
 		},
 		Status: appsv1.StatefulSetStatus{
 			ReadyReplicas:      readyReplicas,
@@ -389,7 +409,7 @@ func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
@@ -401,6 +421,7 @@ func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
 		ChartVersion:      "0.1.28",
 		DomainSuffix:      "example.com",
 	}
+	controller.ConfigureTestGateway(t, r)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: alias},
@@ -450,7 +471,7 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
@@ -462,6 +483,7 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 		ChartVersion:      "0.1.28",
 		DomainSuffix:      "example.com",
 	}
+	controller.ConfigureTestGateway(t, r)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: alias},
@@ -552,12 +574,13 @@ func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
 				Client:            fakeClient,
 				Scheme:            s,
 				EventRecorder:     record.NewFakeRecorder(10),
-				HelmClient:        &fakeHelmClient{},
+				HelmClient:        &fakeHelmClient{useHarness: true},
 				OperatorNamespace: "cetirun-system",
 				OperatorSAName:    "cetirun-operator-controller-manager",
 				ChartVersion:      "0.1.28",
 				DomainSuffix:      "example.com",
 			}
+			controller.ConfigureTestGateway(t, r)
 
 			result, err := r.Reconcile(context.Background(), ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: alias},
@@ -601,7 +624,7 @@ func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
@@ -613,6 +636,7 @@ func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
 		ChartVersion:      "0.1.28",
 		DomainSuffix:      "example.com",
 	}
+	controller.ConfigureTestGateway(t, r)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: alias},
@@ -657,7 +681,7 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 	}
 
 	gwSecretData := gatewayTokenSecret(alias).Data
-	opHash := computeOperatorHash(domainSuffix, computeSecretHash(gwSecretData), "", "", "", "")
+	opHash := computeOperatorHash(domainSuffix, computeSecretHash(gwSecretData), "", "", "", "", "", "", "", "", "")
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, conditions, 1, 1, opHash)
 	s := testScheme()
@@ -667,7 +691,7 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
@@ -679,6 +703,17 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 		ChartVersion:      "0.1.28",
 		DomainSuffix:      domainSuffix,
 	}
+	controller.ConfigureTestGateway(t, r)
+	// Establish the Gateway projection and actual rendered cache key first.
+	for range 2 {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: alias}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !helmFake.installCalled {
+		t.Fatal("fixture never deployed its Gateway workload")
+	}
+	helmFake.installCalled = false
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: alias},
@@ -716,10 +751,6 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 	alias := "eve"
 	domainSuffix := "example.com"
 
-	// Seed the CR as Ready with an operator hash computed from the OLD secret data.
-	oldSecretData := map[string][]byte{"OPENCLAW_GATEWAY_TOKEN": []byte("old-token")}
-	oldHash := computeOperatorHash(domainSuffix, computeSecretHash(oldSecretData), "", "", "", "")
-
 	conditions := []metav1.Condition{
 		{
 			Type:               cetirunv1alpha1.ConditionHelmDeployed,
@@ -737,16 +768,16 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 		},
 	}
 
-	cr := newCR(alias, cetirunv1alpha1.PhaseReady, conditions, 1, 1, oldHash)
+	cr := newCR(alias, cetirunv1alpha1.PhaseReady, conditions, 1, 1, "")
 
-	// But the actual Secret in the cluster has NEW content (simulating token rotation).
+	// Start with the original token and establish the Gateway workload.
 	newSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "gateway-token",
 			Namespace: "cetirun-" + alias,
 		},
 		Data: map[string][]byte{
-			"OPENCLAW_GATEWAY_TOKEN": []byte("new-rotated-token"),
+			"OPENCLAW_GATEWAY_TOKEN": []byte("original-token"),
 		},
 	}
 
@@ -757,7 +788,7 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
@@ -768,6 +799,23 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 		OperatorSAName:    "cetirun-operator-controller-manager",
 		ChartVersion:      "0.1.28",
 		DomainSuffix:      domainSuffix,
+	}
+	controller.ConfigureTestGateway(t, r)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: alias}}
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	helmFake.installCalled = false
+	if _, err := r.Reconcile(context.Background(), request); err != nil || helmFake.installCalled {
+		t.Fatalf("unchanged Gateway workload did not settle: %v", err)
+	}
+	rotated := &corev1.Secret{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(newSecret), rotated); err != nil {
+		t.Fatal(err)
+	}
+	rotated.Data["OPENCLAW_GATEWAY_TOKEN"] = []byte("new-rotated-token")
+	if err := fakeClient.Update(context.Background(), rotated); err != nil {
+		t.Fatal(err)
 	}
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -796,7 +844,7 @@ func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
 	alias := "legacy-auth-key"
 	domainSuffix := "example.com"
 	legacySecretData := map[string][]byte{"OPENCLAW_GATEWAY_TOKEN": []byte("legacy-token")}
-	legacyHash := computeOperatorHash(domainSuffix, computeSecretHash(legacySecretData), "", "", "", "")
+	legacyHash := computeOperatorHash(domainSuffix, computeSecretHash(legacySecretData), "", "", "", "", "", "", "", "", "")
 
 	conditions := []metav1.Condition{
 		{
@@ -826,7 +874,7 @@ func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
 		WithObjects(cr, instanceNamespace(alias), legacySecret, statefulSet(alias, 1)).
 		WithStatusSubresource(cr).
 		Build()
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
@@ -837,6 +885,7 @@ func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
 		ChartVersion:      "0.1.28",
 		DomainSuffix:      domainSuffix,
 	}
+	controller.ConfigureTestGateway(t, r)
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: alias}}); err != nil {
 		t.Fatalf("Reconcile returned unexpected error: %v", err)
@@ -876,7 +925,7 @@ func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 		WithObjects(cr, vs).
 		WithStatusSubresource(cr).
 		Build()
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
@@ -908,8 +957,7 @@ func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 }
 
 // computeOperatorHash reproduces the operatorConfigHash logic for test seeding.
-// Extra configuration includes integration settings and the referenced Team's
-// ResourceVersion, matching the reconciler's cache inputs.
+// The optional config values mirror configHash's cache-invalidation inputs.
 func computeOperatorHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, config ...string) string {
 	var payload string
 	if skillsStorageAccount == "" && cetirunHelmValuesHash == "" && chartRegistry == "" && len(config) == 0 {
@@ -962,7 +1010,7 @@ func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
@@ -974,6 +1022,7 @@ func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
 		ChartVersion:      chartVersion,
 		DomainSuffix:      "example.com",
 	}
+	controller.ConfigureTestGateway(t, r)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: alias},
@@ -1017,7 +1066,7 @@ func TestReconcile_VersionSet_PassesToHelm(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
@@ -1029,6 +1078,7 @@ func TestReconcile_VersionSet_PassesToHelm(t *testing.T) {
 		ChartVersion:      "0.1.28", // Operator default differs from pinned version.
 		DomainSuffix:      "example.com",
 	}
+	controller.ConfigureTestGateway(t, r)
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: alias},
@@ -1120,6 +1170,7 @@ func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 		ChartVersion:      "0.1.28",
 		DomainSuffix:      "example.com",
 	}
+	controller.ConfigureTestGateway(t, r)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: alias},
@@ -1127,13 +1178,13 @@ func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile returned unexpected error: %v", err)
 	}
-	if result.RequeueAfter != 10*time.Minute {
-		t.Errorf("expected RequeueAfter=10m, got %v", result.RequeueAfter)
+	if result.RequeueAfter != time.Minute {
+		t.Errorf("expected RequeueAfter=1m, got %v", result.RequeueAfter)
 	}
 
-	// Verify Helm was called (it should pass replicaCount=0 via buildHelmValues).
-	if !helmFake.installCalled {
-		t.Error("expected Helm InstallOrUpgrade to be called")
+	// Suspension stops compute without resolving a Chart.
+	if helmFake.installCalled {
+		t.Error("suspension must not call Helm")
 	}
 
 	// Fetch updated CR and verify status.
@@ -1163,8 +1214,8 @@ func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 	if ready.Status != metav1.ConditionFalse {
 		t.Errorf("expected Ready=False, got %s", ready.Status)
 	}
-	if ready.Reason != "InstanceSuspended" {
-		t.Errorf("expected Ready reason=InstanceSuspended, got %s", ready.Reason)
+	if ready.Reason != "Suspended" {
+		t.Errorf("expected Ready reason=Suspended, got %s", ready.Reason)
 	}
 }
 
@@ -1185,7 +1236,7 @@ func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 
-	helmFake := &fakeHelmClient{}
+	helmFake := &fakeHelmClient{useHarness: true}
 
 	r := &controller.AgentReconciler{
 		Client:            fakeClient,
@@ -1197,6 +1248,7 @@ func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
 		ChartVersion:      "0.1.28",
 		DomainSuffix:      "example.com",
 	}
+	controller.ConfigureTestGateway(t, r)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: alias},
@@ -1234,9 +1286,10 @@ func TestReconcile_SuspendedSkipCache(t *testing.T) {
 	// Compute the expected operator hash for skip-cache to match.
 	gwSecretData := gatewayTokenSecret(alias).Data
 	gwHash := computeSecretHash(gwSecretData)
-	opHash := computeOperatorHash("example.com", gwHash, "", "", "", "")
+	opHash := computeOperatorHash("example.com", gwHash, "", "", "", "", "", "", "", "", "")
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseSuspended, nil, 1, 1, opHash)
+	cr.Spec.Suspended = true
 
 	s := testScheme()
 	fakeClient := fake.NewClientBuilder().
@@ -1264,8 +1317,8 @@ func TestReconcile_SuspendedSkipCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile returned unexpected error: %v", err)
 	}
-	if result.RequeueAfter != 10*time.Minute {
-		t.Errorf("expected RequeueAfter=10m (skip-cache), got %v", result.RequeueAfter)
+	if result.RequeueAfter != time.Minute {
+		t.Errorf("expected RequeueAfter=1m (suspended), got %v", result.RequeueAfter)
 	}
 
 	// Helm should NOT have been called (skip-cache hit).
@@ -1301,13 +1354,21 @@ func TestReconcile_StaleAgentCopyDoesNotInstall(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 	key := types.NamespacedName{Name: alias}
+	var gatewayState *controller.AgentReconciler
 	newReconciler := func(cl client.Client) (*controller.AgentReconciler, *fakeHelmClient) {
-		helmFake := &fakeHelmClient{}
-		return &controller.AgentReconciler{
+		helmFake := &fakeHelmClient{useHarness: true}
+		r := &controller.AgentReconciler{
 			Client: cl, APIReader: fakeClient, Scheme: s, EventRecorder: record.NewFakeRecorder(10),
 			HelmClient: helmFake, OperatorNamespace: "cetirun-system",
 			OperatorSAName: "cetirun-operator-controller-manager", ChartVersion: "0.1.28", DomainSuffix: "example.com",
-		}, helmFake
+		}
+		if gatewayState == nil {
+			controller.ConfigureTestGateway(t, r)
+			gatewayState = r
+		} else {
+			controller.ReuseTestGateway(t, gatewayState, r)
+		}
+		return r, helmFake
 	}
 	reconcile := func(cl client.Client) (ctrl.Result, *fakeHelmClient) {
 		t.Helper()

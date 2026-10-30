@@ -45,7 +45,6 @@ func TestAdminTeam_List(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 		Spec: cetirunv1alpha1.TeamSpec{
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
-			Defaults:      cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
 			Skills:        []string{"@anthropic/mcp-server-fetch"},
 		},
 	}
@@ -96,9 +95,8 @@ func TestAdminTeam_Create(t *testing.T) {
 	body, _ := json.Marshal(TeamUpsertRequest{
 		Name:           "sre",
 		AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
-		Role:            "SRE",
-		DefaultProvider: "anthropic",
-		Skills:          []string{"npm:@scope/skill"},
+		Role:   "SRE",
+		Skills: []string{"npm:@scope/skill"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -110,7 +108,7 @@ func TestAdminTeam_Create(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Name != "sre" || got.DefaultProvider != "anthropic" {
+	if got.Name != "sre" {
 		t.Errorf("unexpected DTO: %+v", got)
 	}
 }

@@ -3,7 +3,6 @@
 
 import os
 import re
-import runpy
 import subprocess
 import tempfile
 import unittest
@@ -59,7 +58,6 @@ class HarnessAssetsTests(unittest.TestCase):
         entrypoint = (
             CHART / "agents/hermes/bootstrap/hermes-entrypoint.sh"
         ).read_text()
-        auth = (CHART / "agents/hermes/bootstrap/hermes-auth.sh").read_text()
         runtime = (
             CHART / "templates/agents/hermes/_runtime.tpl"
         ).read_text()
@@ -72,12 +70,6 @@ class HarnessAssetsTests(unittest.TestCase):
         self.assertNotIn("--insecure", entrypoint)
         self.assertIn("HERMES_DASHBOARD_HOST", entrypoint)
         self.assertIn("/usr/local/lib/hermes-agent/venv/bin/python", entrypoint)
-
-        self.assertIn("hermes auth status copilot", auth)
-        self.assertIn("hermes model", auth)
-        self.assertNotIn("hermes_cli.", auth)
-        legacy = CHART / "agents/hermes/bootstrap/hermes-copilot-auth.py"
-        self.assertNotIn("hermes_cli.", legacy.read_text())
 
         for name, key in (
             ("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "API_SERVER_KEY"),
@@ -94,18 +86,13 @@ class HarnessAssetsTests(unittest.TestCase):
         self.assertIn('name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME', runtime)
         self.assertIn('value: "cetirun"', runtime)
 
-    def test_legacy_hermes_auth_helper_delegates_to_public_cli(self):
-        helper = runpy.run_path(
-            str(CHART / "agents/hermes/bootstrap/hermes-copilot-auth.py")
-        )
-        for arguments, expected in (
-            ([], ["hermes", "model"]),
-            (["login"], ["hermes", "model"]),
-            (["status"], ["hermes", "auth", "status", "copilot"]),
-        ):
-            with self.subTest(arguments=arguments), patch("os.execvp") as execute:
-                helper["main"](arguments)
-                execute.assert_called_once_with("hermes", expected)
+    def test_hermes_image_has_no_direct_model_auth_helpers(self):
+        dockerfile = (CHART / "agents/hermes/Dockerfile").read_text()
+        for helper in ("hermes-auth.sh", "hermes-copilot-auth.py", "cetirun-auth-service.py"):
+            self.assertNotIn(helper, dockerfile)
+        entrypoint = (CHART / "agents/hermes/bootstrap/hermes-entrypoint.sh").read_text()
+        self.assertNotIn("[program:cetirun-auth]", entrypoint)
+        self.assertIn("AI Gateway is required", entrypoint)
 
     def test_hermes_dashboard_defaults_preserve_explicit_bindings(self):
         source = (CHART / "agents/hermes/bootstrap/hermes-entrypoint.sh").read_text()

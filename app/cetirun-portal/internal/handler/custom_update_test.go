@@ -110,7 +110,7 @@ func TestCustomWebUIResponseDoesNotAdvertiseDesktopOrCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.WebUIURL != instance.Status.AccessURL || response.AccessURL != "" || response.GatewayToken != "" || response.CetiRunAuthKey != "" {
+	if response.WebUIURL != instance.Status.AccessURL || response.AccessURL != "" || response.GatewayToken != "" {
 		t.Fatalf("wrong Custom Web UI response: %#v", response)
 	}
 	instance.Status.Phase = "Suspended"

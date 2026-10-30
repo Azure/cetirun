@@ -43,10 +43,7 @@ support. An administrator enables the runtime and approves the image:
 cetirun-operator:
   customRuntime:
     enabled: true
-    agentManagedModel: true
     approvedImages:
-      - registry.example.com/cetirun-vscode@sha256:<approved-digest>
-    gatewayImages:
       - registry.example.com/cetirun-vscode@sha256:<approved-digest>
     storageClass: <qualified-storage-class>
     storageSize: 20Gi
@@ -66,10 +63,8 @@ The manifest sets `webUI: true` and `port: 8080`, publishing the editor at
 provides its own terminal. The image runs as UID/GID 1024 with `HOME=/home/vibe`;
 let the platform provision its namespace and storage.
 
-Add the image to `gatewayImages` as well as `approvedImages`; this uses the
-per-image Gateway binding even when `agentManagedModel` is `true`. Merge these
-entries into existing lists to preserve other images' configuration.
-The Operator injects `OPENAI_BASE_URL` and the instance's Secret-backed
+Every approved Custom image receives the Gateway binding. The Operator injects
+`OPENAI_BASE_URL` and the instance's Secret-backed
 `OPENAI_API_KEY`. The manifest enables shared models and disables the optional
 Gateway Copilot upstream.
 
@@ -126,9 +121,9 @@ configuration command. Save dirty model configuration before doing so.
 
 Empty catalogs, denied requests and invalid configuration report a setup warning;
 they do not enable a GitHub login fallback. Partial Gateway environment bindings
-fail startup. With neither variable set, the extension does nothing, retaining
-the earlier image-managed mode. Existing browser credentials/configuration are
-not deleted when switching modes; use a separate profile for a different mode.
+fail startup. Platform model access uses the Gateway. Existing browser
+credentials/configuration are not managed by this example; use a separate
+profile for a different mode.
 
 BYOK covers Chat, local Agent workflows and utility tasks. It does **not** supply
 GitHub's inline code completions, semantic search or embedding-dependent features.

@@ -156,22 +156,23 @@ func Token(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// GetKey returns the key identified by token, or nil when it does not exist.
+// GetKey returns the key identified by token, or nil if missing or archived.
 func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 	query := url.Values{"key": []string{token}}
 	var response struct {
 		Info struct {
-			KeyAlias       string   `json:"key_alias"`
-			Models         []string `json:"models"`
-			MaxBudget      *float64 `json:"max_budget"`
-			BudgetDuration string   `json:"budget_duration"`
-			Blocked        *bool    `json:"blocked"`
-			Spend          *float64 `json:"spend"`
-			BudgetResetAt  *string  `json:"budget_reset_at"`
-			TeamID         *string  `json:"team_id"`
-			UserID         *string  `json:"user_id"`
-			Aliases        any      `json:"aliases"`
-			AllowedRoutes  []string `json:"allowed_routes"`
+			KeyAlias       string     `json:"key_alias"`
+			Models         []string   `json:"models"`
+			MaxBudget      *float64   `json:"max_budget"`
+			BudgetDuration string     `json:"budget_duration"`
+			Blocked        *bool      `json:"blocked"`
+			Spend          *float64   `json:"spend"`
+			BudgetResetAt  *string    `json:"budget_reset_at"`
+			DeletedAt      *time.Time `json:"deleted_at"`
+			TeamID         *string    `json:"team_id"`
+			UserID         *string    `json:"user_id"`
+			Aliases        any        `json:"aliases"`
+			AllowedRoutes  []string   `json:"allowed_routes"`
 			keyLimitsInfo
 		} `json:"info"`
 	}
@@ -183,6 +184,9 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 		return nil, err
 	}
 	info := response.Info
+	if info.DeletedAt != nil {
+		return nil, nil
+	}
 	key := &Key{
 		Alias: info.KeyAlias, Models: info.Models, MaxBudget: info.MaxBudget,
 		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked, Spend: info.Spend,

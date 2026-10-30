@@ -34,13 +34,14 @@ const (
 )
 
 type Handler struct {
-	reader           client.Reader
-	config           Config
-	registrations    map[api.SandboxType]sandbox.Registration
-	platformSource   sandboxplatform.Source
-	platformSnapshot *sandboxplatform.Snapshot
-	coordination     *sandboxcoordination.Store
-	requestTimeout   time.Duration
+	reader            client.Reader
+	config            Config
+	registrations     map[api.SandboxType]sandbox.Registration
+	platformSource    sandboxplatform.Source
+	platformSnapshot  *sandboxplatform.Snapshot
+	nativeGrantChecks []nativePolicyGrantCheck
+	coordination      *sandboxcoordination.Store
+	requestTimeout    time.Duration
 }
 
 func NewHandler(reader client.Reader, config Config) (*Handler, error) {
@@ -299,7 +300,7 @@ func (h *Handler) agentAuthorizationResources(ctx context.Context, operation adm
 	if err := sandbox.CheckAgentProfile(registrations[selected.Type].Capabilities, spec.Agent.Type); err != nil {
 		return sandbox.Resources{}, admission.Denied(err.Error())
 	}
-	if err := h.checkNativeNetworkBinding(ctx, selected.Type, resources.AgentPolicies[team.Spec.AgentPolicyRef],
+	if err := h.checkNativePolicyBinding(ctx, selected.Type, resources.AgentPolicies[team.Spec.AgentPolicyRef],
 		registrations[selected.Type].Capabilities); err != nil {
 		return sandbox.Resources{}, admission.Denied(err.Error())
 	}

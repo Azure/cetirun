@@ -38,10 +38,6 @@ const (
 	// hermesDashboardPort is the port the native Hermes Dashboard listens on.
 	hermesDashboardPort = 9119
 
-	// cetirunAuthPort is the port the in-pod CetiRun auth helper service listens on.
-	// It exposes /v1/login/* and /v1/status for the Portal "Copilot Auth" UI.
-	cetirunAuthPort = 18790
-
 	// ttydPort is the port ttyd web terminal listens on.
 	ttydPort = 7681
 
@@ -143,8 +139,9 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 	if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
 		config = append(config, agentIdentityRuntimeRevision)
 	}
-	// A configured default affects only GitHub Copilot instances without a
-	// per-instance model.
+	// A configured default affects instances without a per-instance model.
+	// Include it only for those instances so an explicit selection does not
+	// restart when the deployment default changes.
 	if defaultModel := strings.TrimSpace(r.DefaultModel); defaultModel != "" && r.usesDeploymentDefaultModel(instance, team) {
 		config = append(config, defaultModel)
 	}
@@ -175,32 +172,9 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 }
 
 // usesDeploymentDefaultModel reports whether buildHelmValues will render the
-// operator's default model. Keep provider precedence aligned with that function.
-func (r *AgentReconciler) usesDeploymentDefaultModel(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) bool {
-	if strings.TrimSpace(instance.Spec.Model) != "" {
-		return false
-	}
-	provider := "github_copilot"
-	applyProvider := func(value interface{}) {
-		secrets, ok := value.(map[string]interface{})
-		if !ok {
-			return
-		}
-		if configured, ok := secrets["provider"].(string); ok && strings.TrimSpace(configured) != "" {
-			provider = strings.TrimSpace(configured)
-		}
-	}
-	applyProvider(r.CetiRunHelmValues["secrets"])
-	if team != nil && strings.TrimSpace(team.Spec.Defaults.Provider) != "" {
-		provider = strings.TrimSpace(team.Spec.Defaults.Provider)
-	}
-	if raw, ok := instance.Spec.Helm.Values["secrets"]; ok && raw.Raw != nil {
-		var values map[string]interface{}
-		if err := json.Unmarshal(raw.Raw, &values); err == nil {
-			applyProvider(values)
-		}
-	}
-	return provider == "github_copilot"
+// operator's default model when no per-Agent selection is present.
+func (r *AgentReconciler) usesDeploymentDefaultModel(instance *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) bool {
+	return strings.TrimSpace(instance.Spec.Model) == ""
 }
 
 // hashCetiRunHelmValues returns a stable hash string of the operator-level helm values map.
@@ -249,9 +223,8 @@ func generateRandomToken(byteLen int) (string, error) {
 
 // buildHelmValues constructs the Helm values map for installing/upgrading the openclaw chart.
 // The optional final argument is the operator deployment default model. An
-// GitHub Copilot instance's spec.model takes precedence. The variadic form
-// keeps the helper convenient for unit tests and callers that do not need a
-// default.
+// Agent's spec.model takes precedence. The variadic form keeps the helper
+// convenient for unit tests and callers that do not need a default.
 // Merge order (later wins): controller defaults → cetirunHelmValues → team
 // context/skills → per-instance spec.helm.values → controller-enforced model.
 type AgentIdentityHelmConfig struct {
@@ -291,11 +264,11 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 
 	values := map[string]interface{}{
 		"agentType": string(agentType),
-		// Point to the pre-created gateway token secret.
-		// The chart maps provider names into each agent's native config shape.
+		// Keep runtime/UI credentials separate from the AI Gateway model key.
+		// The controller projects the Gateway endpoint and key before apply.
 		"secrets": map[string]interface{}{
 			"existingSecret": spec.GatewayTokenSecretRef,
-			"provider":       "github_copilot",
+			"provider":       "openai",
 			"model":          "",
 		},
 		// User identity — templates USER.md in the ConfigMap.
@@ -336,11 +309,7 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	// on key collisions), lower priority than per-instance spec.helm.values
 	// which is applied at the bottom of this function.
 	if team != nil {
-		if team.Spec.Defaults.Provider != "" {
-			values["secrets"] = deepMerge(values["secrets"], map[string]interface{}{
-				"provider": team.Spec.Defaults.Provider,
-			})
-		}
+
 		userPatch := map[string]interface{}{}
 		if team.Spec.MemberContext.Role != "" {
 			userPatch["role"] = team.Spec.MemberContext.Role
@@ -450,10 +419,8 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		})
 	}
 
-	// Model selection is intentionally declarative and applies only to GitHub
-	// Copilot. An explicit spec.model wins for that provider, followed by the
-	// deployment default. OpenAI/Anthropic retain their provider-specific Helm
-	// model even if an older instance has a stale spec.model override.
+	// The AI Gateway projection validates the selected model against the
+	// Agent grant before execution.
 	secrets, ok := values["secrets"].(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("helm values secrets must be an object")
@@ -461,9 +428,9 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	provider, _ := secrets["provider"].(string)
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
-		provider = "github_copilot"
+		provider = "openai"
 	}
-	if provider == "github_copilot" {
+	if provider == "openai" {
 		model := strings.TrimSpace(spec.Model)
 		if model == "" && len(defaultModels) > 0 {
 			model = strings.TrimSpace(defaultModels[0])
@@ -790,10 +757,6 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
 			makeRoute(uiPrefix+descriptor.HealthPath, descriptor.HealthPath, primaryPort, 0),
 		)
-		// The route exists exactly where the workload serves the helper.
-		if servesSignInHelper(instance) {
-			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
-		}
 		routes = append(routes,
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),
@@ -812,10 +775,6 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		// on that exact path directly to the gateway because WebSockets cannot
 		// follow a 301 redirect.
 		routes = append([]*istioapiv1beta1.HTTPRoute{makeWebSocketRoute(uiPrefix, primaryPort)}, routes...)
-		// The route exists exactly where the workload serves the helper.
-		if servesSignInHelper(instance) {
-			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
-		}
 		routes = append(routes,
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),

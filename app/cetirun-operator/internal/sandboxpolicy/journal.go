@@ -206,6 +206,73 @@ func (s GrantJournalStore) Record(ctx context.Context, agentName string, agentUI
 	return s.confirm(ctx, cm, agentName, agentUID, refs, false)
 }
 
+// ConfirmBindingIntents preserves observed UIDs before cleanup can delete their
+// objects. Missing outcomes remain recorded, including in terminating journals.
+// This confirms existing inventory only; it never creates or removes a grant.
+func (s GrantJournalStore) ConfirmBindingIntents(ctx context.Context, agentName string, agentUID types.UID, desired []BindingReference) error {
+	if err := s.validate(agentName, agentUID, true); err != nil {
+		return err
+	}
+	if err := validateJournalReferences(agentName, agentUID, desired); err != nil {
+		return err
+	}
+	cm, recorded, err := s.read(ctx, agentName, agentUID, journalRequireProtection)
+	if err != nil {
+		return err
+	}
+	indices := make(map[journalBindingKey]int, len(recorded))
+	for index, ref := range recorded {
+		indices[journalKey(ref)] = index
+	}
+	for _, requested := range desired {
+		index, found := indices[journalKey(requested)]
+		if !found || journalIdentity(recorded[index]) != journalIdentity(requested) ||
+			(requested.UID != "" && requested.UID != recorded[index].UID) {
+			return fmt.Errorf("%w: confirmation is not in the grant journal", ErrOwnership)
+		}
+	}
+	changed, pending := false, false
+	var failures []error
+	for _, requested := range desired {
+		ref := &recorded[indices[journalKey(requested)]]
+		if ref.UID != "" {
+			continue
+		}
+		object, err := readOwnedBinding(ctx, s.APIReader, *ref)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if object == nil {
+			pending = true
+			continue
+		}
+		ref.UID, changed = object.GetUID(), true
+	}
+	if changed {
+		if err := setJournalReferences(cm, agentName, agentUID, recorded); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
+		originalUID := cm.UID
+		if err := s.Client.Update(ctx, cm); err != nil {
+			return errors.Join(append(failures, fmt.Errorf("confirm sandbox grant outcomes: %w", err))...)
+		}
+		if cm.UID != originalUID {
+			return errors.Join(append(failures, journalConflict(cm.Name, "journal was replaced during confirmation"))...)
+		}
+		if err := s.confirm(ctx, cm, agentName, agentUID, recorded, true); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if len(failures) != 0 {
+		return errors.Join(failures...)
+	}
+	if pending {
+		return fmt.Errorf("%w: binding write outcome is unconfirmed", ErrRevocationPending)
+	}
+	return nil
+}
+
 // RefreshBindingIntents checks already-recorded desired grants before writes.
 // Confirmed bindings that are authoritatively absent are retired durably before
 // fresh UID-less intent is recorded. Live replacements are rejected, and healthy
@@ -238,9 +305,6 @@ func (s GrantJournalStore) RefreshBindingIntents(ctx context.Context, agentName 
 			(requested.UID != "" && requested.UID != old.UID) {
 			return fmt.Errorf("%w: desired binding is not in the grant journal", ErrOwnership)
 		}
-		if old.UID == "" {
-			continue
-		}
 		object, err := readOwnedBinding(ctx, s.APIReader, old)
 		if err != nil {
 			return err
@@ -249,6 +313,9 @@ func (s GrantJournalStore) RefreshBindingIntents(ctx context.Context, agentName 
 			if !object.GetDeletionTimestamp().IsZero() {
 				return fmt.Errorf("%w: desired %s is terminating", ErrRevocationPending, old.Kind)
 			}
+			continue
+		}
+		if old.UID == "" {
 			continue
 		}
 		absent = append(absent, old)

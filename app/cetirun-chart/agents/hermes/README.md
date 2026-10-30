@@ -40,9 +40,8 @@ CetiRun keeps these layers on top of the upstream source:
 
 - the persistent user and HOME contract at UID/GID `1024` and
   `/home/vibe/.hermes`;
-- the in-pod CetiRun authentication service, which the entrypoint does not run
-  when `CETIRUN_AI_GATEWAY=true`: on the platform AI Gateway the owner signs
-  in to GitHub Copilot through the Portal;
+- mandatory AI Gateway routing; owners connect GitHub Copilot through the
+  Portal, and the image has no platform direct-provider login service;
 - Supervisor wiring for the Hermes gateway, Dashboard, terminal, and Tailscale;
 - the external shared-skills directory and CetiRun-owned persona/context files;
 - the SQLite version and compile flags used by the upstream container to avoid
@@ -51,14 +50,11 @@ CetiRun keeps these layers on top of the upstream source:
   `API_SERVER_KEY` is the password, and `CETIRUN_AUTH_KEY` signs Dashboard
   sessions.
 
-The Chart supplies the Dashboard settings explicitly. For older Charts, the
-entrypoint supplies the same defaults from the existing keys without
-overriding explicit settings. Missing keys do not disable upstream
-authentication.
+The Chart supplies the Dashboard settings explicitly. Missing keys do not
+disable upstream authentication.
 
-Older Charts also retain a `copilot-auth` wrapper that calls
-`hermes-copilot-auth.py`. That path remains in the image as a CLI-only
-compatibility entrypoint; it no longer imports private Hermes auth functions.
+Charts that disable the AI Gateway are unsupported. The runtime rejects them
+before initialization instead of offering an in-Agent model sign-in path.
 
 Do not replace these contracts with the upstream container layout without also
 qualifying persistent HOME ownership, chart probes and ports, Istio routes,

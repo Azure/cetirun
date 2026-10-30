@@ -366,7 +366,7 @@ func TestSandboxExecutionSourcesRecheckSharedChangesWithoutRestaging(t *testing.
 					agent.Spec.Suspended = true
 					agent.Generation++
 				case *api.Team:
-					changed.Spec.Defaults.Provider = "changed-provider"
+					changed.Spec.MemberContext.Role = "changed-role"
 				case *api.AgentPolicy:
 					changed.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
 				case *corev1.PersistentVolumeClaim:

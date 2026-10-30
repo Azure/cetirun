@@ -39,10 +39,13 @@ CHARTS = (
         (
             "agentType=openclaw",
             "secrets.model=lint-model",
+            "aiGateway.keySecretName=lint-model-key",
+            "secrets.apiBase=http://gateway.example.com/v1",
             "secrets.openclawGatewayToken=lint-token",
         ),
     ),
-    ("app/cetirun-chart", ("agentType=hermes", "secrets.model=lint-model")),
+    ("app/cetirun-chart", ("agentType=hermes", "secrets.model=lint-model",
+        "aiGateway.keySecretName=lint-model-key", "secrets.apiBase=http://gateway.example.com/v1")),
     ("app/cetirun-operator/chart", ()),
     ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",)),
     (
@@ -293,11 +296,7 @@ def workflow_gate(root):
 
 
 def python_tests(root):
-    for source in (
-        "app/cetirun-chart/tests/test_auth_service.py",
-        "scripts/ci/python_safety.py",
-    ):
-        require_file(root / source)
+    require_file(root / "scripts/ci/python_safety.py")
     # Fail missing packages rather than replacing the real HTTP and YAML libraries.
     run(
         [

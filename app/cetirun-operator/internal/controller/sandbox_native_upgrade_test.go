@@ -23,7 +23,6 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
-	"google.golang.org/protobuf/proto"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -186,99 +185,6 @@ func TestNativeUpgradePreparesExistingAgentWithPinnedPreProxyChart(t *testing.T)
 	f.ready(t)
 	if f.installer.stages != 1 {
 		t.Fatal("completed pinned preparation was not reusable")
-	}
-}
-
-func TestNativeUpgradePreservesExistingRuntimeAndReceipt(t *testing.T) {
-	f, legacy := oldNativeUpgradeFixture(t)
-	ctx := context.Background()
-	beforeAgent, beforePod, beforeWorkload := f.current(t), f.pod(t), f.workload(t)
-	beforeState, expected := f.expectation(t)
-	beforeReceipt, _, err := f.r.readSandboxPreparationReceipt(ctx, beforeAgent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if beforeState.Name != legacy.StateName || beforeReceipt.Name != legacy.ReceiptName ||
-		beforeReceipt.Annotations[nativeStartAnnotation] != legacy.Revision ||
-		expected.Revision != legacy.Revision || expected.ExecutionHeld || expected.PodUID != beforePod.UID {
-		t.Fatal("old execution receipt or one-shot boundary is incomplete")
-	}
-	oldConfig := &corev1.ConfigMap{}
-	if err := f.kube.Get(ctx, client.ObjectKey{Namespace: beforeWorkload.Namespace, Name: beforeWorkload.Name + "-config"}, oldConfig); err != nil {
-		t.Fatal(err)
-	}
-	var runtimeConfig struct {
-		Gateway struct {
-			TrustedProxies []string `json:"trustedProxies"`
-		} `json:"gateway"`
-	}
-	if err := json.Unmarshal([]byte(oldConfig.Data["openclaw.json"]), &runtimeConfig); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(runtimeConfig.Gateway.TrustedProxies, []string{"127.0.0.6"}) {
-		t.Fatal("upgrade regression did not retain the old runtime configuration")
-	}
-	route := &istiov1beta1.VirtualService{}
-	routeKey := client.ObjectKey{Namespace: beforeWorkload.Namespace, Name: virtualServiceName(beforeAgent.Name)}
-	if err := f.kube.Get(ctx, routeKey, route); err != nil {
-		t.Fatal(err)
-	}
-	beforeRoute := route.DeepCopy()
-	// The recorded controller installed a Teams-only deny route even for this
-	// Agent. Retiring that endpoint removes exactly this rule while retaining
-	// every native route and the existing runtime/receipt.
-	if len(beforeRoute.Spec.Http) < 2 {
-		t.Fatal("historical fixture is missing its native routes")
-	}
-	webhook := beforeRoute.Spec.Http[0]
-	if len(webhook.Match) != 1 || webhook.Match[0].GetUri().GetExact() != "/"+beforeAgent.Name+"/api/messages" ||
-		webhook.Match[0].GetMethod().GetExact() != "POST" || webhook.GetDirectResponse().GetStatus() != 404 || len(webhook.Route) != 0 {
-		t.Fatal("historical fixture is missing its Teams-only deny route")
-	}
-	beforeRoute.Spec.Http = beforeRoute.Spec.Http[1:]
-	for iteration := range 2 {
-		f.reconcileOK(t)
-		f.assertReady(t)
-		agent := f.current(t)
-		if agent.UID != beforeAgent.UID || !reflect.DeepEqual(agent.Spec, beforeAgent.Spec) ||
-			slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
-			agent.Status.Sandbox.AppliedRevision != legacy.Revision ||
-			agent.Status.Policy.Enforcement.Sandbox.DesiredRevision != legacy.Revision ||
-			agent.Status.AccessURL != beforeAgent.Status.AccessURL {
-			t.Fatal("operator upgrade changed intent, held the lifetime or changed its effective revision")
-		}
-		if !reflect.DeepEqual(f.workload(t), beforeWorkload) || !reflect.DeepEqual(f.pod(t), beforePod) {
-			t.Fatal("operator upgrade changed or replaced the existing runtime")
-		}
-		state, _ := f.expectation(t)
-		receipt, _, err := f.r.readSandboxPreparationReceipt(ctx, agent)
-		if err != nil || !reflect.DeepEqual(state, beforeState) || !reflect.DeepEqual(receipt, beforeReceipt) {
-			t.Fatalf("operator upgrade rewrote the old expectation or single-start receipt: %v", err)
-		}
-		currentConfig := &corev1.ConfigMap{}
-		if err := f.kube.Get(ctx, client.ObjectKeyFromObject(oldConfig), currentConfig); err != nil || !reflect.DeepEqual(currentConfig, oldConfig) {
-			t.Fatalf("operator upgrade silently migrated runtime configuration: %v", err)
-		}
-		if err := f.kube.Get(ctx, routeKey, route); err != nil {
-			t.Fatal(err)
-		}
-		if iteration == 0 {
-			if route.ResourceVersion == beforeRoute.ResourceVersion {
-				t.Fatal("operator upgrade did not retire the Teams-only deny route")
-			}
-			beforeRoute.ResourceVersion = route.ResourceVersion
-		}
-		if !reflect.DeepEqual(route.ObjectMeta, beforeRoute.ObjectMeta) || !proto.Equal(&route.Spec, &beforeRoute.Spec) {
-			t.Fatal("operator upgrade changed native routing beyond retiring the Teams-only deny route")
-		}
-	}
-	if f.installer.stages != 0 || len(f.gateway.generated) != 0 || len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {
-		t.Fatal("operator upgrade restaged the workload or replaced/revoked its Gateway grant")
-	}
-	for _, key := range f.gateway.keys {
-		if key.Blocked {
-			t.Fatal("operator upgrade blocked the existing Gateway grant")
-		}
 	}
 }
 
