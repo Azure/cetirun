@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -28,7 +29,7 @@ const (
 	PublicPath             = "/var/run/cetirun/ingress-public"
 	ConfigPath             = "/etc/cetirun-ingress/envoy.json"
 	AdminPort              = 15440
-	APIPort                = 15443
+	APIPort                = chataccess.MTLSAPIPort
 	DashboardPort          = 15444
 	TerminalPort           = 15445
 	DesktopPort            = 15446

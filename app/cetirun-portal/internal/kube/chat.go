@@ -180,15 +180,19 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 			return target, nil
 		}
 	}
-	portFound := false
-	targetPort := *agent.Spec.Agent.Port
-	if common && commonExpectation.CustomIngressTLS != nil {
-		targetPort = commonChatMTLSPort
+	chatPort := *agent.Spec.Agent.Port
+	if common {
+		var valid bool
+		chatPort, valid = commonExpectation.chatPort(agent)
+		if !valid {
+			return target, nil
+		}
 	}
+	portFound := false
 	for _, port := range svc.Spec.Ports {
-		if port.Name == "http" && port.Protocol == corev1.ProtocolTCP && port.Port == *agent.Spec.Agent.Port &&
-			(port.TargetPort == intstr.FromInt32(targetPort) ||
-				targetPort == *agent.Spec.Agent.Port && port.TargetPort == intstr.FromString("http")) {
+		targetMatches := port.TargetPort == intstr.FromInt32(chatPort) ||
+			(chatPort == *agent.Spec.Agent.Port && port.TargetPort == intstr.FromString("http"))
+		if port.Name == "http" && port.Protocol == corev1.ProtocolTCP && port.Port == *agent.Spec.Agent.Port && targetMatches {
 			portFound = true
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/chatproxy"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/chattest"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/podtemplate"
@@ -166,7 +167,7 @@ func commonChatTLSObjects(t *testing.T) (*api.Agent, []client.Object, *corev1.Co
 	hash := sha256.Sum256([]byte(agent.UID))
 	serverName := fmt.Sprintf("agent-%x.%s", hash[:16], host)
 	secret := commonChatSource{Namespace: chattest.Caller.Namespace, Name: "chat-client", UID: "synthetic-client", ResourceVersion: "10"}
-	expected.CustomIngressTLS = &commonChatTLS{
+	expected.CustomIngressTLS = &commonChatIngressTLS{
 		AgentUID: agent.UID, Namespace: expected.Namespace.Name, Harness: "custom", Port: 8080, ServiceHost: host, ServerName: serverName,
 		ChatClients: []commonChatClient{{Secret: secret, PodLabels: maps.Clone(chattest.Caller.PodLabels)}},
 	}
@@ -266,6 +267,97 @@ func TestCommonChatMTLSRequiresCurrentTLSPath(t *testing.T) {
 			}
 			if target.Available && target.BaseURL != "http://"+expected.CustomIngressTLS.ServiceHost+":8080" {
 				t.Fatalf("private HTTP Service route changed: %s", target.BaseURL)
+			}
+		})
+	}
+}
+
+func TestCommonChatMTLSCompilerOutput(t *testing.T) {
+	agent, objects := chattest.MTLSObjects(t)
+	c := NewClient(newFakeClient(objects...))
+	for _, resolve := range []func(context.Context, *api.Agent, chataccess.Caller) (chatproxy.Target, error){c.ResolveChat, c.ObserveChat} {
+		target, err := resolve(context.Background(), agent, chattest.Caller)
+		if err != nil || !target.Available || target.BaseURL != "http://openclaw-chat-example-cetirun.cetirun-chat-example.svc.cluster.local:8080" {
+			t.Fatalf("compiler-approved mTLS Chat unavailable: %+v %v", target, err)
+		}
+	}
+}
+
+func TestCommonChatMTLSRejectsChangedEndpoint(t *testing.T) {
+	for name, mutate := range map[string]func(*api.Agent, []client.Object, *commonChatExpectation){
+		"missing TLS approval": func(_ *api.Agent, _ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS = nil },
+		"foreign Agent":        func(_ *api.Agent, _ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.AgentUID = "other" },
+		"foreign namespace": func(_ *api.Agent, _ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.Namespace = "other"
+		},
+		"wrong harness": func(_ *api.Agent, _ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.Harness = "hermes" },
+		"wrong backend": func(_ *api.Agent, _ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.Port = 9000 },
+		"wrong Service": func(_ *api.Agent, _ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.ServiceHost = "other.example.com"
+		},
+		"wrong serving name": func(_ *api.Agent, _ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.ServerName = "other.example.com"
+		},
+		"plaintext Service": func(_ *api.Agent, objects []client.Object, _ *commonChatExpectation) {
+			objects[4].(*corev1.Service).Spec.Ports[0].TargetPort = intstr.FromInt32(8080)
+		},
+		"named plaintext Service": func(_ *api.Agent, objects []client.Object, _ *commonChatExpectation) {
+			objects[4].(*corev1.Service).Spec.Ports[0].TargetPort = intstr.FromString("http")
+		},
+		"unapproved TLS port": func(_ *api.Agent, objects []client.Object, _ *commonChatExpectation) {
+			objects[4].(*corev1.Service).Spec.Ports[0].TargetPort = intstr.FromInt32(15444)
+		},
+		"plaintext caller rule": func(_ *api.Agent, objects []client.Object, e *commonChatExpectation) {
+			for index := range e.Controls {
+				control := &e.Controls[index]
+				if control.GetKind() != "CiliumNetworkPolicy" {
+					continue
+				}
+				rules, _, err := unstructured.NestedSlice(control.Object, "spec", "ingress")
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, raw := range rules {
+					rule, ok := raw.(map[string]any)
+					if ok && commonChatRuleAllows(rule, chattest.Caller, chataccess.MTLSAPIPort) {
+						rule["toPorts"] = []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}}
+					}
+				}
+				if err := unstructured.SetNestedSlice(control.Object, rules, "spec", "ingress"); err != nil {
+					t.Fatal(err)
+				}
+				for _, object := range objects {
+					actual, ok := object.(*unstructured.Unstructured)
+					if ok && actual.GetKind() == control.GetKind() && actual.GetName() == control.GetName() {
+						actual.Object["spec"] = control.DeepCopy().Object["spec"]
+					}
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent, objects := chattest.MTLSObjects(t)
+			var state *corev1.ConfigMap
+			for _, object := range objects {
+				if config, ok := object.(*corev1.ConfigMap); ok && config.Data[commonExpectationKey] != "" {
+					state = config
+				}
+			}
+			if state == nil {
+				t.Fatal("compiler fixture has no protected expectation")
+			}
+			var expected commonChatExpectation
+			if err := json.Unmarshal([]byte(state.Data[commonExpectationKey]), &expected); err != nil {
+				t.Fatal(err)
+			}
+			mutate(agent, objects, &expected)
+			writeCommonChatExpectation(t, state, expected)
+			c := NewClient(newFakeClient(objects...))
+			for _, resolve := range []func(context.Context, *api.Agent, chataccess.Caller) (chatproxy.Target, error){c.ResolveChat, c.ObserveChat} {
+				target, err := resolve(context.Background(), agent, chattest.Caller)
+				if err != nil || target.Available {
+					t.Fatalf("changed mTLS endpoint accepted: %+v %v", target, err)
+				}
 			}
 		})
 	}

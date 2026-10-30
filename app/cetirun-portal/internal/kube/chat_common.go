@@ -31,7 +31,6 @@ const (
 	commonReconciledAnnotation       = "sandbox.cetirun.microsoft.com/reconciled"
 	commonWorkloadRevisionAnnotation = "cetirun.microsoft.com/sandbox-revision"
 	commonPolicyRevisionAnnotation   = "sandbox.cetirun.microsoft.com/revision"
-	commonChatMTLSPort               = int32(15443)
 )
 
 type commonChatIdentity struct {
@@ -75,10 +74,10 @@ type commonChatExpectation struct {
 	Workloads        []commonChatWorkload        `json:"workloads"`
 	Sources          []commonChatSource          `json:"sources"`
 	Controls         []unstructured.Unstructured `json:"controls"`
-	CustomIngressTLS *commonChatTLS              `json:"customIngressTLS,omitempty"`
+	CustomIngressTLS *commonChatIngressTLS       `json:"customIngressTLS,omitempty"`
 }
 
-type commonChatTLS struct {
+type commonChatIngressTLS struct {
 	AgentUID    types.UID          `json:"agentUID"`
 	Namespace   string             `json:"namespace"`
 	Harness     string             `json:"harness"`
@@ -91,6 +90,21 @@ type commonChatTLS struct {
 type commonChatClient struct {
 	Secret    commonChatSource  `json:"secret"`
 	PodLabels map[string]string `json:"podLabels"`
+}
+
+func (e commonChatExpectation) chatPort(agent *api.Agent) (int32, bool) {
+	if e.CustomIngressTLS == nil {
+		return *agent.Spec.Agent.Port, true
+	}
+	plan := e.CustomIngressTLS
+	host := chataccess.ServiceName(agent.Name) + "." + e.Namespace.Name + ".svc.cluster.local"
+	hash := sha256.Sum256([]byte(agent.UID))
+	if plan.AgentUID != agent.UID || plan.Namespace != e.Namespace.Name || plan.Harness != "custom" ||
+		plan.Port != *agent.Spec.Agent.Port || plan.ServiceHost != host ||
+		plan.ServerName != "agent-"+hex.EncodeToString(hash[:16])+"."+host {
+		return 0, false
+	}
+	return chataccess.MTLSAPIPort, true
 }
 
 func commonExpectationName(namespace string, uid types.UID) string {
@@ -187,16 +201,16 @@ func (c *Client) commonChatControlCurrent(ctx context.Context, agent *api.Agent,
 }
 
 func (c *Client) verifyCommonChatIngress(ctx context.Context, agent *api.Agent, expected commonChatExpectation, caller chataccess.Caller) (int32, bool, error) {
-	plan := expected.CustomIngressTLS
-	if plan == nil {
-		return *agent.Spec.Agent.Port, true, nil
-	}
-	host := chataccess.ServiceName(agent.Name) + "." + expected.Namespace.Name + ".svc.cluster.local"
-	hash := sha256.Sum256([]byte(agent.UID))
-	if plan.AgentUID != agent.UID || plan.Namespace != expected.Namespace.Name || plan.Harness != "custom" ||
-		plan.Port != *agent.Spec.Agent.Port || plan.ServiceHost != host || plan.ServerName != fmt.Sprintf("agent-%x.%s", hash[:16], host) {
+	port, valid := expected.chatPort(agent)
+	if !valid {
 		return 0, false, nil
 	}
+	plan := expected.CustomIngressTLS
+	if plan == nil {
+		return port, true, nil
+	}
+	host := plan.ServiceHost
+	hash := sha256.Sum256([]byte(agent.UID))
 	var clients []commonChatClient
 	for _, candidate := range plan.ChatClients {
 		if candidate.Secret.Namespace == caller.Namespace && maps.Equal(candidate.PodLabels, caller.PodLabels) {
@@ -231,7 +245,7 @@ func (c *Client) verifyCommonChatIngress(ctx context.Context, agent *api.Agent, 
 			commonChatOwned(&control, agent) && control.GetAnnotations()[commonPolicyRevisionAnnotation] == expected.Revision &&
 			equality.Semantic.DeepEqual(control.Object["spec"], want) {
 			current, err := c.commonChatControlCurrent(ctx, agent, expected.Revision, control)
-			return commonChatMTLSPort, current, err
+			return port, current, err
 		}
 	}
 	return 0, false, nil
