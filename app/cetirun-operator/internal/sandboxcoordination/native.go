@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/util/retry"
 )
 
 // NativeIntent pins selected configuration for a Kubernetes lifetime.
@@ -148,6 +149,16 @@ func (intent NativeIntent) SelectedSandbox() string {
 // The controller must recheck current selected inputs after acquiring: a
 // configuration writer may have completed since preparation captured them.
 func (s Store) AcquireNative(ctx context.Context, intent NativeIntent) (NativeTicket, error) {
+	var ticket NativeTicket
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var err error
+		ticket, err = s.acquireNative(ctx, intent)
+		return err
+	})
+	return ticket, err
+}
+
+func (s Store) acquireNative(ctx context.Context, intent NativeIntent) (NativeTicket, error) {
 	if err := intent.Validate(); err != nil {
 		return NativeTicket{}, err
 	}

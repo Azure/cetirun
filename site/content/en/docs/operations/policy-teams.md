@@ -323,6 +323,9 @@ support. Members can then create Agents for the Team, as in
   the basic configuration above does not enable them.
 - Changing a Policy's model access, budget, network or security settings
   restarts its running Agents once. Changing only its request limits does not.
+- Concurrent updates to the shared native reservation use bounded retries for
+  definite Kubernetes resource-version conflicts. Each retry rereads the
+  authority; stopping/source conflicts and uncertain writes are not bypassed.
 - An Agent moves to another Team only when an administrator reauthorizes it
   with `kubectl`.
 
