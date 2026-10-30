@@ -35,6 +35,15 @@ var teamValidationFieldPattern = regexp.MustCompile(`^(metadata\.name|spec(\.(ag
 	`skillStorage(\.(resourceGroup|storageAccount|containerName|storageClassName|storageSize|mountPath))?|` +
 	`modelRouters(\[[0-9]+\](\.(name|classifier(\.(type|model))?|tiers(\.(simple|medium|complex|reasoning))?))?)?))?)$`)
 
+func teamAdmissionRejected(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return false
+	}
+	message := status.Status().Message
+	return strings.HasPrefix(message, `admission webhook "`) && strings.Contains(message, `" denied the request:`)
+}
+
 func teamValidationMessage(err error) string {
 	message := "Team configuration was rejected by the cluster."
 	var status apierrors.APIStatus

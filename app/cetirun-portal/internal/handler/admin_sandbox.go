@@ -109,6 +109,9 @@ func writeConfigurationError(w http.ResponseWriter, operation, kind, name string
 	case apierrors.IsInvalid(err) && kind == "Team":
 		slog.Error("admin: team configuration rejected", "operation", operation, "name", name, "error", err)
 		writeError(w, http.StatusUnprocessableEntity, "invalid_team", teamValidationMessage(err))
+	case kube.IsForbidden(err) && kind == "Team" && teamAdmissionRejected(err):
+		slog.Error("admin: team admission rejected", "operation", operation, "name", name, "error", err)
+		writeError(w, http.StatusForbidden, "admission_rejected", "Platform admission denied the Team operation. Check the selected Policy and Sandbox prerequisites and Portal logs; changing ClusterRole bindings may not resolve this rejection.")
 	case kube.IsForbidden(err) && kind == "Team":
 		slog.Error("admin: team operation forbidden", "operation", operation, "name", name, "error", err)
 		writeError(w, http.StatusForbidden, "rbac_forbidden", "Portal service account is not allowed to "+operation+" teams. Check ClusterRole bindings.")

@@ -314,6 +314,17 @@ Policy that is not accepted names the setting the registration does not
 support. Members can then create Agents for the Team, as in
 [Your first instance](../../getting-started/first-instance/).
 
+### Team operations rejected by admission
+
+An HTTP 403 can come from the Sandbox admission webhook even when the Portal
+ServiceAccount has permission to create or update Teams. The Portal reports
+these webhook refusals as `admission_rejected`, separately from
+`rbac_forbidden`. Check the selected Policy, Sandbox and registered topology,
+then consult the administrator-only Portal diagnostics. Do not broaden
+ClusterRole permissions merely to address a conflicting network requirement.
+The response omits raw webhook details; admission and RBAC enforcement are
+unchanged.
+
 ## What changes for Agents
 
 - Tailscale, Microsoft Teams, Agent Identity and custom harnesses are not
