@@ -2,6 +2,17 @@
 # Licensed under the MIT License.
 
 ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:0.1.1
+FROM ${BASE_IMAGE} AS runtime-source
+USER root
+WORKDIR /opt/cetirun-pi
+COPY --chmod=0644 *.mjs ./
+RUN chmod 0755 /opt/cetirun-pi pi-tui.mjs
+USER 1024:1024
+RUN test "$(id -u):$(id -g)" = "1024:1024" \
+    && for source in *.mjs; do node --check "$source" || exit 1; done \
+    && node server.mjs --help \
+    && ./pi-tui.mjs --help
+
 FROM ${BASE_IMAGE}
 ARG VERSION=0.1.1
 ARG GIT_SHA=unknown
@@ -29,7 +40,7 @@ RUN inherited_undici="$(node -p 'require("/usr/local/lib/node_modules/npm/node_m
     fi && \
     npm --version
 
-COPY package.json package-lock.json ./
+COPY --chmod=0644 package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && node --input-type=module -e 'await import("@earendil-works/pi-coding-agent")'
 
@@ -52,11 +63,10 @@ RUN case "${TARGETARCH}" in \
     install -D -m 644 "${fd_dir}/LICENSE-APACHE" /licenses/fd/LICENSE-APACHE && \
     rm -r "${fd_dir}" && fd --version
 
-COPY *.mjs ./
+COPY --from=runtime-source /opt/cetirun-pi/ ./
 RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp fd rg; do \
       command -v "$tool" >/dev/null || exit 1; \
     done \
-    && chmod +x pi-tui.mjs \
     && ln -s /opt/cetirun-pi/pi-tui.mjs /usr/local/bin/pi-tui
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun" \
@@ -67,6 +77,10 @@ LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun" \
       org.opencontainers.image.licenses="MIT"
 ENV HOME=/home/vibe PI_TELEMETRY=0 PI_OFFLINE=1
 USER 1024:1024
+RUN test "$(id -u):$(id -g)" = "1024:1024" \
+    && node server.mjs --help \
+    && pi-tui --help \
+    && node --input-type=module -e 'await import("./pi-runtime.mjs")'
 WORKDIR /home/vibe
 EXPOSE 8080
 ENTRYPOINT ["node", "/opt/cetirun-pi/server.mjs"]

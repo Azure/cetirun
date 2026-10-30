@@ -34,6 +34,12 @@ For a custom `BASE_IMAGE`, provide Node.js 24, Git, Python with tarfile's `data`
 extraction filter, and the CetiRun HOME initializer's tools. The example is not
 included in platform image publishing. Deploy an approved image by digest.
 
+The `runtime-source` stage gives copied JavaScript modules mode `0644` and
+application directories mode `0755`. It also makes the bundled Gateway
+extension readable and traversable while preserving executable scripts.
+The build checks these files as UID/GID `1024:1024`, including the installed
+extension copy in the final stage. HOME and user credentials are not changed.
+
 ## Deploy
 
 Use matching Operator, CRD, runtime chart and Portal versions with Custom Web UI
@@ -152,3 +158,7 @@ They do not start VS Code or validate a real Copilot request. Separately qualify
 an approved image with a signed-out browser profile, a native Agent tool task
 and matching Gateway request metadata. Recheck after restart and key rotation.
 Deployment and live model calls require separate authorization.
+
+The shared [source-permission suite](../pi-agent/README.md#source-permissions)
+checks both examples with a selected cached Node image. It tests the actual
+`runtime-source` stage, not the complete VS Code distribution.
