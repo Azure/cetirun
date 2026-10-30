@@ -608,7 +608,7 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`; also accepts opt-in `custom`. Checked by both the form and backend |
 | `sandboxRuntimeProfiles` | Approved chart/image/port pins for built-in Sandbox creation; missing profiles reject creation unless controller defaults are explicitly enabled |
 | `sandboxRuntimeDefaultsFromController` | `false`; permit missing profiles only after the Operator's common Sandbox executor is enabled |
-| `noticeBanner` | Set your deployment notice explicitly or clear it |
+| `noticeBanner` | `""` (no banner); set to display a deployment notice |
 | `image`, `imagePullSecrets` | Portal image pin and pull access |
 
 The backend enforces `features.allowedAgentTypes`, the Tailscale feature flag
@@ -634,7 +634,7 @@ the chart's NetworkPolicy. Both require the intended gateway namespace.
 The portal service name comes from `fullnameOverride` or the chart name, not
 the Helm release name. If you change that name or the namespace, align the
 shared Istio chart's `portalAuth.clusterHost`. `admins.aliases` controls portal
-administrative APIs, not access to every native instance UI. Set `noticeBanner`
-to reviewed deployment text or clear it instead of inheriting the bundled copy.
+administrative APIs, not access to every native instance UI. `noticeBanner` is
+empty by default; set it to reviewed deployment text when a notice is needed.
 
 For shared authentication settings, use [Istio operations](../../operations/istio/).
