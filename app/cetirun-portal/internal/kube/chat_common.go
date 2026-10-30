@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -30,6 +31,7 @@ const (
 	commonReconciledAnnotation       = "sandbox.cetirun.microsoft.com/reconciled"
 	commonWorkloadRevisionAnnotation = "cetirun.microsoft.com/sandbox-revision"
 	commonPolicyRevisionAnnotation   = "sandbox.cetirun.microsoft.com/revision"
+	commonChatMTLSPort               = int32(15443)
 )
 
 type commonChatIdentity struct {
@@ -63,16 +65,32 @@ type commonChatSource struct {
 }
 
 type commonChatExpectation struct {
-	Version         string                      `json:"version"`
-	Agent           commonChatIdentity          `json:"agent"`
-	AgentGeneration int64                       `json:"agentGeneration"`
-	Namespace       commonChatIdentity          `json:"namespace"`
-	Binding         commonChatBinding           `json:"binding"`
-	Revision        string                      `json:"revision"`
-	PlanHash        string                      `json:"planHash"`
-	Workloads       []commonChatWorkload        `json:"workloads"`
-	Sources         []commonChatSource          `json:"sources"`
-	Controls        []unstructured.Unstructured `json:"controls"`
+	Version          string                      `json:"version"`
+	Agent            commonChatIdentity          `json:"agent"`
+	AgentGeneration  int64                       `json:"agentGeneration"`
+	Namespace        commonChatIdentity          `json:"namespace"`
+	Binding          commonChatBinding           `json:"binding"`
+	Revision         string                      `json:"revision"`
+	PlanHash         string                      `json:"planHash"`
+	Workloads        []commonChatWorkload        `json:"workloads"`
+	Sources          []commonChatSource          `json:"sources"`
+	Controls         []unstructured.Unstructured `json:"controls"`
+	CustomIngressTLS *commonChatTLS              `json:"customIngressTLS,omitempty"`
+}
+
+type commonChatTLS struct {
+	AgentUID    types.UID          `json:"agentUID"`
+	Namespace   string             `json:"namespace"`
+	Harness     string             `json:"harness"`
+	Port        int32              `json:"port"`
+	ServiceHost string             `json:"serviceHost"`
+	ServerName  string             `json:"serverName"`
+	ChatClients []commonChatClient `json:"chatClients"`
+}
+
+type commonChatClient struct {
+	Secret    commonChatSource  `json:"secret"`
+	PodLabels map[string]string `json:"podLabels"`
 }
 
 func commonExpectationName(namespace string, uid types.UID) string {
@@ -143,23 +161,88 @@ func (c *Client) verifyCommonChatExpectation(ctx context.Context, agent *api.Age
 	}) {
 		return expected, false, nil
 	}
+	port, approved, err := c.verifyCommonChatIngress(ctx, agent, expected, caller)
+	if err != nil || !approved {
+		return expected, false, err
+	}
 	for _, control := range expected.Controls {
-		if !commonChatCiliumAllows(control, agent, namespace.Name, caller, *agent.Spec.Agent.Port) {
+		if !commonChatCiliumAllows(control, agent, namespace.Name, caller, port) {
 			continue
 		}
-		actual := &unstructured.Unstructured{}
-		actual.SetGroupVersionKind(control.GroupVersionKind())
-		if err := c.client.Get(ctx, client.ObjectKeyFromObject(&control), actual); err != nil {
-			return expected, false, err
-		}
-		if actual.GetUID() == "" || !actual.GetDeletionTimestamp().IsZero() || !commonChatOwned(actual, agent) ||
-			actual.GetAnnotations()[commonPolicyRevisionAnnotation] != expected.Revision ||
-			!equality.Semantic.DeepEqual(actual.Object["spec"], control.Object["spec"]) {
-			return expected, false, nil
-		}
-		return expected, true, nil
+		current, err := c.commonChatControlCurrent(ctx, agent, expected.Revision, control)
+		return expected, current, err
 	}
 	return expected, false, nil
+}
+
+func (c *Client) commonChatControlCurrent(ctx context.Context, agent *api.Agent, revision string, control unstructured.Unstructured) (bool, error) {
+	actual := &unstructured.Unstructured{}
+	actual.SetGroupVersionKind(control.GroupVersionKind())
+	if err := c.client.Get(ctx, client.ObjectKeyFromObject(&control), actual); err != nil {
+		return false, err
+	}
+	return actual.GetUID() != "" && actual.GetDeletionTimestamp().IsZero() && commonChatOwned(actual, agent) &&
+		actual.GetAnnotations()[commonPolicyRevisionAnnotation] == revision &&
+		equality.Semantic.DeepEqual(actual.Object["spec"], control.Object["spec"]), nil
+}
+
+func (c *Client) verifyCommonChatIngress(ctx context.Context, agent *api.Agent, expected commonChatExpectation, caller chataccess.Caller) (int32, bool, error) {
+	plan := expected.CustomIngressTLS
+	if plan == nil {
+		return *agent.Spec.Agent.Port, true, nil
+	}
+	host := chataccess.ServiceName(agent.Name) + "." + expected.Namespace.Name + ".svc.cluster.local"
+	hash := sha256.Sum256([]byte(agent.UID))
+	if plan.AgentUID != agent.UID || plan.Namespace != expected.Namespace.Name || plan.Harness != "custom" ||
+		plan.Port != *agent.Spec.Agent.Port || plan.ServiceHost != host || plan.ServerName != fmt.Sprintf("agent-%x.%s", hash[:16], host) {
+		return 0, false, nil
+	}
+	var clients []commonChatClient
+	for _, candidate := range plan.ChatClients {
+		if candidate.Secret.Namespace == caller.Namespace && maps.Equal(candidate.PodLabels, caller.PodLabels) {
+			clients = append(clients, candidate)
+		}
+	}
+	if len(clients) != 1 {
+		return 0, false, nil
+	}
+	approved := clients[0]
+	if approved.Secret.Name == "" || approved.Secret.UID == "" || approved.Secret.ResourceVersion == "" ||
+		!slices.ContainsFunc(expected.Sources, func(source commonChatSource) bool {
+			return source.APIVersion == "v1" && source.Kind == "Secret" && source.Namespace == approved.Secret.Namespace &&
+				source.Name == approved.Secret.Name && source.UID == approved.Secret.UID && source.ResourceVersion == approved.Secret.ResourceVersion
+		}) {
+		return 0, false, nil
+	}
+	want := map[string]any{
+		"host": host, "exportTo": []any{"."},
+		"workloadSelector": map[string]any{"matchLabels": stringMapValues(caller.PodLabels)},
+		"trafficPolicy": map[string]any{
+			"tls": map[string]any{
+				"mode": "MUTUAL", "credentialName": approved.Secret.Name,
+				"sni": plan.ServerName, "subjectAltNames": []any{plan.ServerName}, "insecureSkipVerify": false,
+			},
+			"connectionPool": map[string]any{"tcp": map[string]any{"maxConnectionDuration": "300s"}},
+		},
+	}
+	for _, control := range expected.Controls {
+		if control.GetAPIVersion() == "networking.istio.io/v1beta1" && control.GetKind() == "DestinationRule" &&
+			control.GetName() == fmt.Sprintf("cetirun-ingress-mtls-%x", hash[:16]) && control.GetNamespace() == caller.Namespace &&
+			commonChatOwned(&control, agent) && control.GetAnnotations()[commonPolicyRevisionAnnotation] == expected.Revision &&
+			equality.Semantic.DeepEqual(control.Object["spec"], want) {
+			current, err := c.commonChatControlCurrent(ctx, agent, expected.Revision, control)
+			return commonChatMTLSPort, current, err
+		}
+	}
+	return 0, false, nil
+}
+
+func stringMapValues(values map[string]string) map[string]any {
+	result := make(map[string]any, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func commonChatCiliumAllows(control unstructured.Unstructured, agent *api.Agent, namespace string, caller chataccess.Caller, port int32) bool {

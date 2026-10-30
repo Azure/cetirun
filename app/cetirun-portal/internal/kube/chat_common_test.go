@@ -5,7 +5,9 @@ package kube
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"testing"
 
@@ -17,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -151,6 +154,118 @@ func TestCommonChatRequiresCurrentOwnedExecution(t *testing.T) {
 			target, err := NewClient(newFakeClient(objects...)).ResolveChat(context.Background(), agent, chattest.Caller)
 			if err != nil || target.Available != (name == "current") {
 				t.Fatalf("available=%v reason=%s err=%v", target.Available, target.Reason, err)
+			}
+		})
+	}
+}
+
+func commonChatTLSObjects(t *testing.T) (*api.Agent, []client.Object, *corev1.ConfigMap, commonChatExpectation) {
+	t.Helper()
+	agent, objects, state, expected := commonChatObjects(t)
+	host := chataccess.ServiceName(agent.Name) + "." + expected.Namespace.Name + ".svc.cluster.local"
+	hash := sha256.Sum256([]byte(agent.UID))
+	serverName := fmt.Sprintf("agent-%x.%s", hash[:16], host)
+	secret := commonChatSource{Namespace: chattest.Caller.Namespace, Name: "chat-client", UID: "synthetic-client", ResourceVersion: "10"}
+	expected.CustomIngressTLS = &commonChatTLS{
+		AgentUID: agent.UID, Namespace: expected.Namespace.Name, Harness: "custom", Port: 8080, ServiceHost: host, ServerName: serverName,
+		ChatClients: []commonChatClient{{Secret: secret, PodLabels: maps.Clone(chattest.Caller.PodLabels)}},
+	}
+	secret.APIVersion, secret.Kind = "v1", "Secret"
+	expected.Sources = append(expected.Sources, secret)
+	control := objects[len(objects)-1].(*unstructured.Unstructured)
+	rule := control.Object["spec"].(map[string]any)["ingress"].([]any)[0].(map[string]any)
+	rule["toPorts"] = []any{map[string]any{"ports": []any{map[string]any{"port": "15443", "protocol": "TCP"}}}}
+	expected.Controls[0] = *control.DeepCopy()
+	objects[4].(*corev1.Service).Spec.Ports[0].TargetPort = intstr.FromInt32(15443)
+	destination := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "networking.istio.io/v1beta1", "kind": "DestinationRule",
+		"spec": map[string]any{
+			"host": host, "exportTo": []any{"."},
+			"workloadSelector": map[string]any{"matchLabels": map[string]any{"app": "test-portal"}},
+			"trafficPolicy": map[string]any{
+				"tls": map[string]any{
+					"mode": "MUTUAL", "credentialName": "chat-client", "sni": serverName,
+					"subjectAltNames": []any{serverName}, "insecureSkipVerify": false,
+				},
+				"connectionPool": map[string]any{"tcp": map[string]any{"maxConnectionDuration": "300s"}},
+			},
+		},
+	}}
+	destination.SetName(fmt.Sprintf("cetirun-ingress-mtls-%x", hash[:16]))
+	destination.SetNamespace(chattest.Caller.Namespace)
+	destination.SetUID("synthetic-destination")
+	destination.SetOwnerReferences([]metav1.OwnerReference{*metav1.NewControllerRef(agent, api.GroupVersion.WithKind("Agent"))})
+	destination.SetAnnotations(map[string]string{commonPolicyRevisionAnnotation: expected.Revision})
+	expected.Controls = append(expected.Controls, *destination.DeepCopy())
+	return agent, append(objects, destination), state, expected
+}
+
+func TestCommonChatMTLSRequiresCurrentTLSPath(t *testing.T) {
+	for name, mutate := range map[string]func([]client.Object, *commonChatExpectation){
+		"current":                func([]client.Object, *commonChatExpectation) {},
+		"missing plan":           func(_ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS = nil },
+		"foreign Agent":          func(_ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.AgentUID = "other" },
+		"foreign namespace":      func(_ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.Namespace = "other" },
+		"wrong harness":          func(_ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.Harness = "hermes" },
+		"wrong application port": func(_ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.Port = 9000 },
+		"wrong service host": func(_ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.ServiceHost = "other.example.com"
+		},
+		"wrong serving identity": func(_ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.ServerName = "other.example.com" },
+		"missing client":         func(_ []client.Object, e *commonChatExpectation) { e.CustomIngressTLS.ChatClients = nil },
+		"duplicate client": func(_ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.ChatClients = append(e.CustomIngressTLS.ChatClients, e.CustomIngressTLS.ChatClients[0])
+		},
+		"wrong caller": func(_ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.ChatClients[0].PodLabels["app"] = "other"
+		},
+		"wrong client namespace": func(_ []client.Object, e *commonChatExpectation) {
+			e.CustomIngressTLS.ChatClients[0].Secret.Namespace = "other"
+		},
+		"missing client source":  func(_ []client.Object, e *commonChatExpectation) { e.Sources = e.Sources[:1] },
+		"changed client UID":     func(_ []client.Object, e *commonChatExpectation) { e.Sources[1].UID = "other" },
+		"changed client version": func(_ []client.Object, e *commonChatExpectation) { e.Sources[1].ResourceVersion = "11" },
+		"plaintext named target": func(o []client.Object, _ *commonChatExpectation) {
+			o[4].(*corev1.Service).Spec.Ports[0].TargetPort = intstr.FromString("http")
+		},
+		"plaintext numeric target": func(o []client.Object, _ *commonChatExpectation) {
+			o[4].(*corev1.Service).Spec.Ports[0].TargetPort = intstr.FromInt32(8080)
+		},
+		"changed public port": func(o []client.Object, _ *commonChatExpectation) {
+			o[4].(*corev1.Service).Spec.Ports[0].Port = 15443
+		},
+		"plaintext network rule": func(o []client.Object, e *commonChatExpectation) {
+			control := o[len(o)-2].(*unstructured.Unstructured)
+			rule := control.Object["spec"].(map[string]any)["ingress"].([]any)[0].(map[string]any)
+			rule["toPorts"] = []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}}
+			e.Controls[0] = *control.DeepCopy()
+		},
+		"missing TLS control": func(_ []client.Object, e *commonChatExpectation) { e.Controls = e.Controls[:1] },
+		"changed TLS credential": func(_ []client.Object, e *commonChatExpectation) {
+			if err := unstructured.SetNestedField(e.Controls[1].Object, "other", "spec", "trafficPolicy", "tls", "credentialName"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"live TLS drift": func(o []client.Object, _ *commonChatExpectation) {
+			if err := unstructured.SetNestedField(o[len(o)-1].(*unstructured.Unstructured).Object, "DISABLE", "spec", "trafficPolicy", "tls", "mode"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"foreign TLS control": func(o []client.Object, _ *commonChatExpectation) { o[len(o)-1].SetOwnerReferences(nil) },
+		"stale TLS control": func(o []client.Object, _ *commonChatExpectation) {
+			o[len(o)-1].SetAnnotations(map[string]string{commonPolicyRevisionAnnotation: "old"})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent, objects, state, expected := commonChatTLSObjects(t)
+			mutate(objects, &expected)
+			writeCommonChatExpectation(t, state, expected)
+			target, err := NewClient(newFakeClient(objects...)).ResolveChat(context.Background(), agent, chattest.Caller)
+			if err != nil || target.Available != (name == "current") {
+				t.Fatalf("available=%v reason=%s err=%v", target.Available, target.Reason, err)
+			}
+			if target.Available && target.BaseURL != "http://"+expected.CustomIngressTLS.ServiceHost+":8080" {
+				t.Fatalf("private HTTP Service route changed: %s", target.BaseURL)
 			}
 		})
 	}

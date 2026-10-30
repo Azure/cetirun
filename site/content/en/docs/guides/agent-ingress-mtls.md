@@ -119,6 +119,13 @@ only locally; the Portal process neither reads the key nor changes its HTTP
 protocol. Missing mesh/credentials cannot fall back to reachable plaintext.
 The compiler restricts Cilium to the corresponding TLS listener.
 
+Chat readiness checks that TLS listener rather than the application's
+loopback port, while retaining the original HTTP Service port and private
+route. The Portal verifies its current, owned DestinationRule against the
+approved execution expectation using namespace-local `get` permission. It
+does not read certificate Secrets. Missing or changed approvals, caller
+selectors, TLS controls or Service target ports keep Chat unavailable.
+
 These additional Secret sources use the existing namespace-scoped source-read
 grants and journal. The existing protected execution expectation carries a
 typed Custom TLS plan so that no unrelated cross-namespace control resource
