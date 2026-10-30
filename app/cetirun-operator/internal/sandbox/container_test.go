@@ -156,3 +156,26 @@ func TestContainerRuntimeCapabilities(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeObservedSNICapabilityIsRuntimeSpecific(t *testing.T) {
+	for _, kind := range []api.SandboxType{api.SandboxKata, api.SandboxContainer} {
+		t.Run(string(kind), func(t *testing.T) {
+			input := resolverFixture()
+			box := input.Resources.Sandboxes["standard"].Spec
+			box.Type = kind
+			policy := input.Resources.AgentPolicies["normal"].Spec
+			policy.Network.BlockedFQDNs = []string{"blocked.example.com"}
+			capabilities := nativeCapabilities()
+			if kind == api.SandboxContainer {
+				capabilities = containerCapabilities()
+			}
+			for _, registered := range []bool{false, true} {
+				capabilities.BlockedFQDNs = registered
+				errs := CheckCompatibility(box, policy, capabilities)
+				if (len(errs) == 0) != (kind == api.SandboxKata && registered) {
+					t.Fatalf("unexpected observed-SNI compatibility with registered=%t: %v", registered, errs)
+				}
+			}
+		})
+	}
+}

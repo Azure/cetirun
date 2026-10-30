@@ -456,7 +456,9 @@ On a separately authorized target, verify allowed SCTP, wrong ports and
 TCP/UDP on the same port, overlapping grants, explicit denies, required DNS
 and Gateway access, protected destinations, peer isolation and grant removal.
 Record direct endpoint paths and each registered address family, not merely
-application success. FQDN blocking remains unsupported. Ingress mTLS has a
+application success. Observed-SNI filtering has a separate opt-in
+[managed egress contract](../../app/cetirun-operator/README.md#managed-observed-sni-egress);
+SCTP registration does not enable it. Ingress mTLS has a
 separate opt-in [managed endpoint contract](../../site/content/en/docs/guides/agent-ingress-mtls.md);
 SCTP registration does not enable it.
 

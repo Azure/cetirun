@@ -9,8 +9,11 @@ allowedGroups: ""
 # If empty, the chart reuses any existing secret via lookup, or generates a new one
 # on first install. This prevents session invalidation on upgrades.
 cookieSecret: ""
+# Namespace of a pre-migration oauth2-proxy-credentials Secret. The current
+# release namespace always takes precedence. Empty disables the legacy lookup.
+cookieSecretLegacyNamespace: istio-system
 
-# Wildcard domain for CetiRun instances.
+# Apex domain for the Portal and path-based CetiRun instances.
 domain: example.com
 
 # Allowed email domain for OAuth2 Proxy. Use "*" to allow any email domain.
@@ -27,6 +30,8 @@ tls:
 # Istio ingress gateway namespace and selector.
 gateway:
   namespace: aks-istio-ingress
+  # Keep legacy instance subdomains reachable. Set false for apex-only routing.
+  includeWildcardHost: true
   selector:
     istio: aks-istio-ingressgateway-external
 
@@ -92,6 +97,16 @@ oauth2Proxy:
   # Keep entra-id for normal deployments. local-oidc is opt-in local development
   # only, with AgentIdentity disabled; Portal ownership checks still apply.
   mode: entra-id
+  # null preserves the mode default: true for entra-id, false for local-oidc.
+  # false requires a browser session instead of accepting a validated OIDC JWT
+  # as authentication. true is not supported in local-oidc mode.
+  skipJwtBearerTokens: null
+  # These match OAuth2 Proxy's logging defaults. Disable explicitly where the
+  # deployment's log collection policy requires it; standard logs aid diagnosis.
+  logging:
+    request: true
+    auth: true
+    standard: true
   localOIDC:
     # Required in local-oidc mode. Register the existing HTTPS /oauth2/callback.
     issuerURL: ""

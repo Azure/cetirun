@@ -9,6 +9,7 @@ import (
 	"errors"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/egresscapture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	corev1 "k8s.io/api/core/v1"
@@ -56,7 +57,9 @@ type Controls struct {
 	Environment          []corev1.EnvVar
 	Objects              []unstructured.Unstructured
 	PodLabels            map[string]string
-	IngressMTLS          *ingressmtls.Plan `json:",omitempty"`
+	IngressMTLS          *ingressmtls.Plan   `json:",omitempty"`
+	EgressSNI            *egresscapture.Plan `json:",omitempty"`
+	ProxyDigest          string              `json:",omitempty"`
 }
 
 type ObjectIdentity struct {

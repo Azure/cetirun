@@ -1,10 +1,175 @@
 # CetiRun Platform chart
 
-`cetirun-platform` packages the Operator, the Portal and the AI Gateway into one
-Helm release. It does not install AKS managed Istio, the CetiRun Istio release,
-certificates, credentials, Agent Instances, or retained Agent data.
+Deploy with `make deploy DEPLOY_CONFIG=/path/to/environment.yaml`.
+It manages the CetiRun Istio/OAuth2 Proxy release, the Broker and Auth SDK in a
+private credential namespace, and the platform release. The platform includes
+the Operator, admission server, Portal, AI Gateway, PostgreSQL, Valkey, and
+Connections MCP. The same configuration enables Portal Chat and supplies
+Custom runtime, terminal, Memory, and shared Skills/HOME references.
 
-CetiRun Connections MCP can optionally be enabled as an independent component. Install
+The `cetirun-platform` Helm chart packages the platform components. Its switches
+remain available to chart consumers. The deployment script requires the full
+set without a `--full` option. Cloud identities, certificates, Sandbox enrollment,
+and Agent creation are outside this entry point.
+
+## Deploy the platform
+
+Prepare an environment file outside the repository. The
+[synthetic example](ci/deployment-example.yaml) shows the input shape and is
+used by offline tests. Its certificate framing, image digests, identities,
+prices, and owner are test data, not deployable credentials or qualification.
+
+The file contains these inputs:
+
+| Input | Meaning |
+| --- | --- |
+| `target` | Explicit kubeconfig context, cluster name, HTTPS API server, and independently obtained `kube-system` namespace UID |
+| `release` | Registry including any repository prefix, release version, and full source Git SHA |
+| `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the real platform owner's Portal administrator alias |
+| `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the versioned Key Vault key URL |
+| `istio` | Separate release/namespace, existing managed control plane and ingress identities, mesh ConfigMap, and Istio Chart values |
+| `broker` | Separate credential namespace/release and Broker Chart values, including existing TLS and optional provider credential Secret references |
+| `platform` | Platform release/namespace and umbrella values, including admission, provider credentials, model deployments, and qualified Custom images |
+| `sharedSkills` | The runtime chart's existing shared Skills storage fields, including storage class, resource group, account, and container |
+
+The existing managed Istio control plane, ingress workload, DNS, cloud identity
+federation/permissions, storage classes, and referenced Secrets are prerequisites.
+Provision them through the environment's approved workflow. The helper does not
+call `az`, retrieve Key Vault secrets, change subscriptions, or change
+`current-context`. Every cluster operation carries `target.context`; the helper
+checks its cluster name, API origin, and cluster UID before a write.
+
+Use the existing Helm values under each release's `values` field. The helper
+connects component URLs, namespaces, image coordinates, and identity fields from
+the common inputs. Custom images require digest-pinned `approvedImages`, an explicit model-access mode,
+and the storage settings whose UID/GID behavior you qualified. An image being
+published does not establish that qualification.
+
+Configure the logical model `auto` with `auto_router/complexity_router`,
+`classifier_type: jev`, and `jev_classifier_config.deployment_name: decision-1`.
+The separate `decision-1` entry names the real `azure_ai/<deployment>` and uses
+`model_info.base_model: Microsoft-Decision-1` or
+`azure_ai/Microsoft-Decision-1` with `mode: evaluation`. Its `api_version` is
+optional; omission preserves the provider's default, and an explicit value is
+passed through. The endpoint and Secret environment reference remain required. All four
+tiers and the real provider deployments belong in the environment file. The
+router's price fields are required guard metadata, not an average of route
+prices. Use the highest real tier rates; billing remains on the selected
+backend and classifier. Do not copy the synthetic fixture prices into service.
+
+Run the offline plan first:
+
+```bash
+make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
+```
+
+The plan validates inputs and renders local charts in a temporary directory.
+Its JSON lists the target, releases, workloads, all 13 images and 8 charts, and
+`referenceCounts` by resource kind. Reference names, Secret keys, and extra input
+fields are omitted. YAML errors report their position without echoing contents.
+The plan does not contact a cluster or registry. Python, PyYAML, and Helm must
+already be installed.
+
+After the target deployment is authorized, run:
+
+```bash
+make deploy DEPLOY_CONFIG=/path/to/environment.yaml
+```
+
+This command also requires kubectl, OpenSSL, and Docker buildx for read-only artifact
+inspection, with their normal authentication configured beforehand. It checks
+release ownership, required Secret key names, storage references, and
+image/chart availability before its first persistent write. It refuses to adopt
+unmanaged objects or resources from another Helm release.
+
+Before a write, it also verifies the configured admission CA and service DNS
+name, the MCP/Broker server chains, and the Broker client's CA, client purpose,
+and existing exact MCP URI identity contract. The ingress certificate must be
+currently valid and cover `domain`; this is not a public-browser trust test.
+Only the referenced `tls.crt` and CA fields are extracted into temporary public
+certificate files. Kubernetes still returns the whole Secret for a JSONPath
+request and requires `get Secret` permission. The helper does not parse, save,
+or log private-key, cookie, or provider-key values. A failed OpenSSL check stops
+before any persistent cluster write. It does not issue or rotate certificates.
+
+The helper installs or upgrades CetiRun Istio, waits for OAuth2 Proxy, and
+reconciles only the named `oauth2-proxy` mesh provider through the existing
+resource-version-checked helper. A provider for another service or a replaced
+ConfigMap stops deployment. Set `istio.mode: external` only when the named
+release and provider are already managed elsewhere; that mode verifies them
+without upgrading the release or patching the mesh.
+
+The Broker and its Auth SDK start next in the credential namespace. The helper
+then installs the platform and waits for every Deployment and StatefulSet,
+including PostgreSQL, Valkey, MCP, and the admission server. On a new
+installation, the admission server starts before fail-closed webhooks are
+installed. An upgrade never turns off existing admission enforcement. A final
+server-side dry-run of a Team creation checks the served admission path without
+persisting a Team. Any failed read, render, upgrade, rollout, or dry-run returns
+a nonzero exit status. There is no automatic rollback or ownership transfer.
+
+Upgrades require existing admission administrators, Team assignments, Pod and
+strict validation settings, coordination authority, and active native execution
+controls to be preserved. Unreadable or externally referenced control values
+stop the upgrade. Changes to these protections need a separate approved
+procedure; the helper does not migrate arbitrary stored Helm values.
+
+The Operator's `connectionsMCP.runtimeTypes`, the Portal's
+`agentTools.runtimeTypes`, and the Broker's `toolService.runtimeTypes` must name
+the same runtimes. A consistent explicit `[hermes]` selection remains supported.
+For existing Agents in a selected runtime, the helper extracts the name,
+runtime, Team/Sandbox markers, and necessary ServiceAccount settings. It does
+not output owner details, unrelated Helm values, or conversation data. It
+rejects ordinary Agents that depend on a custom ServiceAccount, an API role,
+or an API token before enabling MCP can override those settings. Policy-bound
+Sandbox Agents use the separate native path and are not treated as ordinary
+Agents by this check. Kubernetes still returns complete objects for these
+projections; the helper only parses the selected fields.
+The caller needs read access to these Agent, Team, Deployment, and webhook
+resources. The helper does not grant itself additional permissions.
+
+### Preserve certificates and retained data
+
+`istio.tlsMode: external` uses the existing `cetirun-tls` Secret in the ingress
+namespace. If the Istio release owns that Secret, this mode fails before writes
+because disabling `tls.enabled` would delete the release's certificate.
+
+For an existing chart-owned certificate, set `istio.tlsMode: retain`. The helper
+requires the existing release and matching Secret ownership, omits `tls` from
+the actual override file, and uses `--reuse-values` for that Istio upgrade.
+Helm retains the prior TLS values without placing private-key material in the
+helper's override file. Switching ownership modes requires a separate migration.
+
+The offline render uses synthetic cookie/TLS values only in a separate temporary
+render file. The helper never applies that manifest. Actual upgrades use the
+normal charts and their server-side Secret lookup. Missing retained cookie or
+database Secrets fail before writes; they are not replaced with new keys.
+Existing Agents, HOME/PVCs, and user keys remain in place. Repeating the command
+reconciles the same releases without disabling admission enforcement.
+Verify actual cookie, certificate, and database continuity in a separately
+authorized environment test.
+
+### Deployment readiness is not runtime qualification
+
+Broker/MCP readiness endpoints do not establish provider or Auth SDK API
+availability. The helper checks workload rollouts, required containers and
+Istio sidecars, reference wiring, and the admission dry-run. It does not run
+an OAuth sign-in, a provider token exchange, a real model call, or a terminal
+session. The Gateway's own health probes follow its configured model settings
+and can make model calls after startup.
+
+Native Sandbox execution and physical writer fencing remain separate
+qualification work. The default does not enable `sandboxSources` or manufacture
+capability registrations. Existing native configuration must retain its real
+qualification inputs. The deployment does not add CetiAdmin assets or resolve
+CetiAdmin ServiceAccount/token coexistence with MCP. An existing ordinary
+Agent with that conflict stops deployment before writes and names the remaining
+dependency. The helper does not silently remove OpenClaw from the allowlist.
+Instance creation requests in this file are rejected.
+
+## Use the component chart directly
+
+CetiRun Connections MCP can optionally be enabled by direct chart consumers. Install
 the Agent Broker separately in its private credential namespace; the umbrella
 rejects colocating an enabled Broker with the Tool service. Provision TLS and
 OAuth separately, then configure the MCP Broker HTTPS origin, Portal/Operator

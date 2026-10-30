@@ -206,7 +206,11 @@ class ConnectionsMCPChartTests(unittest.TestCase):
             objects = [value for value in yaml.safe_load_all(result.stdout) if value]
             deployments = {value["metadata"]["name"]: value for value in objects if value["kind"] == "Deployment"}
             self.assertNotIn("cetirun-agent-broker", deployments)
-            self.assertEqual(deployments["cetirun-connections-mcp"]["spec"]["template"]["spec"]["containers"][0]["image"], "registry.example.invalid/cetirun-connections-mcp:0.1.1")
+            runtime_version = yaml.safe_load((ROOT / "app/cetirun-chart/Chart.yaml").read_text())["appVersion"]
+            self.assertEqual(
+                deployments["cetirun-connections-mcp"]["spec"]["template"]["spec"]["containers"][0]["image"],
+                f"registry.example.invalid/cetirun-connections-mcp:{runtime_version}",
+            )
             operator = next(value for value in objects if value["kind"] == "Deployment" and value["metadata"]["labels"]["app.kubernetes.io/name"] == "cetirun-operator")["spec"]["template"]["spec"]["containers"][0]
             env = {value["name"]: value.get("value") for value in operator["env"]}
             self.assertEqual(env["CONNECTIONS_MCP_CA_SECRET_NAME"], "connections-ca")

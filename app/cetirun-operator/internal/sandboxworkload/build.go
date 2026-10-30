@@ -147,13 +147,19 @@ func Build(input Input) (*Bundle, error) {
 	if input.Helpers.Logger {
 		spec.Containers = append(spec.Containers, corev1.Container{Resources: b.helperResources()})
 	}
-	if input.Controls.IngressMTLS != nil {
+	if input.Controls.IngressMTLS != nil && input.Controls.EgressSNI == nil {
 		spec.Containers = append(spec.Containers, corev1.Container{Resources: b.helperResources()})
 	}
 	if input.Helpers.Desktop {
 		spec.Containers = append(spec.Containers, corev1.Container{Resources: b.helperResources()})
 	}
 	spec.InitContainers = []corev1.Container{{Resources: b.helperResources()}}
+	if input.Controls.EgressSNI != nil {
+		spec.InitContainers = append([]corev1.Container{
+			{Resources: b.helperResources(), RestartPolicy: ptr.To(corev1.ContainerRestartPolicyAlways)},
+			{Resources: b.helperResources()},
+		}, spec.InitContainers...)
+	}
 	if input.CustomAgent != nil && input.CustomAgent.HTTP != nil {
 		spec.InitContainers = append(spec.InitContainers, corev1.Container{Resources: b.helperResources()})
 	}
@@ -205,6 +211,22 @@ func validateControls(input Input) error {
 	}
 	if (c.IngressMTLS != nil) != input.Resolution.AgentPolicy.Network.Ingress.RequireMTLS {
 		return fmt.Errorf("compiler mTLS endpoint must match the requested ingress contract")
+	}
+	if (c.EgressSNI != nil) != (len(input.Resolution.AgentPolicy.Network.BlockedFQDNs) != 0) {
+		return fmt.Errorf("compiled observed-SNI capture must match the selected policy")
+	}
+	if c.EgressSNI != nil {
+		if !input.Reconciled || !slices.Equal(c.EgressSNI.Hostnames, input.Resolution.AgentPolicy.Network.BlockedFQDNs) ||
+			c.EgressSNI.IPv4 != slices.Contains(input.Resolution.Capabilities.IPFamilies, corev1.IPv4Protocol) ||
+			c.EgressSNI.IPv6 != slices.Contains(input.Resolution.Capabilities.IPFamilies, corev1.IPv6Protocol) {
+			return fmt.Errorf("observed-SNI capture must bind the current executor, hostnames and IP families")
+		}
+		digest, err := sandboxpolicy.ManagedProxyDigest(c.IngressMTLS, c.EgressSNI)
+		if err != nil || c.ProxyDigest != digest {
+			return fmt.Errorf("observed-SNI proxy digest differs from compiled controls")
+		}
+	} else if c.ProxyDigest != "" {
+		return fmt.Errorf("unrequested observed-SNI proxy digest")
 	}
 	if err := validateDNSIPs(c.DNSIPs); err != nil {
 		return err

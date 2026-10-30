@@ -36,15 +36,27 @@ function finish(code, message) {
 request = http.get({ hostname: "127.0.0.1", port, path, agent: false }, (response) => {
   response.resume();
   if (response.statusCode >= 200 && response.statusCode < 400) {
-    if (process.env.CETIRUN_INGRESS_MTLS === "true") {
+    const ingress = () => {
+      if (process.env.CETIRUN_INGRESS_MTLS === "true") {
+        try {
+          require("/etc/cetirun/ingress-health.cjs")((ready) =>
+            finish(ready ? 0 : 1, ready ? undefined : "managed ingress TLS is not current"));
+        } catch {
+          finish(1, "managed ingress TLS probe is unavailable");
+        }
+      } else {
+        finish(0);
+      }
+    };
+    if (process.env.CETIRUN_EGRESS_SNI === "true") {
       try {
-        require("/etc/cetirun/ingress-health.cjs")((ready) =>
-          finish(ready ? 0 : 1, ready ? undefined : "managed ingress TLS is not current"));
+        require("/etc/cetirun/proxy-health.cjs")((ready) =>
+          ready ? ingress() : finish(1, "managed egress proxy is unavailable"));
       } catch {
-        finish(1, "managed ingress TLS probe is unavailable");
+        finish(1, "managed egress probe is unavailable");
       }
     } else {
-      finish(0);
+      ingress();
     }
   } else {
     finish(1, `HTTP ${response.statusCode}`);

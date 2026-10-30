@@ -64,10 +64,10 @@ func validateObjects(input Input) error {
 		}}
 	}
 	tlsObjects := map[string][]byte{}
-	if c.IngressMTLS != nil {
-		expected, err := sandboxpolicy.IngressMTLSResources(sandboxpolicy.CompileInput{
+	if c.IngressMTLS != nil || c.EgressSNI != nil {
+		expected, err := sandboxpolicy.ManagedProxyResources(sandboxpolicy.CompileInput{
 			AgentName: input.AgentName, Namespace: input.Namespace.Name, Resolution: *input.Resolution,
-		}, *c.IngressMTLS, c.Revision)
+		}, c.IngressMTLS, c.EgressSNI, c.Revision)
 		if err != nil {
 			return err
 		}
@@ -109,7 +109,7 @@ func validateObjects(input Input) error {
 		case "v1/ConfigMap", "networking.istio.io/v1beta1/DestinationRule":
 			encoded, err := json.Marshal(object.Object)
 			if err != nil || string(tlsObjects[key]) != string(encoded) {
-				return fmt.Errorf("mTLS compiler resource differs from the exact approved endpoint")
+				return fmt.Errorf("managed proxy resource differs from the exact compiled controls")
 			}
 			delete(tlsObjects, key)
 		case "cilium.io/v2/CiliumNetworkPolicy":

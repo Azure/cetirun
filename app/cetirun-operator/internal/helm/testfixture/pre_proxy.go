@@ -19,6 +19,13 @@ var laterAdditions = map[string][]string{
 {{- fail "managed ingress mTLS requires common built-in API/UI/terminal/desktop routing without alternate ingress" -}}
 {{- end -}}
 {{- end -}}
+`, `{{- if $s.egressSNI -}}
+{{- if or (not $reconciled) (ne (len ($s.managedInitContainers | default list)) 2) .Values.initContainers .Values.sidecars (not .Values.readinessProbe.enabled) -}}
+{{- fail "observed-SNI capture requires the managed Envoy/init prefix and proxy-aware common-executor readiness" -}}
+{{- end -}}
+{{- else if $s.managedInitContainers -}}
+{{- fail "managed capture initializers require observed-SNI controls" -}}
+{{- end -}}
 `},
 	"agents/openclaw/config/native.tpl": {`{{- /* Portal sign-in: the ingress lets only the Agent's owner through, after
    their Portal sign-in, and passes their email from that sign-in; the Istio
@@ -42,6 +49,8 @@ var laterAdditions = map[string][]string{
 `},
 	"values.schema.json": {`                "ingressMTLS": {"const": true, "description": "Internal common-executor managed Envoy endpoint; absent for ordinary ingress"},
 `, `                "ingressServerName": {"type": "string", "minLength": 1},
+`, `                "egressSNI": {"const": true, "description": "Internal compiler-owned observed-SNI capture; never a user policy override"},
+                "managedInitContainers": {"type": "array", "minItems": 2, "maxItems": 2, "description": "Exact managed Envoy and trusted capture initializer prefix"},
 `, `                "context": {
                     "type": "object", "additionalProperties": false,
                     "properties": {"name": {"type": "string", "minLength": 1}, "files": {"type": "object", "additionalProperties": false, "properties": {"AGENTS.md": {"const": "AGENTS.md"}}, "required": ["AGENTS.md"]}},

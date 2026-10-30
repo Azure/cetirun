@@ -40,6 +40,10 @@ assert_sign_in_flags() {
   local limit="$2"
   local flag
   for flag in \
+    '- --cookie-secure=true' \
+    '- --cookie-httponly=true' \
+    '- --code-challenge-method=S256' \
+    '- --insecure-oidc-skip-nonce=false' \
     '- --cookie-csrf-per-request=true' \
     "- --cookie-csrf-per-request-limit=${limit}" \
     '- --api-route=^/api/' \

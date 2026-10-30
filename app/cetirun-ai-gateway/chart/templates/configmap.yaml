@@ -123,7 +123,9 @@ data:
       use_shared_health_check: true
       {{- end }}
       {{- end }}
-      {{- with (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).spendLogs.retention }}
+      {{- $spendLogs := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).spendLogs }}
+      store_prompts_in_spend_logs: {{ $spendLogs.storePrompts }}
+      {{- with $spendLogs.retention }}
       # spendLogs.retention: LiteLLM deletes the rows of its spend log older
       # than this, and the stored health check results as well. Each replica
       # deletes one interval after it starts, then every interval. At

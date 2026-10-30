@@ -468,9 +468,9 @@ topology, DNS/Gateway peers, and pinned RuntimeClass/StorageClass identities
 remain required; read-only root and ingress support must match the selected
 policy. The configuration harness allow-list supports `openclaw` and `hermes`;
 the earlier single-start executor itself remains OpenClaw-only.
-For native Kata, `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
-and FQDN support must be `false`. Kubernetes access may be
-explicitly registered for new Kata common-executor lifetimes with exact policy-role
+For native Kata, `enforcementObservation`, `restrictiveFailure` and per-container
+guarantee flags must be `false`. Kubernetes access may be explicitly registered
+for new Kata common-executor lifetimes with exact policy-role
 and per-Agent identity approvals; see the
 [Kubernetes API access example](../../examples/native-sandbox/README.md#kubernetes-api-access).
 Retained single-start lifetimes continue to reject Kubernetes access.
@@ -479,7 +479,8 @@ Older readers cannot consume or clean up the new RBAC controls; disabling the
 capability alone does not make a rollback safe. Follow the example's cleanup
 and old-compatible-state prerequisites before downgrading.
 Generic Entra projection can be explicitly enabled for common-executor
-lifetimes with the dedicated bootstrap/source contract below. These are not
+lifetimes with the dedicated bootstrap/source contract below. Observed-SNI
+egress requires its separate explicit registration. These are not
 physical fencing or guest-external runtime-observation guarantees.
 
 Common-executor Kata and container OpenClaw/Hermes lifetimes can opt in to managed ingress
@@ -487,7 +488,9 @@ mTLS with `mutualTLS: true`, per-Agent external certificate approvals and the
 registered Envoy endpoint. Retained single-start lifetimes still reject it.
 See [managed Agent ingress mTLS](../../site/content/en/docs/guides/agent-ingress-mtls.md)
 for certificate ownership, supported surfaces, source pins and stop/change/resume
-rotation. It does not enable outbound TLS inspection or FQDN blocking.
+rotation. It does not by itself enable outbound inspection. Observed-SNI egress
+requires the separate registration described below.
+
 ### Ordinary-container backend
 
 An explicit `Sandbox.spec.type: container` runs OpenClaw or Hermes in ordinary
@@ -1895,12 +1898,14 @@ becoming no-ops. The native common executor has the separately registered
 The effective compiled revision includes topology, identity and role-content
 changes; use it rather than only the base resolver revision.
 
-Both Cilium adapter registrations require `capabilities.blockedFQDNs=false`,
-even when the current policy requests no hostname rules. Declaring support
-rejects platform validation, standalone policy validation and compilation.
+The qualified candidate adapter still rejects FQDN capability declarations.
+The common native Kata executor accepts `Capabilities.blockedFQDNs=true` only with
+an operator-owned `platforms.kata.egressSNI` image registration. Ordinary-container
+registrations must keep `blockedFQDNs=false`. This enables
+the bounded observed-SNI implementation below, not full hostname enforcement.
 `blockedFQDNs` accepts exact lowercase ASCII hostnames, not suffixes, wildcards,
-URLs or IP literals. DNS-derived IP sets and the shared Istio SNI blacklist are
-not equivalent implementations of that hostname control.
+URLs or IP literals. DNS-derived IP sets are not equivalent to exact observed-SNI
+denial; no DNS-to-IP conversion is used.
 
 The trusted topology must explicitly supply `DNSResolverIPs`, the one to three
 distinct Pod resolver addresses, separately from `DNS` peer membership.
@@ -2678,9 +2683,9 @@ Public documentation reviewed on 2026-09-25 narrows the next trial:
 
 The initial candidate is the configured managed Cilium path, with a separately
 qualified upstream Cilium installation as a comparison only where authorized.
-FQDN blocking, qualified-adapter gateway-to-workload mTLS and any unqualified
-protocols remain explicitly unsupported. The native common-executor mTLS
-endpoint is a separate opt-in, not qualification of this baseline.
+Full hostname blocking, qualified-adapter gateway-to-workload mTLS and any
+unqualified protocols remain unsupported. Native common-executor mTLS and
+observed-SNI capture are separate opt-ins, not qualification of this baseline.
 Required network isolation, port blocking, runtime
 accounting and observation/fencing still need actual target-version tests.
 No cluster was inspected or modified to establish this baseline.
@@ -2714,9 +2719,9 @@ those rules generate additive IP **allows**, not hostname denies, and do not
 remove the compiler's public-egress allowance. Nor is this the shared
 [Istio sidecar SNI blacklist](../../infra/istio/templates/egress/blacklist.yaml):
 that filter matches a TLS requested server name, not a guest-external control
-covering arbitrary traffic. No hostname capability, schema, resource ownership
-or execution gate changes. Production `blockedFQDNs` rejection remains intact
-for both adapters; passing this experiment is not M3 completion.
+covering arbitrary traffic. This experiment does not enable the separately
+registered observed-SNI path below or establish full hostname enforcement.
+Passing the DNS-projection experiment is not M3 completion.
 
 Run this bounded offline check with the documented pinned Go toolchain:
 
@@ -2733,6 +2738,89 @@ connections, then change one DNS answer and observe the update. Record both
 denied and allowed controls from outside the guest. This can check the predicted
 counterexample, not qualify hostname support; a different hostname-aware backend
 still needs a separately agreed design and qualification.
+
+#### Managed observed-SNI egress
+
+The common executor connects `AgentPolicy.spec.network.blockedFQDNs` through the
+compiler, controlled Envoy, chart, final-Pod admission and lifecycle. It requires
+`registrations.<runtime>.Capabilities.blockedFQDNs: true` and an explicit
+operator-owned registration in `platform.json`:
+
+```json
+{
+  "egressSNI": {
+    "envoyImage": "registry.example.com/envoy@sha256:<approved-envoy-digest>",
+    "initImage": "registry.example.com/cetirun-base@sha256:<approved-helper-digest>"
+  }
+}
+```
+
+This is a fragment of `platforms.<runtime>`, not a complete platform configuration.
+Replace the placeholders with approved artifact digests. The tested Envoy version
+is 1.36.3. The trusted init image must supply `sh`, `curl`, `iptables` and
+`ip6tables`; the existing [CetiRun base-image source](../cetirun-chart/Dockerfile.base)
+already supplies them. No host-binary copying or package installation occurs at
+Pod startup. The init image is selected by the platform, **never** from an Agent
+image override. When mTLS is also requested, both registrations must approve the
+same Envoy image.
+
+An empty list returns no resources or commands. Otherwise, a dedicated proxy UID
+1337 is exempt from Pod-local TCP capture to port 15001. The same controlled
+Envoy starts as a restartable init sidecar, followed by the exact one-shot
+`egress-capture-init`, before ordinary initialization. Only that initializer is
+root with NET_ADMIN; Agent and ordinary helpers remain nonroot/cap-drop and
+cannot use the proxy UID or private mounts. Capture commands never flush other
+rules. Init retries validate the reserved chain, complete only its canonical
+prefix, and deduplicate only the exact owned OUTPUT hook. Foreign contents and
+netfilter errors fail closed instead of being ignored. Namespace/cluster
+admission must permit this narrow initializer; no
+privileged container, host namespace or host mount is requested.
+
+FQDN-only uses no ingress certificates. With both controls there is one Envoy,
+and ingress keeps the existing mTLS ports, certificate source approvals and
+private Copilot routing. Mutating Envoy admin handlers are available only on a
+proxy-private Unix socket; loopback port 15440 exposes GET `/ready`, `/certs`
+and `/stats`, not shutdown, logging changes or config dumps. Native readiness
+requires the managed proxy, plus current certificates when mTLS is enabled.
+
+The implementation uses `original_dst`, stock `tls_inspector`, exact
+`requested_server_name` DENY matching, and an ORIGINAL_DST TCP proxy. Names are
+validated as lowercase ASCII hostnames. Envoy lowercases the observed server
+name before the exact comparison, so wire-case variants of a listed hostname
+are also denied. This is not suffix matching or DNS resolution.
+UDP is untouched. A separate terminal filter chain rejects the loopback capture
+destination **before** creating an upstream connection, including silent direct
+application sockets; the same port at a remote destination is not excluded.
+
+The inspection window is explicitly **1 second**, with continuation afterward.
+Server-first TCP therefore incurs that wait. A delayed/incomplete ClientHello
+can continue without SNI inspection, and no-SNI/nonmatching traffic retains its
+L3/L4 treatment. This is observed-SNI filtering, **not full hostname enforcement**.
+The exported `IPv4TimeoutCounter` and `IPv6TimeoutCounter` identify uninspected
+listener timeouts. TLS inspector's SNI/TLS counters give separate observations
+but can be process-aggregate in a shared Envoy. RBAC `allowed` means only “not
+denied,” never “hostname inspected and allowed.” These counters must remain
+observable through the read-only stats endpoint.
+
+Changes use the existing source UID/version, desired-control, final-apply and
+configuration-coordination guards. Capture contents and images change the
+execution revision and Pod checksum. Removal replaces the Pod's network namespace
+through the normal stop/change/reconcile flow; it does not rewrite live rules or
+declare success from a ConfigMap alone. Independent mTLS remains when FQDN capture
+is removed. Restart, suspend/resume and ordinary deletion retain their existing
+storage, key and grant-journal contracts.
+
+Offline controller/API tests and isolated transport checks do not prove
+equivalence with old deployed proxies or qualify live Cilium, Service translation,
+Kata, kubelet or CSI behavior. The backend-neutral capture contract does not
+enable unmerged ordinary-container or Kubernetes-access features.
+
+```bash
+go -C app/cetirun-operator test ./internal/egresscapture -count=1
+go -C app/cetirun-operator vet ./internal/egresscapture
+go -C app/cetirun-operator test ./internal/sandboxpolicy ./internal/controller -run 'TestEgressSNI|TestReconciledSandboxObservedSNI' -count=1
+KUBEBUILDER_ASSETS=/path/to/local/envtest go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxObservedSNIAPIServer$' -count=1
+```
 
 ### Offline checks
 

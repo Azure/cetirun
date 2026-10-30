@@ -128,7 +128,17 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		return platform, fmt.Errorf("%w: no qualified candidate adapter registration", ErrUnsupportedControl)
 	}
 	if capabilities.BlockedFQDNs {
-		return platform, fmt.Errorf("%w: the selected Cilium adapter cannot declare full FQDN blocking", ErrUnsupportedControl)
+		if capabilities.Profile != sandbox.ProfileNativeSingleStart || platform.EgressSNI == nil {
+			return platform, fmt.Errorf("%w: observed-SNI capture requires the common executor and explicit image registration", ErrUnsupportedControl)
+		}
+		if err := platform.EgressSNI.Validate(); err != nil {
+			return platform, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+		if platform.IngressMTLS != nil && platform.EgressSNI.EnvoyImage != platform.IngressMTLS.Image {
+			return platform, fmt.Errorf("%w: ingress and egress registrations must share one Envoy image", ErrConflict)
+		}
+	} else if platform.EgressSNI != nil {
+		return platform, fmt.Errorf("%w: observed-SNI registration requires declared capture support", ErrUnsupportedControl)
 	}
 	if capabilities.MutualTLS && capabilities.Profile != sandbox.ProfileNativeSingleStart {
 		return platform, fmt.Errorf("%w: this adapter has no qualified ingress mTLS implementation", ErrUnsupportedControl)
