@@ -115,13 +115,10 @@ helm:
       storageClass: approved-storage-class
       accessMode: ReadWriteOnce
       size: 100Gi
-    secrets:
-      provider: openai
-      model: your-authorized-model-id
 ```
 
-The StorageClass and provider credential are deployment prerequisites, not
-created by this fragment. In contrast, top-level `replicaCount: 1`,
+The StorageClass is a deployment prerequisite, not created by this fragment.
+Select a Gateway model with `spec.model`; provider overrides are rejected. In contrast, top-level `replicaCount: 1`,
 `msteamsAllowedUsers: "..."`, or `extraEnv: [...]` under `helm.values` do not
 match this schema. Deployment-wide `cetirun.helmValues` and direct Helm input
 are separate configuration surfaces.
@@ -146,7 +143,6 @@ check does not prove that an override will reconcile successfully.
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
 | `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions; for GitHub Copilot, each registered model's Gateway name (`copilot.routes`) and the models left out for lack of a price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`); `modelRouters` lists the Team's smart-routing models and, for an instance with an Agent Policy, the routers configured in the Gateway that the Policy lists, each with `granted`, the `model` name it sends when granted (a Team router's internal name, or a Gateway router's own name), a Team router's configured limits, or the `reason` it is not granted |
-| `signInHelper` | Whether the workload serves the in-agent model sign-in helper that `/<instance>/cetirun-auth/` routes to; omitted until the operator records it |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
 | `policy` | Resolved effective policy plus desired Sandbox, Gateway, and credential revisions |
@@ -208,7 +204,6 @@ not material to paste into a public bug report.
 | `defaultSandboxRef` | Listed creation default; required for a policy-enabled Team, not a later implicit reselection |
 | `memberContext.role` | Role rendered into runtime-specific team context |
 | `memberContext.description` | Context lines, at most 20 |
-| `defaults.provider` | String without a CRD enum; chart supports `github_copilot`, `openai`, `anthropic`; instance Helm settings take precedence |
 | `skills` | Default identifiers, at most 20 |
 | `skillStorage.resourceGroup` | Required when `skillStorage` is present; existing storage resource group |
 | `skillStorage.storageAccount` | Required when `skillStorage` is present; existing Blob account |
@@ -318,7 +313,7 @@ HOME lifecycle, with per-container resource limits and no implicit VM overhead.
 Saving a configuration does not discover or install a handler. Container
 supports the same separately approved [managed ingress mTLS](../../guides/agent-ingress-mtls/)
 as Kata; a capability flag alone does not authorize the endpoint.
-FQDN blocking, Entra ID and Kubernetes grants remain unsupported on this native
+FQDN blocking and Kubernetes grants remain unsupported on this native
 backend. Select a new Sandbox/Agent instead of attempting online runtime conversion.
 
 Policy assignment is opt-in, not a prerequisite for legacy deployment.
@@ -454,6 +449,14 @@ The summary shows any requested ServiceAccount and namespace or cluster-wide per
 Policy. Platform administrators manage this configuration outside the Portal;
 authorization requires separately approved platform grants. Saving other Policy
 fields preserves the existing Kubernetes access configuration.
+New common-executor Kata OpenClaw/Hermes Agents can use explicitly registered
+Kubernetes access with exact policy-role and per-Agent ServiceAccount approvals.
+The operator projects a bounded, audience-specific token only into the main
+container, pins role UID/version/rules and journals the owned binding UIDs.
+Suspension, grant removal and deletion revoke those bindings; shared ClusterRoles
+are not adopted or deleted. Nil access grants no Kubernetes API token or permissions.
+Kubernetes access does not enable Entra ID or Broker/Connections. See the
+[administrator setup and validation boundaries](https://github.com/Azure/cetirun/tree/main/examples/native-sandbox#kubernetes-api-access).
 
 The Internal network access editor groups each destination CIDR and its complete
 port list into one rule card, matching one `allowedInternalCIDRs` entry. Edit rule
@@ -473,11 +476,14 @@ not a Portal toggle. Broker-backed Agent Identity requires current credential-po
 readback for aggregate `PolicyApplied`; common-executor workloads also require the
 registered native Connections integration. Other controls depend on the selected
 execution profile and platform capabilities.
-New common-executor Kata lifetimes support internal CIDR grants and SCTP port
-rules only with the corresponding explicit platform registration. SCTP internal
+New common-executor Kata lifetimes support internal CIDR grants, approved
+Kubernetes access and SCTP port rules with the corresponding explicit platform
+registration and approvals. SCTP internal
 grants are limited to direct endpoints, excluding registered Service and
 Kubernetes API destinations. Retained version-1 native single-start lifetimes
-still reject internal grants and SCTP requests. See the
+still reject internal grants, Kubernetes access, Entra projection and SCTP requests.
+Common-executor Entra projection requires explicit platform approval and a pinned
+bootstrap-owned ServiceAccount; it does not grant Kubernetes access. See the
 [native SCTP usage and qualification boundary]({{< repo "examples/native-sandbox/README.md" >}}#governed-sctp-egress);
 an accepted API value does not qualify the actual network path.
 

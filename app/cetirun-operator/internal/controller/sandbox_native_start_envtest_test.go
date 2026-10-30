@@ -284,6 +284,7 @@ func newNativeStartAPIHarnessWithRuntime(t *testing.T, admissionNative, coordina
 		ControlPlaneStartTimeout: time.Minute, ControlPlaneStopTimeout: 30 * time.Second,
 	}
 	environment.ControlPlane.GetAPIServer().Configure().Set("authorization-mode", "RBAC")
+	environment.ControlPlane.GetAPIServer().Configure().Set("enable-admission-plugins", "PodTopologyLabels")
 	cfg, err := environment.Start()
 	if err != nil {
 		t.Fatal(errors.Join(err, environment.Stop()))
@@ -532,7 +533,7 @@ func newNativeStartAPIHarnessWithRuntime(t *testing.T, admissionNative, coordina
 		agent.Spec.Agent.Image = ptr.To("registry.example.com/custom-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 		agent.Spec.Agent.Port = ptr.To[int32](8080)
 		r.CustomBindings = NewKubernetesCustomBindings(r, CustomRuntimeConfig{
-			Enabled: true, ApprovedImages: []string{*agent.Spec.Agent.Image}, GatewayImages: []string{*agent.Spec.Agent.Image},
+			Enabled: true, ApprovedImages: []string{*agent.Spec.Agent.Image},
 		})
 		r.CetiRunHelmValues = map[string]any{"ttyd": map[string]any{
 			"enabled": false, "image": map[string]any{

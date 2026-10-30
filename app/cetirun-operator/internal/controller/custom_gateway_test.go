@@ -31,7 +31,6 @@ import (
 func gatewayCustomFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent, *fakeAIGateway, runtimebindings.Custom) {
 	t.Helper()
 	p, instance := readyProvider(t)
-	p.config.GatewayImages = []string{*instance.Spec.Agent.Image}
 	r := p.reconciler
 	r.CustomBindings = p
 	r.EventRecorder = record.NewFakeRecorder(100)
@@ -52,26 +51,12 @@ func gatewayCustomFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent, 
 	return p, instance, gateway, b
 }
 
-func TestCustomGatewayExplicitImageSelection(t *testing.T) {
+func TestCustomGatewayRequiredForEveryApprovedImage(t *testing.T) {
 	p, instance := readyProvider(t)
 	p.reconciler.CustomBindings = p
 	p.reconciler.AIGateway.Enabled = true
-	if p.reconciler.aiGatewayRequired(instance) {
-		t.Fatal("platform enablement migrated an image-owned Agent")
-	}
-	p.config.GatewayImages = []string{*instance.Spec.Agent.Image}
-	p.config.AgentManagedModel = false
-	raw, _ := json.Marshal(p.config)
-	if _, err := ParseCustomRuntimeConfig(string(raw)); err != nil {
-		t.Fatal(err)
-	}
-	if !p.reconciler.aiGatewayRequired(instance) {
-		t.Fatal("approved Gateway image not selected")
-	}
-	p.config.GatewayImages = append(p.config.GatewayImages, "registry.example.com/unapproved@sha256:"+strings.Repeat("b", 64))
-	raw, _ = json.Marshal(p.config)
-	if _, err := ParseCustomRuntimeConfig(string(raw)); err == nil {
-		t.Fatal("unapproved Gateway image accepted")
+	if !p.reconciler.aiGatewayRequired(instance) || !p.UsesAIGateway(instance) {
+		t.Fatal("all approved Custom images must require Gateway access")
 	}
 }
 
@@ -91,7 +76,7 @@ func TestCustomGatewayKeyBindingAndCopilot(t *testing.T) {
 	if _, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil {
 		t.Fatal(err)
 	}
-	if b.AgentManagedModel || b.Model.Name != aiGatewayKeySecretName || b.Model.BaseURL != testAIGatewayURL+"/v1" || b.Network.GatewayPort != 4000 || b.Copilot == nil {
+	if b.Model.Name != aiGatewayKeySecretName || b.Model.BaseURL != testAIGatewayURL+"/v1" || b.Network.GatewayPort != 4000 || b.Copilot == nil {
 		t.Fatalf("missing Custom Gateway binding: %#v", b)
 	}
 	if !instance.Status.AIGateway.Routed || instance.Status.AIGateway.Copilot.Phase != api.AIGatewayCopilotPhaseSignInRequired {
@@ -147,7 +132,7 @@ func TestCustomGatewayNeverFallsBack(t *testing.T) {
 			if err := p.reconciler.bindCustomGateway(ctx, instance, &b); err == nil {
 				t.Fatal("invalid Gateway binding accepted")
 			}
-			if b.AgentManagedModel || b.Model.Name != "" || len(gateway.generated) != 0 {
+			if b.Model.Name != "" || len(gateway.generated) != 0 {
 				t.Fatal("failure fell back or issued a usable binding")
 			}
 			stored := &api.Agent{}

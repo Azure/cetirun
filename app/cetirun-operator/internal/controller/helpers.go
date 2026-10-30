@@ -38,10 +38,6 @@ const (
 	// hermesDashboardPort is the port the native Hermes Dashboard listens on.
 	hermesDashboardPort = 9119
 
-	// cetirunAuthPort is the port the in-pod CetiRun auth helper service listens on.
-	// It exposes /v1/login/* and /v1/status for the Portal "Copilot Auth" UI.
-	cetirunAuthPort = 18790
-
 	// ttydPort is the port ttyd web terminal listens on.
 	ttydPort = 7681
 
@@ -223,11 +219,11 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 
 	values := map[string]interface{}{
 		"agentType": string(agentType),
-		// Point to the pre-created gateway token secret.
-		// The chart maps provider names into each agent's native config shape.
+		// Keep runtime/UI credentials separate from the AI Gateway model key.
+		// The controller projects the Gateway endpoint and key before apply.
 		"secrets": map[string]interface{}{
 			"existingSecret": spec.GatewayTokenSecretRef,
-			"provider":       "github_copilot",
+			"provider":       "openai",
 			"model":          "",
 		},
 		// User identity — templates USER.md in the ConfigMap.
@@ -268,11 +264,7 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	// on key collisions), lower priority than per-instance spec.helm.values
 	// which is applied at the bottom of this function.
 	if team != nil {
-		if team.Spec.Defaults.Provider != "" {
-			values["secrets"] = deepMerge(values["secrets"], map[string]interface{}{
-				"provider": team.Spec.Defaults.Provider,
-			})
-		}
+
 		userPatch := map[string]interface{}{}
 		if team.Spec.MemberContext.Role != "" {
 			userPatch["role"] = team.Spec.MemberContext.Role
@@ -416,10 +408,8 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		})
 	}
 
-	// Model selection is intentionally declarative and applies only to GitHub
-	// Copilot. An explicit spec.model wins for that provider, followed by the
-	// deployment default. OpenAI/Anthropic retain their provider-specific Helm
-	// model even if an older instance has a stale spec.model override.
+	// The AI Gateway projection validates the selected model against the
+	// Agent grant before execution.
 	secrets, ok := values["secrets"].(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("helm values secrets must be an object")
@@ -427,9 +417,9 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	provider, _ := secrets["provider"].(string)
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
-		provider = "github_copilot"
+		provider = "openai"
 	}
-	if provider == "github_copilot" {
+	if provider == "openai" {
 		model := strings.TrimSpace(spec.Model)
 		if model == "" && len(defaultModels) > 0 {
 			model = strings.TrimSpace(defaultModels[0])
@@ -756,10 +746,6 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
 			makeRoute(uiPrefix+descriptor.HealthPath, descriptor.HealthPath, primaryPort, 0),
 		)
-		// The route exists exactly where the workload serves the helper.
-		if servesSignInHelper(instance) {
-			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
-		}
 		routes = append(routes,
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),
@@ -778,10 +764,6 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		// on that exact path directly to the gateway because WebSockets cannot
 		// follow a 301 redirect.
 		routes = append([]*istioapiv1beta1.HTTPRoute{makeWebSocketRoute(uiPrefix, primaryPort)}, routes...)
-		// The route exists exactly where the workload serves the helper.
-		if servesSignInHelper(instance) {
-			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
-		}
 		routes = append(routes,
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),

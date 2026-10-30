@@ -39,7 +39,7 @@ func catalogConfigMap(models ...string) *corev1.ConfigMap {
 
 func publishedCatalog(copilot bool, models ...string) *corev1.ConfigMap {
 	return routingCatalog(&cetirunv1alpha1.AIGatewayRouting{Chart: testAgentChart,
-		AgentTypes: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}}, copilot, models...)
+		AgentTypes: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom}}, copilot, models...)
 }
 
 const testAgentChart = "oci://registry.example.com/helm/cetirun:1.0.0"
@@ -79,50 +79,41 @@ func errorCode(t *testing.T, w *httptest.ResponseRecorder) string {
 	return resp.Error.Code
 }
 
-func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
-	w, _ := createAgent(t, gatewayConfig(), `{"agent":{"type":"openclaw"}}`, gatewayTeam("aks"))
-	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
+func TestCreateInstanceAIGatewaySupportsOptionalTeamAndCustom(t *testing.T) {
+	w, fc := createAgent(t, gatewayConfig(), `{"agent":{"type":"openclaw"}}`, catalogConfigMap("gpt-6"))
+	if w.Code != http.StatusCreated {
 		t.Fatalf("no team: status %d body %s", w.Code, w.Body.String())
-	}
-	w, _ = createAgent(t, gatewayConfig(), `{"agent":{"type":"openclaw"},"team":"nope"}`, gatewayTeam("aks"))
-	if w.Code != http.StatusBadRequest || errorCode(t, w) != "unknown_team" {
-		t.Fatalf("unknown team: status %d body %s", w.Code, w.Body.String())
-	}
-	// A legacy deployment with the Gateway disabled still permits no Team.
-	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`, gatewayTeam("aks"))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("feature off without team: status %d body %s", w.Code, w.Body.String())
-	}
-	w, fc := createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"},"team":"aks"}`, gatewayTeam("aks"))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("feature off with team: status %d body %s", w.Code, w.Body.String())
 	}
 	created := &cetirunv1alpha1.Agent{}
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, created); err != nil {
 		t.Fatal(err)
 	}
-	if created.Spec.Team != "aks" || created.Spec.SandboxRef != "" {
-		t.Fatalf("binding = %q/%q, want aks with no Sandbox binding", created.Spec.Team, created.Spec.SandboxRef)
+	if created.Spec.Team != "" || created.Spec.SandboxRef != "" || created.Spec.ModelAccess == nil {
+		t.Fatalf("unbound gateway agent = %+v", created.Spec)
 	}
-	// A Custom Agent gets a key too, so it needs a Team as well. It is not
-	// routed, so the model switches do not apply to it.
+	w, _ = createAgent(t, gatewayConfig(), `{"agent":{"type":"openclaw"},"team":"nope"}`, gatewayTeam("aks"), catalogConfigMap("gpt-6"))
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "unknown_team" {
+		t.Fatalf("unknown team: status %d body %s", w.Code, w.Body.String())
+	}
+	// Gateway-only creation rejects deployments where it is disabled.
+	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`, gatewayTeam("aks"))
+	if w.Code != http.StatusConflict || errorCode(t, w) != "gateway_required" {
+		t.Fatalf("feature off: status %d body %s", w.Code, w.Body.String())
+	}
+	// Custom receives the same Gateway model source selection without a Team.
 	custom := gatewayConfig()
 	custom.AllowedAgentTypes = []string{"openclaw", "custom"}
 	customAgent := `"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"}`
-	w, _ = createAgent(t, custom, `{`+customAgent+`}`, gatewayTeam("aks"))
-	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
-		t.Fatalf("custom without team: status %d body %s", w.Code, w.Body.String())
-	}
-	w, fc = createAgent(t, custom, `{`+customAgent+`,"team":"aks","modelAccess":{"githubCopilot":false}}`, gatewayTeam("aks"))
+	w, fc = createAgent(t, custom, `{`+customAgent+`,"modelAccess":{"githubCopilot":false}}`, catalogConfigMap("gpt-6"))
 	if w.Code != http.StatusCreated {
-		t.Fatalf("custom with team: status %d body %s", w.Code, w.Body.String())
+		t.Fatalf("custom: status %d body %s", w.Code, w.Body.String())
 	}
 	agent := &cetirunv1alpha1.Agent{}
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
 		t.Fatal(err)
 	}
-	if agent.Spec.Team != "aks" || agent.Spec.ModelAccess != nil {
-		t.Fatalf("custom: team %q modelAccess %+v, want aks and unset", agent.Spec.Team, agent.Spec.ModelAccess)
+	if agent.Spec.Team != "" || agent.Spec.ModelAccess == nil || *agent.Spec.ModelAccess.GitHubCopilot {
+		t.Fatalf("custom: team %q modelAccess %+v, want no team and Copilot off", agent.Spec.Team, agent.Spec.ModelAccess)
 	}
 }
 
@@ -273,9 +264,6 @@ func TestInstanceResponseDescribesAIGateway(t *testing.T) {
 	if gw.Copilot == nil || gw.Copilot.Phase != "SignInRequired" || gw.Copilot.Models == nil {
 		t.Fatalf("copilot = %+v", gw.Copilot)
 	}
-	if resp.CetiRunAuthKey != "" {
-		t.Fatal("a routed Agent has no in-agent sign-in helper; its key must not be returned")
-	}
 
 	// A placeholder default is not reported as a model.
 	onlyPlaceholder := routedAgent()
@@ -308,34 +296,8 @@ func TestInstanceResponseDescribesAIGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.AIGateway != nil || resp.CetiRunAuthKey != "helper-key" {
-		t.Fatalf("unrouted: aiGateway %+v, helper key %q", resp.AIGateway, resp.CetiRunAuthKey)
-	}
-}
-
-// The Portal offers the in-agent sign-in only where the operator recorded
-// that the workload serves the helper: an OpenClaw chart without one gets no
-// helper key, even when the Agent is not routed through the Gateway.
-func TestInstanceResponseOffersTheInAgentSignInOnlyWithItsHelper(t *testing.T) {
-	helperKeyOf := func(agent *cetirunv1alpha1.Agent) string {
-		t.Helper()
-		h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(agent, gatewayTokenSecret("cetirun-alice"))), Config: gatewayConfig()}
-		resp, err := h.toInstanceResponse(context.Background(), agent)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return resp.CetiRunAuthKey
-	}
-	without, with := false, true
-	agent := sampleInstance()
-	agent.Spec.GatewayTokenSecretRef = "gateway-token"
-	agent.Status.SignInHelper = &without
-	if key := helperKeyOf(agent); key != "" {
-		t.Fatalf("a workload without the helper must not get its key, got %q", key)
-	}
-	agent.Status.SignInHelper = &with
-	if key := helperKeyOf(agent); key != "helper-key" {
-		t.Fatalf("a workload serving the helper gets its key, got %q", key)
+	if resp.AIGateway != nil {
+		t.Fatalf("unrouted: aiGateway %+v", resp.AIGateway)
 	}
 }
 
@@ -368,7 +330,7 @@ func TestGetAIGatewayCatalog(t *testing.T) {
 	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil || !resp.Known || resp.GitHubCopilot {
 		t.Fatalf("published without GitHub Copilot: resp %+v err %v", resp, err)
 	}
-	if !slices.Equal(resp.AgentTypes, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}) {
+	if !slices.Equal(resp.AgentTypes, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom}) {
 		t.Fatalf("the published agent types must reach the form, got %v", resp.AgentTypes)
 	}
 	// Missing routing is unknown and must not imply support for a harness.

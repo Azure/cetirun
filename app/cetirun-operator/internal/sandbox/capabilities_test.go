@@ -327,7 +327,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		"external observer": func(c *Capabilities) { c.EnforcementObservation = true },
 		"physical fencing":  func(c *Capabilities) { c.RestrictiveFailure = true },
 		"container quotas":  func(c *Capabilities) { c.PerContainerResourceLimits = true },
-		"admin support":     func(c *Capabilities) { c.KubernetesAccess = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			capabilities := nativeCapabilities()

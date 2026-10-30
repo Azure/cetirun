@@ -481,7 +481,7 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 	var customIngress *sandboxpolicy.CustomIngress
 	var terminalIngress *sandboxpolicy.TerminalIngress
 	if agent.Spec.Agent.Type == api.AgentTypeCustom {
-		values, user, err := r.sandboxHelmValues(agent, team)
+		values, user, err := r.customSandboxBaseValues(agent, team)
 		if err != nil {
 			return "", err
 		}

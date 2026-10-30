@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
@@ -374,7 +376,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && !commonCustom {
 		return r.suspendCustom(ctx, instance)
 	}
-	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && registryManaged(instance) {
+	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && !reconciledSandbox {
 		return r.suspendRegistryBuiltin(ctx, instance)
 	}
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !commonCustom {
@@ -435,6 +437,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !commonCustom {
 		return r.reconcileCustom(ctx, instance, team)
+	}
+
+	if !r.AIGateway.Enabled {
+		if reconciledSandbox {
+			return r.holdPolicyDependencyUnavailable(ctx, instance)
+		}
+		return r.gatewayRuntimeWaiting(ctx, instance, "AIGatewayRequired")
 	}
 
 	// Persist the Agent Identity provisioning intent before any workload
@@ -809,27 +818,24 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// Reconcile the Agent's AI Gateway virtual key before rendering the
 	// workload: an Agent routed through the Gateway needs its key at startup.
 	var aiGatewayRequeueAfter time.Duration
-	if r.AIGateway.Enabled {
-		chartSupported := commonCustom || aiGatewayChartSupports(prepared, instance.Spec.Agent.Type)
-		if err := r.reconcileAIGateway(ctx, instance, chartSupported); err != nil {
-			logger.Error(err, "AI Gateway virtual key reconciliation failed", "instance", instance.Name)
-			_ = r.updateStatus(ctx, instance)
-			if r.aiGatewayRequired(instance) && chartSupported && !r.aiGatewayRouted(instance) && !instance.Spec.Suspended {
-				// Never provisioned: do not start an Agent that would be
-				// routed through the Gateway without its key.
-				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-			}
-			// A previously provisioned key keeps working through a Gateway
-			// outage, and unrouted Agents do not depend on the key yet.
-			aiGatewayRequeueAfter = 30 * time.Second
-		} else if copilot := instance.Status.AIGateway.Copilot; copilot != nil &&
-			(copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseStarting) {
-			aiGatewayRequeueAfter = 15 * time.Second
+	chartSupported := commonCustom || aiGatewayChartSupports(prepared, instance.Spec.Agent.Type)
+	if !r.AIGateway.Enabled || !chartSupported {
+		if reconciledSandbox {
+			return r.holdPolicyDependencyUnavailable(ctx, instance)
 		}
-	} else if instance.Status.AIGateway != nil && instance.Status.AIGateway.Routed {
-		// The deployment turned the feature off: stop routing. Existing keys
-		// stay in the Gateway until the Agent is deleted.
-		instance.Status.AIGateway.Routed = false
+		return r.gatewayRuntimeWaiting(ctx, instance, "AIGatewayRequired")
+	}
+	if err := r.reconcileAIGateway(ctx, instance, chartSupported); err != nil {
+		logger.Error(err, "AI Gateway virtual key reconciliation failed", "instance", instance.Name)
+		_ = r.updateStatus(ctx, instance)
+		if !r.aiGatewayRouted(instance) && !instance.Spec.Suspended {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		// Keep an already routed workload through a transient management outage.
+		aiGatewayRequeueAfter = 30 * time.Second
+	} else if copilot := instance.Status.AIGateway.Copilot; copilot != nil &&
+		(copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseStarting) {
+		aiGatewayRequeueAfter = 15 * time.Second
 	}
 	if reconciledSandbox {
 		if err := r.updateStatus(ctx, instance); err != nil {
@@ -885,8 +891,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, nil)
 		if err != nil {
-			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-			return result, stderrors.Join(err, holdErr)
+			return r.reconciledSandboxFailure(ctx, instance, err)
 		}
 		helmValues = prepared.Values
 	} else {
@@ -929,13 +934,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			prepared, err = r.HelmClient.Refresh(prepared, helmValues)
 		}
 		if err != nil {
+			if reconciledSandbox && (stderrors.Is(err, errMigrationIntentChanged) || stderrors.Is(err, errSandboxIntentChanged)) {
+				return r.reconciledSandboxFailure(ctx, instance, err)
+			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxIngressMTLS) {
 				result, holdErr := r.holdReconciledSandbox(ctx, instance)
 				return result, stderrors.Join(err, holdErr)
 			}
 			if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
-				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-				return result, stderrors.Join(err, holdErr)
+				return r.reconciledSandboxFailure(ctx, instance, err)
 			}
 			return r.rejectAgentConfig(ctx, instance, err)
 		}
@@ -952,7 +959,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		return r.holdPolicyDenied(ctx, instance)
 	}
-	r.recordSignInHelper(instance, prepared.ServesSignInHelper())
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Agent Harness configuration resolved")
 	helmValues = prepared.Values
@@ -966,8 +972,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if alreadyDeployed {
 			alreadyDeployed, err = r.reconciledSandboxApplied(ctx, instance, prepared)
 			if err != nil {
-				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-				return result, stderrors.Join(err, holdErr)
+				return r.reconciledSandboxFailure(ctx, instance, err)
 			}
 		}
 		held := !instance.Spec.Suspended && controllerutil.ContainsFinalizer(instance, sandbox.HoldFinalizer)
@@ -1014,6 +1019,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 				metav1.ConditionFalse, "HelmInstallFailed", err.Error())
 			_ = r.updateStatus(ctx, instance)
+			if reconciledSandbox {
+				expected, expectationErr := prepared.ReconcileExpectation()
+				if expectationErr != nil || slices.ContainsFunc(expected.Controls, sandboxworkload.KubernetesBindingResource) {
+					result, holdErr := r.holdReconciledSandbox(ctx, instance)
+					return result, stderrors.Join(err, expectationErr, holdErr)
+				}
+			}
 			return ctrl.Result{RequeueAfter: 60 * time.Second}, err
 		}
 		logger.Info("Helm chart installed/upgraded successfully", "release", releaseName)
@@ -1030,6 +1042,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			"Helm chart openclaw installed in namespace %s", ns)
 	} else {
 		logger.V(1).Info("Skipping Helm install, already deployed at current generation", "release", releaseName)
+	}
+	if reconciledSandbox {
+		if err := r.confirmReconciledKubernetesGrants(ctx, instance, prepared); err != nil {
+			result, holdErr := r.holdReconciledSandbox(ctx, instance)
+			return result, stderrors.Join(err, holdErr)
+		}
 	}
 	if registryManaged(instance) {
 		if err := r.cleanupRegistryCredentials(ctx, instance, false); err != nil {
@@ -1136,8 +1154,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			return workloadResult, stderrors.Join(err, r.updateStatus(ctx, instance))
 		}
 		if err := r.observeReconciledSandbox(ctx, instance, prepared); err != nil {
-			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-			return result, stderrors.Join(err, holdErr)
+			return r.reconciledSandboxFailure(ctx, instance, err)
 		}
 	}
 
@@ -1348,6 +1365,9 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	// Remove finalizer.
 	before := instance.DeepCopy()
 	controllerutil.RemoveFinalizer(instance, cetirunv1alpha1.Finalizer)
+	if reconciledSandbox {
+		controllerutil.RemoveFinalizer(instance, sandbox.HoldFinalizer)
+	}
 	logger.V(1).Info("Removing finalizer", "alias", alias)
 	if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		if errors.IsNotFound(err) {
@@ -1702,8 +1722,8 @@ func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger
 	return r.ensureHermesSecretKeys(ctx, logger, secret, instance)
 }
 
-// ensureCetiRunAuthKey adds the bearer key used by the in-pod cetirun-auth
-// service to operator-managed Secrets created before that key was introduced.
+// ensureCetiRunAuthKey preserves the runtime key used by Hermes Dashboard
+// sessions.
 func (r *AgentReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.Logger, secret *corev1.Secret) error {
 	if secret.Data == nil {
 		secret.Data = map[string][]byte{}
@@ -1764,28 +1784,10 @@ func (r *AgentReconciler) ensureHermesSecretKeys(ctx context.Context, logger log
 }
 
 func renderHermesEnv(data map[string][]byte, apiKey string, corsOrigins string) string {
-	modelAPIKey := secretEnvValue(data, "MODEL_API_KEY")
-	openaiKey := secretEnvValue(data, "OPENAI_API_KEY")
-	if openaiKey == "" {
-		openaiKey = modelAPIKey
-	}
-	anthropicKey := secretEnvValue(data, "ANTHROPIC_API_KEY")
-	if anthropicKey == "" {
-		anthropicKey = modelAPIKey
-	}
 	var buf strings.Builder
 	buf.WriteString("API_SERVER_KEY=" + apiKey + "\n")
 	if corsOrigins != "" {
 		buf.WriteString("API_SERVER_CORS_ORIGINS=" + corsOrigins + "\n")
-	}
-	if v := secretEnvValue(data, "COPILOT_GITHUB_TOKEN"); v != "" {
-		buf.WriteString("COPILOT_GITHUB_TOKEN=" + v + "\n")
-	}
-	if openaiKey != "" {
-		buf.WriteString("OPENAI_API_KEY=" + openaiKey + "\n")
-	}
-	if anthropicKey != "" {
-		buf.WriteString("ANTHROPIC_API_KEY=" + anthropicKey + "\n")
 	}
 	if v := secretEnvValue(data, "BRAVE_API_KEY"); v != "" {
 		buf.WriteString("BRAVE_API_KEY=" + v + "\n")

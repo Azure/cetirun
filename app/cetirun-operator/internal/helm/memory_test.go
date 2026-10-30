@@ -263,9 +263,9 @@ func TestCustomMemoryPreparedManifest(t *testing.T) {
 }
 
 func TestSandboxRenderDoesNotInheritOrdinaryMemoryDefaults(t *testing.T) {
-	for _, typ := range []string{"hermes", "openclaw"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
-			fixture := testfixture.New(typ)
+			fixture := gatewayHeldFixture(typ)
 			bundle, err := w.Build(fixture.Input)
 			if err != nil {
 				t.Fatal(err)
@@ -294,6 +294,7 @@ func TestSandboxRenderDoesNotInheritOrdinaryMemoryDefaults(t *testing.T) {
 				t.Fatal(err)
 			}
 			expected.ControllerRevision = workload.Status.UpdateRevision
+			expected.SinglePod = true
 			if err := w.ValidatePod(testfixture.Pod(expected), expected); err != nil {
 				t.Fatal(err)
 			}
@@ -313,7 +314,7 @@ func TestOpenClawMemoryRegistrationMatchesExecutionMode(t *testing.T) {
 				if mode == "ordinary" {
 					prepared, err = PrepareChart(chrt, input)
 				} else {
-					fixture := testfixture.New("openclaw")
+					fixture := gatewayHeldFixture("openclaw")
 					fixture.Input.Reconciled = mode == "reconciled"
 					bundle, buildErr := w.Build(fixture.Input)
 					if buildErr != nil {
@@ -386,8 +387,14 @@ func TestHermesMemoryRegistrationMatchesExecutionMode(t *testing.T) {
 					if mode == "ordinary" {
 						prepared, err = PrepareChart(chrt, input)
 					} else {
-						fixture := testfixture.New("hermes")
-						fixture.Input.Reconciled = mode == "reconciled"
+						fixture := gatewayHeldFixture("hermes")
+						if mode == "single-start" {
+							if _, err := w.Build(fixture.Input); err == nil {
+								t.Fatal("held Hermes workload accepted a Gateway key")
+							}
+							return
+						}
+						fixture.Input.Reconciled = true
 						bundle, buildErr := w.Build(fixture.Input)
 						if buildErr != nil {
 							t.Fatal(buildErr)

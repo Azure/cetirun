@@ -495,14 +495,11 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 				return fail()
 			}
 		}
-		env := []corev1.EnvVar{{Name: "HOME", Value: p.Agent.HomeDir}}
-		if !b.AgentManagedModel {
-			env = append(env,
-				corev1.EnvVar{Name: "OPENAI_BASE_URL", Value: b.Model.BaseURL},
-				corev1.EnvVar{Name: "OPENAI_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: b.Model.Name}, Key: b.Model.Key,
-				}}})
-		}
+		env := []corev1.EnvVar{{Name: "HOME", Value: p.Agent.HomeDir},
+			{Name: "OPENAI_BASE_URL", Value: b.Model.BaseURL},
+			{Name: "OPENAI_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: b.Model.Name}, Key: b.Model.Key,
+			}}}}
 		if p.Agent.Port != nil {
 			env = append(env, corev1.EnvVar{Name: "PORT", Value: strconv.Itoa(int(*p.Agent.Port))})
 		}

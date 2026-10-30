@@ -94,7 +94,7 @@ func TestEnsureGatewayTokenOpenClawCreatesCetiRunAuthKey(t *testing.T) {
 	}
 }
 
-func TestEnsureGatewayTokenHermesBackfillsEnvAndPreservesToken(t *testing.T) {
+func TestEnsureGatewayTokenHermesPreservesServerAndToolCredentials(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -113,7 +113,7 @@ func TestEnsureGatewayTokenHermesBackfillsEnvAndPreservesToken(t *testing.T) {
 			"OPENCLAW_GATEWAY_TOKEN": []byte("gateway-token"),
 			"CETIRUN_AUTH_KEY":       []byte("existing-auth-key"),
 			"API_SERVER_KEY":         []byte("api-key"),
-			"hermes.env":             []byte("COPILOT_GITHUB_TOKEN=old-copilot-token\n"),
+			"hermes.env":             []byte("BRAVE_API_KEY=tool-key\n"),
 		},
 	}
 	instance := hermesSecretTestInstance("bob")
@@ -137,8 +137,8 @@ func TestEnsureGatewayTokenHermesBackfillsEnvAndPreservesToken(t *testing.T) {
 	if !strings.Contains(hermesEnv, "API_SERVER_KEY=api-key\n") {
 		t.Fatalf("hermes.env does not preserve API_SERVER_KEY: %q", hermesEnv)
 	}
-	if !strings.Contains(hermesEnv, "COPILOT_GITHUB_TOKEN=old-copilot-token\n") {
-		t.Fatalf("hermes.env does not preserve COPILOT_GITHUB_TOKEN: %q", hermesEnv)
+	if !strings.Contains(hermesEnv, "BRAVE_API_KEY=tool-key\n") {
+		t.Fatal("Hermes tool credential was lost")
 	}
 	if !strings.Contains(hermesEnv, "API_SERVER_CORS_ORIGINS=https://claws.example.com\n") {
 		t.Fatalf("hermes.env does not contain API_SERVER_CORS_ORIGINS: %q", hermesEnv)

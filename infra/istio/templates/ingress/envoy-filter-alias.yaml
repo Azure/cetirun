@@ -72,7 +72,6 @@ spec:
               }
               local PORTAL_DOMAIN = "{{ .Values.domain | lower }}"
               local PORTAL_COOKIE_NAME = "_cetirun_oauth2"
-              local CETIRUN_AUTH_KEY_HEADER = "x-cetirun-auth-key"
               local AGENT_API_KEY_HEADER = "x-cetirun-agent-api-key"
 
               -- The Portal session cookie, its chunks, and OAuth2 Proxy's
@@ -106,11 +105,6 @@ spec:
                 else
                   headers:replace("cookie", table.concat(retained, "; "))
                 end
-              end
-
-              function is_cetirun_auth_path(path)
-                return path:match("^/[^/]+/cetirun%-auth/") ~= nil or
-                  path:match("^/cetirun%-auth/") ~= nil
               end
 
               function is_native_agent_api_path(path, authority)
@@ -201,18 +195,14 @@ spec:
                 return key and #key <= 128 and key:match("^[A-Za-z0-9_+/=-]+$") ~= nil
               end
 
-              function forward_instance_key(request_handle, path, authority)
+              function forward_native_agent_api_key(request_handle, path, authority)
                 local headers = request_handle:headers()
-                local auth_key = headers:get(CETIRUN_AUTH_KEY_HEADER)
                 local api_key = headers:get(AGENT_API_KEY_HEADER)
                 -- After ext-auth, Authorization carries the user's ID token.
                 local identity_token = headers:get("authorization")
-                headers:remove(CETIRUN_AUTH_KEY_HEADER)
                 headers:remove(AGENT_API_KEY_HEADER)
                 headers:remove("authorization")
-                if is_cetirun_auth_path(path) and valid_instance_key(auth_key) then
-                  headers:replace("authorization", "Bearer " .. auth_key)
-                elseif is_native_agent_api_path(path, authority) and valid_instance_key(api_key) then
+                if is_native_agent_api_path(path, authority) and valid_instance_key(api_key) then
                   headers:replace("authorization", "Bearer " .. api_key)
                 elseif is_native_ui_path(path, authority) and not is_native_agent_api_path(path, authority) then
                   -- Native Agent UIs, such as the OpenClaw Control UI,
@@ -293,14 +283,12 @@ spec:
                       end
                     end
                     request_handle:headers():remove("authorization")
-                    request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
                     request_handle:headers():remove(AGENT_API_KEY_HEADER)
                   elseif is_webhook then
                     -- Webhook routes preserve the Bot Framework Authorization
                     -- header, but an unrelated Portal session must never be
                     -- forwarded into the Agent workload.
                     strip_portal_session_cookie(request_handle)
-                    request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
                     request_handle:headers():remove(AGENT_API_KEY_HEADER)
                     request_handle:headers():remove("x-auth-request-user")
                     request_handle:headers():remove("x-auth-request-email")
@@ -308,8 +296,7 @@ spec:
                   else
                     -- Shared service hosts have their own authentication
                     -- contract. Never reinterpret their Authorization header
-                    -- as a Portal identity or an instance helper key.
-                    request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
+                    -- as a Portal identity.
                     request_handle:headers():remove(AGENT_API_KEY_HEADER)
                   end
                   return
@@ -336,7 +323,6 @@ spec:
                   -- Do not let credentials reach a fallback route when a
                   -- non-exempt request has no valid instance path segment.
                   request_handle:headers():remove("authorization")
-                  request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
                   request_handle:headers():remove(AGENT_API_KEY_HEADER)
                   return
                 end
@@ -383,5 +369,5 @@ spec:
                 -- from its purpose-specific transport header, or the browser's
                 -- own Authorization on a native Agent UI route, only after the
                 -- ownership check succeeds and only on its exact route family.
-                forward_instance_key(request_handle, path_only, authority)
+                forward_native_agent_api_key(request_handle, path_only, authority)
               end

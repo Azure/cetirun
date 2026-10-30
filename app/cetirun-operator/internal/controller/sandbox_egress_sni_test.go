@@ -258,6 +258,39 @@ func TestReconciledSandboxObservedSNIWithEntraAndConnections(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxObservedSNIWithKubernetesAccess(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		t.Run(kind, func(t *testing.T) {
+			input := testfixture.New(kind)
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false,
+				withObservedSNI(t, kind), func(r *AgentReconciler, author client.Client) {
+					configureReconciledKubernetesAccess(t, r, author, input.Agent.Name, input.Policy.Name)
+					installKubernetesFixtureCA(t, r, author, input.Agent.Name)
+				})
+			f.reconcileOK(t)
+			assertKubernetesFixtureGrants(t, f, true)
+			expected := reconciledExpectationForTest(t, f)
+			pod := reconciledPodForTest(t, f, expected.Workloads[0])
+			if pod.Spec.ServiceAccountName != kubernetesFixtureAccount ||
+				ptr.Deref(pod.Spec.AutomountServiceAccountToken, true) ||
+				len(pod.Spec.InitContainers) < 3 ||
+				pod.Spec.InitContainers[0].Name != ingressmtls.ContainerName ||
+				pod.Spec.InitContainers[1].Name != egresscapture.InitContainerName {
+				t.Fatal("combined workload lost its explicit Kubernetes identity or observed-SNI capture")
+			}
+			handler, err := admissionhandler.NewPodHandler(f.kube, admissionhandler.PodConfig{
+				StateNamespace: f.r.OperatorNamespace,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response := handler.Validate(context.Background(), reconciledPodRequest(t, pod)); !response.Allowed {
+				t.Fatal("combined Kubernetes and observed-SNI controls failed current Pod admission:", response.Result)
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxObservedSNI(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, mtls := range []bool{false, true} {

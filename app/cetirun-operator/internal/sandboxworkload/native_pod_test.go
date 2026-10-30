@@ -17,6 +17,8 @@ import (
 
 func TestNativePodObservationPinsUIDAndNodeTopology(t *testing.T) {
 	f := testfixture.New("openclaw")
+	f.Input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
+	f.Input.AuthorizedSecrets = append(f.Input.AuthorizedSecrets, "gateway-key")
 	bundle, err := w.Build(f.Input)
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +29,8 @@ func TestNativePodObservationPinsUIDAndNodeTopology(t *testing.T) {
 	}
 	prepared, err := helm.PrepareSandboxChart(chart, map[string]any{
 		"agentType": "openclaw", "agentRequest": map[string]any{"type": "openclaw"},
-		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
+		"secrets":   map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model", "apiBase": "http://gateway.example-platform.svc.cluster.local:4000/v1"},
+		"aiGateway": map[string]any{"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key", "models": []any{map[string]any{"id": "example-model", "name": "Example"}}},
 	}, nil, bundle)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +78,15 @@ func TestNativeInitProcessKeepsExactHelperBoundaries(t *testing.T) {
 	for _, agentType := range []string{"openclaw", "hermes"} {
 		t.Run(agentType, func(t *testing.T) {
 			f := testfixture.New(agentType)
+			f.Input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
+			f.Input.AuthorizedSecrets = append(f.Input.AuthorizedSecrets, "gateway-key")
 			bundle, err := w.Build(f.Input)
+			if agentType == "hermes" {
+				if err == nil {
+					t.Fatal("unreconciled Hermes unexpectedly accepted a Gateway key")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -85,7 +96,8 @@ func TestNativeInitProcessKeepsExactHelperBoundaries(t *testing.T) {
 			}
 			prepared, err := helm.PrepareSandboxChart(chart, map[string]any{
 				"agentType": agentType, "agentRequest": map[string]any{"type": agentType},
-				"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
+				"secrets":   map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model", "apiBase": "http://gateway.example-platform.svc.cluster.local:4000/v1"},
+				"aiGateway": map[string]any{"enabled": true, "keySecretName": "gateway-key", "keySecretKey": "api-key", "models": []any{map[string]any{"id": "example-model", "name": "Example"}}},
 			}, nil, bundle)
 			if err != nil {
 				t.Fatal(err)

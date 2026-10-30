@@ -86,20 +86,20 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 		},
 		{
 			name: "team-editable-fields", team: true, strict: true,
-			wantSpec: `{"defaults":{"provider":"anthropic"},"memberContext":{"role":"Reviewer"},"skills":["new-skill"],"skillStorage":{"storageSize":"2Gi"}}`,
+			wantSpec: `{"memberContext":{"role":"Reviewer"},"skills":["new-skill"],"skillStorage":{"storageSize":"2Gi"}}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
 				spec := object.(*api.Team).Spec.DeepCopy()
-				spec.Defaults.Provider, spec.MemberContext.Role = "anthropic", "Reviewer"
+				spec.MemberContext.Role = "Reviewer"
 				spec.Skills, spec.SkillStorage.StorageSize = []string{"new-skill"}, "2Gi"
 				return c.UpdateTeamSpec(ctx, object.GetName(), *spec, ConfigurationVersion{UID: object.GetUID(), ResourceVersion: object.GetResourceVersion()})
 			},
 		},
 		{
 			name: "team-clear-editable-fields", team: true, strict: true,
-			wantSpec: `{"defaults":{"provider":null},"memberContext":{"role":null},"skills":null,"skillStorage":null}`,
+			wantSpec: `{"memberContext":{"role":null},"skills":null,"skillStorage":null}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
 				spec := object.(*api.Team).Spec.DeepCopy()
-				spec.MemberContext, spec.Defaults, spec.Skills, spec.SkillStorage = api.TeamContextSpec{}, api.TeamDefaultsSpec{}, nil, nil
+				spec.MemberContext, spec.Skills, spec.SkillStorage = api.TeamContextSpec{}, nil, nil
 				return c.UpdateTeamSpec(ctx, object.GetName(), *spec, ConfigurationVersion{UID: object.GetUID(), ResourceVersion: object.GetResourceVersion()})
 			},
 		},
@@ -155,7 +155,6 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 				spec = map[string]any{
 					"agentPolicyRef": "policy",
 					"sandboxRefs":    []string{"example-sandbox"}, "defaultSandboxRef": "example-sandbox",
-					"defaults":      map[string]any{"provider": "github_copilot", "futureDefaults": "keep-defaults"},
 					"memberContext": map[string]any{"role": "Engineer", "futureContext": "keep-context"},
 					"skills":        []string{"old-skill"},
 					"skillStorage": map[string]any{

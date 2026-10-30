@@ -6,7 +6,6 @@ import type { AgentPolicyRateLimits } from "./rateLimits";
 export interface TeamSummary {
   name: string;
   role: string;
-  provider: string;
 }
 
 export type AgentType = "openclaw" | "hermes" | "custom";
@@ -61,7 +60,6 @@ export interface Instance extends InstanceVersion {
   webUIUrl?: string;
   gatewayToken?: string;           // Token for gateway access, returned separately when available
   apiServerKey?: string;           // Hermes API server key, returned separately when available
-  cetirunAuthKey?: string;         // Bearer key for the in-pod cetirun-auth helper (both agent types)
   tailscaleAuthKey?: string;       // Tailscale auth key, returned when Tailscale is enabled
   conditions?: ConditionStatus[];
   createdAt: string;
@@ -133,7 +131,7 @@ export interface CreateInstanceRequest {
   model?: string;
   teamsEnabled?: boolean;
   agentIdentityEnabled?: boolean;
-  /** OpenClaw Agents with the AI Gateway enabled. */
+  /** Gateway model sources for every Agent harness. */
   modelAccess?: ModelAccess;
 }
 

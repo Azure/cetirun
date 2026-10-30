@@ -100,6 +100,261 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			assets[file.Name] = &file.Data
 		}
 	}
+
+	// Reverse the Gateway-only source changes before checking the immutable
+	// historical assets. These bytes are test inputs, never release defaults.
+	for name, replacements := range map[string][][2]string{
+		"agents/openclaw/config/native.tpl": {
+			{`    "trustedProxy" (dict
+      "userHeader" "x-auth-request-email"
+      "allowLoopback" true
+      "deviceAutoApprove" (dict "enabled" true))) }}
+{{- $_ := set $config "gateway" $gateway }}
+{{- end }}
+{{- /* The AI Gateway is the only platform model provider. */}}
+{{- $model := required "secrets.model must be set by the CetiRun operator" .Values.secrets.model }}
+{{- $gatewayRouted := true }}
+{{- $nativeGateway := true }}
+{{- $_ := set $config "auth" (dict "profiles" (dict)) }}
+{{- $providerPrefix := "openai" }}
+{{- $modelFull := printf "openai/%s" $model }}
+{{- /* Models the platform AI Gateway offers this Agent. Each becomes a model
+   of the Gateway provider, with its limits, and is allowed; the rest of the
+   configuration keeps naming the default model. */}}
+{{- $gatewayModels := list }}
+{{- if $gatewayRouted }}
+{{- $gatewayModels = dig "models" (list) .Values.aiGateway }}
+`, `    "trustedProxy" (dict
+      "userHeader" "x-auth-request-email"
+      "allowLoopback" true
+      "deviceAutoApprove" (dict "enabled" true))) }}
+{{- $_ := set $config "gateway" $gateway }}
+{{- end }}
+{{- /* Model provider auth profile and default model.
+   Supports: github_copilot (token-based), openai (api-key), anthropic (api-key). */}}
+{{- $provider := .Values.secrets.provider | default "github_copilot" }}
+{{- $model := required "secrets.model must be set by the CetiRun operator or Helm values" .Values.secrets.model }}
+{{- $gatewayRouted := and (dig "enabled" false (.Values.aiGateway | default dict)) (eq $provider "openai") }}
+{{- $nativeGateway := and $gatewayRouted .Values.sandboxWorkload }}
+{{- $authMode := .Values.secrets.authMode }}
+{{- $authProfileMode := $authMode }}
+{{- if eq $authProfileMode "api-key" }}
+{{- $authProfileMode = "api_key" }}
+{{- end }}
+{{- $auth := dig "auth" (dict) $config }}
+{{- if $nativeGateway }}
+{{- $auth = dict "profiles" (dict) }}
+{{- else if eq $provider "github_copilot" }}
+{{- $_ := set $auth "profiles" (dict "github-copilot:github" (dict "provider" "github-copilot" "mode" "token")) }}
+{{- else if eq $provider "openai" }}
+{{- $profile := dict "provider" "openai" }}
+{{- if $authProfileMode }}
+{{- $_ := set $profile "mode" $authProfileMode }}
+{{- end }}
+{{- $_ := set $auth "profiles" (dict "openai:default" $profile) }}
+{{- else if eq $provider "anthropic" }}
+{{- $profile := dict "provider" "anthropic" }}
+{{- if $authProfileMode }}
+{{- $_ := set $profile "mode" $authProfileMode }}
+{{- end }}
+{{- $_ := set $auth "profiles" (dict "anthropic:default" $profile) }}
+{{- end }}
+{{- $_ := set $config "auth" $auth }}
+{{- /* Compose full model identifier as <provider>/<model> */}}
+{{- $providerPrefix := $provider | replace "_" "-" }}
+{{- $modelFull := printf "%s/%s" $providerPrefix $model }}
+{{- /* Models the platform AI Gateway offers this Agent. Each becomes a model
+   of the Gateway provider, with its limits, and is allowed; the rest of the
+   configuration keeps naming the default model. */}}
+{{- $gatewayModels := list }}
+{{- if $gatewayRouted }}
+{{- $gatewayModels = dig "models" (list) .Values.aiGateway }}
+`},
+			{`{{- /* Default model and compaction settings */}}
+{{- $compaction := dict "memoryFlush" (dict "enabled" true "softThresholdTokens" (int 4000)) }}
+{{- $modelConfig := dict }}
+{{- $agentsCurrent := dig "agents" (dict) $config }}
+{{- $defaultsCurrent := dig "defaults" (dict) $agentsCurrent }}
+{{- $_ := set $defaultsCurrent "compaction" $compaction }}
+{{- if $gatewayModels }}
+{{- $modelsDict := dict }}
+{{- $allow := list }}
+{{- range $gatewayModels }}
+{{- $ref := printf "%s/%s" $providerPrefix .id }}
+{{- $_ := set $modelsDict $ref (dict) }}
+{{- $allow = append $allow $ref }}
+`, `{{- /* Default model and compaction settings */}}
+{{- $compaction := dict "memoryFlush" (dict "enabled" true "softThresholdTokens" (int 4000)) }}
+{{- $modelConfig := dict }}
+{{- $agentsCurrent := dig "agents" (dict) $config }}
+{{- $defaultsCurrent := dig "defaults" (dict) $agentsCurrent }}
+{{- $_ := set $defaultsCurrent "compaction" $compaction }}
+{{- if eq $provider "github_copilot" }}
+{{- $fallbacks := list }}
+{{- $_ := set $defaultsCurrent "model" (dict "primary" $modelFull "fallbacks" $fallbacks) }}
+{{- $modelsDict := dict $modelFull $modelConfig }}
+{{- range $fallbacks }}
+{{- $_ := set $modelsDict . (dict) }}
+{{- end }}
+{{- $_ := set $defaultsCurrent "models" $modelsDict }}
+{{- $_ := set $defaultsCurrent "modelPolicy" (dict "allow" (concat (list $modelFull) $fallbacks)) }}
+{{- else if $gatewayModels }}
+{{- $modelsDict := dict }}
+{{- $allow := list }}
+{{- range $gatewayModels }}
+{{- $ref := printf "%s/%s" $providerPrefix .id }}
+{{- $_ := set $modelsDict $ref (dict) }}
+{{- $allow = append $allow $ref }}
+`},
+			{`   model serves them instead. */}}
+{{- $_ := set $defaultsCurrent "utilityModel" $modelFull }}
+{{- end }}
+{{- $_ := set $agentsCurrent "defaults" $defaultsCurrent }}
+{{- $_ := set $config "agents" $agentsCurrent }}
+{{- /* Custom API base URL → models.providers.<provider>.baseUrl */}}
+{{- if .Values.secrets.apiBase }}
+{{- $providerModels := list }}
+{{- $listed := false }}
+{{- range $gatewayModels }}
+{{- $entry := dict "id" .id "name" (.name | default .id) }}
+{{- if .contextWindow }}
+{{- $_ := set $entry "contextWindow" (int .contextWindow) }}
+`, `   model serves them instead. */}}
+{{- $_ := set $defaultsCurrent "utilityModel" $modelFull }}
+{{- end }}
+{{- $_ := set $agentsCurrent "defaults" $defaultsCurrent }}
+{{- $_ := set $config "agents" $agentsCurrent }}
+{{- /* Custom API base URL → models.providers.<provider>.baseUrl */}}
+{{- if and (ne $provider "github_copilot") .Values.secrets.apiBase }}
+{{- $providerModels := list }}
+{{- $listed := false }}
+{{- range $gatewayModels }}
+{{- $entry := dict "id" .id "name" (.name | default .id) }}
+{{- if .contextWindow }}
+{{- $_ := set $entry "contextWindow" (int .contextWindow) }}
+`},
+		},
+		"values.schema.json": {
+			{`            "type": "object",
+            "description": "Operator-owned platform AI Gateway access for the Agent's model traffic",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "const": true,
+                    "default": true
+                },
+                "keySecretName": {
+                    "type": "string",
+                    "description": "Secret in the release namespace holding the Agent's virtual key",
+                    "default": ""
+                },
+`, `            "type": "object",
+            "description": "Operator-owned platform AI Gateway access for the Agent's model traffic",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false
+                },
+                "keySecretName": {
+                    "type": "string",
+                    "description": "Secret in the release namespace holding the Agent's virtual key",
+                    "default": ""
+                },
+`},
+			{`                "openclawGatewayToken": {
+                    "type": "string",
+                    "description": "Gateway authentication token"
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "AI Gateway protocol; upstream providers are managed by the platform",
+                    "enum": ["openai"],
+                    "default": "openai"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model name supplied by the operator from spec.model or its deployment default",
+                    "default": ""
+                },
+                "apiKey": {
+                    "type": "string",
+                    "description": "Removed direct credentials; use the AI Gateway",
+                    "const": "",
+                    "default": ""
+                },
+                "apiBase": {
+                    "type": "string",
+                    "description": "Custom API base URL (uses provider default if empty)",
+                    "default": ""
+`, `                "openclawGatewayToken": {
+                    "type": "string",
+                    "description": "Gateway authentication token"
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "Model provider: github_copilot, openai, or anthropic",
+                    "enum": [
+                        "github_copilot",
+                        "openai",
+                        "anthropic"
+                    ],
+                    "default": "github_copilot"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model name supplied by the operator from spec.model or its deployment default",
+                    "default": ""
+                },
+                "apiKey": {
+                    "type": "string",
+                    "description": "API key for openai/anthropic providers (not needed for github_copilot)",
+                    "default": ""
+                },
+                "apiBase": {
+                    "type": "string",
+                    "description": "Custom API base URL (uses provider default if empty)",
+                    "default": ""
+`},
+			{`                    "default": false
+                }
+            }
+        },
+        "litellm": {
+            "type": "object",
+            "description": "The removed per-Agent model proxy is unsupported; use the platform AI Gateway.",
+            "not": {},
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Enable LiteLLM sidecar container",
+                    "default": true
+                },
+`, `                    "default": false
+                }
+            }
+        },
+        "litellm": {
+            "type": "object",
+            "description": "LiteLLM sidecar configuration",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Enable LiteLLM sidecar container",
+                    "default": true
+                },
+`},
+		},
+	} {
+		data := assets[name]
+		for _, replacement := range replacements {
+			if data == nil || bytes.Count(*data, []byte(replacement[0])) != 1 {
+				return fmt.Errorf("pre-proxy fixture requires the exact Gateway change in %s", name)
+			}
+			*data = bytes.Replace(*data, []byte(replacement[0]), []byte(replacement[1]), 1)
+		}
+	}
 	// The current chart also contains native MCP support. Remove only those
 	// additions before reconstructing and checking the fixed pre-proxy revision.
 	for name, addition := range map[string]string{

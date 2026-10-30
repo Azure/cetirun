@@ -14,6 +14,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -80,6 +81,22 @@ func (h *PodHandler) validateReconciledSources(ctx context.Context, expected w.R
 	return nil
 }
 
+func (h *PodHandler) validateReconciledKubernetesGrants(ctx context.Context, expected w.ReconcileExpectation, confirmed bool) *podFailure {
+	bindings, err := expected.KubernetesBindings()
+	if err != nil {
+		return podDenied("GrantInventoryInvalid", "current Kubernetes grant inventory is invalid")
+	}
+	journal := sandboxpolicy.GrantJournalStore{APIReader: h.reader, Namespace: h.config.StateNamespace}
+	verify := journal.VerifyKubernetesBindings
+	if !confirmed {
+		verify = journal.VerifyKubernetesBindingIntents
+	}
+	if err := verify(ctx, expected.Agent.Name, expected.Agent.UID, bindings); err != nil {
+		return podDenied("KubernetesGrantsUnconfirmed", "current Kubernetes grants do not match confirmed journal authority")
+	}
+	return nil
+}
+
 func (h *PodHandler) validateReconciledPod(ctx context.Context, request admission.Request, pod *corev1.Pod) (admission.Response, bool) {
 	expected, state, handled, failure := h.reconciledExpectation(ctx, request.Namespace)
 	if !handled {
@@ -121,6 +138,9 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 		return reject(failure)
 	}
 	if failure := h.validateReconciledSources(ctx, expected); failure != nil {
+		return reject(failure)
+	}
+	if failure := h.validateReconciledKubernetesGrants(ctx, expected, true); failure != nil {
 		return reject(failure)
 	}
 	if desired := expected.IdentityServiceAccount; desired != nil {
@@ -223,17 +243,28 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 			return reject(podReadFailure("PreviousPod", err))
 		}
 		if old.UID != pod.UID || old.UID != persisted.UID || pod.ResourceVersion != persisted.ResourceVersion ||
-			old.ResourceVersion != persisted.ResourceVersion || old.Spec.NodeName != persisted.Spec.NodeName {
+			old.ResourceVersion != persisted.ResourceVersion || old.Spec.NodeName != persisted.Spec.NodeName ||
+			pod.Spec.NodeName != persisted.Spec.NodeName {
 			return reject(podDenied("PreviousPodMismatch", "Pod update does not match its persisted identity"))
 		}
-		wanted.Template.Spec.NodeName = persisted.Spec.NodeName
 	}
-	if err := w.ValidateRenderedPod(pod, wanted, owner, revision); err != nil {
+	var validationErr error
+	if request.Operation == admissionv1.Update && pod.Spec.NodeName != "" {
+		node, failure := h.readAssignedNode(ctx, pod)
+		if failure != nil {
+			return reject(failure)
+		}
+		validationErr = w.ValidateRenderedPodOnNode(pod, node, wanted, owner, revision)
+	} else {
+		validationErr = w.ValidateRenderedPod(pod, wanted, owner, revision)
+	}
+	if validationErr != nil {
 		message := "Pod differs from the current authorized chart template"
 		var mismatch *w.PodMismatchError
-		if errors.As(err, &mismatch) {
+		if errors.As(validationErr, &mismatch) {
 			message = mismatch.Error()
 		}
+
 		return reject(podDenied("TemplateMismatch", message))
 	}
 	confirmed := &corev1.ConfigMap{}
@@ -246,10 +277,27 @@ func (h *PodHandler) validateReconciledPod(ctx context.Context, request admissio
 	if failure := h.validateReconciledSources(ctx, expected); failure != nil {
 		return reject(failure)
 	}
+	if failure := h.validateReconciledKubernetesGrants(ctx, expected, true); failure != nil {
+		return reject(failure)
+	}
 	if failure := checkReservation(); failure != nil {
 		return reject(failure)
 	}
 	return admission.Allowed("Pod matches current authorized common chart output"), true
+}
+
+func (h *PodHandler) readAssignedNode(ctx context.Context, pod *corev1.Pod) (*corev1.Node, *podFailure) {
+	if pod.Spec.NodeName == "" {
+		return nil, podDenied("NodeUnavailable", "the current Pod has no assigned Node")
+	}
+	node := &corev1.Node{}
+	if err := h.reader.Get(ctx, client.ObjectKey{Name: pod.Spec.NodeName}, node); err != nil {
+		return nil, podReadFailure("Node", err)
+	}
+	if node.UID == "" || !node.DeletionTimestamp.IsZero() {
+		return nil, podDenied("NodeUnavailable", "the assigned Node is unavailable")
+	}
+	return node, nil
 }
 
 func controllerRuntimeDefaults(agent, old *api.Agent) bool {
@@ -299,6 +347,9 @@ func (h *Handler) reconciledHoldRelease(ctx context.Context, request admission.R
 		return admission.Denied("hold release requires the current reconciled Sandbox intent"), true
 	}
 	if failure := handler.validateReconciledSources(ctx, record); failure != nil {
+		return rejectPod(ctx, request, failure), true
+	}
+	if failure := handler.validateReconciledKubernetesGrants(ctx, record, false); failure != nil {
 		return rejectPod(ctx, request, failure), true
 	}
 	if _, err := h.platformRegistrations(ctx); err != nil {

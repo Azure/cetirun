@@ -179,7 +179,16 @@ func TestCommonCustomTerminalConnectUsesRenderedAuthority(t *testing.T) {
 			pod = candidate
 		}
 	}
-	pod.Spec.NodeName = "node-a"
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name: "node-a", UID: "example-node-uid",
+		Labels: map[string]string{corev1.LabelTopologyRegion: "example-region", corev1.LabelTopologyZone: "example-zone"},
+	}}
+	if err := f.kube.Create(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	pod.Spec.NodeName = node.Name
+	pod.Labels[corev1.LabelTopologyRegion] = node.Labels[corev1.LabelTopologyRegion]
+	pod.Labels[corev1.LabelTopologyZone] = node.Labels[corev1.LabelTopologyZone]
 	pod.Status = corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
 		Name: "cetirun", Ready: true, ContainerID: "containerd://synthetic-main",
 		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
@@ -193,6 +202,24 @@ func TestCommonCustomTerminalConnectUsesRenderedAuthority(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	pod.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
+	update := reconciledPodRequest(t, pod)
+	update.Operation = admissionv1.Update
+	update.OldObject = update.Object
+	if response := handler.Validate(ctx, update); !response.Allowed {
+		t.Fatal("current bound Pod update was denied:", response.Result)
+	}
+	otherNode := node.DeepCopy()
+	otherNode.Name, otherNode.UID, otherNode.ResourceVersion = "other-node", "other-node-uid", ""
+	if err := f.kube.Create(ctx, otherNode); err != nil {
+		t.Fatal(err)
+	}
+	moved := pod.DeepCopy()
+	moved.Spec.NodeName = otherNode.Name
+	update.Object = reconciledPodRequest(t, moved).Object
+	if response := handler.Validate(ctx, update); response.Allowed {
+		t.Fatal("Pod update reassigned a bound Pod to another observed Node")
 	}
 	options, err := json.Marshal(corev1.PodExecOptions{
 		Container: "cetirun", Command: []string{"sh", "-i"}, Stdout: true, Stdin: true, TTY: true,
@@ -227,6 +254,27 @@ func TestCommonCustomTerminalConnectUsesRenderedAuthority(t *testing.T) {
 		if response := handler.Validate(ctx, changed); response.Allowed {
 			t.Fatal("terminal authority admitted a different caller, target or protocol")
 		}
+	}
+	node.Labels[corev1.LabelTopologyZone] = "changed-zone"
+	if err := f.kube.Update(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	if response := handler.Validate(ctx, request); response.Allowed {
+		t.Fatal("terminal accepted topology from a stale Node observation")
+	}
+	node.Labels[corev1.LabelTopologyZone] = "example-zone"
+	if err := f.kube.Update(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Delete(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	if response := handler.Validate(ctx, request); response.Allowed || !strings.Contains(response.Result.Message, "Node") {
+		t.Fatal("terminal did not fail closed when its assigned Node disappeared:", response.Result)
+	}
+	node.ResourceVersion = ""
+	if err := f.kube.Create(ctx, node); err != nil {
+		t.Fatal(err)
 	}
 	agent := f.current(t)
 	agent.Spec.Suspended, agent.Generation = true, agent.Generation+1

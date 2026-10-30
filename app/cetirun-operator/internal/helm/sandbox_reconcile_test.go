@@ -85,7 +85,7 @@ func TestReconciledSandboxHelperResources(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{"doctor", "retire-copilot-sign-in", "retire-direct-model-auth"} {
+			for _, name := range []string{"doctor"} {
 				if !slices.ContainsFunc(template.Spec.InitContainers, func(container corev1.Container) bool {
 					return container.Name == name
 				}) {
@@ -162,7 +162,7 @@ func TestReconciledSandboxStartupWindowAndOverrides(t *testing.T) {
 func TestReconciledSandboxPullSecretIsKubeletOnly(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		t.Run(kind, func(t *testing.T) {
-			fixture := testfixture.New(kind)
+			fixture := gatewayHeldFixture(kind)
 			fixture.Input.Reconciled = true
 			fixture.Input.ImagePullSecret = &w.ObjectIdentity{Name: "registry-pull-exampleuid", UID: "pull-secret-uid"}
 			bundle, err := w.Build(fixture.Input)
@@ -489,6 +489,7 @@ func TestReconciledSandboxApplyRequiresCurrentAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	stale := errors.New("synthetic authority changed")
 	prepared, err := base.ReconcileSandbox(values, bundle, func(context.Context) error { return stale })
 	if err != nil {
@@ -505,10 +506,11 @@ func TestReconciledSandboxHistoryFailureDoesNotSubmit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	submitted, checked := false, false
+	submitted, checked, rendered := false, false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { checked = true; return nil },
-		func(context.Context) error { submitted = true; return nil })
+		func(context.Context) error { rendered = true; return nil },
+		func(context.Context) error { submitted = true; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,8 +528,8 @@ func TestReconciledSandboxHistoryFailureDoesNotSubmit(t *testing.T) {
 	}
 	store.queryError = nil
 	kube.afterWrite = func() {
-		if !submitted {
-			t.Fatal("Helm wrote a resource before the submission checkpoint")
+		if !rendered {
+			t.Fatal("Helm wrote a resource before manifest authorization")
 		}
 	}
 	if err := (&Client{}).installOrUpgrade(bundle.Identity().Namespace.Name, bundle.Identity().ReleaseName, prepared,
@@ -549,7 +551,8 @@ func TestReconciledSandboxPreflightRejectsStaleAuthority(t *testing.T) {
 	submitted, configured := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { return stale },
-		func(context.Context) error { submitted = true; return nil })
+		func(context.Context) error { return nil },
+		func(context.Context) error { submitted = true; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +575,8 @@ func TestReconciledSandboxConfigurationFailureDoesNotSubmit(t *testing.T) {
 	checked, submitted := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { checked = true; return nil },
-		func(context.Context) error { submitted = true; return nil })
+		func(context.Context) error { return nil },
+		func(context.Context) error { submitted = true; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +598,8 @@ func TestReconciledSandboxApplyGuardFailureDoesNotWrite(t *testing.T) {
 	checked, submitted := false, false
 	prepared, err := base.ReconcileSandboxWithPreflight(values, bundle,
 		func(context.Context) error { checked = true; return nil },
-		func(context.Context) error { submitted = true; return injected })
+		func(context.Context) error { submitted = true; return injected },
+		func(context.Context) error { return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

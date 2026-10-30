@@ -63,8 +63,9 @@ func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
 	r := &controller.AgentReconciler{Client: c, APIReader: c, Scheme: scheme, HelmClient: hc,
 		OperatorNamespace: "cetirun-system", OperatorSAName: "operator-test", IstioRevision: "asm-test",
 		EventRecorder: record.NewFakeRecorder(100)}
+	controller.ConfigureTestGateway(t, r)
 	config := controller.CustomRuntimeConfig{
-		Enabled: true, AgentManagedModel: true, ApprovedImages: []string{*cr.Spec.Agent.Image},
+		Enabled: true, ApprovedImages: []string{*cr.Spec.Agent.Image},
 		StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadWriteOnce", FSGroup: 1024,
 		Context: map[string]string{"AGENTS.md": "approved context", "skills/cetirun-memory/SKILL.md": "approved memory"},
 	}
@@ -328,10 +329,11 @@ func TestCustomReconcileUsesBindingsNotNativeSecrets(t *testing.T) {
 	for _, port := range []*int32{nil, ptr.To[int32](8080)} {
 		cr, b, objects := customFixture("example", port)
 		scheme := testScheme()
-		c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()
+		c := provisioningClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()}
 		hc := &fakeHelmClient{useHarness: true}
 		provider := &customProvider{bindings: b}
 		r := &controller.AgentReconciler{Client: c, Scheme: scheme, HelmClient: hc, CustomBindings: provider, EventRecorder: record.NewFakeRecorder(100)}
+		controller.ConfigureTestGateway(t, r)
 		key := types.NamespacedName{Name: cr.Name}
 		if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
 			t.Fatal(err)
@@ -347,8 +349,8 @@ func TestCustomReconcileUsesBindingsNotNativeSecrets(t *testing.T) {
 			t.Fatal("Custom received a native URL or default port")
 		}
 		secrets := &corev1.SecretList{}
-		if err := c.List(context.Background(), secrets); err != nil || len(secrets.Items) != 1 {
-			t.Fatal("Custom generated a native Secret")
+		if err := c.List(context.Background(), secrets); err != nil || len(secrets.Items) != 2 {
+			t.Fatal("Custom did not retain its binding Secret and add the Gateway key")
 		}
 		raw := fmt.Sprint(hc.lastValues["runtime"])
 		if strings.Contains(raw, "sk-dummy") || strings.Contains(raw, "gateway-token") {
@@ -363,6 +365,7 @@ func TestCustomReconcileUsesBindingsNotNativeSecrets(t *testing.T) {
 			"cetirun.microsoft.com/agent-uid":        string(cr.UID),
 			"cetirun.microsoft.com/custom-plan-hash": hc.lastValues["runtime"].(map[string]any)["workloadHash"].(string),
 		}
+		markGatewayCustomWorkload(sts, r.AIGateway.URL)
 		if err := c.Create(context.Background(), sts); err != nil {
 			t.Fatal(err)
 		}
@@ -384,16 +387,19 @@ func TestCustomReconcileUsesBindingsNotNativeSecrets(t *testing.T) {
 		if err := c.Get(context.Background(), key, current); err != nil || current.ResourceVersion != steadyVersion {
 			t.Fatal("steady-state status caused another watch event")
 		}
-		// A model rotation must not be lost to the old native-secret cache.
+		// A Gateway binding rotation must still pass through the controlled
+		// replacement gate, preserving the original writer-lifecycle regression.
 		secret := &corev1.Secret{}
-		if err := c.Get(context.Background(), types.NamespacedName{Namespace: b.Namespace.Name, Name: b.Model.Name}, secret); err != nil {
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: b.Namespace.Name, Name: current.Status.AIGateway.KeySecretName}, secret); err != nil {
 			t.Fatal(err)
 		}
-		secret.Data["api-key"] = []byte("sk-dummy-rotated")
+		if secret.Annotations == nil {
+			secret.Annotations = map[string]string{}
+		}
+		secret.Annotations["example.com/rotation"] = "next-binding-revision"
 		if err := c.Update(context.Background(), secret); err != nil {
 			t.Fatal(err)
 		}
-		provider.bindings.Model.Revision = secret.ResourceVersion
 		provider.applyErr = fmt.Errorf("no handoff")
 		provider.applied = false
 		if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {

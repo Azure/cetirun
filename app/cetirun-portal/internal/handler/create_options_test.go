@@ -128,7 +128,7 @@ func TestCreateRejectsPolicyViolationsWithoutWrites(t *testing.T) {
 		{name: "identity", body: `"agent":{"type":"hermes"},"agentIdentityEnabled":true`, code: "policy_identity_not_allowed"},
 		{name: "skills", body: `"agent":{"type":"hermes"}`, code: "policy_skills_conflict", change: func(_ *InstanceHandler, t *api.Team, _ *api.AgentPolicy) { t.Spec.Skills = []string{"npm:unapproved"} }},
 		{name: "missing budget", body: `"agent":{"type":"hermes"}`, code: "invalid_policy", change: func(_ *InstanceHandler, _ *api.Team, p *api.AgentPolicy) { p.Spec.ModelAccess.GatewayBudget = nil }},
-		{name: "disabled gateway", body: `"agent":{"type":"hermes"}`, code: "policy_gateway_required", change: func(h *InstanceHandler, _ *api.Team, _ *api.AgentPolicy) { h.Config.AIGatewayEnabled = false }},
+		{name: "disabled gateway", body: `"agent":{"type":"hermes"}`, code: "gateway_required", change: func(h *InstanceHandler, _ *api.Team, _ *api.AgentPolicy) { h.Config.AIGatewayEnabled = false }},
 		{name: "empty intersection", body: `"agent":{"type":"openclaw"}`, code: "agent_type_not_allowed", change: func(h *InstanceHandler, _ *api.Team, _ *api.AgentPolicy) {
 			h.Config.AllowedAgentTypes = []string{"openclaw"}
 		}},
@@ -168,6 +168,71 @@ func TestCreatePersistsEffectiveModelDefaultsAndPolicyBinding(t *testing.T) {
 			}
 			if agent.Spec.SandboxRef != "test-sandbox" || agent.Spec.Team != team.Name || agent.Spec.ModelAccess == nil || agent.Spec.ModelAccess.SharedModels == nil || agent.Spec.ModelAccess.GitHubCopilot == nil || !*agent.Spec.ModelAccess.SharedModels || *agent.Spec.ModelAccess.GitHubCopilot || agent.Spec.ModelAccess.MonthlyBudgetUSD != "" {
 				t.Fatalf("invalid persisted defaults: %+v", agent.Spec)
+			}
+		})
+	}
+}
+
+func TestCreateCustomSandboxModelSelection(t *testing.T) {
+	tests := []struct {
+		name, fields, code       string
+		status                   int
+		shared, copilot, unknown bool
+		change                   func(*api.AgentPolicy)
+	}{
+		{name: "policy defaults", status: http.StatusCreated, shared: true},
+		{name: "explicit shared", fields: `,"modelAccess":{"sharedModels":true,"githubCopilot":false}`, status: http.StatusCreated, shared: true},
+		{name: "allowed default model", fields: `,"model":"gpt-6-mini"`, status: http.StatusCreated, shared: true},
+		{name: "copilot only", status: http.StatusCreated, copilot: true, change: func(p *api.AgentPolicy) {
+			p.Spec.ModelAccess.SharedModels.Allowed = nil
+			p.Spec.ModelAccess.Copilot.Allowed = true
+		}},
+		{name: "owner disables shared", fields: `,"modelAccess":{"sharedModels":false,"githubCopilot":true}`, status: http.StatusCreated, copilot: true, change: func(p *api.AgentPolicy) {
+			p.Spec.ModelAccess.Copilot.Allowed = true
+		}},
+		{name: "forbidden copilot", fields: `,"modelAccess":{"githubCopilot":true}`, status: http.StatusBadRequest, code: "invalid_model_access"},
+		{name: "forbidden default model", fields: `,"model":"gpt-6"`, status: http.StatusForbidden, code: "model_not_allowed"},
+		{name: "no requested source", fields: `,"modelAccess":{"sharedModels":false,"githubCopilot":false}`, status: http.StatusBadRequest, code: "invalid_model_access"},
+		{name: "no permitted source", status: http.StatusConflict, code: "no_model_source", change: func(p *api.AgentPolicy) {
+			p.Spec.ModelAccess.SharedModels.Allowed = []string{"unavailable-model"}
+		}},
+		{name: "unknown catalog", status: http.StatusServiceUnavailable, code: "model_sources_unknown", unknown: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			team, policy := creationPolicy()
+			policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeCustom}
+			if tt.change != nil {
+				tt.change(policy)
+			}
+			h, fc := creationPolicyHandler(team, policy)
+			if tt.unknown {
+				if err := fc.Delete(context.Background(), catalogConfigMap("gpt-6", "gpt-6-mini")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w := httptest.NewRecorder()
+			body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"},"team":"policy-team"` + tt.fields + `}`
+			h.CreateInstance(w, managementRequest(http.MethodPost, body))
+			if w.Code != tt.status {
+				t.Fatalf("create: %d %s, want %d", w.Code, w.Body.String(), tt.status)
+			}
+			if tt.status != http.StatusCreated {
+				if code := errorCode(t, w); code != tt.code {
+					t.Fatalf("error %q, want %q", code, tt.code)
+				}
+				assertNoCreationWrites(t, fc)
+				return
+			}
+			agent := &api.Agent{}
+			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
+				t.Fatal(err)
+			}
+			selection := agent.Spec.ModelAccess
+			if agent.Spec.SandboxRef != "test-sandbox" || selection == nil || selection.SharedModels == nil ||
+				selection.GitHubCopilot == nil || *selection.SharedModels != tt.shared ||
+				*selection.GitHubCopilot != tt.copilot || selection.MonthlyBudgetUSD != "" {
+				t.Fatalf("model selection was not recorded explicitly: %+v", agent.Spec)
 			}
 		})
 	}
@@ -286,9 +351,7 @@ func TestRegistryCreationRetryRechecksPolicy(t *testing.T) {
 	if err := fc.Create(context.Background(), policy); err != nil {
 		t.Fatal(err)
 	}
-	if err := fc.Create(context.Background(), catalogConfigMap("gpt-6-mini")); err != nil {
-		t.Fatal(err)
-	}
+	replaceTestCatalog(t, fc, catalogConfigMap("gpt-6-mini"))
 	h.Config.AIGatewayEnabled = true
 	h.Config.AIGatewayCatalogNamespace = "cetirun-system"
 	failing = false
@@ -337,9 +400,7 @@ func TestRegistryRetryValidatesPersistedSourcesRatherThanNewDefaults(t *testing.
 	if err := fc.Create(context.Background(), policy); err != nil {
 		t.Fatal(err)
 	}
-	if err := fc.Create(context.Background(), catalogConfigMap("gpt-6-mini")); err != nil {
-		t.Fatal(err)
-	}
+	replaceTestCatalog(t, fc, catalogConfigMap("gpt-6-mini"))
 	h.Config.AIGatewayEnabled = true
 	h.Config.AIGatewayCatalogNamespace = "cetirun-system"
 	configured, _ := creationPolicyHandler(team, policy)

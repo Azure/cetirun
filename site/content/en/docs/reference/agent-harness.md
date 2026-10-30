@@ -94,13 +94,21 @@ that policy and a permitted Sandbox through the Team. Portal's policy editor
 supports Custom explicitly; Portal creation must also enable the existing
 `custom` entry in `features.allowedAgentTypes`.
 
-The Operator's existing `customRuntime.enabled`, `approvedImages` and
-`gatewayImages` settings remain the image-approval authority. The selected digest
-must be in both lists. Image-owned model authentication is not a fallback for
-governed Custom. The image must use a numeric, non-root UID/GID and support its
-declared HOME and existing [initialization contract](#initialization). The
-common Pod retains the image user rather than imposing the managed harness UID;
+The Operator's `customRuntime.enabled` and `approvedImages` settings control
+image approval. The selected digest must be approved, and every Custom image
+must use the platform Gateway for model access. The image must use a numeric,
+non-root UID/GID and support its declared HOME and existing
+[initialization contract](#initialization). The common Pod retains the image user rather than imposing the managed harness UID;
 the registered volume group and filesystem permissions still need qualification.
+
+Sandbox-bound Custom Agents need an explicit model-source selection. Portal
+creation records the sources available under the current Team policy and Gateway
+catalog, or validates the owner's requested `modelAccess` selection. When creating
+an Agent manifest directly, set `spec.modelAccess`, for example
+`sharedModels: true` and `githubCopilot: false`, for a permitted shared model.
+Omitting both switches does not inherit legacy model access: the Agent remains
+held without a model entitlement. Custom without a Sandbox keeps its existing
+model-selection behavior.
 
 Creation, restart, retained suspension/resume, healthy-source migration and
 ordinary deletion use the common execution state, owned HOME and grant journal,
@@ -125,6 +133,9 @@ audience override. Protected Pod admission permits only this owned terminal's
 current named target, main container and shell protocol; it rechecks the
 execution sources and non-stopping reservation. It mounts neither HOME nor model
 credentials. Suspension stops both workloads before acknowledging completion.
+For bound workloads, admission accepts Kubernetes' copied region/zone labels only
+when they match a fresh read of the assigned Node. This applies to terminal
+CONNECT and ordinary Pod updates; other labels and template inputs remain exact.
 
 Custom receives an immutable, Agent-owned `AGENTS.md` snapshot and a read-only
 `$HOME/.agents` view. Optional Memory/shared skills compose into that view without
@@ -161,12 +172,10 @@ Administrators can explicitly enable `customRuntime` in the Operator chart for
 qualified image digests. This
 Kubernetes provider prepares the namespace, HOME claim template and canonical
 context, and coordinates Pod replacements, including approved image updates.
-The runtime Chart retains and reuses the same HOME claim. The `gatewayImages`
-setting is a subset of `approvedImages` qualified for platform model access.
-Those images receive only their own Virtual Key and the Gateway API base.
-Other approved images require `agentManagedModel: true` and retain image-owned
-authentication. Enabling the Gateway does not migrate them automatically, and
-missing Gateway bindings never select native login as a fallback.
+The runtime Chart retains and reuses the same HOME claim. Every approved Custom
+image receives only its own Virtual Key and the Gateway API base for
+platform-provided model access. This does not restrict arbitrary outbound
+connections made by user code in the image.
 
 For Gateway-backed Custom Agents, the existing Portal Overview provides the
 platform Copilot sign-in. A compatible runtime chart marked

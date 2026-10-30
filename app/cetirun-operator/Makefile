@@ -15,10 +15,10 @@ LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.V
 	-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=$(GIT_SHA)
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
-# The full controller suite exceeds Go's default 10m package timeout.
-GO_TEST_TIMEOUT := 20m
-# Envtest also runs the unit suite alongside isolated API-server regressions.
-GO_ENVTEST_TIMEOUT := 30m
+# The full controller suite exceeds 20m on CI runners.
+GO_TEST_TIMEOUT := 30m
+# Envtest also runs the unit suite; the combined regressions exceed 30m in CI.
+GO_ENVTEST_TIMEOUT := 40m
 
 .PHONY: all build build-terminal build-node-guard build-sandbox-config-change test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
@@ -111,10 +111,10 @@ test-envtest:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" && test -x "$(KUBEBUILDER_ASSETS)/kubectl" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries, including kubectl"; exit 1; }
 	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination ./cmd/sandbox-config-change -count=1 -v -timeout=$(GO_ENVTEST_TIMEOUT)
 
-## Local held Sandbox integration; synthetic providers are not runtime qualification.
+## Local Sandbox bootstrap and Gateway rejection; not runtime qualification.
 test-sandbox-integration:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration -run '^TestSandbox(Preparation|Bootstrap)' -count=1 -v
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration -run '^(TestSandboxBootstrap|TestGatewayOnlyRejectsUnsupportedHeldProfiles)' -count=1 -v
 
 ## Durable lifecycle state against isolated API servers; no live runtime providers.
 test-sandbox-lifecycle:

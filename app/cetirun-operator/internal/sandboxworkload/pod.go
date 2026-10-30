@@ -81,9 +81,6 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 	if b.input.Helpers.Doctor {
 		initNames = append(initNames, "doctor")
 	}
-	if b.input.GatewayKey != nil {
-		initNames = append(initNames, "retire-copilot-sign-in", "retire-direct-model-auth")
-	}
 	if len(spec.Containers) != len(names) || len(spec.InitContainers) != len(initNames) {
 		return fmt.Errorf("unexpected native container or helper count")
 	}

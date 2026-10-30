@@ -16,6 +16,23 @@ permissions:
 jobs:
   go-build-test:
     name: Operator Go checks
+    needs: [go-unit-tests, go-api-tests]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful Go jobs
+        env:
+          UNIT_RESULT: ${{ needs.go-unit-tests.result }}
+          API_RESULT: ${{ needs.go-api-tests.result }}
+        run: |
+          if [[ "$UNIT_RESULT" != success || "$API_RESULT" != success ]]; then
+            echo "::error::Operator Go jobs did not both succeed (unit=$UNIT_RESULT, api=$API_RESULT)"
+            exit 1
+          fi
+
+  go-unit-tests:
+    name: Operator Go unit and build checks
     runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
@@ -48,6 +65,58 @@ jobs:
 
       - name: Run go test
         run: make test
+
+      - name: Run go build
+        run: |
+          CGO_ENABLED=0 go build -o bin/manager ./cmd/main.go
+          CGO_ENABLED=0 go build -o bin/terminal ./cmd/terminal
+
+      - name: Test terminal reconnect client
+        run: node --test internal/terminal/reconnect.test.cjs
+
+      - name: Install govulncheck
+        env:
+          GOTOOLCHAIN: local
+          GOTELEMETRY: "off"
+        run: GOBIN="$RUNNER_TEMP/cetirun-tools" go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+      - name: Check reachable Go vulnerabilities
+        env:
+          GOFLAGS: "-mod=readonly"
+          GOWORK: "off"
+          GOTOOLCHAIN: local
+          GOTELEMETRY: "off"
+        run: '"$RUNNER_TEMP/cetirun-tools/govulncheck" ./...'
+
+  go-api-tests:
+    name: Operator API admission checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app/cetirun-operator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: |
+            app/cetirun-operator/go.sum
+            app/internal/go.sum
+            app/cetirun-portal/go.sum
+
+      - name: Download Operator API test modules
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go mod download
+          go -C ../internal mod download
 
       - name: Install CRD generator and pinned admission test tools
         env:
@@ -90,28 +159,6 @@ jobs:
           KUBECONFIG: /dev/null
           USE_EXISTING_CLUSTER: "false"
         run: go test -tags=envtest ./internal/kube ./internal/handler -run '^Test(RetainedRestartThroughServedAPI|SandboxDefaultsThroughPortalAndServedAPI)$' -count=1
-
-      - name: Run go build
-        run: |
-          CGO_ENABLED=0 go build -o bin/manager ./cmd/main.go
-          CGO_ENABLED=0 go build -o bin/terminal ./cmd/terminal
-
-      - name: Test terminal reconnect client
-        run: node --test internal/terminal/reconnect.test.cjs
-
-      - name: Install govulncheck
-        env:
-          GOTOOLCHAIN: local
-          GOTELEMETRY: "off"
-        run: GOBIN="$RUNNER_TEMP/cetirun-tools" go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-
-      - name: Check reachable Go vulnerabilities
-        env:
-          GOFLAGS: "-mod=readonly"
-          GOWORK: "off"
-          GOTOOLCHAIN: local
-          GOTELEMETRY: "off"
-        run: '"$RUNNER_TEMP/cetirun-tools/govulncheck" ./...'
 
   docker-build:
     name: Operator image CVEs

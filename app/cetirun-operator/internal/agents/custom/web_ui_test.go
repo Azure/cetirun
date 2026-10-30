@@ -17,7 +17,7 @@ func TestWebUIIsNotChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings := agents.Bindings{AgentManagedModel: true, ContextRevision: "context-1", WebBasePath: "/ui/editor/", WebInstance: "uid-1"}
+	bindings := agents.Bindings{ContextRevision: "context-1", Model: agents.ModelBinding{BaseURL: "https://gateway.example.com/v1", CredentialSlot: "model", Revision: "gateway-key"}, WebBasePath: "/ui/editor/", WebInstance: "uid-1"}
 	c, err := (Harness{}).Build(agent, bindings)
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +27,7 @@ func TestWebUIIsNotChat(t *testing.T) {
 		t.Fatalf("wrong browser contract: %#v", c)
 	}
 	if !reflect.DeepEqual(c.Environment, []agents.EnvironmentValue{
-		{Name: "HOME", Value: "/home/vibe"}, {Name: "PORT", Value: "8080"},
+		{Name: "HOME", Value: "/home/vibe"}, {Name: "OPENAI_BASE_URL", Value: "https://gateway.example.com/v1"}, {Name: "OPENAI_API_KEY", CredentialSlot: "model"}, {Name: "PORT", Value: "8080"},
 		{Name: "CETIRUN_WEB_BASE_PATH", Value: "/ui/editor/"}, {Name: "CETIRUN_WEB_INSTANCE", Value: "uid-1"},
 	}) {
 		t.Fatalf("browser port or platform environment changed: %#v", c.Environment)
@@ -49,7 +49,7 @@ func TestWebUIFlagSelectsHTTPContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		bindings := agents.Bindings{AgentManagedModel: true, ContextRevision: "context-1", WebBasePath: "/ui/editor/", WebInstance: "uid-1"}
+		bindings := agents.Bindings{ContextRevision: "context-1", Model: agents.ModelBinding{BaseURL: "https://gateway.example.com/v1", CredentialSlot: "model", Revision: "gateway-key"}, WebBasePath: "/ui/editor/", WebInstance: "uid-1"}
 		c, err := (Harness{}).Build(agent, bindings)
 		if err != nil || c.Agent.WebUI != enabled || (c.HTTP.ChatPath == "") != enabled || (c.HTTP.ModelsPath == "") != enabled {
 			t.Fatalf("webUI=%v selected the wrong protocol: %#v, %v", enabled, c, err)

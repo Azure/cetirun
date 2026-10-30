@@ -624,23 +624,30 @@ func TestControllerPlatformConfigurationParity(t *testing.T) {
 		cr, bindings, objects := customFixture("example", nil)
 		if typ != api.AgentTypeCustom {
 			cr = newCR("example", api.PhasePending, nil, 1, 0, "")
-			cr.Spec.Agent.Type = typ
+			// Let the selected chart registry pin its qualified image and port;
+			// carrying newCR's Azure default would be an unqualified override.
+			cr.Spec.Agent = api.HarnessSpec{Type: typ}
 			objects = []client.Object{cr}
 		}
 		scheme := testScheme()
-		c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()
+		c := provisioningClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()}
 		h := &fakeHelmClient{useHarness: true}
 		r := &controller.AgentReconciler{Client: c, Scheme: scheme, HelmClient: h,
 			CustomBindings: &customProvider{bindings: bindings}, CetiRunHelmValues: configuration,
 			ChartRegistry: "registry.example.com", DefaultModel: "test-model", DomainSuffix: "platform.example.com",
 			IstioRevision: "test", EventRecorder: record.NewFakeRecorder(100)}
+		controller.ConfigureTestGateway(t, r)
 		for i := 0; i < 4 && !h.installCalled; i++ {
 			if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}}); err != nil {
 				t.Fatal(err)
 			}
 		}
 		if !h.installCalled {
-			t.Fatalf("%s did not reach the actual preparation path", typ)
+			current := &api.Agent{}
+			if err := c.Get(context.Background(), client.ObjectKeyFromObject(cr), current); err != nil {
+				t.Fatal(err)
+			}
+			t.Fatalf("%s did not reach the actual preparation path: status=%+v", typ, current.Status)
 		}
 		network := h.lastValues["networkPolicy"].(map[string]any)
 		if network["istioNamespace"] != "aks-istio-system" || network["istioIngressNamespace"] != "aks-istio-ingress" {
@@ -684,9 +691,26 @@ func TestControllerPlatformConfigurationParity(t *testing.T) {
 	custom := run(api.AgentTypeCustom)
 	for _, typ := range []api.AgentType{api.AgentTypeHermes, api.AgentTypeOpenClaw} {
 		native := run(typ)
-		network := custom["NetworkPolicy"]["spec"].(map[string]any)
-		egress := network["egress"].([]any)
-		if !reflect.DeepEqual(egress[1:], native["NetworkPolicy"]["spec"].(map[string]any)["egress"]) {
+		withoutGatewayEgress := func(egress []any) []any {
+			shared := make([]any, 0, len(egress))
+			for _, item := range egress {
+				rule, _ := item.(map[string]any)
+				gateway := false
+				for _, target := range rule["to"].([]any) {
+					peer, _ := target.(map[string]any)
+					selector, _ := peer["podSelector"].(map[string]any)
+					labels, _ := selector["matchLabels"].(map[string]any)
+					gateway = gateway || labels["app.kubernetes.io/name"] == "cetirun-ai-gateway"
+				}
+				if !gateway {
+					shared = append(shared, item)
+				}
+			}
+			return shared
+		}
+		customEgress := custom["NetworkPolicy"]["spec"].(map[string]any)["egress"].([]any)
+		nativeEgress := native["NetworkPolicy"]["spec"].(map[string]any)["egress"].([]any)
+		if !reflect.DeepEqual(withoutGatewayEgress(customEgress), withoutGatewayEgress(nativeEgress)) {
 			t.Fatal("shared network egress diverged across controller paths")
 		}
 		hosts := func(objects map[string]map[string]any) []any {

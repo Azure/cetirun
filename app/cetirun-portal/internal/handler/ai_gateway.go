@@ -13,9 +13,9 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
-// ModelAccessRequest selects the model sources of a new OpenClaw or Hermes
-// Agent when the platform AI Gateway is enabled. Omitted switches use the
-// sources currently available to the selected Team.
+// ModelAccessRequest selects the model sources of a new Agent through the
+// platform AI Gateway. Omitted switches use the sources currently available
+// to the selected Team, or deployment defaults without a Team.
 type ModelAccessRequest struct {
 	SharedModels  *bool `json:"sharedModels,omitempty"`
 	GitHubCopilot *bool `json:"githubCopilot,omitempty"`
@@ -87,6 +87,7 @@ type AIGatewayCatalogResponse struct {
 var agentTypeNames = map[cetirunv1alpha1.AgentType]string{
 	cetirunv1alpha1.AgentTypeOpenClaw: "OpenClaw",
 	cetirunv1alpha1.AgentTypeHermes:   "Hermes",
+	cetirunv1alpha1.AgentTypeCustom:   "Custom",
 }
 
 func isAIGatewayPlaceholder(model string) bool {
@@ -198,8 +199,8 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 	if req.AgentIdentityEnabled && !options.AgentIdentity.Allowed {
 		return reject(http.StatusForbidden, "policy_identity_not_allowed", "Agent Identity is not available to this owner under the selected Team's Policy and deployment settings")
 	}
-	if !options.AIGatewayEnabled || agentType == cetirunv1alpha1.AgentTypeCustom {
-		return options.Team, options.sandboxRef, nil, true
+	if !options.AIGatewayEnabled {
+		return reject(http.StatusConflict, "gateway_required", "The AI Gateway is required for Agent creation in this deployment")
 	}
 	catalog := options.Gateway
 	if !catalog.Known {
@@ -239,15 +240,4 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 // which replaces the in-agent GitHub Copilot sign-in helper.
 func aiGatewayRouted(instance *cetirunv1alpha1.Agent) bool {
 	return instance.Status.AIGateway != nil && instance.Status.AIGateway.Routed
-}
-
-// servesSignInHelper reports whether the Agent's workload serves the in-agent
-// cetirun-auth sign-in helper, as the operator records it. OpenClaw charts
-// with the per-Agent Copilot proxy carry none. Before the operator recorded
-// it, the helper ran wherever the AI Gateway did not replace it.
-func servesSignInHelper(instance *cetirunv1alpha1.Agent) bool {
-	if instance.Status.SignInHelper != nil {
-		return *instance.Status.SignInHelper
-	}
-	return !aiGatewayRouted(instance)
 }

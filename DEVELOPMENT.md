@@ -110,12 +110,19 @@ go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
 
-The Operator's full unit target uses a bounded 20-minute Go per-package timeout.
-The full envtest target uses 30 minutes because it also runs the unit suite
-alongside isolated API-server regressions; together they exceed 20 minutes on
+The Operator's full unit target uses a bounded 30-minute Go per-package timeout
+because the combined controller regressions exceed 20 minutes on CI runners.
+The full envtest target uses 40 minutes because it also runs the unit suite
+alongside isolated API-server regressions; together they exceed 30 minutes on
 CI runners. Root Go test gates and CI use the same component targets. Neither
-target filters out tests. These budgets do not change individual test assertions,
-runtime/lifecycle deadlines, or the 60-minute CI job limit.
+target filters out tests. These budgets do not change individual test assertions
+or runtime/lifecycle deadlines.
+
+Operator CI runs unit/build checks and API admission checks in separate,
+independent jobs, each retaining a 60-minute limit. The existing `Operator Go checks`
+status aggregates both and fails unless both succeed, including when a job fails,
+is skipped or is cancelled. This avoids sharing one job deadline between the
+two full suites without dropping generated-API, Portal, build or vulnerability checks.
 
 The build writes `app/cetirun-operator/bin/manager`; it does not start the
 operator. The component's `make test` and `make vet` targets are also available.
@@ -318,6 +325,37 @@ boundaries, managed-peer isolation, deny precedence and grant removal for
 OpenClaw/Hermes with RWO/RWOP. These are offline checks, not Cilium dataplane
 qualification; use the [internal-egress example](examples/native-sandbox/README.md#scoped-internal-egress)
 for the separate authorized live witnesses.
+
+Kata Kubernetes access has a focused served-API regression:
+
+```bash
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxKubernetes(Access|PostSubmitRecovery|RejectedGrantRecovery|FirstInstallRejection)APIServer$' -count=1
+```
+
+It uses real API RBAC and admission for OpenClaw and Hermes, including
+administrator-approved namespace and cluster-wide grants, token projection
+validation, role-version drift, access withdrawal and journal/finalizer cleanup
+after restart with new starts disabled. Unit tests additionally cover missing
+and foreign approvals, unconfirmed or shared bindings, lost apply
+acknowledgements, suspension/resume and nil-access isolation. First-install
+recovery tests inject a failed final authority read before Helm receives its
+manifest: a first attempt stays pending until a workload write is authorized, so retry and
+deletion can conditionally cancel it without downgrading a submitted record.
+A served-API regression verifies the cancellation and retry with real
+conditional writes. Previously authorized applies, competing claims and unconfirmed
+cancellations retain their shutdown requirements. Rejected-grant tests resume
+stopped Agents with temporarily missing binding authority, then verify retry and
+normal deletion. First-install rejection tests also verify cancellation before
+any workload write, unchanged lifetime identities on retry, and normal deletion.
+Helm SDK tests check submission immediately before workload CREATEs or update
+batches, including first-install adoption, grant rejection, uncertain responses
+and disabled HTTP retries. Controller tests fence delayed rejection receipts and
+cover failed/lost outcome writes and independent uncertain-grant cleanup barriers.
+All fixtures are
+synthetic; kubelet token rotation, Kubernetes client requests from a running
+Agent and Cilium dataplane enforcement require separately authorized live
+validation. See the [administrator setup](examples/native-sandbox/README.md#kubernetes-api-access).
 
 Registered Kata SCTP rules have a focused served-API regression using the same
 local assets:
@@ -674,19 +712,14 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   namespace status/finalize updates). These are isolated API-server tests, not
   runtime/Cilium/CSI qualification or permission to lift the execution hold.
   The focused `make -C app/cetirun-operator test-sandbox-integration` target
-  exercises the native Sandbox/AgentPolicy controller preparation chain with
-  synthetic platform inventory, real API object identities/defaulting and held
-  admission expectations. It also checks current grant-journal and owned
-  ControllerRevision pins, API resource-version conflicts, post-write source
-  races and restart without adding another receipt/history format.
-  The ControllerRevision producer is synthetic, not a running StatefulSet
-  controller. It stages OpenClaw/Hermes resources at zero replicas;
-  it does not start containers, install a production provider, or deploy to an
-  existing cluster. These tests inject their platform and fencing dependencies.
-  Their results do not qualify the opt-in Kubernetes-backed sources or a
-  production writer-exclusion adapter. Stock startup leaves writer exclusion
-  unavailable, so enabling sources alone cannot finish held preparation or
-  lift execution holds.
+  checks protected namespace/HOME bootstrap, published skills ownership and
+  Gateway-only rejection of unsupported held profiles against an isolated API
+  server. Repeated reconciliation and controller restart must not create a
+  workload, publish a route or mark those profiles ready. The valid Gateway
+  start paths are covered by the native and common-executor controller tests
+  described below. These tests use synthetic platform observations; they do
+  not start containers, install a production provider, qualify storage or
+  authorize deployment to an existing cluster.
   Normal unit tests also cover stale inputs, metadata-only
   refresh/reauthorization, partial writes, restart, grant revocation, suspension
   and ordered cleanup. Regression tests count read/write requests for unchanged
@@ -751,13 +784,14 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   journal readers before issuing new metadata. Real API cases exercise UID/version
   conflicts, replacement protection, served deletion admission and independent
   finalizer cleanup; no live cluster or physical writer is involved.
-  Running-input tests additionally check a synthetic held-to-running handoff
-  against real Pod creation, API binding/defaulting and final-Pod admission.
-  They contain no scheduler, kubelet or guest-external runtime observer. Run the
-  focused API test with `go test -tags=envtest ./test/integration -run
-  '^TestSandboxRunningInputs$' -count=1` from the Operator module, with the same
-  explicit local envtest assets. Its synthetic enrollment is not a runnable
-  activation procedure.
+  Native-start and common-executor tests check Gateway-backed handoff, Pod
+  admission and authenticated ingress using isolated API servers. Run
+  `go test -tags=envtest ./internal/controller -run
+  '^(TestNativeSandboxStartAPIServer|TestReconciledSandboxIngressMTLSAPIServer)$'
+  -count=1` from the Operator module, with the same explicit local envtest
+  assets. The common-executor ingress cases cover OpenClaw and Hermes. These
+  tests contain no scheduler, kubelet or guest-external runtime observer;
+  their synthetic enrollment is not a runnable activation procedure.
 - Helm files under `templates/` are source templates. Rendered Kubernetes
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's

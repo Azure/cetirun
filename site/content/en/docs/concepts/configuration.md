@@ -11,7 +11,7 @@ The operator builds Helm values in this order:
 1. Controller defaults, including the instance Secret, identity, home volume,
    and AKS Istio namespaces.
 2. Deployment-wide `cetirun.helmValues` / `CETIRUN_HELM_VALUES`.
-3. Referenced `Team` provider, member context, and skills.
+3. Referenced `Team` member context and skills.
 4. Controller-derived integration settings and image repositories.
 5. Per-instance `spec.helm.values`.
 6. Enforced Agent type, OpenClaw native UI base path and Copilot model selection.
@@ -38,15 +38,13 @@ Top-level scalars and arrays from a standalone values file are rejected by API
 admission, even though the controller can merge them internally. See the
 [CRD reference](../../reference/crds/).
 
-For GitHub Copilot, `spec.model` wins; otherwise the deployment’s default model
-is used. Other providers take their model from Helm values. See
+`spec.model` selects an allowed AI Gateway model. See
 [model selection](../../guides/models/).
 
 ## Teams
 
 An instance references a `Team` by `spec.team`. Teams can set:
 
-- The default provider.
 - Role and context rendered for the selected runtime.
 - Up to 20 default skill identifiers.
 - A shared Blob storage location for read-only skills.
