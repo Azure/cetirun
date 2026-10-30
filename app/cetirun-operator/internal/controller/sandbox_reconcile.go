@@ -111,6 +111,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 	if err := r.sandboxPreparationInput(ctx, attempt); err != nil {
 		return nil, err
 	}
+	if err := sandboxEgressSNIInputs(attempt); err != nil {
+		return nil, err
+	}
 	if attempt.input.Terminal != nil && !attempt.agent.Spec.Suspended {
 		if err := r.ensureTerminalReadRoles(ctx, attempt.agent); err != nil {
 			return nil, err

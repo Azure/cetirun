@@ -431,6 +431,30 @@ the Envoy transport tests still run. Exact target-image and real Istio/Kata/Cili
 qualification remain separate. See the
 [usage and rotation contract](site/content/en/docs/guides/agent-ingress-mtls.md).
 
+### Managed observed-SNI egress
+
+The [managed egress contract](app/cetirun-operator/README.md#managed-observed-sni-egress)
+uses the same controlled Envoy as ingress mTLS and a narrowly scoped capture init.
+It has explicit one-second uninspected-timeout semantics, not full domain
+enforcement. Focused offline checks are:
+
+```bash
+go -C app/cetirun-operator test ./internal/egresscapture ./internal/sandboxpolicy -count=1
+go -C app/cetirun-operator test ./internal/controller -run '^TestReconciledSandboxObservedSNI' -count=1
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  go -C app/cetirun-operator test -tags=envtest ./internal/controller -run '^TestReconciledSandboxObservedSNIAPIServer$' -count=1
+```
+
+The API test uses local Kubernetes binaries and actual Pod admission, not a live
+cluster or kubelet. Controller tests cover source drift, the final apply guard,
+retained restart, suspend/change/resume and deletion. They preserve mTLS source
+and private Copilot routing behavior. Explicit `CETIRUN_EGRESS_PROOF_DIR` exports
+synthetic rendered Pod/config/probe fixtures from the focused controller test for
+a separately authorized isolated Docker check. It does not export live data.
+The trusted init image is digest-pinned platform configuration; the existing
+CetiRun base image supplies its network tools. Runtime capture does not install
+packages, inherit an Agent image override or use copied host binaries.
+
 ### Agent Identity Broker
 
 The Broker owns owner-scoped Connections, per-instance ConnectionBindings, OAuth/OBO,

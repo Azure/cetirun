@@ -447,10 +447,13 @@ func ValidateRenderedPod(pod *corev1.Pod, workload RenderedWorkload, owner metav
 
 func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, image string, memoryEnabled bool) error {
 	spec := template.Spec
+	if err := b.validateEgressTemplate(template); err != nil {
+		return err
+	}
 	if err := b.validateIngressTemplate(spec); err != nil {
 		return err
 	}
-	if plan := b.input.Controls.IngressMTLS; plan != nil {
+	if plan := b.input.Controls.IngressMTLS; plan != nil && b.input.Controls.EgressSNI == nil {
 		digest, err := plan.ConfigDigest()
 		if err != nil || template.Annotations[ingressmtls.ConfigDigestAnnotation] != digest {
 			return fmt.Errorf("mTLS static configuration requires its rollout checksum")
@@ -516,6 +519,11 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 	}
 	for _, group := range [][]corev1.Container{spec.Containers, spec.InitContainers} {
 		for _, container := range group {
+			if b.input.Controls.EgressSNI != nil && container.Name == b.captureContainer().Name {
+				// The exact placement, image, argv, mounts and security context were
+				// checked above; this is the sole root/NET_ADMIN exception.
+				continue
+			}
 			sc := container.SecurityContext
 			imageUser := b.input.CustomAgent != nil && sc != nil && sc.RunAsUser == nil && spec.SecurityContext.RunAsUser == nil
 			if sc == nil || ptr.Deref(sc.Privileged, false) || ptr.Deref(sc.AllowPrivilegeEscalation, true) ||

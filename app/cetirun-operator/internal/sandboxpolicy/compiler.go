@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/egresscapture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
@@ -103,6 +104,23 @@ func Compile(input CompileInput) (*Plan, error) {
 			return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
 		}
 	}
+	var egress *egresscapture.Plan
+	var proxyDigest string
+	if len(resolution.AgentPolicy.Network.BlockedFQDNs) != 0 {
+		if !input.NativeExecution || platform.EgressSNI == nil {
+			return nil, fmt.Errorf("%w: observed-SNI capture requires the common executor and registered images", ErrUnsupportedControl)
+		}
+		egress, err = platform.EgressSNI.Resolve(resolution.AgentPolicy.Network.BlockedFQDNs,
+			slices.Contains(resolution.Capabilities.IPFamilies, corev1.IPv4Protocol),
+			slices.Contains(resolution.Capabilities.IPFamilies, corev1.IPv6Protocol))
+		if err != nil {
+			return nil, err
+		}
+		proxyDigest, err = ManagedProxyDigest(mtls, egress)
+		if err != nil {
+			return nil, err
+		}
+	}
 	identity, grants, approval, err := compileIdentity(input)
 	if err != nil {
 		return nil, err
@@ -114,7 +132,7 @@ func Compile(input CompileInput) (*Plan, error) {
 	plan := &Plan{
 		Binding: binding, AgentName: input.AgentName, Namespace: input.Namespace,
 		ResolutionRevision: resolution.Revision, Network: network, Identity: identity,
-		IngressMTLS: mtls,
+		IngressMTLS: mtls, EgressSNI: egress, ProxyDigest: proxyDigest,
 	}
 	capabilities := resolution.Capabilities
 	capabilities.IPFamilies = sortedUnique(capabilities.IPFamilies)
@@ -138,13 +156,15 @@ func Compile(input CompileInput) (*Plan, error) {
 		Approval        *ApprovedIdentity
 		Identity        IdentityPlan
 		Network         NetworkPlan
-		CustomIngress   *CustomIngress    `json:"customIngress,omitempty"`
-		TerminalIngress *TerminalIngress  `json:"terminalIngress,omitempty"`
-		IngressMTLS     *ingressmtls.Plan `json:",omitempty"`
+		CustomIngress   *CustomIngress      `json:"customIngress,omitempty"`
+		TerminalIngress *TerminalIngress    `json:"terminalIngress,omitempty"`
+		IngressMTLS     *ingressmtls.Plan   `json:",omitempty"`
+		EgressSNI       *egresscapture.Plan `json:",omitempty"`
+		ProxyDigest     string              `json:",omitempty"`
 	}{
 		"sandbox-controls-v1", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
-		platform.Topology, grants, approval, identity, revisionNetwork, input.CustomIngress, input.TerminalIngress, mtls,
+		platform.Topology, grants, approval, identity, revisionNetwork, input.CustomIngress, input.TerminalIngress, mtls, egress, proxyDigest,
 	})
 	if err != nil {
 		return nil, err
@@ -169,8 +189,8 @@ func Compile(input CompileInput) (*Plan, error) {
 		}
 		plan.Resources = append(plan.Resources, resource)
 	}
-	if mtls != nil {
-		resources, err := IngressMTLSResources(input, *mtls, plan.Revision)
+	if mtls != nil || egress != nil {
+		resources, err := ManagedProxyResources(input, mtls, egress, plan.Revision)
 		if err != nil {
 			return nil, err
 		}
@@ -253,8 +273,8 @@ func supportedPolicy(policy api.AgentPolicySpec, capabilities sandbox.Capabiliti
 		(policy.Network.Ingress.Mode != api.AgentPolicyIngressAuthenticated && policy.Network.Ingress.Mode != api.AgentPolicyIngressDisabled) {
 		return fmt.Errorf("%w: policy must be normalized before support evaluation", ErrUnsupportedControl)
 	}
-	if len(policy.Network.BlockedFQDNs) != 0 {
-		return fmt.Errorf("%w: full FQDN blocking is not implemented by the selected adapter", ErrUnsupportedControl)
+	if len(policy.Network.BlockedFQDNs) != 0 && !capabilities.BlockedFQDNs {
+		return fmt.Errorf("%w: observed-SNI blocking is not registered", ErrUnsupportedControl)
 	}
 	if policy.Network.Ingress.RequireMTLS && (capabilities.Profile != sandbox.ProfileNativeSingleStart || !capabilities.MutualTLS) {
 		return fmt.Errorf("%w: managed ingress mTLS requires an explicitly registered native endpoint", ErrUnsupportedControl)

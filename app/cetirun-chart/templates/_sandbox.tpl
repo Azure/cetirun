@@ -27,6 +27,13 @@ Licensed under the MIT License.
 {{- fail "managed ingress mTLS requires common built-in API/UI/terminal/desktop routing without alternate ingress" -}}
 {{- end -}}
 {{- end -}}
+{{- if $s.egressSNI -}}
+{{- if or (not $reconciled) (ne (len ($s.managedInitContainers | default list)) 2) .Values.initContainers .Values.sidecars (not .Values.readinessProbe.enabled) -}}
+{{- fail "observed-SNI capture requires the managed Envoy/init prefix and proxy-aware common-executor readiness" -}}
+{{- end -}}
+{{- else if $s.managedInitContainers -}}
+{{- fail "managed capture initializers require observed-SNI controls" -}}
+{{- end -}}
 {{- if and (eq (include "cetirun.agent.type" .) "custom") (not $reconciled) -}}
 {{- fail "Custom requires common reconciled Sandbox execution" -}}
 {{- end -}}
