@@ -14,6 +14,36 @@ bash scripts/cetirun-helm-test.sh
 Documentation validation is `make -C site check`. It does not run deployment,
 publication, or end-to-end scripts.
 
+## Default platform deployment and release
+
+`cetirun-platform-deploy.sh --config /path/to/environment.yaml` is the full
+default deployment entry point. It manages the separate Istio/OAuth2 Proxy,
+Broker/Auth SDK, and platform releases. It requires the complete environment
+configuration and never creates Agent instances or cloud identities.
+`--plan` performs local input validation and Helm rendering only. The root
+`make deploy` and `make deploy-plan` targets pass `DEPLOY_CONFIG` to this helper.
+See [the platform guide](../app/cetirun-platform/README.md#deploy-the-platform)
+for the input shape, certificate ownership modes, staged admission, and the
+remaining identity/runtime qualification boundary.
+
+`cetirun-release.py` drives the root build/publish targets and the MCR pipeline
+from `release-artifacts.json`. Its `list`, `check`, and `plan` commands do not
+contact a registry. Image builds require explicit registry/version/source SHA
+and VS Code license acceptance. Publication refuses existing tags unless
+`--force` is explicit, distinguishes registry errors from missing artifacts,
+and verifies chart pulls. Component build scripts remain independently usable.
+
+```bash
+python3 -B scripts/cetirun-release.py list images
+python3 -B scripts/cetirun-release.py list charts
+make artifact-check
+python3 -B -m unittest scripts.tests.test_release_inventory scripts.tests.test_full_deployment -v
+```
+
+The offline tests replace external mutations with command doubles and use
+real local Helm rendering/packaging. They do not prove a running deployment,
+cloud authorization, a model request, or storage qualification.
+
 ## CetiRun Connections MCP artifacts
 
 `cetirun-connections-mcp-docker-build.sh` builds the standalone MCP image from the
