@@ -94,12 +94,11 @@ that policy and a permitted Sandbox through the Team. Portal's policy editor
 supports Custom explicitly; Portal creation must also enable the existing
 `custom` entry in `features.allowedAgentTypes`.
 
-The Operator's existing `customRuntime.enabled`, `approvedImages` and
-`gatewayImages` settings remain the image-approval authority. The selected digest
-must be in both lists. Image-owned model authentication is not a fallback for
-governed Custom. The image must use a numeric, non-root UID/GID and support its
-declared HOME and existing [initialization contract](#initialization). The
-common Pod retains the image user rather than imposing the managed harness UID;
+The Operator's `customRuntime.enabled` and `approvedImages` settings control
+image approval. The selected digest must be approved, and every Custom image
+must use the platform Gateway for model access. The image must use a numeric,
+non-root UID/GID and support its declared HOME and existing
+[initialization contract](#initialization). The common Pod retains the image user rather than imposing the managed harness UID;
 the registered volume group and filesystem permissions still need qualification.
 
 Sandbox-bound Custom Agents need an explicit model-source selection. Portal

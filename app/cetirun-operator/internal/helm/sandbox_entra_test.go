@@ -20,8 +20,9 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// This compiles the existing synthetic held contract, not a native registration
-// or an execution qualification.
+// This compiles synthetic protected contracts, not a native registration or an
+// execution qualification. OpenClaw starts from the retained renderer; Hermes
+// starts from the current common executor.
 func entraRenderBundle(t *testing.T, kind string, enabled bool) *w.Bundle {
 	t.Helper()
 	return entraRenderBundleAtRevision(t, kind, enabled, "synthetic-approval")
@@ -30,6 +31,13 @@ func entraRenderBundle(t *testing.T, kind string, enabled bool) *w.Bundle {
 func entraRenderBundleAtRevision(t *testing.T, kind string, enabled bool, revision string) *w.Bundle {
 	t.Helper()
 	f := testfixture.New(kind)
+	// Gateway-only charts require the separately authorized virtual-key
+	// projection in addition to the runtime Secret used by the fixture.
+	f.Input.GatewayKey = &w.ObjectIdentity{Name: "ai-gateway-virtual-key", UID: "model-key-uid"}
+	f.Input.AuthorizedSecrets = append(f.Input.AuthorizedSecrets, f.Input.GatewayKey.Name)
+	// Hermes has no retained Gateway-only renderer. Its protected identity
+	// projection is exercised through the current common executor instead.
+	f.Input.Reconciled = kind == "hermes"
 	f.Policy.Spec.EntraID.Enabled = enabled
 	objects := sandbox.Resources{Sandboxes: map[string]*api.Sandbox{f.Sandbox.Name: f.Sandbox},
 		AgentPolicies: map[string]*api.AgentPolicy{f.Policy.Name: f.Policy}}
@@ -86,10 +94,9 @@ func entraRenderBundleAtRevision(t *testing.T, kind string, enabled bool, revisi
 }
 
 func entraChartInput(kind string) map[string]any {
-	return map[string]any{
-		"agentType": kind, "agentRequest": map[string]any{"type": kind},
-		"secrets": map[string]any{"existingSecret": "runtime-secret", "provider": "openai", "model": "example-model"},
-	}
+	values := sampleInput(kind, "openai", false)
+	values["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+	return values
 }
 
 func TestEntraRuntimeProjectionContainerScope(t *testing.T) {
@@ -110,9 +117,17 @@ func TestEntraRuntimeProjectionContainerScope(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := bundle.Identity()
-			expected, err := bundle.Expect(*template, testfixture.Workload(input, *template), nil)
-			if err != nil || !expected.ExecutionHeld {
-				t.Fatal("projection rendering must remain held:", err)
+			var expected *w.Expectation
+			if input.Reconciled {
+				if err := bundle.ValidateReconciledTemplate(template, prepared.Agent.Image, false); err != nil {
+					t.Fatal("common renderer lost the Entra projection:", err)
+				}
+			} else {
+				expectation, err := bundle.Expect(*template, testfixture.Workload(input, *template), nil)
+				if err != nil || !expectation.ExecutionHeld {
+					t.Fatal("projection rendering must remain held:", err)
+				}
+				expected = &expectation
 			}
 			if template.Labels["azure.workload.identity/use"] != "" {
 				t.Fatal("projection opted into arbitrary workload identity webhook injection")
@@ -163,7 +178,11 @@ func TestEntraRuntimeProjectionContainerScope(t *testing.T) {
 					if err := bundle.ValidateIdentityProjection(changed.Spec); err == nil {
 						t.Fatal("runtime identity drift passed the shared validation core")
 					}
-					if err := bundle.ValidateTemplate(changed, prepared.Agent.Image); err == nil {
+					if input.Reconciled {
+						if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false); err == nil {
+							t.Fatal("common rendering accepted identity drift")
+						}
+					} else if err := bundle.ValidateTemplate(changed, prepared.Agent.Image); err == nil {
 						t.Fatal("held rendering accepted identity drift")
 					}
 					common := bundle.Identity()
@@ -175,10 +194,12 @@ func TestEntraRuntimeProjectionContainerScope(t *testing.T) {
 					if err := commonBundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false); err == nil {
 						t.Fatal("common rendering accepted identity drift")
 					}
-					pod := testfixture.Pod(expected)
-					pod.Spec = changed.Spec
-					if err := w.ValidatePod(pod, expected); err == nil {
-						t.Fatal("final Pod accepted identity drift")
+					if expected != nil {
+						pod := testfixture.Pod(*expected)
+						pod.Spec = changed.Spec
+						if err := w.ValidatePod(pod, *expected); err == nil {
+							t.Fatal("final Pod accepted identity drift")
+						}
 					}
 				})
 			}

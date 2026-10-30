@@ -22,7 +22,8 @@ import (
 )
 
 func (r *AgentReconciler) customGatewaySelected(instance *api.Agent) bool {
-	return instance.Spec.Agent.Type == api.AgentTypeCustom
+	provider, ok := r.CustomBindings.(interface{ UsesAIGateway(*api.Agent) bool })
+	return ok && provider.UsesAIGateway(instance)
 }
 
 func (r *AgentReconciler) bindCustomGateway(ctx context.Context, instance *api.Agent, b *runtimebindings.Custom) (returnedErr error) {
