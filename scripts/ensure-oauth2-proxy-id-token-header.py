@@ -51,11 +51,11 @@ UniqueKeyLoader.add_constructor(
 )
 
 
-def _oauth2_proxy_provider() -> dict:
+def _oauth2_proxy_provider(service="oauth2-proxy.cetirun-istio.svc.cluster.local") -> dict:
     return {
         "name": "oauth2-proxy",
         "envoyExtAuthzHttp": {
-            "service": "oauth2-proxy.cetirun-istio.svc.cluster.local",
+            "service": service,
             "port": 4180,
             "includeRequestHeadersInCheck": [
                 "cookie",
@@ -97,7 +97,7 @@ def _dump_mesh(mesh: dict) -> str:
     return yaml.safe_dump(mesh, default_flow_style=False, sort_keys=False)
 
 
-def _ensure_provider(mesh_text: str, add_missing: bool) -> tuple[str, bool]:
+def _ensure_provider(mesh_text: str, add_missing: bool, service=None) -> tuple[str, bool]:
     mesh = _load_mesh(mesh_text)
     providers = mesh.get("extensionProviders")
     if providers is None:
@@ -114,12 +114,14 @@ def _ensure_provider(mesh_text: str, add_missing: bool) -> tuple[str, bool]:
     if len(matches) > 1 or (not matches and not add_missing):
         raise RuntimeError("oauth2-proxy extension provider was not resolved exactly")
     if not matches:
-        providers.append(_oauth2_proxy_provider())
+        providers.append(_oauth2_proxy_provider(service) if service else _oauth2_proxy_provider())
         return _dump_mesh(mesh), True
 
     ext_authz = matches[0].get("envoyExtAuthzHttp")
     if not isinstance(ext_authz, dict):
         raise RuntimeError("oauth2-proxy ext_authz configuration is invalid")
+    if service and ext_authz.get("service") != service:
+        raise RuntimeError("oauth2-proxy extension provider points to another service; review the mesh configuration before deployment")
     headers = ext_authz.get("headersToUpstreamOnAllow")
     if headers is None:
         headers = []
@@ -136,22 +138,22 @@ def ensure_header(mesh_text: str) -> tuple[str, bool]:
     return _ensure_provider(mesh_text, add_missing=False)
 
 
-def ensure_provider(mesh_text: str) -> tuple[str, bool]:
-    return _ensure_provider(mesh_text, add_missing=True)
+def ensure_provider(mesh_text: str, service=None) -> tuple[str, bool]:
+    return _ensure_provider(mesh_text, add_missing=True, service=service)
 
 
-def configmap_patch(configmap: dict) -> tuple[dict, bool]:
+def configmap_patch(configmap: dict, service=None) -> tuple[dict, bool]:
     resource_version = configmap.get("metadata", {}).get("resourceVersion")
     if not isinstance(resource_version, str) or not resource_version:
         raise RuntimeError("Istio ConfigMap resourceVersion is unavailable")
-    mesh, changed = ensure_provider(configmap.get("data", {}).get("mesh", ""))
+    mesh, changed = ensure_provider(configmap.get("data", {}).get("mesh", ""), service)
     return {
         "metadata": {"resourceVersion": resource_version},
         "data": {"mesh": mesh},
     }, changed
 
 
-def reconcile_configmap(namespace: str, name: str, runner=subprocess.run) -> None:
+def reconcile_configmap(namespace: str, name: str, runner=subprocess.run, service=None, uid=None) -> None:
     for attempt in range(MAX_PATCH_ATTEMPTS):
         raw = runner(
             [
@@ -166,7 +168,9 @@ def reconcile_configmap(namespace: str, name: str, runner=subprocess.run) -> Non
         if getattr(raw, "returncode", 0) != 0:
             raise RuntimeError("Istio ConfigMap could not be read safely")
         if not raw.stdout.strip():
-            mesh, _ = ensure_provider("")
+            if uid:
+                raise RuntimeError("The pinned Istio ConfigMap was deleted; refusing recreation")
+            mesh, _ = ensure_provider("", service)
             document = {
                 "apiVersion": "v1",
                 "kind": "ConfigMap",
@@ -197,7 +201,12 @@ def reconcile_configmap(namespace: str, name: str, runner=subprocess.run) -> Non
             if "AlreadyExists" in result.stderr and attempt + 1 < MAX_PATCH_ATTEMPTS:
                 continue
             raise RuntimeError("Istio ConfigMap could not be created safely")
-        patch, changed = configmap_patch(json.loads(raw.stdout))
+        configmap = json.loads(raw.stdout)
+        if uid and configmap.get("metadata", {}).get("uid") != uid:
+            raise RuntimeError("The pinned Istio ConfigMap was replaced; refusing to modify it")
+        patch, changed = configmap_patch(configmap, service)
+        if uid:
+            patch["metadata"]["uid"] = uid
         if not changed:
             return
         descriptor, filename = tempfile.mkstemp(prefix="cetirun-istio-mesh-", suffix=".json")
@@ -231,8 +240,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--name", required=True)
+    parser.add_argument("--context", help="explicit Kubernetes context; never changes current-context")
+    parser.add_argument("--service", help="expected oauth2-proxy service FQDN")
+    parser.add_argument("--uid", help="pin an existing ConfigMap UID; reject deletion or replacement")
     args = parser.parse_args()
-    reconcile_configmap(args.namespace, args.name)
+    def runner(command, **kwargs):
+        if args.context:
+            command = [command[0], "--context", args.context, "--request-timeout=15s", *command[1:]]
+        return subprocess.run(command, **kwargs)
+    reconcile_configmap(args.namespace, args.name, runner=runner, service=args.service, uid=args.uid)
     return 0
 
 

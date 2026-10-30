@@ -6,12 +6,15 @@ REGISTRY ?=
 VERSION ?= $(shell scripts/cetirun-release-metadata.sh version)
 GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 VERIFY_PULL ?= true
+FORCE_PUBLISH ?= false
+ACCEPT_VSCODE_SERVER_LICENSE_TERMS ?= false
+DEPLOY_CONFIG ?=
 .DEFAULT_GOAL := help
 
 .PHONY: help check test lint docs-check license-check ci-test python-test \
 	python-check go-test go-lint portal-test portal-lint chart-check \
 	bicep-check shell-check workflow-check version-check set-version \
-	build-images publish-images publish-charts publish require-registry
+	build-images publish-images publish-charts publish require-registry artifact-check deploy deploy-plan
 
 .NOTPARALLEL: publish publish-images publish-charts
 
@@ -25,6 +28,10 @@ help:
 	@echo "  make set-version VERSION=<version>  (e.g. 0.1.0-dev.1)"
 	@echo "  make build-images REGISTRY=<registry> [VERSION=X.Y.Z]"
 	@echo "  make publish REGISTRY=<registry> [VERSION=X.Y.Z]"
+	@echo "  Image builds require ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true"
+	@echo "Deployment (explicit environment authorization required):"
+	@echo "  make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml  (offline)"
+	@echo "  make deploy DEPLOY_CONFIG=/path/to/environment.yaml"
 	@echo "Prerequisites: Go from .go-version, Node 24 + npm ci, scripts/ci/requirements.txt,"
 	@echo "  helm, bicep, shellcheck, actionlint, scripts/check-license-headers.py."
 	@echo "Workflow lint covers seven validation workflows; publisher/E2E workflows are excluded."
@@ -38,7 +45,7 @@ test: ci-test python-test go-test portal-test memory-native-test
 memory-native-test:
 	node --test app/cetirun-memory-context/tests/native.test.mjs
 
-lint: version-check license-check python-check go-lint portal-lint chart-check bicep-check shell-check workflow-check
+lint: version-check artifact-check license-check python-check go-lint portal-lint chart-check bicep-check shell-check workflow-check
 
 docs-check license-check ci-test python-test python-check go-test go-lint portal-test portal-lint chart-check bicep-check shell-check workflow-check:
 	$(PYTHON) -B scripts/ci/validate.py $@
@@ -55,33 +62,14 @@ set-version:
 	helm dependency update --skip-refresh app/cetirun-platform
 	$(PYTHON) -B scripts/cetirun-version.py check "$(VERSION)"
 
-build-images:
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false bash scripts/memory-context-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false BUILD_HERMES=true scripts/cetirun-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false bash scripts/pi-agent-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/operator-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false bash scripts/terminal-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/portal-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/ai-gateway-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" PUSH=false bash scripts/cetirun-connections-mcp-docker-build.sh
+artifact-check:
+	$(PYTHON) -B scripts/cetirun-release.py check
 
-publish-images: require-registry version-check
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true bash scripts/memory-context-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true BUILD_HERMES=true scripts/cetirun-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true bash scripts/pi-agent-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/operator-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true bash scripts/terminal-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/portal-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/ai-gateway-docker-build.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" PUSH=true bash scripts/cetirun-connections-mcp-docker-build.sh
+build-images publish-images publish-charts publish: require-registry version-check artifact-check
+	@test "$(FORCE_PUBLISH)" = false -o "$(FORCE_PUBLISH)" = true || { echo "FORCE_PUBLISH must be true or false" >&2; exit 1; }
+	@test "$(VERIFY_PULL)" = true || { echo "Unified releases require Chart pull verification" >&2; exit 1; }
+	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS="$(ACCEPT_VSCODE_SERVER_LICENSE_TERMS)" $(PYTHON) -B scripts/cetirun-release.py $@ $(if $(filter true,$(FORCE_PUBLISH)),--force,)
 
-publish-charts: require-registry version-check
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/cetirun-helm-release.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/operator-helm-release.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/portal-helm-release.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/platform-helm-release.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/istio-helm-release.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/ai-gateway-helm-release.sh
-	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" bash scripts/cetirun-connections-mcp-helm-release.sh
-
-publish: publish-images publish-charts
+deploy-plan deploy:
+	@test -n "$(DEPLOY_CONFIG)" || { echo "DEPLOY_CONFIG is required; see app/cetirun-platform/README.md" >&2; exit 1; }
+	bash scripts/cetirun-platform-deploy.sh --config "$(DEPLOY_CONFIG)" $(if $(filter deploy-plan,$@),--plan,)

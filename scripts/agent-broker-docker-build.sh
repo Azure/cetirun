@@ -9,9 +9,13 @@ docker buildx version >/dev/null 2>&1 || { echo "ERROR: docker buildx is require
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 registry="${REGISTRY:-cetirun.azurecr.io}"
-image_tag="${IMAGE_TAG:-latest}"
+release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
+image_tag="${IMAGE_TAG:-${release_version}}"
 image_ref="${registry}/cetirun-agent-broker:${image_tag}"
-args=(-f "${repo_root}/app/cetirun-agent-broker/Dockerfile" -t "${image_ref}")
+git_sha="${GIT_SHA:-$(git -C "${repo_root}" rev-parse HEAD)}"
+args=(-f "${repo_root}/app/cetirun-agent-broker/Dockerfile" -t "${image_ref}"
+  --label "org.opencontainers.image.version=${image_tag}"
+  --label "org.opencontainers.image.revision=${git_sha}")
 if [[ "${PUSH:-false}" == true ]]; then
   args+=(--platform linux/amd64 --push)
   if docker buildx inspect --bootstrap 2>/dev/null | grep -q 'Driver:.*docker-container'; then

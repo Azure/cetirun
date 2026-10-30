@@ -32,6 +32,15 @@ test scripts require a separately authorized environment.
 
 ### Deployment-specific configuration
 
+The default platform entry point is `make deploy
+DEPLOY_CONFIG=/path/to/environment.yaml`. Use `make deploy-plan` with the same
+input for local Helm rendering without cluster or registry access. The entry
+point manages the separate CetiRun Istio, Broker, and platform releases, with
+Portal Chat, Connections MCP, and supported runtime artifact references. It
+requires explicit target, identity, Secret, model/tier, storage, and owner inputs.
+See the [platform deployment guide](app/cetirun-platform/README.md#deploy-the-platform).
+The old `DOMAIN`/`VALUES_FILE`-only invocation is no longer sufficient.
+
 `scripts/cetirun-dev-deploy.sh` requires an explicit `REGISTRY` and alias
 argument and no longer inserts a default user team label; use `--help` for its
 modes. Other build, deployment, and Helm publishing helpers retain their
@@ -601,7 +610,54 @@ Image builds, rendered IDE checks and real Copilot tasks are separate checks;
 see [the example](examples/vscode-server/README.md).
 
 `make build-images` and `make publish-images` include the `cetirun-pi-agent`
-demo. See [its README](examples/pi-agent/README.md) for usage and tests.
+demo and VS Code Server. See [the Pi README](examples/pi-agent/README.md) for
+usage and tests. The full image set requires explicit
+`ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` before any build.
+
+### Unified release inventory
+
+[`scripts/release-artifacts.json`](scripts/release-artifacts.json) is the common
+inventory for root Make targets and the MCR release pipeline: 13 images and
+8 charts, including the Broker, VS Code, and Memory assets. `make artifact-check`
+checks source paths and chart coverage. The driver calls the existing image
+builders, stamps the explicit version/source SHA, and builds the base image
+before its consumers. It never logs in or installs tools.
+
+After registry authentication and publication authorization:
+
+```bash
+make publish REGISTRY=registry.example.com VERSION=0.1.1 \
+  GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+```
+
+`publish` checks every destination image/chart tag before a build or push.
+An existing tag or an unknown registry error stops it. `FORCE_PUBLISH=true`
+explicitly permits replacing tags; an ordinary retry does not. Use a new
+version after a partial publication unless replacement is authorized.
+Every chart is pulled back and compared with its package. `VERIFY_PULL=false`
+is rejected for the unified release. `build-images` builds locally without
+publishing, while `publish-images` and `publish-charts` select one artifact class.
+
+The MCR pipeline uses the same inventory and builders while retaining staged
+pushes, digest verification, and promotion of `latest` only after all versioned
+images and charts succeed. It passes the pipeline's already-configured
+`ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` value to the shared driver, so existing
+automatic tag releases do not need a new manual approval parameter. Local
+build/publish callers still supply their own explicit acceptance. The existing
+manual-only `forcePublish` control remains separate.
+
+Offline release/deployment regressions use synthetic APIs and local Helm:
+
+```bash
+python3 -B -m unittest scripts.tests.test_release_inventory scripts.tests.test_full_deployment -v
+python3 -B -m unittest scripts.tests.test_connections_mcp_release -v
+make version-check artifact-check python-check license-check
+```
+
+These tests never build an image with Docker or contact a registry/cluster.
+They exercise the actual image build wrappers against a command double and
+package real local charts. Production image builds, registry publication,
+OAuth, provider calls, and live deployment remain unverified by these tests.
 
 ### Release-agent build storage
 
