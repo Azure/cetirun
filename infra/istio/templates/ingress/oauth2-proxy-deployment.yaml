@@ -3,6 +3,7 @@
 {{- fail "oauth2Proxy.mode must be entra-id or local-oidc" -}}
 {{- end -}}
 {{- $isLocalOIDC := eq $mode "local-oidc" -}}
+{{- $ingressSettings := include "cetirun-istio.ingressSettings" . | fromJson -}}
 {{- $localOIDC := .Values.oauth2Proxy.localOIDC -}}
 {{- if not (kindIs "map" $localOIDC) -}}
 {{- fail "oauth2Proxy.localOIDC must be an object" -}}
@@ -176,6 +177,12 @@ spec:
             - --cookie-domain={{ .Values.domain }}
             - --cookie-name=_cetirun_oauth2
             - --cookie-secure=true
+            - --cookie-httponly=true
+            - --code-challenge-method=S256
+            - --insecure-oidc-skip-nonce=false
+            - --request-logging={{ $ingressSettings.logging.request }}
+            - --auth-logging={{ $ingressSettings.logging.auth }}
+            - --standard-logging={{ $ingressSettings.logging.standard }}
             - --cookie-samesite=lax
             # Every sign-in keeps its own CSRF cookie, so sign-ins started at
             # the same time, by a page reload and a background request or by
@@ -219,7 +226,7 @@ spec:
             # before routing, so Agent workloads never receive this token.
             - --pass-authorization-header=true
             - --set-authorization-header=true
-            - --skip-jwt-bearer-tokens={{ not $isLocalOIDC }}
+            - --skip-jwt-bearer-tokens={{ $ingressSettings.skipJwtBearerTokens }}
             - --silence-ping-logging=true
             - --footer=-
           readinessProbe:

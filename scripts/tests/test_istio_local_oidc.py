@@ -46,6 +46,12 @@ ENTRA_ARGS = [
     "--cookie-domain=example.com",
     "--cookie-name=_cetirun_oauth2",
     "--cookie-secure=true",
+    "--cookie-httponly=true",
+    "--code-challenge-method=S256",
+    "--insecure-oidc-skip-nonce=false",
+    "--request-logging=true",
+    "--auth-logging=true",
+    "--standard-logging=true",
     "--cookie-samesite=lax",
     "--cookie-csrf-per-request=true",
     "--cookie-csrf-per-request-limit=20",
@@ -130,7 +136,7 @@ class IstioLocalOIDCTests(unittest.TestCase):
             for document in yaml.safe_load_all(result.stdout) if document
         }
 
-    def test_default_entra_configuration_is_unchanged(self):
+    def test_default_entra_provider_and_session_configuration(self):
         objects = self.render(ENTRA_VALUES)
         self.assertEqual(
             objects, self.render({**ENTRA_VALUES, "oauth2Proxy": {"mode": "entra-id"}}),
@@ -183,6 +189,14 @@ class IstioLocalOIDCTests(unittest.TestCase):
             container["env"],
             [NO_ENV_COLLECTION, COOKIE_ENV, client_secret_env("oidc-client-secret")],
         )
+
+    def test_local_oidc_never_enables_bearer_authentication(self):
+        values = local_values()
+        default = self.render(values)
+        values["oauth2Proxy"]["skipJwtBearerTokens"] = False
+        self.assertEqual(default, self.render(values))
+        values["oauth2Proxy"]["skipJwtBearerTokens"] = True
+        self.render(values, error="oauth2Proxy.skipJwtBearerTokens=true is not supported in local-oidc mode")
 
     def test_local_oidc_preserves_redis_sessions(self):
         values = local_values()

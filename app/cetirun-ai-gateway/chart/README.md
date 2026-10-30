@@ -1936,17 +1936,18 @@ This is why the chart writes as little as possible into those blocks.
 ### Values the chart owns
 
 `model_list`; `general_settings.store_model_in_db`, the spend log retention
-and its deletion interval, and the health check settings when
+and its deletion interval, `general_settings.store_prompts_in_spend_logs` only
+when `spendLogs.storePrompts` is true, and the health check settings when
 `router.healthChecks` is on; in `litellm_settings`,
 `num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
 metrics callback and its settings, and, when Redis is configured, the Redis
 cache; and in `router_settings`, Redis when it is configured, the routing
 strategy, and the failover, the affinity checks and the fallbacks of `router`.
-Everything else in
-LiteLLM's configuration is left alone. The request log and the spend log
-setting are not in LiteLLM's configuration at all: the image's entrypoint
-applies them (see [One log line per call](#one-log-line-per-call)), so saving
-a settings block cannot remove them.
+Everything else in LiteLLM's configuration is left alone. The request log and
+`spendLogs.enabled` are applied by the image's entrypoint, outside these settings
+blocks (see [One log line per call](#one-log-line-per-call)). Prompt storage and
+retention are configuration-file settings, so saved database settings can
+override them.
 
 ### Models added through the console survive upgrades
 
@@ -1965,6 +1966,8 @@ with:
 
 - `requestLog`, `spendLogs` and `metrics`: the request log on, LiteLLM's spend
   log kept, metrics off;
+- `spendLogs.storePrompts`: `false`, so the chart does not request prompt or
+  response storage;
 - `spendLogs.retention`: `7d`, so LiteLLM starts deleting spend log rows older
   than seven days;
 - `router`: `simple-shuffle`, failover and the affinity checks on, no
@@ -2155,14 +2158,44 @@ LiteLLM again without the image's callbacks, the guard included, whatever
 ### LiteLLM's spend log
 
 LiteLLM writes a row per call to `LiteLLM_SpendLogs`, which the console's
-request log pages read. The row holds the call's metadata, not its prompt or
-response: the chart does not set `store_prompts_in_spend_logs`. The table
-grows by one row for every call, so `spendLogs.retention`, `7d` by default,
+request log pages read. By default, the row holds the call's metadata, not its
+prompt or response. `spendLogs.storePrompts` defaults to `false`; only an
+explicit `true` renders `general_settings.store_prompts_in_spend_logs: true`.
+Enabling Gateway components, metrics, or operator integration does not enable
+content storage.
+
+To opt in to storing sensitive prompt and response content in the database:
+
+```yaml
+spendLogs:
+  enabled: true
+  storePrompts: true
+  retention: 7d
+```
+
+In the platform umbrella, nest these values under `cetirun-ai-gateway`.
+`storePrompts` accepts a YAML boolean, not a quoted string. Setting it to `true`
+with `spendLogs.enabled: false` fails rendering. It does not depend on
+`requestLog.enabled` and never adds content to the stdout request log. A change
+updates the configuration checksum, so Helm replaces the Gateway pods.
+
+Setting `storePrompts` to `false` omits the LiteLLM key, restoring its default
+for configuration-file-controlled deployments. It does not erase content
+already stored. A `general_settings` block saved through LiteLLM's console or
+management API can override this setting in either direction, just as it can
+override retention. Check the effective configuration before relying on an
+opt-in or opt-out. The chart does not read or rewrite `LiteLLM_Config` or
+existing spend logs. See
+[settings saved in the console](#editing-settings-in-the-console-takes-them-out-of-chart-control).
+
+The table grows by one row for every call, so `spendLogs.retention`, `7d` by default,
 renders LiteLLM's `maximum_spend_logs_retention_period`, and
 `maximum_health_check_retention_period` for the stored health check results.
-Spend, budgets and the daily usage totals are kept beyond it. Set it empty to
-keep every row. A retention period saved in the console's settings wins over
-the chart's, as for any `general_settings` key.
+The same row retention applies when content storage is enabled. Spend, budgets
+and the daily usage totals are kept beyond it. Set retention empty to keep
+every row, including any stored content, indefinitely. A retention period saved
+in the console's settings wins over the chart's, as for any `general_settings`
+key.
 
 Each replica deletes the older rows on its own schedule: the first time one
 interval (`maximum_spend_logs_retention_interval`) after the pod starts, then

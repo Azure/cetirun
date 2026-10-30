@@ -453,8 +453,8 @@ requestLog:
 # which the console's request log pages read. It grows by one row per call;
 # retention below keeps it short. Spend, budgets and the daily usage totals the
 # console's usage pages show are kept either way. Prompts and responses are not
-# stored in it. The request log above keeps the per-call record outside the
-# database, for as long as the log collector keeps it.
+# stored unless storePrompts is explicitly enabled. The request log above keeps
+# metadata outside the database, for as long as the log collector keeps it.
 #
 # It is turned off only together with the request log: the image's entrypoint
 # does both, so an image built before the request log keeps writing the table.
@@ -462,6 +462,12 @@ spendLogs:
   # -- Write a row to LiteLLM_SpendLogs for each call. false needs
   # requestLog.enabled.
   enabled: true
+  # -- Store prompts and responses in LiteLLM_SpendLogs. Requires enabled=true.
+  # This can persist sensitive content. false leaves LiteLLM's default in place;
+  # true renders general_settings.store_prompts_in_spend_logs. A general_settings
+  # block saved in LiteLLM's database can override this value. This does not add
+  # content to the stdout request log. The rows use retention below.
+  storePrompts: false
   # -- How long LiteLLM keeps those rows, and the stored health check results:
   # a number with h, d, w or mo, such as 7d. Each Gateway pod deletes older
   # ones every hour, the first time an hour after it starts. Empty keeps them

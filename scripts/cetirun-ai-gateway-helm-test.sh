@@ -931,7 +931,7 @@ assert_rejected "the spend log off without the request log" --set spendLogs.enab
 # pods replaced sooner, as every configuration change replaces them, never
 # deleted a row, so the chart sets an hour whenever a retention is set. With
 # the spend log off there are still health check results and older rows to
-# delete. Prompts are never stored.
+# delete. Prompt and response storage requires a separate opt-in.
 echo "==> LiteLLM's spend log is kept for seven days, and older rows are deleted every hour"
 assert_contains 'maximum_spend_logs_retention_period: "7d"' "spend log rows are kept for seven days by default" "${output}"
 assert_contains 'maximum_health_check_retention_period: "7d"' "health check results are kept as long" "${output}"
@@ -948,6 +948,50 @@ assert_absent "retention_period" "an empty retention keeps every row" "${no_rete
 assert_absent "retention_interval" "nothing is scheduled for deletion without a retention" "${no_retention}"
 assert_rejected "a retention LiteLLM cannot read" --set-string spendLogs.retention=week
 assert_absent "store_prompts_in_spend_logs" "prompts stay out of the spend log" "${output}"
+
+echo "==> storing prompts and responses requires an explicit spend-log opt-in"
+prompt_config="$(render --set spendLogs.storePrompts=true -s templates/configmap.yaml)"
+assert_contains '^      store_prompts_in_spend_logs: true$' \
+  "the opt-in reaches LiteLLM's general settings as a boolean" "${prompt_config}"
+assert_absent "disable_spend_logs" "prompt storage does not change spend-log enablement" "${prompt_config}"
+assert_contains 'maximum_spend_logs_retention_period: "7d"' \
+  "prompt storage keeps the configured retention" "${prompt_config}"
+assert_absent "store_prompts_in_spend_logs" "false keeps the upstream default" \
+  "$(render --set spendLogs.storePrompts=false)"
+assert_absent "store_prompts_in_spend_logs" "operator integration and metrics do not enable content storage" \
+  "$(render --set operatorIntegration=true --set metrics.enabled=true)"
+assert_contains '^      store_prompts_in_spend_logs: true$' "content storage does not require the stdout request log" \
+  "$(render --set spendLogs.storePrompts=true --set requestLog.enabled=false)"
+prompt_no_retention="$(render --set spendLogs.storePrompts=true --set-string spendLogs.retention=)"
+assert_contains '^      store_prompts_in_spend_logs: true$' "empty retention keeps stored content indefinitely" \
+  "${prompt_no_retention}"
+assert_absent 'retention_period' "prompt storage does not force a retention period" "${prompt_no_retention}"
+assert_rejected "prompt storage while the spend log is disabled" \
+  --set spendLogs.enabled=false --set spendLogs.storePrompts=true
+for value in true false ''; do
+  assert_rejected "a string instead of the prompt-storage boolean" --set-string "spendLogs.storePrompts=${value}"
+done
+for value in 1 '[]' '{}'; do
+  assert_rejected "a non-boolean prompt-storage value" --set-json "spendLogs.storePrompts=${value}"
+done
+prompt_pod="$(render --set spendLogs.storePrompts=true -s templates/deployment.yaml)"
+if [ "$(grep 'checksum/config:' <<< "${prompt_pod}")" = "$(grep 'checksum/config:' <<< "${gateway_pod}")" ]; then
+  echo "FAIL: changing prompt storage does not roll the Gateway pods" >&2
+  exit 1
+fi
+assert_absent "CETIRUN_REQUEST_LOG_CONTENT" "prompt storage never enables stdout body logging" "${prompt_pod}"
+if [ "$(render "${gitops_args[@]}" --set spendLogs.storePrompts=true)" \
+  != "$(render "${gitops_args[@]}" --set spendLogs.storePrompts=true --is-upgrade)" ]; then
+  echo "FAIL: prompt storage is not stable across repeated install and upgrade renders" >&2
+  exit 1
+fi
+for template in configmap.yaml deployment.yaml; do
+  [ "$(render --set spendLogs.storePrompts=null --is-upgrade -s "templates/${template}")" \
+    = "$(render -s "templates/${template}")" ] || {
+    echo "FAIL: missing spendLogs.storePrompts does not keep the default ${template}" >&2
+    exit 1
+  }
+done
 
 # Container Insights copies each container's environment, Secret values
 # included, into its ContainerInventory table once a minute unless collection

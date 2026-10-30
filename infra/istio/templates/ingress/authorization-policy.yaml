@@ -28,6 +28,7 @@ spec:
     # Rule 1 — subdomain hosts: normal traffic authenticates; webhook suffixes bypass.
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               - "*.{{ .Values.domain }}"
             {{- if .Values.authPolicy.authExemptPrefixes }}
@@ -46,6 +47,7 @@ spec:
     # suffixes, and apex-only callbacks bypass.
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               - "{{ .Values.domain }}"
             notPaths:
@@ -65,6 +67,7 @@ spec:
     # Rule 3 — apex host method guard: only POST bypasses these paths.
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               - "{{ .Values.domain }}"
             paths:
@@ -82,6 +85,7 @@ spec:
     # with the subdomain webhook bypass once all instances use the apex path model.
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               - "*.{{ .Values.domain }}"
             {{- if .Values.authPolicy.authExemptPrefixes }}
@@ -100,6 +104,7 @@ spec:
     {{- with .Values.authPolicy.oauthCallbackPath }}
     - to:
         - operation:
+            ports: ["443"]
             hosts: [{{ $.Values.domain | quote }}]
             paths: [{{ . | quote }}]
             notMethods: ["GET", "POST"]
