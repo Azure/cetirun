@@ -45,7 +45,6 @@ def agent(request, tmp_path):
         (source / ".openclaw/npm").symlink_to("/usr/local/share/openclaw-npm")
         (config / "openclaw.json").write_text(json.dumps({
             "agents": {"defaults": {"model": {"primary": "test-model"}}},
-            "channels": {"msteams": {"enabled": True}},
         }))
         (config / "user-md").write_text("Example User")
         script = CHART / "agents/openclaw/bootstrap/init-home.sh"
@@ -106,7 +105,6 @@ def test_native_first_start_and_repeat_preserve_user_files(agent):
             assert installed.read_bytes() == path.read_bytes()
     if agent["kind"] == "openclaw":
         user = agent["target"] / ".openclaw/workspace/USER.md"
-        assert read_config(agent)["channels"]["msteams"]["allowFrom"] == ["00000000-0000-0000-0000-000000000000"]
         assert (agent["target"] / ".openclaw/npm").is_symlink()
         assert not (agent["target"] / ".acpx/config.json").exists()
     else:
@@ -138,6 +136,44 @@ def test_corrupt_config_is_preserved_and_not_logged(agent):
     assert agent["config_file"].read_text() == corrupt
     assert "secret-test-sentinel" not in result.stderr + result.stdout
     assert "[agent-init] complete" not in result.stderr
+
+
+@pytest.mark.parametrize("existing_home", [False, True])
+def test_retired_teams_configuration_does_not_survive_initialization(agent, existing_home):
+    if existing_home:
+        assert run(agent).returncode == 0
+        config_file = agent["config_file"]
+    else:
+        config_file = agent["source"] / f'.{agent["kind"]}' / agent["config_file"].name
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+    if agent["kind"] == "openclaw":
+        legacy = {
+            "channels": {"msteams": {"enabled": True}, "telegram": {"enabled": False}},
+            "plugins": {
+                "allow": ["msteams", "home-plugin"],
+                "entries": {"msteams": {"enabled": True}, "home-plugin": {"enabled": True}},
+                "installs": {"msteams": {"source": "npm"}, "home-plugin": {"source": "path"}},
+            },
+            "user_preference": {"msteams": "unrelated user data"},
+        }
+        config_file.write_text(json.dumps(legacy))
+    else:
+        platforms = {"cetirun_teams": {"enabled": True}, "telegram": {"enabled": False}}
+        # A YAML alias must not let retirement mutate an unrelated user field.
+        legacy = {"platforms": platforms, "user_preference": platforms}
+        config_file.write_text(yaml.safe_dump(legacy))
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        current = read_config(agent)
+        assert current["user_preference"] == legacy["user_preference"]
+        if agent["kind"] == "openclaw":
+            assert current["channels"] == {"telegram": {"enabled": False}}
+            assert current["plugins"]["entries"] == {"home-plugin": {"enabled": True}}
+            assert current["plugins"]["allow"] == ["home-plugin"]
+            assert current["plugins"]["installs"] == {"home-plugin": {"source": "path"}}
+        else:
+            assert current["platforms"] == {"telegram": {"enabled": False}}
 
 
 def test_openclaw_disabling_memory_removes_only_platform_plugin_config(agent):

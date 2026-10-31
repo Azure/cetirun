@@ -63,7 +63,7 @@ func decodeManagementRequest(w http.ResponseWriter, r *http.Request, target any)
 }
 
 func hasNativeCreateFields(fields map[string]json.RawMessage) bool {
-	for _, key := range []string{"gatewayToken", "tailscaleAuthKey", "teamsEnabled"} {
+	for _, key := range []string{"gatewayToken", "tailscaleAuthKey"} {
 		if _, exists := fields[key]; exists {
 			return true
 		}
@@ -112,7 +112,7 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if (req.Agent == nil || req.Agent.Empty()) && req.DisplayName == nil && req.Team == nil && req.Model == nil &&
-		req.GatewayToken == nil && req.TailscaleAuthKey == nil && req.TeamsEnabled == nil {
+		req.GatewayToken == nil && req.TailscaleAuthKey == nil {
 		writeError(w, http.StatusBadRequest, "no_fields", "At least one field must be provided for update")
 		return
 	}
@@ -150,7 +150,7 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 	}
 	opts := kube.UpdateInstanceOpts{
 		DisplayName: req.DisplayName, Team: req.Team, Model: req.Model,
-		GatewayToken: req.GatewayToken, TailscaleAuthKey: req.TailscaleAuthKey, TeamsEnabled: req.TeamsEnabled,
+		GatewayToken: req.GatewayToken, TailscaleAuthKey: req.TailscaleAuthKey,
 		ExpectedUID: types.UID(req.UID), ExpectedResourceVersion: req.ResourceVersion,
 	}
 	if req.Team != nil {

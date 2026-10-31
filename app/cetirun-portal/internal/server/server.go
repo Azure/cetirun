@@ -54,7 +54,6 @@ func New(
 	api.HandleFunc("POST /api/v1/instance/suspend", instanceHandler.SuspendInstance)
 	api.HandleFunc("POST /api/v1/instance/resume", instanceHandler.ResumeInstance)
 	api.HandleFunc("GET /api/v1/instance/status", instanceHandler.GetInstanceStatus)
-	api.HandleFunc("GET /api/v1/instance/teams-app", instanceHandler.DownloadTeamsApp)
 
 	// Multi-instance API
 	api.HandleFunc("GET /api/v1/instances", instanceHandler.ListInstances)
@@ -69,7 +68,6 @@ func New(
 	api.HandleFunc("POST /api/v1/instances/{name}/suspend", instanceHandler.SuspendInstanceByName)
 	api.HandleFunc("POST /api/v1/instances/{name}/resume", instanceHandler.ResumeInstanceByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/status", instanceHandler.GetInstanceStatusByName)
-	api.HandleFunc("GET /api/v1/instances/{name}/teams-app", instanceHandler.DownloadTeamsAppByName)
 	api.HandleFunc("GET /api/v1/teams", instanceHandler.ListTeams)
 	api.HandleFunc("GET /api/v1/ai-gateway/catalog", instanceHandler.GetAIGatewayCatalog)
 	api.HandleFunc("POST /api/v1/instances/{name}/copilot/login", instanceHandler.StartCopilotLogin)

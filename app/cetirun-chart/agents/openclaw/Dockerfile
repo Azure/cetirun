@@ -97,7 +97,6 @@ RUN npm --min-release-age=0 install \
       "@openclaw/brave-plugin@${OPENCLAW_VERSION}" \
       "@openclaw/discord@${OPENCLAW_VERSION}" \
       "@openclaw/feishu@${OPENCLAW_VERSION}" \
-      "@openclaw/msteams@${OPENCLAW_VERSION}" \
       "@openclaw/perplexity-plugin@${OPENCLAW_VERSION}" \
       "@openclaw/slack@${OPENCLAW_VERSION}" && \
     rm -rf /tmp/openclaw-plugin-prefetch && \
@@ -105,7 +104,6 @@ RUN npm --min-release-age=0 install \
     openclaw plugins install "npm:@openclaw/brave-plugin@${OPENCLAW_VERSION}" && \
     openclaw plugins install "npm:@openclaw/discord@${OPENCLAW_VERSION}" && \
     openclaw plugins install "npm:@openclaw/feishu@${OPENCLAW_VERSION}" && \
-    openclaw plugins install "npm:@openclaw/msteams@${OPENCLAW_VERSION}" && \
     openclaw plugins install "npm:@openclaw/perplexity-plugin@${OPENCLAW_VERSION}" && \
     openclaw plugins install "npm:@openclaw/slack@${OPENCLAW_VERSION}" && \
     find /usr/local/share/openclaw-npm -type d \( \
@@ -146,6 +144,6 @@ RUN --mount=from=openclaw-source,source=/home/vibe/openclaw-pack/openclaw.tgz,ta
 COPY --chown=vibe:vibe agents/openclaw/compat/ /tmp/cetirun-mcp-compat/
 RUN node /tmp/cetirun-mcp-compat/apply-workload-mcp.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && rm -r /tmp/cetirun-mcp-compat
 
-EXPOSE 18789 7681 3978
+EXPOSE 18789 7681
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

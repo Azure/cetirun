@@ -90,7 +90,7 @@ func TestCreateInstance_Success(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "")
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestCreateInstance_Success(t *testing.T) {
 func TestCreateInstanceAgentIdentityRequiresOwner(t *testing.T) {
 	c := NewClient(newFakeClient())
 
-	_, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "", false,
+	_, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "",
 		CreateInstanceOptions{AgentIdentityEnabled: true})
 	if err == nil || !strings.Contains(err.Error(), "verified owner identity") {
 		t.Fatalf("CreateInstance() error = %v, want verified owner identity error", err)
@@ -138,7 +138,7 @@ func TestCreateInstanceAgentIdentityPersistsOwnerBinding(t *testing.T) {
 	const objectID = "22222222-2222-2222-2222-222222222222"
 	c := NewClient(newFakeClient())
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "", false,
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "",
 		CreateInstanceOptions{AgentIdentityEnabled: true, OwnerTenantID: tenantID, OwnerObjectID: objectID})
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestCreateInstanceRejectsCustomAgentIdentity(t *testing.T) {
 	c := NewClient(newFakeClient())
 	_, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "",
 		cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:test"), Username: ptr.To("vibe")},
-		"", "", "", false, CreateInstanceOptions{AgentIdentityEnabled: true, OwnerTenantID: "tenant", OwnerObjectID: "owner"})
+		"", "", "", CreateInstanceOptions{AgentIdentityEnabled: true, OwnerTenantID: "tenant", OwnerObjectID: "owner"})
 	if !IsUnsupportedCustomUpdate(err) {
 		t.Fatalf("CreateInstance() error = %v, want unsupported Custom identity error", err)
 	}
@@ -166,7 +166,7 @@ func TestCreateAndClearInstanceModel(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "gpt-5.4", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "gpt-5.4")
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestCreateInstance_AlreadyExists(t *testing.T) {
 	fc := newFakeClient(sampleInstance())
 	c := NewClient(fc)
 
-	_, err := c.CreateInstance(context.Background(), "alice", "Alice Smith", "example-team", "alice@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "", false)
+	_, err := c.CreateInstance(context.Background(), "alice", "Alice Smith", "example-team", "alice@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "")
 	if err == nil {
 		t.Fatal("expected error for duplicate instance")
 	}
@@ -201,7 +201,7 @@ func TestCreateInstance_WithGatewayToken(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "my-token", "", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "my-token", "", "")
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "tskey-auth-xxx", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "tskey-auth-xxx", "")
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestCreateInstance_WithBothSecrets(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "my-token", "tskey-auth-xxx", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "my-token", "tskey-auth-xxx", "")
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -483,43 +483,6 @@ func TestUpdateInstance_NoChanges(t *testing.T) {
 	}
 	if instance.Spec.User.DisplayName != "Alice Smith" {
 		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Alice Smith")
-	}
-}
-
-func TestUpdateInstance_EnableTeams(t *testing.T) {
-	fc := newFakeClient(sampleInstance())
-	c := NewClient(fc)
-
-	enabled := true
-	instance, err := c.UpdateInstance(context.Background(), "alice", UpdateInstanceOpts{
-		TeamsEnabled: &enabled,
-	})
-	if err != nil {
-		t.Fatalf("UpdateInstance failed: %v", err)
-	}
-	if instance.Spec.MSTeams == nil {
-		t.Fatal("expected MSTeams spec to be non-nil after enabling")
-	}
-	if !instance.Spec.MSTeams.Enabled {
-		t.Error("expected MSTeams.Enabled to be true")
-	}
-}
-
-func TestUpdateInstance_DisableTeams(t *testing.T) {
-	inst := sampleInstance()
-	inst.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
-	fc := newFakeClient(inst)
-	c := NewClient(fc)
-
-	disabled := false
-	instance, err := c.UpdateInstance(context.Background(), "alice", UpdateInstanceOpts{
-		TeamsEnabled: &disabled,
-	})
-	if err != nil {
-		t.Fatalf("UpdateInstance failed: %v", err)
-	}
-	if instance.Spec.MSTeams != nil {
-		t.Error("expected MSTeams spec to be nil after disabling")
 	}
 }
 

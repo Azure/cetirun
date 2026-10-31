@@ -86,7 +86,7 @@ type sandboxPreparationAttempt struct {
 
 func sandboxPreparationSupported(agent *api.Agent) bool {
 	return (agent.Spec.Agent.Type == api.AgentTypeOpenClaw || agent.Spec.Agent.Type == api.AgentTypeHermes) &&
-		agent.Spec.Tailscale == nil && agent.Spec.MSTeams == nil && !agentIdentityRequested(agent)
+		agent.Spec.Tailscale == nil && !agentIdentityRequested(agent)
 }
 
 func (r *AgentReconciler) reconcileSandboxPreparation(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
@@ -138,7 +138,7 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if requested.Spec.Agent.Type != api.AgentTypeOpenClaw && requested.Spec.Agent.Type != api.AgentTypeHermes {
 		return fmt.Errorf("%w: only native OpenClaw and Hermes preparation is supported", sandboxpolicy.ErrUnsupportedControl)
 	}
-	if requested.Spec.Tailscale != nil || requested.Spec.MSTeams != nil || agentIdentityRequested(requested) {
+	if requested.Spec.Tailscale != nil || agentIdentityRequested(requested) {
 		return fmt.Errorf("%w: native cloud and sidecar integrations require separate Sandbox lifecycle support", sandboxpolicy.ErrUnsupportedControl)
 	}
 	if config.bootstrap == nil && controllerutil.ContainsFinalizer(requested, sandbox.BootstrapFinalizer) {

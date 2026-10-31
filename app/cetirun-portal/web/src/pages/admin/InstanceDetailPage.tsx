@@ -45,7 +45,6 @@ interface Draft {
   port: string;
   webUI: boolean;
   model: string;
-  teamsEnabled: boolean;
 }
 
 function fromDetail(detail: AdminInstanceDetail): Draft {
@@ -55,7 +54,6 @@ function fromDetail(detail: AdminInstanceDetail): Draft {
     port: detail.agent.port?.toString() || "",
     webUI: detail.agent.webUI || false,
     model: detail.model || "",
-    teamsEnabled: detail.teamsEnabled,
   };
 }
 
@@ -99,8 +97,6 @@ function ConfigSummary({ detail }: { detail: AdminInstanceDetail }) {
     ["Port", detail.agent.port?.toString() || "Platform default"],
     ["Web UI", detail.agent.webUI ? "Enabled" : "Disabled"],
     ["Model override", detail.model || "Platform default"],
-    ["Microsoft Teams", detail.teamsEnabled ? detail.teamsState || "Enabled" : "Disabled"],
-    ["Teams message", detail.teamsMessage || "—"],
     ["Tailscale", detail.tailscaleEnabled ? "Enabled" : "Disabled"],
     ["Agent identity", detail.agentIdentity?.enabled ? detail.agentIdentity.phase || "Enabled" : "Disabled"],
     ["Agent identity reason", detail.agentIdentity?.reason || "—"],
@@ -181,7 +177,6 @@ export function InstanceDetailPage() {
   }, [deletionObserved, deletionUID, detail, detailQuery.isLoading, name, navigate]);
 
   const editableType = Boolean(features?.allowedAgentTypes?.includes(detail?.agent.type || "custom"));
-  const builtIn = detail?.agent.type === "openclaw" || detail?.agent.type === "hermes";
   const custom = detail?.agent.type === "custom";
   const pendingReconcile = Boolean(detail && detail.generation > detail.observedGeneration);
   const deletionInProgress = Boolean(detail?.deletionTimestamp) || (deleting && deletionUID === detail?.uid);
@@ -271,7 +266,6 @@ export function InstanceDetailPage() {
       port: draft.port !== previous.port ? draft.port : latest.port,
       webUI: draft.webUI !== previous.webUI ? draft.webUI : latest.webUI,
       model: draft.model !== previous.model ? draft.model : latest.model,
-      teamsEnabled: draft.teamsEnabled !== previous.teamsEnabled ? draft.teamsEnabled : latest.teamsEnabled,
     };
     setDraft(merged);
     setBaseline(refreshed.data);
@@ -297,7 +291,6 @@ export function InstanceDetailPage() {
     const request: AdminUpdateInstanceRequest = { uid: baseline.uid, resourceVersion: baseline.resourceVersion };
     if (draft.displayName !== (baseline.displayName || "")) request.displayName = draft.displayName.trim();
     if (draft.model !== (baseline.model || "")) request.model = draft.model.trim();
-    if (builtIn && draft.teamsEnabled !== baseline.teamsEnabled) request.teamsEnabled = draft.teamsEnabled;
     const agent: NonNullable<AdminUpdateInstanceRequest["agent"]> = {};
     if (draft.image !== (baseline.agent.image || "")) agent.image = draft.image.trim() || null;
     if (custom && port !== (baseline.agent.port ?? null)) agent.port = port;
@@ -357,7 +350,6 @@ export function InstanceDetailPage() {
             {custom ? <Field label={draft.webUI ? "Web UI port" : "HTTP port"} required={draft.webUI}><Input type="number" min={1} max={65535} value={draft.port} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, port: data.value })} /></Field> : <Text size={200}>HTTP port: {draft.port || "Platform default"} (managed by the platform runtime).</Text>}
             {custom && <Checkbox label="Serve Web UI" checked={draft.webUI} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, webUI: data.checked === true })} />}
             <Field label="Model override" hint="Leave blank to use the platform default."><Input value={draft.model} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, model: data.value })} /></Field>
-            {builtIn && <Checkbox label="Enable Microsoft Teams integration" checked={draft.teamsEnabled} disabled={!editableType || deletionInProgress || editBusy} onChange={(_, data) => setDraft({ ...draft, teamsEnabled: data.checked === true })} />}
             <Text size={200}>Agent type, username, owner, Team, Sandbox and registry credentials are read-only.</Text>
             {validationError && <Text style={{ color: tokens.colorStatusDangerForeground1 }}>{validationError}</Text>}
             {conflict && <MessageBar intent="warning">This Agent changed since you opened it. Reload and review the current configuration; your draft is retained.</MessageBar>}

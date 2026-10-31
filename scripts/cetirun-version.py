@@ -114,17 +114,6 @@ def set_version(version):
         r'^  "version": "[^"]+",$',
         f'  "version": "{version}",',
     )
-    replace(
-        ROOT
-        / "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/plugin.yaml",
-        r"^version:\s*.*$",
-        f"version: {version}",
-    )
-    replace(
-        ROOT / "app/cetirun-portal/internal/handler/teamsapp/manifest.json",
-        r'^  "version": "[^"]+",$',
-        f'  "version": "{version}",',
-    )
     for path, content in PENDING_UPDATES.items():
         path.write_text(content)
 
@@ -170,12 +159,6 @@ def check_version(version):
         "app/cetirun-portal/deploy/deploy.sh": f"CHART_VERSION:-{version}",
         "app/cetirun-portal/go.mod": f"cetirun-operator v{version}",
         "app/internal/go.mod": f"cetirun-operator v{version}",
-        "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/plugin.yaml": (
-            f"version: {version}"
-        ),
-        "app/cetirun-portal/internal/handler/teamsapp/manifest.json": (
-            f'"version": "{version}"'
-        ),
     }
     for relative, expected in expected_text.items():
         if expected not in (ROOT / relative).read_text():

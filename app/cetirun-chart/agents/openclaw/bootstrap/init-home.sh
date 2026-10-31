@@ -80,6 +80,8 @@ agent_apply_config() (
     . as $inputs
     | .[-1] as $source
     | reduce .[] as $item ({}; . * $item)
+    | del(.channels.msteams, .plugins.entries.msteams, .plugins.installs.msteams)
+    | if (.plugins.allow | type) == "array" then .plugins.allow |= map(select(. != "msteams")) else . end
     | reduce [["plugins", "load", "paths"], ["skills", "load", "extraDirs"]][] as $path
         (. ; [$inputs[] | getpath($path) | select(. != null)] as $lists
           | if ($lists | length) == 0 then .
@@ -108,9 +110,7 @@ agent_apply_config() (
       elif (.agents.list | type) == "array" then
         .agents.list |= map(del(.model))
       else . end
-    | if .channels.msteams.enabled then
-        .channels.msteams.allowFrom //= ["00000000-0000-0000-0000-000000000000"]
-      else . end'
+    '
   if [ -f "$dest" ]; then
     jq -s --argjson native_gateway "$native_gateway" "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }

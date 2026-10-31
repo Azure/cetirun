@@ -65,10 +65,6 @@ export interface Instance extends InstanceVersion {
   createdAt: string;
   lastReconciled?: string;
   upgradeAvailable: boolean;
-  teamsEnabled?: boolean;
-  teamsState?: "Provisioning" | "PendingAppRegistration" | "Ready" | "Failed" | "Deleting";
-  teamsAppId?: string;
-  teamsMessage?: string;
   agentIdentity?: {
     enabled: boolean;
     phase?: "Disabled" | "Provisioning" | "Ready" | "Degraded" | "Failed" | "Deleting";
@@ -129,7 +125,6 @@ export interface CreateInstanceRequest {
   gatewayToken?: string;
   tailscaleAuthKey?: string;
   model?: string;
-  teamsEnabled?: boolean;
   agentIdentityEnabled?: boolean;
   /** Gateway model sources for every Agent harness. */
   modelAccess?: ModelAccess;
@@ -148,7 +143,6 @@ export interface UpdateInstanceRequest extends InstanceVersion {
   gatewayToken?: string;
   tailscaleAuthKey?: string; // "" = disable tailscale
   model?: string; // "" = use deployment default
-  teamsEnabled?: boolean;
 }
 
 export interface StatusResponse {

@@ -461,7 +461,7 @@ and budget. Per-Agent Gateway keys are projected through owned Secrets, not
 embedded provider credentials. CIDR denies and supported TCP/UDP destination-port
 denies are compiled into the owned Cilium policy. FQDN rules, internal-network
 exceptions, required mTLS, Kubernetes/identity grants, Copilot sidecars, desktop,
-Tailscale, Teams and arbitrary Agent Helm overrides are rejected before start.
+Tailscale and arbitrary Agent Helm overrides are rejected before start.
 Existing baseline network controls are retained.
 
 Platform registration must state the guarantee it actually provides. A bounded
@@ -1483,7 +1483,7 @@ pool isolation, qualified old-writer fencing, a distinct pre-start enforcement
 acknowledgement and trusted current Pod/node/epoch observations. Neither a
 held expectation nor pool deletion alone supplies those authorities.
 
-Tailscale, Teams and workload identity remain unsupported by this native path.
+Tailscale and workload identity remain unsupported by this native path.
 Custom requires common reconciliation rather than retained single-start execution.
 Unsupported requests retain an explanatory `UnsupportedControl`
 hold and bounded requeue instead of a permanent preparation-error loop. Existing
@@ -2747,9 +2747,9 @@ The result is **NO-GO for exact-hostname blocking through DNS-to-CIDR denies**:
 This is not Cilium [`toFQDNs`](https://docs.cilium.io/en/stable/security/policy/layer3/#dns-based):
 those rules generate additive IP **allows**, not hostname denies, and do not
 remove the compiler's public-egress allowance. Nor is this the shared
-[Istio sidecar SNI blacklist](../../infra/istio/templates/egress/blacklist.yaml):
-that filter matches a TLS requested server name, not a guest-external control
-covering arbitrary traffic. This experiment does not enable the separately
+Istio sidecar SNI blacklist, which has been retired in favor of the scoped
+AgentPolicy controls. That filter was not a guest-external control covering
+arbitrary traffic. This experiment does not enable the separately
 registered observed-SNI path below or establish full hostname enforcement.
 Passing the DNS-projection experiment is not M3 completion.
 

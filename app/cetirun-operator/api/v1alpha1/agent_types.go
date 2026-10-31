@@ -104,12 +104,6 @@ type AgentSpec struct {
 	// +optional
 	Helm HelmSpec `json:"helm,omitempty"`
 
-	// MSTeams configures Microsoft Teams bot integration for this instance.
-	// When set, the operator provisions the necessary Helm values, volumes,
-	// and Istio routing for the Teams webhook endpoint.
-	// +optional
-	MSTeams *MSTeamsSpec `json:"msteams,omitempty"`
-
 	// Suspended, when true, scales the instance to zero replicas and removes
 	// ingress routing. The instance data (PVC) is preserved. Set this field
 	// to restrict access for a user without deleting their instance.
@@ -280,10 +274,6 @@ type AgentStatus struct {
 	// LastReconcileTime is the timestamp of the last successful reconciliation.
 	// +optional
 	LastReconcileTime *metav1.Time `json:"lastReconcileTime,omitempty"`
-
-	// MSTeams reports the observed state of Teams integration resources.
-	// +optional
-	MSTeams *MSTeamsStatus `json:"msteams,omitempty"`
 
 	// AgentIdentity reports the platform-managed Entra identity lifecycle.
 	// It never contains user tokens, authorization caches, or credentials.
@@ -736,7 +726,6 @@ const (
 	ConditionIngressReady             = "IngressReady"
 	ConditionPodReady                 = "PodReady"
 	ConditionTailscaleReady           = "TailscaleReady"
-	ConditionTeamsReady               = "TeamsReady"
 	ConditionAgentConfigReady         = "AgentConfigReady"
 	ConditionAgentIdentityReady       = "AgentIdentityReady"
 	ConditionAIGatewayReady           = "AIGatewayReady"
@@ -764,14 +753,6 @@ const (
 	AgentIdentityPhaseDegraded     = "Degraded"
 	AgentIdentityPhaseFailed       = "Failed"
 	AgentIdentityPhaseDeleting     = "Deleting"
-)
-
-// MSTeams state constants.
-const (
-	TeamsStateProvisioning           = "Provisioning"
-	TeamsStatePendingAppRegistration = "PendingAppRegistration"
-	TeamsStateReady                  = "Ready"
-	TeamsStateFailed                 = "Failed"
 )
 
 // Phase constants.
@@ -827,66 +808,4 @@ type AgentList struct {
 
 func init() {
 	SchemeBuilder.Register(&Agent{}, &AgentList{})
-}
-
-// MSTeamsSpec configures Microsoft Teams bot integration.
-type MSTeamsSpec struct {
-	// Enabled toggles Teams bot provisioning. When false or omitted, no Teams
-	// resources are created even if the MSTeams block is present.
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// AppID is the Azure AD Application (client) ID for the Teams bot.
-	// If Enabled=true and AppID is empty, the operator creates the app
-	// automatically and writes the generated appId to status.msteams.appId.
-	// If provided, the operator uses this existing app instead.
-	// +optional
-	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
-	AppID string `json:"appId,omitempty"`
-
-	// TenantID is the Azure AD tenant ID. Defaults to operator-level config if not set.
-	// +optional
-	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
-	TenantID string `json:"tenantId,omitempty"`
-
-	// WebhookPort is the port the Teams webhook listener runs on inside the container.
-	// Defaults to 3978.
-	// +kubebuilder:default=3978
-	// +optional
-	WebhookPort int32 `json:"webhookPort,omitempty"`
-}
-
-// MSTeamsStatus reports the observed state of Teams integration resources.
-type MSTeamsStatus struct {
-	// State is the current state of Teams provisioning.
-	// +kubebuilder:validation:Enum=Provisioning;PendingAppRegistration;Ready;Failed;Deleting
-	// +optional
-	State string `json:"state,omitempty"`
-
-	// Message provides human-readable detail about the current state.
-	// +optional
-	Message string `json:"message,omitempty"`
-
-	// AppID is the Azure AD Application (client) ID, whether auto-created or from spec.
-	// +optional
-	AppID string `json:"appId,omitempty"`
-
-	// AppObjectID is the Azure AD Application Object ID (used for Graph API management).
-	// +optional
-	AppObjectID string `json:"appObjectId,omitempty"`
-
-	// BotResourceID is the Azure Resource Manager resource ID of the Bot Service.
-	// +optional
-	BotResourceID string `json:"botResourceId,omitempty"`
-
-	// ServicePrincipalID is the Object ID of the service principal for the bot app.
-	// +optional
-	ServicePrincipalID string `json:"servicePrincipalId,omitempty"`
-
-	// AppNotFoundSince is the timestamp when the cached AppObjectID first returned
-	// a 404 from Graph API. Used to distinguish AAD eventual consistency delays
-	// (which can last up to ~15 min) from genuinely deleted apps. Cleared on
-	// successful app lookup.
-	// +optional
-	AppNotFoundSince *metav1.Time `json:"appNotFoundSince,omitempty"`
 }

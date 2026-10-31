@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -24,7 +25,7 @@ import (
 
 func TestCustomNativeUpdatesHaveNoSideEffects(t *testing.T) {
 	for _, byName := range []bool{false, true} {
-		for _, body := range []string{`{"gatewayToken":"sk-dummy"}`, `{"tailscaleAuthKey":"sk-dummy"}`, `{"teamsEnabled":true}`, `{"teamsEnabled":false}`} {
+		for _, body := range []string{`{"gatewayToken":"sk-dummy"}`, `{"tailscaleAuthKey":"sk-dummy"}`} {
 			body = strings.Replace(body, "{", `{"uid":"agent-alice","resourceVersion":"1",`, 1)
 			instance := sampleInstance()
 			instance.Spec.Agent.Type = api.AgentTypeCustom
@@ -38,7 +39,12 @@ func TestCustomNativeUpdatesHaveNoSideEffects(t *testing.T) {
 			} else {
 				h.UpdateInstance(response, request)
 			}
-			if response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte("unsupported_custom_feature")) {
+			var payload ErrorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusBadRequest || payload.Error.Code != "unsupported_custom_feature" ||
+				strings.Contains(payload.Error.Message, "Teams") {
 				t.Fatalf("byName=%v body=%s status=%d", byName, body, response.Code)
 			}
 			namespaces, secrets := &corev1.NamespaceList{}, &corev1.SecretList{}
@@ -51,6 +57,41 @@ func TestCustomNativeUpdatesHaveNoSideEffects(t *testing.T) {
 			if len(namespaces.Items) != 0 || len(secrets.Items) != 0 {
 				t.Fatal("rejected Custom update created native resources")
 			}
+		}
+	}
+}
+
+func TestRetiredTeamsEnabledOwnerPatchesDoNotMutate(t *testing.T) {
+	for _, byName := range []bool{false, true} {
+		for _, value := range []string{"true", "false", "null"} {
+			t.Run(fmt.Sprintf("byName=%t/%s", byName, value), func(t *testing.T) {
+				instance := sampleInstance()
+				fc := newFakeClient(instance)
+				h := &InstanceHandler{Kube: kube.NewClient(fc)}
+				before, err := h.Kube.GetInstance(context.Background(), instance.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := withClaims(httptest.NewRequest(http.MethodPatch, "/api/v1/instance",
+					bytes.NewBufferString(`{"uid":"agent-alice","resourceVersion":"1","teamsEnabled":`+value+`}`)), "alice", "Example", "alice@example.com")
+				request.SetPathValue("name", instance.Name)
+				response := httptest.NewRecorder()
+				if byName {
+					h.UpdateInstanceByName(response, request)
+				} else {
+					h.UpdateInstance(response, request)
+				}
+				if response.Code != http.StatusBadRequest || errorCode(t, response) != "invalid_body" {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				after, err := h.Kube.GetInstance(context.Background(), instance.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(before, after) {
+					t.Fatal("rejected retired field mutated the Agent")
+				}
+			})
 		}
 	}
 }

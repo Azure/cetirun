@@ -52,7 +52,7 @@ The root [Makefile]({{< repo "Makefile" >}}) and
 
 | Command | Scope |
 | --- | --- |
-| `make test` | Go, frontend, auth/Teams, CI helper, and script tests |
+| `make test` | Go, frontend, auth/runtime, CI helper, and script tests |
 | `make lint` | License headers, Python syntax, Go vet, frontend types, all five charts, Bicep, shell, and selected workflows |
 | `make check` | `make lint` and `make test`; documentation is separate |
 | `make chart-check` | Runtime chart for both agents, operator, Portal, Istio, and platform charts, plus runtime/platform/Istio render regressions |
@@ -84,5 +84,5 @@ bundle when changing the Portal.
 
 Use an authorized test environment to verify RuntimeClass availability,
 storage provisioning, image access, Istio authentication, provider entitlement,
-Teams permissions, and Tailscale connectivity. Local rendering does not
+and Tailscale connectivity. Local rendering does not
 exercise these integrations.

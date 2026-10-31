@@ -60,7 +60,7 @@ test("OpenClaw treats only the owner's operator turns as private", () => {
     ["operator input marked as a person's input", controlUiContext({ inputProvenance: { kind: "external_user", sourceChannel: "fixture" } }), true],
     ["local CLI turn", controlUiContext({ messageProvider: "cli", channel: "cli" }), true],
     ["channel direct message a channel plugin marks as the owner",
-      channelContext("msteams", "direct", { channelContext: { sender: { id: "fixture-sender", isOwner: true }, chat: { id: "fixture-conversation", type: "direct" } } }), true],
+      channelContext("slack", "direct", { channelContext: { sender: { id: "fixture-sender", isOwner: true }, chat: { id: "fixture-conversation", type: "direct" } } }), true],
     ["another Gateway client, such as the public webchat client", controlUiContext({ senderId: "webchat-ui" }), false],
     ["heartbeat", controlUiContext({ trigger: "heartbeat" }), false],
     ["cron job", controlUiContext({ trigger: "cron", jobId: "fixture-job", sessionKey: "agent:main:cron:fixture-job:run:fixture-run" }), false],
@@ -74,7 +74,7 @@ test("OpenClaw treats only the owner's operator turns as private", () => {
     ["webchat turn routed to another channel", controlUiContext({ channel: "slack" }), false],
     ["voice transcript from a paired node", controlUiContext({ messageProvider: "node", channel: "node",
       inputProvenance: { kind: "external_user", sourceChannel: "voice", sourceTool: "gateway.voice.transcript" } }), false],
-    ["channel direct message", channelContext("msteams", "direct"), false],
+    ["channel direct message", channelContext("slack", "direct"), false],
     ["channel message without a chat type", channelContext("telegram"), false],
     ["group chat", channelContext("slack", "group"), false],
   ];

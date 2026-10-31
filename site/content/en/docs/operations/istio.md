@@ -303,8 +303,6 @@ does not reconfigure the independent Istio release. See the
 | --- | --- |
 | `authPolicy.authExemptPrefixes` | Host prefixes bypassing OAuth2 Proxy |
 | `authPolicy.aliasExemptPrefixes` | Present in values, but unused by the ownership filter |
-| `authPolicy.webhookBypassPaths` | POST-only apex `/<instance>/api/messages` template |
-| `authPolicy.legacySubdomainWebhookBypassPaths` | Exact POST-only `/api/messages` path on legacy instance subdomains |
 
 Both prefix lists contain `oauth2` and `llmapi`. `authExemptPrefixes` bypasses
 OAuth2 Proxy for those subdomain hosts, while `aliasExemptPrefixes` prevents
@@ -317,36 +315,60 @@ also exempts apex `/oauth2/*`, `/healthz`, and `/readyz`. The ownership filter's
 static portal-path exclusions are separate from OAuth exemptions; skipping
 an ownership call does not by itself skip sign-in.
 
-The apex webhook default is `["/{*}/api/messages"]`. Istio's `{*}` URI
-template matches exactly one path segment, so only
-`POST /<instance>/api/messages` is exempted. The legacy subdomain exception is
-the exact path `/api/messages`; neither setting is a suffix wildcard. For a
-live per-instance VirtualService, the exact
-`POST /<instance>/api/messages` route goes to the Teams webhook if enabled,
-or returns 404 if disabled. Non-POST requests to the suffix go through
-OAuth2 Proxy.
-
-Suspended or nonexistent instances have no per-instance VirtualService. Do not
-promise a fixed 404 or a Bot adapter for every matching URL. See the
-[route implementation]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}).
-Set both webhook bypass lists to `[]` to remove the exceptions entirely.
-Applications behind exceptions must perform their own request authentication.
-
 ## Egress and logging
 
-The chart adds ServiceEntries, access logging, and blacklist filters in the
+The chart adds ServiceEntries and access logging in the
 Istio root namespace. Access logging is enabled by default and can include
 destination names. A ServiceEntry list does not by itself create an egress
 allowlist; the chart does not implement a complete outbound allowlist.
-Review configured blacklist rules and their mesh-wide effect.
+These audit resources do not enforce AgentPolicy. Guest-external network
+controls and approved Pod-local visible-SNI capture belong to each Agent's
+common Sandbox execution pipeline.
 
 The agent NetworkPolicy permits external IPv4 egress except blocked ranges;
 it does not restrict all external traffic to HTTPS. Its configured
 `allowedInternalCIDRs` are additional allow rules, so private-range exclusions
-are not absolute. Review or replace that environment-specific list. The
-[blacklist filter]({{< repo "infra/istio/templates/egress/blacklist.yaml" >}})
-matches configured TLS SNI/IP destinations; it is not a complete domain or
-application-level egress boundary.
+are not absolute. Review or replace that environment-specific list.
+
+### Retired shared blacklist
+
+The mesh-wide `egress.blacklist` filter and values have been removed. Supplying
+that retired values key, including `enabled: false`, now fails chart rendering
+instead of silently ignoring a former enforcement setting. Remove it from your
+reviewed configuration. Do not use `--reuse-values` from an older release;
+upgrade with `--reset-values -f <reviewed-values.yaml>` and retain the required
+TLS/OIDC, owner, routing, header and logging configuration.
+
+Before removing old enforcement, qualify the required AgentPolicy network
+outcomes on your supported runtime profiles. The old filter's
+`helm.sh/resource-policy: keep` annotation means neither removing its template
+nor uninstalling the release proves it is gone.
+
+After upgrading, run the explicit
+[cleanup helper]({{< repo "scripts/cetirun-istio-cleanup.py" >}}) with your
+approved target coordinates. Its default action is read-only:
+
+```bash
+python3 scripts/cetirun-istio-cleanup.py \
+  --kubeconfig /path/to/test-kubeconfig --context test-cluster \
+  --cluster-uid '<observed-kube-system-uid>' \
+  --release cetirun-istio --release-namespace cetirun-istio \
+  --legacy-namespace aks-istio-system
+```
+
+Review the returned object UID/resourceVersion, then rerun with `--apply`,
+`--expected-uid '<reviewed-uid>'` and
+`--expected-resource-version '<reviewed-resource-version>'`. Add
+`--after-uninstall` only after Helm confirms the exact release no longer
+exists. The helper checks cluster identity, release state, current manifest,
+Helm ownership and the retired filter's shape. It issues one conditional
+deletion and verifies absence. A foreign/replaced/changed object, failed
+release, conflicting deletion or lost reply is not silently retried.
+
+No cleanup hook runs automatically. The helper never lists or deletes unrelated
+filters, strips finalizers, changes the shared authorization provider, or removes
+the retained ServiceEntries/access logging. Do not publish its environment-
+specific receipt or Helm values; record only sanitized outcomes.
 
 ## Inspect, upgrade, or remove
 
@@ -365,6 +387,6 @@ contain certificate or cookie material, so do not dump them into reports.
 
 An upgrade can affect every instance. Review changed values and the external
 authorization patch before applying. Uninstalling Helm does not remove the
-external authorization provider from the managed ConfigMap; the blacklist
-filter also has a keep policy. Plan those residual resources and the shared
+external authorization provider from the managed ConfigMap; an older kept
+blacklist needs the explicit cleanup above. Plan residual resources and the shared
 access impact explicitly. Do not blindly remove a shared provider.

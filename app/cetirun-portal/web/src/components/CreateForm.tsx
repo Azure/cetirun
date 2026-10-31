@@ -30,7 +30,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const [team, setTeam] = useState("");
   const [gatewayToken, setGatewayToken] = useState("");
   const [tailscaleAuthKey, setTailscaleAuthKey] = useState("");
-  const [teamsEnabled, setTeamsEnabled] = useState(false);
   const [agentIdentityEnabled, setAgentIdentityEnabled] = useState(false);
   const [privateRegistry, setPrivateRegistry] = useState(false);
   const [registryUsername, setRegistryUsername] = useState("");
@@ -91,7 +90,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       setImage("");
       setGatewayToken("");
       setTailscaleAuthKey("");
-      setTeamsEnabled(false);
       setAgentIdentityEnabled(false);
       setWebUI(false);
       setPort("");
@@ -143,7 +141,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       gatewayToken: !custom ? gatewayToken || undefined : undefined,
       tailscaleAuthKey: !custom ? tailscaleAuthKey || undefined : undefined,
       model: gatewayModels && !custom ? gatewayModel || undefined : undefined,
-      teamsEnabled: !custom ? teamsEnabled || undefined : undefined,
       agentIdentityEnabled: effectiveIdentity || undefined,
       modelAccess: gatewayModels ? { sharedModels: effectiveShared, githubCopilot: effectiveCopilot } : undefined,
     });
@@ -193,7 +190,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
             setPort("");
             setGatewayToken("");
             setTailscaleAuthKey("");
-            setTeamsEnabled(false);
             setAgentIdentityEnabled(false);
             setWebUI(false);
             setValidationError("");
@@ -347,12 +343,6 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           />
         </Field>
       )}
-
-      {!custom && <Switch
-        checked={teamsEnabled}
-        onChange={(_, data) => setTeamsEnabled(!!data.checked)}
-        label="Enable Microsoft Teams Integration"
-      />}
 
       {identitySupported && options?.agentIdentity.allowed && (
         <Switch

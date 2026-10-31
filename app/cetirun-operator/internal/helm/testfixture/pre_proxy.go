@@ -101,6 +101,9 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			assets[file.Name] = &file.Data
 		}
 	}
+	if err := restoreRemovedTeamsAssets(assets); err != nil {
+		return err
+	}
 
 	// Reverse the Gateway-only source changes before checking the immutable
 	// historical assets. These bytes are test inputs, never release defaults.
@@ -499,6 +502,127 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			return fmt.Errorf("pre-proxy fixture %s differs from the original chart asset", name)
 		}
 		*data = original
+	}
+	return nil
+}
+
+func restoreRemovedTeamsAssets(assets map[string]*[]byte) error {
+	replace := func(name, old, new string) error {
+		data := assets[name]
+		if data == nil || bytes.Count(*data, []byte(old)) != 1 {
+			return fmt.Errorf("pre-proxy fixture requires the current Teams removal point in %s", name)
+		}
+		*data = bytes.Replace(*data, []byte(old), []byte(new), 1)
+		return nil
+	}
+	if err := replace("templates/_sandbox.tpl", `{{- if or (not $reconciled) (include "cetirun.tailscaleEnabled" .) -}}`, `{{- if or (not $reconciled) (include "cetirun.tailscaleEnabled" .) (gt (int .Values.msteamsWebhookPort) 0) -}}`); err != nil {
+		return err
+	}
+	const teamsPlugin = `{{- $msteamsAuthType := default "" .Values.msteamsAuthType }}
+{{- if or
+      (and
+        (gt (int .Values.msteamsWebhookPort) 0)
+        .Values.secrets.msteamsAppId
+        .Values.secrets.msteamsTenantId
+        (or
+          (and (or (eq $msteamsAuthType "") (eq $msteamsAuthType "secret")) .Values.secrets.msteamsAppPassword)
+          (or (eq $msteamsAuthType "managedIdentity") (eq $msteamsAuthType "certificate"))
+        )
+      )
+      (and (gt (int .Values.msteamsWebhookPort) 0) .Values.secrets.existingSecret)
+    }}
+{{- $_ := set $pluginEntries "msteams" (dict "enabled" true) }}
+{{- end }}
+`
+	if err := replace("agents/openclaw/config/native.tpl", `{{- /* Enable ACPX plugin when acpx.enabled is true */}}`, teamsPlugin+`{{- /* Enable ACPX plugin when acpx.enabled is true */}}`); err != nil {
+		return err
+	}
+	if err := replace("agents/openclaw/config/native.tpl", `{{- if $pluginEntries }}
+{{- $plugins := dig "plugins" (dict) $config }}`, `{{- if or $pluginEntries (gt (int .Values.msteamsWebhookPort) 0) }}
+{{- $plugins := dig "plugins" (dict) $config }}`); err != nil {
+		return err
+	}
+	const teamsAllow = `{{- /* Plugins (msteams, acpx) are npm-installed and auto-discovered — only allowlist needed */}}
+{{- if gt (int $.Values.msteamsWebhookPort) 0 }}
+{{- if not (has "msteams" $pluginsAllow) }}
+{{- $pluginsAllow = append $pluginsAllow "msteams" }}
+{{- $_ := set $plugins "allow" $pluginsAllow }}
+{{- end }}
+{{- end }}
+`
+	if err := replace("agents/openclaw/config/native.tpl", `{{- end }}
+{{- $_ := set $config "plugins" $plugins }}
+{{- end }}
+{{- /* Fix Telegram connectivity`, `{{- end }}
+`+teamsAllow+`{{- $_ := set $config "plugins" $plugins }}
+{{- end }}
+{{- /* Fix Telegram connectivity`); err != nil {
+		return err
+	}
+	const teamsChannel = `{{- /* Configure msteams channel when webhook port is set AND credentials are available */}}
+{{- if and (gt (int $.Values.msteamsWebhookPort) 0) (or (and .Values.secrets.msteamsAppId .Values.secrets.msteamsTenantId) .Values.secrets.existingSecret) }}
+{{- $msteams := dig "msteams" (dict) $channels }}
+{{- $_ := set $msteams "enabled" true }}
+{{- $_ := set $msteams "dmPolicy" "allowlist" }}
+{{- $_ := set $msteams "groupPolicy" "allowlist" }}
+{{- $_ := set $msteams "replyStyle" "thread" }}
+{{- $_ := set $msteams "webhook" (dict "port" (int $.Values.msteamsWebhookPort) "path" "/api/messages") }}
+{{- $_ := set $channels "msteams" $msteams }}
+{{- end }}
+`
+	if err := replace("agents/openclaw/config/native.tpl", `{{- if $channels }}
+{{- $_ := set $config "channels" $channels }}`, teamsChannel+`{{- if $channels }}
+{{- $_ := set $config "channels" $channels }}`); err != nil {
+		return err
+	}
+	const teamsSecrets = `                "msteamsAppId": {
+                    "type": "string",
+                    "description": "Microsoft Teams app ID",
+                    "default": ""
+                },
+                "msteamsAppPassword": {
+                    "type": "string",
+                    "description": "Microsoft Teams app password",
+                    "default": ""
+                },
+                "msteamsTenantId": {
+                    "type": "string",
+                    "description": "Microsoft Teams tenant ID",
+                    "default": ""
+                },
+`
+	if err := replace("values.schema.json", `                "braveApiKey": {`, teamsSecrets+`                "braveApiKey": {`); err != nil {
+		return err
+	}
+	const teamsValues = `        "msteamsWebhookPort": {
+            "type": "integer",
+            "description": "MS Teams webhook listener port (0 = disabled, set by operator when spec.msteams is configured)",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 65535
+        },
+        "msteamsAuthType": {
+            "type": "string",
+            "description": "MS Teams auth type. Empty string uses secret-based auth, \"managedIdentity\" uses Azure Workload Identity, \"certificate\" uses client certificate.",
+            "default": "",
+            "enum": [
+                "",
+                "managedIdentity",
+                "certificate"
+            ]
+        },
+        "msteamsAllowedUsers": {
+            "type": "string",
+            "description": "Comma-separated AAD object IDs allowed to message the Teams bot. Empty allows all (relies on bot-side gating).",
+            "default": ""
+        }
+`
+	if err := replace("values.schema.json", `        }
+    },
+    "allOf": [`, `        },
+`+teamsValues+`    },
+    "allOf": [`); err != nil {
+		return err
 	}
 	return nil
 }

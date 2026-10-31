@@ -89,9 +89,8 @@ func (b *Bundle) applyIngressMTLS(values map[string]any) error {
 	if enabled, present := object("desktop")["enabled"]; present && enabled != plan.Desktop {
 		return fmt.Errorf("mTLS desktop selection differs from platform approval")
 	}
-	if object("tailscale")["enabled"] == true ||
-		object("agentRequest")["tailscaleEnabled"] == true || nonzeroValue(values["msteamsWebhookPort"]) {
-		return fmt.Errorf("mTLS supports registered built-in API, UI, terminal and desktop; Tailscale and webhook ingress must be disabled")
+	if object("tailscale")["enabled"] == true || object("agentRequest")["tailscaleEnabled"] == true {
+		return fmt.Errorf("mTLS supports registered built-in API, UI, terminal and desktop; Tailscale must be disabled")
 	}
 	if enabled, present := object("ttyd")["enabled"]; present && enabled != plan.Terminal {
 		return fmt.Errorf("mTLS terminal selection differs from platform approval")

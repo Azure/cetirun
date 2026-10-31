@@ -35,15 +35,10 @@ used by your deployment.
   controls. A namespace name or a Helm option does not establish that isolation
   is enforced. Restrict who can change custom resources, Helm values, service
   accounts, and the operator or portal.
-- [Teams webhook exceptions](../guides/msteams/) rely on application-level Bot
-  Framework authentication instead of a user's OAuth session.
-  [Tailscale](../guides/tailscale/) adds another access path; configuring it
+- [Tailscale](../guides/tailscale/) adds another access path; configuring it
   does not remove public ingress or the Gateway's own authentication.
 
-The ownership filter defines its own fixed path exemptions and takes the
-POST-only one-segment apex webhook template from
-`authPolicy.webhookBypassPaths`; the legacy subdomain exception is an exact
-path. The Istio
+The ownership filter defines its own fixed path exemptions. The Istio
 templates consume `authPolicy.aliasExemptPrefixes` only to distinguish explicit
 shared subdomain hosts from legacy instance subdomains. They do not consume
 `authPolicy.adminAliases` supplied by the
@@ -154,7 +149,7 @@ agent, provider, browser, tool, or infrastructure collection path.
 Configured model providers and tools can receive prompts, conversation context,
 files, and tool output. GitHub Copilot login and model discovery contact
 authentication and catalog endpoints separately from inference requests.
-Entra ID, Teams, and Tailscale introduce their own service boundaries. Skills,
+Entra ID and Tailscale introduce their own service boundaries. Skills,
 plugins, CLI tools, package registries, and browsed sites create further routes.
 Review each service's terms, retention, training-use settings, and region.
 There is no single CetiRun setting that opts out of all third-party telemetry
@@ -165,8 +160,8 @@ includes an external IPv4 rule without port restrictions, excluding configured
 blocked ranges. Defaults exclude private ranges and IMDS, with explicit internal
 exceptions. It is not HTTPS-only. Review the deployment-specific internal
 exception list before use. The
-[Istio ServiceEntries and blacklist settings]({{< repo "infra/istio/values.yaml" >}})
-are not a complete destination allowlist. Source configuration and access logs
+[Istio ServiceEntries and access-log settings]({{< repo "infra/istio/values.yaml" >}})
+are audit configuration, not a destination allowlist. Source configuration and access logs
 do not prove that unlisted destinations are blocked.
 
 ## Documentation site privacy

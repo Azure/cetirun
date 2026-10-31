@@ -66,7 +66,7 @@ jobs:
         run: make version-check python-check ci-test
 
   python-tests:
-    name: CetiRun auth and Teams tests
+    name: CetiRun auth and runtime tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -82,7 +82,7 @@ jobs:
           cache-dependency-path: scripts/ci/requirements.txt
       - name: Install test dependencies
         run: python3 -m pip install --disable-pip-version-check -r scripts/ci/requirements.txt
-      - name: Test auth and Teams logic without cloud or Hermes runtime
+      - name: Test auth and runtime helpers offline
         run: make python-test
 
   static-checks:

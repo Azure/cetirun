@@ -69,10 +69,6 @@ migration. Retention does not protect against a schema downgrade.
 | `restartRequestID` | Optional retained-restart ID: 16-128 letters, digits, `_` or `-`. Changing it requests a new Pod through normal reconciliation; reusing it does not. Cannot be removed once set or changed while suspended |
 | `plannedMigration` | Opt-in administrator request with `requestID` and destination `target.name`/`target.uid`; common-executor OpenClaw/Hermes and one CSI/RWOP HOME only. An accepted request is immutable until completed; the same ID cannot change its destination |
 | `tailscale.authKeySecretRef` | Required non-empty Secret name when `tailscale` is present; instance-namespace Secret must contain non-empty `TAILSCALE_AUTH_KEY` |
-| `msteams.enabled` | Opt in to Teams provisioning; default false |
-| `msteams.appId` | Optional lowercase UUID client ID; the controller uses it as a fallback after tracked/name-based resolution and app creation |
-| `msteams.tenantId` | Optional lowercase UUID tenant ID; otherwise use operator configuration |
-| `msteams.webhookPort` | `int32`, schema default 3978; the CRD does not constrain its range, so use a valid non-conflicting listener port |
 
 The namespace and release derive from `metadata.name`. For example, `alice`
 uses `cetirun-alice` and `openclaw-alice`. An owner can have a differently named
@@ -83,8 +79,7 @@ Use short DNS-label instance names. Portal creation reserves `oauth2`, `api`,
 explicitly rejects `ui`. Avoid all reserved names rather than relying on
 schema acceptance to establish safe routing.
 
-See [first instance](../../getting-started/first-instance/) for minimal YAML and
-[Teams](../../guides/msteams/) for the optional cloud integration.
+See [first instance](../../getting-started/first-instance/) for minimal YAML.
 
 The operator resolves Hermes and OpenClaw images and ports through the Harness
 interface; their profiles require the `vibe` username. Custom uses a separate
@@ -118,8 +113,8 @@ helm:
 ```
 
 The StorageClass is a deployment prerequisite, not created by this fragment.
-Select a Gateway model with `spec.model`; provider overrides are rejected. In contrast, top-level `replicaCount: 1`,
-`msteamsAllowedUsers: "..."`, or `extraEnv: [...]` under `helm.values` do not
+Select a Gateway model with `spec.model`; provider overrides are rejected. In
+contrast, top-level `replicaCount: 1` or `extraEnv: [...]` under `helm.values` do not
 match this schema. Deployment-wide `cetirun.helmValues` and direct Helm input
 are separate configuration surfaces.
 
@@ -141,7 +136,6 @@ check does not prove that an override will reconcile successfully.
 | `plannedMigration` | Controller-owned source/storage identity and acknowledgement checkpoint; phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, `Completed`. Not a physical-fencing receipt or permission to edit status |
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
-| `msteams` | Teams state, message, resolved app and bot resource identifiers |
 | `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions; for GitHub Copilot, each registered model's Gateway name (`copilot.routes`) and the models left out for lack of a price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`); `modelRouters` lists the Team's smart-routing models and, for an instance with an Agent Policy, the routers configured in the Gateway that the Policy lists, each with `granted`, the `model` name it sends when granted (a Team router's internal name, or a Gateway router's own name), a Team router's configured limits, or the `reason` it is not granted |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
@@ -177,23 +171,12 @@ depends on its validated platform bindings, not just schema acceptance.
 
 Other condition types include `PolicyResolved`, `PolicyApplied`, `Ready`,
 `HelmDeployed`, `IngressReady`, `PodReady`,
-`TailscaleReady`, and `TeamsReady`. Check them independently; overall readiness
-can be true while ingress creation or Teams provisioning failed.
+and `TailscaleReady`. Check them independently; overall readiness
+can be true while ingress creation failed.
 `TailscaleReady` reports that the key was copied, not that a node joined the
 tailnet. `Suspended` skips pod-readiness checks; inspect actual replicas and
 pod termination. The chart permits zero or one replica and restricts any
 enabled HPA to `minReplicas=maxReplicas=1`.
-
-The Teams state schema accepts `Provisioning`, `PendingAppRegistration`,
-`Ready`, `Failed`, and `Deleting`. The controller's missing-OIDC-issuer branch
-attempts to write `Pending`, which is not in that enum; its status update can
-be rejected. Do not wait specifically for `Pending` to diagnose missing OIDC
-configuration. Inspect conditions, events, and a narrowly scoped operator log
-without disclosing credentials.
-
-Teams status may contain `appId`, `appObjectId`, `botResourceId`,
-`servicePrincipalId`, and `appNotFoundSince`. These are deployment identifiers,
-not material to paste into a public bug report.
 
 ## Team
 
@@ -608,7 +591,6 @@ API validation uses these schemas:
 - [Go API types]({{< repo "app/cetirun-operator/api/v1alpha1" "tree" >}})
 - [Reconciler and status writes]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
 - [Helm value and route builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
-- [Teams state handling]({{< repo "app/cetirun-operator/internal/controller/teams.go" >}})
 - [Portal name validation]({{< repo "app/cetirun-portal/internal/handler/instance.go" >}})
 
 Use `agents.cetirun.microsoft.com` and `teams.cetirun.microsoft.com` in scripts

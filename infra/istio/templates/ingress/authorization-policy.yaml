@@ -1,4 +1,4 @@
-{{- include "cetirun-istio.validateWebhookBypasses" . -}}
+{{- include "cetirun-istio.validateOAuthCallback" . -}}
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
@@ -13,19 +13,8 @@ spec:
   action: CUSTOM
   provider:
     name: oauth2-proxy
-  # webhookBypassPaths is a one-segment apex Bot Framework webhook template.
-  # exception, NOT a per-instance allowlist. It exempts webhook-shaped requests from
-  # oauth2-proxy because Teams webhook calls carry a Bot Framework JWT instead of an
-  # oauth2 session. Per-instance enable/disable is enforced by operator-owned
-  # VirtualService routes (a Teams route for enabled instances, an explicit deny route
-  # for everyone else), NOT by editing this policy. Do not add concrete per-instance
-  # paths here.
-  #
-  # The bypass is scoped to POST only: a paired method-guard rule routes all non-POST
-  # requests to the same suffix back through oauth2-proxy, so the webhook suffix cannot
-  # be used as a generic anonymous bypass.
   rules:
-    # Rule 1 — subdomain hosts: normal traffic authenticates; webhook suffixes bypass.
+    # Subdomain hosts authenticate unless explicitly exempted.
     - to:
         - operation:
             ports: ["443"]
@@ -37,14 +26,7 @@ spec:
               - "{{ . }}.{{ $.Values.domain }}"
             {{- end }}
             {{- end }}
-            {{- if .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
-            notPaths:
-            {{- range .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
-              - "{{ . }}"
-            {{- end }}
-            {{- end }}
-    # Rule 2 — apex host: normal traffic authenticates; static base, webhook
-    # suffixes, and apex-only callbacks bypass.
+    # Apex traffic authenticates except health, sign-in, and configured callbacks.
     - to:
         - operation:
             ports: ["443"]
@@ -54,48 +36,21 @@ spec:
               - "/oauth2/*"
               - "/healthz"
               - "/readyz"
-              {{- range .Values.authPolicy.webhookBypassPaths }}
-              - "{{ . }}"
-              {{- end }}
               {{- range .Values.authPolicy.apexPostBypassPaths }}
               - "{{ . }}"
               {{- end }}
               {{- with .Values.authPolicy.oauthCallbackPath }}
               - {{ . | quote }}
               {{- end }}
-    {{- if or .Values.authPolicy.webhookBypassPaths .Values.authPolicy.apexPostBypassPaths }}
-    # Rule 3 — apex host method guard: only POST bypasses these paths.
+    {{- if .Values.authPolicy.apexPostBypassPaths }}
+    # Apex host method guard: only POST bypasses these paths.
     - to:
         - operation:
             ports: ["443"]
             hosts:
               - "{{ .Values.domain }}"
             paths:
-            {{- range .Values.authPolicy.webhookBypassPaths }}
-              - "{{ . }}"
-            {{- end }}
             {{- range .Values.authPolicy.apexPostBypassPaths }}
-              - "{{ . }}"
-            {{- end }}
-            notMethods:
-              - "POST"
-    {{- end }}
-    {{- if .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
-    # Rule 4 — subdomain host method guard (legacy subdomain instances). Remove together
-    # with the subdomain webhook bypass once all instances use the apex path model.
-    - to:
-        - operation:
-            ports: ["443"]
-            hosts:
-              - "*.{{ .Values.domain }}"
-            {{- if .Values.authPolicy.authExemptPrefixes }}
-            notHosts:
-            {{- range .Values.authPolicy.authExemptPrefixes }}
-              - "{{ . }}.{{ $.Values.domain }}"
-            {{- end }}
-            {{- end }}
-            paths:
-            {{- range .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
               - "{{ . }}"
             {{- end }}
             notMethods:

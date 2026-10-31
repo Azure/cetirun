@@ -28,7 +28,7 @@ image, model override, or supported integration settings. Save and Cancel
 remain below the scrollable fields. Port editing is available only for Custom
 Agents, matching the creation form. OpenClaw and Hermes ports are managed by
 the platform runtime and displayed read-only. Web UI applies only to Custom
-Agents with a port; Teams applies only to OpenClaw and Hermes. Clearing the model selects
+Agents with a port. Clearing the model selects
 the platform's default resolution. Agent type, runtime username, resource name,
 owner, Team, Sandbox binding, and Chart version are read-only here. A pinned
 image cannot be cleared. Image changes preserve any existing private registry
@@ -62,7 +62,7 @@ The administrative API uses `/api/v1/admin/instances` for listing and
 per-source errors. Both mutation bodies require the `uid` and `resourceVersion`
 returned by the current detail response. Missing versions return `428`; changed
 or replaced Agents return `409`; accepted deletion returns `202`. `PATCH`
-accepts only `displayName`, `model`, `teamsEnabled`, and the nested `agent.image`,
+accepts only `displayName`, `model`, and the nested `agent.image`,
 `agent.port`, and `agent.webUI` fields, alongside those version fields.
 `agent.port` and `agent.webUI` are accepted only for Custom Agents; sending
 either field for a built-in Agent returns `400`, including attempts to clear it.
@@ -70,6 +70,14 @@ Administrative mutation logs record the actor, target, changed field names, and
 HTTP result without recording configuration values or request bodies.
 
 ## Inspect before changing
+
+Microsoft Teams integration has been removed. Before upgrading an older
+Teams-enabled deployment, retire its Azure Bot, application registration and
+federated credentials using the previous version and retain the resource
+inventory. The new Operator removes the Teams API fields and no longer performs
+cloud cleanup. New runtime initializers remove saved Teams channel and plugin
+references from HOME while preserving other configuration; they do not delete
+cloud resources or conversation files.
 
 Replace `alice` and `cetirun-alice` with your instance name and its reported
 namespace. These commands inspect cluster resources without changing them:
@@ -84,8 +92,7 @@ kubectl get virtualservice cetirun-alice -n cetirun-alice
 
 The controller waits for the StatefulSet's updated replicas, ready replicas,
 and observed generation before setting overall `Ready`. Ingress creation is
-best-effort and Teams errors are non-blocking, so also check `IngressReady`
-and, if enabled, `TeamsReady`. A displayed access URL or overall `Ready` is
+best-effort, so also check `IngressReady`. A displayed access URL or overall `Ready` is
 not a successful request through the gateway.
 
 Probe paths differ by runtime:
@@ -97,8 +104,7 @@ Probe paths differ by runtime:
 | Custom with a port | `/healthz` on the declared port | Readiness uses `/healthz`; no liveness probe |
 | Headless Custom | None | No HTTP probes |
 
-These are pod probes, not checks of Entra login, model entitlement, Teams
-delivery, or tailnet reachability. See the
+These are pod probes, not checks of Entra login, model entitlement, or tailnet reachability. See the
 [OpenClaw]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}})
 and [Hermes]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
 probe templates.
@@ -188,7 +194,7 @@ idle-suspend/resume policy in this controller.
 
 Resume by setting `suspended` to `false`. Reconciliation must restore both the
 workload and routing before handing access back to the user.
-Suspension does not delete Teams cloud resources or revoke a tailnet device.
+Suspension does not revoke a tailnet device.
 
 ## Restart while retaining HOME
 
@@ -292,7 +298,11 @@ failover. Portal disables retained restart while migration is pending.
 Before a request is captured, a transient authorization outage can stop the
 source. Once authorization recovers, normal reconciliation restores the current
 running configuration before retrying capture; it does not apply the new target
-early or discard a previous completed destination pin. After capture, source
+early or discard a previous completed destination pin. A stale Agent `Ready`
+observation does not prevent this recovery when the owned source StatefulSet
+is scaled down or its readiness has not converged. The request remains
+uncaptured until the actual source is stable; ownership, authorization,
+suspension and target checks still apply. After capture, source
 observations must be protected before any hold stops compute. Suspension remains
 pending if a source read or protection write fails during `Protecting`, and
 retries continue the same request when those operations recover. These retries
@@ -381,8 +391,8 @@ for it to disappear; it does not execute Helm uninstall hooks. Missing records
 or changed ownership block cleanup. Do not remove these finalizers to bypass
 the ownership check.
 
-Deleting a built-in `Agent` invokes finalizer cleanup: it attempts Teams
-cleanup and Helm uninstall, then route and namespace deletion. Some cleanup
+Deleting a built-in `Agent` invokes finalizer cleanup: it attempts Helm
+uninstall, then route and namespace deletion. Some cleanup
 errors are logged without blocking finalizer removal, and namespace deletion
 is asynchronous. A disappeared custom resource therefore does not prove that
 all Kubernetes or Azure resources are gone. Verify them separately under the
@@ -397,5 +407,4 @@ Do not remove finalizers merely to hide a blocked cleanup.
 
 Sources: [instance controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [value builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
-[chart validation]({{< repo "app/cetirun-chart/templates/_helpers.tpl" >}}),
-and [Teams cleanup]({{< repo "app/cetirun-operator/internal/controller/teams.go" >}}).
+and [chart validation]({{< repo "app/cetirun-chart/templates/_helpers.tpl" >}}).

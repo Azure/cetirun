@@ -357,24 +357,10 @@ customRuntime:
       Do not store passwords, tokens or authentication responses. Never write memory
       into the read-only skills directory or shared storage.
 
-# -- Azure configuration for Teams auto-provisioning.
-# Only required when instances use msteams.enabled=true.
+# -- Azure workload identity configuration for the Operator.
 azure:
-  # -- Azure subscription ID for Bot Service resources.
-  subscriptionId: ""
-  # -- Resource group for Bot Service resources.
-  resourceGroup: ""
-  # -- Name prefix for Bot Service and AAD app registrations (<prefix>-<alias>).
-  botNamePrefix: ""
-  # -- Azure AD tenant ID for bot app registrations.
-  tenantId: ""
-  # -- Optional serviceManagementReference for AAD app registrations.
-  serviceTreeId: ""
   # -- Client ID of the operator's managed identity (enables workload identity).
   clientId: ""
-  # -- FIC Issuer IDs mapping (JSON object: {"tenantId":"issuerId",...}).
-  # Used when the tenant requires a trusted issuer for Federated Identity Credentials.
-  ficIssuerIds: ""
 memoryContext:
   # -- Install Memory for Agents with a compatible pinned Chart. Request-level restrictions still apply.
   enabled: true

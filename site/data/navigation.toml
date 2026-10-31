@@ -43,7 +43,6 @@
   [[modules.groups]]
     title = "Integrations"
     pages = [
-      "/docs/guides/msteams",
       "/docs/guides/tailscale",
     ]
 

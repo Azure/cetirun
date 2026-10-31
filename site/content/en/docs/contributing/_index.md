@@ -54,7 +54,7 @@ review routing; ask maintainers to arrange review for the affected area.
    link the agreed issue or proposal.
 
 Run local tests before submitting a change. Cloud deployment, model-provider
-access, and Teams/Tailscale integration need separate tests in an authorized
+access, and Tailscale integration need separate tests in an authorized
 environment; security review remains separate from test results.
 Contributors do not need cloud credentials or publishing access.
 

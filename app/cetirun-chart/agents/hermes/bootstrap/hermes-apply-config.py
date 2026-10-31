@@ -233,6 +233,10 @@ def main() -> int:
         generated = read_yaml(args.config)
         generated_env = read_env(args.env)
         desired_config = merge(existing_config, generated)
+        platforms = desired_config.get("platforms")
+        if isinstance(platforms, dict) and "cetirun_teams" in platforms:
+            # Detach YAML aliases before retiring the removed adapter reference.
+            desired_config["platforms"] = {key: value for key, value in platforms.items() if key != "cetirun_teams"}
         reconcile_memory_lists(existing_config, generated, desired_config)
         desired_config = apply_gateway(desired_config, generated)
         for key, value in generated_env.items():

@@ -958,21 +958,6 @@
                     "description": "Feishu (Lark) app secret",
                     "default": ""
                 },
-                "msteamsAppId": {
-                    "type": "string",
-                    "description": "Microsoft Teams app ID",
-                    "default": ""
-                },
-                "msteamsAppPassword": {
-                    "type": "string",
-                    "description": "Microsoft Teams app password",
-                    "default": ""
-                },
-                "msteamsTenantId": {
-                    "type": "string",
-                    "description": "Microsoft Teams tenant ID",
-                    "default": ""
-                },
                 "braveApiKey": {
                     "type": "string",
                     "description": "Brave Search API key (enables web search)",
@@ -1618,28 +1603,6 @@
                     "default": true
                 }
             }
-        },
-        "msteamsWebhookPort": {
-            "type": "integer",
-            "description": "MS Teams webhook listener port (0 = disabled, set by operator when spec.msteams is configured)",
-            "default": 0,
-            "minimum": 0,
-            "maximum": 65535
-        },
-        "msteamsAuthType": {
-            "type": "string",
-            "description": "MS Teams auth type. Empty string uses secret-based auth, \"managedIdentity\" uses Azure Workload Identity, \"certificate\" uses client certificate.",
-            "default": "",
-            "enum": [
-                "",
-                "managedIdentity",
-                "certificate"
-            ]
-        },
-        "msteamsAllowedUsers": {
-            "type": "string",
-            "description": "Comma-separated AAD object IDs allowed to message the Teams bot. Empty allows all (relies on bot-side gating).",
-            "default": ""
         }
     },
     "allOf": [

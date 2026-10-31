@@ -71,7 +71,7 @@ func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 		return fmt.Errorf("%w: native execution requires OpenClaw, Kata and ReadWriteOncePod HOME", sandboxpolicy.ErrUnsupportedControl)
 	}
 	if !agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() ||
-		agent.Spec.Tailscale != nil || agent.Spec.MSTeams != nil || agentIdentityRequested(agent) ||
+		agent.Spec.Tailscale != nil || agentIdentityRequested(agent) ||
 		policy.EntraID.Enabled || policy.KubernetesAccess != nil || len(agent.Spec.Helm.Values) != 0 {
 		return fmt.Errorf("%w: native execution supports shared Gateway models without sidecars, identity grants or Helm overrides", sandboxpolicy.ErrUnsupportedControl)
 	}

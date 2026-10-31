@@ -41,7 +41,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), [DEVELOPMENT.md](DEVELOPMENT.md), and
 
 - `app/cetirun-chart/Chart.yaml` is the default release-version source. For an
   official version change, run `make set-version VERSION=X.Y.Z`; do not update
-  individual Chart, Go, Portal, or Teams version fields by hand.
+  individual Chart, Go, or Portal version fields by hand.
 - Validate the synchronized source with `make check`. Operator and Portal Go
   binaries receive the release version and Git commit during Makefile, Docker,
   and release-workflow builds.

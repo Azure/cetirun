@@ -296,17 +296,13 @@ def workflow_gate(root):
 
 
 def python_tests(root):
-    for source in (
-        "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/test_adapter.py",
-        "scripts/ci/python_safety.py",
-    ):
-        require_file(root / source)
-    # Fail missing packages rather than replacing the real HTTP/JWT libraries.
+    require_file(root / "scripts/ci/python_safety.py")
+    # Fail missing packages rather than replacing the real HTTP and YAML libraries.
     run(
         [
             sys.executable,
             "-c",
-            "import pytest, aiohttp, httpx, jwt, yaml, azure.identity",
+            "import pytest, aiohttp, yaml",
         ],
         root,
         env=offline_env(),
@@ -328,7 +324,6 @@ def python_tests(root):
             "no:cacheprovider",
             "-q",
             "app/cetirun-chart/tests",
-            "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/test_adapter.py",
         ],
         root,
         env=env,

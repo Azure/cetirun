@@ -4,8 +4,6 @@
 package handler
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,7 +21,6 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/copilot"
-	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler/teamsapp"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -88,7 +85,6 @@ type CreateInstanceRequest struct {
 	GatewayToken         string                    `json:"gatewayToken,omitempty"`
 	TailscaleAuthKey     string                    `json:"tailscaleAuthKey,omitempty"`
 	Model                string                    `json:"model,omitempty"`
-	TeamsEnabled         bool                      `json:"teamsEnabled,omitempty"`
 	AgentIdentityEnabled bool                      `json:"agentIdentityEnabled,omitempty"`
 	// ModelAccess selects Gateway model sources for every Agent harness.
 	ModelAccess *ModelAccessRequest `json:"modelAccess,omitempty"`
@@ -124,10 +120,6 @@ type InstanceResponse struct {
 	CreatedAt                   string                      `json:"createdAt"`
 	LastReconciled              string                      `json:"lastReconciled,omitempty"`
 	UpgradeAvailable            bool                        `json:"upgradeAvailable"`
-	TeamsEnabled                bool                        `json:"teamsEnabled"`
-	TeamsState                  string                      `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
-	TeamsAppID                  string                      `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
-	TeamsMessage                string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
 	AgentIdentity               *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
 	AIGateway                   *AIGatewayResponse          `json:"aiGateway,omitempty"`
 }
@@ -424,45 +416,6 @@ func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// DownloadTeamsAppByName handles GET /api/v1/instances/{name}/teams-app.
-func (h *InstanceHandler) DownloadTeamsAppByName(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	name := r.PathValue("name")
-	if name == "" {
-		http.Error(w, "missing instance name", http.StatusBadRequest)
-		return
-	}
-
-	instance, err := h.Kube.GetInstanceByName(r.Context(), name)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
-		return
-	}
-	if !ownsInstance(instance, claims) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	// Reuse the original DownloadTeamsApp logic by temporarily setting the instance in context
-	// via a sub-request, but since that's complex we inline the logic here.
-	if instance.Spec.MSTeams == nil || !instance.Spec.MSTeams.Enabled {
-		writeError(w, http.StatusNotFound, "teams_not_enabled", "Teams integration is not enabled on this instance")
-		return
-	}
-	if instance.Status.MSTeams == nil || instance.Status.MSTeams.State != "Ready" || instance.Status.MSTeams.AppID == "" {
-		writeError(w, http.StatusConflict, "teams_not_ready",
-			"Teams integration is not yet ready. Current state: "+teamsStateOrUnknown(instance))
-		return
-	}
-
-	// Delegate to the shared helper used by DownloadTeamsApp.
-	h.serveTeamsApp(w, instance)
-}
-
 // InternalAuth handles GET /internal/auth
 // Called by the Istio EnvoyFilter Lua script to verify instance ownership.
 // Returns 200 OK if alias owns the instance, 403 Forbidden otherwise.
@@ -533,7 +486,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if agent.Type == cetirunv1alpha1.AgentTypeCustom && hasNativeCreateFields(fields) {
-		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token, Teams or Tailscale settings")
+		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token or Tailscale settings")
 		return
 	}
 	if agent.Type == cetirunv1alpha1.AgentTypeCustom && req.AgentIdentityEnabled {
@@ -674,7 +627,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 			registryauth.Operation: id,
 		}
 	}
-	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled, options)
+	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), options)
 	if err != nil {
 		if kube.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "instance_exists",
@@ -711,7 +664,6 @@ type UpdateInstanceRequest struct {
 	Team             *string            `json:"team,omitempty"`
 	GatewayToken     *string            `json:"gatewayToken,omitempty"`
 	TailscaleAuthKey *string            `json:"tailscaleAuthKey,omitempty"`
-	TeamsEnabled     *bool              `json:"teamsEnabled,omitempty"`
 	Model            *string            `json:"model,omitempty"`
 }
 
@@ -855,15 +807,6 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		}
 	}
 
-	// Teams integration status
-	if instance.Spec.MSTeams != nil {
-		resp.TeamsEnabled = instance.Spec.MSTeams.Enabled
-	}
-	if instance.Status.MSTeams != nil {
-		resp.TeamsState = instance.Status.MSTeams.State
-		resp.TeamsAppID = instance.Status.MSTeams.AppID
-		resp.TeamsMessage = instance.Status.MSTeams.Message
-	}
 	if instance.Spec.AgentIdentity != nil {
 		resp.AgentIdentity = &AgentIdentityResponse{Enabled: instance.Spec.AgentIdentity.Enabled}
 		if instance.Status.AgentIdentity != nil {
@@ -901,130 +844,6 @@ func (h *InstanceHandler) GetInstanceStatus(w http.ResponseWriter, r *http.Reque
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	r.SetPathValue("name", claims.Alias)
 	h.GetInstanceStatusByName(w, r)
-}
-
-// DownloadTeamsApp handles GET /api/v1/instance/teams-app.
-// Returns a ZIP containing a Teams app manifest with the instance's Application ID
-// and display name substituted, plus bot icons.
-func (h *InstanceHandler) DownloadTeamsApp(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	r.SetPathValue("name", claims.Alias)
-	h.DownloadTeamsAppByName(w, r)
-}
-
-// serveTeamsApp builds and writes the Teams app ZIP for the given instance.
-func (h *InstanceHandler) serveTeamsApp(w http.ResponseWriter, instance *cetirunv1alpha1.Agent) {
-	appID := instance.Status.MSTeams.AppID
-	displayName := instance.Spec.User.DisplayName
-
-	// Read manifest template from embedded assets.
-	manifestBytes, err := teamsapp.Assets.ReadFile("manifest.json")
-	if err != nil {
-		slog.Error("Failed to read embedded manifest template", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
-		return
-	}
-
-	// Parse manifest template as JSON and substitute fields safely.
-	var manifestObj map[string]any
-	if err := json.Unmarshal(manifestBytes, &manifestObj); err != nil {
-		slog.Error("Failed to parse manifest template", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
-		return
-	}
-
-	// Set application ID.
-	manifestObj["id"] = appID
-
-	// Build display names, applying rune-aware truncation only to fullName.
-	shortName := "CetiRun Bot"
-	fullName := "CetiRun Teams Bot for " + displayName
-	fullNameRunes := []rune(fullName)
-	if len(fullNameRunes) > 100 {
-		fullName = string(fullNameRunes[:100])
-	}
-
-	nameObj, ok := manifestObj["name"].(map[string]any)
-	if !ok {
-		slog.Error("Failed to parse manifest template", "error", "missing or invalid name object")
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
-		return
-	}
-	nameObj["short"] = shortName
-	nameObj["full"] = fullName
-
-	descObj, _ := manifestObj["description"].(map[string]any)
-	if descObj != nil {
-		descObj["short"] = fullName
-	}
-
-	// Set bot ID.
-	if bots, ok := manifestObj["bots"].([]any); ok && len(bots) > 0 {
-		if bot, ok := bots[0].(map[string]any); ok {
-			bot["botId"] = appID
-		}
-	}
-
-	manifestJSON, err := json.MarshalIndent(manifestObj, "", "  ")
-	if err != nil {
-		slog.Error("Failed to encode manifest", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
-		return
-	}
-
-	// Build ZIP in memory.
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-
-	if err := addFileToZip(zw, "manifest.json", manifestJSON); err != nil {
-		slog.Error("Failed to add manifest to ZIP", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
-		return
-	}
-
-	for _, name := range []string{"color.png", "outline.png"} {
-		data, err := teamsapp.Assets.ReadFile(name)
-		if err != nil {
-			slog.Error("Failed to read embedded asset", "name", name, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
-			return
-		}
-		if err := addFileToZip(zw, name, data); err != nil {
-			slog.Error("Failed to add asset to ZIP", "name", name, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
-			return
-		}
-	}
-
-	if err := zw.Close(); err != nil {
-		slog.Error("Failed to finalize ZIP", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="cetirun-teams-app.zip"`)
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-	w.Write(buf.Bytes())
-}
-
-func addFileToZip(zw *zip.Writer, name string, data []byte) error {
-	fw, err := zw.Create(name)
-	if err != nil {
-		return err
-	}
-	_, err = fw.Write(data)
-	return err
-}
-
-func teamsStateOrUnknown(instance *cetirunv1alpha1.Agent) string {
-	if instance.Status.MSTeams != nil && instance.Status.MSTeams.State != "" {
-		return instance.Status.MSTeams.State
-	}
-	return "Unknown"
 }
 
 func toEventItems(events []corev1.Event) []EventItem {

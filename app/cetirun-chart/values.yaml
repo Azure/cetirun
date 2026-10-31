@@ -39,13 +39,6 @@ image:
   # When set, the image reference becomes repository:tag@digest.
   digest: ""
 
-# -- MS Teams webhook port (0 = disabled, set by operator when spec.msteams is configured)
-msteamsWebhookPort: 0
-# -- MS Teams auth type: "" (use secret), "managedIdentity", or "certificate"
-msteamsAuthType: ""
-# -- Comma-separated AAD object IDs allowed to message the Teams bot
-msteamsAllowedUsers: ""
-
 # -- Image pull secrets for private registries
 imagePullSecrets: []
 
@@ -465,10 +458,6 @@ secrets:
   existingSecret: ""
   # -- Secret annotations
   annotations: {}
-  # -- Microsoft Teams channel credentials
-  msteamsAppId: ""
-  msteamsAppPassword: ""
-  msteamsTenantId: ""
   # -- Web search API keys (enables tools.web.search when set)
   # Brave Search - structured results with free tier
   braveApiKey: ""

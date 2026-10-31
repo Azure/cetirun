@@ -200,13 +200,8 @@ underlying PV's reclaim policy.
 | `aiGateway.enabled`, `aiGateway.keySecretName` | Gateway access is required; the Operator supplies the Agent virtual-key Secret |
 | `secrets.openclawGatewayToken` | Empty; required for standalone OpenClaw without `existingSecret` |
 | `secrets.braveApiKey`, `secrets.perplexityApiKey` | Optional web search provider credentials |
-| `secrets.msteamsAppId`, `msteamsAppPassword`, `msteamsTenantId` | Lower-level Teams chart settings |
-| `msteamsWebhookPort`, `msteamsAuthType` | Top-level keys: `0` (off), empty |
-| `msteamsAllowedUsers` | Top-level key: optional permitted Teams user IDs |
 
-The three Teams credential keys are under `secrets`; the port, authentication
-type, and permitted users are not. Use approved secret delivery, not real keys
-in CLI flags. The operator manages an existing gateway Secret for its instances.
+Use approved secret delivery, not real keys in CLI flags. The operator manages an existing gateway Secret for its instances.
 
 `existingSecret` skips [chart-managed Secret creation]({{< repo "app/cetirun-chart/templates/secret.yaml" >}}).
 Direct provider keys are no longer accepted. OpenClaw needs `OPENCLAW_GATEWAY_TOKEN` and `CETIRUN_AUTH_KEY`; Hermes needs
@@ -369,7 +364,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `acrDockerSecret` | Operator-namespace registry Secret for its Helm client |
 | `image` | Operator image pin; `IfNotPresent`, empty tag falls back to `appVersion` |
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
-| `azure.*` | Optional Teams provisioning configuration |
+| `azure.clientId` | Optional operator workload identity client ID override |
 | `sandboxAdmission.enabled`, `sandboxAdmission.podsEnabled` | `false`; run the Sandbox admission webhook for configuration and Agent writes, and for Sandbox Pods. Needs Kubernetes 1.37 or later, `tlsSecretName` and an administrator. See [Policy-bound Teams](../../operations/policy-teams/) |
 | `sandboxAdmission.tlsSecretName` | Empty; an existing `kubernetes.io/tls` Secret for `cetirun-sandbox-admission.<namespace>.svc`. The chart issues no certificate |
 | `sandboxAdmission.enforce`, `sandboxAdmission.caBundle` | `false` and empty; make the webhook's refusals binding, with the base64 PEM bundle of the CA that issued its certificate. Not on the first install: turn it on once the webhook answers |

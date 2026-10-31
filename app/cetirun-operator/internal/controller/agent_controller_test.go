@@ -957,18 +957,14 @@ func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 }
 
 // computeOperatorHash reproduces the operatorConfigHash logic for test seeding.
-// The azureTeamsConfig variadic matches the operator's configHash method, which
-// appends Azure config (subscriptionID, resourceGroup, botNamePrefix, tenantID,
-// oidcIssuerURL) followed by the referenced Team's ResourceVersion to
-// the hash so Teams-enabled instances and team-referenced instances can use the
-// skip-cache.
-func computeOperatorHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, azureTeamsConfig ...string) string {
+// The optional config values mirror configHash's cache-invalidation inputs.
+func computeOperatorHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, config ...string) string {
 	var payload string
-	if skillsStorageAccount == "" && cetirunHelmValuesHash == "" && chartRegistry == "" && len(azureTeamsConfig) == 0 {
+	if skillsStorageAccount == "" && cetirunHelmValuesHash == "" && chartRegistry == "" && len(config) == 0 {
 		payload = domainSuffix + "\x00" + secretHash
 	} else {
 		payload = domainSuffix + "\x00" + secretHash + "\x00" + skillsStorageAccount + "\x00" + cetirunHelmValuesHash + "\x00" + chartRegistry
-		for _, v := range azureTeamsConfig {
+		for _, v := range config {
 			payload += "\x00" + v
 		}
 	}

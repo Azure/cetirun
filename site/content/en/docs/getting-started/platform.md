@@ -24,7 +24,7 @@ a client's first call.
 | Requirement | Why it matters |
 | --- | --- |
 | AKS with managed Istio and an external ingress gateway | Shared authentication and instance routing |
-| OIDC issuer and Workload Identity | Federated identity for OAuth2 Proxy and optional Teams |
+| OIDC issuer and Workload Identity | Federated identity for OAuth2 Proxy and Agent Identity |
 | Azure Disk CSI and the `default` StorageClass | Default persistent HOME volumes |
 | Blob CSI and `azureblob-nfs-premium` StorageClass, when shared skills are enabled | Optional shared skills volumes |
 | A compatible `kata-vm-isolation` RuntimeClass | Default agent chart sandbox; do not silently remove it |
@@ -82,8 +82,10 @@ that port is exempt from mTLS and must be restricted by its NetworkPolicy.
 Shared skills storage is optional and separate from instance home PVCs. Review
 `networkPolicy.allowedInternalCIDRs` rather than inheriting its
 environment-specific exception. If npm skills are enabled, set
-`skills.npmRegistry` to your approved reachable registry. Neither an Istio
-ServiceEntry nor the built-in egress blacklist is a complete outbound allowlist.
+`skills.npmRegistry` to your approved reachable registry. Istio ServiceEntries
+are not an outbound allowlist. Configure AgentPolicy network controls and
+follow the [retired-filter cleanup procedure](../../operations/istio/#retired-shared-blacklist)
+when upgrading an installation that used the old shared blacklist.
 
 ## 3. Install the operator and portal
 

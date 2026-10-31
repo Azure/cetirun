@@ -43,22 +43,6 @@ authPolicy:
     - oauth2
     - llmapi
 
-  # Static one-segment apex webhook URI template exempted from OAuth2 Proxy — for POST only.
-  # This is a STATIC Bot Framework webhook exception, NOT a per-instance allowlist: a single
-  # "/{*}/api/messages" covers exactly /<instance>/api/messages. Per-instance enable/disable is enforced by
-  # operator-owned VirtualService routes (a Teams route for enabled instances; an explicit deny
-  # route for everyone else) — do NOT add concrete per-instance paths here.
-  # Only POST requests to these suffixes bypass auth (real Teams webhook calls are POST and carry
-  # a Bot Framework JWT the application validates). A paired method-guard rule sends all non-POST
-  # requests to the same suffix back through OAuth2 Proxy, so the suffix is not a generic anonymous
-  # bypass. To disable the bypass entirely, set this to an empty list: webhookBypassPaths: []
-  webhookBypassPaths:
-    - "/{*}/api/messages"
-
-  # Exact POST-only webhook path retained for legacy instance subdomains.
-  legacySubdomainWebhookBypassPaths:
-    - "/api/messages"
-
   # POST-only unauthenticated callbacks that are valid on the apex Portal host
   # and must never be exempted on legacy instance subdomains.
   apexPostBypassPaths:
@@ -160,7 +144,7 @@ oauth2Proxy:
       operator: Exists
 
 # ── Egress audit configuration ──
-# Deploys ServiceEntry, access logging, and blacklist EnvoyFilter to the Istio
+# Deploys ServiceEntry and access logging to the Istio
 # root config namespace. These resources apply mesh-wide to all sidecar proxies.
 egress:
   # Namespace for egress resources (Istio root config namespace).
@@ -168,7 +152,6 @@ egress:
 
   # External services — ServiceEntry enables Istio SNI routing so FQDN appears in access logs.
   # Without these, HTTPS traffic falls back to PassthroughCluster (IP only, no hostname).
-  # Phase 2: switch outboundTrafficPolicy to REGISTRY_ONLY to enforce as allowlist.
   externalServices:
     - github.com
     - api.github.com
@@ -181,17 +164,3 @@ egress:
   # Access logging (via EnvoyFilter for JSON format with SNI field).
   accessLog:
     enabled: true
-
-  # Blacklist mode — EnvoyFilter injects Envoy network RBAC on SIDECAR_OUTBOUND
-  # to block configured destinations. helm.sh/resource-policy: keep prevents Helm
-  # from deleting the resource on uninstall (but helm upgrade will reconcile).
-  blacklist:
-    enabled: true
-    # FQDNs blocked via TLS SNI matching (connection.sni).
-    # Prefix with "." for wildcard subdomain matching (e.g. ".example.com" blocks *.example.com).
-    fqdns:
-      - "models.litellm.cloud"
-      - "checkmarx.zone"
-    # IP addresses or CIDR ranges blocked via destination.ip.
-    ipCidrs:
-      - "129.212.152.70/32"

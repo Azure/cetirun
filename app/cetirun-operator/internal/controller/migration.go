@@ -28,6 +28,7 @@ import (
 )
 
 var errMigrationIntentChanged = errors.New("migration intent changed")
+var errMigrationSourceNotReady = errors.New("migration requires a stable single-Pod owned workload")
 
 func (r *AgentReconciler) migrationCheckpoint(ctx context.Context, agent *api.Agent, phase string) error {
 	agent.Status.PlannedMigration.Phase = phase
@@ -256,6 +257,11 @@ func (r *AgentReconciler) reconcileMigration(ctx context.Context, agent *api.Age
 		}
 		captured, err := r.captureMigration(ctx, agent)
 		if err != nil {
+			// A stale Ready status must not prevent ordinary, authorized source
+			// recovery before this request has captured any migration evidence.
+			if errors.Is(err, errMigrationSourceNotReady) && !agent.Spec.Suspended {
+				return true, ctrl.Result{}, nil
+			}
 			return block(err)
 		}
 		agent.Status.PlannedMigration = captured

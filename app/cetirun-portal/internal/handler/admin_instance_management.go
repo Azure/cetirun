@@ -30,9 +30,6 @@ type AdminInstanceDetail struct {
 	SandboxRef         string                 `json:"sandboxRef,omitempty"`
 	ChartVersion       string                 `json:"chartVersion,omitempty"`
 	Model              string                 `json:"model,omitempty"`
-	TeamsEnabled       bool                   `json:"teamsEnabled"`
-	TeamsState         string                 `json:"teamsState,omitempty"`
-	TeamsMessage       string                 `json:"teamsMessage,omitempty"`
 	AgentIdentity      *AgentIdentityResponse `json:"agentIdentity,omitempty"`
 	TailscaleEnabled   bool                   `json:"tailscaleEnabled"`
 	// This means a credential reference is configured, not that it was verified.
@@ -50,10 +47,9 @@ type AdminAgentUpdate struct {
 // controls. Unknown fields are rejected by decodeManagementRequest.
 type AdminUpdateInstanceRequest struct {
 	kube.InstanceVersion
-	Agent        *AdminAgentUpdate `json:"agent,omitempty"`
-	DisplayName  *string           `json:"displayName,omitempty"`
-	Model        *string           `json:"model,omitempty"`
-	TeamsEnabled *bool             `json:"teamsEnabled,omitempty"`
+	Agent       *AdminAgentUpdate `json:"agent,omitempty"`
+	DisplayName *string           `json:"displayName,omitempty"`
+	Model       *string           `json:"model,omitempty"`
 }
 
 type AdminDiagnosticError struct {
@@ -83,12 +79,6 @@ func adminInstanceDetail(instance *api.Agent) AdminInstanceDetail {
 	}
 	if !instance.DeletionTimestamp.IsZero() {
 		resp.DeletionTimestamp = instance.DeletionTimestamp.UTC().Format("2006-01-02T15:04:05Z")
-	}
-	if instance.Spec.MSTeams != nil {
-		resp.TeamsEnabled = instance.Spec.MSTeams.Enabled
-	}
-	if instance.Status.MSTeams != nil {
-		resp.TeamsState, resp.TeamsMessage = instance.Status.MSTeams.State, instance.Status.MSTeams.Message
 	}
 	if instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil {
 		resp.AgentIdentity = &AgentIdentityResponse{}
@@ -252,7 +242,7 @@ func (h *AdminInstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Req
 			audit.fields = append(audit.fields, "agent.webUI")
 		}
 	}
-	if input.Empty() && req.DisplayName == nil && req.Model == nil && req.TeamsEnabled == nil {
+	if input.Empty() && req.DisplayName == nil && req.Model == nil {
 		writeError(w, http.StatusBadRequest, "no_fields", "At least one field must be provided for update")
 		return
 	}
@@ -282,7 +272,7 @@ func (h *AdminInstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Req
 	}
 	opts := kube.UpdateInstanceOpts{
 		ExpectedUID: req.UID, ExpectedResourceVersion: req.ResourceVersion,
-		DisplayName: req.DisplayName, Model: req.Model, TeamsEnabled: req.TeamsEnabled,
+		DisplayName: req.DisplayName, Model: req.Model,
 	}
 	if !input.Empty() {
 		agent, err := input.Apply(instance.Spec.Agent)

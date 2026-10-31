@@ -198,21 +198,6 @@ Licensed under the MIT License.
 {{- $pluginsAllow = append $pluginsAllow "feishu" }}
 {{- end }}
 {{- end }}
-{{- $msteamsAuthType := default "" .Values.msteamsAuthType }}
-{{- if or
-      (and
-        (gt (int .Values.msteamsWebhookPort) 0)
-        .Values.secrets.msteamsAppId
-        .Values.secrets.msteamsTenantId
-        (or
-          (and (or (eq $msteamsAuthType "") (eq $msteamsAuthType "secret")) .Values.secrets.msteamsAppPassword)
-          (or (eq $msteamsAuthType "managedIdentity") (eq $msteamsAuthType "certificate"))
-        )
-      )
-      (and (gt (int .Values.msteamsWebhookPort) 0) .Values.secrets.existingSecret)
-    }}
-{{- $_ := set $pluginEntries "msteams" (dict "enabled" true) }}
-{{- end }}
 {{- /* Enable ACPX plugin when acpx.enabled is true */}}
 {{- if .Values.openclaw.acpx.enabled }}
 {{- $acpxConfig := dict
@@ -236,18 +221,11 @@ Licensed under the MIT License.
 }}
 {{- $_ := set $config "acp" $acp }}
 {{- end }}
-{{- if or $pluginEntries (gt (int .Values.msteamsWebhookPort) 0) }}
+{{- if $pluginEntries }}
 {{- $plugins := dig "plugins" (dict) $config }}
 {{- $_ := set $plugins "entries" $pluginEntries }}
 {{- if $pluginsAllow }}
 {{- $_ := set $plugins "allow" $pluginsAllow }}
-{{- end }}
-{{- /* Plugins (msteams, acpx) are npm-installed and auto-discovered — only allowlist needed */}}
-{{- if gt (int $.Values.msteamsWebhookPort) 0 }}
-{{- if not (has "msteams" $pluginsAllow) }}
-{{- $pluginsAllow = append $pluginsAllow "msteams" }}
-{{- $_ := set $plugins "allow" $pluginsAllow }}
-{{- end }}
 {{- end }}
 {{- $_ := set $config "plugins" $plugins }}
 {{- end }}
@@ -273,16 +251,6 @@ Licensed under the MIT License.
 {{- $slack := dig "slack" (dict) $channels }}
 {{- $_ := set $slack "groupPolicy" "open" }}
 {{- $_ := set $channels "slack" $slack }}
-{{- end }}
-{{- /* Configure msteams channel when webhook port is set AND credentials are available */}}
-{{- if and (gt (int $.Values.msteamsWebhookPort) 0) (or (and .Values.secrets.msteamsAppId .Values.secrets.msteamsTenantId) .Values.secrets.existingSecret) }}
-{{- $msteams := dig "msteams" (dict) $channels }}
-{{- $_ := set $msteams "enabled" true }}
-{{- $_ := set $msteams "dmPolicy" "allowlist" }}
-{{- $_ := set $msteams "groupPolicy" "allowlist" }}
-{{- $_ := set $msteams "replyStyle" "thread" }}
-{{- $_ := set $msteams "webhook" (dict "port" (int $.Values.msteamsWebhookPort) "path" "/api/messages") }}
-{{- $_ := set $channels "msteams" $msteams }}
 {{- end }}
 {{- if $channels }}
 {{- $_ := set $config "channels" $channels }}
