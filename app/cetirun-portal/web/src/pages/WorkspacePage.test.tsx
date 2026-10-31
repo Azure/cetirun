@@ -20,7 +20,6 @@ const mockInstance: Instance = {
   accessUrl: "https://example.com/ui/testuser/",
   gatewayToken: "tok-abc",
   upgradeAvailable: false,
-  teamsEnabled: false,
   createdAt: "2026-01-01T00:00:00Z",
 };
 
@@ -50,10 +49,6 @@ const mockFeatures = {
   isLoading: false,
 };
 vi.mock("../hooks/useFeatures", () => ({ useFeatures: () => mockFeatures }));
-
-vi.mock("../api/instance", () => ({
-  downloadTeamsApp: vi.fn(),
-}));
 
 function renderAt(path: string) {
   const queryClient = new QueryClient({

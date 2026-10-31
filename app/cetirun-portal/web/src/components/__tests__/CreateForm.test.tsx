@@ -68,7 +68,6 @@ describe("CreateForm", () => {
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
     await user.type(screen.getByLabelText("Gateway Token (optional)"), "sk-dummy");
-    await user.click(screen.getByLabelText("Enable Microsoft Teams Integration"));
     await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "custom");
     expect(screen.getByText(/Image updates retain HOME and require a compatible image/)).toBeInTheDocument();
     expect(screen.queryByText(/image cannot change after creation/)).toBeNull();
@@ -76,7 +75,6 @@ describe("CreateForm", () => {
     await user.type(screen.getByLabelText(/Agent Image/), image);
     expect(screen.getByLabelText(/Agent Username/)).toHaveValue("vibe");
     expect(screen.queryByLabelText("Gateway Token (optional)")).toBeNull();
-    expect(screen.queryByLabelText("Enable Microsoft Teams Integration")).toBeNull();
     expect(screen.queryByLabelText("Tailscale Auth Key (optional)")).toBeNull();
     expect(screen.queryByLabelText("Model (optional)")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
@@ -107,7 +105,6 @@ describe("CreateForm", () => {
     expect(input.agent.type).toBe("custom");
     expect(input).not.toHaveProperty("agentIdentityEnabled");
     expect(input).not.toHaveProperty("gatewayToken");
-    expect(input).not.toHaveProperty("teamsEnabled");
   });
 
   it("creates a Web UI with the shared port and does not carry the flag to built-ins", async () => {
@@ -186,7 +183,6 @@ describe("CreateForm", () => {
       team: undefined,
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
-      teamsEnabled: undefined,
     });
   });
 
@@ -211,7 +207,6 @@ describe("CreateForm", () => {
       team: "platform",
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
-      teamsEnabled: undefined,
     });
   });
 
@@ -249,7 +244,6 @@ describe("CreateForm", () => {
       team: "security",
       gatewayToken: "my-gw-token",
       tailscaleAuthKey: "tskey-auth-xxx",
-      teamsEnabled: undefined,
     });
   });
 
@@ -270,7 +264,6 @@ describe("CreateForm", () => {
       team: undefined,
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
-      teamsEnabled: undefined,
     });
   });
 
@@ -291,7 +284,6 @@ describe("CreateForm", () => {
       team: undefined,
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
-      teamsEnabled: undefined,
     });
   });
 

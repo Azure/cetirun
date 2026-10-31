@@ -72,41 +72,6 @@ export async function getInstanceStatus(): Promise<StatusResponse> {
   return response.json();
 }
 
-export async function downloadTeamsApp(instanceName: string): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(`/api/v1/instances/${encodeURIComponent(instanceName)}/teams-app`);
-  } catch {
-    throw new Error("Session expired, please refresh the page");
-  }
-
-  const ct = response.headers.get("content-type") || "";
-  if (response.status === 401 || response.redirected || ct.includes("text/html")) {
-    throw new Error("Session expired, please refresh the page");
-  }
-
-  if (!response.ok) {
-    let err: any;
-    try {
-      err = await response.json();
-    } catch {
-      // Response may not be JSON (e.g. HTML from OAuth2 Proxy).
-    }
-    throw new Error(err?.error?.message || "Failed to download Teams app");
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "cetirun-teams-app.zip";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 0);
-}
-
 export async function upgradeInstanceByName(name: string, version: InstanceVersion): Promise<Instance> {
   const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/upgrade`, {
     method: "POST", body: JSON.stringify({ uid: version.uid, resourceVersion: version.resourceVersion }),

@@ -19,9 +19,8 @@ that disables logging, telemetry, and network activity across every component.
 | Portal and sign-in | User alias, preferred username, display name, email claims, group authorization, and administrator status, used to identify users and authorize access | Browser, OAuth2 Proxy/identity provider, portal request context, and application logs; instance ownership/profile fields are also stored in Kubernetes resources |
 | Workspace management | Instance and team names, owner alias, model selection, profile information, configuration, status, events, and resource identifiers | Portal, operator, Kubernetes API objects, Helm release state, and operational logs |
 | Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and workspace storage; configured model, tool, and channel services; potentially container logs |
-| Authentication material | Gateway/API keys, provider credentials, OAuth device-flow state, and optional Teams/Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
+| Authentication material | Gateway/API keys, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
 | Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Workspace processes and storage; websites or services contacted by the browser/tools; terminal/desktop streams delivered to the user |
-| Teams integration | Message text, sender name/ID, conversation and message IDs, service routing URLs, and responses | Agent runtime, Microsoft Teams/Bot Framework, plugin state, and operational logs |
 
 The portal does not merely display public metadata. Its authorized instance
 response can include gateway tokens, a Hermes API server key, the CetiRun auth
@@ -60,7 +59,6 @@ Portal and operator logs also include operational information such as aliases,
 display names, team/instance names, resource IDs, access URLs, reconciliation
 status, and errors. Some update logging records field names rather than values,
 but this does not establish that all logs are free of personal data or secrets.
-The Teams adapter can log rejected sender names/IDs and remote error text.
 Agent, terminal, auth-helper, and optional Tailscale processes also write
 stdout/stderr.
 
@@ -69,8 +67,7 @@ Source: [chart defaults](app/cetirun-chart/values.yaml),
 [OpenClaw entrypoint](app/cetirun-chart/agents/openclaw/bootstrap/entrypoint.sh),
 [Hermes entrypoint](app/cetirun-chart/agents/hermes/bootstrap/hermes-entrypoint.sh),
 [portal handlers](app/cetirun-portal/internal/handler/instance.go),
-[operator reconciliation](app/cetirun-operator/internal/controller/agent_controller.go),
-and [Teams adapter](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/adapter.py).
+and [operator reconciliation](app/cetirun-operator/internal/controller/agent_controller.go).
 
 ### AI Gateway request log and metrics
 
@@ -157,18 +154,15 @@ and [operator metrics configuration](app/cetirun-operator/cmd/main.go).
   routes. Check the terms, retention, training-use settings, and region of each
   selected service with that service.
 - **GitHub Copilot authentication and model discovery.** The Portal initiates
-  GitHub device authorization and stores the completed credential in an
+  GitHub device authorization and stores the completed credential in a
   Kubernetes Secret in the Agent's namespace. The Operator provisions each Agent's Copilot
   proxy and Gateway access; the proxy exchanges the credential and retrieves
   the Copilot model catalog. New sign-ins do not write provider credentials
   into Agent HOME. These operations are separate from inference requests
   routed through the AI Gateway.
-- **Identity and Teams.** The ingress sign-in flow uses Microsoft Entra ID.
-  When Teams integration is configured, the operator calls Microsoft Graph
-  and Azure Bot Service to manage application, identity, and bot resources.
-  The Hermes Teams adapter retrieves Bot Framework signing metadata/keys and
-  exchanges messages with Teams/Bot Framework services. It persists a bounded
-  conversation-to-service-URL map in the Hermes home directory for later replies.
+- **Identity.** The ingress sign-in flow uses Microsoft Entra ID. When Agent
+  Identity is configured, the operator calls Microsoft Graph to manage Agent
+  Identity service principals.
 - **Browser and remote access.** The desktop sidecar runs Google Chrome and
   exposes a desktop through noVNC; ttyd exposes a terminal. Browsed sites
   receive browser requests and submitted data. Configured Tailscale access
@@ -197,9 +191,6 @@ controls independently.
 Source: [Portal Copilot sign-in](app/cetirun-portal/internal/handler/copilot_login.go),
 [Gateway provisioning](app/cetirun-operator/internal/controller/ai_gateway.go),
 [Graph client](app/cetirun-operator/internal/azure/graphclient.go),
-[Bot Service client](app/cetirun-operator/internal/azure/botservice.go),
-[Teams authentication](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/auth.py),
-[Teams adapter](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/adapter.py),
 [base image recipe](app/cetirun-chart/Dockerfile.base),
 [desktop recipe](app/cetirun-chart/Dockerfile.desktop),
 [skill initialization](app/cetirun-chart/configs/init-skills.sh),

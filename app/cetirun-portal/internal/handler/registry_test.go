@@ -350,7 +350,7 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if first.Spec.GatewayTokenSecretRef != "" || first.Spec.AgentIdentity != nil || first.Spec.MSTeams != nil || first.Spec.Tailscale != nil ||
+			if first.Spec.GatewayTokenSecretRef != "" || first.Spec.AgentIdentity != nil || first.Spec.Tailscale != nil ||
 				first.Annotations[api.AnnotationOwnerObjectID] != managementOwner || first.Annotations[kube.AnnotationCreateRequest] == "" {
 				t.Fatal("Custom gained native settings or lost ownership/retry annotations")
 			}

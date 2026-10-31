@@ -35,7 +35,6 @@ import (
 func TestSandboxPreparationUnsupportedIntegrationsRemainCleanlyHeld(t *testing.T) {
 	for name, mutate := range map[string]func(*api.Agent){
 		"tailscale": func(a *api.Agent) { a.Spec.Tailscale = &api.TailscaleSpec{AuthKeySecretRef: "example-vpn"} },
-		"teams":     func(a *api.Agent) { a.Spec.MSTeams = &api.MSTeamsSpec{Enabled: true} },
 		"identity":  func(a *api.Agent) { a.Spec.AgentIdentity = &api.AgentIdentitySpec{Enabled: true} },
 	} {
 		for _, previouslyPrepared := range []bool{false, true} {

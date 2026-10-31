@@ -25,12 +25,6 @@ spec:
       protocol: TCP
       name: ttyd
     {{- end }}
-    {{- if gt (int .Values.msteamsWebhookPort) 0 }}
-    - port: {{ .Values.msteamsWebhookPort }}
-      targetPort: {{ .Values.msteamsWebhookPort }}
-      protocol: TCP
-      name: msteams-webhook
-    {{- end }}
   selector:
     {{- include "cetirun.selectorLabels" . | nindent 4 }}
 {{- end }}

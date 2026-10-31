@@ -28,7 +28,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 )
 
-var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Teams, Tailscale, or Agent Identity without a governed Sandbox")
+var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Tailscale, or Agent Identity without a governed Sandbox")
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
@@ -60,7 +60,7 @@ func validateInstanceUpdate(instance *cetirunv1alpha1.Agent, opts UpdateInstance
 		}
 	}
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom &&
-		(opts.GatewayToken != nil || opts.TailscaleAuthKey != nil || opts.TeamsEnabled != nil) {
+		(opts.GatewayToken != nil || opts.TailscaleAuthKey != nil) {
 		return ErrUnsupportedCustomUpdate
 	}
 	if opts.Agent != nil {
@@ -92,7 +92,6 @@ type UpdateInstanceOpts struct {
 	SandboxRef              *string // nil = no change; set with Team from the selected Team default
 	GatewayToken            *string // nil = no change, non-empty = update
 	TailscaleAuthKey        *string // nil = no change, "" = disable tailscale, non-empty = update/enable
-	TeamsEnabled            *bool   // nil = no change
 	Model                   *string // nil = no change, "" = use deployment default
 }
 
@@ -170,7 +169,7 @@ func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1alpha
 // instanceName is metadata.name; an empty value uses the caller's alias.
 // If gatewayToken or tailscaleAuthKey are non-empty, it pre-creates the
 // corresponding Secrets in the instance namespace before creating the CR.
-func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName string, agent cetirunv1alpha1.HarnessSpec, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool, optional ...CreateInstanceOptions) (*cetirunv1alpha1.Agent, error) {
+func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName string, agent cetirunv1alpha1.HarnessSpec, gatewayToken, tailscaleAuthKey, model string, optional ...CreateInstanceOptions) (*cetirunv1alpha1.Agent, error) {
 	if instanceName == "" {
 		instanceName = alias
 	}
@@ -180,7 +179,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	}
 	identityEnabled := len(optional) > 0 && optional[0].AgentIdentityEnabled
 	if agent.Type == cetirunv1alpha1.AgentTypeCustom &&
-		(gatewayToken != "" || tailscaleAuthKey != "" || teamsEnabled || identityEnabled && optional[0].SandboxRef == "") {
+		(gatewayToken != "" || tailscaleAuthKey != "" || identityEnabled && optional[0].SandboxRef == "") {
 		return nil, ErrUnsupportedCustomUpdate
 	}
 	if identityEnabled && (optional[0].OwnerTenantID == "" || optional[0].OwnerObjectID == "") {
@@ -254,9 +253,6 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
 			AuthKeySecretRef: "tailscale-auth",
 		}
-	}
-	if teamsEnabled {
-		instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
 	}
 	if len(optional) > 0 && optional[0].ModelAccess != nil {
 		instance.Spec.ModelAccess = optional[0].ModelAccess.DeepCopy()
@@ -518,17 +514,6 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 				instance.Spec.Tailscale = nil
 				crChanged = true
 			}
-		}
-		if opts.TeamsEnabled != nil {
-			if *opts.TeamsEnabled {
-				if instance.Spec.MSTeams == nil {
-					instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{}
-				}
-				instance.Spec.MSTeams.Enabled = true
-			} else {
-				instance.Spec.MSTeams = nil
-			}
-			crChanged = true
 		}
 		if opts.Model != nil {
 			instance.Spec.Model = strings.TrimSpace(*opts.Model)

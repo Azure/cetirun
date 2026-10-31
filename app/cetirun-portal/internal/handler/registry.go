@@ -207,8 +207,7 @@ func registryCreateMatches(instance *api.Agent, req CreateInstanceRequest) bool 
 	if (wanted.Type == api.AgentTypeCustom || wanted.Port != nil) && !reflect.DeepEqual(current.Port, wanted.Port) {
 		return false
 	}
-	return (instance.Spec.MSTeams != nil && instance.Spec.MSTeams.Enabled) == req.TeamsEnabled &&
-		(instance.Spec.AgentIdentity != nil && instance.Spec.AgentIdentity.Enabled) == req.AgentIdentityEnabled
+	return (instance.Spec.AgentIdentity != nil && instance.Spec.AgentIdentity.Enabled) == req.AgentIdentityEnabled
 }
 
 func (h *InstanceHandler) resumeRegistryCreate(w http.ResponseWriter, r *http.Request, name string, req CreateInstanceRequest, claims auth.Claims) bool {

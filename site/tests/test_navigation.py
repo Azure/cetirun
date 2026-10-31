@@ -242,7 +242,6 @@ class SourceContractTests(unittest.TestCase):
                 "/docs/guides",
                 "/docs/guides/models",
                 "/docs/guides/lifecycle",
-                "/docs/guides/msteams",
                 "/docs/guides/tailscale",
             ],
             "operations": [

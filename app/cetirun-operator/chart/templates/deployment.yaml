@@ -91,30 +91,6 @@ spec:
             - name: CETIRUN_SANDBOX_SOURCES
               value: {{ $sandboxSources | quote }}
             {{- end }}
-            {{- if .Values.azure.subscriptionId }}
-            - name: AZURE_SUBSCRIPTION_ID
-              value: {{ .Values.azure.subscriptionId | quote }}
-            {{- end }}
-            {{- if .Values.azure.resourceGroup }}
-            - name: AZURE_RESOURCE_GROUP
-              value: {{ .Values.azure.resourceGroup | quote }}
-            {{- end }}
-            {{- if .Values.azure.botNamePrefix }}
-            - name: AZURE_BOT_NAME_PREFIX
-              value: {{ .Values.azure.botNamePrefix | quote }}
-            {{- end }}
-            {{- if .Values.azure.tenantId }}
-            - name: AZURE_TENANT_ID
-              value: {{ .Values.azure.tenantId | quote }}
-            {{- end }}
-            {{- if .Values.azure.serviceTreeId }}
-            - name: AZURE_SERVICE_TREE_ID
-              value: {{ .Values.azure.serviceTreeId | quote }}
-            {{- end }}
-            {{- if .Values.azure.ficIssuerIds }}
-            - name: FIC_ISSUER_IDS
-              value: {{ .Values.azure.ficIssuerIds | quote }}
-            {{- end }}
             - name: AGENT_ID_ENABLED
               value: {{ .Values.agentIdentity.enabled | quote }}
             - name: CONNECTIONS_MCP_URL

@@ -24,13 +24,6 @@ spec:
   gatewayTokenSecretRef: string     # Required for built-ins. Native authentication Secret.
   tailscale:                        # Optional.
     authKeySecretRef: string        # Secret name containing TAILSCALE_AUTH_KEY
-  msteams:                          # Optional. MS Teams bot integration.
-    appId: string                   # Required. Azure AD app (client) ID (UUID).
-    tenantId: string                # Required. Azure AD tenant ID (UUID).
-    authType: string                # Optional. "secret" (default), "certificate", or "managedIdentity".
-    certificateSecretRef: string    # Optional. Secret name with PEM cert (key: tls.pem). Required for certificate auth.
-    certificateThumbprint: string   # Optional. SHA-1 thumbprint (hex). Required for certificate auth.
-    webhookPort: int32              # Optional. Webhook listener port. Default: 3978.
   helm:                             # Optional.
     version: string                 # Chart version override
     values: {}                      # Arbitrary Helm values merged with defaults
@@ -48,12 +41,6 @@ spec:
 | `spec.agent.type` | enum | No | Defaults to `hermes`; `openclaw` and `custom` remain explicit choices. Immutable after creation. |
 | `spec.gatewayTokenSecretRef` | string | Built-ins only | Required for openclaw/hermes; forbidden for custom. |
 | `spec.tailscale.authKeySecretRef` | string | No | Name of Secret containing `TAILSCALE_AUTH_KEY` |
-| `spec.msteams.appId` | string | Yes (if msteams set) | Azure AD Application (client) ID (UUID) |
-| `spec.msteams.tenantId` | string | Yes (if msteams set) | Azure AD tenant ID (UUID) |
-| `spec.msteams.authType` | enum | No | Authentication method: `secret` (default), `certificate`, or `managedIdentity` |
-| `spec.msteams.certificateSecretRef` | string | No | Secret name containing PEM cert (key: `tls.pem`). Required when `authType=certificate` |
-| `spec.msteams.certificateThumbprint` | string | No | SHA-1 thumbprint of certificate (hex, no colons). Required when `authType=certificate` |
-| `spec.msteams.webhookPort` | int32 | No | Port the Teams webhook listener runs on (default: 3978) |
 | `spec.helm.version` | string | No | Chart version override (defaults to operator's configured version) |
 | `spec.helm.values` | object | No | Helm values merged over defaults |
 
@@ -239,56 +226,3 @@ AdminClaw's `adminclaw-admin` ClusterRole grants the following permissions:
 - **No write access to RBAC resources**: Prevents privilege escalation.
 - **No write access to Istio infrastructure**: Gateway, mesh config, and control plane are off-limits.
 - **Cluster-scoped reads**: AdminClaw can read nodes, CRDs, and cluster-level resources for diagnostics.
-
----
-
-## 6. MSTeamsSpec Reference
-
-The `spec.msteams` field configures Microsoft Teams bot integration for an instance. When set, the operator provisions webhook routing, credential injection, and (optionally) certificate mounts or Azure Workload Identity.
-
-### MSTeamsSpec Fields
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `spec.msteams.appId` | string | Yes | — | Azure AD Application (client) ID. Must be a valid UUID. |
-| `spec.msteams.tenantId` | string | Yes | — | Azure AD tenant ID. Must be a valid UUID. |
-| `spec.msteams.authType` | enum | No | `secret` | Auth method: `secret`, `certificate`, or `managedIdentity` |
-| `spec.msteams.certificateSecretRef` | string | No | — | Secret name containing PEM cert (key: `tls.pem`). Required when `authType=certificate`. |
-| `spec.msteams.certificateThumbprint` | string | No | — | SHA-1 thumbprint of the certificate (hex, no colons). Required when `authType=certificate`. |
-| `spec.msteams.webhookPort` | int32 | No | `3978` | Port the Teams webhook listener runs on inside the container. |
-
-### Example CR with MS Teams
-
-```yaml
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: Agent
-metadata:
-  name: bob
-spec:
-  agent:
-    type: hermes
-  user:
-    alias: bob
-    displayName: "Bob Builder"
-    team: aks-ai
-  gatewayTokenSecretRef: "gateway-token"
-  msteams:
-    enabled: true
-    appId: "<your-app-id>"
-    tenantId: "<your-tenant-id>"
-```
-
-### What the Operator Provisions for MS Teams
-
-| Resource | Details |
-|----------|---------|
-| Gateway token Secret | Adds `MSTEAMS_APP_ID` and `MSTEAMS_TENANT_ID` keys |
-| Helm values: `msteamsWebhookPort` | Exposes webhook port on Service and StatefulSet |
-| Helm values: `msteamsAuthType` | Sets `MSTEAMS_AUTH_TYPE` and `MSTEAMS_USE_MANAGED_IDENTITY` env vars |
-| VirtualService route | `POST /<instance>/api/messages` → webhook port (before catch-all). Non-Teams instances get a deny route returning 404 for the same path. |
-| NetworkPolicy | Allows ingress on webhook port from Istio ingress gateway |
-| Native configuration | Hermes uses `hermes-config.yaml` and `cetirun_teams`; explicit OpenClaw uses `openclaw.json` and its msteams plugin. |
-| Extra volumes (certificate only) | Mounts cert Secret at `/etc/msteams-cert/tls.pem` |
-| Azure Workload Identity (managedIdentity only) | Annotated ServiceAccount; IMDS remains blocked by NetworkPolicy |
-
-See [MS Teams Setup Guide](../../../../../docs/guides/msteams.md) for full setup instructions.

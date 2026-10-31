@@ -35,10 +35,6 @@ spec:
         - protocol: TCP
           port: {{ .Values.ttyd.port }}
         {{- end }}
-        {{- if gt (int .Values.msteamsWebhookPort) 0 }}
-        - protocol: TCP
-          port: {{ .Values.msteamsWebhookPort }}
-        {{- end }}
     {{- end }}
     {{- with (.Values.runtime | default dict).bindings }}
     {{- if and $.Values.runtime.http (not $webUI) .network.callers }}

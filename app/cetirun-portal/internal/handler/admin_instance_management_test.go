@@ -180,6 +180,32 @@ func TestAdminAgentUpdateRequiresVersionAndStrictAllowlist(t *testing.T) {
 	}
 }
 
+func TestAdminAgentUpdateRejectsRetiredTeamsEnabledWithoutMutation(t *testing.T) {
+	for _, value := range []string{"true", "false", "null"} {
+		t.Run(value, func(t *testing.T) {
+			instance := adminManagedInstance()
+			h := adminManagementHandler(newFakeClient(instance))
+			before, err := h.Kube.GetInstanceByName(context.Background(), instance.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			h.UpdateInstance(w, adminManagementRequest(http.MethodPatch,
+				`{"uid":"foreign-agent-uid","resourceVersion":"7","teamsEnabled":`+value+`}`))
+			if w.Code != http.StatusBadRequest || errorCode(t, w) != "invalid_body" {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			after, err := h.Kube.GetInstanceByName(context.Background(), instance.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("rejected retired field mutated the Agent")
+			}
+		})
+	}
+}
+
 func TestAdminAgentUpdateValidatesRuntimeSpecificFieldsAndRequestShape(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -192,11 +218,6 @@ func TestAdminAgentUpdateValidatesRuntimeSpecificFieldsAndRequestShape(t *testin
 			instance.Spec.Agent.Image = ptr.To(managementImage)
 			instance.Spec.Agent.Username = ptr.To("vibe")
 		}, `{"agent":{"webUI":true}}`, http.StatusOK},
-		{"Custom Teams rejected", func(instance *api.Agent) {
-			instance.Spec.Agent.Type = api.AgentTypeCustom
-			instance.Spec.Agent.Image = ptr.To(managementImage)
-			instance.Spec.Agent.Username = ptr.To("vibe")
-		}, `{"teamsEnabled":true}`, http.StatusBadRequest},
 		{"builtin web UI true rejected", func(*api.Agent) {}, `{"agent":{"webUI":true}}`, http.StatusBadRequest},
 		{"builtin web UI false rejected", func(*api.Agent) {}, `{"agent":{"webUI":false}}`, http.StatusBadRequest},
 		{"invalid Custom port", func(instance *api.Agent) { instance.Spec.Agent.Type = api.AgentTypeCustom }, `{"agent":{"port":0}}`, http.StatusBadRequest},

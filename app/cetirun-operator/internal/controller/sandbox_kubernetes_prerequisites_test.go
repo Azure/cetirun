@@ -290,7 +290,6 @@ func TestKubernetesSandboxPrerequisitesRejectsInvalidConfigurationAndIntent(t *t
 		"suspended":              func(a *api.Agent) { a.Spec.Suspended = true },
 		"Custom":                 func(a *api.Agent) { a.Spec.Agent.Type = api.AgentTypeCustom },
 		"tailscale":              func(a *api.Agent) { a.Spec.Tailscale = &api.TailscaleSpec{} },
-		"teams":                  func(a *api.Agent) { a.Spec.MSTeams = &api.MSTeamsSpec{} },
 		"identity":               func(a *api.Agent) { a.Spec.AgentIdentity = &api.AgentIdentitySpec{Enabled: true} },
 		"missing authorization":  func(a *api.Agent) { a.Annotations = nil },
 		"unapproved chart":       func(a *api.Agent) { a.Spec.Helm.Version = "0.2.0" },

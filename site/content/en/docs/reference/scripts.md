@@ -25,7 +25,7 @@ only applies to `go-test` and `go-lint`.
 The header checker has explicit generated/upstream exclusions. Passing it does
 not establish dependency or container redistribution compliance; see
 [NOTICE]({{< repo "NOTICE" >}}) and [security and data boundaries](../../security/).
-The CI Python requirements are for auth/Teams tests, not a Hermes runtime lock.
+The CI Python requirements are for auth and runtime helper tests, not a Hermes runtime lock.
 The image helper checks the local image before downloading the scanner. It
 fails on fixable HIGH/CRITICAL findings, skips unfixed findings, and does not
 build or push an image. Review the report for lower-severity and unfixed findings.

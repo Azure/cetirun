@@ -21,7 +21,7 @@ DEPLOY_CONFIG ?=
 help:
 	@echo "Offline validation (install tools/dependencies separately):"
 	@echo "  make check       Run lint and unit tests; no cluster/cloud or downloads"
-	@echo "  make test        Go, portal, auth, Teams, and CI helper unit tests"
+	@echo "  make test        Go, portal, auth, runtime, and CI helper unit tests"
 	@echo "  make lint        Headers, Go vet, TypeScript, Python, Helm, Bicep, shell, workflows"
 	@echo "  make docs-check  Run make -C site check (separate from check)"
 	@echo "Release:"

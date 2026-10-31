@@ -88,11 +88,6 @@ spec:
               containerPort: {{ .Values.ttyd.port }}
               protocol: TCP
             {{- end }}
-            {{- if gt (int .Values.msteamsWebhookPort) 0 }}
-            - name: msteams-webhook
-              containerPort: {{ .Values.msteamsWebhookPort }}
-              protocol: TCP
-            {{- end }}
           env:
             {{- if (.Values.sandboxWorkload | default dict).egressSNI }}
             - name: CETIRUN_EGRESS_SNI
@@ -119,43 +114,6 @@ spec:
               value: /var/run/cetirun/connections-ca/ca.crt
             {{- end }}
             {{- include "cetirun.agent.envVars" . | nindent 12 }}
-            {{- if gt (int .Values.msteamsWebhookPort) 0 }}
-            - name: MSTEAMS_WEBHOOK_PORT
-              value: {{ .Values.msteamsWebhookPort | quote }}
-            # Microsoft Teams channel tokens (openclaw.secretName resolves to
-            # existingSecret when set, otherwise the chart-created secret)
-            - name: MSTEAMS_APP_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "cetirun.secretName" . }}
-                  key: MSTEAMS_APP_ID
-                  optional: true
-            - name: MSTEAMS_APP_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "cetirun.secretName" . }}
-                  key: MSTEAMS_APP_PASSWORD
-                  optional: true
-            - name: MSTEAMS_TENANT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "cetirun.secretName" . }}
-                  key: MSTEAMS_TENANT_ID
-                  optional: true
-            {{- if eq .Values.msteamsAuthType "managedIdentity" }}
-            - name: MSTEAMS_AUTH_TYPE
-              value: "federated"
-            - name: MSTEAMS_USE_MANAGED_IDENTITY
-              value: "true"
-            {{- else if eq .Values.msteamsAuthType "certificate" }}
-            - name: MSTEAMS_AUTH_TYPE
-              value: "federated"
-            {{- end }}
-            {{- if .Values.msteamsAllowedUsers }}
-            - name: CETIRUN_TEAMS_ALLOWED_USERS
-              value: {{ .Values.msteamsAllowedUsers | quote }}
-            {{- end }}
-            {{- end }}
             # ttyd web terminal configuration
             - name: TTYD_ENABLED
               value: {{ .Values.ttyd.enabled | quote }}

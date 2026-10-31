@@ -39,8 +39,6 @@ spec:
         name: "openclaw-admin-cetirun"
       skills:
         shared: ${ENABLE_SKILLS}
-  msteams:
-    enabled: true
   user:
     alias: admin
     displayName: "CetiRun Admin"

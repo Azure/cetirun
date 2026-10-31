@@ -61,16 +61,6 @@
         }
       },
       "channels": {
-        "msteams": {
-          "dmPolicy": "allowlist",
-          "enabled": true,
-          "groupPolicy": "allowlist",
-          "replyStyle": "thread",
-          "webhook": {
-            "path": "/api/messages",
-            "port": 3978
-          }
-        },
         "slack": {
           "groupPolicy": "open"
         },
@@ -111,8 +101,7 @@
           "slack",
           "discord",
           "feishu",
-          "acpx",
-          "msteams"
+          "acpx"
         ],
         "entries": {
           "acpx": {
@@ -132,9 +121,6 @@
             "enabled": true
           },
           "github": {
-            "enabled": true
-          },
-          "msteams": {
             "enabled": true
           },
           "slack": {
@@ -173,13 +159,13 @@
     }
   },
   "manifestHashes": {
-    "configmap.yaml": "03151b2b0939da140481757144b9ff3fe1451883daf8dbcf84fb3606bb14d2b6",
+    "configmap.yaml": "06266c706aa1718230df320f605bda9398debd8cc0acb24039d5a9a32352831b",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
-    "networkpolicy.yaml": "e71831723d761652ee6f625d7d36e0764a584cf813d2b39638c8cfd1b9b9504a",
+    "networkpolicy.yaml": "6c57b76bb0ecee3288edfc78b188519894908e356083989a683c5e9d21c4a47f",
     "pre-upgrade-hook.yaml": "06438617ca6f50d2ea5d2e0e898f95cad13438e19e07b141c52a7b19725f60fc",
-    "service.yaml": "baa7d022acf61be11565fd8dc8c9ecd36a6a5e2a677c6f41d59353d13bce45ba",
+    "service.yaml": "32f5e1f17661d94fbec319327628e7977d04d6231befc907400dc4f2ae84c0c1",
     "shared-skills-pv.yaml": "38c08b871f0dfe5237fff4c92fd6622e54c9b81edec9bcb10c79f68075035e77",
     "shared-skills-pvc.yaml": "d5af7044cd33fb9d6ddacb1d23aa2fbcc17d0ddcbfa42f9e10f2a7103ab75d7d",
-    "statefulset.yaml": "84c0753307c68d87e28f59332fd647638aeb4f80eae4f8454ebb30c70a574e50"
+    "statefulset.yaml": "e8fe0bd437d198146f818f7063fe4b998587dc059e268ad85afbcbb4e3a8f918"
   }
 }

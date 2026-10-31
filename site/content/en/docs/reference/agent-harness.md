@@ -65,7 +65,7 @@ configuration. Chart version and image version remain separate.
 An image override must match the profile's default image or an exact entry in
 its `qualifiedImages` list. This compatibility check does not replace image
 authorization policy. Port overrides must not collide with native helper,
-dashboard, desktop, terminal or enabled Teams ports.
+dashboard, desktop or terminal ports.
 
 Use `spec.agent.image` and `spec.agent.port`, not the old image or primary-port
 Helm values. `runtime`, `agentRequest` and managed `imagePullSecrets` are reserved platform inputs.
@@ -285,7 +285,7 @@ available. These behaviors require qualification with the target CNI, mesh,
 runtime and image; a configured route is not an interactive acceptance test.
 
 Custom does not run a native authentication helper, doctor, session logger,
-Teams, Tailscale or the native upgrade hook. The Agent and HOME init containers
+Tailscale or the native upgrade hook. The Agent and HOME init containers
 inherit the image's numeric non-root identity, with the approved volume group
 applied by Kubernetes. The shared desktop keeps its platform image, UID 1024
 and `/home/vibe` mount, which exposes the same PVC as the Agent's resolved HOME.
@@ -432,7 +432,7 @@ without an active request or change tool permissions.
 The Memory adapters use private memory only in the owner's own conversations:
 for OpenClaw, turns the owner sends from the Control UI or the TUI; for Hermes,
 its CLI, TUI and API server sessions. In other conversations, such as channel
-conversations (Microsoft Teams, Slack, Telegram and others), heartbeats,
+conversations (Slack, Telegram and others), heartbeats,
 scheduled jobs, sub-agents and messages between sessions, the adapters inject
 no notes and the Memory tool does not read or save notes.
 
@@ -762,7 +762,7 @@ Custom requires an image accepted by the configured runtime. Omitting
 remains independent of `agent` in the API. The current image-owned Custom runtime
 does not use it to select a model, so Custom forms leave model setup and login
 to the image. Custom requests must omit
-Gateway Token, Tailscale, Microsoft Teams and Agent Identity settings, including
+Gateway Token, Tailscale and Agent Identity settings, including
 empty or false values. No built-in credential Secret is created for Custom.
 
 The instance heading displays its nonblank Display Name, falling back to the

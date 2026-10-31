@@ -24,7 +24,7 @@ a client's first call.
 | Requirement | Why it matters |
 | --- | --- |
 | AKS with managed Istio and an external ingress gateway | Shared authentication and instance routing |
-| OIDC issuer and Workload Identity | Federated identity for OAuth2 Proxy and optional Teams |
+| OIDC issuer and Workload Identity | Federated identity for OAuth2 Proxy and Agent Identity |
 | Azure Disk CSI and the `default` StorageClass | Default persistent HOME volumes |
 | Blob CSI and `azureblob-nfs-premium` StorageClass, when shared skills are enabled | Optional shared skills volumes |
 | A compatible `kata-vm-isolation` RuntimeClass | Default agent chart sandbox; do not silently remove it |

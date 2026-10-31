@@ -14,9 +14,6 @@ Licensed under the MIT License.
 {{- if eq $apiPort 9119 -}}
 {{- fail "hermes API port must not collide with dashboard port (9119)" }}
 {{- end -}}
-{{- if eq (int .Values.msteamsWebhookPort) 9119 -}}
-{{- fail "MS Teams webhook port must not collide with Hermes dashboard port (9119)" }}
-{{- end -}}
 {{- if and .Values.desktop.enabled (eq $apiPort 6080) -}}
 {{- fail "hermes API port must not collide with noVNC port (6080)" }}
 {{- end -}}

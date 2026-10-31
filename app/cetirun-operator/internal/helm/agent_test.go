@@ -57,8 +57,6 @@ func sampleInput(typ, provider string, integrations bool) map[string]any {
 			"shared": true, "resourceGroup": "test", "storageAccount": "test",
 			"containerName": "skills", "npm": []any{"@example/skill@1.0.0", "example-skill@2.0.0"},
 		}
-		v["msteamsWebhookPort"] = 3978
-		v["msteamsAuthType"] = "managedIdentity"
 		v["ttyd"] = map[string]any{"enabled": true}
 		secrets := v["secrets"].(map[string]any)
 		for _, key := range []string{"tailscaleAuthKey", "telegramBotToken", "slackBotToken", "slackAppToken", "discordBotToken", "feishuAppId", "feishuAppSecret"} {
