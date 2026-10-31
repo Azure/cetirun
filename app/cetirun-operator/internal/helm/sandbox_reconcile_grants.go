@@ -137,25 +137,30 @@ func (k *reconciledGrantKube) Update(original, target kube.ResourceList, force b
 		}
 		var updated *kube.Result
 		old := previous.Get(info)
-		if reconciledWorkloadResource(*object) && old == nil {
-			// Preserve Helm ordering when an initial install adopts controls,
-			// but give its first workload CREATE a distinct outcome recorder.
+		workload := reconciledWorkloadResource(*object)
+		missing := false
+		if workload {
 			if info.Client == nil || info.Mapping == nil {
-				return result, fmt.Errorf("initial workload creation requires its API resource mapping")
+				return result, fmt.Errorf("workload reconciliation requires its API resource mapping")
 			}
 			if err := k.prepared.CheckSandboxApply(context.Background()); err != nil {
 				return result, err
 			}
 			_, err = resource.NewHelper(info.Client, info.Mapping).Get(info.Namespace, info.Name)
-			if !apierrors.IsNotFound(err) {
-				if err == nil {
-					err = fmt.Errorf("an unrecorded workload appeared before initial creation")
-				}
+			missing = apierrors.IsNotFound(err)
+			if err != nil && !missing {
 				return result, err
 			}
+			if !missing && old == nil {
+				return result, fmt.Errorf("an unrecorded workload appeared before initial creation")
+			}
+		}
+		if workload && missing {
+			// Failed Helm history can contain a workload that was never created.
+			// Only the durable controller checkpoint may prove non-submission.
 			updated, err = k.createGuarded(info, *object)
 		} else {
-			if reconciledWorkloadResource(*object) {
+			if workload {
 				if err := k.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
 					return result, err
 				}

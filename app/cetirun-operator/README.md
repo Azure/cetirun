@@ -272,11 +272,12 @@ If bindings succeed but the first workload CREATE receives a definitive API
 rejection, the writer records non-creation against the exact submitted
 expectation UID/resourceVersion. Normal retry and deletion can then revoke the
 grants and release the reservation without waiting for a nonexistent StatefulSet.
-The same first-CREATE boundary applies when Helm initially uses its update path
-because other release controls already exist. Workloads from a previous release
-remain part of the opaque update batch, not a new first-submission proof.
-Workload CREATEs do not follow HTTP Retry-After responses. Timeouts, lost
-responses, earlier workload submissions and update batches remain uncertain;
+The same CREATE boundary applies when Helm uses its update path, including
+retries whose failed release history declares a workload that was never created.
+The durable controller checkpoint, not a historical manifest or current absence,
+decides whether this is still the first unobserved submission. Earlier workload
+submissions remain opaque. Guarded CREATEs do not follow HTTP Retry-After
+responses. Timeouts, lost responses, earlier workload submissions and update batches remain uncertain;
 a later rejection cannot cancel them. A competing claim or replacement
 expectation also prevents a stale rejection recorder from cancelling current work.
 Cancellation and workload submission compete through conditional state writes;
