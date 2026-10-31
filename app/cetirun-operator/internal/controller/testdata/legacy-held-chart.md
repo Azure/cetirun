@@ -1,6 +1,6 @@
 # Isolated held-preparation regression fixture
 
-`legacy-held-chart-cfdf7c55.tgz` contains the unmodified runtime Chart sources at
+`legacy-held-chart-cfdf7c55.tgz` contains the unchanged runtime Chart sources at
 [cfdf7c5550484b7290eb268a8ffb76f9b87058c3](https://github.com/Azure/cetirun/tree/cfdf7c5550484b7290eb268a8ffb76f9b87058c3/app/cetirun-chart).
 Its SHA-256 is:
 
@@ -8,15 +8,17 @@ Its SHA-256 is:
 b4916f6e804d0d56cc137799934fce17eebc6b70b87ef0d38680a319f39a79e2
 ```
 
-Only the existing held-preparation tests use this fixture to isolate their
-authorization, receipts, fencing, and cleanup assertions from runtime Chart
-changes. That held test contract does not support Hermes Gateway bindings.
-Current native execution tests use the current source Chart. This is a test
-fixture only; the platform supports only the current Gateway contract.
+Only the held-preparation tests that already exist use this fixture. They use
+it to isolate their authorization, receipts, fencing, and cleanup assertions
+from runtime Chart changes. That held test contract does not support Hermes
+Gateway bindings. The current native execution tests use the current source
+Chart. This is a test fixture only. The platform supports only the current
+Gateway contract.
 
 Do not refresh this fixture from changed output to make a regression pass.
-To reproduce it from the public source commit, run this at the repository root
-with Python 3 and Git (the commit must already be present locally):
+Python 3 and Git are necessary, and the commit must already be present
+locally. To reproduce the fixture from the public source commit, run this
+script at the repository root:
 
 ```bash
 python3 - <<'PY'
