@@ -3,9 +3,9 @@
 
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
+import payloadSchema from "./payload-schema.json" with { type: "json" };
 
 export const ADAPTER_VERSION = "memory-adapter/v1";
 export const MEMORY_TOOL = {
@@ -15,7 +15,7 @@ export const MEMORY_TOOL = {
     type: "object", additionalProperties: false,
     properties: {
       command: { type: "string", enum: ["status", "query", "capture", "prepare", "commit", "propose", "check", "advance", "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source", "evaluate"] },
-      payload: JSON.parse(readFileSync(new URL("./payload-schema.json", import.meta.url), "utf8")),
+      payload: payloadSchema,
     }, required: ["command", "payload"],
   },
 };
