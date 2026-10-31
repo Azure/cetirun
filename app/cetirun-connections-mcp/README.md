@@ -1,25 +1,25 @@
 # CetiRun Connections MCP
 
-CetiRun Connections MCP is a stateless Streamable HTTP MCP service that executes JSON
-REST requests through a workload-bound Connection. It verifies the
-calling Agent workload, asks the Agent Identity Broker to check the Agent's
-enabled connection binding, obtains a short-lived token, executes the
-fixed-service REST request, and returns the provider result. The
-credential never enters Agent context, logs, files, command arguments, or tool
-results.
+CetiRun Connections MCP is a stateless Streamable HTTP MCP service. It executes
+JSON REST requests through a workload-bound Connection. The service validates
+the Agent workload that calls it. It asks the Agent Identity Broker to examine
+the Agent's enabled connection binding. It gets a short-lived token, executes
+the fixed-service REST request, and returns the provider result. The credential
+never enters Agent context, logs, files, command arguments, or tool results.
 
 Services include Azure Resource Manager, GitHub, Microsoft Graph, Gmail and
 Google Calendar. Provider RBAC, OAuth permissions, and GitHub App installation
-permissions determine resource access. GitHub App bindings include explicit
-repositories and permissions; the Broker narrows each installation token to
-that grant. MCP checks this metadata across authorization and issuance without
-maintaining a REST operation permission catalog.
+permissions control resource access. GitHub App bindings include explicit
+repositories and permissions. The Broker limits each installation token to that
+grant. MCP examines this metadata across authorization and issuance. It does
+not keep a permission catalog for REST operations.
 
 ## Tools and request contract
 
-- `connections_status`: enabled bindings, account or principal, and status;
-  never credentials.
-- `connections_start_link`: configured Portal URL for account and Agent connection management.
+- `connections_status`: enabled bindings, account or principal, and status,
+  but never credentials.
+- `connections_start_link`: configured Portal URL for account and Agent
+  connection management.
 - `services_list`: enabled services and their fixed origin/base path.
 - `service_request`: execute one JSON REST request.
 
@@ -38,184 +38,211 @@ maintaining a REST operation permission catalog.
 `/` and are relative to that base path. Query values are strings or arrays of
 strings. The optional headers are `If-Match`, `If-None-Match`, `Prefer`,
 `ConsistencyLevel`, and `X-GitHub-Api-Version`.
-The JSON body is limited to 256 KiB; GET and HEAD bodies are rejected. Methods
-are GET, HEAD, POST, PUT, PATCH, DELETE, and OPTIONS. HTTP method does not
-classify permission.
 
-Results contain provider `status`, `body`, filtered `headers`, `request_ids`,
-and a CetiRun `correlation_id`. Provider 401/403 responses remain provider
-results; workload and binding failures are separate tool errors. External data
-is untrusted.
+The JSON body is limited to 256 KiB. GET and HEAD bodies are rejected. The
+methods are GET, HEAD, POST, PUT, PATCH, DELETE, and OPTIONS. The HTTP method
+does not classify permission.
+
+Results contain the provider `status`, `body`, filtered `headers`,
+`request_ids`, and a CetiRun `correlation_id`. Provider 401/403 responses stay
+provider results. Workload and binding failures are separate tool errors.
+External data is untrusted.
 
 ## Execution and trust boundaries
 
 The service rejects traversal, absolute or scheme-relative URLs, redirects,
 proxy headers, cookies, authentication overrides, unsafe DNS answers and
-oversized requests or responses. Its transport validates public DNS results,
-dials the checked address, verifies TLS, disables proxies, HTTP/2 and
-connection reuse, and never retries automatically. Every provider call has a
-20-second timeout; each MCP call has a 30-second deadline.
+oversized requests or responses. Its transport validates public DNS results and
+connects to the validated address. It verifies TLS and disables proxies,
+HTTP/2, and connection reuse. It never retries automatically. Every provider
+call has a 20-second timeout. Each MCP call has a 30-second deadline.
 
-`execution_unknown` means an effect might already have occurred, including when
-the response cannot be read safely. Inspect provider state before another call. A
-correlation ID supports tracing only; it is not an idempotency key.
+`execution_unknown` means that an effect possibly occurred already. This also
+applies when the response cannot be read safely. Before another call, examine
+the provider state. A correlation ID supports tracing only. It is not an
+idempotency key.
 
-MCP runs over HTTPS `/mcp`. Native clients present a rotating Pod-bound proof
-for audience `cetirun-connections-mcp`. MCP validates the live Pod, ServiceAccount,
-namespace Agent owner reference and Agent state. The Broker repeats this
-verification and independently checks the owner-scoped connection and Agent binding. MCP checks
-that Broker check and issuance responses agree on connection and binding
-revisions before sending a request.
+MCP runs over HTTPS `/mcp`. Native clients present a Pod-bound proof that
+rotates. Its audience is `cetirun-connections-mcp`. MCP validates the live Pod,
+ServiceAccount, namespace Agent owner reference and Agent state. The Broker
+repeats this validation and independently examines the owner-scoped connection
+and Agent binding. Before MCP sends a request, it makes sure that the Broker
+check and issuance responses agree on connection and binding revisions.
 
-For governed Agent Identity acquisition, they must also agree on the current
-credential-policy revision read from the authenticated Agent, and on the
-enforcement record UID/resource version. Recreating an identical record does
-not reuse an earlier check response. The Broker
-independently validates an owned enforcement record against the live Agent,
-Team and AgentPolicy before and after credential acquisition. Missing, changed
-or unreadable evidence stops execution; an ARM-only policy cannot be used for
-Graph OBO. This does not create a Connection or authorize a provider operation.
-Governed native workloads additionally require the current common-executor proof
-described below; a stored policy alone is insufficient. See the
+For governed Agent Identity acquisition, these responses must also agree on
+these items:
+
+- the current credential-policy revision that is read from the authenticated
+  Agent
+- the enforcement record UID/resource version
+
+A recreated identical record does not reuse an earlier check response. The
+Broker independently validates an owned enforcement record against the live
+Agent, Team and AgentPolicy before and after credential acquisition. If the
+evidence is absent, changed, or unreadable, execution stops. An ARM-only policy
+cannot be used for Graph OBO. This does not create a Connection or authorize a
+provider operation.
+
+For governed native workloads, the current common-executor proof described
+below is also necessary. A stored policy alone is not sufficient. See the
 [credential policy contract](../cetirun-agent-broker/README.md#credential-policy-execution-and-readback).
 
-Workload authentication failures return HTTP 401 with `unauthenticated` when
-the proof is invalid or its live binding is missing, changed or inactive.
+When the proof is invalid, or its live binding is absent, changed, or inactive,
+workload authentication failures return HTTP 401 with `unauthenticated`.
 Kubernetes API timeouts, failed API requests, invalid responses, and
-unavailable server credentials return HTTP 503 with
-`dependency_unavailable`. These failures stop the request before Broker or
-provider execution; they do not require reconnecting the Agent account.
-Failed notifications use the same HTTP status without a JSON-RPC body.
+unavailable server credentials return HTTP 503 with `dependency_unavailable`.
+These failures stop the request before Broker or provider execution. For these
+failures, it is not necessary to reconnect the Agent account. Failed
+notifications use the same HTTP status without a JSON-RPC body.
 
 Authenticated `ping` requests return `result: {}` with the same request ID.
-They use the same workload proof and protocol-version validation, without
-contacting the Broker or Azure.
+They use the same workload proof and protocol-version validation. They do not
+contact the Broker or Azure.
 
-The chart requires an MCP server TLS Secret (`tls.crt`, `tls.key`) and a
-dedicated Broker client TLS Secret (`tls.crt`, `tls.key`, `ca.crt`). The server
-certificate must cover the MCP service hostname used by clients. The Broker
-client certificate must carry the URI
-`spiffe://cluster.local/ns/<mcp-namespace>/sa/<mcp-serviceaccount>`; its CA must be
-trusted by the Broker, and its `ca.crt` must trust the Broker server. Configure
-the Broker's `toolService` identity and workload audience to match this chart,
-following the [Broker prerequisites](../cetirun-agent-broker/README.md#internal-credential-issuance).
+For the chart, an MCP server TLS Secret (`tls.crt`, `tls.key`) and a dedicated
+Broker client TLS Secret (`tls.crt`, `tls.key`, `ca.crt`) are necessary. The
+server certificate must cover the MCP service hostname that clients use. The
+Broker client certificate must carry the URI
+`spiffe://cluster.local/ns/<mcp-namespace>/sa/<mcp-serviceaccount>`. The Broker
+must trust the CA of this certificate, and the `ca.crt` of this certificate
+must trust the Broker server. Configure the Broker's `toolService` identity and
+workload audience to match this chart. For this configuration, follow the
+[Broker prerequisites](../cetirun-agent-broker/README.md#internal-credential-issuance).
 
-Mount whole Secrets, without `subPath`, so valid certificate and CA replacements
-can reload for new connections. Invalid replacements retain the last valid
-material; established connections and issued provider tokens are not immediately
-revoked. MCP can create TokenReviews and read named workload identity objects;
-it has no Secret API access. Its release namespace must differ from the Broker
-namespace.
+Mount whole Secrets, without `subPath`, so that valid certificate and CA
+replacements can reload for new connections. Invalid replacements keep the last
+valid material. Established connections and issued provider tokens are not
+revoked immediately. MCP can create TokenReviews and read named workload
+identity objects. It has no Secret API access. Its release namespace must be
+different from the Broker namespace.
 
 Audit records identify the Agent, connection and binding revisions, Azure
 principal, request method, target path, duration, outcome and Azure request
 IDs. They exclude query strings, request and response bodies, supplied headers
-and credentials. The injected bearer token is never returned, including when a
-provider echoes it. Azure APIs can still return other sensitive resource data,
-such as access keys, when Azure RBAC permits that action; assign Azure roles
-with that possibility in mind.
+and credentials. The injected bearer token is never returned. This also applies
+when a provider echoes it.
+
+Azure APIs can still return other sensitive resource data, such as access keys.
+This can occur when Azure RBAC allows that action. When you assign Azure roles,
+consider this possibility.
 
 ## Deployment configuration
 
-Follow the [Agent Identity setup guide](../../site/content/en/docs/operations/agent-identity.md)
-for the complete Broker/MCP certificate and trust layout, platform values, and
-provider preparation before enabling this service.
+Before you enable this service, follow the
+[Agent Identity setup guide](../../site/content/en/docs/operations/agent-identity.md).
+It gives the complete Broker/MCP certificate and trust layout, platform values,
+and provider preparation.
 
 The image, standalone Helm chart, default ServiceAccount, and workload token
 audience use `cetirun-connections-mcp`. The platform umbrella chart enables this
 component through `cetirun-connections-mcp.enabled`.
 
 Configure the Operator and runtime charts through `connectionsMCP`. The Operator
-reads `CONNECTIONS_MCP_*` environment variables; native OpenClaw and Hermes
-clients use `CETIRUN_CONNECTIONS_MCP_URL` and the `cetirun-connections` MCP server
-entry. Workloads mount their rotating proof at
+reads `CONNECTIONS_MCP_*` environment variables. Native OpenClaw and Hermes
+clients use `CETIRUN_CONNECTIONS_MCP_URL` and the `cetirun-connections` MCP
+server entry. Workloads mount their proof at
 `/var/run/cetirun/connections/token` and their MCP CA at
-`/var/run/cetirun/connections-ca/ca.crt`.
+`/var/run/cetirun/connections-ca/ca.crt`. The proof rotates.
 
 Deploy the renamed MCP service, Broker configuration, Operator, and runtime
-assets together. Configure the server certificate for the new service DNS name
-and the Broker client certificate for the matching ServiceAccount SPIFFE URI.
-Recreate Agent workloads with the new configuration, projected token audience,
-and mount paths. Previous component and configuration names have no aliases.
-Connection records and provider authorization grants do not require migration.
+assets together. Configure the server certificate for the new service DNS name.
+Configure the Broker client certificate for the SPIFFE URI that matches the
+ServiceAccount. Recreate Agent workloads with the new configuration, projected
+token audience, and mount paths. Previous component and configuration names
+have no aliases. It is not necessary to migrate connection records and provider
+authorization grants.
 
 ### Governed native workloads
 
 The common OpenClaw/Hermes executor has an explicit Connections opt-in:
 
 - Operator: enable `sandboxSources.nativeExecution` and
-  `connectionsMCP.nativeEnabled`, alongside the existing Connections URL,
+  `connectionsMCP.nativeEnabled` together with the current Connections URL,
   purpose audience, CA and Broker namespace/ServiceAccount configuration.
 - Connections chart: enable `nativeSandbox.enabled`, set
-  `nativeSandbox.operatorNamespace`, and provide `nativeSandbox.peerUID`.
+  `nativeSandbox.operatorNamespace`, and supply `nativeSandbox.peerUID`.
   Register the same protected managed-peer identity, namespace, Service name
-  and Service IP inventory in the Operator's existing Sandbox platform source.
-- Keep the fixed Sandbox Pod-admission webhook and its current serving CA
-  available. Broker and MCP receive only named read access to
-  `cetirun-sandbox-pods`; MCP also needs its normal workload reads and
-  TokenReview permission. They receive no Pod write permission.
+  and Service IP inventory in the Operator's current Sandbox platform source.
+- Keep the fixed Sandbox Pod-admission webhook and the current CA of its server
+  certificate available. Broker and MCP receive only named read access to
+  `cetirun-sandbox-pods`. For MCP, its normal workload reads and TokenReview
+  permission are also necessary. They receive no Pod write permission.
   Admission TLS verifies `cetirun-sandbox-admission.<operatorNamespace>.svc`
-  against that CA; a certificate containing only this documented Service SAN
+  against that CA. A certificate that contains only this documented Service SAN
   is sufficient.
 
-The Operator derives the required TCP destination from the current registered
-MCP Service, including its numeric backend port. Deny rules still take
-precedence. The current/default workload ServiceAccount already has UID/version
-pins in common-executor Sources; this path does not create a dedicated
-ServiceAccount or depend on generic Entra projection approval. Only the primary
+The Operator derives the necessary TCP destination from the current registered
+MCP Service. The destination includes the numeric backend port of the Service.
+Deny rules still have priority.
+
+The current/default workload ServiceAccount already has UID/version pins in
+common-executor Sources. This path does not create a dedicated ServiceAccount,
+and it does not depend on generic Entra projection approval. Only the primary
 container mounts the 600-second, purpose-bound Connections proof. It is not an
 `api://AzureADTokenExchange` token.
 
-Both MCP and Broker independently TokenReview that proof, reread the current
-Running/Ready Pod, namespace, ServiceAccount and Ready Agent, and ask the existing
-Operator Pod-admission validator to validate an identical-object, dry-run UPDATE
-of the API-read Pod. The request cannot select a webhook, namespace or alternate
-validation path. Discovery uses the fixed Kubernetes webhook configuration and
-its current CA. No Pod is written. The existing validator checks current source
-UIDs/versions/digests, Agent binding, rendered workloads/controls and reservation;
-the consumer then rereads identities and webhook trust. Recreated, suspended,
-deleting, held, changed or unavailable authority fails closed.
+Both MCP and Broker independently do these steps:
+
+- They TokenReview that proof.
+- They reread the current Running/Ready Pod, namespace, ServiceAccount and
+  Ready Agent.
+- They ask the Operator Pod-admission validator that already exists to
+  validate an identical-object, dry-run UPDATE of the API-read Pod.
+
+The request cannot select a webhook, namespace or alternate validation path.
+Discovery uses the fixed Kubernetes webhook configuration and its current CA.
+No Pod is written. This validator examines current source
+UIDs/versions/digests, Agent binding, rendered workloads/controls and
+reservation. Then the consumer rereads identities and webhook trust. If the
+authority is recreated, suspended, held, changed, or unavailable, or if its
+deletion is in progress, it fails closed.
 
 Native Pods do not carry an Istio sidecar. With this opt-in, port 8443 on MCP
-uses its existing **application HTTPS and Pod-proof authentication**, not an
-additional outer Istio mTLS layer. The chart limits ingress by Agent namespace
-and registers the protected peer selector. A Service-scoped DestinationRule
-also prevents ordinary meshed Agents from adding an incompatible outer mTLS
-layer; their application HTTPS and proof remain required. MCP-to-Broker direct mTLS remains
-required; other MCP ports retain the existing mesh restrictions. The default
-non-native chart configuration remains strict.
+uses its current **application HTTPS and Pod-proof authentication**. It does not
+add an outer Istio mTLS layer. The chart limits ingress by Agent namespace and
+registers the protected peer selector.
 
-Credential-policy configuration readback can run before aggregate Agent Ready;
-it never permits credential serving before workload readiness. Current policy
-evidence can then complete `PolicyApplied`. Independent GitHub/Google metadata
-and credentials do not require Broker Agent Identity or ARM policy records.
-Unavailable *workload authority*, however, rejects all workload-authenticated
-requests, including metadata. Owner-side inventory and exact owned cleanup do
-not require a still-running native Pod.
+A Service-scoped DestinationRule also makes sure that ordinary meshed Agents do
+not add an incompatible outer mTLS layer. Their application HTTPS and proof are
+still necessary. MCP-to-Broker direct mTLS is still necessary. Other MCP ports
+keep the current mesh restrictions. The default non-native chart configuration
+stays strict.
+
+Credential-policy configuration readback can run before aggregate Agent Ready.
+It never allows credentials to be served before workload readiness. Current
+policy evidence can then complete `PolicyApplied`.
+
+For independent GitHub/Google metadata and credentials, it is not necessary to
+have Broker Agent Identity or ARM policy records. But unavailable *workload
+authority* rejects all workload-authenticated requests. This also applies to
+metadata. For owner-side inventory and exact owned cleanup, a native Pod that
+still runs is not necessary.
 
 ### Governed Custom workloads
 
-Custom uses the same native verification, not a type-only bypass. It remains
-off by default: add `custom` to the Operator `connectionsMCP.runtimeTypes`,
-Broker `toolService.runtimeTypes`, and Portal `agentTools.runtimeTypes` lists,
-and enable the native settings above. Custom without a Sandbox remains
-unsupported. Source or workload outages still reject execution.
+Custom uses the same native validation, not a type-only bypass. It stays off by
+default. To enable it, add `custom` to the Operator
+`connectionsMCP.runtimeTypes`, Broker `toolService.runtimeTypes`, and Portal
+`agentTools.runtimeTypes` lists. Also enable the native settings above. Custom
+without a Sandbox stays unsupported. Source or workload outages still reject
+execution.
 
-The Custom image implements the MCP client contract using
+The Custom image implements the MCP client contract with
 `CETIRUN_CONNECTIONS_MCP_URL`, `CETIRUN_CONNECTIONS_MCP_TOKEN_FILE` and
-`CETIRUN_CONNECTIONS_MCP_CA_FILE`. The latter two refer to the existing mounted
-proof and CA paths above. Read both on each new request, retain certificate
-verification, and do not retry an unknown effect. Do not make application
-startup/readiness depend on a successful provider call: serving credentials
-requires the Agent and current Pod to be ready first. The
-[Pi adapter](../../examples/pi-agent/connections-runtime.mjs) initializes
+`CETIRUN_CONNECTIONS_MCP_CA_FILE`. The last two refer to the mounted proof and
+CA paths above. Read both files on each new request. Keep certificate
+verification. Do not retry an unknown effect.
+
+Do not make application startup/readiness depend on a successful provider call.
+Before credentials are served, the Agent and current Pod must first be ready.
+The [Pi adapter](../../examples/pi-agent/connections-runtime.mjs) initializes
 lazily and exposes the four fixed tools to the real SDK.
 
-Custom Agent Identity additionally requires the existing directory configuration,
-policy permission and current credential-policy readback. Generic Entra token
-projection is independent. GitHub/Google connections need neither form of
-Entra identity. Explicit bindings and provider permissions remain mandatory;
-no provider token is projected into any Agent.
+For Custom Agent Identity, the directory configuration that already exists,
+policy permission, and current credential-policy readback are also necessary.
+Generic Entra token projection is independent. For GitHub/Google connections,
+neither form of Entra identity is necessary. Explicit bindings and provider
+permissions are still mandatory. No provider token is projected into any Agent.
 
 ## Offline checks
 
@@ -226,9 +253,9 @@ go vet ./...
 make chart-lint
 ```
 
-Checks use synthetic Azure and Kubernetes fixtures. They do not qualify a live
-Azure tenant, cluster, Portal UI or dataplane. The Operator additionally has a
-local API-server/common-executor/served-admission test documented in
-[DEVELOPMENT.md](../../DEVELOPMENT.md); scheduler, kubelet, directory and provider
-observations remain synthetic. Live Kata/Cilium, Service routing, TLS delivery
-and provider/federation qualification are separate prerequisites.
+These checks use synthetic Azure and Kubernetes fixtures. They do not qualify a
+live Azure tenant, cluster, Portal UI or dataplane. The Operator also has a
+local API-server/common-executor/served-admission test that is documented in
+[DEVELOPMENT.md](../../DEVELOPMENT.md). Scheduler, kubelet, directory and
+provider observations stay synthetic. Live Kata/Cilium, Service routing, TLS
+delivery and provider/federation qualification are separate prerequisites.

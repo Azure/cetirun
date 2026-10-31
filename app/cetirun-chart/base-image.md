@@ -1,9 +1,9 @@
 # Shared base image versions
 
-`Dockerfile.base` supplies the tools used by both native agent images. Versions
-below were checked against public upstream releases on 2026-10-08. Standalone
-tool archives use version/commit and checksum pins; npm tools use explicit
-release versions.
+`Dockerfile.base` supplies the tools that both native agent images use. On
+2026-10-08, the versions below were compared with the public upstream releases.
+Standalone tool archives use version/commit and checksum pins. npm tools use
+explicit release versions.
 
 | Component | Selected version | Upstream source |
 | --- | --- | --- |
@@ -25,54 +25,63 @@ release versions.
 | pip-vendored setuptools | 81.0.0, compatibility ceiling | [Removal of pkg_resources in 82.0.0](https://setuptools.pypa.io/en/latest/history.html#v82-0-0) |
 | Oh My Zsh | `60c9a7a839b790cd905d0fd4419435124fd1bdc0` | [Upstream commit](https://github.com/ohmyzsh/ohmyzsh/commit/60c9a7a839b790cd905d0fd4419435124fd1bdc0) |
 
-The Microsoft Go builder was subsequently updated on 2026-10-21 to address
+Later, on 2026-10-21, the Microsoft Go builder was updated to fix
 [GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809) in `crypto/x509`. All Go
-builders use the same digest-pinned 1.27.3 release, including the runtime image's
-Go-built tools. Other selected dependency versions are unchanged.
+builders use the same digest-pinned 1.27.3 release. This also applies to the
+Go-built tools of the runtime image. The other selected dependency versions
+are unchanged.
 
 ## Compatibility choices
 
-Node stays on the existing LTS line. Node 26.11.1 is the newer Current release,
-not yet LTS at the review date. The pinned OpenClaw release accepts Node 24.21.0.
+Node stays on the LTS line that it already uses. Node 26.11.1 is the newer
+Current release. At the review date, it was not yet an LTS release. The pinned
+OpenClaw release accepts Node 24.21.0.
 
-System packages, including Python, pip, Git, and Azure CLI, follow the supported
-Azure Linux 3.0 repositories through `tdnf install` and `tdnf update`. They are
-not replaced with unrelated upstream major versions. Azure CLI 2.91.0 is both
-the current upstream release and the version available from the distribution.
-System pip and Azure CLI's private pip still require `pkg_resources`, so their
-setuptools replacement stays at the last compatible release, 81.0.0, rather
-than 84.0.0. Both vendor inventories and SBOM references are checked after the
-payloads are updated.
+System packages, for example Python, pip, Git, and Azure CLI, follow the
+supported Azure Linux 3.0 repositories through `tdnf install` and `tdnf update`.
+They are not replaced with unrelated upstream major versions. Azure CLI 2.91.0
+is both the current upstream release and the version available from the
+distribution. System pip and the private pip of Azure CLI still must have
+`pkg_resources`. As a result, their setuptools replacement stays at 81.0.0, the
+last compatible release, and not at 84.0.0. After the payloads are updated,
+both vendor inventories and SBOM references are examined.
 
-GitHub CLI and Tailscale now require Go 1.27. All shared Go builders, module
-minimums, and `.go-version` move together. Microsoft Go 1.27 supports cgo-less
-OpenSSL automatically; the removed `ms_nocgo_opensslcrypto` experiment must not
-be passed to it. Tailscale archive builds explicitly stamp their release
-version, and kubectl's major/minor metadata is derived from its selected version.
+Go 1.27 is now necessary for GitHub CLI and Tailscale. All shared Go builders,
+module minimums, and `.go-version` move together. Microsoft Go 1.27 supports
+cgo-less OpenSSL automatically. The removed `ms_nocgo_opensslcrypto` experiment
+must not be passed to it. Tailscale archive builds explicitly stamp their
+release version. The major/minor metadata of kubectl comes from its selected
+version.
+
 The [kubectl skew policy](https://kubernetes.io/releases/version-skew-policy/#kubectl)
-requires a server within one minor version of the client; qualify the target
-cluster separately before deploying this image. In particular, the legacy
-`infra/cluster/main.bicep` default is still Kubernetes 1.34, outside the supported
-range for this client. This image update does not change that infrastructure
-default or establish compatibility with a 1.34 cluster.
+says that the server must be within one minor version of the client. Before you
+deploy this image, validate the target cluster separately. For example, the
+legacy `infra/cluster/main.bicep` default is still Kubernetes 1.34. This
+version is outside the supported range for this client. This image update does
+not change that infrastructure default. It also does not make the image
+compatible with a 1.34 cluster.
 
 npm 12 supplies its own fixed undici dependency. The old in-place npm patch is
-removed. CLI installs save exact versions so later agent-layer installs cannot
-change them through a caret range. Only the reviewed OpenCode, Claude Code, and
-OpenClaw lifecycle scripts are approved, using `npm install-scripts approve`.
-Registry overrides and the existing `min-release-age=1` setting remain in
-effect. npm measures this setting in days, so tool pins must have been published
-for at least 24 hours. Codex 0.161.0 and Claude Code 2.1.293 were inside that
-window when checked; the selected releases are the latest stable versions
-eligible under this policy at the review time.
-The Pi example still fixes undici 6.26.0 when using its older published base,
-but leaves the already-fixed 6.27.0 and 6.28.0 payloads untouched. Its SDK pin
-is unchanged.
+removed. CLI installs save exact versions so that later agent-layer installs
+cannot change them through a caret range. Only the reviewed OpenCode, Claude
+Code, and OpenClaw lifecycle scripts are approved, with
+`npm install-scripts approve`.
 
-Oh My Zsh has no stable-release version channel; the selected upstream commit
-and archive checksum provide its immutable snapshot. uv and uvx now live in
-`/usr/local/bin` so a persistent HOME cannot hide the image's updated tools.
-Existing HOME files, including older user-local copies, are not deleted.
-No shared HOME contents, credentials, agent provider settings, or permission
-defaults are migrated by this update. The separate desktop image and native
-agent releases are outside this base-tool update.
+The registry overrides and the `min-release-age=1` setting that already exists
+stay in effect. npm measures this setting in days. As a result, tool pins must
+refer to releases that are at least 24 hours old. At the time of the check,
+Codex 0.161.0 and Claude Code 2.1.293 were inside that window. The selected
+releases are the latest stable versions that this policy allowed at the review
+time.
+
+When the Pi example uses its older published base, it still fixes undici
+6.26.0. It does not change the already-fixed 6.27.0 and 6.28.0 payloads. Its
+SDK pin is unchanged.
+
+Oh My Zsh has no stable-release version channel. The selected upstream commit
+and archive checksum give an immutable snapshot of it. The uv and uvx tools are
+now in `/usr/local/bin`, so that a persistent HOME cannot hide the updated
+tools of the image. HOME files that already exist, for example older user-local
+copies, are not deleted. This update does not migrate shared HOME contents,
+credentials, agent provider settings, or permission defaults. The separate
+desktop image and native agent releases are outside this base-tool update.

@@ -1,16 +1,16 @@
 # CetiRun agent chart
 
-The chart deploys an OpenClaw, Hermes or approved Custom instance. Read the
-[Helm configuration reference](../../site/content/en/docs/reference/helm.md)
-for settings and defaults, and the
-[local checks guide](../../site/content/en/docs/getting-started/local-checks.md)
-for credential-free rendering.
-Maintainers updating the bundled Hermes release should also follow
+The chart deploys an OpenClaw, Hermes, or approved Custom instance. For
+settings and defaults, read the
+[Helm configuration reference](../../site/content/en/docs/reference/helm.md).
+To render the chart without credentials, read the
+[local checks guide](../../site/content/en/docs/getting-started/local-checks.md).
+We recommend that maintainers who update the bundled Hermes release also follow
 [the Hermes runtime upgrade procedure](agents/hermes/README.md).
 
 `values.yaml`, `values.schema.json`, and `templates/` are the source of truth.
 Operator-resolved values differ from standalone chart defaults. A local render
-does not establish storage, RuntimeClass, image access, or cloud readiness.
+does not prove storage, RuntimeClass, image access, or cloud readiness.
 
 From the repository root:
 
@@ -20,99 +20,110 @@ bash scripts/cetirun-helm-test.sh
 make -C site serve
 ```
 
-See [package registry overrides](../../site/content/en/docs/reference/scripts.md#container-build-helpers)
-for public npm/PyPI defaults and alternate mirrors, and
-[configuration and skills](../../site/content/en/docs/concepts/configuration.md)
-for runtime package and Git settings.
+For public npm/PyPI defaults and alternate mirrors, see
+[package registry overrides](../../site/content/en/docs/reference/scripts.md#container-build-helpers).
+For runtime package and Git settings, see
+[configuration and skills](../../site/content/en/docs/concepts/configuration.md).
 
 ## Protected Sandbox rendering
 
-The Operator's `sandboxworkload` adapter consumes the shared Sandbox resolution
-and the policy compiler's desired outputs. `helm.PrepareSandboxChart` validates
-original per-Agent overrides **before** merging, then applies the complete
-protected bundle last. `sandboxWorkload` is an internal chart contract, not a
-tenant override or a way to enable Sandbox execution.
+The Operator's `sandboxworkload` adapter uses the shared Sandbox resolution and
+the desired outputs of the policy compiler. `helm.PrepareSandboxChart`
+validates the original per-Agent overrides **before** it merges them. Then it
+applies the complete protected bundle last. `sandboxWorkload` is an internal
+chart contract. It is not a tenant override or a way to enable Sandbox
+execution.
 
-Common reconciliation supports OpenClaw, Hermes and Gateway-qualified Custom.
+Common reconciliation supports OpenClaw, Hermes, and Gateway-qualified Custom.
 The retained preparation-only path still renders zero replicas and does not
-authorize execution; Custom requires the common executor and never falls back
-to an ungoverned runtime.
+authorize execution. Custom must use the common executor. It never uses an
+ungoverned runtime as a fallback.
 
-Custom preserves its approved image entrypoint and inherited numeric non-root
-identity, reuses the existing HOME claim, and projects immutable canonical
-context at its actual HOME. HTTP modes use the static probe packaged in the
-approved terminal image; headless mode has no probes. The optional isolated
-terminal is separately rendered, resource-bounded and policy-controlled.
-See the [governed Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution)
-for registration, artifact pins and unsupported combinations.
+Custom keeps its approved image entrypoint and its inherited numeric non-root
+identity. It reuses the HOME claim that already exists and projects immutable
+canonical context at its actual HOME. HTTP modes use the static probe that is
+packaged in the approved terminal image. Headless mode has no probes. The
+optional isolated terminal is rendered separately, is resource-bounded, and is
+policy-controlled. For registration, artifact pins, and unsupported
+combinations, see the
+[governed Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
 
 The protected inventory includes:
 
-- The main container, HOME initializer, and selected chart-owned doctor, logger
-  and desktop helpers. Each gets CPU, memory and ephemeral-storage requests and
-  limits. Pod-level CPU/memory declarations use effective init/helper accounting;
-  RuntimeClass overhead is accounted separately and checked after API defaulting.
+- The main container, the HOME initializer, and the selected chart-owned
+  doctor, logger, and desktop helpers. Each gets CPU, memory, and
+  ephemeral-storage requests and limits. Pod-level CPU/memory declarations use
+  effective init/helper accounting. RuntimeClass overhead is accounted
+  separately and validated after the API applies defaults.
 - Non-root security contexts, dropped capabilities, disabled privilege
-  escalation and RuntimeDefault seccomp. Explicit policy
+  escalation, and RuntimeDefault seccomp. An explicit policy
   `readOnlyRootFilesystem: false` changes only that control.
-- An existing private HOME claim and a distinct read-only skills claim, plus a
-  size-limited writable scratch volume. `skills.existingClaim` suppresses chart
-  PV/PVC creation on the native path. The adapter requires confirmed HOME UID
-  ownership and unchanged class, access mode and size. The opt-in native
-  OpenClaw profile may instead use an explicit internal empty-skills source
-  when the effective selection is empty and no catalog is configured.
-- Disabled Istio injection and Sidecar discovery, enabled compiler-owned network
-  controls, and independent explicit identity projections mounted only in the
-  main container. Compiler resources are emitted unchanged by this chart.
+- A private HOME claim that already exists, a distinct read-only skills claim,
+  and a size-limited writable scratch volume. On the native path,
+  `skills.existingClaim` prevents PV/PVC creation by the chart. For the
+  adapter, HOME UID ownership must be confirmed, and the class, access mode,
+  and size must be unchanged. When the effective selection is empty and no
+  catalog is configured, the opt-in native OpenClaw profile can use an explicit
+  internal empty-skills source instead.
+- Disabled Istio injection and Sidecar discovery, enabled compiler-owned
+  network controls, and independent explicit identity projections that are
+  mounted only in the main container. This chart emits compiler resources
+  unchanged.
 - Only compiler-owned CiliumNetworkPolicy, dedicated ServiceAccount,
-  RoleBinding and ClusterRoleBinding resources are accepted. Explicitly requested
-  cross-namespace RoleBindings and cluster-wide ClusterRoleBindings retain their
-  scopes and must target only the workload's exact ServiceAccount. Shared Role
-  and ClusterRole objects are never emitted or adopted. Ordinary mode uses the
-  namespace's default ServiceAccount without creating it or projecting identity.
+  RoleBinding, and ClusterRoleBinding resources are accepted. Explicitly
+  requested cross-namespace RoleBindings and cluster-wide ClusterRoleBindings
+  keep their scopes. They must target only the exact ServiceAccount of the
+  workload. Shared Role and ClusterRole objects are never emitted or adopted.
+  Ordinary mode uses the default ServiceAccount of the namespace. It does not
+  create that ServiceAccount or project identity.
 - `dnsPolicy: None` with exactly the compiler's one to three trusted DNS server
-  IPs. Node/cluster resolver defaults, fallback servers, search suffixes and DNS
-  options are not inherited or user-configurable. No cluster-domain suffix is
-  invented; use fully qualified names where needed. The compiler's bound ingress
-  mode must also match the shared resolution.
+  IPs. Node/cluster resolver defaults, fallback servers, search suffixes, and
+  DNS options are not inherited, and users cannot configure them. No
+  cluster-domain suffix is invented. Where necessary, use fully qualified
+  names. The compiler's bound ingress mode must also match the shared
+  resolution.
 
-The legacy pre-upgrade orphan/re-adoption hook is absent from protected renders.
-An existing StatefulSet using `volumeClaimTemplates` requires a separately
-approved stopped-workload transition; rendering never migrates it, changes PVC
-ownership or claims writer exclusion. Scratch limits are accounting/eviction
-controls, not an independent hard disk quota.
+The legacy pre-upgrade orphan/re-adoption hook is absent from protected
+renders. If a StatefulSet that already exists uses `volumeClaimTemplates`, a
+separately approved stopped-workload transition is necessary. A render never
+migrates that StatefulSet, changes PVC ownership, or claims writer exclusion.
+Scratch limits are controls for accounting and eviction, not an independent
+hard disk quota.
 
-Only model provider/name, authorized existing Secret selection and non-reserved
-typed environment inputs are accepted as governed user overrides. Final-Pod
-validation compares all containers, volumes, identity, scheduling and other
-PodSpec fields against the rendered expectation, allowing only sanctioned
-Kubernetes/StatefulSet defaults. Admission additionally requires current
-controller-owned persisted UID/revision state; a rendered template alone cannot
-authorize a Pod.
+Only model provider/name, the authorized selection of a Secret that already
+exists, and non-reserved typed environment inputs are accepted as governed user
+overrides. Final-Pod validation compares all containers, volumes, identity,
+scheduling, and other PodSpec fields with the rendered expectation. It allows
+only sanctioned Kubernetes/StatefulSet defaults. For admission, the current
+controller-owned persisted UID/revision state is also necessary. A rendered
+template alone cannot authorize a Pod.
 
-The admission contract also checks the live Namespace's
-`cetirun.microsoft.com/sandbox-protected: "true"` label, Agent name/UID annotations
-and canonical Agent owner reference against that state. Installation must make
-this namespace identity immutable and restrict initial marking to the exact
-controller identity; labels alone never authorize a workload.
+The admission contract also validates the live Namespace's
+`cetirun.microsoft.com/sandbox-protected: "true"` label, Agent name/UID
+annotations, and canonical Agent owner reference against that state.
+Installation must make this namespace identity immutable. It must also
+restrict initial marking to the exact controller identity. Labels alone never
+authorize a workload.
 
-Admission needs reads of the protected state ConfigMap and name-scoped reads of
-referenced workload ConfigMaps and authorized Secrets in their namespaces. This
-includes the platform-managed `kube-root-ca.crt` when Kubernetes access is
-projected; it is not copied into an Agent-owned CA resource. Metadata-only reads
-still require ordinary resource `get` permission, so do not grant cluster-wide
-Secret access.
+Admission must read the protected state ConfigMap. It must also do name-scoped
+reads of referenced workload ConfigMaps and authorized Secrets in their
+namespaces. When Kubernetes access is projected, this includes the
+platform-managed `kube-root-ca.crt`. It is not copied into an Agent-owned CA
+resource. For metadata-only reads, ordinary resource `get` permission is still
+necessary. As a result, do not grant cluster-wide Secret access.
 
 For common-executor Kata lifetimes, the controller records workload binding
-intents before this chart is applied and confirms their live UIDs afterward.
-Current Pod admission requires those confirmed grants and exact ClusterRole
-source pins. A suspended common render validates the compiler output but omits
-workload RoleBindings/ClusterRoleBindings and requires every component to have
-zero replicas; it cannot recreate revoked access during suspension.
-Kubernetes identity volumes and mounts must be present unchanged on the main
-container and cannot be added to helpers. See the
-[administrator setup](../../examples/native-sandbox/README.md#kubernetes-api-access);
-this chart does not approve roles or enable capabilities.
+intents before this chart is applied. Afterward, it confirms their live UIDs.
+For current Pod admission, those confirmed grants and exact ClusterRole source
+pins are necessary. A suspended common render validates the compiler output,
+but it omits workload RoleBindings/ClusterRoleBindings. Every component in that
+render must have zero replicas. A suspended render cannot recreate revoked
+access during suspension.
+
+Kubernetes identity volumes and mounts must be present and unchanged on the
+main container. They cannot be added to helpers. See the
+[administrator setup](../../examples/native-sandbox/README.md#kubernetes-api-access).
+This chart does not approve roles or enable capabilities.
 
 Offline regression checks include:
 
@@ -123,89 +134,103 @@ go -C app/cetirun-operator test -tags=envtest ./internal/admission -run '^TestPo
 ```
 
 These checks do not qualify runtime isolation, host resource enforcement, CSI
-writer exclusion, network enforcement or identity federation. Legacy chart
-defaults remain unchanged when the protected contract is absent.
+writer exclusion, network enforcement, or identity federation. When the
+protected contract is absent, legacy chart defaults stay unchanged.
 
 ### Native OpenClaw Gateway packaging
 
-The native OpenClaw MVP reuses the protected renderer and the existing
-OpenClaw image. It does not add an alternative image, an Istio sidecar, or a
-Helm value that authorizes execution. The controller owns Sandbox/AgentPolicy
-selection, owner access, activation and deletion; the chart still prepares a
-held workload. Rendering alone does not test any of those live operations.
+The native OpenClaw MVP reuses the protected renderer and the OpenClaw image
+that already exists. It does not add an alternative image, an Istio sidecar, or
+a Helm value that authorizes execution. The controller owns Sandbox/AgentPolicy
+selection, owner access, activation, and deletion. The chart still prepares a
+held workload. A render alone does not test any of those live operations.
 
 The Operator supplies this contract:
 
 | Values | Runtime use |
 | --- | --- |
-| `agentType: openclaw`, `sandboxWorkload.contractVersion: v1` | Explicit protected OpenClaw profile; preparation retains `executionHeld: true` and `replicaCount: 0` |
-| `runtimeClassName`, `sandboxWorkload` resources, DNS, security and enforcement objects | The selected Sandbox's compiled runtime controls, never legacy network defaults |
+| `agentType: openclaw`, `sandboxWorkload.contractVersion: v1` | Explicit protected OpenClaw profile. Preparation keeps `executionHeld: true` and `replicaCount: 0` |
+| `runtimeClassName`, `sandboxWorkload` resources, DNS, security and enforcement objects | The compiled runtime controls of the selected Sandbox, never legacy network defaults |
 | `persistence.existingClaim`, `skills.existingClaim` | Separately owned HOME and read-only skills storage |
 | `sandboxWorkload.skillsMode: empty` (internal, otherwise omitted) | Replaces only the skills claim with an unpopulated `emptyDir`, mounted read-only at `/home/vibe/.aks/skills` in the main container |
-| `openclaw.image.repository`, `tag`, optional `digest` | The same existing OpenClaw image for the Agent and its initializers; shared registry/version overrides remain supported |
+| `openclaw.image.repository`, `tag`, optional `digest` | The Agent and its initializers use the same OpenClaw image that already exists. Shared registry/version overrides stay supported |
 | `aiGateway.enabled: true`, `keySecretName`, `keySecretKey` | The Agent's virtual key, passed as `OPENAI_API_KEY` through a Secret reference only in the main container |
-| `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default and Gateway endpoint; missing endpoints and defaults outside that list fail rendering |
+| `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default, and Gateway endpoint. If an endpoint is not set, or a default is outside that list, the render fails |
 | `openclaw.config.gateway` | Controller-selected ingress/auth configuration, copied without persisted auth overrides on each native start |
 
-Protected Gateway traffic uses compiler-owned network policy, so
-`sidecarScope.enabled` remains false. A legacy Gateway render still requires
-the existing Istio Sidecar scope.
+Protected Gateway traffic uses compiler-owned network policy. As a result,
+`sidecarScope.enabled` stays false. For a legacy Gateway render, the Istio
+Sidecar scope that already exists is still necessary.
 
-Only the controller's existing `sandboxSources.nativeExecution` opt-in can
-select the empty-skills mode, after resolving Team skills and Agent additions
-and removals. It requires no new public flag. HOME remains a PVC, the chart
-remains held, and the initial Pod lifetime finalizer is preserved.
-The schema and renderer reject combining the empty mode with a shared claim,
-package requests, another mount path, a non-OpenClaw runtime or missing native
-Gateway/lifetime inputs. No helper can populate the empty skills volume.
-Requested skills and configured catalogs continue to use the existing validated
-PVC/publication path; errors never select an empty fallback.
+Only the controller's `sandboxSources.nativeExecution` opt-in, which already
+exists, can select the empty-skills mode. This selection occurs after Team
+skills and Agent additions and removals are resolved. No new public flag is
+necessary. HOME stays a PVC, the chart stays held, and the initial Pod lifetime
+finalizer is kept.
 
-Protected OpenClaw startup, readiness and liveness probes use the image's
-existing Node runtime to request `/startupz`, `/readyz` and `/healthz` over
-`127.0.0.1` inside the main container. The helper is packaged in the read-only
-ConfigMap mount at `/etc/cetirun/health-probe.cjs`; no new image is needed.
-It accepts HTTP 200-399 without following redirects, sends no model credentials,
-and exits nonzero on HTTP errors, connection failures or its bounded deadline.
-Explicit probe timing, thresholds and enablement settings are preserved.
+The schema and renderer reject the empty mode in combination with any of these
+items:
+
+- a shared claim
+- package requests
+- another mount path
+- a non-OpenClaw runtime
+- native Gateway/lifetime inputs that are not set
+
+No helper can populate the empty skills volume. Requested skills and configured
+catalogs continue to use the validated PVC/publication path that already
+exists. Errors never select an empty fallback.
+
+Protected OpenClaw startup, readiness, and liveness probes use the Node runtime
+that is already in the image. They request `/startupz`, `/readyz`, and
+`/healthz` over `127.0.0.1` inside the main container. The helper is packaged
+in the read-only ConfigMap mount at `/etc/cetirun/health-probe.cjs`, and no new
+image is necessary. It accepts HTTP 200-399 but does not follow redirects, and
+it sends no model credentials. It exits nonzero on HTTP errors, connection
+failures, or its bounded deadline. Explicit probe timing, thresholds, and
+enablement settings are kept.
+
 With `startupProbe.failureThreshold: null` (the default), common-executor
-OpenClaw Sandboxes allow 60 failed startup probes at the existing 10-second
-interval, rather than restarting a still-initializing gateway after 30 failures.
-Other built-in paths, including retained single-start OpenClaw and Hermes, keep
-30 failures. An explicit positive integer, including `30`, overrides either
-default. Liveness/readiness checks and their timings remain unchanged.
-Legacy OpenClaw and held Hermes renders retain their existing HTTP probes.
+OpenClaw Sandboxes allow 60 failed startup probes at the current 10-second
+interval. They do not restart a gateway after 30 failures while its
+initialization continues. Other built-in paths keep 30 failures, for example
+retained single-start OpenClaw and Hermes. An explicit positive integer
+overrides either default. This also applies to `30`.
 
-The startup probe starts after init containers finish; it is not a deadline for
-doctor or credential retirement and does not extend a lifecycle operation's
-acceptance bound. Qualify the complete startup and retained operations on the
-target runtime/storage, not just the probe window. Existing pinned charts and
-explicit overrides are not changed by this default; use the normal retained
-update flow to adopt the new chart.
+Liveness/readiness checks and their timings stay unchanged. Legacy OpenClaw and
+held Hermes renders keep their HTTP probes.
 
-These exec probes require no host/remote-node ingress exception or network
-compiler change. They report Kubernetes container health only, not
-guest-external observations, runtime qualification or authorization to lift an
-execution hold.
+The startup probe starts after init containers finish. It is not a deadline for
+doctor or credential retirement. It does not extend the acceptance bound of a
+lifecycle operation. Qualify the complete startup and retained operations on
+the target runtime/storage, not only the probe window. This default does not
+change pinned charts that already exist or explicit overrides. To adopt the new
+chart, use the normal retained update flow.
+
+For these exec probes, no host/remote-node ingress exception or network
+compiler change is necessary. They report Kubernetes container health only,
+not guest-external observations, runtime qualification, or authorization to
+lift an execution hold.
 
 The chart adds `CETIRUN_NATIVE_SANDBOX=true` to OpenClaw's HOME initializer only
 on this protected Gateway path. The initializer replaces saved model/provider,
-model fallback and ingress-auth settings with the current platform configuration.
-Invalid source configuration fails initialization instead of starting with a
-different model source. Named-agent configurations are outside this single-agent
-MVP.
+model fallback, and ingress-auth settings with the current platform
+configuration. Invalid source configuration fails initialization instead of a
+start with a different model source. Named-agent configurations are outside
+this single-agent MVP.
+
 Native OpenClaw doctor and gateway processes also disable Node's optional
-on-disk compile cache. Recreating that cache in ephemeral Pod scratch adds startup
-I/O on virtualized filesystems. This changes neither the JavaScript being executed
-nor plugin selection, resource limits, health checks or lifecycle deadlines.
-Legacy OpenClaw and Hermes keep their existing settings.
+on-disk compile cache. If that cache is created again in ephemeral Pod scratch,
+this adds startup I/O on virtualized filesystems. This does not change the
+JavaScript that is executed, plugin selection, resource limits, health checks,
+or lifecycle deadlines. Legacy OpenClaw and Hermes keep their settings.
 
 The Gateway deployment must enable `operatorIntegration` and configure shared
-models in its chart so the Operator can bind AgentPolicy grants to the
+models in its chart. This lets the Operator bind AgentPolicy grants to the
 [chart-derived model identities](../cetirun-ai-gateway/chart/README.md#cetirun-agentpolicy-model-bindings).
-Provider credentials stay with the Gateway. Arbitrary direct provider routes,
-unimplemented policy restrictions, identity extensions and other deferred
-profiles must be rejected by the controller, not passed through as ordinary
+Provider credentials stay with the Gateway. The controller must reject
+arbitrary direct provider routes, unimplemented policy restrictions, identity
+extensions, and other deferred profiles. It must not forward them as ordinary
 runtime values.
 
 Focused offline checks (with the documented dependencies, Node and Helm 3 or 4):
@@ -217,7 +242,7 @@ python3 -B -m pytest -p no:cacheprovider -q \
   app/cetirun-chart/tests/test_retire_copilot_sign_in.py
 ```
 
-`make ci-test` includes the rendering tests; `make python-test` includes the
-initialization tests with the repository's offline guards. The CLI fixtures are
-synthetic; they do not qualify a built image, Kata, Cilium, storage, a live owner
-sign-in or an actual model request.
+`make ci-test` includes the render tests. `make python-test` includes the
+initialization tests with the offline guards of the repository. The CLI
+fixtures are synthetic. They do not qualify a built image, Kata, Cilium,
+storage, a live owner sign-in, or an actual model request.
