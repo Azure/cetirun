@@ -160,7 +160,7 @@ oauth2Proxy:
       operator: Exists
 
 # ── Egress audit configuration ──
-# Deploys ServiceEntry, access logging, and blacklist EnvoyFilter to the Istio
+# Deploys ServiceEntry and access logging to the Istio
 # root config namespace. These resources apply mesh-wide to all sidecar proxies.
 egress:
   # Namespace for egress resources (Istio root config namespace).
@@ -168,7 +168,6 @@ egress:
 
   # External services — ServiceEntry enables Istio SNI routing so FQDN appears in access logs.
   # Without these, HTTPS traffic falls back to PassthroughCluster (IP only, no hostname).
-  # Phase 2: switch outboundTrafficPolicy to REGISTRY_ONLY to enforce as allowlist.
   externalServices:
     - github.com
     - api.github.com
@@ -181,17 +180,3 @@ egress:
   # Access logging (via EnvoyFilter for JSON format with SNI field).
   accessLog:
     enabled: true
-
-  # Blacklist mode — EnvoyFilter injects Envoy network RBAC on SIDECAR_OUTBOUND
-  # to block configured destinations. helm.sh/resource-policy: keep prevents Helm
-  # from deleting the resource on uninstall (but helm upgrade will reconcile).
-  blacklist:
-    enabled: true
-    # FQDNs blocked via TLS SNI matching (connection.sni).
-    # Prefix with "." for wildcard subdomain matching (e.g. ".example.com" blocks *.example.com).
-    fqdns:
-      - "models.litellm.cloud"
-      - "checkmarx.zone"
-    # IP addresses or CIDR ranges blocked via destination.ip.
-    ipCidrs:
-      - "129.212.152.70/32"

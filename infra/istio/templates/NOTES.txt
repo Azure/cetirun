@@ -16,10 +16,9 @@ CetiRun Istio infrastructure deployed.
 {{- if .Values.egress.accessLog.enabled }}
   - EnvoyFilter: JSON access logging on all sidecars ({{ .Values.egress.namespace }})
 {{- end }}
-{{- if .Values.egress.blacklist.enabled }}
-  - EnvoyFilter: egress blacklist ({{ .Values.egress.namespace }})
-    NOTE: This EnvoyFilter has helm.sh/resource-policy: keep — it survives helm uninstall.
-{{- end }}
+  - Agent egress enforcement belongs to AgentPolicy, not shared mesh filters.
+    Older kept blacklist filters require explicit ownership-checked cleanup;
+    see scripts/cetirun-istio-cleanup.py and the Istio operations guide.
 
 IMPORTANT: The ext_authz extension provider must be configured separately.
 If you used deploy.sh, this was handled automatically.
@@ -35,4 +34,4 @@ Verify:
 
 Manage:
   helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
-  helm upgrade {{ .Release.Name }} . -n {{ .Release.Namespace }} --reuse-values
+  helm upgrade {{ .Release.Name }} . -n {{ .Release.Namespace }} --reset-values -f <reviewed-values.yaml>

@@ -189,7 +189,7 @@ Code, OpenCode, GitHub CLI, and Azure CLI. Their provider requests, diagnostics,
 update behavior, and service terms must be reviewed separately for the versions
 and configuration actually deployed.
 
-The Istio external-service entries and configured blacklist are not a complete
+The Istio external-service entries are audit configuration, not a complete
 allowlist of possible destinations. Do not infer that an unlisted provider,
 website, or telemetry service is unreachable. Validate the deployed network
 controls independently.
