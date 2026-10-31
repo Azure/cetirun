@@ -1,71 +1,73 @@
 ---
 title: "Your first instance"
-description: "Create a persistent OpenClaw or Hermes workspace on an existing CetiRun deployment."
+description: "Create a persistent OpenClaw or Hermes workspace on a CetiRun deployment that already exists."
 weight: 10
 ---
 
 ## Before you begin
 
-You need access to a configured CetiRun portal, membership in its permitted Entra
-ID group, and an account with the model provider you intend to use. Ask your
-administrator for the actual portal URL; `https://example.com/` in these docs is
-only a placeholder.
+You must have access to a configured CetiRun portal. You must also be a member
+of the Entra ID group that the portal allows. You must also have an account
+with the model provider that you intend to use. Ask your administrator for the
+actual portal URL. In these docs, `https://example.com/` is only a placeholder.
 
 The portal's **Sign out** action uses `/oauth2/sign_out` on the portal origin.
-Your administrator should verify session clearing as part of deployment; see
-[Istio authentication](../../operations/istio/#prepare-identity-dns-and-tls)
-for the routing requirements.
+As part of the deployment, we recommend that your administrator make sure that
+sign-out clears the session. For the necessary routing, refer to
+[Istio authentication](../../operations/istio/#prepare-identity-dns-and-tls).
 
 ## Create through the portal
 
-1. Open the portal and sign in.
-2. Choose **New Agent**. Hermes is selected by default when allowed by the
-   deployment; select OpenClaw explicitly if needed. Both take their models
-   from the AI Gateway.
+1. Open the portal. Then sign in.
+2. Select **New Agent**. If the deployment allows Hermes, Hermes is the default
+   selection. To use OpenClaw, select OpenClaw explicitly. Both take their
+   models from the AI Gateway.
 3. Enter an optional instance-name suffix and display name. The owner alias
-   comes from your authenticated identity, not a field you choose. Leaving the
-   name empty uses your alias; a suffix such as `example` produces
-   `alice-example` for the synthetic owner `alice`. Leave the gateway token
-   empty to let the platform generate it.
-4. Choose a **Team**. Every platform installation includes the AI Gateway,
-   which requires one: **Create Agent** stays disabled until a Team is
-   selected, and the portal rejects a request without it. If the list is
-   empty, ask an administrator to create a Team in the portal's
+   comes from your authenticated identity, not from a field that you set. If
+   you leave the name empty, the portal uses your alias as the name. For the
+   synthetic owner `alice`, a suffix such as `example` gives `alice-example`.
+   To let the platform generate the gateway token, leave the token empty.
+4. Select a **Team**. Every platform installation includes the AI Gateway, and
+   a Team is necessary for the AI Gateway. **Create Agent** stays disabled
+   until you select a Team. The portal rejects a request without a Team. If
+   the list is empty, ask an administrator to create a Team in the portal's
    administration pages.
-5. Choose the models. Turn on **Use shared models** for the models your
-   administrators share, **Use GitHub Copilot** for your own Copilot
-   subscription, or both; at least one stays on. If the deployment offers
-   neither, the form says so: ask an administrator to add a shared model. With
-   shared models on, you can choose the default model, or leave it to the
-   deployment default.
-   Select **Microsoft Entra Agent Identity** only when the deployment has
-   enabled it and you need delegated Azure access.
-6. Select **Create Agent** and wait for provisioning. An administrator can inspect
-   individual readiness conditions if the instance does not become ready.
-7. Sign in to GitHub Copilot if you use it: open the instance and choose
-   **Sign in with GitHub** in the **Models** section of its overview; the
-   Copilot models appear within a few minutes, after the instance restarts to
-   pick them up.
+5. Select the models. To use the models that your administrators share, enable
+   **Use shared models**. To use your own Copilot subscription, enable
+   **Use GitHub Copilot**. You can enable both, but at least one stays enabled.
+   If the form says that the deployment offers neither, ask an administrator
+   to add a shared model. With shared models enabled, you can select the
+   default model or keep the deployment default.
+6. Select **Microsoft Entra Agent Identity** only when the deployment enables
+   it and delegated Azure access is necessary for you. Then select
+   **Create Agent**. Wait until the platform provisions the instance. If the
+   instance does not become ready, an administrator can examine the individual
+   readiness conditions.
+7. If you use GitHub Copilot, sign in to it. To sign in, open the instance.
+   Then select **Sign in with GitHub** in the **Models** section of its
+   overview. The Copilot models appear within a few minutes, after the
+   instance restarts to get them.
 8. [Choose a model](../../guides/models/). Set the default model in the
-   **Models** section; saving it restarts the instance.
-9. Use the portal's access action to open an OpenClaw instance's console. It
-   asks for the gateway token: copy **Gateway Token** from the instance
-   Overview. It also asks to pair each new browser the first time it connects:
-   open the instance's **Terminal** in the portal, run
-   `openclaw devices list`, approve your browser's pending request with
-   `openclaw devices approve <request-id>`, and reload the console. Each
-   browser pairs once per instance. `kubectl exec` cannot approve it by default,
-   because the instance's exec restriction denies it.
+   **Models** section. When you save it, the instance restarts.
+9. To open the console of an OpenClaw instance, use the portal's access
+   action. When the console asks for the gateway token, copy
+   **Gateway Token** from the instance Overview. The first time that a browser
+   connects to an instance, the console also asks to pair that browser. To pair
+   the browser, open the instance's **Terminal** in the portal and run
+   `openclaw devices list`. Approve the pending request of your browser with
+   `openclaw devices approve <request-id>`, then reload the console. By
+   default, `kubectl exec` cannot approve the request, because the exec
+   restriction of the instance denies it.
 10. If Agent Identity was enabled, use the instance overview to
-    [connect Microsoft Entra](../../guides/agent-identity/) before asking the
-    Agent to inspect Azure resources.
+    [connect Microsoft Entra](../../guides/agent-identity/). Do this before you
+    ask the Agent to examine Azure resources.
 
-The deployment controls which agent types are offered, whether Tailscale is
-visible, and how many instances each user may create. The portal chart defaults
-to one instance per user; this is a portal creation limit, not a Kubernetes
-resource quota or a restriction on direct CR creation. An instance of a Team
-with an Agent Policy runs in the Team's Sandbox, where Tailscale and Agent
-Identity are not available; see
+The deployment controls the offered agent types, the visibility of Tailscale,
+and the number of instances that each user can create. By default, the portal
+chart allows one instance per user. This is a portal creation limit, not a
+Kubernetes resource quota or a restriction on direct CR creation. An instance
+of a Team with an Agent Policy runs in the Team's Sandbox. Tailscale and Agent
+Identity are not available in this Sandbox. Refer to
 [Policy-bound Teams](../../operations/policy-teams/).
 
 Sources: [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}})
@@ -73,10 +75,11 @@ and [portal instance handler]({{< repo "app/cetirun-portal/internal/handler/inst
 
 ## Create through Kubernetes
 
-You need permission to create cluster-scoped resources on a configured
-cluster. Save the following manifest as `instance.yaml` outside the repository.
-Replace `alice-example` with the instance name and `spec.user.alias` with its
-owner's identity. Applying the manifest creates the instance and its resources.
+You must have permission to create cluster-scoped resources on a configured
+cluster. Save this manifest as `instance.yaml` outside the repository.
+Replace `alice-example` with the instance name and `spec.user.alias` with the
+identity of its owner. When you apply the manifest, the instance and its
+resources are created.
 
 ```yaml
 apiVersion: cetirun.microsoft.com/v1alpha1
@@ -94,22 +97,25 @@ spec:
     displayName: Alice
 ```
 
-Keep `metadata.name` and `spec.user.alias` stable. The former determines the
-instance namespace, Helm release, and URL path; the latter determines
-ownership. Do not use `ui`, which the controller reserves.
+Keep `metadata.name` and `spec.user.alias` stable. The instance namespace, Helm
+release, and URL path come from the name. The ownership comes from the alias.
+Do not use `ui`, because the controller reserves it.
 
-`spec.team` and `spec.sandboxRef` select administrator-defined policy and
-isolation settings. `spec.agent` is required; omitting its `type` defaults to
-Hermes. The effective type and runtime username cannot change after creation.
+`spec.team` and `spec.sandboxRef` select the policy and isolation settings that
+an administrator defines. You must set `spec.agent`. If you do not set its
+`type`, Hermes is the default. The effective type and runtime username cannot
+change after creation.
 
-Validate the manifest against the cluster's installed CRD without saving it:
+Validate the manifest against the cluster's installed CRD. This command does
+not save the manifest:
 
 ```bash
 kubectl apply --dry-run=server -f instance.yaml
 ```
 
-Server-side validation checks admission and the schema. It contacts the cluster
-but does not test image pulls, scheduling, storage, routing, or identity.
+Server-side validation examines admission and the schema. It connects to the
+cluster, but it does not test image pulls, scheduling, storage, routing, or
+identity.
 
 Create the instance:
 
@@ -117,7 +123,7 @@ Create the instance:
 kubectl apply -f instance.yaml
 ```
 
-Check the instance status:
+Examine the instance status:
 
 ```bash
 kubectl get agents.cetirun.microsoft.com alice-example
@@ -126,34 +132,38 @@ kubectl wait --for=condition=IngressReady agents.cetirun.microsoft.com/alice-exa
 kubectl get agents.cetirun.microsoft.com alice-example -o jsonpath='{.status.namespace}{"\n"}{.status.accessUrl}{"\n"}'
 ```
 
-The [controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
-creates `gateway-token` in `cetirun-alice-example` if absent, including
-`OPENCLAW_GATEWAY_TOKEN` and the separate `CETIRUN_AUTH_KEY`. Hermes also needs
-`API_SERVER_KEY` and `hermes.env`, which the controller supplies. Do not place
-tokens in the CR or print the Secret for diagnosis. If supplying an existing
-Secret, ensure its OpenClaw token is valid; merely naming a Secret does not
-validate its contents.
+If `gateway-token` does not exist in `cetirun-alice-example`, the
+[controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
+creates it. The Secret contains `OPENCLAW_GATEWAY_TOKEN` and the separate
+`CETIRUN_AUTH_KEY`. Hermes also must have `API_SERVER_KEY` and `hermes.env`,
+and the controller supplies them. Do not put tokens in the CR or print the
+Secret for diagnosis. If you supply a Secret that already exists, make sure
+that its OpenClaw token is valid. The name of a Secret alone does not validate
+its contents.
 
-`spec.model` is optional for Copilot because the operator supplies its deployment
-default. `spec.helm.version`, if empty, is populated from the operator's runtime
-chart version on first reconciliation. This pins the instance chart; changing
-the operator's default chart version alone does not upgrade existing instances.
+`spec.model` is optional for Copilot, because the operator supplies its
+deployment default. If `spec.helm.version` is empty, it is set to the
+operator's runtime chart version at the first reconciliation. This pins the
+instance chart. A change to only the operator's default chart version does not
+upgrade the instances that already exist.
 
 Open the URL in `status.accessUrl`. `Ready` reports workload readiness
 independently of ingress. `IngressReady=True` confirms VirtualService
-reconciliation; verify TLS, sign-in, and model-provider access separately.
-For Hermes, sign in to the native Dashboard with username `cetirun` and the
-Hermes API / Dashboard key shown on the instance Overview page. For OpenClaw,
-enter the gateway token and approve the browser's pairing request from the
-instance's Terminal, as in the portal steps above.
+reconciliation. Examine TLS, sign-in, and model-provider access separately.
+
+For Hermes, sign in to the native Dashboard with the username `cetirun` and the
+Hermes API / Dashboard key. The instance Overview page shows this key. For
+OpenClaw, enter the gateway token. Then approve the request to pair the browser
+from the instance's Terminal, as in the portal steps above.
 
 ## Keep your workspace
 
-The default storage settings preserve the home directory across pod restarts.
+The default storage settings keep the home directory across pod restarts.
 
-> **Warning:** Deleting an instance deletes its namespace, including PVCs.
-> A StatefulSet `Retain` policy does not prevent namespace deletion. Back up
-> important data before deleting an instance.
+> **Warning:** Before you delete an instance, back up important data. The
+> deletion of an instance also deletes its namespace and the PVCs in that
+> namespace. A StatefulSet `Retain` policy does not prevent namespace deletion.
 
-See [instance lifecycle](../../guides/lifecycle/) for suspension and deletion
-behavior, and ask your administrator about backup and recovery procedures.
+For the suspension and deletion behavior, refer to
+[instance lifecycle](../../guides/lifecycle/). Ask your administrator about the
+backup and recovery procedures.

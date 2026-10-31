@@ -1,14 +1,14 @@
 ---
 title: "Testing"
-description: "Run component, chart, and documentation checks without contacting a cluster."
+description: "Run component, chart, and documentation checks that do not connect to a cluster."
 weight: 20
 ---
 
 ## Render the runtime chart
 
-Run these commands from the repository root with Helm installed. They use the
-local chart and synthetic values; they do not start an agent, pull runtime
-images, verify credentials, or test AKS integrations.
+With Helm installed, run these commands from the repository root. The commands
+use the local chart and synthetic values. They do not start an agent, pull
+runtime images, validate credentials, or test AKS integrations.
 
 ```bash
 bash scripts/cetirun-helm-lint.sh
@@ -19,7 +19,7 @@ helm template cetirun app/cetirun-chart \
   --set-string secrets.openclawGatewayToken=dev-token
 ```
 
-To inspect Hermes:
+To examine Hermes:
 
 ```bash
 helm template cetirun app/cetirun-chart \
@@ -27,8 +27,8 @@ helm template cetirun app/cetirun-chart \
   --set-string secrets.model=example-model
 ```
 
-`example-model` and `dev-token` are render-only placeholders. The chart requires
-an explicit model. Do not apply this output to a cluster.
+`example-model` and `dev-token` are render-only placeholders. The chart must
+have an explicit model. Do not apply this output to a cluster.
 
 ## Check the documentation
 
@@ -37,36 +37,43 @@ make -C site check
 make -C site serve
 ```
 
-The first run installs pinned site dependencies and may access package
-registries. With those dependencies already installed, use `make docs-check`
-for the repository's offline documentation gate or `make -C site test` for
-the standard-library validator tests alone.
+The first run installs pinned site dependencies and can access package
+registries. If these dependencies are already installed, use `make docs-check`
+for the repository's offline documentation gate. Or use `make -C site test` to
+run only the standard-library validator tests.
 
-See the [site contributor guide](../../contributing/site/) for the pinned tool
-versions, an existing-Hugo override, and the local preview address.
+Refer to the [site contributor guide](../../contributing/site/) for the pinned
+tool versions, an override for an installed Hugo, and the local preview
+address.
 
 ## Validate application and infrastructure changes
 
 The root [Makefile]({{< repo "Makefile" >}}) and
-[validation runner]({{< repo "scripts/ci/validate.py" >}}) provide:
+[validation runner]({{< repo "scripts/ci/validate.py" >}}) give these commands:
 
 | Command | Scope |
 | --- | --- |
 | `make test` | Go, frontend, auth/runtime, CI helper, and script tests |
 | `make lint` | License headers, Python syntax, Go vet, frontend types, all five charts, Bicep, shell, and selected workflows |
-| `make check` | `make lint` and `make test`; documentation is separate |
+| `make check` | `make lint` and `make test`. Documentation is separate. |
 | `make chart-check` | Runtime chart for both agents, operator, Portal, Istio, and platform charts, plus runtime/platform/Istio render regressions |
 | `make docs-check` | Site tests, build, links, and content checks |
 
-Install the prerequisites separately: the Go version in
-[`.go-version`]({{< repo ".go-version" >}}), Node.js 24 and the frontend's locked
-npm dependencies, the Python packages in
-[`scripts/ci/requirements.txt`]({{< repo "scripts/ci/requirements.txt" >}}),
-and Helm, Bicep, ShellCheck, and actionlint. These gates fail on missing tools
-or dependencies; they do not log in to Azure or run deployment scripts.
-The [developer guide]({{< repo "DEVELOPMENT.md" >}}) describes component setup.
+Install these prerequisites separately:
 
-For example, these narrower checks need only Python's standard library:
+- The Go version in [`.go-version`]({{< repo ".go-version" >}})
+- Node.js 24 and the frontend's locked npm dependencies
+- The Python packages in
+  [`scripts/ci/requirements.txt`]({{< repo "scripts/ci/requirements.txt" >}})
+- Helm, Bicep, ShellCheck, and actionlint
+
+These gates fail if a tool or a dependency is not installed. They do not log in
+to Azure or run deployment scripts. The
+[developer guide]({{< repo "DEVELOPMENT.md" >}}) describes how to prepare the
+components.
+
+For example, only Python's standard library is necessary for these narrower
+checks:
 
 ```bash
 make license-check ci-test python-check
@@ -76,13 +83,12 @@ python3 scripts/ci/validate.py --help
 
 Workflow lint covers an explicit validation-workflow list, not every workflow.
 Image CVE scans and dependency review are separate CI jobs, not part of
-`make check`. Go tests use a disposable embed fixture if the Portal frontend has
-not been built. Run the frontend build separately to validate the production
-bundle when changing the Portal.
+`make check`. If the Portal frontend is not built, Go tests use a disposable
+embed fixture. When you change the Portal, run the frontend build separately to
+validate the production bundle.
 
 ## Integration testing
 
-Use an authorized test environment to verify RuntimeClass availability,
+Use an authorized test environment to examine RuntimeClass availability,
 storage provisioning, image access, Istio authentication, provider entitlement,
-and Tailscale connectivity. Local rendering does not
-exercise these integrations.
+and Tailscale connectivity. A local render does not test these integrations.

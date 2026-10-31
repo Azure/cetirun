@@ -1,10 +1,10 @@
 ---
 title: "Development"
-description: "Find the component you want to change and set up a local development environment."
+description: "Find the component that you want to change and prepare a local development environment."
 weight: 10
 ---
 
-Choose the component you want to work on, then follow
+Select the component that you want to work on. Then follow
 [DEVELOPMENT.md]({{< repo "DEVELOPMENT.md" >}}) for its toolchain,
 dependency setup, and build commands.
 
@@ -15,15 +15,16 @@ dependency setup, and build commands.
 | Runtime images and Helm chart | [Runtime chart]({{< repo "app/cetirun-chart" "tree" >}}) |
 | Infrastructure and shared services | [Infrastructure]({{< repo "infra" "tree" >}}) |
 
-Keep the operator and portal modules in the same checkout: the portal uses a
-local Go module replacement for the operator. Build the frontend before
-building the complete portal binary so that it embeds the real web assets.
+Keep the operator and portal modules in the same checkout. The portal uses a
+local Go module replacement for the operator. Build the frontend before you
+build the complete portal binary, so that the binary embeds the real web
+assets.
 
-Use [Testing](../../getting-started/local-checks/) to select local checks for
-your change. For site work, follow [Documentation](../site/).
-Deployment scripts and live integrations require a separately authorized
-environment; they are not part of local development checks.
+Use [Testing](../../getting-started/local-checks/) to select the local checks
+for your change. For site work, follow [Documentation](../site/). A separately
+authorized environment is necessary for deployment scripts and live
+integrations. They are not part of the local development checks.
 
-Before opening a pull request, follow the
-[contribution requirements](../) and the generated-file guidance in
+Before you open a pull request, follow the
+[contribution rules](../) and the generated-file guidance in
 [DEVELOPMENT.md]({{< repo "DEVELOPMENT.md" >}}).

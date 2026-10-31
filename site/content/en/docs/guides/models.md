@@ -1,6 +1,6 @@
 ---
 title: "Choose a model"
-description: "Choose shared models or GitHub Copilot through the AI Gateway."
+description: "Select shared models or GitHub Copilot through the AI Gateway."
 weight: 10
 ---
 
@@ -9,218 +9,271 @@ direct provider credentials for Agents.
 
 ## Models through the AI Gateway
 
-The platform AI Gateway is part of every platform installation: the operator's
-`aiGateway.enabled` and the portal's `features.aiGatewayEnabled` are required.
-OpenClaw, Hermes, and approved Custom instances take their platform-provided
-models from the Gateway, from two sources:
+The platform AI Gateway is part of every platform installation. The operator's
+`aiGateway.enabled` and the portal's `features.aiGatewayEnabled` are necessary.
+OpenClaw, Hermes, and approved Custom instances take their platform-supplied
+models from the Gateway. These models come from two sources:
 
-- **Shared models** are the models an administrator configures in the Gateway
-  chart's `models`, which gives each a deployment ID and an access group
-  derived from its name. They keep the administrator's names. Instances without
-  a policy are offered all of them, and policy-bound instances those their
-  AgentPolicy grants. A model added in the Gateway's console is shared only
-  with the access group `cetirun-shared`, and only with instances without a
+- **Shared models** are the models that an administrator configures in the
+  Gateway chart's `models`. The chart gives each model a deployment ID and an
+  access group that is derived from its name. Shared models keep the names from
+  the administrator. All shared models are offered to instances without a
+  policy. Policy-bound instances are offered the shared models that their
+  AgentPolicy grants. A model that is added in the Gateway's console is shared
+  only with the access group `cetirun-shared` and only with instances without a
   policy.
-  While the Gateway blocks requests for unpriced models, as it does by default
-  (`blockUnpricedModels`), the operator offers only shared models with a price.
-  It reads the setting from the Gateway, so a change made in the Gateway's
-  console counts too. To offer a model that is free on purpose, set its zero
-  price in `litellm_params`; a zero in `model_info` alone cannot be told apart
-  from a missing price.
-- **GitHub Copilot** models come from the owner's own Copilot subscription,
-  through a small proxy per instance that only the Gateway can reach. The
-  operator's `aiGateway.copilotProxy.enabled` turns the proxy off for the whole
-  deployment.
 
-An instance sees one name per model. A Copilot model that is the same model as
-a shared model the instance may use takes that shared model's name, and the
-instance lists it once. The operator compares the Copilot model's ID with each
-deployment's `model_info.base_model`, or its `litellm_params.model` when the
-Gateway's price table prices that name, ignoring the provider prefix, letter
-case, and dots versus dashes. A Copilot model with a date version, such as
-`gpt-4.1-2025-04-14`, is never merged, and when several shared models match,
-the first name in sort order is used. Requests for the name are then served by
-the shared deployments or by the instance's own Copilot subscription, as the
-Gateway's routing strategy chooses. The instance's Copilot route copies the
-shared model's routing fields (`order`, `weight`, `rpm`, `tpm`), so standby
-deployments stay in reserve as configured. Either way, a request counts against
-the instance's budget at the model's list price. When Copilot fails, the Gateway
-takes the instance's Copilot route out of rotation for a few seconds and sends
-its requests to the shared deployments: at once after a 429, and for other
-errors once most of the route's recent requests have failed, so a few requests
-can fail first. While the instance's proxy itself cannot be reached, for example
-while it restarts after a sign-in, the requests sent to it fail. The Gateway's
-health checks would take it out of rotation at their next probe, but they leave
-Copilot models alone unless the deployment turns their probes on; see below.
+  By default, the Gateway blocks requests for unpriced models
+  (`blockUnpricedModels`). When the Gateway blocks these requests, the operator
+  offers only shared models with a price. The operator reads this setting from
+  the Gateway. As a result, a change that is made in the Gateway's console also
+  counts. To offer a model that is free on purpose, set its zero price in
+  `litellm_params`. A zero in `model_info` alone cannot be told apart from a
+  price that is not set.
+- **GitHub Copilot** models come from the owner's own Copilot subscription.
+  They go through a small proxy for each instance, and only the Gateway can
+  reach this proxy. The operator's `aiGateway.copilotProxy.enabled` disables
+  the proxy for the whole deployment.
 
-Any other Copilot model keeps its own ID, such as `gpt-5.5`, and only the
-instance's Copilot subscription serves it: a 429 from Copilot reaches the
-instance as it is, and the next request goes to Copilot again. If a shared model
-already has that name but is another model, the Copilot model is left out, and
-the instance page lists it as not offered. If it is the same model but one the
-instance may not use, the instance keeps that name for its own Copilot model,
-which only its own key reaches.
-The instance's key reaches a Copilot model only by that name; the
+An instance sees one name for each model. If a Copilot model is the same model
+as a shared model that the instance can use, it takes the name of that shared
+model. The instance lists it one time.
+
+The operator compares the Copilot model ID with each deployment's
+`model_info.base_model`, or with its `litellm_params.model` when the Gateway's
+price table prices that name. The comparison ignores the provider prefix,
+letter case, and the difference between dots and dashes. A Copilot model with
+a date version, such as `gpt-4.1-2025-04-14`, is never merged. If several
+shared models match, the first name in sort order is used.
+
+The shared deployments or the instance's own Copilot subscription then serve
+requests for the name. The Gateway's routing strategy selects between them. The
+instance's Copilot route copies the routing fields of the shared model
+(`order`, `weight`, `rpm`, `tpm`). As a result, standby deployments stay in
+reserve as configured. In both cases, a request counts against the instance's
+budget at the list price of the model.
+
+When Copilot fails, the Gateway takes the instance's Copilot route out of
+rotation for a few seconds and sends its requests to the shared deployments.
+This occurs immediately after a 429. For other errors, it occurs after most of
+the recent requests of the route fail. As a result, a few requests can fail
+first.
+
+When the instance's proxy itself cannot be reached, the requests that are sent
+to it fail. For example, this occurs when the proxy restarts after a sign-in.
+The Gateway's health checks leave Copilot models alone unless the deployment
+enables their probes. With these probes enabled, the health checks take the
+proxy out of rotation at their next probe. See below.
+
+Any other Copilot model keeps its own ID, such as `gpt-5.5`. Only the
+instance's Copilot subscription serves this model. A 429 from Copilot reaches
+the instance without change, and the next request goes to Copilot again.
+
+If a shared model already has that name but is another model, the Copilot model
+is left out. The instance page lists it as not offered. If that shared model is
+the same model but the instance cannot use it, the instance keeps that name for
+its own Copilot model. Only the instance's own key reaches this Copilot model.
+
+The instance's key reaches a Copilot model only by that name. The
 `copilot/<model>` names of earlier versions are removed from the key. An
-instance whose default model is set as `copilot/<model>` uses the model's
-current name.
+instance whose default model is set as `copilot/<model>` uses the current name
+of the model.
 
-The Gateway's health checks leave Copilot models alone by default. Each probe
-is a real call on the owner's Copilot allowance: at the default interval of
-five minutes, about 288 calls a day for each Copilot model of each instance.
-The operator's `aiGateway.copilotProxy.healthChecks.enabled` turns the probes
-on for every instance. An instance's Copilot route that fails its probe is then
-taken out of rotation; that changes where requests go only for a model that
-shared deployments serve too.
+By default, the Gateway's health checks leave Copilot models alone. Each probe
+is a real call on the owner's Copilot allowance. At the default interval of
+five minutes, this is about 288 calls a day for each Copilot model of each
+instance. The operator's `aiGateway.copilotProxy.healthChecks.enabled` enables
+the probes for every instance. With the probes enabled, an instance's Copilot
+route that fails its probe is taken out of rotation. This changes where
+requests go only for a model that shared deployments also serve.
 
-Each instance's key reaches only its own access groups: those of the shared
-models it may use, with `cetirun-shared` for an instance without a policy, and
-the instance's own Copilot group, so its Copilot models
-reach only its own proxy, also under a shared model's name. The Gateway checks
-router fallbacks against the key as well (`operatorIntegration`), and its guard
-keeps every key that does not hold an instance's Copilot group, such as the
-master key or a key allowed every model, away from that instance's Copilot
-routes. Keep teams and keys in the Gateway console limited to access groups.
+Each instance's key reaches only its own access groups. These are the groups of
+the shared models that the instance can use and the instance's own Copilot
+group. For an instance without a policy, these groups include `cetirun-shared`.
+As a result, the Copilot models of the instance reach only its own proxy, also
+under the name of a shared model.
+
+The Gateway also examines router fallbacks against the key
+(`operatorIntegration`). Its guard keeps every key that does not hold an
+instance's Copilot group away from that instance's Copilot routes. Examples are
+the master key and a key that is allowed every model. Keep teams and keys in
+the Gateway console limited to access groups.
 
 A shared model can also be a router that the administrator configures in the
-Gateway: for each request it picks one of several shared models, such as a
-cheaper one for simple requests. An instance gets such a router only when it
-may use every model the router sends requests to, as for a Team's routers. With
-an Agent Policy, the Policy must list the router and every model of its tiers,
-its default model and a context compaction model; a classifier model must be a
-shared model but need not be listed. An instance without a Policy gets every
-router whose models are all shared models. A router the operator cannot read
-completely, such as one with a setting it does not know or a classifier plugin,
-is not given to instances with a Policy. A router an instance cannot use is
-left out of its key and its models, and an instance whose Policy lists the
-router shows why on its page. A changed router reaches the instances' keys
-within about two minutes; it does not change the Policy's Gateway projection.
-See the Gateway chart's
+Gateway. For each request, the router picks one of several shared models, such
+as a cheaper model for simple requests. An instance gets such a router only
+when it can use every model that the router sends requests to. This is the
+same as for a Team's routers.
+
+With an Agent Policy, the Policy must list the router, every model of its
+tiers, its default model, and a context compaction model. A classifier model
+must be a shared model, but it is not necessary to list it. An instance without
+a Policy gets every router whose models are all shared models.
+
+If the operator cannot read a router completely, instances with a Policy do not
+get it. Examples are a router with a setting that the operator does not know
+and a router with a classifier plugin. If an instance cannot use a router, the
+router is left out of the key and the models of the instance. If the Policy of
+that instance lists the router, the instance shows why on its page.
+
+A changed router reaches the keys of the instances within about two minutes. It
+does not change the Gateway projection of the Policy. See the Gateway chart's
 [Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
-section; its
+section. Its
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
 part has Log Analytics queries that show how requests were routed. A Team's own
 routers are described under
 [Smart-routing models](#smart-routing-models).
 
 A shared model can also be a router that the administrator configures in the
-Gateway: for each request it picks one of several shared models, such as a
-cheaper one for simple requests. An instance that may use the router reaches
-every model the router can pick. See the Gateway chart's
+Gateway. For each request, the router picks one of several shared models, such
+as a cheaper model for simple requests. An instance that can use the router
+reaches every model that the router can pick. See the Gateway chart's
 [Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
-section; its
+section. Its
 [Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
 part has Log Analytics queries that show how requests were routed.
 
-The create form offers both sources, on by default, and every new Agent needs a
-model to use: shared models while at least one is offered, or
-GitHub Copilot while the deployment offers it. GitHub Copilot stays on while
-shared models are off or none is offered, and shared models stay on without
-GitHub Copilot. With neither source, the portal creates no Agent and asks for a
-shared model. It reads the sources from the catalog the operator publishes, so
-it also waits until the catalog exists. The catalog lists the agent types the
-selected runtime chart routes through the Gateway. The portal creates an Agent
-only after it has read a compatible chart. A Team remains optional; when
-selected, its Agent Policy further restricts the model sources.
+The create form offers both sources, and both are on by default. Every new
+Agent must have a model to use: shared models when at least one is offered, or
+GitHub Copilot when the deployment offers it. GitHub Copilot stays on when
+shared models are off or when no shared model is offered. Shared models stay on
+without GitHub Copilot. With neither source, the portal creates no Agent and
+asks for a shared model.
 
-To add Copilot models, open the instance and choose **Sign in with GitHub**. The
-portal runs the GitHub device-code sign-in, stores the token for the instance's
-proxy, and records the account's chat models. They appear once the proxy has
-started, usually within a few minutes, and the instance restarts to pick them
-up. A model the Gateway has no price for is listed as not offered: it would
-escape the instance's budget. The token and the models carry the same sign-in
-generation, and the operator uses models only with the token they came with,
-once the portal has completed that sign-in: if a sign-in stops or is cancelled
-after storing its token, the instance offers no Copilot models and reports
-`SignInIncomplete` until you sign in again. Each new sign-in also
-restarts the proxy: it otherwise keeps the Copilot token it exchanged until
-that token expires, so another GitHub account would take effect only then.
+The portal reads the sources from the catalog that the operator publishes. As a
+result, it also waits until the catalog exists. The catalog lists the agent
+types that the selected runtime chart routes through the Gateway. The portal
+creates an Agent only after it reads a compatible chart. A Team stays optional.
+When a Team is selected, its Agent Policy further restricts the model sources.
+
+To add Copilot models, open the instance. Then select **Sign in with GitHub**.
+The portal runs the GitHub device-code sign-in, stores the token for the
+instance's proxy, and records the account's chat models. The models appear
+after the proxy starts, usually within a few minutes. Then the instance
+restarts to get them.
+
+A model that the Gateway has no price for is listed as not offered, because the
+instance's budget cannot limit that model.
+
+The token and the models carry the same sign-in generation. The operator uses
+models only with the token that they came with, after the portal completes that
+sign-in. If a sign-in stops or is cancelled after it stores its token, the
+instance offers no Copilot models. The instance reports `SignInIncomplete`
+until you sign in again.
+
+Each new sign-in also restarts the proxy. Without this restart, the proxy keeps
+the Copilot token that it exchanged until that token expires. As a result,
+another GitHub account takes effect only when that token expires.
 
 ## Runtime configuration
 
 OpenClaw and Hermes receive their model list and virtual key from the AI
 Gateway on every start. Hermes writes the Gateway provider as
 `cetirun-gateway` in `~/.hermes/config.yaml` and reads its key from
-`CETIRUN_GATEWAY_API_KEY`; the key is in neither HOME file. A model removed from
-the Gateway no longer appears in the Agent configuration. This routing does not
-prevent arbitrary user code in a Custom image from making its own outbound
-network connection; use network policy when that control is required.
+`CETIRUN_GATEWAY_API_KEY`. The key is in neither HOME file. If a model is
+removed from the Gateway, it no longer appears in the Agent configuration.
+Arbitrary user code in a Custom image can make its own outbound network
+connection, and this routing does not prevent it. If that control is
+necessary, use network policy.
 
 Each instance has its own virtual key with a monthly budget. The instance page
-lists its models. For OpenClaw and Hermes, it also sets the default; saving a
-new default restarts the instance. Custom images select a model through their
-own configuration or Chat UI using the models available through the Gateway.
-When an administrator adds or removes a shared model, changes its
-limits, or changes whether it is offered through its price or the Gateway's
-setting, the operator updates every instance that uses shared models, which
-restarts them, and registers their Copilot models again under the names that
-now apply. A change to a shared model's base model or routing fields alone
-reaches the Copilot routes at each instance's next verification, within ten
-minutes. A restarting instance shows as provisioning for a short while, and its
-UI is unavailable until it is ready again. Other changes to a shared model,
-such as its endpoint, provider parameters or price, keep the access groups
-instances are granted: the Gateway chart derives a model's group from its name
-alone. Instances keep using the model, and none of them restarts. After an
-upgrade from a version that named Copilot models `copilot/<model>`, the
-operator registers each instance's Copilot models under their new names at its
-next verification, and the instance restarts with its new model list. A client
-outside the instance that still requests `copilot/<model>` is refused and must
-use the new name.
-A Gateway upgrade does not interrupt instances either. Each Gateway pod keeps
-the configuration it started with until it is replaced, and the operator waits
-for the rollout to finish before it applies a changed model list, so instances
-are updated once rather than once for each replaced pod.
-Changing the operator's `aiGateway.copilotProxy.healthChecks.enabled`, or
-upgrading with it off from a version that let the Gateway probe Copilot models,
-registers every instance's Copilot models again at its next verification,
-within about ten minutes, without restarting instances. Each route is briefly
-unavailable while it is deleted and added again.
+lists its models. For OpenClaw and Hermes, the page also sets the default. When
+you save a new default, the instance restarts. Custom images select a model
+from the models that are available through the Gateway. They make this
+selection through their own configuration or Chat UI.
 
-OpenClaw also sends short internal tasks, such as generated session titles and
-activity recaps, to a utility model. On the Gateway, an instance's utility
-model is its default model: OpenClaw would otherwise pick OpenAI's small model,
-which the Gateway does not offer. These calls count against the instance's
-key like any other.
+When an administrator does one of these actions, the operator updates every
+instance that uses shared models:
 
-An instance governed by an Agent Policy can also carry request limits on its
-key: parallel requests, requests per minute, tokens per minute, and per-model
-limits. The Policy sets them for every Agent of its Teams, each on its own key.
-The operator applies limit-only changes to the existing key without stopping or
-restarting running Agents. Budget and model access changes still use the normal
-policy reprojection fence. A request
-over a limit receives HTTP 429 with a `retry-after` header. A tokens per minute
-limit counts the tokens of finished requests; see the
+- adds or removes a shared model
+- changes the limits of a shared model
+- changes if a shared model is offered, through its price or the Gateway's
+  setting
+
+This update restarts these instances. The operator also registers their
+Copilot models again under the names that now apply.
+
+If only the base model or routing fields of a shared model change, the change
+reaches the Copilot routes at each instance's next check. This occurs within
+ten minutes. When an instance restarts, it shows as provisioning for a short
+time. Its UI is unavailable until it is ready again.
+
+Other changes to a shared model, for example to its endpoint, provider
+parameters, or price, keep the access groups that instances are granted. The
+Gateway chart derives the group of a model only from its name. Instances
+continue to use the model, and none of them restarts.
+
+After an upgrade from a version that named Copilot models `copilot/<model>`,
+the operator registers each instance's Copilot models under their new names.
+This occurs at the next check of the instance. Then the instance restarts with
+its new model list. A client outside the instance that still requests
+`copilot/<model>` is refused. The client must use the new name.
+
+A Gateway upgrade also does not interrupt instances. Each Gateway pod keeps the
+configuration that it started with until it is replaced. Before the operator
+applies a changed model list, it waits for the rollout to finish. As a result,
+instances are updated one time, not one time for each replaced pod.
+
+A change to the operator's `aiGateway.copilotProxy.healthChecks.enabled`
+registers every instance's Copilot models again. An upgrade with this setting
+off, from a version that let the Gateway probe Copilot models, does the same.
+This occurs at the next check of each instance, within about ten minutes.
+Instances do not restart. Each route is briefly unavailable while it is
+deleted and added again.
+
+OpenClaw also sends short internal tasks to a utility model, for example
+generated session titles and activity recaps. On the Gateway, the utility model
+of an instance is its default model. Otherwise, OpenClaw picks OpenAI's small
+model, which the Gateway does not offer. These calls count against the
+instance's key like any other call.
+
+An instance governed by an Agent Policy can also carry these request limits on
+its key:
+
+- parallel requests
+- requests per minute
+- tokens per minute
+- per-model limits
+
+The Policy sets these limits for every Agent of its Teams, each on its own key.
+The operator applies limit-only changes to the key that exists, and it does
+not stop or restart running Agents. Budget and model access changes still use
+the normal policy reprojection fence.
+
+A request over a limit receives HTTP 429 with a `retry-after` header. A tokens
+per minute limit counts the tokens of finished requests. See the
 [AgentPolicy rate limits](../../reference/crds/#agentpolicy-rate-limits)
 reference.
 
-The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
-that Secret is lost while the key still exists in the Gateway, the operator
-does not replace the key, which would reset its spend, restore the default
-budget and unblock a blocked key. The Agent instead reports `AIGatewayReady`
-as false with the reason `KeySecretLost`, with an `AIGatewayKeySecretLost`
-event. Restore the Secret, or delete the key in the Gateway to have a new one
-created with the default budget.
+The value of the key is kept in the instance's `ai-gateway-virtual-key` Secret.
+If that Secret is lost and the key still exists in the Gateway, the operator
+does not replace the key. A replacement resets the spend of the key, restores
+the default budget, and unblocks a blocked key. Instead, the Agent reports
+`AIGatewayReady` as false with the reason `KeySecretLost`, with an
+`AIGatewayKeySecretLost` event. Restore the Secret, or delete the key in the
+Gateway. If you delete the key, a new key is created with the default budget.
 
-With `operatorIntegration` enabled, the Gateway sets
-`general_settings.user_api_key_cache_ttl` to zero. Each new virtual-key
-request checks current database authorization instead of reusing a previous
-worker's cached grant. Redis coordination for budgets and rate limits stays
-enabled, and response caching remains off unless requested. Standalone
-Gateways retain their existing authentication-cache defaults.
+When `operatorIntegration` is enabled, the Gateway sets
+`general_settings.user_api_key_cache_ttl` to zero. Each new virtual-key request
+examines the current database authorization. It does not reuse the cached grant
+of a previous worker. Redis coordination for budgets and rate limits stays
+enabled. Response caching stays off unless it is requested. Standalone Gateways
+keep their authentication-cache defaults.
 
-This trades extra database reads and dependence on database availability for
-fresh authorization. Requests can return service-unavailable responses while
-database connections recover. Allow the Gateway rollout to finish on every replica
-before relying on the new setting. Requests already authorized or in flight
-are not cancelled by a subsequent key change. This is not a guarantee about
-stopping Agent processes or revoking credentials held by other services.
+This trades more database reads and a dependence on database availability for
+fresh authorization. While database connections recover, requests can return
+service-unavailable responses. Before you rely on the new setting, let the
+Gateway rollout finish on every replica. A later key change does not cancel
+requests that are already authorized or in flight. This is not a guarantee
+that Agent processes stop or that credentials held by other services are
+revoked.
 
 An instance's configuration lists at most 256 models. Its GitHub Copilot
-models, at most 128, all stay; shared models fill the rest in name order, and
-the instance's default model, the deployment's default and the shared models
-that are Copilot models too are kept. The
-operator reports the shared models it leaves out in an `AIGatewayModelsLimited`
-event on the Agent.
+models, at most 128, all stay. Shared models fill the rest in name order. The
+instance's default model, the deployment's default, and the shared models that
+are also Copilot models are kept. The operator reports the shared models that
+it leaves out in an `AIGatewayModelsLimited` event on the Agent.
 
 Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller/ai_gateway.go" >}}),
 [Copilot model names]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_copilot_merge.go" >}}),
@@ -231,74 +284,80 @@ and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login
 
 ### Smart-routing models
 
-A Team can also define its own smart-routing models in the Portal; see
-[Configure a team](../teams/#smart-routing). An instance that may use one
-lists it under its name, such as `auto`, and the create form offers the names
-the Team's Policy allows as the default model. The instance's configuration
-carries the router's internal Gateway name as the model ID: OpenClaw shows
-the router's name, while Hermes lists the internal name. Choosing the router's
-name as the default model selects it. The instance is configured with the
-smallest context window and output limit among the router's tier models that
-the Gateway reports, so a request sized for the router fits every tier. When
-the owner's GitHub Copilot model is merged into a tier's shared model, the
-instance's requests for that tier may reach its Copilot route too, so the
-router's limits include the route's, as the instance's entry for that shared
-model does; the same holds for a router configured in the Gateway.
+A Team can also define its own smart-routing models in the Portal. See
+[Configure a team](../teams/#smart-routing). An instance that can use one of
+these models lists it under its name, such as `auto`. The create form offers
+the names that the Team's Policy allows as the default model. The instance's
+configuration carries the router's internal Gateway name as the model ID.
+OpenClaw shows the router's name, but Hermes lists the internal name.
 
-Each request is charged to the instance's key at the price of the tier model it
-is sent to, and the calls of an `llm` or `jev` classifier are charged too; the
-router's own price in the Gateway only satisfies the check for unpriced models.
-The key's budget applies as usual. A per-model rate limit is matched against
-the model name the instance requests, the router's internal name, so a
-per-model limit on a tier model does not apply to requests that go through a
-router.
+If you select the router's name as the default model, you select the router.
+The instance is configured with the smallest context window and output limit
+among the router's tier models that the Gateway reports. As a result, a request
+sized for the router fits every tier. When the owner's GitHub Copilot model is
+merged into a tier's shared model, the instance's requests for that tier can
+also reach its Copilot route. As a result, the router's limits include the
+limits of the route, as the instance's entry for that shared model does. The
+same is true for a router configured in the Gateway.
 
-An instance that cannot use one of its Team's routers shows why on its page:
-for example, the Policy does not list the router, a tier uses a model the
-Policy does not allow, or a GitHub Copilot tier waits for its owner to sign in.
-Before the operator has registered a router, the instance shows it as not
+Each request is charged to the instance's key at the price of the tier model
+that it is sent to. The calls of an `llm` or `jev` classifier are also charged.
+The router's own price in the Gateway only satisfies the check for unpriced
+models. The key's budget applies as usual. A per-model rate limit is matched
+against the model name that the instance requests, which is the router's
+internal name. As a result, a per-model limit on a tier model does not apply to
+requests that go through a router.
+
+An instance that cannot use one of its Team's routers shows why on its page.
+For example:
+
+- The Policy does not list the router.
+- A tier uses a model that the Policy does not allow.
+- A GitHub Copilot tier waits for its owner to sign in.
+
+Before the operator registers a router, the instance shows it as not
 registered yet.
 
 ## GitHub Copilot in the portal
 
 Every harness uses the Portal sign-in described above. The Portal stores the
-owner's Copilot credential through the Gateway management flow; it does not
-call an in-agent authentication helper. Select a model from the Gateway
-catalog after the owner completes sign-in and the operator publishes access.
-If the Gateway or catalog is unavailable, resolve that condition before
-creating an Agent or selecting a new model.
+owner's Copilot credential through the Gateway management flow. It does not
+call an in-agent authentication helper. After the owner completes sign-in and
+the operator publishes access, select a model from the Gateway catalog. If the
+Gateway or catalog is unavailable, resolve that condition before you create an
+Agent or select a new model.
 
-Changing an OpenClaw or Hermes default model updates the custom resource,
+A change to an OpenClaw or Hermes default model updates the custom resource,
 causes reconciliation, and can restart the Agent. Expect a brief interruption.
-Clear the per-instance selection to resume the Gateway default. The Portal
+To use the Gateway default again, clear the per-instance selection. The Portal
 offers only models in the Gateway catalog that the selected optional Team
-Policy permits.
+Policy allows.
 
 ## Persistence and precedence
 
 `Agent.spec.model` is an optional Gateway model ID, at most 256 characters. An
-empty `model` string in a Portal PATCH clears the override. The Portal validates
-the initial selection against the published Gateway catalog when creating an
-Agent. PATCH stores the requested model ID; the operator resolves the effective
-model and enforces the final key grant. Deployment defaults and per-Agent
-selections do not bypass Gateway authorization.
+empty `model` string in a Portal PATCH clears the override. When the Portal
+creates an Agent, it validates the initial selection against the published
+Gateway catalog. PATCH stores the requested model ID. The operator resolves the
+effective model and enforces the final key grant. Deployment defaults and
+per-Agent selections do not bypass Gateway authorization.
 
-The Operator owns platform-managed Agents' model routing. Per-Agent provider
-overrides do not select an upstream provider, and workloads receive a Gateway
-virtual key. Configure providers, credentials, permissions, budgets, and rate
-limits in the AI Gateway instead.
+The Operator owns the model routing of platform-managed Agents. Per-Agent
+provider overrides do not select an upstream provider, and workloads receive a
+Gateway virtual key. Configure providers, credentials, permissions, budgets,
+and rate limits in the AI Gateway instead.
 
 ## Catalog architecture
 
-The operator publishes the Gateway model catalog and each Agent's allowed
-model access. The Portal reads those catalogs through its authenticated API.
-Shared models come from Gateway configuration; Copilot models become available
+The operator publishes the Gateway model catalog and the allowed model access
+of each Agent. The Portal reads those catalogs through its authenticated API.
+Shared models come from Gateway configuration. Copilot models become available
 after the owner signs in through the Portal. Provider credentials are not
 returned to the browser or the Agent workload.
 
 ## When discovery fails
 
-Check the Agent's AI Gateway conditions and the selected
-Team Policy, if any. Complete Portal sign-in again when authentication has
-expired, or retry after a temporary Gateway failure. Do not print or paste
-token files to diagnose these errors.
+Examine the Agent's AI Gateway conditions and the selected
+Team Policy, if any. If authentication expired, complete Portal sign-in again.
+After a temporary Gateway failure, retry. Do not print or paste token files to
+diagnose these errors.

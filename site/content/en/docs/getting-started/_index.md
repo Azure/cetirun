@@ -5,11 +5,14 @@ weight: 20
 no_list: true
 ---
 
-Start with an existing CetiRun deployment:
+Start with a CetiRun deployment that already exists:
 
 1. Ask your platform administrator for the portal address and access group.
-2. Follow [Your first instance](first-instance/) to create and open a workspace.
-3. Use the [agent guides](../guides/) to choose a model and manage your instance.
+2. To create and open a workspace, follow
+   [Your first instance](first-instance/).
+3. To select a model and manage your instance, use the
+   [agent guides](../guides/).
 
-Need to set up the platform? Follow [Install CetiRun](platform/) in Operations.
-To develop or test CetiRun locally, see [Development](../contributing/development/).
+To install the platform, follow [Install CetiRun](platform/) in Operations.
+To develop or test CetiRun locally, refer to
+[Development](../contributing/development/).

@@ -1,86 +1,102 @@
 ---
 title: "Manage instance lifecycle"
-description: "Check instance health, request a retained restart, update, suspend, resume, or delete an instance."
+description: "Examine instance health, request a retained restart, and update, suspend, resume, or delete an instance."
 weight: 40
 ---
 
 ## Manage agents as an administrator
 
 In Portal, open **Admin → All agents**. Search by Agent name or owner, or
-filter by Team, Agent type, and phase. Select an Agent name or **View details**
-to open its management page. Access requires membership in the Portal's
-configured administrator allowlist; Team membership alone does not grant it.
+filter by Team, Agent type, and phase. To open the management page of an
+Agent, select its name or **View details**. To get access, a user must be a
+member of the Portal's configured administrator allowlist. Team membership
+alone does not grant this access.
 
 The **Overview** tab shows ownership, configuration, integration states, and
 the desired and observed configuration generations. **Status** shows Conditions
-and Pod health; **Events** shows Agent and namespace events. An unavailable
-diagnostic source is reported separately from an empty result. Registry
-authentication being configured means a credential reference exists; it does
-not establish that an image can be pulled.
+and Pod health. **Events** shows Agent and namespace events. An unavailable
+diagnostic source is reported separately from an empty result. Configured
+registry authentication means that a credential reference exists. It does not
+prove that an image can be pulled.
 
-This page does not expose credentials or grant access to the owner's chat,
-terminal, or native Agent workspace. Arbitrary Helm values and annotations
-are not included. The ordinary owner APIs retain their ownership checks,
-including when the caller is an administrator.
+This page does not expose credentials. It does not grant access to the owner's
+chat, terminal, or native Agent workspace. The page does not include arbitrary
+Helm values and annotations. The ordinary owner APIs keep their ownership
+checks. This is also true when the caller is an administrator.
 
-Choose **Edit** to open the configuration dialog and change the display name,
-image, model override, or supported integration settings. Save and Cancel
-remain below the scrollable fields. Port editing is available only for Custom
-Agents, matching the creation form. OpenClaw and Hermes ports are managed by
-the platform runtime and displayed read-only. Web UI applies only to Custom
-Agents with a port. Clearing the model selects
-the platform's default resolution. Agent type, runtime username, resource name,
-owner, Team, Sandbox binding, and Chart version are read-only here. A pinned
-image cannot be cleared. Image changes preserve any existing private registry
-credential reference; administrators cannot replace credentials through this
-page. Platform type restrictions and admission still apply.
+Select **Edit** to open the configuration dialog. In this dialog, you can
+change the display name, image, model override, or supported integration
+settings. Save and Cancel stay below the scrollable fields. You can edit the
+port only for Custom Agents, as in the creation form. The platform runtime
+manages the OpenClaw and Hermes ports, and the dialog shows them as read-only.
+Web UI applies only to Custom Agents with a port.
 
-Saving sends only the changed fields. A saved configuration may still be
-waiting for the Operator to apply it; review Conditions and observed generation
-before considering the Agent ready. Background refresh does not overwrite an
-editing draft. If another operation changes the Agent, a version conflict
-preserves the draft: reload and review the current configuration before saving
-again. The Portal does not automatically retry a conflicting write.
-If a refresh fails, the last loaded details and editing draft remain visible,
-with the failure reported so that conflict review can be retried.
+If you clear the model, the platform's default resolution is selected. Agent
+type, runtime username, resource name, owner, Team, Sandbox binding, and Chart
+version are read-only here. You cannot clear a pinned image. An image change
+keeps any private registry credential reference that exists. Administrators
+cannot replace credentials through this page. Platform type restrictions and
+admission still apply.
 
-Choose **Delete**, review the owner and Team, and enter the complete Agent name
-to confirm. Deletion can remove persistent data, including PVC objects during
-namespace cleanup. There is no recycle bin or data-retention option in this
-workflow. The page shows **Deleting** after the request is accepted and continues
-to show status and events. It returns to the list when the Agent resource
-disappears. This does not prove that all external resources or storage have
-finished cleanup. A stuck deletion requires investigation; the page cannot
+When you save, only the changed fields are sent. It is possible that the
+Operator did not apply a saved configuration yet. Before you consider the
+Agent ready, review Conditions and the observed generation.
+
+A background refresh does not overwrite the draft of your changes. If another
+operation changes the Agent, a version conflict keeps the draft. Before you
+save again, reload and review the current configuration. The Portal does not
+automatically retry a write that conflicts. If a refresh fails, the last loaded
+details and the draft of your changes stay visible. The failure is reported so
+that the conflict review can be retried.
+
+Select **Delete**. Review the owner and Team. To confirm, enter the complete
+Agent name. Deletion can remove persistent data, for example PVC objects
+during namespace cleanup. There is no recycle bin or data-retention option in
+this workflow.
+
+After the request is accepted, the page shows **Deleting** and continues to
+show status and events. When the Agent resource disappears, the page returns
+to the list. This does not prove that all external resources or storage
+finished cleanup. You must investigate a stuck deletion. The page cannot
 remove finalizers or force cleanup. See [deletion behavior](#delete-only-with-a-recovery-plan).
-If deletion encounters a version conflict, select **Reload and review**, check
-the current owner and Team, and enter the complete Agent name again. A reload
-never automatically retries deletion.
 
-The administrative API uses `/api/v1/admin/instances` for listing and
-`/api/v1/admin/instances/{name}` for `GET`, `PATCH`, and `DELETE`.
-`GET /api/v1/admin/instances/{name}/status` returns diagnostics and any
-per-source errors. Both mutation bodies require the `uid` and `resourceVersion`
-returned by the current detail response. Missing versions return `428`; changed
-or replaced Agents return `409`; accepted deletion returns `202`. `PATCH`
-accepts only `displayName`, `model`, and the nested `agent.image`,
-`agent.port`, and `agent.webUI` fields, alongside those version fields.
-`agent.port` and `agent.webUI` are accepted only for Custom Agents; sending
-either field for a built-in Agent returns `400`, including attempts to clear it.
-Administrative mutation logs record the actor, target, changed field names, and
-HTTP result without recording configuration values or request bodies.
+If a version conflict occurs during deletion, select **Reload and review**.
+Examine the current owner and Team. Then enter the complete Agent name again.
+A reload never automatically retries deletion.
+
+The administrative API uses `/api/v1/admin/instances` for the list operation.
+It uses `/api/v1/admin/instances/{name}` for `GET`, `PATCH`, and `DELETE`.
+`GET /api/v1/admin/instances/{name}/status` returns diagnostics and any errors
+for each source. Both mutation bodies must contain the `uid` and
+`resourceVersion` from the current detail response. The API returns these
+status codes:
+
+- `428` if the body does not contain the versions.
+- `409` if the Agent changed or was replaced.
+- `202` for an accepted deletion.
+
+Together with those version fields, `PATCH` accepts only `displayName`,
+`model`, and the nested `agent.image`, `agent.port`, and `agent.webUI` fields.
+`agent.port` and `agent.webUI` are accepted only for Custom Agents. If a
+request sends one of these fields for a built-in Agent, the API returns `400`.
+This also applies to a request that tries to clear the field. Logs of
+administrative mutations record the actor, the target, the names of changed
+fields, and the HTTP result. They do not record configuration values or
+request bodies.
 
 ## Inspect before changing
 
-Microsoft Teams integration has been removed. Before upgrading an older
-Teams-enabled deployment, retire its Azure Bot, application registration and
-federated credentials using the previous version and retain the resource
-inventory. The new Operator removes the Teams API fields and no longer performs
+Microsoft Teams integration was removed. Before you upgrade an older
+Teams-enabled deployment, use the previous version to retire its Azure Bot,
+application registration, and federated credentials. Keep the resource
+inventory. The new Operator removes the Teams API fields and no longer does
 cloud cleanup. New runtime initializers remove saved Teams channel and plugin
-references from HOME while preserving other configuration; they do not delete
-cloud resources or conversation files.
+references from HOME, but keep other configuration. They do not delete cloud
+resources or conversation files.
 
-Replace `alice` and `cetirun-alice` with your instance name and its reported
-namespace. These commands inspect cluster resources without changing them:
+Replace `alice` with your instance name. Replace `cetirun-alice` with the
+reported namespace of the instance. These commands examine cluster resources
+but do not change them:
 
 ```bash
 kubectl get agents.cetirun.microsoft.com alice
@@ -90,187 +106,224 @@ kubectl get statefulset openclaw-alice-cetirun -n cetirun-alice
 kubectl get virtualservice cetirun-alice -n cetirun-alice
 ```
 
-The controller waits for the StatefulSet's updated replicas, ready replicas,
-and observed generation before setting overall `Ready`. Ingress creation is
-best-effort, so also check `IngressReady`. A displayed access URL or overall `Ready` is
-not a successful request through the gateway.
+Before the controller sets overall `Ready`, it waits for the StatefulSet's
+updated replicas, ready replicas, and observed generation. Ingress creation is
+best-effort, so also examine `IngressReady`. A displayed access URL or overall
+`Ready` is not the same as a successful request through the gateway.
 
-Probe paths differ by runtime:
+The probe paths are different for each runtime:
 
 | Runtime | Startup | Liveness and readiness |
 | --- | --- | --- |
 | OpenClaw | `/health` on the gateway port, 18789 by default | `/healthz` on the gateway port |
 | Hermes | `/health` on the API port, 8642 by default | `/health` on the API port |
-| Custom with a port | `/healthz` on the declared port | Readiness uses `/healthz`; no liveness probe |
+| Custom with a port | `/healthz` on the declared port | Readiness uses `/healthz`. There is no liveness probe |
 | Headless Custom | None | No HTTP probes |
 
-These are pod probes, not checks of Entra login, model entitlement, or tailnet reachability. See the
+These are pod probes. They do not examine Entra login, model entitlement, or
+tailnet reachability. See the
 [OpenClaw]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}})
 and [Hermes]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
 probe templates.
 
 ## Suspend and resume
 
-Owners can choose **Suspend Agent** or **Resume Agent** in Portal. These controls
-change only the existing `spec.suspended` intent; they do not delete the Agent,
-HOME or Gateway key, reset spending history, or create another lifecycle operation.
+In Portal, owners can select **Suspend Agent** or **Resume Agent**. These
+controls change only the `spec.suspended` intent. They do not delete the
+Agent, HOME, or Gateway key. They do not reset the spend history or create
+another lifecycle operation.
 
 | Current Agent | Suspend | Resume |
 | --- | --- | --- |
-| Ordinary OpenClaw, Hermes or Custom; common-executor Sandbox Agents | Allowed when the current owned workload has confirmed PVC-backed HOME, including while provisioning or recovering | Allowed when suspension is requested |
-| Ephemeral HOME or unverified/missing workload storage | Unavailable; no retained suspension is accepted | Existing resume intent remains available |
-| Pending restart or administrator migration | Suspension takes precedence | Continue the original operation, retaining its request ID and controller safeguards |
-| Recorded legacy single-start Sandbox lifetime | Rejected; no lifetime conversion | Rejected |
-| Deleting Agent | Rejected; deletion takes precedence | Rejected |
+| Ordinary OpenClaw, Hermes, or Custom Agents, and common-executor Sandbox Agents | Allowed when the current owned workload has a confirmed PVC-backed HOME, also during provisioning or recovery | Allowed when suspension is requested |
+| Ephemeral HOME, or workload storage that is unverified or absent | Unavailable. No retained suspension is accepted | A resume intent that already exists stays available |
+| Pending restart or administrator migration | Suspension takes precedence | Continues the original operation and keeps its request ID and controller safeguards |
+| Recorded legacy single-start Sandbox lifetime | Rejected. The lifetime is not converted | Rejected |
+| Agent in deletion | Rejected. Deletion takes precedence | Rejected |
 | Same requested intent on the same Agent UID | Observe without another write | Observe without another write |
 
 The owner endpoints are `POST /api/v1/instances/{name}/suspend` and
-`POST /api/v1/instances/{name}/resume`; the default-instance equivalents use
-`/api/v1/instance/suspend` and `/api/v1/instance/resume`. Both require the current
-`uid` and `resourceVersion` in the JSON body, ownership and the normal management
-origin checks. They return HTTP `202` with the Agent's requested `suspended` value,
-`suspendAvailable`/`resumeAvailable` capabilities and existing controller status.
-These capabilities describe whether intent can be changed, not whether compute
-has stopped or recovered. Restart remains unavailable during suspension or a
-pending restart/migration.
+`POST /api/v1/instances/{name}/resume`. The equivalent endpoints for the
+default instance use `/api/v1/instance/suspend` and `/api/v1/instance/resume`.
+For both actions, the JSON body must contain the current `uid` and
+`resourceVersion`. The caller must be the owner, and the request must pass the
+normal management origin checks.
 
-Portal checks the effective StatefulSet HOME mount, not only Agent overrides:
-chart and deployment defaults may select `emptyDir`. Such HOME would be lost
-when its Pod stops, so the owner action returns `409 suspension_home_required`
-without writing intent. Missing, unreadable or unowned workload storage returns
-`503 suspension_home_unverified`; the disabled control explains the reason via
-`suspensionUnavailableReason`. No automatic storage conversion or data-loss
-confirmation is offered. Resume and observation of an already accepted intent
-do not depend on a fresh storage check.
+They return HTTP `202` with the requested `suspended` value of the Agent, the
+`suspendAvailable`/`resumeAvailable` capabilities, and the current controller
+status. These capabilities show if the intent can be changed, not if compute
+stopped or recovered. Restart stays unavailable during suspension or during a
+pending restart or migration.
 
-A repeated intent can be observed after status updates without changing the
-Agent again. A stale version cannot reverse a newer intent or target a same-name
-replacement. After a lost or unreadable reply, retry with the **original action,
-UID and version**, or observe the current Agent. Portal refreshes after every
-outcome and does not automatically resubmit. A delayed acknowledgement does not
-replace an already refreshed observation at the same generation, including
-controller-only status changes. Closing an unsent dialog discards
-its draft; closing after an uncertain submission retains it for retry and does
-not cancel accepted work. A definite rejection requires a new confirmation
-against the current Agent; it does not prove an earlier uncertain attempt never
-took effect.
+Portal examines the effective HOME mount of the StatefulSet, not only the
+Agent overrides. This is because chart and deployment defaults can select
+`emptyDir`. If its Pod stops, this type of HOME is lost. As a result, the
+owner action returns `409 suspension_home_required` and does not write the
+intent. If the workload storage is absent, unreadable, or not owned, the
+action returns `503 suspension_home_unverified`.
 
-Portal deliberately says **Suspension requested**, not that shutdown is complete.
-Its controller phase is not a Pod-termination or access-removal observation.
-Likewise, HTTP acceptance of resume is not readiness: wait for the current
-generation's Ready condition and the existing restart/migration completion
-checks. Failed recovery remains visible in Status, and suspension remains
-available when persistent HOME can be verified. Portal does not advance migration phases or provide owner migration
-controls. Use matching supported Portal, Operator and CRD versions.
+The disabled control gives the reason through `suspensionUnavailableReason`.
+No automatic storage conversion or data-loss confirmation is offered. Resume
+and observation of an already accepted intent do not depend on a new storage
+check.
 
-To suspend an instance, set `spec.suspended` to `true`. The operator scales the
-workload, and the instance's GitHub Copilot proxy if it has one, to zero and
-removes its ingress route while retaining persistent data.
+After status updates, a repeated intent can be observed without another change
+to the Agent. A stale version cannot reverse a newer intent or target a
+replacement with the same name. After a lost or unreadable reply, retry with
+the **original action, UID and version**, or observe the current Agent. Portal
+refreshes after every outcome and does not automatically resubmit. A delayed
+acknowledgement does not replace an observation that was already refreshed at
+the same generation. This is also true when the only changes are status
+changes from the controller.
+
+If you close a dialog that you did not send, its draft is discarded. If you
+close the dialog after an uncertain submission, the draft is kept for a retry.
+This does not cancel accepted work. After a definite rejection, a new
+confirmation against the current Agent is necessary. The rejection does not
+prove that an earlier uncertain try never took effect.
+
+Portal intentionally shows **Suspension requested**. It does not say that
+shutdown is complete. Its controller phase is not an observation of Pod
+termination or access removal. In the same way, HTTP acceptance of a resume is
+not readiness. Wait for the Ready condition of the current generation and for
+the restart and migration completion checks.
+
+A failed recovery stays visible in Status, and suspension stays available when
+persistent HOME can be confirmed. Portal does not advance migration phases or
+give migration controls to owners. Use supported Portal, Operator, and CRD
+versions that match.
+
+To suspend an instance, set `spec.suspended` to `true`. The operator scales
+the workload to zero. If the instance has a GitHub Copilot proxy, the operator
+also scales this proxy to zero. The operator removes the ingress route of the
+instance but keeps the persistent data.
 
 ```bash
 kubectl patch agents.cetirun.microsoft.com alice --type=merge \
   -p '{"spec":{"suspended":true}}'
 ```
 
-Verify `Suspended`, the StatefulSet's actual zero replicas, no remaining
-workload pods, and removal of the VirtualService. The suspension branch does
-not wait for pod termination. For ordinary OpenClaw and Hermes Agents, the
-controller enforces zero replicas and `persistence.retainPolicy: Retain` after
-all Helm overrides, so a configured `Delete` policy cannot remove HOME during
-scale-down. Stored Agent, deployment and chart preferences remain unchanged;
-resume reapplies the configured retention policy. Older suspended-state cache
-entries are invalidated so an Operator upgrade does not skip this retention
-repair. Keep autoscaling disabled for this lifecycle. `Suspended` alone is not
-proof that all access paths have stopped.
-The ordinary built-in apply path also rejects effective ephemeral-HOME
-configuration during retained suspension, including defaults resolved from the
-selected chart; a configuration change must not turn an accepted retained stop
-into a destructive scale-down.
+Make sure that the Agent shows `Suspended` and that the actual replica count of
+the StatefulSet is zero. Also make sure that no workload pods are left and that
+the VirtualService was removed. The suspension branch does not wait for pod
+termination.
 
-The runtime chart permits only `replicaCount: 0` or `1`. Its HPA validation
-requires `minReplicas=maxReplicas=1`, so it cannot scale an agent horizontally
-and is not a substitute for explicit suspension. There is no automatic
-idle-suspend/resume policy in this controller.
+For ordinary OpenClaw and Hermes Agents, the controller enforces zero replicas
+and `persistence.retainPolicy: Retain` after all Helm overrides. As a result,
+a configured `Delete` policy cannot remove HOME during scale-down. The stored
+Agent, deployment, and chart preferences do not change. Resume applies the
+configured retention policy again. Older cache entries for the suspended state
+are invalidated so that an Operator upgrade does not skip this retention
+repair.
 
-Resume by setting `suspended` to `false`. Reconciliation must restore both the
-workload and routing before handing access back to the user.
-Suspension does not revoke a tailnet device.
+Keep autoscaling disabled for this lifecycle. `Suspended` alone does not prove
+that all access paths stopped. During retained suspension, the ordinary
+built-in apply path also rejects an effective ephemeral-HOME configuration.
+This also applies to defaults that are resolved from the selected chart. A
+configuration change must not turn an accepted retained stop into a
+destructive scale-down.
+
+The runtime chart allows only `replicaCount: 0` or `1`. Its HPA validation
+accepts only `minReplicas=maxReplicas=1`. As a result, the HPA cannot scale an
+agent horizontally, and it is not a substitute for explicit suspension. There
+is no automatic idle-suspend/resume policy in this controller.
+
+To resume, set `suspended` to `false`. Reconciliation must restore both the
+workload and routing before it gives access back to the user. Suspension does
+not revoke a tailnet device.
 
 ## Restart while retaining HOME
 
-For a current, ready Agent, choose **Restart Agent** in Portal and confirm the
-interruption. This requests a replacement Pod through the existing controller;
-it does not delete the Agent, namespace or HOME PVC. Persistent files and the
-existing Gateway key identity and spending history are retained. Active process
-sessions are interrupted, and Pod-local temporary files are not retained.
-Closing the confirmation dialog before submitting discards that draft; reopening
-uses the currently displayed Agent version. After a request was sent with an
-uncertain result, closing the dialog retains its ID and version for a safe retry.
-For an explicit `instance_changed` version conflict after a status update,
-close the dialog and confirm again using the current version. Other errors,
-including suspension after an earlier attempt, a network failure or an unreadable
-response, do not establish whether the original request was accepted and retain
-it for retry. An already observed accepted request is never discarded merely
-because a later retry is rejected.
-Portal refreshes the displayed Agent after each outcome without automatically
-submitting another restart.
+For a current, ready Agent, select **Restart Agent** in Portal. Then confirm
+the interruption. This requests a replacement Pod through the controller. It
+does not delete the Agent, namespace, or HOME PVC. Persistent files, the
+current Gateway key identity, and the spend history are kept. Active process
+sessions are interrupted, and Pod-local temporary files are not kept.
+
+If you close the confirmation dialog before you submit, the draft is
+discarded. If you open the dialog again, it uses the Agent version that is
+displayed now. If you close the dialog after a sent request has an uncertain
+result, the ID and version are kept for a safe retry. If an explicit
+`instance_changed` version conflict occurs after a status update, close the
+dialog. Then confirm again with the current version.
+
+Other errors do not show if the original request was accepted. Examples are a
+suspension after an earlier try, a network failure, or an unreadable response.
+After these errors, the request is kept for a retry. An accepted request that
+was already observed is never discarded only because a later retry is
+rejected. After each outcome, Portal refreshes the displayed Agent. It does
+not automatically submit another restart.
 
 The owner API is `POST /api/v1/instances/{name}/restart`. Send the current
-`uid` and `resourceVersion` in the JSON body and an `Idempotency-Key` header
-containing a fresh 16-128 character ID made of letters, digits, `_` or `-`.
-Reuse the same ID and body when retrying an uncertain response. The accepted
-ID is persisted as `spec.restartRequestID`; a repeated current ID does not
-request another restart, including after a Portal restart. A stale request
-cannot replace a newer request or a same-name replacement Agent.
+`uid` and `resourceVersion` in the JSON body. Also send an `Idempotency-Key`
+header with a new ID of 16-128 characters. Use only letters, digits, `_`, or
+`-` in the ID. When you retry after an uncertain response, use the same ID and
+body again.
 
-HTTP `202` means the request was accepted, not that the replacement is ready.
-Portal reports the desired `restartRequestId` and
+The accepted ID is persisted as `spec.restartRequestID`. A repeated current ID
+does not request another restart. This is also true after a Portal restart. A
+stale request cannot replace a newer request or a replacement Agent with the
+same name.
+
+HTTP `202` means that the request was accepted. It does not mean that the
+replacement is ready. Portal reports the desired `restartRequestId` and
 `observedRestartRequestId` separately. The Operator records
-`status.observedRestartRequestID` only after observing the requested template
-on the current ready Pod. It does not count the old Pod's Ready status or a
-successful Helm apply as completion. A pending request prevents another restart.
-During an Operator rolling upgrade, an older leader may observe the new Agent
-generation without applying the restart marker. A restart-aware controller binds
-both reconciliation caches to the request ID, so takeover applies the pending
-restart even if that generation was already observed. Waiting for the replacement
-Pod or recording its readiness does not request another apply.
+`status.observedRestartRequestID` only after it observes the requested
+template on the current ready Pod. It does not count the Ready status of the
+old Pod or a successful Helm apply as completion. A pending request prevents
+another restart.
 
-Suspension and deletion take precedence; restart cannot resume a suspended
+During an Operator rolling upgrade, it is possible that an older leader
+observes the new Agent generation but does not apply the restart marker. A
+restart-aware controller binds both reconciliation caches to the request ID.
+As a result, takeover applies the pending restart even if that generation was
+already observed. When the controller waits for the replacement Pod or records
+its readiness, it does not request another apply.
+
+Suspension and deletion take precedence. Restart cannot resume a suspended
 Agent. Current policy and runtime checks still apply. Earlier single-start
-Sandbox lifetimes reject this operation rather than converting their records.
+Sandbox lifetimes reject this operation and do not convert their records.
 Governed Custom uses the common Sandbox restart path. Custom without Sandbox
-selection retains its approved shutdown and apply path. The Operator renders
-the Custom restart marker through the existing
-`podAnnotations` chart contract, so approved older Custom chart pins do not need
-an upgrade to restart, stop or resume. The marker remains controller-owned;
-caller-supplied values are rejected. Use Operator, Portal and CRD versions that
-support the restart API. A chart that omits the required annotation contract
-cannot produce a completed restart.
+selection keeps its approved shutdown and apply path.
 
-This operation is a normal retained restart. It does not provide node migration,
-force deletion, physical writer fencing, or recovery from an unreachable source.
-Completion is a Kubernetes workload observation, not a new model-inference or
-storage-failover qualification.
+The Operator renders the Custom restart marker through the `podAnnotations`
+chart contract that already exists. As a result, approved older Custom chart
+pins can restart, stop, or resume without an upgrade. The marker stays
+controller-owned. Values that a caller supplies are rejected. Use Operator,
+Portal, and CRD versions that support the restart API. If a chart does not
+have the necessary annotation contract, it cannot produce a completed restart.
+
+This operation is a normal retained restart. It does not do node migration,
+force deletion, physical writer fencing, or recovery from an unreachable
+source. Completion is an observation of the Kubernetes workload. It is not a
+new qualification for model inference or storage failover.
 
 ## Planned node migration
 
-Platform administrators can opt in to planned cold migration for common-executor
-OpenClaw, Hermes and governed Custom Agents with one filesystem CSI HOME using `ReadWriteOncePod`
-(RWOP) or `ReadWriteOnce` (RWO), explicitly supported by the selected Kata or container platform
-registration. This is a Kubernetes
-API, not a Portal migration button. The deployment must enable
-`sandboxSources.plannedMigration` after all readers have upgraded. Qualify the
-actual AKS, runtime and CSI artifacts in an authorized test environment first.
-Non-Sandbox Custom, retained single-start, additional PVCs, unavailable sources and
-cross-cluster moves are outside this initial scope.
+Platform administrators can opt in to planned cold migration for Agents that
+meet these conditions:
 
-Both HOME modes use the same restart, retained stop/resume and migration
-checkpoints. RWO is not a single-Pod lock: current workload admission and
-acknowledged source shutdown and detach remain mandatory. Existing HOME claims
-are not converted in place, and retained single-start lifetimes remain RWOP-only.
+- The Agent is a common-executor OpenClaw, Hermes, or governed Custom Agent.
+- The Agent has one filesystem CSI HOME that uses `ReadWriteOncePod` (RWOP) or
+  `ReadWriteOnce` (RWO).
+- The selected Kata or container platform registration explicitly supports
+  that HOME mode.
 
-Read the current Agent UID/resourceVersion and target Node UID from the
-authorized context. The following values are illustrative and must be replaced:
+This is a Kubernetes API, not a Portal migration button. The deployment must
+enable `sandboxSources.plannedMigration` after all readers are upgraded. First,
+qualify the actual AKS, runtime, and CSI artifacts in an authorized test
+environment. Non-Sandbox Custom, retained single-start, other PVCs, unavailable
+sources, and cross-cluster moves are outside this initial scope.
+
+Both HOME modes use the same checkpoints for restart, retained stop/resume, and
+migration. RWO is not a single-Pod lock. Current workload admission and
+acknowledged source shutdown and detach stay mandatory. HOME claims that
+already exist are not converted in place. Retained single-start lifetimes stay
+RWOP-only.
+
+Read the current Agent UID/resourceVersion and the target Node UID from the
+authorized context. The values in the command that follows are examples. You
+must replace them:
 
 ```bash
 kubectl --context=test-context patch agents.cetirun.microsoft.com alice --type=json \
@@ -281,129 +334,149 @@ kubectl --context=test-context patch agents.cetirun.microsoft.com alice --type=j
          "target":{"name":"worker-b","uid":"current-target-node-uid"}}}]'
 ```
 
-Observe `status.plannedMigration.phase` and `PlannedMigrationReady`. An accepted
-request, absent Pod or changed placement alone is not completion. The controller
-retains the source Pod's termination and CSI detach observations before allowing
-the destination to start. Completion requires the current Ready replacement and
-reattached original HOME; Agent/namespace/PVC/PV and Gateway spending identities
-remain unchanged. Process sessions and Pod-local scratch do not survive.
+Observe `status.plannedMigration.phase` and `PlannedMigrationReady`. An
+accepted request, an absent Pod, or a changed placement alone is not
+completion. Before the controller allows the destination to start, it keeps
+the observations of the source Pod's termination and CSI detach. For
+completion, the current Ready replacement and the reattached original HOME are
+necessary. The Agent, namespace, PVC, PV, and Gateway spend identities do not
+change. Process sessions and Pod-local scratch do not survive.
 
-An uncertain response must be recovered by reading the current request, not
-issuing another ID. In-progress requests cannot be overwritten; same-ID retries
-do not repeat a move. After completion, a new ID can request the next move.
-Suspension retains the request without starting its destination; resume
-continues it. Deletion destroys the Agent through normal cleanup, never migration
-failover. Portal disables retained restart while migration is pending.
+To recover from an uncertain response, you must read the current request. Do
+not send another ID. In-progress requests cannot be overwritten. Retries with
+the same ID do not repeat a move. After completion, a new ID can request the
+next move.
+
+Suspension keeps the request but does not start its destination. Resume
+continues the request. Deletion destroys the Agent through normal cleanup,
+never through migration failover. Portal disables retained restart during a
+pending migration.
 
 Before a request is captured, a transient authorization outage can stop the
-source. Once authorization recovers, normal reconciliation restores the current
-running configuration before retrying capture; it does not apply the new target
-early or discard a previous completed destination pin. A stale Agent `Ready`
-observation does not prevent this recovery when the owned source StatefulSet
-is scaled down or its readiness has not converged. The request remains
-uncaptured until the actual source is stable; ownership, authorization,
-suspension and target checks still apply. After capture, source
-observations must be protected before any hold stops compute. Suspension remains
-pending if a source read or protection write fails during `Protecting`, and
-retries continue the same request when those operations recover. These retries
-still check current authorization: withdrawn or unverified model access blocks
-the existing Gateway key independently of the deferred source shutdown, without
-resetting its accounting identity. A failed key operation remains an explicit
-retrying error, not a successful block.
+source. When authorization recovers, normal reconciliation restores the
+current running configuration before it retries the capture. It does not apply
+the new target early or discard an earlier completed destination pin. If the
+owned source StatefulSet is scaled down or its readiness is not converged, a
+stale Agent `Ready` observation does not prevent this recovery.
+
+The request stays uncaptured until the actual source is stable. Ownership,
+authorization, suspension, and target checks still apply. After capture, the
+source observations must be protected before any hold stops compute. If a
+source read or a protection write fails during `Protecting`, suspension stays
+pending. When those operations recover, retries continue the same request.
+
+These retries still examine the current authorization. If model access is
+withdrawn or unverified, the Gateway key that exists is blocked. This block
+does not depend on the deferred source shutdown, and it does not reset the
+accounting identity of the key. A failed key operation stays an explicit error
+with retries, not a successful block.
 
 Do not clear recorded destination fields, edit checkpoints, force-delete Pods,
-strip finalizers or force-detach storage to make progress. Unknown source
-state and incompatible or replaced Nodes remain blocked. Kubernetes and CSI
+strip finalizers, or force-detach storage to make progress. Unknown source
+state and incompatible or replaced Nodes stay blocked. Kubernetes and CSI
 acknowledgements are not physical fencing or unavailable-node recovery.
 See the [operator contract]({{< repo "app/cetirun-operator/README.md" >}}#planned-healthy-source-migration-separate-opt-in).
 
 ## Pin and update a chart
 
-On first reconciliation the operator fills an empty `spec.helm.version` from
-its configured agent chart version. Later operator upgrades do not automatically
-advance that instance’s pinned chart. To update it, set a reviewed version
-that is accessible in your configured OCI registry.
+During the first reconciliation, the operator fills an empty
+`spec.helm.version` with its configured agent chart version. Later operator
+upgrades do not automatically advance that instance’s pinned chart. To update
+it, set a reviewed version that is accessible in your configured OCI registry.
 
-The portal's **Upgrade** action selects the chart version configured on the
-operator Deployment; it does not query a registry for the newest release.
-Updating to that version is separate from changing the operator itself.
-The lookup reads Deployment `cetirun-operator` in `cetirun-system`
-and its `manager` container's `--chart-version` argument. A differently named
-or namespaced installation needs a reviewed workflow; changing only the Helm
-release namespace does not make this lookup portable.
+The portal's **Upgrade** action selects the chart version that is configured
+on the operator Deployment. It does not query a registry for the newest
+release. An update to that version is separate from a change to the operator
+itself.
+
+The lookup reads Deployment `cetirun-operator` in `cetirun-system` and the
+`--chart-version` argument of its `manager` container. For an installation
+with a different name or namespace, a reviewed workflow is necessary. If you
+change only the Helm release namespace, this lookup does not become portable.
 See the [portal Kubernetes client]({{< repo "app/cetirun-portal/internal/kube/client.go" >}}).
 
-Treat model, chart, credential, and agent configuration changes as potentially
-disruptive. Review backups and test the selected configuration before changing
-users’ instances. ConfigMap changes alter the pod-template checksum. The
-operator also annotates the pod template with the gateway Secret's resource
-version on a full reconcile, so environment-backed credential updates can
-restart the workload. Direct Secret edits might not trigger reconciliation;
-use the supported update path.
+Treat model, chart, credential, and agent configuration changes as possibly
+disruptive. Before you change users’ instances, review the backups and test
+the selected configuration.
+
+A change to a ConfigMap changes the pod-template checksum. On a full
+reconcile, the operator also annotates the pod template with the resource
+version of the gateway Secret. As a result, environment-backed credential
+updates can restart the workload. It is possible that a direct Secret edit does
+not trigger reconciliation. Use the supported update path.
 
 ## Update an Agent image
 
-Edit **Agent Image** in Portal or update `spec.agent.image` to select a new
-image. Platform image approvals still apply. The Agent type and image username
-cannot change, and a pinned image cannot be cleared. Changing the image does
-not change `spec.helm.version`.
+To select a new image, edit **Agent Image** in Portal or update
+`spec.agent.image`. Platform image approvals still apply. The Agent type and
+the image username cannot change. You cannot clear a pinned image. If you
+change the image, `spec.helm.version` does not change.
 
-A running Agent is replaced using the new image and the existing HOME PVC.
-A suspended Agent stays stopped and uses the selected image when resumed.
-Choose an image that supports the existing data, numeric user identity and
-HOME permissions; CetiRun does not migrate native data formats.
+A running Agent is replaced with the new image and the same HOME PVC. A
+suspended Agent stays stopped. When the Agent is resumed, it uses the selected
+image. Select an image that supports the data that already exists, the numeric
+user identity, and the HOME permissions. CetiRun does not migrate native data
+formats.
 
-HOME seeding is separate from an image or configuration update. Once
-`.cetirun-home-seeded` exists on the home PVC, a new image does not recopy its
-HOME or update dependencies previously copied there. Managed configuration
-continues to apply during Pod initialization.
+The process that seeds HOME is separate from an image or configuration update.
+After `.cetirun-home-seeded` exists on the home PVC, a new image does not copy
+its HOME again. It also does not update dependencies that were copied there
+before. Managed configuration continues to apply during Pod initialization.
 
 Do not remove initialization records to force an upgrade. A nonempty home
-without a recognized record fails safely; interrupted seeding requires the
-same immutable source image. Review the recorded state, existing files and
-recovery copies before performing explicit maintenance.
+without a recognized record fails safely. If the seed operation was
+interrupted, the same immutable source image is necessary. Before you do
+explicit maintenance, review the recorded state, the files that exist, and the
+recovery copies.
 
-Custom without Sandbox selection uses a separate `OnDelete` update path. It requires approved model,
-HOME and context bindings plus an explicit storage/lifecycle handoff. The old
-StatefulSet must be stopped and no active Pod may still reference HOME before
-the new plan is applied. The configured binding provider coordinates this
-handoff. The opt-in Kubernetes provider scales the old StatefulSet to zero,
-waits for its HOME consumers to exit, and allows the new image to be applied
-with one replica. It does not use the built-in orphan-delete hook or replace
-the HOME claim. Model Key and context revision changes go through the same
-gate; process environment does not refresh in place.
+Custom without Sandbox selection uses a separate `OnDelete` update path. For
+this path, approved model, HOME, and context bindings are necessary. An
+explicit storage/lifecycle handoff is also necessary. Before the new plan is
+applied, these conditions must be true:
+
+- The old StatefulSet is stopped.
+- No active Pod still refers to HOME.
+
+The configured binding provider coordinates this handoff. The opt-in
+Kubernetes provider scales the old StatefulSet to zero and waits for its HOME
+consumers to exit. Then it allows the new image to be applied with one
+replica. It does not use the built-in orphan-delete hook or replace the HOME
+claim. Changes to the Model Key and to the context revision go through the
+same gate. The process environment does not refresh in place.
 
 The default installation does not enable Custom provisioning. The opt-in
 non-Sandbox provider reports `CustomBindingsPending` until its prerequisites are
-available. Governed Custom instead requires current common-executor registration
-and Gateway-qualified image approval. Chat/headless instances have no public
-Agent UI URL; a declared Web UI uses its authenticated route.
+available. Governed Custom instead must have a current common-executor
+registration and a Gateway-qualified image approval. Chat/headless instances
+have no public Agent UI URL. A declared Web UI uses its authenticated route.
 See [Agent Harness](../../reference/agent-harness/#custom-runtime) for the
 implementation boundary and offline qualification tests.
 
 ## Delete only with a recovery plan
 
-Governed Custom cleanup uses the common bootstrap ownership and grant journal;
-non-Sandbox Custom requires its separate durable ownership receipt. A never-bound
-Custom does not delete resources merely because their names match. For a bound
-Custom, cleanup verifies the recorded namespace UID before deletion and waits
-for it to disappear; it does not execute Helm uninstall hooks. Missing records
-or changed ownership block cleanup. Do not remove these finalizers to bypass
-the ownership check.
+Governed Custom cleanup uses the common bootstrap ownership and grant journal.
+Non-Sandbox Custom must have its separate durable ownership receipt. A
+never-bound Custom does not delete resources only because their names match.
 
-Deleting a built-in `Agent` invokes finalizer cleanup: it attempts Helm
-uninstall, then route and namespace deletion. Some cleanup
-errors are logged without blocking finalizer removal, and namespace deletion
-is asynchronous. A disappeared custom resource therefore does not prove that
-all Kubernetes or Azure resources are gone. Verify them separately under the
-same authorized scope.
+For a bound Custom, cleanup makes sure that the namespace has the recorded UID
+before deletion. Then cleanup waits for the namespace to disappear. It does not
+run Helm uninstall hooks. Absent records or changed ownership block cleanup. Do
+not remove these finalizers to bypass the ownership check.
 
-> **Warning:** Namespace deletion removes PVC objects, including claims retained
-> by a StatefulSet. Back up required data and test recovery before deleting an
-> instance. Rebinding a retained volume requires a separate recovery procedure.
+Deletion of a built-in `Agent` invokes finalizer cleanup. This cleanup tries a
+Helm uninstall, then route and namespace deletion. Some cleanup errors are
+logged but do not block finalizer removal. Namespace deletion is asynchronous.
+As a result, a custom resource that disappeared does not prove that all
+Kubernetes or Azure resources are gone. Examine these resources separately
+under the same authorized scope.
 
-Check the storage backend's reclaim policy before authorizing deletion.
-Do not remove finalizers merely to hide a blocked cleanup.
+> **Warning:** Before you delete an instance, back up the necessary data and
+> test recovery. Namespace deletion removes PVC objects. This includes claims
+> retained by a StatefulSet. To bind a retained volume again, a separate
+> recovery procedure is necessary.
+
+Before you authorize deletion, examine the reclaim policy of the storage
+backend. Do not remove finalizers only to hide a blocked cleanup.
 
 Sources: [instance controller]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [value builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
