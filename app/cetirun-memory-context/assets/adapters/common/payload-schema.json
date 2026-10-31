@@ -13,7 +13,7 @@
     "view": { "type": "string", "description": "Optional query view; use search for normal lookup." },
     "note": {
       "type": "object",
-      "description": "Required for capture of a fact/preference/decision/lesson, and revise. Put the actual claim in body, with provenance in sources. For capture omit id, revision and updatedAt; the helper assigns them. Keep existing sources when revising.",
+      "description": "Required for capture of a fact/preference/decision/lesson, and revise. Put the actual claim in body, with provenance in sources. Every note needs revalidation, for example {\"mode\":\"on-change\"} for a stable owner preference. Copy scope from Memory runtime, not from the topic's name. For capture omit id, revision and updatedAt; the helper assigns them. Keep existing sources when revising.",
       "required": ["kind", "title", "body", "scope", "temporalClass", "revalidation", "sources"],
       "properties": {
         "kind": { "type": "string", "enum": ["fact", "preference", "decision", "lesson"] },
@@ -31,6 +31,7 @@
         "decisionState": { "type": "string", "description": "Only for kind=decision.", "enum": ["proposed", "confirmed", "exception", "superseded"] },
         "revalidation": {
           "type": "object",
+          "description": "Required, not optional. Use {\"mode\":\"on-change\"} for a stable owner preference or {\"mode\":\"on-use\"} for a live claim.",
           "required": ["mode"],
           "properties": {
             "mode": { "type": "string", "description": "live claims require on-use. after-date requires reviewAfter; other modes omit it.", "enum": ["on-use", "on-change", "after-date"] },
