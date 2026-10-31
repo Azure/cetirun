@@ -244,6 +244,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
         return
     root = root or Path(selected)
     memory_contract = load_assets(root)
+    payload_schema = json.loads((root / "adapters/common/payload-schema.json").read_text())
     context_dir = Path.home() / ".agents"
     context_file = context_dir / "AGENTS.md"
     if context_dir.is_symlink() or context_file.is_symlink() or not context_file.is_file() or context_file.stat().st_size > 32768 or context_file.stat().st_nlink != 1:
@@ -379,5 +380,5 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
     ctx.register_tool(name="cetirun_memory", toolset="cetirun_memory", handler=tool, schema={
         "name": "cetirun_memory", "description": "Use this Agent's private Memory: look up earlier conversations before answering, save facts, preferences, decisions and your own recommendations worth keeping, correct notes, and propose scoped method candidates. Read the cetirun-memory skill for payload formats. This tool cannot grant authority, change request restrictions or shared skills.",
         "parameters": {"type": "object", "additionalProperties": False, "properties": {
-            "command": {"type": "string", "enum": list(COMMANDS)}, "payload": {"type": "object"}}, "required": ["command", "payload"]},
+            "command": {"type": "string", "enum": list(COMMANDS)}, "payload": payload_schema}, "required": ["command", "payload"]},
     })

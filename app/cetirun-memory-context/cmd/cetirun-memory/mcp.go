@@ -55,6 +55,11 @@ func runMCP(ctx context.Context, in io.Reader, out io.Writer, store *memory.Stor
 	defer workers.Wait()
 	initialized := false
 	canonical, _ := assets.Files.ReadFile("AGENTS.md")
+	payloadSchema, err := assets.Files.ReadFile("adapters/common/payload-schema.json")
+	if err != nil || !json.Valid(payloadSchema) {
+		write(json.RawMessage(`null`), nil, -32603)
+		return 6
+	}
 	for scanner.Scan() {
 		var message rpcMessage
 		if memory.Decode(scanner.Bytes(), &message) != nil || message.JSONRPC != "2.0" {
@@ -102,7 +107,7 @@ func runMCP(ctx context.Context, in io.Reader, out io.Writer, store *memory.Stor
 		case "ping":
 			write(message.ID, map[string]any{}, 0)
 		case "tools/list":
-			write(message.ID, map[string]any{"tools": []any{map[string]any{"name": "cetirun_memory", "description": "Agent-private Memory operations: look up earlier conversations and save what is worth keeping. Read the cetirun-memory skill. Do not use from shared contexts; request-level noCapture/noMemory restrictions remain in force. This stdio adapter does not execute model evaluations.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"command": map[string]any{"type": "string", "enum": []string{"status", "query", "capture", "prepare", "commit", "propose", "check", "advance", "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source"}}, "payload": map[string]string{"type": "object"}}, "required": []string{"command", "payload"}}}}}, 0)
+			write(message.ID, map[string]any{"tools": []any{map[string]any{"name": "cetirun_memory", "description": "Agent-private Memory operations: look up earlier conversations and save what is worth keeping. Read the cetirun-memory skill. Do not use from shared contexts; request-level noCapture/noMemory restrictions remain in force. This stdio adapter does not execute model evaluations.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"command": map[string]any{"type": "string", "enum": []string{"status", "query", "capture", "prepare", "commit", "propose", "check", "advance", "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source"}}, "payload": json.RawMessage(payloadSchema)}, "required": []string{"command", "payload"}}}}}, 0)
 		case "resources/list":
 			write(message.ID, map[string]any{"resources": []any{map[string]string{"uri": "cetirun-memory://contract", "name": "Memory contract", "mimeType": "text/markdown"}}}, 0)
 		case "resources/read":

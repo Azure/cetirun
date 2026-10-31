@@ -9,7 +9,7 @@ import path from "node:path";
 import test from "node:test";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { createMemoryBridge, digest, loadAssets } from "../assets/adapters/common/bridge.mjs";
+import { createMemoryBridge, digest, loadAssets, MEMORY_TOOL } from "../assets/adapters/common/bridge.mjs";
 import { registerMemory, privateOrigin, evaluationRoute } from "../assets/adapters/openclaw/index.mjs";
 
 const moduleDir = fileURLToPath(new URL("../", import.meta.url));
@@ -37,6 +37,23 @@ function note(f) {
   return { kind: "fact", title: "Private fixture marker", scope: { project: f.workspace }, body: "PRIVATE-MEMORY-FIXTURE-CONTENT",
     temporalClass: "historical", status: "active", revalidation: { mode: "on-change" }, sources: [{ kind: "fixture", ref: "native-fixture-source", origin: "external-claim", assurance: "reported", observedAt: "2026-10-08T00:00:00Z" }] };
 }
+
+test("native Memory tools describe valid query and capture payloads", () => {
+  const payload = MEMORY_TOOL.parameters.properties.payload;
+  assert.equal(payload.properties?.queryTerms?.type, "array", "queryTerms must be visible before the first tool call");
+  assert.equal(payload.properties.queryTerms.maxItems, 8);
+  assert.equal(payload.properties.limit.maximum, 20);
+  const note = payload.properties.note;
+  for (const field of ["kind", "title", "body", "scope", "temporalClass", "revalidation", "sources"]) {
+    assert.ok(note.required.includes(field), `missing required note input ${field}`);
+  }
+  assert.ok(note.properties.sources.items.properties.origin.enum.includes("user-stated"));
+  assert.match(payload.properties.procedure.description, /prepare/);
+  assert.equal(payload.properties.procedure.properties.payload.properties.maxResults.maximum, 10);
+  assert.equal(MEMORY_TOOL.parameters.additionalProperties, false);
+  assert.equal(payload.properties.requestContext, undefined);
+  assert.equal(payload.properties.root, undefined);
+});
 
 // The before_prompt_build context OpenClaw 2026.9.6 builds for an owner's
 // Control UI or TUI turn: embedded-agent-runner/run/attempt-prompt-build.ts with
