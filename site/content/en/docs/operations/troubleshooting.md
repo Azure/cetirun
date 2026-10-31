@@ -113,6 +113,17 @@ account; do not propose exec or port-forward as a way around the deployment's
 access controls. The portal terminal is the intended authenticated user path
 when enabled and healthy.
 
+### Hermes tools stop at 420 seconds
+
+The pinned Hermes release has an outer tool deadline in addition to the
+terminal tool's requested timeout. A larger tool request alone cannot make an
+eight-minute foreground command fit that default. Use a deliberately bounded
+per-command override or the existing native timeout configuration, as described
+in the [Hermes long-task guidance]({{< repo "app/cetirun-chart/agents/hermes/README.md" >}}).
+Keep normal approval controls and a finite overall run budget. A later output
+file, detached child or successful CLI exit is not by itself a successful
+foreground-tool result.
+
 ## Before changing lifecycle state
 
 A restart, Helm upgrade/rollback, suspension, or deletion changes the running

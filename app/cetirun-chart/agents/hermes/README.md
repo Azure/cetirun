@@ -60,6 +60,37 @@ Do not replace these contracts with the upstream container layout without also
 qualifying persistent HOME ownership, chart probes and ports, Istio routes,
 Portal authentication flows and upgrade behavior.
 
+## Bounded long-running tools
+
+The pinned Hermes release has a 420-second outer tool-execution deadline.
+Increasing a terminal tool's requested `timeout` alone does not increase that
+outer deadline. An eight-minute foreground command can therefore fail at
+420 seconds even when it requested 520 seconds. A file written later by the
+child process is not proof that the foreground tool completed successfully.
+
+For an explicitly approved longer task, use a finite outer deadline above the
+tool's requested timeout, with a larger but still finite overall run budget.
+For example, through the normal owner terminal:
+
+```bash
+HERMES_CONCURRENT_TOOL_TIMEOUT_S=600 hermes chat \
+  --oneshot -Q --max-turns 8 --run-budget 660 --query-file -
+```
+
+This override affects only that CLI process. The supported persistent
+configuration is `timeouts.tools.concurrent_batch` in the existing Hermes
+configuration. `timeouts.tools.sequential_call` defaults to the concurrent
+deadline but can be set independently. Explicit configuration takes precedence
+over the environment bridge, so check both when an override has no effect.
+Merge only the intended keys; do not replace a retained configuration or
+display authentication files to diagnose timeouts.
+
+Keep approval controls unchanged. Do not set these deadlines to zero or a
+negative value, which disables them, or detach a task to call it a foreground
+pass. Check the native tool result and its duration as well as an independent
+output. Long tasks and lifecycle operations need separate bounds: an
+application deadline change does not extend startup, restart or migration.
+
 ## Instance URL prefixes
 
 The Operator's Dashboard route owns `/ui/<instance>/`. It strips that prefix
