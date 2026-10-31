@@ -39,7 +39,7 @@ func enableTerminal(t *testing.T, s *completionScenario, desktop bool) {
 		Annotations:     map[string]string{"cetirun.microsoft.com/agent-uid": string(s.agent.UID)},
 		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(s.agent, api.GroupVersion.WithKind("Agent"))},
 	}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](1)},
-		Status: appsv1.DeploymentStatus{ObservedGeneration: 1, AvailableReplicas: 1}}
+		Status: appsv1.DeploymentStatus{ObservedGeneration: 1, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}}
 	if err := s.client.Create(context.Background(), deployment); err != nil {
 		t.Fatal(err)
 	}

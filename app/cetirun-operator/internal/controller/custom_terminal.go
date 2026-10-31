@@ -243,7 +243,8 @@ func (r *AgentReconciler) customTerminalReady(ctx context.Context, instance *api
 	}
 	return deployment.DeletionTimestamp.IsZero() && ptr.Deref(deployment.Spec.Replicas, 0) == 1 &&
 		deployment.Status.ObservedGeneration >= deployment.Generation &&
-		deployment.Status.AvailableReplicas > 0, nil
+		deployment.Status.Replicas == 1 && deployment.Status.UpdatedReplicas == 1 &&
+		deployment.Status.ReadyReplicas == 1 && deployment.Status.AvailableReplicas == 1, nil
 }
 
 func commonCustomTerminalOwned(deployment *appsv1.Deployment, instance *api.Agent) bool {

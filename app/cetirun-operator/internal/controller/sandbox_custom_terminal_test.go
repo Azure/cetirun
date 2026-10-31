@@ -89,6 +89,35 @@ func readyCustomWorkload(t *testing.T, f *nativeSandboxFixture) {
 	}
 }
 
+func TestCommonCustomTerminalWaitsForCurrentDeployment(t *testing.T) {
+	f := customTerminalFixture(t, "container")
+	for _, scenario := range []struct {
+		name                     string
+		replicas, ready, updated int32
+		available                int32
+		wantReady                bool
+	}{
+		{name: "old available pod", replicas: 1, ready: 1, available: 1},
+		{name: "surge replacement pending", replicas: 2, ready: 1, updated: 1, available: 1},
+		{name: "old pod still draining", replicas: 2, ready: 2, updated: 1, available: 2},
+		{name: "current rollout complete", replicas: 1, ready: 1, updated: 1, available: 1, wantReady: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			deployment := customTerminalDeployment(t, f)
+			deployment.Status.ObservedGeneration = deployment.Generation
+			deployment.Status.Replicas, deployment.Status.ReadyReplicas = scenario.replicas, scenario.ready
+			deployment.Status.UpdatedReplicas, deployment.Status.AvailableReplicas = scenario.updated, scenario.available
+			if err := f.kube.Status().Update(context.Background(), deployment); err != nil {
+				t.Fatal(err)
+			}
+			ready, err := f.r.customTerminalReady(context.Background(), f.current(t))
+			if err != nil || ready != scenario.wantReady {
+				t.Fatalf("terminal accepted an earlier or incomplete rollout: ready=%t want=%t err=%v", ready, scenario.wantReady, err)
+			}
+		})
+	}
+}
+
 func TestCommonCustomTerminalReadinessAndSuspension(t *testing.T) {
 	for _, backend := range []string{"kata", "container"} {
 		t.Run(backend, func(t *testing.T) {
@@ -103,6 +132,7 @@ func TestCommonCustomTerminalReadinessAndSuspension(t *testing.T) {
 			terminal := customTerminalDeployment(t, f)
 			terminal.Status.ObservedGeneration = terminal.Generation
 			terminal.Status.Replicas, terminal.Status.ReadyReplicas, terminal.Status.AvailableReplicas = 1, 1, 1
+			terminal.Status.UpdatedReplicas = 1
 			if err := f.kube.Status().Update(context.Background(), terminal); err != nil {
 				t.Fatal(err)
 			}

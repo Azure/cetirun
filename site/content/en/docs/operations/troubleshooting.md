@@ -49,6 +49,15 @@ it does not wait for pod readiness. A suspended instance intentionally has
 zero desired replicas and no VirtualService; inspect `spec.suspended` and
 phase before treating absent pods as a failure.
 
+After a workload apply, readiness uses a current API read of the StatefulSet,
+not a possibly stale pre-apply informer snapshot. The existing generation,
+replica, restart and migration checks are evaluated against that current
+object. A failed current read is reported rather than replaced with cached
+Ready status. The Custom terminal also waits for its one current Deployment
+replica to be updated, ready and available, without an older surge replica
+remaining. Availability of the previous terminal Pod alone is not a completed
+rollout. These observations do not replace model/tool or provider acceptance.
+
 For a missing `ValidatingAdmissionPolicy` API or a forbidden admission-policy
 write, check the default `execRestriction` prerequisites and operator
 ClusterRole. The chart does not conditionally omit that policy for older
