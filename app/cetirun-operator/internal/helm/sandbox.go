@@ -98,7 +98,7 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 func (p *PreparedRelease) ReconcileSandbox(values map[string]any, bundle *sandboxworkload.Bundle,
 	guard func(context.Context) error,
 ) (*PreparedRelease, error) {
-	return p.ReconcileSandboxWithPreflight(values, bundle, guard, guard, guard, nil)
+	return p.ReconcileSandboxWithPreflight(values, bundle, guard, guard, guard, nil, nil)
 }
 
 // ReconcileSandboxWithPreflight separates preflight and manifest authority
@@ -106,6 +106,7 @@ func (p *PreparedRelease) ReconcileSandbox(values map[string]any, bundle *sandbo
 func (p *PreparedRelease) ReconcileSandboxWithPreflight(values map[string]any, bundle *sandboxworkload.Bundle,
 	preflight, renderGuard, guard func(context.Context) error,
 	bindingCreate func(context.Context, unstructured.Unstructured) (func(context.Context) error, error),
+	workloadCreate func(context.Context) (func(context.Context) error, error),
 ) (*PreparedRelease, error) {
 	if p == nil || p.chart == nil || bundle == nil || !bundle.Identity().Reconciled || preflight == nil || renderGuard == nil || guard == nil {
 		return nil, fmt.Errorf("Sandbox reconciliation requires a current bundle and guarded apply")
@@ -116,6 +117,7 @@ func (p *PreparedRelease) ReconcileSandboxWithPreflight(values map[string]any, b
 	}
 	prepared.sandboxPreflight, prepared.sandboxRenderGuard, prepared.sandboxGuard = preflight, renderGuard, guard
 	prepared.sandboxBindingCreate = bindingCreate
+	prepared.sandboxWorkloadCreate = workloadCreate
 	return prepared, nil
 }
 

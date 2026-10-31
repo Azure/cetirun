@@ -198,12 +198,39 @@ func (p *PreparedRelease) AuthorizeSandboxRender(ctx context.Context) error {
 }
 
 // AuthorizeSandboxApply rechecks authority and records submission intent before
-// an installer may write workloads. A failed or uncertain apply remains submitted.
+// an installer may write workloads. Opaque or earlier submissions remain submitted.
 func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
 	if p == nil || p.sandboxReconcile == nil || p.sandboxGuard == nil || p.sealedInput != p.inputDigest() {
 		return fmt.Errorf("Sandbox apply requires unchanged current render and controller authority")
 	}
 	return p.sandboxGuard(ctx)
+}
+
+// AuthorizeSandboxWorkloadCreate binds a definite non-creation result to this
+// submission. Callers without a rejection recorder retain the opaque barrier.
+func (p *PreparedRelease) AuthorizeSandboxWorkloadCreate(ctx context.Context) (func(error) error, error) {
+	if p == nil || p.sandboxReconcile == nil || p.sandboxGuard == nil || p.sealedInput != p.inputDigest() {
+		return nil, fmt.Errorf("Sandbox workload creation requires current render and controller authority")
+	}
+	if p.sandboxWorkloadCreate == nil {
+		if err := p.AuthorizeSandboxApply(ctx); err != nil {
+			return nil, err
+		}
+		return func(err error) error { return err }, nil
+	}
+	rejected, err := p.sandboxWorkloadCreate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func(createErr error) error {
+		if rejected == nil || !sandboxBindingCreateRejected(createErr) {
+			return createErr
+		}
+		if err := rejected(ctx); err != nil {
+			return errors.Join(createErr, fmt.Errorf("record rejected Sandbox workload creation: %w", err))
+		}
+		return createErr
+	}, nil
 }
 
 // AuthorizeSandboxBindingCreate returns an outcome recorder bound to this

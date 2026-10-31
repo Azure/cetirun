@@ -249,8 +249,9 @@ Removed or never-created auxiliary Deployments still require their ReplicaSets
 and namespace Pods to be absent. Their absence does not replace the main HOME
 workload's acknowledged shutdown.
 A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
-StatefulSet shutdown acknowledgement, but only before any workload write is submitted and
-after ordinary namespace/Pod cleanup checks. Its expectation is first persisted
+StatefulSet shutdown acknowledgement, but only before any workload write is submitted
+or after a fenced definitive rejection of the first workload CREATE, and after
+ordinary namespace/Pod cleanup checks. Its expectation is first persisted
 as initializing, before the grant journal, and becomes pending only after the
 empty journal is confirmed. Publication retries, including lost acknowledgements,
 therefore retain the pre-submit evidence without inferring it from a missing
@@ -267,6 +268,14 @@ or before an update batch containing workloads. A first-install binding rejectio
 before that boundary can therefore cancel the pending workload and recover through
 normal retry or deletion. Grant submissions remain independently tracked: an
 uncertain binding CREATE still blocks cleanup even when no workload was submitted.
+If bindings succeed but the first workload CREATE receives a definitive API
+rejection, the writer records non-creation against the exact submitted
+expectation UID/resourceVersion. Normal retry and deletion can then revoke the
+grants and release the reservation without waiting for a nonexistent StatefulSet.
+Workload CREATEs do not follow HTTP Retry-After responses. Timeouts, lost
+responses, earlier workload submissions and update batches remain uncertain;
+a later rejection cannot cancel them. A competing claim or replacement
+expectation also prevents a stale rejection recorder from cancelling current work.
 Cancellation and workload submission compete through conditional state writes;
 no missing-resource observation can reset a submitted or older uncertain record.
 Competing claims fence stale writers, while lost workload-submission

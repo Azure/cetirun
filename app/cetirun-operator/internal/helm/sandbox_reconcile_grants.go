@@ -34,14 +34,9 @@ func (k *reconciledGrantKube) Create(resources kube.ResourceList) (*kube.Result,
 		if err != nil {
 			return result, err
 		}
-		if reconciledWorkloadResource(*object) {
-			if err := k.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
-				return result, err
-			}
-		}
 		var created *kube.Result
-		if w.KubernetesBindingResource(*object) {
-			created, err = k.createBinding(info, *object)
+		if w.KubernetesBindingResource(*object) || reconciledWorkloadResource(*object) {
+			created, err = k.createGuarded(info, *object)
 		} else {
 			created, err = k.Interface.Create(kube.ResourceList{info})
 		}
@@ -69,11 +64,17 @@ func (c reconciledGrantRESTClient) Post() *rest.Request {
 	return c.RESTClient.Post().MaxRetries(0)
 }
 
-func (k *reconciledGrantKube) createBinding(info *resource.Info, object unstructured.Unstructured) (*kube.Result, error) {
+func (k *reconciledGrantKube) createGuarded(info *resource.Info, object unstructured.Unstructured) (*kube.Result, error) {
 	if info.Client == nil || info.Mapping == nil {
-		return nil, fmt.Errorf("Kubernetes grant creation requires its API resource mapping")
+		return nil, fmt.Errorf("guarded Sandbox creation requires its API resource mapping")
 	}
-	complete, err := k.prepared.AuthorizeSandboxBindingCreate(context.Background(), object)
+	var complete func(error) error
+	var err error
+	if w.KubernetesBindingResource(object) {
+		complete, err = k.prepared.AuthorizeSandboxBindingCreate(context.Background(), object)
+	} else {
+		complete, err = k.prepared.AuthorizeSandboxWorkloadCreate(context.Background())
+	}
 	if err != nil {
 		return nil, err
 	}

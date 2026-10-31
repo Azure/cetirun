@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -27,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -395,7 +397,20 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 			return r.rejectReconciledGrantSubmission(ctx, submitted, requested)
 		}, nil
 	}
-	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, renderGuard, applyGuard, bindingGuard)
+	workloadCreateGuard := func(ctx context.Context) (func(context.Context) error, error) {
+		firstSubmission := published != nil && published.Annotations[sandboxApplyStateAnnotation] == sandboxApplyPending
+		if err := applyGuard(ctx); err != nil {
+			return nil, err
+		}
+		if !firstSubmission {
+			return nil, nil
+		}
+		submitted := published.DeepCopy()
+		return func(ctx context.Context) error {
+			return r.rejectReconciledWorkloadSubmission(ctx, submitted)
+		}, nil
+	}
+	result, err := prepared.ReconcileSandboxWithPreflight(values, bundle, guard, renderGuard, applyGuard, bindingGuard, workloadCreateGuard)
 	if err != nil {
 		return nil, err
 	}
@@ -814,6 +829,23 @@ func (r *AgentReconciler) cancelUnsubmittedReconciledApply(ctx context.Context, 
 		}
 	}
 	return true, nil
+}
+
+func (r *AgentReconciler) rejectReconciledWorkloadSubmission(ctx context.Context, submitted *corev1.ConfigMap) error {
+	expected, err := w.ReadReconcileExpectation(submitted)
+	if err != nil || submitted.UID == "" || submitted.ResourceVersion == "" ||
+		submitted.Annotations[sandboxApplyStateAnnotation] != sandboxApplySubmitted ||
+		slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool { return workload.Identity.UID != "" }) {
+		return fmt.Errorf("workload rejection requires its first unobserved submission")
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{
+		"uid": submitted.UID, "resourceVersion": submitted.ResourceVersion,
+		"annotations": map[string]string{sandboxApplyStateAnnotation: sandboxApplyCancelled},
+	}})
+	if err != nil {
+		return err
+	}
+	return r.Patch(ctx, submitted.DeepCopy(), client.RawPatch(types.MergePatchType, patch))
 }
 
 func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *api.Agent, ticket sandboxcoordination.NativeTicket) error {
