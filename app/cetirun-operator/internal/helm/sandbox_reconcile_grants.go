@@ -129,26 +129,66 @@ func (k *reconciledGrantKube) Update(original, target kube.ResourceList, force b
 	if err != nil {
 		return &kube.Result{}, err
 	}
+	result := &kube.Result{}
 	for _, info := range next {
 		object, err := sandboxUnstructured(info.Object)
 		if err != nil {
-			return &kube.Result{}, err
+			return result, err
 		}
-		if reconciledWorkloadResource(*object) {
-			if err := k.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
-				return &kube.Result{}, err
+		var updated *kube.Result
+		old := previous.Get(info)
+		if reconciledWorkloadResource(*object) && old == nil {
+			// Preserve Helm ordering when an initial install adopts controls,
+			// but give its first workload CREATE a distinct outcome recorder.
+			if info.Client == nil || info.Mapping == nil {
+				return result, fmt.Errorf("initial workload creation requires its API resource mapping")
 			}
-			break
+			if err := k.prepared.CheckSandboxApply(context.Background()); err != nil {
+				return result, err
+			}
+			_, err = resource.NewHelper(info.Client, info.Mapping).Get(info.Namespace, info.Name)
+			if !apierrors.IsNotFound(err) {
+				if err == nil {
+					err = fmt.Errorf("an unrecorded workload appeared before initial creation")
+				}
+				return result, err
+			}
+			updated, err = k.createGuarded(info, *object)
+		} else {
+			if reconciledWorkloadResource(*object) {
+				if err := k.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+					return result, err
+				}
+			}
+			var before kube.ResourceList
+			if old != nil {
+				before = append(before, old)
+			}
+			updated, err = k.Interface.Update(before, kube.ResourceList{info}, false)
+		}
+		if updated != nil {
+			result.Created = append(result.Created, updated.Created...)
+			result.Updated = append(result.Updated, updated.Updated...)
+			result.Deleted = append(result.Deleted, updated.Deleted...)
+		}
+		if err != nil {
+			return result, err
 		}
 	}
 	// Grant retirement belongs to the UID-bound journal, not Helm's
-	// name-only pruning against an older deployed release.
-	result, err := k.Interface.Update(previous, next, false)
+	// name-only pruning. Retire other obsolete objects only after all writes.
+	var obsolete kube.ResourceList
+	for _, info := range previous {
+		if next.Get(info) == nil {
+			obsolete = append(obsolete, info)
+		}
+	}
+	retired, err := k.Interface.Update(obsolete, nil, false)
+	if retired != nil {
+		result.Deleted = append(result.Deleted, retired.Deleted...)
+	}
 	if err != nil {
 		return result, err
-	}
-	if result == nil {
-		result = &kube.Result{}
 	}
 	for _, info := range target {
 		desired, err := sandboxUnstructured(info.Object)
