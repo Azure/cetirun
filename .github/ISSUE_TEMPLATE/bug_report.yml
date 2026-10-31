@@ -5,9 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Search existing issues before filing a report.
+        Before you submit a report, search the issues that already exist.
         For suspected security vulnerabilities, stop here and follow [SECURITY.md](https://github.com/Azure/cetirun/blob/main/SECURITY.md) to report privately to MSRC.
-        Everything you submit must be safe to publish. Use synthetic examples; do not attach full logs, credentials, cookies, private endpoints, tenant or subscription identifiers, customer data, agent conversations, or internal documents.
+        Everything that you submit must be safe to publish. Use synthetic examples. Do not attach full logs, credentials, cookies, private endpoints, tenant or subscription identifiers, customer data, agent conversations, or internal documents.
 
   - type: dropdown
     id: component
@@ -37,10 +37,10 @@ body:
     id: reproduction
     attributes:
       label: Smallest reproduction
-      description: Include steps and a minimal configuration using only synthetic data.
+      description: Include steps and a minimal configuration. Use only synthetic data.
       placeholder: |
         1. Use this component and configuration ...
-        2. Perform this action ...
+        2. Do this action ...
         3. Observe ...
     validations:
       required: true
@@ -57,25 +57,25 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Include relevant OS, architecture, Kubernetes, Helm, Go, or Node.js versions and installation method. Omit account identifiers and private resource names.
+      description: Include the relevant OS, architecture, Kubernetes, Helm, Go, or Node.js versions and the installation method. Do not include account identifiers or private resource names.
     validations:
       required: true
 
   - type: textarea
     id: output
     attributes:
-      label: Sanitized output or additional context
+      label: Sanitized output or more context
       description: Share only a short relevant excerpt that is safe to publish, or describe a workaround. Do not paste a full diagnostic bundle.
       render: text
 
   - type: checkboxes
     id: confirmation
     attributes:
-      label: Before submitting
+      label: Before you submit
       options:
-        - label: I searched existing issues.
+        - label: I searched the issues that already exist.
           required: true
-        - label: This is not a suspected security vulnerability; I will use MSRC for those reports.
+        - label: This is not a suspected security vulnerability. I will use MSRC for those reports.
           required: true
-        - label: I checked the text and attachments and removed secrets, private identifiers, customer data, and other non-public information.
+        - label: I examined the text and attachments and removed secrets, private identifiers, customer data, and other non-public information.
           required: true

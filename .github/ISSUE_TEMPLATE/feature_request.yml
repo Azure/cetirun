@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Start with the problem you want to solve and search existing requests first.
+        Start with the problem that you want to solve, and search the requests that already exist first.
         Keep all examples and attachments safe to publish. Do not include credentials, private identifiers or endpoints, customer data, agent conversations, or internal documents.
         Report suspected vulnerabilities privately through [SECURITY.md](https://github.com/Azure/cetirun/blob/main/SECURITY.md), not this form.
 
@@ -13,7 +13,7 @@ body:
     id: problem
     attributes:
       label: Problem to solve
-      description: What are you trying to do with CetiRun, who is affected, and what gets in the way?
+      description: What do you want to do with CetiRun, who is affected, and what prevents it?
     validations:
       required: true
 
@@ -21,7 +21,7 @@ body:
     id: outcome
     attributes:
       label: Desired outcome
-      description: Describe the behavior you want and how you would know the improvement works.
+      description: Describe the behavior that you want and how you can see that the improvement works.
     validations:
       required: true
 
@@ -29,22 +29,22 @@ body:
     id: proposal
     attributes:
       label: Suggested approach
-      description: If you have one, describe the approach and affected components. Note effects on APIs, CRDs, authentication, isolation, storage, or existing users.
+      description: If you have an approach, describe it and the affected components. Include the effects on APIs, CRDs, authentication, isolation, storage, or current users.
 
   - type: textarea
     id: alternatives
     attributes:
       label: Alternatives considered
-      description: Describe any existing features or workarounds you tried and why they were not enough.
+      description: Describe any current features or workarounds that you tried and why they were not enough.
 
   - type: checkboxes
     id: confirmation
     attributes:
-      label: Before submitting
+      label: Before you submit
       options:
-        - label: I searched existing issues for this request.
+        - label: For this request, I searched the issues that already exist.
           required: true
-        - label: This is not a suspected security vulnerability; I will use MSRC for those reports.
+        - label: This is not a suspected security vulnerability. I will use MSRC for those reports.
           required: true
-        - label: I checked the text and attachments and removed secrets, private identifiers, customer data, and other non-public information.
+        - label: I examined the text and attachments and removed secrets, private identifiers, customer data, and other non-public information.
           required: true
