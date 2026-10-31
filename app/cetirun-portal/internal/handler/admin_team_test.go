@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -160,6 +161,20 @@ func TestAdminTeam_WriteErrors(t *testing.T) {
 		{
 			name: "forbidden", err: apierrors.NewForbidden(schema.GroupResource{Resource: "teams"}, "example-team", errors.New("sensitive-rbac-detail")),
 			status: http.StatusForbidden, code: "rbac_forbidden", contains: []string{"Check ClusterRole bindings"},
+		},
+		{
+			name: "admission forbidden", err: &apierrors.StatusError{ErrStatus: metav1.Status{
+				Reason: metav1.StatusReasonForbidden, Code: 403,
+				Message: `admission webhook "sandbox-configuration.cetirun.microsoft.com" denied the request: sensitive-admission-detail`,
+			}},
+			status: http.StatusForbidden, code: "admission_rejected", contains: []string{"Policy and Sandbox prerequisites", "Portal logs"},
+		},
+		{
+			name: "wrapped admission forbidden", err: fmt.Errorf("create Team: %w", &apierrors.StatusError{ErrStatus: metav1.Status{
+				Reason: metav1.StatusReasonForbidden, Code: 403,
+				Message: `admission webhook "synthetic.example.com" denied the request: sensitive-admission-detail`,
+			}}),
+			status: http.StatusForbidden, code: "admission_rejected", contains: []string{"Policy and Sandbox prerequisites", "Portal logs"},
 		},
 	}
 	for _, operation := range []string{"create", "update"} {
