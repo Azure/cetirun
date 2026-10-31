@@ -1,33 +1,34 @@
 # Runtime Data and Privacy
 
-CetiRun runs agent workspaces on infrastructure selected by the deployment
-operator. This document describes data handling visible in the repository's
-application code, charts, and infrastructure templates. It is not a statement
-that a particular deployment has been inspected, a promise about third-party
-services, or a substitute for the operator's own privacy notice.
+CetiRun runs agent workspaces on infrastructure that the deployment operator
+selects. This document describes how data is handled, as the repository's
+application code, charts, and infrastructure templates show. It is not a
+statement that a particular deployment was inspected. It is also not a promise
+about third-party services or a substitute for the operator's own privacy
+notice.
 
 **The default configuration can collect conversation content in container logs.**
-The agent chart enables the session logger, and the infrastructure templates
-enable Container Insights and managed Prometheus configuration. Review these
-settings before allowing sensitive workloads. There is no single CetiRun setting
+The agent chart enables the session logger. The infrastructure templates enable
+Container Insights and managed Prometheus configuration. Before you allow
+sensitive workloads, examine these settings. There is no single CetiRun setting
 that disables logging, telemetry, and network activity across every component.
 
 ## Data processed by CetiRun
 
 | Surface | Data and purpose | Where it can be processed or stored |
 | --- | --- | --- |
-| Portal and sign-in | User alias, preferred username, display name, email claims, group authorization, and administrator status, used to identify users and authorize access | Browser, OAuth2 Proxy/identity provider, portal request context, and application logs; instance ownership/profile fields are also stored in Kubernetes resources |
+| Portal and sign-in | User alias, preferred username, display name, email claims, group authorization, and administrator status. These items are used to identify users and authorize access. | Browser, OAuth2 Proxy/identity provider, portal request context, and application logs. Instance ownership/profile fields are also stored in Kubernetes resources. |
 | Workspace management | Instance and team names, owner alias, model selection, profile information, configuration, status, events, and resource identifiers | Portal, operator, Kubernetes API objects, Helm release state, and operational logs |
-| Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and workspace storage; configured model, tool, and channel services; potentially container logs |
+| Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and workspace storage. Configured model, tool, and channel services. Possibly container logs. |
 | Authentication material | Gateway/API keys, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
-| Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Workspace processes and storage; websites or services contacted by the browser/tools; terminal/desktop streams delivered to the user |
+| Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Workspace processes and storage. Websites or services that the browser/tools contact. Terminal/desktop streams that go to the user. |
 
-The portal does not merely display public metadata. Its authorized instance
-response can include gateway tokens, a Hermes API server key, the CetiRun auth
-helper key, and a configured Tailscale auth key. Treat browser access to a
-workspace and its API responses as access to sensitive information. Do not
-publish browser network captures, session files, or support bundles without
-reviewing them.
+The portal does not show only public metadata. Its authorized instance response
+can include gateway tokens, a Hermes API server key, the CetiRun auth helper
+key, and a configured Tailscale auth key. Treat browser access to a workspace
+and its API responses as access to sensitive information. Do not publish
+browser network captures, session files, or support bundles before you examine
+them.
 
 Source: [portal claims](app/cetirun-portal/internal/auth/claims.go),
 [authentication middleware](app/cetirun-portal/internal/auth/middleware.go),
@@ -40,27 +41,30 @@ and [Hermes configuration templates](app/cetirun-chart/templates/agents/hermes/_
 
 ### Session and application logs
 
-`logger.enabled` defaults to `true`. For OpenClaw, the logger sidecar follows
-active session JSONL files beneath `/home/vibe/.openclaw/agents` and writes new
+`logger.enabled` is `true` by default. For OpenClaw, the logger sidecar follows
+active session JSONL files under `/home/vibe/.openclaw/agents` and writes new
 lines to stdout. Those records can contain user input, assistant output, tool
-calls, and tool results. OpenClaw as packaged in the agent image keeps its
-sessions in SQLite instead and writes no such files, so the logger currently
-exports nothing for OpenClaw. For Hermes, it follows
-`/home/vibe/.hermes/logs/gateway.log`; its content depends on the installed
-Hermes version and configuration, and is not necessarily a complete transcript.
+calls, and tool results. OpenClaw, as the agent image packages it, keeps its
+sessions in SQLite instead and writes no such files. As a result, the logger
+now exports nothing for OpenClaw.
 
-The logger does not redact content. It starts following at the current end of
-each file rather than replaying the whole history. The OpenClaw file selection
-looks for recent files and limits how many it follows; those limits are not a
-data-retention or privacy guarantee. Anyone with access to the resulting
-container logs or their downstream log store may be able to read the content.
+For Hermes, the logger follows `/home/vibe/.hermes/logs/gateway.log`. The
+content of this file depends on the installed Hermes version and configuration.
+This content is not necessarily a complete transcript.
 
-Portal and operator logs also include operational information such as aliases,
-display names, team/instance names, resource IDs, access URLs, reconciliation
-status, and errors. Some update logging records field names rather than values,
-but this does not establish that all logs are free of personal data or secrets.
-Agent, terminal, auth-helper, and optional Tailscale processes also write
-stdout/stderr.
+The logger does not redact content. The logger starts to follow each file at
+the current end of that file and does not replay the whole history. The
+OpenClaw file selection looks for recent files and limits the number of files
+that it follows. These limits are not a data-retention or privacy guarantee.
+Anyone with access to the container logs that contain this output, or to their
+downstream log store, can possibly read the content.
+
+Portal and operator logs also include operational information, for example
+aliases, display names, team/instance names, resource IDs, access URLs,
+reconciliation status, and errors. Some update logs record field names instead
+of values. But this does not prove that all logs are free of personal data or
+secrets. Agent, terminal, auth-helper, and optional Tailscale processes also
+write stdout/stderr.
 
 Source: [chart defaults](app/cetirun-chart/values.yaml),
 [session logger](app/cetirun-chart/configs/session-logger.sh),
@@ -71,28 +75,32 @@ and [operator reconciliation](app/cetirun-operator/internal/controller/agent_con
 
 ### AI Gateway request log and metrics
 
-The AI Gateway's `requestLog.enabled` defaults to `true`. Each model call then
-writes one JSON line to the Gateway's stdout with the call's metadata: the
-virtual key's alias and hash, the user ID, the Team, the Agent's name and UID
-recorded on the key, the model, token counts, spend, timing, the client's
-address and user agent, and error text for failed calls. Error text can quote
-the provider's response. The line carries no request or response content.
+The AI Gateway's `requestLog.enabled` is `true` by default. Each model call then
+writes one JSON line to the Gateway's stdout with the call's metadata. This
+metadata contains the virtual key's alias and hash, the user ID, the Team, and
+the Agent's name and UID recorded on the key. It also contains the model, token
+counts, spend, timing, the client's address and user agent, and error text for
+failed calls. Error text can quote the provider's response. The line contains
+no request or response content.
 
-`metrics.enabled` defaults to `false` in the Gateway chart and `true` in the
-platform chart. Turned on, each Gateway pod serves Prometheus metrics without
-authentication on a separate port. Their labels include virtual key aliases
-and hashes, user IDs and Team names alongside spend, and anything that can
-reach the port can read them. The platform chart also creates a PodMonitor, so
-Azure Monitor managed Prometheus collects them where it runs.
+By default, `metrics.enabled` is `false` in the Gateway chart and `true` in the
+platform chart. When this setting is enabled, each Gateway pod serves
+Prometheus metrics without authentication on a separate port. Their labels
+include virtual key aliases and hashes, user IDs, and Team names, together with
+spend. Anything that can reach the port can read them. The platform chart also
+creates a PodMonitor. As a result, Azure Monitor managed Prometheus collects
+them where it runs.
 
-The Gateway's PostgreSQL database keeps daily spend totals per key, user and
-Team. Unless `spendLogs.enabled` is `false`, it also keeps LiteLLM's own record
-of each call, health-check probes included, in `LiteLLM_SpendLogs`: the call's
-metadata, such as the key, user, Team, model, token counts, spend, timing and
-the error of a failed call, but not its prompt or response. LiteLLM deletes
-these rows, and the stored health-check results, once they are older than
-`spendLogs.retention`: seven days by default, checked every hour. An empty
-retention keeps them.
+The Gateway's PostgreSQL database keeps daily spend totals for each key, user,
+and Team. Unless `spendLogs.enabled` is `false`, the database also keeps
+LiteLLM's own record of each call in `LiteLLM_SpendLogs`. The recorded calls
+also include health-check probes. Each record contains the call's metadata, for
+example the key, user, Team, model, token counts, spend, timing, and the error
+of a failed call. It does not contain the prompt or response of the call.
+
+When these rows and the stored health-check results are older than
+`spendLogs.retention`, LiteLLM deletes them. The default value is seven days,
+and the check occurs every hour. An empty retention keeps them.
 
 Source: [Gateway chart defaults](app/cetirun-ai-gateway/chart/values.yaml),
 [platform chart defaults](app/cetirun-platform/values.yaml),
@@ -102,39 +110,44 @@ and [LiteLLM configuration](app/cetirun-ai-gateway/chart/templates/configmap.yam
 
 ### Infrastructure collection and traffic metadata
 
-The cluster template defaults `enableContainerInsights` and
-`enablePrometheusMetrics` to `true`. With them it enables the Container
-Insights monitoring add-on and managed Prometheus, and defines data collection
-rules and associations for Container Insights, including ContainerLogV2, and
-for managed Prometheus. Collected data is directed to the configured Azure Log
-Analytics and Azure Monitor workspaces. Container Insights then collects
-container stdout and stderr outside `kube-system`, together with Kubernetes
-inventory, events and performance data. That output includes the session
-logger's output described above and what Agents print themselves, which can
-include conversation text. Successful collection still depends on the deployed
-collectors, permissions, and settings; source configuration alone does not
-prove that a live cluster is collecting data.
+The cluster template sets `enableContainerInsights` and
+`enablePrometheusMetrics` to `true` by default. With these settings, the
+template enables the Container Insights monitoring add-on and managed
+Prometheus. It also defines data collection rules and associations for
+Container Insights and for managed Prometheus. The rules for Container Insights
+include ContainerLogV2. The collected data is sent to the configured Azure Log
+Analytics and Azure Monitor workspaces.
 
-By default Container Insights also copies every container's environment
-variables, values taken from Kubernetes Secrets included, into its
-`ContainerInventory` table. The cluster helper creates the settings in
-`infra/cluster/container-azm-ms-agentconfig.yaml`, which turn that collection
-off for the cluster; on a cluster that already has agent settings, it checks
-that they do. CetiRun containers that keep credentials in their
-environment turn it off for themselves with `AZMON_COLLECT_ENV=False`. A
-cluster that runs the add-on without these settings collects those values.
+Container Insights then collects container stdout and stderr outside
+`kube-system`, together with Kubernetes inventory, events and performance data.
+That output includes the session logger's output that is described above and
+what Agents print themselves. This output can include conversation text.
+Successful collection still depends on the deployed collectors, permissions,
+and settings. Source configuration alone does not prove that a live cluster
+collects data.
 
-The Istio chart defaults `egress.accessLog.enabled` to `true`. Its Envoy filters
-write traffic metadata to stdout, including timestamps, authority/host, HTTP
-method/path when available, status, byte counts, duration, upstream addresses,
-downstream remote addresses, and TLS server names. URL paths may contain
-identifying or sensitive information. These access logs are not a transcript of
-encrypted application bodies, but the separate session logger can expose agent
-content in plaintext.
+By default, Container Insights also copies the environment variables of every
+container into its `ContainerInventory` table. This copy includes values that
+come from Kubernetes Secrets. The cluster helper creates the settings in
+`infra/cluster/container-azm-ms-agentconfig.yaml`, which disable that
+collection for the cluster. On a cluster that already has agent settings, the
+helper examines them to find if they disable that collection. CetiRun
+containers that keep credentials in their environment disable it for
+themselves with `AZMON_COLLECT_ENV=False`. A cluster that runs the add-on
+without these settings collects those values.
 
-The operator configures a controller-runtime metrics listener at `:8080` by
-default. Exposing an endpoint is not the same as scraping or exporting it.
-Whether a deployment collects those metrics depends on its monitoring setup.
+The Istio chart sets `egress.accessLog.enabled` to `true` by default. Its Envoy
+filters write traffic metadata to stdout. This metadata includes timestamps,
+authority/host, HTTP method/path when available, status, and byte counts. It
+also includes duration, upstream addresses, downstream remote addresses, and
+TLS server names. URL paths can contain identifying or sensitive information.
+These access logs are not a transcript of encrypted application bodies, but
+the separate session logger can expose agent content in plaintext.
+
+By default, the operator configures a controller-runtime metrics listener at
+`:8080`. To expose an endpoint is not the same as to scrape or export it. The
+collection of those metrics in a deployment depends on the monitoring
+configuration of that deployment.
 
 Source: [cluster defaults](infra/cluster/main.bicep),
 [collection destinations and retention](infra/cluster/modules/aks-cluster.bicep),
@@ -145,48 +158,49 @@ and [operator metrics configuration](app/cetirun-operator/cmd/main.go).
 
 ## Network and third-party boundaries
 
-- **Models and agent tools.** Platform-provided model requests from OpenClaw,
-  Hermes, and Custom Agents go through the AI Gateway, which forwards prompts,
-  conversation context, file contents, and tool output to configured providers.
-  Agent tools can send data and authentication information to other services.
-  Model choice alone does not describe every recipient: skills, plugins,
-  command-line tools, browsers, and user-supplied endpoints create additional
-  routes. Check the terms, retention, training-use settings, and region of each
-  selected service with that service.
-- **GitHub Copilot authentication and model discovery.** The Portal initiates
+- **Models and agent tools.** Requests from OpenClaw, Hermes, and Custom Agents
+  to models that the platform supplies go through the AI Gateway. The AI
+  Gateway forwards prompts, conversation context, file contents, and tool
+  output to configured providers. Agent tools can send data and authentication
+  information to other services. Model choice alone does not describe every
+  recipient: skills, plugins, command-line tools, browsers, and user-supplied
+  endpoints create more routes. Examine the terms, retention, training-use
+  settings, and region of each selected service with that service.
+- **GitHub Copilot authentication and model discovery.** The Portal starts
   GitHub device authorization and stores the completed credential in a
-  Kubernetes Secret in the Agent's namespace. The Operator provisions each Agent's Copilot
-  proxy and Gateway access; the proxy exchanges the credential and retrieves
-  the Copilot model catalog. New sign-ins do not write provider credentials
-  into Agent HOME. These operations are separate from inference requests
-  routed through the AI Gateway.
+  Kubernetes Secret in the Agent's namespace. The Operator provisions each
+  Agent's Copilot proxy and Gateway access. The proxy exchanges the credential
+  and gets the Copilot model catalog. New sign-ins do not write provider
+  credentials into Agent HOME. These operations are separate from inference
+  requests that go through the AI Gateway.
 - **Identity.** The ingress sign-in flow uses Microsoft Entra ID. When Agent
   Identity is configured, the operator calls Microsoft Graph to manage Agent
   Identity service principals.
 - **Browser and remote access.** The desktop sidecar runs Google Chrome and
-  exposes a desktop through noVNC; ttyd exposes a terminal. Browsed sites
+  exposes a desktop through noVNC. ttyd exposes a terminal. Browsed sites
   receive browser requests and submitted data. Configured Tailscale access
   starts Tailscale processes and connects them to that service. These
-  components have their own data handling and diagnostic behavior.
-- **Packages, images, and shared skills.** Builds download third-party software.
-  The operator pulls its configured Helm chart from an OCI registry. Runtime
-  initialization can obtain configured skill packages and mount shared skill
-  storage. These registries, package services, storage services, and the
-  resulting tools are separate trust boundaries.
+  components handle data in their own way and have their own diagnostic
+  behavior.
+- **Packages, images, and shared skills.** Builds download third-party
+  software. The operator pulls its configured Helm chart from an OCI registry.
+  Runtime initialization can get configured skill packages and mount shared
+  skill storage. These registries, package services, storage services, and the
+  tools that result from them are separate trust boundaries.
 
-CetiRun's first-party settings do not provide a blanket third-party telemetry
-opt-out. For example, disabling OpenClaw's startup update check addresses that
-specific check; it does not establish that OpenClaw, Hermes, Chrome, Azure CLI,
-coding assistants, dependencies, or added skills make no other network requests.
-The runtime Dockerfiles install additional tools, including Codex CLI, Claude
-Code, OpenCode, GitHub CLI, and Azure CLI. Their provider requests, diagnostics,
-update behavior, and service terms must be reviewed separately for the versions
-and configuration actually deployed.
+CetiRun's first-party settings do not give a single opt-out for all third-party
+telemetry. For example, if you disable OpenClaw's startup update check, this
+change applies to that specific check. It does not prove that OpenClaw, Hermes,
+Chrome, Azure CLI, coding assistants, dependencies, or added skills make no
+other network requests. The runtime Dockerfiles install more tools, for example
+Codex CLI, Claude Code, OpenCode, GitHub CLI, and Azure CLI. Their provider
+requests, diagnostics, update behavior, and service terms must be examined
+separately for the versions and configuration that are deployed.
 
-The Istio external-service entries are audit configuration, not a complete
-allowlist of possible destinations. Do not infer that an unlisted provider,
-website, or telemetry service is unreachable. Validate the deployed network
-controls independently.
+The Istio external-service entries are audit configuration. They are not a
+complete allowlist of possible destinations. Do not conclude that an unlisted
+provider, website, or telemetry service is unreachable. Validate the deployed
+network controls independently.
 
 Source: [Portal Copilot sign-in](app/cetirun-portal/internal/handler/copilot_login.go),
 [Gateway provisioning](app/cetirun-operator/internal/controller/ai_gateway.go),
@@ -199,34 +213,34 @@ and [egress settings](infra/istio/values.yaml).
 
 ## Browser storage, persistence, and deletion
 
-The provided ingress configuration uses an authentication cookie named
-`_cetirun_oauth2`, with secure transport, SameSite=Lax, and an eight-hour expiry.
-The portal stores the theme preference under `cetirun-theme` in localStorage.
-Third-party agent interfaces and visited sites can use their own cookies and
-browser storage; the portal's theme setting is not an inventory of all browser
-state.
+The supplied ingress configuration uses an authentication cookie named
+`_cetirun_oauth2`, with secure transport, SameSite=Lax, and an eight-hour
+expiry. The portal stores the theme preference under `cetirun-theme` in
+localStorage. Third-party agent interfaces and visited sites can use their own
+cookies and browser storage. The portal's theme setting is not an inventory of
+all browser state.
 
 The desktop starts Chrome with
-`--user-data-dir=/home/vibe/.config/google-chrome/openclaw` on workspace storage.
-It disables Chrome sync in that invocation, but does not promise to disable all
-Chrome service traffic. Browser profiles may retain website login state,
-history, and other personal data. `desktop.logging=false`, the default,
-suppresses x11vnc/websockify process output; Chrome stderr still goes to the
-container's stderr. Disabling this diagnostic output does not erase the profile
-or stop website requests.
+`--user-data-dir=/home/vibe/.config/google-chrome/openclaw` on workspace
+storage. It disables Chrome sync in that invocation, but it does not promise to
+disable all Chrome service traffic. Browser profiles can keep website login
+state, history, and other personal data. `desktop.logging=false`, the default,
+suppresses x11vnc/websockify process output. Chrome stderr still goes to the
+container's stderr. If you disable this diagnostic output, you do not erase the
+profile or stop website requests.
 
-Agent persistence is enabled by default. The chart defaults
-`persistence.retainPolicy` to `Retain` for StatefulSet volume claims. That is
-not a guarantee that data survives namespace deletion or storage-provider
-cleanup. Conversely, deleting a CetiRun instance is not a complete erasure of
-data from cloud logs, backups, retained volumes, browser devices, or external
-providers. Effective retention depends on the PVC/PV lifecycle, reclaim policy,
-storage backend, backup policies, and downstream services.
+Agent persistence is enabled by default. For StatefulSet volume claims, the
+chart sets `persistence.retainPolicy` to `Retain` by default. This is not a
+guarantee that data survives namespace deletion or storage-provider cleanup.
+Also, the deletion of a CetiRun instance is not a complete erasure of data from
+cloud logs, backups, retained volumes, browser devices, or external providers.
+Effective retention depends on the PVC/PV lifecycle, reclaim policy, storage
+backend, backup policies, and downstream services.
 
-When the infrastructure template creates a Log Analytics workspace it sets
-`retentionInDays` to 30. An existing workspace, per-table settings, exports, and
-other stores can have different retention. CetiRun does not implement one
-global deletion schedule across these systems.
+When the infrastructure template creates a Log Analytics workspace, it sets
+`retentionInDays` to 30. A workspace that already exists, per-table settings,
+exports, and other stores can have different retention. CetiRun does not
+implement one global deletion schedule across these systems.
 
 Source: [OAuth2 Proxy configuration](infra/istio/templates/ingress/oauth2-proxy-deployment.yaml),
 [theme storage](app/cetirun-portal/web/src/context/ThemeContext.tsx),
@@ -238,20 +252,20 @@ and [Log Analytics configuration](infra/cluster/modules/aks-cluster.bicep).
 ## Deployment operator checklist
 
 - Tell users which models, tools, channels, and monitoring systems receive their
-  data, including whether conversation content is collected in logs.
-- Review `logger.enabled`, agent logging, `desktop.logging`,
+  data. Also tell them if conversation content is collected in logs.
+- Examine `logger.enabled`, agent logging, `desktop.logging`,
   `egress.accessLog.enabled`, the AI Gateway's `requestLog` and `metrics`,
-  collection rules, and metrics scraping separately. Turning off the session
-  logger alone does not disable the other paths.
+  collection rules, and metrics scraping separately. If you disable only the
+  session logger, this does not disable the other paths.
 - Restrict access to the portal, Kubernetes Secrets, workspace volumes, desktop
   and terminal endpoints, operational logs, and monitoring workspaces. Evaluate
   administrators and automation identities as data-access roles.
 - Set retention, backup, export, and deletion procedures for each storage
-  location. Address provider-side data separately from local instance deletion.
-- Review added skills, tools, images, and provider settings before use. Do not
-  put secrets in prompts or public issue reports; logs and tool output can
-  contain sensitive values even when a particular handler avoids logging them.
+  location. Handle provider-side data separately from local instance deletion.
+- Before use, examine added skills, tools, images, and provider settings. Do not
+  put secrets in prompts or public issue reports. Logs and tool output can
+  contain sensitive values, even when a particular handler does not log them.
 
-Ask your deployment operator about the actual deployment's recipients, access
-controls, retention, and deletion process. This repository-level disclosure
+Ask your deployment operator about the recipients, access controls, retention,
+and deletion process of the actual deployment. This repository-level disclosure
 cannot determine those choices for a hosted service.
