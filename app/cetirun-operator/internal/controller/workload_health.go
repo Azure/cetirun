@@ -30,7 +30,8 @@ func (r *AgentReconciler) observeWorkload(ctx context.Context, instance *cetirun
 	stsName := instanceServiceName(instance.Name)
 	sts := &appsv1.StatefulSet{}
 	stsKey := types.NamespacedName{Namespace: ns, Name: stsName}
-	if err := r.Get(ctx, stsKey, sts); err != nil {
+	// Helm writes directly to the API; a cached pre-apply rollout can still be Ready.
+	if err := r.customReader().Get(ctx, stsKey, sts); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("StatefulSet not found yet, requeueing", "name", stsName, "namespace", ns)
 			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
