@@ -272,9 +272,12 @@ func (r *AgentReconciler) captureMigration(ctx context.Context, agent *api.Agent
 		return nil, err
 	}
 	if workload.UID == "" || !sandboxBuiltinOwned(workload, agent) || !workload.DeletionTimestamp.IsZero() ||
-		ptr.Deref(workload.Spec.Replicas, 0) != 1 || workload.Status.ObservedGeneration < workload.Generation ||
-		workload.Status.ReadyReplicas != 1 || workload.Status.UpdatedReplicas != 1 {
+		workload.Spec.Replicas == nil || *workload.Spec.Replicas < 0 || *workload.Spec.Replicas > 1 {
 		return nil, fmt.Errorf("migration requires a stable single-Pod owned workload")
+	}
+	if *workload.Spec.Replicas == 0 || workload.Status.ObservedGeneration < workload.Generation ||
+		workload.Status.ReadyReplicas != 1 || workload.Status.UpdatedReplicas != 1 {
+		return nil, errMigrationSourceNotReady
 	}
 	if !slices.ContainsFunc(expected.Workloads, func(item w.RenderedWorkload) bool {
 		return item.Kind == "StatefulSet" && item.Identity.Name == workload.Name &&

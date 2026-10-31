@@ -292,7 +292,11 @@ failover. Portal disables retained restart while migration is pending.
 Before a request is captured, a transient authorization outage can stop the
 source. Once authorization recovers, normal reconciliation restores the current
 running configuration before retrying capture; it does not apply the new target
-early or discard a previous completed destination pin. After capture, source
+early or discard a previous completed destination pin. A stale Agent `Ready`
+observation does not prevent this recovery when the owned source StatefulSet
+is scaled down or its readiness has not converged. The request remains
+uncaptured until the actual source is stable; ownership, authorization,
+suspension and target checks still apply. After capture, source
 observations must be protected before any hold stops compute. Suspension remains
 pending if a source read or protection write fails during `Protecting`, and
 retries continue the same request when those operations recover. These retries
