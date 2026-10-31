@@ -72,6 +72,9 @@ func (k *reconciledGrantKube) createGuarded(info *resource.Info, object unstruct
 	var err error
 	if w.KubernetesBindingResource(object) {
 		complete, err = k.prepared.AuthorizeSandboxBindingCreate(context.Background(), object)
+	} else if object.GetKind() == "Deployment" {
+		err = k.prepared.AuthorizeSandboxAuxiliaryApply(context.Background(), object)
+		complete = func(err error) error { return err }
 	} else {
 		complete, err = k.prepared.AuthorizeSandboxWorkloadCreate(context.Background())
 	}
@@ -161,7 +164,12 @@ func (k *reconciledGrantKube) Update(original, target kube.ResourceList, force b
 			updated, err = k.createGuarded(info, *object)
 		} else {
 			if workload {
-				if err := k.prepared.AuthorizeSandboxApply(context.Background()); err != nil {
+				if object.GetKind() == "Deployment" {
+					err = k.prepared.AuthorizeSandboxAuxiliaryApply(context.Background(), *object)
+				} else {
+					err = k.prepared.AuthorizeSandboxApply(context.Background())
+				}
+				if err != nil {
 					return result, err
 				}
 			}

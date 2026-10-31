@@ -36,6 +36,7 @@ import (
 )
 
 const (
+	// The durable primary HOME submission is independent of auxiliary writes.
 	sandboxApplyStateAnnotation   = "sandbox.cetirun.microsoft.com/apply-state"
 	sandboxApplyAttemptAnnotation = "sandbox.cetirun.microsoft.com/apply-attempt"
 	sandboxApplyInitializing      = "initializing"
@@ -566,8 +567,8 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 			}
 			desired.Annotations[sandboxApplyStateAnnotation] = state
 		case sandboxApplyPending, sandboxApplyCancelled:
-			if !unobserved {
-				return nil, fmt.Errorf("unsubmitted Sandbox expectation has an observed workload")
+			if reconciledPrimaryObserved(expected) {
+				return nil, fmt.Errorf("unsubmitted Sandbox expectation has an observed primary workload")
 			}
 			desired.Annotations[sandboxApplyStateAnnotation] = sandboxApplyPending
 		case sandboxApplySubmitted:
@@ -814,10 +815,8 @@ func (r *AgentReconciler) cancelUnsubmittedReconciledApply(ctx context.Context, 
 	if applyState != sandboxApplyPending && applyState != sandboxApplyCancelled {
 		return false, nil
 	}
-	if slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
-		return workload.Identity.UID != ""
-	}) {
-		return false, fmt.Errorf("unsubmitted Sandbox expectation has a recorded workload")
+	if reconciledPrimaryObserved(expected) {
+		return false, fmt.Errorf("unsubmitted Sandbox expectation has a recorded primary workload")
 	}
 	if applyState == sandboxApplyPending {
 		// Compete with submission on its resource version; absence alone cannot
@@ -831,11 +830,17 @@ func (r *AgentReconciler) cancelUnsubmittedReconciledApply(ctx context.Context, 
 	return true, nil
 }
 
+func reconciledPrimaryObserved(expected w.ReconcileExpectation) bool {
+	return slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool {
+		return workload.Kind == "StatefulSet" && workload.Identity.UID != ""
+	})
+}
+
 func (r *AgentReconciler) rejectReconciledWorkloadSubmission(ctx context.Context, submitted *corev1.ConfigMap) error {
 	expected, err := w.ReadReconcileExpectation(submitted)
 	if err != nil || submitted.UID == "" || submitted.ResourceVersion == "" ||
 		submitted.Annotations[sandboxApplyStateAnnotation] != sandboxApplySubmitted ||
-		slices.ContainsFunc(expected.Workloads, func(workload w.RenderedWorkload) bool { return workload.Identity.UID != "" }) {
+		reconciledPrimaryObserved(expected) {
 		return fmt.Errorf("workload rejection requires its first unobserved submission")
 	}
 	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{

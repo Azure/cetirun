@@ -99,6 +99,8 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 			var authorizeErr error
 			if w.KubernetesBindingResource(*object) {
 				complete, authorizeErr = prepared.AuthorizeSandboxBindingCreate(ctx, *object)
+			} else if workload && object.GetKind() == "Deployment" {
+				authorizeErr = prepared.AuthorizeSandboxAuxiliaryApply(ctx, *object)
 			} else if workload {
 				complete, authorizeErr = prepared.AuthorizeSandboxWorkloadCreate(ctx)
 			}
@@ -116,7 +118,13 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 			return err
 		} else {
 			if workload {
-				if err := prepared.AuthorizeSandboxApply(ctx); err != nil {
+				var err error
+				if object.GetKind() == "Deployment" {
+					err = prepared.AuthorizeSandboxAuxiliaryApply(ctx, *object)
+				} else {
+					err = prepared.AuthorizeSandboxApply(ctx)
+				}
+				if err != nil {
 					return err
 				}
 			}

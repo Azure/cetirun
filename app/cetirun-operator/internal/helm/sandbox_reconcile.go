@@ -188,8 +188,8 @@ func (p *PreparedRelease) CheckSandboxApply(ctx context.Context) error {
 	return p.sandboxPreflight(ctx)
 }
 
-// AuthorizeSandboxRender fences manifest delivery without declaring that a
-// workload write was submitted. Each workload still needs AuthorizeSandboxApply.
+// AuthorizeSandboxRender fences manifest delivery without declaring a primary
+// workload submission.
 func (p *PreparedRelease) AuthorizeSandboxRender(ctx context.Context) error {
 	if p == nil || p.sandboxReconcile == nil || p.sandboxRenderGuard == nil || p.sealedInput != p.inputDigest() {
 		return fmt.Errorf("Sandbox render requires unchanged current render and controller authority")
@@ -197,8 +197,21 @@ func (p *PreparedRelease) AuthorizeSandboxRender(ctx context.Context) error {
 	return p.sandboxRenderGuard(ctx)
 }
 
+// AuthorizeSandboxAuxiliaryApply fences an approved auxiliary without consuming
+// the primary HOME writer's non-submission proof. Cleanup still waits for it.
+func (p *PreparedRelease) AuthorizeSandboxAuxiliaryApply(ctx context.Context, object unstructured.Unstructured) error {
+	if p == nil || p.sandboxReconcile == nil || object.GetAPIVersion() != "apps/v1" || object.GetKind() != "Deployment" ||
+		object.GetNamespace() != p.sandboxReconcile.Namespace.Name ||
+		!slices.ContainsFunc(p.sandboxReconcile.Workloads, func(workload w.RenderedWorkload) bool {
+			return workload.Kind == "Deployment" && workload.Identity.Name == object.GetName()
+		}) {
+		return fmt.Errorf("Sandbox auxiliary apply requires its sealed workload identity")
+	}
+	return p.AuthorizeSandboxRender(ctx)
+}
+
 // AuthorizeSandboxApply rechecks authority and records submission intent before
-// an installer may write workloads. Opaque or earlier submissions remain submitted.
+// a primary or opaque workload apply. Earlier submissions remain submitted.
 func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
 	if p == nil || p.sandboxReconcile == nil || p.sandboxGuard == nil || p.sealedInput != p.inputDigest() {
 		return fmt.Errorf("Sandbox apply requires unchanged current render and controller authority")
@@ -206,8 +219,8 @@ func (p *PreparedRelease) AuthorizeSandboxApply(ctx context.Context) error {
 	return p.sandboxGuard(ctx)
 }
 
-// AuthorizeSandboxWorkloadCreate binds a definite non-creation result to this
-// submission. Callers without a rejection recorder retain the opaque barrier.
+// AuthorizeSandboxWorkloadCreate binds a definite primary non-creation result to
+// this submission. Callers without a rejection recorder retain the opaque barrier.
 func (p *PreparedRelease) AuthorizeSandboxWorkloadCreate(ctx context.Context) (func(error) error, error) {
 	if p == nil || p.sandboxReconcile == nil || p.sandboxGuard == nil || p.sealedInput != p.inputDigest() {
 		return nil, fmt.Errorf("Sandbox workload creation requires current render and controller authority")

@@ -249,8 +249,8 @@ Removed or never-created auxiliary Deployments still require their ReplicaSets
 and namespace Pods to be absent. Their absence does not replace the main HOME
 workload's acknowledged shutdown.
 A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
-StatefulSet shutdown acknowledgement, but only before any workload write is submitted
-or after a fenced definitive rejection of the first workload CREATE, and after
+StatefulSet shutdown acknowledgement, but only before the primary workload write is submitted
+or after a fenced definitive rejection of the first primary CREATE, and after
 ordinary namespace/Pod cleanup checks. Its expectation is first persisted
 as initializing, before the grant journal, and becomes pending only after the
 empty journal is confirmed. Publication retries, including lost acknowledgements,
@@ -262,22 +262,27 @@ checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
 Helm configuration and history reads recheck current authority without marking
 submission. The post-renderer claims the expectation resource version and
-rechecks authority, but leaves a first workload pending. Helm's guarded writer
-records submission immediately before each StatefulSet or Deployment CREATE,
-or before an update batch containing workloads. A first-install binding rejection
+rechecks authority, but leaves a first primary workload pending. Helm's guarded writer
+records primary submission immediately before a StatefulSet CREATE or update,
+or before an opaque apply that may contain the primary workload. An approved
+auxiliary Deployment CREATE or update takes its own conditional render claim
+without consuming the primary's non-submission proof. A first-install binding rejection
 before that boundary can therefore cancel the pending workload and recover through
 normal retry or deletion. Grant submissions remain independently tracked: an
 uncertain binding CREATE still blocks cleanup even when no workload was submitted.
-If bindings succeed but the first workload CREATE receives a definitive API
+If bindings or Copilot's auxiliary creation succeed but the first primary CREATE receives a definitive API
 rejection, the writer records non-creation against the exact submitted
 expectation UID/resourceVersion. Normal retry and deletion can then revoke the
 grants and release the reservation without waiting for a nonexistent StatefulSet.
+An existing or uncertain auxiliary still requires ordinary controller,
+ReplicaSet and Pod quiescence; primary cancellation cannot skip those checks.
 The same CREATE boundary applies when Helm uses its update path, including
 retries whose failed release history declares a workload that was never created.
 The durable controller checkpoint, not a historical manifest or current absence,
 decides whether this is still the first unobserved submission. Earlier workload
-submissions remain opaque. Guarded CREATEs do not follow HTTP Retry-After
-responses. Timeouts, lost responses, earlier workload submissions and update batches remain uncertain;
+submissions remain opaque. Existing submitted checkpoints are not reclassified
+from workload absence. Guarded CREATEs do not follow HTTP Retry-After
+responses. Primary timeouts, lost responses, earlier submissions and opaque update batches remain uncertain;
 a later rejection cannot cancel them. A competing claim or replacement
 expectation also prevents a stale rejection recorder from cancelling current work.
 Cancellation and workload submission compete through conditional state writes;
