@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { approvedResources } from "./pi-resources.mjs";
 import { gatewayAccess, gatewayConfiguration, gatewayCredentials, GATEWAY_PROVIDER } from "./gateway-runtime.mjs";
+import { RunError } from "./run-error.mjs";
 
 export const PROVIDER = "github-copilot";
 export const PI_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
@@ -144,10 +145,10 @@ async function runHTTPPrompt(session, prompt, signal, onText) {
     signal.throwIfAborted();
     await session.prompt(prompt);
     signal.throwIfAborted();
-    if (limitExceeded) throw new Error("Example tool budget exceeded");
+    if (limitExceeded) throw new RunError("tool_budget_exceeded");
     const last = session.messages.findLast((message) => message.role === "assistant");
-    if (!last || ["error", "aborted"].includes(last.stopReason)) throw new Error("Pi run did not complete");
-    return { text: session.getLastAssistantText() ?? "", toolCalls };
+    if (!last || !["stop", "length"].includes(last.stopReason)) throw new RunError("run_failed");
+    return { text: session.getLastAssistantText() ?? "", toolCalls, finishReason: last.stopReason };
   } finally {
     signal.removeEventListener("abort", abort);
     unsubscribe();

@@ -198,13 +198,15 @@ export async function sendChat(
           return finish;
         }
         const value = JSON.parse(data);
-        if (value.error)
+        if (value.error) {
+          const reported = value.error.code === "agent_reported_error";
           throw new ChatError(
-            "The response was interrupted. The Agent may still be running.",
-            value.error.code === "agent_reported_error"
-              ? "agent_reported_error"
-              : "agent_stream_interrupted",
+            reported
+              ? "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be replayed."
+              : "The response was interrupted. The Agent may still be running.",
+            reported ? "agent_reported_error" : "agent_stream_interrupted",
           );
+        }
         if (
           !Array.isArray(value.choices) ||
           value.choices.length !== 1 ||

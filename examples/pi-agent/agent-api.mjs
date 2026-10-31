@@ -3,6 +3,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createHTTPServer, readJSON, writeJSON } from "./http.mjs";
+import { RunError } from "./run-error.mjs";
 
 const CHAT_TIMEOUT_MS = 120_000;
 const OUTPUT_LIMIT = 4 * 1024 * 1024;
@@ -84,7 +85,8 @@ async function handleChat(request, response, runtime, activity, runs) {
 
   activity.chat = true;
   const controller = new AbortController();
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(CHAT_TIMEOUT_MS)]);
+  const deadline = AbortSignal.timeout(CHAT_TIMEOUT_MS);
+  const signal = AbortSignal.any([controller.signal, deadline]);
   runs.add(controller);
   const disconnected = () => {
     if (!response.writableEnded) controller.abort();
@@ -105,25 +107,31 @@ async function handleChat(request, response, runtime, activity, runs) {
       onText: stream ? (text) => stream.chunk({ content: text }) : undefined,
     });
     signal.throwIfAborted();
+    const finishReason = result.finishReason ?? "stop";
+    if (!["stop", "length", "content_filter"].includes(finishReason)) throw new RunError("run_failed");
     if (stream) {
-      stream.chunk({}, "stop");
+      stream.chunk({}, finishReason);
       signal.throwIfAborted();
       response.end("data: [DONE]\n\n");
     } else {
-      if (Buffer.byteLength(result.text) > OUTPUT_LIMIT) throw new Error("Output limit exceeded");
+      if (Buffer.byteLength(result.text) > OUTPUT_LIMIT) throw new RunError("output_limit_exceeded");
       writeJSON(response, 200, {
         ...completion,
         object: "chat.completion",
         choices: [{
           index: 0,
           message: { role: "assistant", content: result.text },
-          finish_reason: "stop",
+          finish_reason: finishReason,
         }],
       });
     }
-  } catch {
-    if (response.headersSent) response.destroy();
-    else writeJSON(response, 502, { error: { message: "Pi run failed or model access is unavailable" } });
+  } catch (error) {
+    const failure = deadline.aborted ? new RunError("deadline_exceeded")
+      : signal.reason instanceof RunError ? signal.reason
+      : error instanceof RunError ? error : new RunError("run_failed");
+    const body = { error: { code: failure.code, message: new RunError(failure.code).message } };
+    if (stream) stream.fail(body);
+    else if (!response.destroyed) writeJSON(response, deadline.aborted ? 504 : 502, body);
   } finally {
     stream?.close();
     activity.chat = false;
@@ -134,14 +142,16 @@ async function handleChat(request, response, runtime, activity, runs) {
 
 function startStream(response, completion, controller, signal) {
   let outputBytes = 0;
-  const write = (event) => {
-    if (response.destroyed || response.writableEnded || signal.aborted) return;
-    outputBytes += Buffer.byteLength(event);
-    if (outputBytes > OUTPUT_LIMIT || response.writableLength > STREAM_BUFFER_LIMIT) {
-      controller.abort();
-      return;
+  const write = (event, terminal = false) => {
+    if (response.destroyed || response.writableEnded || signal.aborted && !terminal) return false;
+    const bytes = Buffer.byteLength(event);
+    if (outputBytes + bytes > OUTPUT_LIMIT || response.writableLength + bytes > STREAM_BUFFER_LIMIT) {
+      controller.abort(new RunError("output_limit_exceeded"));
+      return false;
     }
+    outputBytes += bytes;
     response.write(event);
+    return true;
   };
   const chunk = (delta, finishReason = null) => {
     const data = JSON.stringify({
@@ -166,5 +176,12 @@ function startStream(response, completion, controller, signal) {
   };
   signal.addEventListener("abort", close, { once: true });
   if (signal.aborted) close();
-  return { chunk, close };
+  return {
+    chunk, close,
+    fail(body) {
+      close();
+      if (write(`data: ${JSON.stringify(body)}\n\n`, true)) response.end();
+      else response.destroy();
+    },
+  };
 }

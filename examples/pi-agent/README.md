@@ -25,6 +25,15 @@ from native TUI history. Automatic model retries and compaction are disabled.
 Streaming responses send bounded SSE keepalives every 15 seconds during silent
 model prefill or tool work. The two-minute task deadline, cancellation and output
 limits still apply; keepalives do not extend a task or replay a request.
+If a run fails after streaming starts, the adapter sends one bounded, redacted
+SSE error and ends the response without a successful finish or `[DONE]`.
+Error codes distinguish `tool_budget_exceeded`, `deadline_exceeded`,
+`output_limit_exceeded` and `run_failed`. If the client has disconnected or
+there is no output capacity, the connection can still end without that event.
+Earlier tool actions may have completed; do not replay the request to find out.
+Portal Chat records a reported error as failed, not as an unknown transport
+interruption. A model response that reaches its output-token limit keeps
+`finish_reason: length`; it is not a successfully completed answer.
 See the [Custom Agent contract](../../docs/agent-harness-contract.md) for the
 platform requirements beyond this example.
 
@@ -35,6 +44,7 @@ platform requirements beyond this example.
 | [server.mjs](server.mjs) | Image entrypoint: start the API and private auth listener; stop them on shutdown. |
 | [agent-api.mjs](agent-api.mjs) | HTTP contract, input validation, streaming, limits and cancellation. |
 | [pi-runtime.mjs](pi-runtime.mjs) | Pi SDK sessions, model discovery and tool execution. |
+| [run-error.mjs](run-error.mjs) | Fixed error codes and messages shared by the runtime and HTTP adapter; no provider text is returned. |
 | [gateway-runtime.mjs](gateway-runtime.mjs) | Model discovery and requests through the platform AI Gateway, with memory-only credentials and no automatic retries. |
 | [connections-runtime.mjs](connections-runtime.mjs) | Lazy native MCP client with rotating workload proof, explicit TLS trust, bounded requests and no automatic replay. |
 | [pi-resources.mjs](pi-resources.mjs) | Load the common `$HOME/.agents` view and connect Memory through the Pi SDK. |

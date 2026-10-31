@@ -14,6 +14,7 @@
 #   - For each package, install into NPM_CACHE_DIR/<dir>/, then copy
 #     node_modules/<pkg-name>/ to SKILLS_DIR/<dir>/.
 #   - Idempotent: <dir>/.installed-version stores the requested spec; skipped if matches.
+#   - Copies and completion markers are staged before replacing the installed directory.
 #   - Prunes <dir> entries no longer in the requested list.
 #   - Per-package failures are recorded; script exits non-zero if any failed.
 set -u
@@ -118,11 +119,23 @@ for spec in $NPM_PACKAGES; do
     continue
   fi
 
-  rm -rf "$target"
-  mkdir -p "$target"
-  # cp -a preserves attrs; trailing /. copies dir contents into target.
-  cp -a "$src/." "$target/"
-  printf '%s\n' "$spec" > "$marker"
+  stage=$(mktemp -d "$SKILLS_DIR/.stage.XXXXXX") || {
+    echo "[init-skills] FAILED staging $spec" | tee -a "$ERRORS_LOG"
+    fail_count=$((fail_count + 1))
+    continue
+  }
+  if ! cp -a "$src/." "$stage/" || ! rm -f "$stage/.installed-version" || ! printf '%s\n' "$spec" > "$stage/.installed-version"; then
+    echo "[init-skills] FAILED copying or recording $spec" | tee -a "$ERRORS_LOG"
+    rm -rf "$stage"
+    fail_count=$((fail_count + 1))
+    continue
+  fi
+  if ! rm -rf "$target" || ! mv -T "$stage" "$target"; then
+    echo "[init-skills] FAILED publishing $spec" | tee -a "$ERRORS_LOG"
+    rm -rf "$stage"
+    fail_count=$((fail_count + 1))
+    continue
+  fi
   echo "[init-skills] OK $spec"
 done
 

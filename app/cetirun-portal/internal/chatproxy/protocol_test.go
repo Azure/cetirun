@@ -101,6 +101,36 @@ func TestClientDoesNotFollowRedirectOrReplayPost(t *testing.T) {
 	}
 }
 
+func TestClientDistinguishesReportedFailureFromStreamLoss(t *testing.T) {
+	for _, reported := range []bool{false, true} {
+		t.Run(map[bool]string{false: "lost", true: "reported"}[reported], func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, textEvent)
+				if reported {
+					_, _ = io.WriteString(w, "data: {\"error\":{\"code\":\"tool_budget_exceeded\",\"message\":\"secret-sentinel\"}}\n\n")
+				}
+			}))
+			defer upstream.Close()
+			w := httptest.NewRecorder()
+			NewClient().Complete(context.Background(), w, Target{BaseURL: upstream.URL}, Request{Model: "agent", Stream: true}, "test")
+			body := w.Body.String()
+			if calls.Load() != 1 || strings.Contains(body, "secret-sentinel") || strings.Contains(body, "[DONE]") {
+				t.Fatalf("unexpected replay, disclosure or completion: %s", body)
+			}
+			if reported {
+				if !strings.Contains(body, `"code":"agent_reported_error"`) || !strings.Contains(body, "Earlier tool actions may have completed") || strings.Contains(body, "may still be running") {
+					t.Fatalf("reported failure treated as unknown transport loss: %s", body)
+				}
+			} else if !strings.Contains(body, `"code":"agent_stream_interrupted"`) || !strings.Contains(body, "may still be running") {
+				t.Fatalf("stream loss lost its uncertainty: %s", body)
+			}
+		})
+	}
+}
+
 func TestClientModelsAndCancellation(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan struct{})

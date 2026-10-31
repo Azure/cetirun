@@ -164,10 +164,12 @@ func (c *Client) Complete(ctx context.Context, w http.ResponseWriter, target Tar
 	}
 	if err := stream(res.Body, writer, requestID, request.Model); err != nil {
 		code := "agent_stream_interrupted"
+		message := "The response did not complete. The Agent may still be running."
 		if errors.Is(err, ErrAgent) {
 			code = "agent_reported_error"
+			message = "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be replayed."
 		}
-		_ = writer.write("data: {\"error\":{\"code\":\"" + code + "\",\"message\":\"The response did not complete. The Agent may still be running.\"}}\n\n")
+		_ = writer.write("data: {\"error\":{\"code\":\"" + code + "\",\"message\":\"" + message + "\"}}\n\n")
 	}
 }
 
