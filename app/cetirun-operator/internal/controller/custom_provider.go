@@ -15,6 +15,7 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/egresscapture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,13 +30,19 @@ import (
 
 // This is operator configuration, never a tenant Agent/Helm override.
 type CustomRuntimeConfig struct {
-	Enabled        bool              `json:"enabled"`
-	ApprovedImages []string          `json:"approvedImages"`
-	StorageClass   string            `json:"storageClass"`
-	StorageSize    string            `json:"storageSize"`
-	AccessMode     string            `json:"accessMode"`
-	FSGroup        int64             `json:"fsGroup"`
-	Context        map[string]string `json:"context"`
+	Enabled        bool                       `json:"enabled"`
+	ApprovedImages []string                   `json:"approvedImages"`
+	ImageUsers     map[string]CustomImageUser `json:"imageUsers,omitempty"`
+	StorageClass   string                     `json:"storageClass"`
+	StorageSize    string                     `json:"storageSize"`
+	AccessMode     string                     `json:"accessMode"`
+	FSGroup        int64                      `json:"fsGroup"`
+	Context        map[string]string          `json:"context"`
+}
+
+type CustomImageUser struct {
+	UID int64 `json:"uid"`
+	GID int64 `json:"gid"`
 }
 
 func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
@@ -57,6 +64,15 @@ func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
 	for _, image := range cfg.ApprovedImages {
 		if !digest.MatchString(image) {
 			return cfg, fmt.Errorf("Custom approvedImages must use immutable sha256 references")
+		}
+	}
+	if len(cfg.ImageUsers) > len(cfg.ApprovedImages) {
+		return cfg, fmt.Errorf("Custom image users require existing image approvals")
+	}
+	for image, user := range cfg.ImageUsers {
+		if !slices.Contains(cfg.ApprovedImages, image) || user.UID < 1 || user.GID < 1 ||
+			user.UID == egresscapture.ProxyUID || user.UID > 2147483647 || user.GID > 2147483647 {
+			return cfg, fmt.Errorf("Custom image users require approved images and non-root numeric identities distinct from the proxy")
 		}
 	}
 	if cfg.FSGroup < 1 || cfg.FSGroup > 2147483647 {
@@ -112,6 +128,17 @@ func (p *KubernetesCustomBindings) authorize(instance *api.Agent) error {
 func (p *KubernetesCustomBindings) UsesAIGateway(instance *api.Agent) bool {
 	return p.config.Enabled && instance.Spec.Agent.Type == api.AgentTypeCustom && instance.Spec.Agent.Image != nil &&
 		slices.Contains(p.config.ApprovedImages, *instance.Spec.Agent.Image)
+}
+
+func (p *KubernetesCustomBindings) ImageUser(instance *api.Agent) (CustomImageUser, error) {
+	if err := p.authorize(instance); err != nil {
+		return CustomImageUser{}, err
+	}
+	user, present := p.config.ImageUsers[*instance.Spec.Agent.Image]
+	if !present || user.UID < 1 || user.GID < 1 {
+		return CustomImageUser{}, fmt.Errorf("Custom FQDN capture requires the approved image's numeric UID/GID")
+	}
+	return user, nil
 }
 
 func objectReference(obj client.Object) runtimebindings.ObjectReference {

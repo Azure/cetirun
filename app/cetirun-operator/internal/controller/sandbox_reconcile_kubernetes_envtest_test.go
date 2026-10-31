@@ -42,7 +42,12 @@ func newKubernetesAccessAPIHarness(t *testing.T, kind string) *nativeStartAPIHar
 
 func newUnreconciledKubernetesAccessAPIHarness(t *testing.T, kind string) *nativeStartAPIHarness {
 	t.Helper()
-	h := newNativeStartAPIHarnessForAgent(t, true, true, corev1.ReadWriteOnce, kind)
+	return newUnreconciledKubernetesAccessAPIHarnessWithRuntime(t, kind, api.SandboxKata)
+}
+
+func newUnreconciledKubernetesAccessAPIHarnessWithRuntime(t *testing.T, kind string, backend api.SandboxType) *nativeStartAPIHarness {
+	t.Helper()
+	h := newNativeStartAPIHarnessWithRuntime(t, true, true, corev1.ReadWriteOnce, kind, backend, nil, api.AgentPolicyNetwork{})
 	configureReconciledKubernetesAccess(t, h.r, h.admin, h.agent.Name, "policy-example")
 	configuration := &corev1.ConfigMap{}
 	if err := h.admin.Get(h.ctx, client.ObjectKey{Namespace: h.r.OperatorNamespace, Name: "sandbox-platform"}, configuration); err != nil {
@@ -53,9 +58,9 @@ func newUnreconciledKubernetesAccessAPIHarness(t *testing.T, kind string) *nativ
 	if err := json.Unmarshal([]byte(approved), &document); err != nil {
 		t.Fatal(err)
 	}
-	platform := document.Platforms[api.SandboxKata]
+	platform := document.Platforms[backend]
 	platform.Identities = nil
-	document.Platforms[api.SandboxKata] = platform
+	document.Platforms[backend] = platform
 	raw, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -94,9 +99,21 @@ func newUnreconciledKubernetesAccessAPIHarness(t *testing.T, kind string) *nativ
 }
 
 func TestReconciledSandboxKubernetesAccessAPIServer(t *testing.T) {
+	testReconciledSandboxKubernetesAccessAPIServer(t, api.SandboxKata)
+}
+
+func TestContainerSandboxKubernetesAccessAPIServer(t *testing.T) {
+	testReconciledSandboxKubernetesAccessAPIServer(t, api.SandboxContainer)
+}
+
+func testReconciledSandboxKubernetesAccessAPIServer(t *testing.T, backend api.SandboxType) {
+	t.Helper()
 	for _, kind := range []string{"openclaw", "hermes"} {
 		t.Run(kind, func(t *testing.T) {
-			h := newKubernetesAccessAPIHarness(t, kind)
+			h := newUnreconciledKubernetesAccessAPIHarnessWithRuntime(t, kind, backend)
+			for range 6 {
+				h.reconcileOK(t)
+			}
 			before := reconciledExpectationForTest(t, h.nativeSandboxFixture)
 			bindings := assertKubernetesFixtureGrants(t, h.nativeSandboxFixture, true)
 			identity := &corev1.ServiceAccount{}

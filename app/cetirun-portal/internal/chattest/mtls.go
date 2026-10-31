@@ -34,6 +34,14 @@ func MTLSObjects(t *testing.T) (*api.Agent, []client.Object) {
 	if err := json.Unmarshal(compiledMTLS, &compiled); err != nil {
 		t.Fatal(err)
 	}
+	var ingress struct {
+		ChatClients []struct {
+			Secret map[string]any `json:"secret"`
+		} `json:"chatClients"`
+	}
+	if err := json.Unmarshal(compiled.CustomIngressTLS, &ingress); err != nil {
+		t.Fatal(err)
+	}
 	agent, objects := Objects()
 	agent.Spec.SandboxRef = "sandbox-example"
 	agent.Status.Sandbox = &api.SandboxStatus{
@@ -81,6 +89,13 @@ func MTLSObjects(t *testing.T) (*api.Agent, []client.Object) {
 			"uid": agent.UID, "generation": agent.Generation, "intentDigest": intent}},
 		"controls": compiled.Controls, "customIngressTLS": compiled.CustomIngressTLS,
 	}
+	sources := expected["sources"].([]any)
+	for _, approved := range ingress.ChatClients {
+		source := maps.Clone(approved.Secret)
+		source["apiVersion"], source["kind"] = "v1", "Secret"
+		sources = append(sources, source)
+	}
+	expected["sources"] = sources
 	raw, err := json.Marshal(expected)
 	if err != nil {
 		t.Fatal(err)

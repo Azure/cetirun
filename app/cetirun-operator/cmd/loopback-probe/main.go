@@ -75,17 +75,28 @@ func run(arguments []string) error {
 	flags.SetOutput(io.Discard)
 	endpoint := flags.String("url", "", "")
 	serverName := flags.String("mtls-server-name", "", "")
-	if err := flags.Parse(arguments); err != nil || *endpoint == "" || flags.NArg() != 0 {
-		return errors.New("usage: http-probe --url http://127.0.0.1:PORT/PATH")
+	egress := flags.Bool("egress-sni", false, "")
+	if err := flags.Parse(arguments); err != nil || *endpoint == "" && !*egress || flags.NArg() != 0 {
+		return errors.New("usage: http-probe [--url http://127.0.0.1:PORT/PATH] [--egress-sni] [--mtls-server-name NAME]")
 	}
-	if err := probe(*endpoint); err != nil {
-		return err
+	if os.Getenv("CETIRUN_EGRESS_SNI") == "true" && !*egress {
+		return errors.New("egress health requires an explicit managed-proxy probe")
+	}
+	if os.Getenv("CETIRUN_INGRESS_MTLS") == "true" && *serverName == "" {
+		return errors.New("mTLS health requires an explicit approved server name")
+	}
+	if *endpoint != "" {
+		if err := probe(*endpoint); err != nil {
+			return err
+		}
+	}
+	if *egress {
+		if err := probe("http://127.0.0.1:15440/ready"); err != nil {
+			return err
+		}
 	}
 	if *serverName != "" {
 		return probeIngress(*serverName)
-	}
-	if os.Getenv("CETIRUN_INGRESS_MTLS") == "true" {
-		return errors.New("mTLS health requires an explicit approved server name")
 	}
 	return nil
 }

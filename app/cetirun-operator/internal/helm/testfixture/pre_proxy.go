@@ -62,7 +62,7 @@ var laterAdditions = map[string][]string{
                 },
                 "terminal": {
                     "type": "object", "additionalProperties": false,
-                    "properties": {"enabled": {"type": "boolean"}, "image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"}, "port": {"type": "integer", "minimum": 1024, "maximum": 65535}, "sessionSeconds": {"type": "integer", "minimum": 60, "maximum": 3600}, "serviceAccountName": {"type": "string", "minLength": 1}, "tlsContainer": {"type": "object"}, "tlsVolumes": {"type": "array", "items": {"type": "object"}}},
+                    "properties": {"enabled": {"type": "boolean"}, "image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"}, "port": {"type": "integer", "minimum": 1024, "maximum": 65535}, "sessionSeconds": {"type": "integer", "minimum": 60, "maximum": 3600}, "serviceAccountName": {"type": "string", "minLength": 1}, "tlsContainer": {"type": "object"}, "tlsConfigDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "tlsVolumes": {"type": "array", "items": {"type": "object"}}},
                     "required": ["enabled", "image", "port", "sessionSeconds", "serviceAccountName"]
                 },
 `, `                "portalSignIn": {

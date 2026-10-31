@@ -69,6 +69,9 @@ spec:
     spec:
       {{- include "cetirun.platform.podSettings" . | nindent 6 }}
       initContainers:
+        {{- with $s.managedInitContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- include "cetirun.memory.init" . | nindent 8 }}
         - name: init-home-data
           image: {{ $r.agent.image | quote }}
@@ -122,7 +125,7 @@ spec:
               mountPath: /opt/cetirun-memory
               readOnly: true
             {{- end }}
-        {{- with $r.http }}
+        {{- with $s.loopbackProbe }}
         - name: install-loopback-probe
           image: {{ $s.loopbackProbe.image | quote }}
           imagePullPolicy: IfNotPresent
@@ -155,6 +158,10 @@ spec:
               {{- end }}
             {{- end }}
             {{- include "cetirun.memory.env" . | nindent 12 }}
+            {{- if $s.egressSNI }}
+            - name: CETIRUN_EGRESS_SNI
+              value: "true"
+            {{- end }}
             {{- if $s.ingressMTLS }}
             - name: CETIRUN_BIND_HOST
               value: "127.0.0.1"
@@ -185,13 +192,20 @@ spec:
           {{- with $r.http }}
           startupProbe:
             exec:
-              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .startupPath | quote }}{{ if $s.ingressMTLS }}, "--mtls-server-name", {{ $s.ingressServerName | quote }}{{ end }}]
+              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .startupPath | quote }}{{ if $s.ingressMTLS }}, "--mtls-server-name", {{ $s.ingressServerName | quote }}{{ end }}{{ if $s.egressSNI }}, "--egress-sni"{{ end }}]
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 60
           readinessProbe:
             exec:
-              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .healthPath | quote }}{{ if $s.ingressMTLS }}, "--mtls-server-name", {{ $s.ingressServerName | quote }}{{ end }}]
+              command: ["/cetirun-probe/http-probe", "--url", {{ printf "http://127.0.0.1:%v%s" $r.agent.port .healthPath | quote }}{{ if $s.ingressMTLS }}, "--mtls-server-name", {{ $s.ingressServerName | quote }}{{ end }}{{ if $s.egressSNI }}, "--egress-sni"{{ end }}]
+            periodSeconds: 10
+            timeoutSeconds: 3
+          {{- end }}
+          {{- if and (not $r.http) $s.egressSNI }}
+          readinessProbe:
+            exec:
+              command: ["/cetirun-probe/http-probe", "--egress-sni"]
             periodSeconds: 10
             timeoutSeconds: 3
           {{- end }}
@@ -220,7 +234,7 @@ spec:
               mountPath: {{ printf "%s/.agents" $r.agent.home | quote }}
               subPath: current
               readOnly: true
-            {{- with $r.http }}
+            {{- with $s.loopbackProbe }}
             - name: loopback-probe
               mountPath: /cetirun-probe
               readOnly: true
@@ -250,7 +264,7 @@ spec:
         - name: context-view
           emptyDir:
             sizeLimit: {{ $s.scratchSizeLimit | quote }}
-        {{- with $r.http }}
+        {{- with $s.loopbackProbe }}
         - name: loopback-probe
           emptyDir:
             sizeLimit: {{ $s.scratchSizeLimit | quote }}

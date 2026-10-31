@@ -49,9 +49,10 @@ their existing role-specific contracts. Container supports the same opt-in
 [managed ingress mTLS](../../site/content/en/docs/guides/agent-ingress-mtls.md)
 as Kata: register `Capabilities.mutualTLS: true` and the approved endpoint,
 Gateway and per-Agent certificate identities under `platforms.container.ingressMTLS`.
-Missing or changed approvals fail closed. This does **not** add FQDN blocking,
-Entra identity or Kubernetes grants: keep those capability flags false,
-along with `enforcementObservation` and `restrictiveFailure`.
+Missing or changed approvals fail closed. Observed-SNI blocking, Entra projection
+and Kubernetes grants require their separate common-adapter registrations and
+approvals under the `container` key; mTLS does not grant them. Keep
+`enforcementObservation` and `restrictiveFailure` false.
 
 The [offline checks](../../DEVELOPMENT.md) use synthetic platform observations.
 Live Kata and ordinary-container acceptance, CSI file retention, actual Gateway
@@ -207,8 +208,10 @@ support; an RWOP probe result alone does not justify adding it to the registrati
 
 ## Kubernetes API access
 
-New common-executor Kata OpenClaw and Hermes Agents support
+New common-executor Kata and container OpenClaw and Hermes Agents support
 `AgentPolicy.spec.kubernetesAccess` with either registered HOME access mode.
+The examples below use `kata`; use the corresponding `container` registration
+and platform keys for an independently qualified ordinary-container backend.
 Retained single-start (`v1`) lifetimes still reject Kubernetes access. This is
 Kubernetes ServiceAccount authorization, not Entra ID, Agent Identity, Broker
 or Connections support.

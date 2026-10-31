@@ -118,11 +118,11 @@ bounds, security, DNS, approved peers and the Cilium policy come from the select
 Sandbox and AgentPolicy. Per-instance resource or scheduling values cannot
 override those controls.
 
-Headless Agents have a portless governing Service and no HTTP probes. HTTP Chat
+Headless Agents have a portless governing Service and no application HTTP probes. HTTP Chat
 and Web UI retain their explicit port and `/healthz` contract. The platform's
 static loopback probe requires no curl, Node or Python in the main image.
 Configure an immutable `ttyd.image` digest in the Operator's `cetirun` runtime
-values for HTTP probing, even if `ttyd.enabled` is false. This helper is packaged
+values for HTTP or observed-SNI probing, even if `ttyd.enabled` is false. This helper is packaged
 with `cetirun-terminal`; the image must be available to the target nodes.
 
 The optional terminal uses the same pinned image and the registered
@@ -177,12 +177,46 @@ DNS/API egress. Private Portal Chat needs its own approved client credential;
 it must not borrow the Gateway private key. See
 [Custom mTLS setup](../../guides/agent-ingress-mtls/#custom-http-and-terminal).
 
+#### Governed observed-SNI capture
+
+Custom Chat, Web UI and headless workloads can use `blockedFQDNs` on either
+Kata or container after the platform registers the common capture adapter.
+Gateway image approval alone is insufficient: the administrator must also
+approve the immutable image's numeric user and group in the Operator chart.
+For example, using a synthetic image digest:
+
+```yaml
+customRuntime:
+  imageUsers:
+    "registry.example.com/pi@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":
+      uid: 1024
+      gid: 1024
+```
+
+The image must already be in `approvedImages`. Verify its actual intended
+UID/GID before adding it; both must be positive 32-bit integers, and UID 1337
+is reserved for the proxy. The Pod runs the image's existing entrypoint under
+this explicitly approved identity so it cannot use the proxy's capture bypass.
+Missing approval fails closed. Images without FQDN capture keep their existing
+image-owned identity.
+
+Capture uses the exact managed proxy and trusted initializer before the
+application's normal initialization. HTTP probes require both application and
+proxy readiness. A headless capture workload checks only the managed proxy;
+it does not acquire an application port. Pin `ttyd.image` for that static
+probe even when the optional terminal is disabled.
+
+FQDN capture composes with separately approved Entra, Connections and HTTP
+mTLS. An enabled terminal retains its separate TLS configuration and DNS/API
+network policy, not the Agent's capture or model permissions. This is exact
+visible-SNI matching, not HTTPS decryption or an ECH guarantee.
+
 **Current boundaries:** this common Custom path does not support desktop.
 Headless images have no application HTTP endpoint and cannot request ingress
 mTLS; keep ingress disabled when no access surface is needed.
 Explicit unsupported requests fail closed; disabling policy is not a workaround.
-Scoped Kubernetes access and FQDN controls also require their separately
-delivered common adapters. Do not treat template, controller or local API-server
+Scoped Kubernetes access still requires its separate common-adapter
+authorization. Do not treat template, controller or local API-server
 tests as live image, model/tool, Cilium, CSI, identity-provider or fencing
 qualification. Deploy matching Operator, admission, Portal and runtime chart
 artifacts before enabling the path.

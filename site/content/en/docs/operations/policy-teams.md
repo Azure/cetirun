@@ -327,10 +327,16 @@ unchanged.
 
 ## What changes for Agents
 
-- Tailscale, Agent Identity and custom harnesses are not
-  available to Sandbox Agents.
+- Tailscale is not available to Sandbox Agents.
+- Custom harnesses, Entra projection and Agent Identity/Connections require the
+  separate approved-image and identity setup in the
+  [Custom contract](../../reference/agent-harness/#policy-governed-custom-execution);
+  the basic configuration above does not enable them.
 - Changing a Policy's model access, budget, network or security settings
   restarts its running Agents once. Changing only its request limits does not.
+- Concurrent updates to the shared native reservation use bounded retries for
+  definite Kubernetes resource-version conflicts. Each retry rereads the
+  authority; stopping/source conflicts and uncertain writes are not bypassed.
 - An Agent moves to another Team only when an administrator reauthorizes it
   with `kubectl`.
 

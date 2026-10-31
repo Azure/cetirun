@@ -157,6 +157,16 @@ func ManagedProxyResources(input CompileInput, ingress *ingressmtls.Plan, egress
 	if err != nil {
 		return nil, err
 	}
-	objects[0].Object["data"] = map[string]any{"envoy.json": string(bootstrap), "capture.sh": script}
+	data, _, err := unstructured.NestedStringMap(objects[0].Object, "data")
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		data = map[string]string{}
+	}
+	data["envoy.json"], data["capture.sh"] = string(bootstrap), script
+	if err := unstructured.SetNestedStringMap(objects[0].Object, data, "data"); err != nil {
+		return nil, err
+	}
 	return objects, nil
 }

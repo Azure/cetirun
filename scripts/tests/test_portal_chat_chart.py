@@ -42,6 +42,7 @@ class PortalChatChartTests(unittest.TestCase):
         roles = [value for value in objects if value["kind"] == "ClusterRole"]
         self.assertEqual(len(roles), 1)
         self.assertFalse(any("networkpolicies" in rule["resources"] for role in roles for rule in role["rules"]))
+        self.assertFalse(any(value["kind"] == "Role" and value["metadata"]["name"].endswith("-chat-mtls") for value in objects))
 
     def test_enabled_portal_has_scoped_reader_and_no_retry_route(self):
         objects = self.render(ROOT / "app/cetirun-portal/chart", {"istio": {"host": "portal.example.com"}, "chat": {"enabled": True, "identityRealm": "synthetic"}})
@@ -68,6 +69,13 @@ class PortalChatChartTests(unittest.TestCase):
         self.assertEqual(state_binding["metadata"]["namespace"], "cetirun-system")
         self.assertEqual(state_binding["subjects"], binding["subjects"])
         self.assertEqual(env["SANDBOX_STATE_NAMESPACE"], "cetirun-system")
+        tls_role = next(value for value in objects if value["kind"] == "Role" and value["metadata"]["name"] == "cetirun-portal-chat-mtls")
+        self.assertEqual(tls_role["metadata"]["namespace"], "test-platform")
+        self.assertEqual(tls_role["rules"], [{"apiGroups": ["networking.istio.io"], "resources": ["destinationrules"], "verbs": ["get"]}])
+        tls_binding = next(value for value in objects if value["kind"] == "RoleBinding" and value["metadata"]["name"] == tls_role["metadata"]["name"])
+        self.assertEqual(tls_binding["metadata"]["namespace"], "test-platform")
+        self.assertEqual(tls_binding["roleRef"], {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": tls_role["metadata"]["name"]})
+        self.assertEqual(tls_binding["subjects"], binding["subjects"])
 
     def test_explicit_state_namespace_is_bound_in_rbac_and_environment(self):
         objects = self.render(ROOT / "app/cetirun-portal/chart", {
@@ -79,6 +87,9 @@ class PortalChatChartTests(unittest.TestCase):
         readers = [value for value in objects if value["kind"] in {"Role", "RoleBinding"} and value["metadata"]["name"] == "cetirun-portal-chat-sandbox-state"]
         self.assertEqual(len(readers), 2)
         self.assertTrue(all(value["metadata"]["namespace"] == "operator-state" for value in readers))
+        tls_readers = [value for value in objects if value["kind"] in {"Role", "RoleBinding"} and value["metadata"]["name"] == "cetirun-portal-chat-mtls"]
+        self.assertEqual(len(tls_readers), 2)
+        self.assertTrue(all(value["metadata"]["namespace"] == "test-platform" for value in tls_readers))
 
     def test_enabled_portal_requires_identity_realm(self):
         error = self.render(ROOT / "app/cetirun-portal/chart", {"istio": {"host": "portal.example.com"}, "chat": {"enabled": True}}, success=False)

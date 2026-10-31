@@ -4,8 +4,10 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,6 +70,55 @@ func TestProbeCommandRejectsUnexpectedArgumentsAndDestinations(t *testing.T) {
 	for _, arguments := range [][]string{nil, {"--url"}, {"install", "/tmp/other"}, {"--url", "http://127.0.0.1:8080/healthz", "extra"}} {
 		if err := run(arguments); err == nil {
 			t.Fatalf("accepted invalid probe invocation %v", arguments)
+		}
+	}
+}
+
+func TestProbeRequiresExplicitEgressCheckWithOrWithoutMTLS(t *testing.T) {
+	t.Setenv("CETIRUN_EGRESS_SNI", "true")
+	for _, arguments := range [][]string{
+		{"--url", "http://127.0.0.1:8080/healthz"},
+		{"--url", "http://127.0.0.1:8080/healthz", "--mtls-server-name", "agent.example.com"},
+	} {
+		if err := run(arguments); err == nil || !strings.Contains(err.Error(), "explicit managed-proxy probe") {
+			t.Fatalf("missing egress probe did not fail before other health checks: %v", err)
+		}
+	}
+}
+
+func TestHeadlessAndHTTPProbeRequireManagedProxyReadiness(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:15440")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status atomic.Int32
+	status.Store(http.StatusOK)
+	proxy := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ready" {
+			t.Error("probe used a non-readiness proxy endpoint")
+		}
+		w.WriteHeader(int(status.Load()))
+	}))
+	proxy.Listener.Close()
+	proxy.Listener = listener
+	proxy.Start()
+	defer proxy.Close()
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer app.Close()
+	t.Setenv("CETIRUN_EGRESS_SNI", "true")
+	for _, arguments := range [][]string{
+		{"--egress-sni"},
+		{"--url", app.URL + "/healthz", "--egress-sni"},
+	} {
+		status.Store(http.StatusOK)
+		if err := run(arguments); err != nil {
+			t.Fatal("ready managed proxy did not satisfy the explicit probe:", err)
+		}
+		status.Store(http.StatusServiceUnavailable)
+		if err := run(arguments); err == nil {
+			t.Fatal("application HTTP success masked unavailable egress capture")
 		}
 	}
 }

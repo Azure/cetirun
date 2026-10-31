@@ -26,14 +26,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-func firstInstallKubernetesFixture(t *testing.T, kind string) *nativeSandboxFixture {
+func firstInstallKubernetesFixture(t *testing.T, kind string, setup ...func(*AgentReconciler, client.Client)) *nativeSandboxFixture {
 	t.Helper()
 	input := testfixture.New(kind)
-	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false,
-		withReconciledCoordination(t), func(r *AgentReconciler, author client.Client) {
-			configureReconciledKubernetesAccess(t, r, author, input.Agent.Name, input.Policy.Name)
-			installKubernetesFixtureCA(t, r, author, input.Agent.Name)
-		})
+	setup = append([]func(*AgentReconciler, client.Client){withReconciledCoordination(t)}, setup...)
+	setup = append(setup, func(r *AgentReconciler, author client.Client) {
+		configureReconciledKubernetesAccess(t, r, author, input.Agent.Name, input.Policy.Name)
+		installKubernetesFixtureCA(t, r, author, input.Agent.Name)
+	})
+	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false, setup...)
 	return f
 }
 

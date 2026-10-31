@@ -113,11 +113,22 @@ identity; the Agent server Secret's client trust must cover both approved
 client identities. Never copy the Gateway client key into the Portal.
 
 The Portal must use its existing Istio sidecar and configured SDS credential
-authorization. A per-Agent, workload-selected DestinationRule in the Portal
+authorization. Istio 1.30 checks namespace-wide `list` permission on Secrets
+for the Portal ServiceAccount; permission to `get` an individual Secret is
+not sufficient. Provision that authority explicitly in an appropriately
+isolated Portal credential namespace. The CetiRun chart does not grant it.
+A per-Agent, workload-selected DestinationRule in the Portal
 namespace originates mTLS for its existing private Chat route. It is exported
 only locally; the Portal process neither reads the key nor changes its HTTP
 protocol. Missing mesh/credentials cannot fall back to reachable plaintext.
 The compiler restricts Cilium to the corresponding TLS listener.
+
+Chat readiness checks that TLS listener rather than the application's
+loopback port, while retaining the original HTTP Service port and private
+route. The Portal verifies its current, owned DestinationRule against the
+approved execution expectation using namespace-local `get` permission. It
+does not read certificate Secrets. Missing or changed approvals, caller
+selectors, TLS controls or Service target ports keep Chat unavailable.
 
 These additional Secret sources use the existing namespace-scoped source-read
 grants and journal. The existing protected execution expectation carries a

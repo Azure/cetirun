@@ -134,14 +134,8 @@ func CheckRuntimeCapabilities(kind cetirunv1alpha1.SandboxType, capabilities Cap
 		if capabilities.Profile != ProfileNativeSingleStart {
 			errs = append(errs, field.Forbidden(root.Child("profile"), "container requires the native common executor"))
 		}
-		if capabilities.KubernetesAccess {
-			errs = append(errs, field.Forbidden(root.Child("kubernetesAccess"), "Kubernetes access is unsupported by the container backend"))
-		}
 		if !capabilities.PerContainerResourceLimits {
 			errs = append(errs, field.Required(root.Child("perContainerResourceLimits"), "container requires ordinary per-container resource limits"))
-		}
-		if capabilities.BlockedFQDNs {
-			errs = append(errs, field.Forbidden(root.Child("blockedFQDNs"), "observed-SNI blocking is not supported by native container"))
 		}
 	default:
 		errs = append(errs, field.NotSupported(field.NewPath("spec", "type"), kind, []string{"kata", "gvisor", "container"}))

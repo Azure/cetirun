@@ -155,10 +155,15 @@ func withObservedSNI(t *testing.T, kind string) func(*AgentReconciler, client.Cl
 		if err := json.Unmarshal([]byte(cm.Data[SandboxPlatformConfigurationKey]), &configuration); err != nil {
 			t.Fatal(err)
 		}
-		registration := configuration.Registrations[api.SandboxKata]
+		var boxes api.SandboxList
+		if err := kube.List(ctx, &boxes); err != nil || len(boxes.Items) != 1 {
+			t.Fatal("capture fixture requires one selected Sandbox:", err)
+		}
+		backend := boxes.Items[0].Spec.Type
+		registration := configuration.Registrations[backend]
 		registration.Capabilities.BlockedFQDNs = true
-		configuration.Registrations[api.SandboxKata] = registration
-		platform := configuration.Platforms[api.SandboxKata]
+		configuration.Registrations[backend] = registration
+		platform := configuration.Platforms[backend]
 		platform.EgressSNI = &egresscapture.Registration{
 			EnvoyImage: "registry.example.com/envoy@sha256:" + strings.Repeat("a", 64),
 			InitImage:  "registry.example.com/cetirun-base@sha256:" + strings.Repeat("b", 64),
@@ -166,7 +171,7 @@ func withObservedSNI(t *testing.T, kind string) func(*AgentReconciler, client.Cl
 		if platform.IngressMTLS != nil {
 			platform.EgressSNI.EnvoyImage = platform.IngressMTLS.Image
 		}
-		configuration.Platforms[api.SandboxKata] = platform
+		configuration.Platforms[backend] = platform
 		raw, err := json.Marshal(configuration)
 		if err != nil {
 			t.Fatal(err)

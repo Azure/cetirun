@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -113,6 +114,15 @@ func TestCommonCustomTerminalAPIServer(t *testing.T) {
 }
 
 func TestCommonCustomAPIServer(t *testing.T) {
+	testCommonCustomAPIServer(t, false)
+}
+
+func TestCommonCustomObservedSNIAPIServer(t *testing.T) {
+	testCommonCustomAPIServer(t, true)
+}
+
+func testCommonCustomAPIServer(t *testing.T, capture bool) {
+	t.Helper()
 	for _, backend := range []api.SandboxType{api.SandboxKata, api.SandboxContainer} {
 		for _, endpoint := range []string{"headless", "chat", "web-ui"} {
 			t.Run(string(backend)+"/"+endpoint, func(t *testing.T) {
@@ -133,6 +143,15 @@ func TestCommonCustomAPIServer(t *testing.T) {
 						t.Fatal("served Custom endpoint request:", err)
 					}
 				}
+				if capture {
+					withObservedSNI(t, "custom")(h.r, h.admin)
+					withApprovedCustomUser(t)(h.r, h.admin)
+					controller := &AgentPolicyReconciler{Client: h.kube, APIReader: h.admin,
+						Source: h.r.SandboxPreparation.Configuration, NativeExecution: true}
+					if _, err := controller.Reconcile(h.ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: "policy-example"}}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				h = startReconciledAPIHarness(t, h)
 				current := h.current(t)
 				if current.Spec.GatewayTokenSecretRef != "" {
@@ -142,8 +161,9 @@ func TestCommonCustomAPIServer(t *testing.T) {
 				workload := h.workload(t)
 				main := workload.Spec.Template.Spec.Containers[0]
 				if len(main.Command) != 0 || len(main.Args) != 0 || !ptr.Deref(main.SecurityContext.RunAsNonRoot, false) ||
-					main.SecurityContext.RunAsUser != nil {
-					t.Fatal("served Custom template changed the image entrypoint or inherited non-root UID")
+					(capture && ptr.Deref(main.SecurityContext.RunAsUser, 0) != 1024) ||
+					(!capture && main.SecurityContext.RunAsUser != nil) {
+					t.Fatal("served Custom template changed the image entrypoint or approved user contract")
 				}
 				secret := &corev1.Secret{}
 				if err := h.admin.Get(h.ctx, client.ObjectKey{

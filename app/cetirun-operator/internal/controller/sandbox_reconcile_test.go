@@ -91,20 +91,21 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 		annotations["meta.helm.sh/release-name"] = releaseName
 		annotations["meta.helm.sh/release-namespace"] = namespace
 		object.SetAnnotations(annotations)
-		if object.GetAPIVersion() == "apps/v1" && (object.GetKind() == "StatefulSet" || object.GetKind() == "Deployment") {
-			if err := prepared.AuthorizeSandboxApply(ctx); err != nil {
-				return err
-			}
-		}
+		workload := object.GetAPIVersion() == "apps/v1" && (object.GetKind() == "StatefulSet" || object.GetKind() == "Deployment")
 		current := &unstructured.Unstructured{}
 		current.SetGroupVersionKind(object.GroupVersionKind())
 		if err := i.kube.Get(ctx, client.ObjectKeyFromObject(object), current); apierrors.IsNotFound(err) {
 			var complete func(error) error
+			var authorizeErr error
 			if w.KubernetesBindingResource(*object) {
-				complete, err = prepared.AuthorizeSandboxBindingCreate(ctx, *object)
-				if err != nil {
-					return err
-				}
+				complete, authorizeErr = prepared.AuthorizeSandboxBindingCreate(ctx, *object)
+			} else if workload && object.GetKind() == "Deployment" {
+				authorizeErr = prepared.AuthorizeSandboxAuxiliaryApply(ctx, *object)
+			} else if workload {
+				complete, authorizeErr = prepared.AuthorizeSandboxWorkloadCreate(ctx)
+			}
+			if authorizeErr != nil {
+				return authorizeErr
 			}
 			err := i.kube.Create(ctx, object)
 			if complete != nil {
@@ -116,6 +117,17 @@ func (i *sharedSandboxInstaller) InstallOrUpgrade(namespace, releaseName string,
 		} else if err != nil {
 			return err
 		} else {
+			if workload {
+				var err error
+				if object.GetKind() == "Deployment" {
+					err = prepared.AuthorizeSandboxAuxiliaryApply(ctx, *object)
+				} else {
+					err = prepared.AuthorizeSandboxApply(ctx)
+				}
+				if err != nil {
+					return err
+				}
+			}
 			object.SetUID(current.GetUID())
 			object.SetResourceVersion(current.GetResourceVersion())
 			if err := i.kube.Update(ctx, object); err != nil {

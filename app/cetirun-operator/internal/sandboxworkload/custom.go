@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/egresscapture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
@@ -37,6 +38,8 @@ type LoopbackProbe struct {
 // CustomAgent is a Harness-validated contribution, not an arbitrary Pod spec.
 // Command and arguments remain owned by the approved image.
 type CustomAgent struct {
+	RunAsUser   *int64              `json:"runAsUser,omitempty"`
+	RunAsGroup  *int64              `json:"runAsGroup,omitempty"`
 	Image       string              `json:"image"`
 	Username    string              `json:"username"`
 	Home        string              `json:"home"`
@@ -95,11 +98,17 @@ func validateCustomAgent(input Input) error {
 		len(input.Context.Files) != 1 || input.Context.Files["AGENTS.md"] != "AGENTS.md" {
 		return fmt.Errorf("Custom requires typed AI Gateway and canonical context bindings")
 	}
-	if custom.HTTP != nil && (input.LoopbackProbe == nil || !terminalImage.MatchString(input.LoopbackProbe.Image)) {
-		return fmt.Errorf("Custom HTTP requires an immutable platform loopback probe image")
+	needsProbe := custom.HTTP != nil || input.Controls.EgressSNI != nil
+	if needsProbe && (input.LoopbackProbe == nil || !terminalImage.MatchString(input.LoopbackProbe.Image)) {
+		return fmt.Errorf("Custom HTTP or FQDN capture requires an immutable platform loopback probe image")
 	}
-	if custom.HTTP == nil && input.LoopbackProbe != nil {
+	if !needsProbe && input.LoopbackProbe != nil {
 		return fmt.Errorf("headless Custom cannot configure a loopback probe")
+	}
+	if input.Controls.EgressSNI != nil && (custom.RunAsUser == nil || custom.RunAsGroup == nil ||
+		*custom.RunAsUser < 1 || *custom.RunAsGroup < 1 || *custom.RunAsUser > 2147483647 ||
+		*custom.RunAsGroup > 2147483647 || *custom.RunAsUser == egresscapture.ProxyUID) {
+		return fmt.Errorf("Custom FQDN capture requires an approved non-root image identity distinct from the proxy")
 	}
 	return nil
 }
@@ -183,14 +192,21 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 	if plan := b.input.Controls.IngressMTLS; plan != nil {
 		serverName = plan.ServerName
 	}
+	egress := b.input.Controls.EgressSNI != nil
 	if custom.HTTP == nil {
-		if main.StartupProbe != nil || main.ReadinessProbe != nil || main.LivenessProbe != nil {
+		var readiness *corev1.Probe
+		if egress {
+			readiness = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+				Command: []string{"/cetirun-probe/http-probe", "--egress-sni"},
+			}}, PeriodSeconds: 10, TimeoutSeconds: 3}
+		}
+		if main.StartupProbe != nil || !equality.Semantic.DeepEqual(main.ReadinessProbe, readiness) || main.LivenessProbe != nil {
 			return fmt.Errorf("headless Custom cannot define HTTP probes")
 		}
-	} else if !customHTTPProbesMatch(main, custom.HTTP, *custom.Port, serverName) {
+	} else if !customHTTPProbesMatch(main, custom.HTTP, *custom.Port, serverName, egress) {
 		return fmt.Errorf("Custom probes differ from the Harness contract")
 	}
-	if custom.HTTP != nil {
+	if b.input.LoopbackProbe != nil {
 		probe := b.input.LoopbackProbe
 		index := slices.IndexFunc(spec.InitContainers, func(container corev1.Container) bool { return container.Name == "install-loopback-probe" })
 		if probe == nil || index < 0 || !equality.Semantic.DeepEqual(spec.InitContainers[index], corev1.Container{
@@ -206,7 +222,7 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 		{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
 		{Name: "context-view", MountPath: custom.Home + "/.agents", SubPath: "current", ReadOnly: true},
 	}
-	if custom.HTTP != nil {
+	if b.input.LoopbackProbe != nil {
 		mainMounts = append(mainMounts, corev1.VolumeMount{Name: "loopback-probe", MountPath: "/cetirun-probe", ReadOnly: true})
 	}
 	if memoryEnabled {
@@ -253,7 +269,7 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 		return fmt.Errorf("Custom context source differs from the controller snapshot")
 	}
 	names := []string{"context-view"}
-	if custom.HTTP != nil {
+	if b.input.LoopbackProbe != nil {
 		names = append(names, "loopback-probe")
 	}
 	for _, name := range names {
@@ -280,13 +296,16 @@ func customContainerPorts(ports []CustomPort) []corev1.ContainerPort {
 	return result
 }
 
-func customHTTPProbesMatch(container corev1.Container, http *CustomHTTP, port int32, serverName string) bool {
+func customHTTPProbesMatch(container corev1.Container, http *CustomHTTP, port int32, serverName string, egress bool) bool {
 	probe := func(path string, period, failures int32) *corev1.Probe {
 		command := []string{
 			"/cetirun-probe/http-probe", "--url", fmt.Sprintf("http://127.0.0.1:%d%s", port, path),
 		}
 		if serverName != "" {
 			command = append(command, "--mtls-server-name", serverName)
+		}
+		if egress {
+			command = append(command, "--egress-sni")
 		}
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: command}},
 			PeriodSeconds: period, TimeoutSeconds: 3, FailureThreshold: failures}

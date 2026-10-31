@@ -249,8 +249,9 @@ Removed or never-created auxiliary Deployments still require their ReplicaSets
 and namespace Pods to be absent. Their absence does not replace the main HOME
 workload's acknowledged shutdown.
 A fresh, durably recorded pre-submit checkpoint can be cancelled without a main
-StatefulSet shutdown acknowledgement, but only before any workload write is submitted and
-after ordinary namespace/Pod cleanup checks. Its expectation is first persisted
+StatefulSet shutdown acknowledgement, but only before the primary workload write is submitted
+or after a fenced definitive rejection of the first primary CREATE, and after
+ordinary namespace/Pod cleanup checks. Its expectation is first persisted
 as initializing, before the grant journal, and becomes pending only after the
 empty journal is confirmed. Publication retries, including lost acknowledgements,
 therefore retain the pre-submit evidence without inferring it from a missing
@@ -261,12 +262,29 @@ checkpoints still require acknowledged shutdown; a missing StatefulSet alone is
 not evidence that no workload was submitted.
 Helm configuration and history reads recheck current authority without marking
 submission. The post-renderer claims the expectation resource version and
-rechecks authority, but leaves a first workload pending. Helm's guarded writer
-records submission immediately before each StatefulSet or Deployment CREATE,
-or before an update batch containing workloads. A first-install binding rejection
+rechecks authority, but leaves a first primary workload pending. Helm's guarded writer
+records primary submission immediately before a StatefulSet CREATE or update,
+or before an opaque apply that may contain the primary workload. An approved
+auxiliary Deployment CREATE or update takes its own conditional render claim
+without consuming the primary's non-submission proof. A first-install binding rejection
 before that boundary can therefore cancel the pending workload and recover through
 normal retry or deletion. Grant submissions remain independently tracked: an
 uncertain binding CREATE still blocks cleanup even when no workload was submitted.
+If bindings or Copilot's auxiliary creation succeed but the first primary CREATE receives a definitive API
+rejection, the writer records non-creation against the exact submitted
+expectation UID/resourceVersion. Normal retry and deletion can then revoke the
+grants and release the reservation without waiting for a nonexistent StatefulSet.
+An existing or uncertain auxiliary still requires ordinary controller,
+ReplicaSet and Pod quiescence; primary cancellation cannot skip those checks.
+The same CREATE boundary applies when Helm uses its update path, including
+retries whose failed release history declares a workload that was never created.
+The durable controller checkpoint, not a historical manifest or current absence,
+decides whether this is still the first unobserved submission. Earlier workload
+submissions remain opaque. Existing submitted checkpoints are not reclassified
+from workload absence. Guarded CREATEs do not follow HTTP Retry-After
+responses. Primary timeouts, lost responses, earlier submissions and opaque update batches remain uncertain;
+a later rejection cannot cancel them. A competing claim or replacement
+expectation also prevents a stale rejection recorder from cancelling current work.
 Cancellation and workload submission compete through conditional state writes;
 no missing-resource observation can reset a submitted or older uncertain record.
 Competing claims fence stale writers, while lost workload-submission
@@ -493,7 +511,7 @@ requires the separate registration described below.
 
 ### Ordinary-container backend
 
-An explicit `Sandbox.spec.type: container` runs OpenClaw or Hermes in ordinary
+An explicit `Sandbox.spec.type: container` runs OpenClaw, Hermes or approved Custom images in ordinary
 containers (for example, runc), sharing the node kernel rather than a Kata VM.
 Omitted/null types still default to `kata`; gVisor's existing scope is unchanged.
 Container requires the same opt-in common executor, AgentPolicy/Team binding,
@@ -529,9 +547,11 @@ Container uses the same supported CIDR/port/ingress policy subset as native Kata
 Managed ingress mTLS uses the same approved endpoint and certificate contract
 described above; a runtime or capability flag alone does not authorize it.
 Generic Entra projection requires the separately approved bootstrap identity
-contract below. FQDN blocking and Kubernetes grants remain unsupported;
-their capability flags must stay `false`, as must `enforcementObservation` and
-`restrictiveFailure`.
+contract below. Observed-SNI blocking and Kubernetes grants use the common
+adapters, with their own explicit capability declarations and source approvals;
+neither is enabled merely by selecting container. Kubernetes grants retain the
+exact per-policy role and per-Agent identity checks. Keep
+`enforcementObservation` and `restrictiveFailure` false.
 
 See the [ordinary-container configuration example](../../examples/native-sandbox/README.md#ordinary-container-backend).
 Offline tests exercise the same executor and served admission, not a running
@@ -570,6 +590,21 @@ These controls do not enable live policy rollout: use the ordinary
 stop/change/resume lifecycle for reserved policy or platform changes.
 Registration and policy revisions remain inputs to current Pod admission;
 source drift cannot silently authorize the old running workload.
+
+Custom observed-SNI capture also requires the approved image's numeric UID/GID
+in `customRuntime.imageUsers`. Verify those values against the immutable image
+before approving them. Both must be positive 32-bit integers, and the Agent UID
+must differ from the capture proxy's reserved UID 1337. No numeric identity is
+inferred from an Agent request or from Gateway image approval. Without capture,
+Custom continues to use its image-owned user.
+
+This applies to Custom HTTP Chat, Web UI and headless execution on both Kata
+and container. Pin the platform `ttyd.image` for the static probe even for
+headless capture: headless readiness checks the managed proxy without inventing
+an application HTTP endpoint. HTTP readiness checks both the application and
+proxy. Combining capture with ingress mTLS retains the independently approved
+terminal configuration and its own TLS digest; the terminal gains no Agent
+egress authority.
 
 The empty/omitted capabilities profile retains the existing qualified contract,
 including mandatory `enforcementObservation`, `restrictiveFailure` and the

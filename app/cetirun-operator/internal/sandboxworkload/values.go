@@ -108,7 +108,7 @@ func (b *Bundle) SecurityContext() *corev1.SecurityContext {
 		SeccompProfile:         &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 	if b.input.CustomAgent != nil {
-		context.RunAsUser, context.RunAsGroup = nil, nil
+		context.RunAsUser, context.RunAsGroup = b.input.CustomAgent.RunAsUser, b.input.CustomAgent.RunAsGroup
 	}
 	return context
 }
@@ -120,7 +120,7 @@ func (b *Bundle) PodSecurityContext() *corev1.PodSecurityContext {
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 	if b.input.CustomAgent != nil {
-		context.RunAsUser, context.RunAsGroup = nil, nil
+		context.RunAsUser, context.RunAsGroup = b.input.CustomAgent.RunAsUser, b.input.CustomAgent.RunAsGroup
 	}
 	return context
 }
@@ -172,7 +172,7 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	}
 	security, _ := jsonValue(b.SecurityContext())
 	podSecurity, _ := jsonValue(b.PodSecurityContext())
-	if b.input.CustomAgent != nil {
+	if b.input.CustomAgent != nil && b.input.CustomAgent.RunAsUser == nil {
 		for _, context := range []any{security, podSecurity} {
 			values := context.(map[string]any)
 			values["runAsUser"], values["runAsGroup"] = nil, nil

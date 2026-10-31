@@ -93,7 +93,7 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
         {{- if $terminal.tlsContainer }}
-        cetirun.microsoft.com/ingress-mtls-config: {{ index .Values.podAnnotations "cetirun.microsoft.com/ingress-mtls-config" | quote }}
+        cetirun.microsoft.com/ingress-mtls-config: {{ $terminal.tlsConfigDigest | quote }}
         {{- end }}
       labels:
         {{- toYaml $labels | nindent 8 }}
