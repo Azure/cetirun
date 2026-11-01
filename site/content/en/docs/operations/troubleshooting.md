@@ -1,12 +1,13 @@
 ---
 title: "Troubleshooting"
-description: "Find whether an instance is blocked by reconciliation, storage, routing, or an external integration."
+description: "Find if reconciliation, storage, routing, or an external integration blocks an instance."
 weight: 40
 ---
 
-Start with status and events, then inspect only the failing layer. These
-commands contact Kubernetes but do not change it. Substitute the actual
-instance name and its reported namespace; `alice-example` is synthetic.
+Start with the status and the events. Then examine only the layer that fails.
+These commands connect to Kubernetes, but they do not change it. Replace the
+example values with the actual instance name and its reported namespace. The
+`alice-example` name is synthetic.
 
 ```bash
 kubectl get agents.cetirun.microsoft.com alice-example
@@ -15,13 +16,14 @@ kubectl get statefulset,pods,pvc,service -n cetirun-alice-example
 kubectl get events -n cetirun-alice-example --sort-by=.lastTimestamp
 ```
 
-Resource naming uses `metadata.name`, not `spec.user.alias`. With the
-controller/chart defaults, this example's namespace is `cetirun-alice-example`,
-Helm release is `openclaw-alice-example`, and StatefulSet/Service is
-`openclaw-alice-example-cetirun`. These API names are not interchangeable.
-Prefer status and actual resource listings to guessing.
+Resource names use `metadata.name`, not `spec.user.alias`. With the controller
+and chart defaults, the namespace of this example is `cetirun-alice-example`.
+Its Helm release is `openclaw-alice-example`, and its StatefulSet and Service
+are both `openclaw-alice-example-cetirun`. You cannot use one of these API
+names in place of another. We recommend that you use the status and the actual
+resource lists, not guesses.
 
-Sources: [naming and routing helpers]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
+Sources: [name and routing helpers]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
 and [reconciler]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}).
 
 ## Follow the first failure
@@ -29,41 +31,46 @@ and [reconciler]({{< repo "app/cetirun-operator/internal/controller/agent_contro
 | Observation | Inspect next |
 | --- | --- |
 | No status or repeated reconciliation errors | Operator rollout, logs, CRD version, and RBAC |
-| `HelmDeployed` is false | OCI chart/version, operator registry credentials, values validation, admission/RBAC failures, upgrade hooks |
-| PVC pending or mount failure | StorageClass, Blob CSI, subnet rules, mount events |
-| Pod cannot schedule | RuntimeClass existence/scheduling, node taints, total resource requests and capacity |
-| Image pull failure | Actual image reference/digest, node registry permissions, namespace-local pull Secret |
-| Missing Secret key / container configuration error | Gateway Secret key names, agent type, controller enrichment; do not dump values |
-| Init container fails | `init-home-data` permissions/mounts, OpenClaw `doctor`, or npm `init-skills` registry/package access |
-| `HomeSeedStateUnknown` or `HomeSeedImageUnconfirmed` | Existing HOME and initialization records, interrupted-copy source image; do not clear the PVC or delete records to retry |
-| Native configuration apply fails | JSON/YAML or environment-file syntax, destination permissions and symlinks; the initializer preserves failed files |
-| `PodReady` is false | StatefulSet rollout generation, ready/updated replicas, probes, desktop dependencies |
+| `HelmDeployed` is false | OCI chart and version, operator registry credentials, values validation, admission or RBAC failures, and upgrade hooks |
+| PVC pending or mount failure | StorageClass, Blob CSI, subnet rules, and mount events |
+| Pod cannot be scheduled | RuntimeClass existence and scheduling, node taints, and total resource requests and capacity |
+| Image pull failure | Actual image reference or digest, node registry permissions, and the namespace-local pull Secret |
+| Secret key does not exist, or container configuration error | Gateway Secret key names, agent type, and controller enrichment. Do not print the values. |
+| Init container fails | `init-home-data` permissions and mounts, OpenClaw `doctor`, or npm `init-skills` registry and package access |
+| `HomeSeedStateUnknown` or `HomeSeedImageUnconfirmed` | The HOME and initialization records that exist, and the source image of the interrupted copy. Do not clear the PVC or delete records to retry. |
+| Native configuration apply fails | JSON/YAML or environment-file syntax, destination permissions and symlinks. The initializer keeps the files that failed. |
+| `PodReady` is false | StatefulSet rollout generation, ready and updated replicas, probes, and desktop dependencies |
 | `IngressReady` is false | Instance VirtualService and shared gateway |
-| Login loop or 403 | OAuth callback/TLS, groups, sidecar injection, ownership |
-| Agent opens but model fails | AI Gateway conditions, Portal sign-in, selected model entitlement, DNS and egress; readiness does not test inference |
+| Login loop or 403 | OAuth callback and TLS, groups, sidecar injection, and ownership |
+| Agent opens but model fails | AI Gateway conditions, Portal sign-in, selected model entitlement, DNS, and egress. Readiness does not test inference. |
 
-The controller can mark the overall instance `Ready` even when
-VirtualService reconciliation failed. Read `IngressReady` and verify access
-separately. Conversely, `HelmDeployed=True` means chart submission succeeded;
-it does not wait for pod readiness. A suspended instance intentionally has
-zero desired replicas and no VirtualService; inspect `spec.suspended` and
-phase before treating absent pods as a failure.
+The controller can mark the overall instance `Ready` even when the
+VirtualService reconciliation failed. Read `IngressReady`. Then do a separate
+check to make sure that access works. Also, `HelmDeployed=True` means that the
+chart submission succeeded, but it does not wait for pod readiness. A suspended
+instance intentionally has zero desired replicas and no VirtualService. Before
+you decide that absent pods are a failure, examine `spec.suspended` and the
+phase.
 
-After a workload apply, readiness uses a current API read of the StatefulSet,
-not a possibly stale pre-apply informer snapshot. The existing generation,
-replica, restart and migration checks are evaluated against that current
-object. A failed current read is reported rather than replaced with cached
-Ready status. The Custom terminal also waits for its one current Deployment
-replica to be updated, ready and available, without an older surge replica
-remaining. Availability of the previous terminal Pod alone is not a completed
-rollout. These observations do not replace model/tool or provider acceptance.
+After a workload apply, readiness uses a current API read of the StatefulSet.
+It does not use a pre-apply informer snapshot, which can be stale. The
+generation, replica, restart, and migration checks that already exist use that
+current object. If the current read fails, the failure is reported. A cached
+Ready status is not used instead.
 
-For a missing `ValidatingAdmissionPolicy` API or a forbidden admission-policy
-write, check the default `execRestriction` prerequisites and operator
-ClusterRole. The chart does not conditionally omit that policy for older
-clusters. Do not change cluster access policy just to make a render install.
+The Custom terminal also waits until its one current Deployment replica is
+updated, ready, and available, and until no older surge replica is left. If
+only the previous terminal Pod is available, the rollout is not complete.
+These observations do not replace model/tool or provider acceptance.
 
-For opt-in Sandbox reported-status alerts and offline `promtool` tests, see the
+The `ValidatingAdmissionPolicy` API can be absent, or an admission-policy write
+can be forbidden. In both cases, examine the default `execRestriction`
+prerequisites and the operator ClusterRole. The chart does not have a condition
+that omits that policy for older clusters. Do not change the cluster access
+policy only to make a render install.
+
+For opt-in alerts about the reported Sandbox status and for offline `promtool`
+tests, refer to the
 [standalone examples]({{< repo "app/cetirun-operator/observability/README.md" >}}).
 
 ## Routing
@@ -76,25 +83,33 @@ kubectl get pods -n cetirun-istio
 ```
 
 These commands use the umbrella's `cetirun-system` namespace. For a standalone
-portal installation, check its configured namespace (`cetirun-portal` by default).
+portal installation, examine its configured namespace (`cetirun-portal` by
+default).
 
-The shared gateway namespace and the per-instance VirtualService namespace are
-different. The portal’s internal ownership service is part of the access path.
-Do not disable OAuth2 Proxy, ownership validation, or network policy as a
-diagnostic shortcut.
+The shared gateway namespace and the VirtualService namespace of each instance
+are different. The internal ownership service of the portal is part of the
+access path. Do not disable OAuth2 Proxy, ownership validation, or network
+policy as a diagnostic shortcut.
 
-For login loops, confirm that Entra's redirect URI matches the rendered
-`https://<domain>/oauth2/callback`, not an OAuth subdomain. Check `cetirun-tls`
-coverage/expiry through the approved certificate workflow, federated trust,
-allowed groups, and the `oauth2-proxy` extension provider in the active Istio
-revision's shared ConfigMap. A Helm render cannot validate those dependencies.
+For login loops, make sure that the Entra redirect URI matches the rendered
+`https://<domain>/oauth2/callback`, not an OAuth subdomain. Also examine these
+items:
 
-For ownership 403s, check the instance owner, portal service address, actual
-portal sidecar injection, and gateway-to-portal NetworkPolicy. The ownership
-call goes to port 8081 with mTLS disabled; port 8080 uses strict mTLS. An admin
-alias is not an exception to native instance ownership. Consult
-[Istio operations](../istio/) for the distinct authentication and ownership
-exemptions.
+- The `cetirun-tls` coverage and expiry, through the approved certificate
+  workflow
+- The federated trust
+- The allowed groups
+- The `oauth2-proxy` extension provider in the shared ConfigMap of the active
+  Istio revision
+
+A Helm render cannot validate those dependencies.
+
+For ownership 403 errors, examine the instance owner and the portal service
+address. Also examine the actual portal sidecar injection and the
+gateway-to-portal NetworkPolicy. The ownership call goes to port 8081 with mTLS
+disabled. Port 8080 uses strict mTLS. An admin alias is not an exception to
+native instance ownership. For the separate authentication and ownership
+exemptions, refer to [Istio operations](../istio/).
 
 ## Agent services
 
@@ -105,43 +120,48 @@ exemptions.
 | Desktop noVNC / Chrome debugging | `6080` / `18800` |
 | ttyd terminal | `7681` |
 
-The chart defaults desktop, ttyd, and session logging to enabled. Keep debugging
-and terminal endpoints behind the intended authenticated path.
+By default, the chart enables the desktop, ttyd, and session logging. Keep the
+debug and terminal endpoints behind the intended authenticated path.
 
-OpenClaw startup probes use `/health`; liveness and readiness both use
-`/healthz` on the gateway port. Hermes uses `/health` for all three on the API
-port, not its dashboard. Inspect the actual StatefulSet because overrides and
-sidecar probe handling can affect the effective pod configuration.
+OpenClaw startup probes use `/health`. OpenClaw liveness and readiness probes
+both use `/healthz` on the gateway port. Hermes uses `/health` for all three
+probes on the API port, not on its dashboard. Examine the actual StatefulSet,
+because overrides and the way that sidecars handle probes can affect the
+effective pod configuration.
 Sources: [OpenClaw probes]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}})
 and [Hermes probes]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}).
 
-Inspect only the failing container's logs privately. `logger` can contain
-session content, not just diagnostic messages. The default admission policy
-denies `kubectl exec` in the instance namespace except for a fixed service
-account; do not propose exec or port-forward as a way around the deployment's
-access controls. The portal terminal is the intended authenticated user path
-when enabled and healthy.
+Examine only the logs of the container that fails, and examine them privately.
+`logger` can contain session content, not only diagnostic messages. The default
+admission policy denies `kubectl exec` in the instance namespace, except for a
+fixed service account. Do not propose exec or port-forward as a way around the
+access controls of the deployment. When the portal terminal is enabled and
+healthy, it is the intended authenticated user path.
 
 ### Hermes tools stop at 420 seconds
 
-The pinned Hermes release has an outer tool deadline in addition to the
-terminal tool's requested timeout. A larger tool request alone cannot make an
-eight-minute foreground command fit that default. Use a deliberately bounded
-per-command override or the existing native timeout configuration, as described
-in the [Hermes long-task guidance]({{< repo "app/cetirun-chart/agents/hermes/README.md" >}}).
-Keep normal approval controls and a finite overall run budget. A later output
-file, detached child or successful CLI exit is not by itself a successful
-foreground-tool result.
+The pinned Hermes release has an outer tool deadline, in addition to the
+timeout that the terminal tool requests. A larger tool request alone cannot
+make an eight-minute foreground command fit in that default deadline. Use a
+deliberately bounded per-command override, or the native timeout configuration
+that already exists. The
+[Hermes long-task guidance]({{< repo "app/cetirun-chart/agents/hermes/README.md" >}})
+describes both. Keep the normal approval controls and a finite overall run
+budget. An output file that is written later, a detached child, or a
+successful CLI exit does not alone show a successful foreground-tool result.
 
 ## Before changing lifecycle state
 
-A restart, Helm upgrade/rollback, suspension, or deletion changes the running
-environment and needs authorization; none belongs in the read-only checks
-above. Use [lifecycle guidance](../../guides/lifecycle/) for deliberate changes.
-The runtime pre-upgrade/pre-rollback hook can recreate a StatefulSet when
-immutable fields differ; it does not migrate PVC data. Deleting the CR deletes
-its namespace, so a StatefulSet `Retain` value is not sufficient protection.
-Do not delete PVCs or remove finalizers to conceal a failed reconciliation.
+A restart, a Helm upgrade or rollback, a suspension, or a deletion changes the
+running environment. Authorization is necessary for each of these changes.
+None of them belongs in the read-only checks above. For deliberate changes, use
+the [lifecycle guidance](../../guides/lifecycle/).
+
+If immutable fields are different, the runtime pre-upgrade/pre-rollback hook
+can recreate a StatefulSet. The hook does not migrate PVC data. Deletion of the
+CR also deletes its namespace. As a result, a StatefulSet `Retain` value is not
+sufficient protection. Do not delete PVCs or remove finalizers to hide a failed
+reconciliation.
 
 ## External integrations
 
@@ -151,7 +171,7 @@ Do not delete PVCs or remove finalizers to conceal a failed reconciliation.
 ## Share a useful report
 
 Include the source revision, agent type, chart version, expected behavior,
-redacted condition reasons, and a minimal reproduction. Exclude full session
-logs, credentials, cloud IDs, user prompts, and persistent browser state.
-For suspected vulnerabilities, use the repository’s existing
-[security reporting instructions]({{< repo "SECURITY.md" >}}).
+redacted condition reasons, and a minimal reproduction. Do not include full
+session logs, credentials, cloud IDs, user prompts, or persistent browser
+state. For suspected vulnerabilities, use the repository’s
+[instructions for security reports]({{< repo "SECURITY.md" >}}).

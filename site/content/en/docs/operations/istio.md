@@ -4,61 +4,64 @@ description: "Operate the shared gateway, OAuth2 Proxy, ownership checks, and eg
 weight: 30
 ---
 
-The [infra/istio chart]({{< repo "infra/istio" "tree" >}}) is installed once per
-deployment. It supplies OAuth2 Proxy, an Istio Gateway and VirtualService,
-AuthorizationPolicy, redirect and ownership filters, security headers, and
-mesh-wide egress resources.
+The [infra/istio chart]({{< repo "infra/istio" "tree" >}}) is installed one time
+for each deployment. It supplies OAuth2 Proxy, an Istio Gateway and
+VirtualService, AuthorizationPolicy, redirect and ownership filters, security
+headers, and mesh-wide egress resources.
 
 ## Prepare identity, DNS, and TLS
 
 1. Enable AKS managed Istio and its external ingress gateway.
 2. Configure an Entra app for the OAuth2 callback
    `https://<domain>/oauth2/callback` (for example,
-   `https://example.com/oauth2/callback`). Add the `login_hint` optional claim
-   to this app's ID tokens when Agent Identity is enabled. Entra defines this
-   opaque claim as the reliable value for carrying SSO into another app,
-   including B2B guest and cross-tenant scenarios.
-3. Configure application-assigned group claims and the permitted group IDs.
+   `https://example.com/oauth2/callback`). If Agent Identity is enabled, add
+   the `login_hint` optional claim to the ID tokens of this app. Entra defines
+   this opaque claim as the reliable value to carry SSO into another app. This
+   includes B2B guest and cross-tenant scenarios.
+3. Configure application-assigned group claims and the allowed group IDs.
 4. Configure federated trust for
-   `system:serviceaccount:cetirun-istio:oauth2-proxy` and the cluster’s OIDC issuer.
-5. Point the apex at the ingress address. Add wildcard DNS only for
-   subdomain services you configure; the portal, instance UI,
-   and OAuth routes use the apex.
-6. Supply a certificate that covers the actual names, including the apex.
+   `system:serviceaccount:cetirun-istio:oauth2-proxy` and the cluster’s OIDC
+   issuer.
+5. Configure the apex to refer to the ingress address. Add wildcard DNS only
+   for subdomain services that you configure. The portal, instance UI, and
+   OAuth routes use the apex.
+6. Supply a certificate that covers the actual names. These names include the
+   apex.
 
 The [OAuth2 Proxy deployment]({{< repo "infra/istio/templates/ingress/oauth2-proxy-deployment.yaml" >}})
-sets the apex callback, and its
+sets the apex callback. Its
 [VirtualService]({{< repo "infra/istio/templates/ingress/oauth2-proxy-virtualservice.yaml" >}})
 routes apex `/oauth2` requests. An `oauth2.<domain>` exemption in the values
-does **not** create a working callback route on that host.
+does **not** create a callback route that works on that host.
 
 The [portal's Sign out action]({{< repo "app/cetirun-portal/web/src/components/Header.tsx" >}})
-uses the apex `/oauth2/sign_out` route and returns the user to the page from
+uses the apex `/oauth2/sign_out` route. It returns the user to the page from
 which they signed out.
 
 The chart does not issue or renew certificates. The helper can read supplied
 PEM files, decode PFX content, read a PFX file, or download a certificate from
-Key Vault, in that order. PFX parsing uses an empty password; the helper has no
-PFX-password input. Issuance and renewal remain operator responsibilities.
+Key Vault, in that order. The helper parses PFX content with an empty password.
+The helper has no input for a PFX password. Issuance and renewal are still
+operator responsibilities.
 
 The [Gateway template]({{< repo "infra/istio/templates/ingress/gateway.yaml" >}})
-always declares HTTPS on port 443 using `credentialName: cetirun-tls`.
-`tls.enabled` defaults to false: that suppresses creation of the TLS Secret,
-**not** HTTPS. Supply `cetirun-tls` in the gateway namespace out of band, or
-set `tls.enabled: true` with the certificate and key. A render without that
-Secret is not a usable TLS deployment.
+always declares HTTPS on port 443 with `credentialName: cetirun-tls`. By
+default, `tls.enabled` is false. This value prevents the creation of the TLS
+Secret. It does **not** prevent HTTPS. Supply `cetirun-tls` in the gateway
+namespace out of band, or set `tls.enabled: true` with the certificate and key.
+A render without that Secret is not a usable TLS deployment.
 
 ## Deploy helper inputs
 
-[infra/istio/deploy.sh]({{< repo "infra/istio/deploy.sh" >}})
-requires Bash, Helm, kubectl, jq, OpenSSL, Python 3, and the pinned PyYAML
-dependency. Install the Python dependency before deployment:
+To run [infra/istio/deploy.sh]({{< repo "infra/istio/deploy.sh" >}}), you must
+have Bash, Helm, kubectl, jq, OpenSSL, Python 3, and the pinned PyYAML
+dependency. Before deployment, install the Python dependency:
 
 ```bash
 python3 -m pip install --requirement infra/istio/requirements.txt
 ```
 
-The helper also requires these inputs for its normal path:
+For its normal path, the helper also must have these inputs:
 
 | Variable | Purpose |
 | --- | --- |
@@ -67,40 +70,45 @@ The helper also requires these inputs for its normal path:
 | `ALLOWED_GROUPS` | Comma-separated allowed group IDs |
 | `RESOURCE_GROUP`, `AKS_CLUSTER_NAME` | Target cluster |
 | `DOMAIN` | Deployment domain |
-| `KEY_VAULT_NAME` | Required by the helper, even with supplied certificate files |
+| `KEY_VAULT_NAME` | Necessary for the helper, even with supplied certificate files |
 
 Optional inputs include `KEY_VAULT_CERT_NAME` (default `sslcert`),
 `TLS_CERT_PATH` plus `TLS_KEY_PATH`, `PFX_BASE64`, `PFX_PATH`, `COOKIE_SECRET`,
 `ADMIN_ALIASES`, and `RELEASE_NAME` (default `cetirun-istio`).
-The normal path also requires Azure CLI and an already-authorized Azure
-session. Certificate download needs Key Vault secret access, not merely
-permission to list certificates.
+For the normal path, you also must have Azure CLI and an already-authorized
+Azure session. To download a certificate, Key Vault secret access is necessary.
+Permission to list certificates is not enough.
 
-After setting the required variables, deploy the shared Istio resources:
+After you set the necessary variables, deploy the shared Istio resources:
 
 ```bash
 bash infra/istio/deploy.sh
 ```
 
-The helper selects the Azure subscription, checks the current context,
-installs/upgrades Helm resources, waits for OAuth2 Proxy, then patches the AKS
-Istio shared ConfigMap with the external authorization provider. Context
-validation only tests whether its name contains `AKS_CLUSTER_NAME`; independently
-verify the actual target. `SKIP_AZ_VALIDATION` skips Azure and context checks
-and the subscription-ID requirement; it still needs the other required inputs
-and supplied certificate material. It is not a dry-run flag.
+The helper selects the Azure subscription and examines the current context. It
+installs or upgrades the Helm resources and waits for OAuth2 Proxy. Then it
+patches the AKS Istio shared ConfigMap with the external authorization
+provider. Context validation only tests if the context name contains
+`AKS_CLUSTER_NAME`. Independently, make sure that the actual target is correct.
 
-The patch chooses the revision on the first matching Istiod pod, parses the
-mesh configuration as YAML, and requires at most one provider named exactly
-`oauth2-proxy`. It adds a missing provider or adds `authorization` to that
-provider's upstream header list. The update uses the ConfigMap
-`resourceVersion` as a compare-and-swap precondition and retries against the
-latest mesh configuration after conflicts. Check every active revision during
-Istio upgrades; revision discovery still selects the first matching Istiod pod.
+`SKIP_AZ_VALIDATION` skips the Azure validation and the context validation, and
+the subscription ID is then not necessary. The helper still must have the other
+necessary inputs and the supplied certificate material. `SKIP_AZ_VALIDATION` is
+not a dry-run flag.
+
+The patch selects the revision on the first Istiod pod that matches. It parses
+the mesh configuration as YAML. There must be at most one provider named exactly
+`oauth2-proxy`. The patch adds this provider if it does not exist, or it adds
+`authorization` to the upstream header list of that provider. The update uses
+the ConfigMap `resourceVersion` as a compare-and-swap precondition. After a
+conflict, it retries against the latest mesh configuration.
+
+During Istio upgrades, examine every active revision. Revision discovery still
+selects the first Istiod pod that matches.
 
 ## Direct Helm installation
 
-**Offline render**, using only synthetic identity values:
+**Offline render**, with only synthetic identity values:
 
 ```bash
 helm template cetirun-istio infra/istio --namespace cetirun-istio \
@@ -109,8 +117,8 @@ helm template cetirun-istio infra/istio --namespace cetirun-istio \
   > /dev/null
 ```
 
-This does not verify identity, TLS, existing Secrets, or the managed mesh
-configuration. Do not apply this rendered example.
+This command does not validate identity, TLS, Secrets that already exist, or
+the managed mesh configuration. Do not apply this rendered example.
 
 **Connected, mutating:** platform operators can install the local chart with
 a separately prepared private values file:
@@ -121,23 +129,24 @@ helm upgrade --install cetirun-istio infra/istio \
   -f /absolute/path/reviewed-istio-values.yaml
 ```
 
-This path requires **separate external authorization provider configuration**
-in the AKS shared ConfigMap. A Helm install alone does not wire `ext_authz`.
-The chart reuses an existing cookie Secret via lookup, or generates one on
-first installation. Offline `helm template` cannot look up that Secret and can
-generate a different cookie key. Do not use an offline rendered Secret to
-update a live release.
+This path must have **separate external authorization provider configuration**
+in the AKS shared ConfigMap. A Helm install alone does not configure
+`ext_authz`. The chart reuses a cookie Secret that already exists through a
+lookup, or it generates one at the first installation. Offline `helm template`
+cannot find that Secret and can generate a different cookie key. Do not use an
+offline rendered Secret to update a live release.
 
 ### OAuth session storage
 
 The default `oauth2Proxy.sessionStore.type: cookie` mode does not request
 `offline_access`. Its 45-minute cookie lifetime ends before the Entra ID token
-expires, so users must sign in again instead of carrying a refresh token in an
-encrypted browser cookie. Refresh-token cookies can exceed common 8 KiB request
-header limits and break otherwise unrelated Portal actions.
+expires. As a result, users must sign in again. This mode does not keep a
+refresh token in an encrypted browser cookie. Refresh-token cookies can exceed
+the common 8 KiB request header limits. This can break Portal actions that are
+otherwise unrelated.
 
-For refreshable sessions, provision Redis separately and configure the chart
-to reference it:
+For refreshable sessions, provision Redis separately. Configure the chart to
+refer to it:
 
 ```yaml
 oauth2Proxy:
@@ -151,28 +160,31 @@ oauth2Proxy:
 
 Redis mode requests `offline_access`, stores the session server-side, refreshes
 it every 30 minutes, and keeps only a short session key in the browser. The
-chart does not deploy, persist, back up, or secure Redis. Use an environment-
-appropriate highly available service, NetworkPolicy, encryption in transit,
-and a pre-created Secret. Keep credentials out of `connectionURL` and Helm
-values; OAuth2 Proxy reads the password from the referenced Secret.
+chart does not deploy, persist, back up, or secure Redis. Use a highly
+available service that is correct for the environment. Also use NetworkPolicy,
+encryption in transit, and a pre-created Secret. Keep credentials out of
+`connectionURL` and Helm values. OAuth2 Proxy reads the password from the
+referenced Secret.
 
-After rotating the referenced Redis password Secret, reconcile the Istio Helm
-release. The chart hashes the live Secret data into the OAuth2 Proxy Pod
-template, so that Helm reconciliation rolls the Pods and loads the new
-password. A Secret update by itself does not restart existing Pods.
+After you rotate the referenced Secret for the Redis password, reconcile the
+Istio Helm release. The chart hashes the live Secret data into the OAuth2 Proxy
+Pod template. As a result, Helm reconciliation rolls the Pods and loads the new
+password. A Secret update alone does not restart the Pods that already exist.
 
 ### Expired sessions
 
 After a session expires, the next page load signs the user in again. OAuth2
-Proxy keeps a separate CSRF cookie for each sign-in in progress, so sign-ins
-started at the same time, by a page reload and background requests or by
-several tabs, do not invalidate each other. Starting a sign-in deletes the
-oldest of these cookies beyond `oauth2Proxy.cookie.csrfPerRequestLimit`
-(default 20). Requests below `/api/`, `/ui/<instance>/api/` and
-`/ui/<instance>/assets/` answer `401` instead of redirecting to Entra: a
-browser cannot follow that redirect from a script, and an Agent UI can request
-dozens of assets at once, each of which would otherwise start a sign-in. The
-Portal then asks the user to refresh the page.
+Proxy keeps a separate CSRF cookie for each sign-in that is in progress. As a
+result, sign-ins that start at the same time do not invalidate each other.
+These sign-ins can come from a page reload and background requests, or from
+several tabs. When a sign-in starts, OAuth2 Proxy deletes the oldest of these
+cookies beyond `oauth2Proxy.cookie.csrfPerRequestLimit` (default 20).
+
+Requests below `/api/`, `/ui/<instance>/api/` and `/ui/<instance>/assets/`
+answer `401` instead of a redirect to Entra. This is because a browser cannot
+follow that redirect from a script. Also, an Agent UI can request dozens of
+assets at one time. Otherwise, each of these asset requests starts a sign-in.
+The Portal then asks the user to refresh the page.
 
 ## Authentication and ownership
 
@@ -181,71 +193,73 @@ Browser → gateway → redirect header → OAuth2 Proxy / Entra login
         → ownership filter → portal or instance VirtualService
 ```
 
-OAuth2 Proxy uses Entra's `preferred_username` as its email claim by default.
-Local tenant users are not guaranteed to receive an `email` claim, while the
-tenant-facing UPN remains available for Portal identity headers. Set
-`oauth2Proxy.emailClaim: email` only when every allowed user in the tenant is
-known to receive that claim. This selection is a login identifier; instance
+By default, OAuth2 Proxy uses Entra's `preferred_username` as its email claim.
+It is not certain that local tenant users receive an `email` claim. But the
+tenant-facing UPN stays available for Portal identity headers. Set
+`oauth2Proxy.emailClaim: email` only when you know that every allowed user in
+the tenant receives that claim. This selection is a login identifier. Instance
 ownership and Agent authorization continue to use the verified tenant and
 object IDs from the signed ID token.
 
 When the Portal ID token includes Entra's optional `login_hint` claim, the
 Portal passes that opaque value to the separate Agent authorization client.
-It falls back to `preferred_username` only for app registrations that have not
-enabled the optional claim. The authorization request does not force an account
-picker, allowing Entra to reuse the hinted Portal session. The hint selects a
-sign-in session; it is never an authorization key. The callback must still
-match the instance owner's verified tenant and object IDs, so enabling the
-claim does not relax owner isolation.
+It uses `preferred_username` instead only for app registrations where the
+optional claim is not enabled. The authorization request does not force an
+account picker, so Entra can reuse the hinted Portal session. The hint selects
+a sign-in session, and it is never an authorization key. The callback must
+still match the verified tenant and object IDs of the instance owner. As a
+result, if you enable the claim, this does not relax owner isolation.
 
 The Agent authorization client requests both the OIDC `openid` and `profile`
-scopes. Entra's `profile` scope supplies the immutable object ID used by the
-callback owner check; `openid` alone does not guarantee that claim. Do not
+scopes. Entra's `profile` scope supplies the immutable object ID that the
+callback owner check uses. `openid` alone does not guarantee that claim. Do not
 replace the object-ID check with a username or email fallback.
 
 For authenticated Portal routes, OAuth2 Proxy returns its validated ID token in
 the internal `Authorization` header. The gateway filter first removes any
-client-supplied `X-CetiRun-Portal-ID-Token`, then moves the validated token to
-that header only for the Portal and removes `Authorization`. Agent routes
-receive neither the Portal ID token nor its authorization header. The Portal
-verifies the token signature, issuer, audience, tenant, object ID, and
-timestamps before using it for Agent authorization ownership.
+client-supplied `X-CetiRun-Portal-ID-Token`. Then it moves the validated token
+to that header only for the Portal, and it removes `Authorization`. Agent
+routes receive neither the Portal ID token nor its authorization header. Before
+the Portal uses the token for Agent authorization ownership, it verifies the
+token signature, issuer, audience, tenant, object ID, and timestamps.
 
 Native Agent UIs, such as the OpenClaw Control UI, authenticate some of their
-own HTTP requests with an `Authorization` header that ext-auth replaces. The
-security headers filter records the value the browser sent, before ext-auth,
-in the request's dynamic metadata, which never leaves the gateway. After the
-ownership check, the ownership filter restores it on owned
+own HTTP requests with an `Authorization` header that ext-auth replaces. Before
+ext-auth, the security headers filter records the value from the browser in
+the request's dynamic metadata. This metadata never leaves the gateway. After
+the ownership check, the ownership filter restores the value on owned
 `/ui/<instance>/` routes, unless OAuth2 Proxy accepted that same credential as
-the user's identity. The native Agent API routes below keep accepting only
+the user's identity. The native Agent API routes below continue to accept only
 their dedicated header. On other owned Agent routes, such as the Terminal and
 Desktop, the filter removes `Authorization` unless one of the route-bound
 credentials below applies.
 
-The deployment helper also reconciles `authorization` in the canonical
-oauth2-proxy ext-auth provider's `headersToUpstreamOnAllow`. This step is
-required when upgrading an older shared Istio ConfigMap; Helm cannot modify
-that AKS-managed ConfigMap.
+The deployment helper also reconciles `authorization` in the
+`headersToUpstreamOnAllow` of the canonical oauth2-proxy ext-auth provider.
+When you upgrade an older shared Istio ConfigMap, this step is necessary. Helm
+cannot change that AKS-managed ConfigMap.
 
-The ownership filter extracts the instance from `/ui/<instance>/` or
-the first path segment for other instance services, then calls the portal's
-internal ownership endpoint. Before forwarding a normal or webhook request to
+The ownership filter extracts the instance from `/ui/<instance>/`, or from the
+first path segment for other instance services. Then it calls the portal's
+internal ownership endpoint. Before it forwards a normal or webhook request to
 an instance workload, it removes the `_cetirun_oauth2` Portal session cookie
-(including chunk suffixes) and OAuth2 Proxy's sign-in (CSRF) cookies while
-retaining cookies owned by the Agent UI.
-Portal routes retain the Portal cookie. The filter does not compare a subdomain
-with an owner alias. The portal namespace requires actual sidecar injection, enforced
-NetworkPolicy, and its chart's authorization policy.
+(with chunk suffixes). It also removes the sign-in (CSRF) cookies of OAuth2
+Proxy, but it keeps the cookies that the Agent UI owns.
+
+Portal routes keep the Portal cookie. The filter does not compare a subdomain
+with an owner alias. The portal namespace must have actual sidecar injection,
+enforced NetworkPolicy, and the authorization policy of its chart.
 
 Model sign-in uses the Portal and AI Gateway. Hermes native API clients carry
-`API_SERVER_KEY` in `X-CetiRun-Agent-API-Key`; after the ownership check, the
+`API_SERVER_KEY` in `X-CetiRun-Agent-API-Key`. After the ownership check, the
 filter converts it to a bearer credential only for the owned
 `/ui/<instance>/v1/models` and `/ui/<instance>/v1/chat/completions` routes (and
 their legacy instance-subdomain forms). Transport headers are removed from
 unrelated routes.
+
 Portal port 8080 uses strict mTLS and gateway service-account identity. Port
-8081 deliberately disables mTLS for the Lua ownership call and relies on the
-gateway-namespace NetworkPolicy restriction; do not describe it as an
+8081 deliberately disables mTLS for the Lua ownership call. It relies on the
+gateway-namespace NetworkPolicy restriction. Do not describe it as an
 mTLS-authenticated endpoint.
 
 Sources: [ownership filter]({{< repo "infra/istio/templates/ingress/envoy-filter-alias.yaml" >}}),
@@ -253,47 +267,49 @@ Sources: [ownership filter]({{< repo "infra/istio/templates/ingress/envoy-filter
 and [portal NetworkPolicy]({{< repo "app/cetirun-portal/chart/templates/network-policy-internal-auth.yaml" >}}).
 The operator owns per-instance VirtualServices, not this shared chart.
 
-Portal `admins.aliases` enables administrative APIs; it is not blanket
+Portal `admins.aliases` enables administrative APIs. It is not blanket
 authorization to read another user's instance. The Istio helper passes
-`authPolicy.adminAliases`, but no Istio template consumes it. Configure
-the portal's reviewed admin list separately; running only the Istio helper
+`authPolicy.adminAliases`, but no Istio template uses it. Configure the
+portal's reviewed admin list separately. If you run only the Istio helper, this
 does not grant portal admin access.
 
 ### Agent UI content security policy
 
 Applications served below `/ui/<instance>/` own their Content Security Policy
-(CSP). The gateway preserves their `Content-Security-Policy` and
-`Content-Security-Policy-Report-Only` response headers, including dynamic nonces
-and hashes. It does not supply a fallback CSP when the application omits one.
-Other routes retain the platform policy; the bare `/ui/<instance>` redirect
-also retains it. This is a response-header rule, not an authentication exemption.
+(CSP). The gateway keeps their `Content-Security-Policy` and
+`Content-Security-Policy-Report-Only` response headers, with dynamic nonces and
+hashes. If the application does not set a CSP, the gateway does not supply a
+fallback CSP. Other routes keep the platform policy. The bare `/ui/<instance>`
+redirect also keeps it. This is a response-header rule, not an authentication
+exemption.
 
-AAD authentication, instance ownership checks and platform credential stripping
-remain in effect. The gateway also retains HSTS, `nosniff`, Referrer-Policy and
-the configured X-Frame-Options header. Applications must set a CSP appropriate
-for their scripts, API calls, workers and embedded content. Platform operators
-do not maintain per-application resource allowlists.
+AAD authentication, instance ownership checks, and the removal of platform
+credentials stay in effect. The gateway also keeps HSTS, `nosniff`,
+Referrer-Policy, and the configured X-Frame-Options header. Applications must
+set a CSP that is correct for their scripts, API calls, workers, and embedded
+content. Platform operators do not keep per-application resource allowlists.
 
 Path prefixes do not isolate browser origins. An Agent UI on the Portal's origin
-can make same-origin requests with the visitor's platform session, subject to
-the visitor's server-side permissions. Cookie stripping before forwarding to
-an Agent does not prevent those separate browser requests. Use separate origins
-and corresponding cookie, CORS and CSRF controls when hosting mutually untrusted
-frontends; a storage namespace adapter is not a security boundary.
+can make same-origin requests with the visitor's platform session. The
+server-side permissions of the visitor limit these requests. The removal of
+cookies before a request goes to an Agent does not prevent those separate
+browser requests. When you host mutually untrusted frontends, use separate
+origins and the cookie, CORS, and CSRF controls for these origins. A storage
+namespace adapter is not a security boundary.
 
 ### Portal ownership endpoint
 
-Changing the portal service name or namespace also requires updating
-`portalAuth.clusterHost`. The standalone helper defaults to
+If you change the portal service name or namespace, also update
+`portalAuth.clusterHost`. By default, the standalone helper uses
 `cetirun-portal.cetirun-portal.svc.cluster.local:8081`.
-The platform umbrella installs the portal in `cetirun-system`, so set
-`PORTAL_AUTH_NAMESPACE=cetirun-system` before running the separate Istio
+The platform umbrella installs the portal in `cetirun-system`. For this reason,
+set `PORTAL_AUTH_NAMESPACE=cetirun-system` before you run the separate Istio
 deployment helper.
 
 Use `PORTAL_AUTH_SERVICE` for a custom service name or
 `PORTAL_AUTH_CLUSTER_HOST` for a service FQDN override, without a port suffix.
 The ownership endpoint uses port 8081. The umbrella
-does not reconfigure the independent Istio release. See the
+does not reconfigure the independent Istio release. Refer to the
 [deployment helper]({{< repo "infra/istio/deploy.sh" >}}) and
 [platform installation](../../getting-started/platform/#platform-chart).
 
@@ -301,50 +317,55 @@ does not reconfigure the independent Istio release. See the
 
 | Setting | Scope |
 | --- | --- |
-| `authPolicy.authExemptPrefixes` | Host prefixes bypassing OAuth2 Proxy |
-| `authPolicy.aliasExemptPrefixes` | Present in values, but unused by the ownership filter |
+| `authPolicy.authExemptPrefixes` | Host prefixes that bypass OAuth2 Proxy |
+| `authPolicy.aliasExemptPrefixes` | Present in values, but not used by the ownership filter |
 
 Both prefix lists contain `oauth2` and `llmapi`. `authExemptPrefixes` bypasses
-OAuth2 Proxy for those subdomain hosts, while `aliasExemptPrefixes` prevents
-the ownership filter from interpreting those shared hosts as instance names.
-Review whether they are needed. These values do not install an LLM gateway or
-provide model request authorization.
+OAuth2 Proxy for those subdomain hosts. With `aliasExemptPrefixes`, the
+ownership filter does not interpret those shared hosts as instance names.
+Review if they are necessary. These values do not install an LLM gateway or
+supply model request authorization.
 
 The [authorization policy]({{< repo "infra/istio/templates/ingress/authorization-policy.yaml" >}})
-also exempts apex `/oauth2/*`, `/healthz`, and `/readyz`. The ownership filter's
-static portal-path exclusions are separate from OAuth exemptions; skipping
-an ownership call does not by itself skip sign-in.
+also exempts apex `/oauth2/*`, `/healthz`, and `/readyz`. The static
+portal-path exclusions of the ownership filter are separate from OAuth
+exemptions. If the filter skips an ownership call, this alone does not skip
+sign-in.
 
 ## Egress and logging
 
 The chart adds ServiceEntries and access logging in the
 Istio root namespace. Access logging is enabled by default and can include
-destination names. A ServiceEntry list does not by itself create an egress
-allowlist; the chart does not implement a complete outbound allowlist.
+destination names. A ServiceEntry list alone does not create an egress
+allowlist. The chart does not implement a complete outbound allowlist.
 These audit resources do not enforce AgentPolicy. Guest-external network
 controls and approved Pod-local visible-SNI capture belong to each Agent's
 common Sandbox execution pipeline.
 
-The agent NetworkPolicy permits external IPv4 egress except blocked ranges;
-it does not restrict all external traffic to HTTPS. Its configured
-`allowedInternalCIDRs` are additional allow rules, so private-range exclusions
-are not absolute. Review or replace that environment-specific list.
+The agent NetworkPolicy allows external IPv4 egress, except to blocked ranges.
+It does not restrict all external traffic to HTTPS. Its configured
+`allowedInternalCIDRs` add more allow rules. As a result, private-range
+exclusions are not absolute. Review or replace that environment-specific list.
 
 ### Retired shared blacklist
 
-The mesh-wide `egress.blacklist` filter and values have been removed. Supplying
-that retired values key, including `enabled: false`, now fails chart rendering
-instead of silently ignoring a former enforcement setting. Remove it from your
-reviewed configuration. Do not use `--reuse-values` from an older release;
-upgrade with `--reset-values -f <reviewed-values.yaml>` and retain the required
-TLS/OIDC, owner, routing, header and logging configuration.
+The chart no longer contains the mesh-wide `egress.blacklist` filter and
+values. If you supply that retired values key, the chart render now fails.
+This is also true when the key contains `enabled: false`. The chart does not
+silently ignore a former enforcement setting. Remove the key from your reviewed
+configuration.
 
-Before removing old enforcement, qualify the required AgentPolicy network
-outcomes on your supported runtime profiles. The old filter's
-`helm.sh/resource-policy: keep` annotation means neither removing its template
-nor uninstalling the release proves it is gone.
+Do not use `--reuse-values` from an older release. Upgrade with
+`--reset-values -f <reviewed-values.yaml>`. Keep the necessary TLS/OIDC, owner,
+routing, header, and logging configuration.
 
-After upgrading, run the explicit
+Before you remove the old enforcement, qualify the necessary AgentPolicy
+network outcomes on your supported runtime profiles. The old filter has the
+`helm.sh/resource-policy: keep` annotation. As a result, if you remove its
+template, this does not prove that the filter is gone. If you uninstall the
+release, this also does not prove that the filter is gone.
+
+After you upgrade, run the explicit
 [cleanup helper]({{< repo "scripts/cetirun-istio-cleanup.py" >}}) with your
 approved target coordinates. Its default action is read-only:
 
@@ -356,19 +377,20 @@ python3 scripts/cetirun-istio-cleanup.py \
   --legacy-namespace aks-istio-system
 ```
 
-Review the returned object UID/resourceVersion, then rerun with `--apply`,
-`--expected-uid '<reviewed-uid>'` and
+Review the object UID/resourceVersion that the helper returns. Then run the
+helper again with `--apply`, `--expected-uid '<reviewed-uid>'`, and
 `--expected-resource-version '<reviewed-resource-version>'`. Add
-`--after-uninstall` only after Helm confirms the exact release no longer
-exists. The helper checks cluster identity, release state, current manifest,
-Helm ownership and the retired filter's shape. It issues one conditional
-deletion and verifies absence. A foreign/replaced/changed object, failed
-release, conflicting deletion or lost reply is not silently retried.
+`--after-uninstall` only after Helm confirms that the exact release does not
+exist. The helper examines cluster identity, release state, current manifest,
+Helm ownership, and the shape of the retired filter. It issues one conditional
+deletion and then makes sure that the filter is gone. The helper does not
+silently retry a foreign/replaced/changed object, a failed release, a deletion
+conflict, or a lost reply.
 
 No cleanup hook runs automatically. The helper never lists or deletes unrelated
-filters, strips finalizers, changes the shared authorization provider, or removes
-the retained ServiceEntries/access logging. Do not publish its environment-
-specific receipt or Helm values; record only sanitized outcomes.
+filters, removes finalizers, changes the shared authorization provider, or
+removes the ServiceEntries/access logging that the chart keeps. Do not publish
+its environment-specific receipt or Helm values. Record only sanitized outcomes.
 
 ## Inspect, upgrade, or remove
 
@@ -381,12 +403,14 @@ kubectl get envoyfilter -n aks-istio-ingress
 kubectl get pods -n cetirun-istio
 ```
 
-For diagnosis, inspect the specific shared ConfigMap revision and gateway
-listeners with `istioctl`; review OAuth2 Proxy logs privately. Helm values can
-contain certificate or cookie material, so do not dump them into reports.
+For diagnosis, examine the specific shared ConfigMap revision and gateway
+listeners with `istioctl`. Review OAuth2 Proxy logs privately. Helm values can
+contain certificate or cookie material. For this reason, do not copy them into
+reports.
 
-An upgrade can affect every instance. Review changed values and the external
-authorization patch before applying. Uninstalling Helm does not remove the
-external authorization provider from the managed ConfigMap; an older kept
-blacklist needs the explicit cleanup above. Plan residual resources and the shared
-access impact explicitly. Do not blindly remove a shared provider.
+An upgrade can affect every instance. Before you apply changed values and the
+external authorization patch, review them. A Helm uninstall does not remove the
+external authorization provider from the managed ConfigMap. For an older kept
+blacklist, the explicit cleanup above is necessary. Make an explicit plan for
+the resources that are left and for the effect on shared access. Do not remove a
+shared provider without a review.

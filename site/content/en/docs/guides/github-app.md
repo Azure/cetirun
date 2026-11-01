@@ -4,21 +4,22 @@ description: "Give each Agent explicit repository and permission limits through 
 weight: 46
 ---
 
-A shared GitHub App provides repository-scoped access for Agents. Personal
-GitHub OAuth connections remain available separately. The App installation
-defines the platform's maximum access; each Agent binding narrows the
-installation token to selected repositories and permissions.
+A shared GitHub App gives repository-scoped access to Agents. Personal GitHub
+OAuth connections stay available separately. The App installation defines the
+maximum access of the platform. Each Agent binding narrows the installation
+token to selected repositories and permissions.
 
 ## Register the platform App
 
-Platform administrators should first follow
-[Agent Identity setup](../../operations/agent-identity/) through namespace,
-encryption and certificate preparation. Return to that guide after registering
-the App below to finish the Broker and platform deployment.
+We recommend that platform administrators first follow
+[Agent Identity setup](../../operations/agent-identity/) until the namespace,
+encryption, and certificate preparation is complete. After you register the
+App with the steps below, return to that guide to finish the Broker and
+platform deployment.
 
 An environment maintainer creates the App in GitHub **Settings → Developer
-settings → GitHub Apps → New GitHub App**. Use the deployment's actual Portal
-origin in place of `https://portal.example.com`:
+settings → GitHub Apps → New GitHub App**. Replace
+`https://portal.example.com` with the actual Portal origin of the deployment:
 
 | Setting | Value |
 | --- | --- |
@@ -26,23 +27,24 @@ origin in place of `https://portal.example.com`:
 | Homepage URL | `https://portal.example.com` |
 | Callback URL | `https://portal.example.com/api/v1/connections/callback` |
 | Expire user authorization tokens | Enabled |
-| Request user authorization during installation | Disabled; CetiRun starts authorization separately |
+| Request user authorization during installation | Disabled. CetiRun starts authorization separately |
 | Enable Device Flow | Disabled |
 | Setup URL | `https://portal.example.com/api/v1/connections/github-app/setup` |
 | Redirect on update | Disabled |
-| Webhook active | Disabled; this version checks authorization when issuing credentials |
+| Webhook active | Disabled. This version examines authorization when it issues credentials |
 | Repository permissions | Contents, Pull requests, Issues: Read and write |
-| Metadata permission | Read-only, required by GitHub |
+| Metadata permission | Read-only, mandatory in GitHub |
 | Organization and account permissions | None |
 | Where can this GitHub App be installed? | Any account |
 
-Do not grant Repository administration, Actions or other permissions for this
-integration. Record the App ID, Client ID and the slug from its public App URL.
-Generate a client secret and an RSA private key. Keep both outside the repository
-and do not paste them into chat, logs or Helm values.
+Do not grant Repository administration, Actions, or other permissions for this
+integration. Record the App ID, the Client ID, and the slug from the public App
+URL. Generate a client secret and an RSA private key. Keep both outside the
+repository. Do not paste them into chat, logs, or Helm values.
 
-Create a Secret in the Broker namespace with keys `client-secret` and
-`private-key.pem`, using files stored with restrictive permissions. For example:
+Create a Secret in the Broker namespace with the keys `client-secret` and
+`private-key.pem`. Use files that are stored with restrictive permissions. For
+example:
 
 ```bash
 KUBECONFIG=/private/environment/kubeconfig-admin kubectl \
@@ -51,7 +53,7 @@ KUBECONFIG=/private/environment/kubeconfig-admin kubectl \
   --from-file=private-key.pem=/private/github-app/private-key.pem
 ```
 
-Configure the Broker chart using non-secret values and the Secret reference:
+Configure the Broker chart with non-secret values and the Secret reference:
 
 ```yaml
 providers:
@@ -63,79 +65,92 @@ providers:
       credentialsSecretName: github-app
 ```
 
-The private key is mounted only in the Broker. Its signer reads the mounted key
-when issuing credentials. After updating the Secret, allow the Kubernetes Secret
-volume to refresh; restart the Broker when changing the client secret because it
-is supplied through the environment. Keep the previous GitHub key until the new
-key has been verified, then revoke the previous key in GitHub.
+The private key is mounted only in the Broker. The signer of the Broker reads
+the mounted key when it issues credentials. After you update the Secret, let
+the Kubernetes Secret volume refresh. When you change the client secret,
+restart the Broker, because the client secret is supplied through the
+environment. Keep the previous GitHub key until you make sure that the new key
+works. Then revoke the previous key in GitHub.
 
 ## Give an Agent access
 
-1. Open the Agent's **Identities**, choose **Add identity**, then choose
+1. Open the Agent's **Identities**. Select **Add identity**. Then select
    **GitHub**. The default flow is **Selected repositories**, which uses the
    shared GitHub App. The personal-account flow is under **Other access
-   methods → Personal account** and cannot be narrowed to selected repositories.
-2. Sign in to GitHub. CetiRun verifies this account separately from your Portal
-   account; a GitHub installation ID alone never grants access.
-3. Install the App or select an existing installation. On GitHub, choose
-   **Only select repositories** and the repositories the platform may access.
-   Return to CetiRun and select **Refresh access** after installing or receiving
-   organization approval.
-4. Select repositories for this Agent, then choose **No access**, **Read**, or
+   methods → Personal account**. You cannot narrow this flow to selected
+   repositories.
+2. Sign in to GitHub. CetiRun authenticates this account separately from your
+   Portal account. A GitHub installation ID alone never grants access.
+3. Install the App, or select an installation that already exists. On GitHub,
+   select **Only select repositories** and the repositories that the platform
+   can access. After you install the App or get organization approval, return
+   to CetiRun. Select **Refresh access**.
+4. Select repositories for this Agent. Then select **No access**, **Read**, or
    **Read and write** for **Code**, **Pull requests**, and **Issues**. Code
-   starts as **Read**; Pull requests and Issues start as **No access**. At least
-   one repository and one permission are required. The same permission selection
-   applies to every repository in this binding; Metadata read access is implicit.
-5. Review the access for this Agent and select **Allow access**. Other Agents
-   need their own explicit bindings, even when they have the same owner and
-   reuse this authorization.
+   starts as **Read**, and Pull requests and Issues start as **No access**. At
+   least one repository and one permission are necessary. The same permission
+   selection applies to every repository in this binding. Metadata read access
+   is implicit.
+5. Review the access for this Agent. Then select **Allow access**. Other Agents
+   must have their own explicit bindings, even when they have the same owner
+   and reuse this authorization.
 
-Personal repositories must belong to the signed-in GitHub user. For organization
-repositories, this version requires the configuring user to have repository
-**Admin** permission. GitHub organization policy still governs installation and
-approval. Read or write access to an organization's repository does not by
-itself permit installing an App there. Installing on your personal account does
-not grant access to organization repositories.
+Personal repositories must belong to the signed-in GitHub user. In this
+version, for organization repositories, the user who configures the access must
+have repository **Admin** permission. GitHub organization policy still controls
+installation and approval. Read or write access to an organization's repository
+does not by itself let you install an App there. An installation on your
+personal account does not grant access to organization repositories.
 
-Use **Manage access** to change repositories or permissions, then select
-**Save access**. The Agent's **Remove access** menu item removes only that
-Agent's association. Saved authorizations can be shared by multiple Agents;
-removing access from one Agent does not affect the others. **Connections**
-can remove a connection only after no Agent uses it. Removing it does not
-uninstall the App or change its GitHub permissions; manage or uninstall the App
-separately in GitHub settings.
+To change repositories or permissions, use **Manage access**. Then select
+**Save access**. The Agent's **Remove access** menu item removes only the
+association of that Agent. Multiple Agents can share saved authorizations. The
+removal of access from one Agent does not affect the other Agents.
+
+**Connections** can remove a connection only after no Agent uses it. The
+removal of a connection does not uninstall the App or change its GitHub
+permissions. Manage or uninstall the App separately in GitHub settings.
 
 ## Authorization and trust
 
-Before issuing each execution credential, the Broker checks the current
+Before the Broker issues each execution credential, it examines the current
 installation, the user's repository administration authority, and the selected
-repositories and permissions. Revoked user authorization requires signing in
-again. Removed repositories, suspended installations, unavailable GitHub checks,
-and changed bindings prevent further issuance; there is no personal OAuth fallback.
+repositories and permissions. If the user authorization is revoked, the user
+must sign in again. Removed repositories, suspended installations, unavailable
+GitHub checks, and changed bindings prevent further issuance. There is no
+personal OAuth fallback.
 
-Execution uses a GitHub installation token with explicitly reduced repository
-and permission fields. Tokens remain in Broker/MCP and never enter Agent
-workloads. Installation tokens expire after one hour; the Broker does not cache
-them in this version. Already-sent requests cannot be recalled.
+Execution uses a GitHub installation token with explicitly limited repository
+and permission fields. Tokens stay in Broker/MCP and never enter Agent
+workloads. Installation tokens expire after one hour. In this version, the
+Broker does not cache them. Requests that were already sent cannot be recalled.
 
-The platform holds the App private key and can mint tokens up to the installation's
-full GitHub authorization. Per-Agent limits do not remove the need to trust the
-platform operator. Separate installations isolate individual tokens, but a
-compromised shared App private key can affect all its installations.
+The platform holds the App private key and can mint tokens up to the full GitHub
+authorization of the installation. Per-Agent limits are not a replacement for
+trust in the platform operator. Separate installations isolate individual
+tokens, but a compromised private key of the shared App can affect all its
+installations.
 
-The Broker also stores encrypted GitHub App user access and refresh tokens to
-recheck the configuring user's authority. These are not personal access tokens,
-but operators with access to the Broker and its decryption authority can access
-them. Encryption at rest does not make the platform unable to use credentials.
-Install the App on selected repositories to limit the platform's GitHub authority.
+The Broker also stores encrypted GitHub App user access and refresh tokens.
+With these tokens, the Broker examines again the authority of the user who
+configured the access. These tokens are not personal access tokens, but
+operators with access to the Broker and its decryption authority can access
+them. Encryption at rest does not prevent the use of credentials by the
+platform. To limit the GitHub authority of the platform, install the App on
+selected repositories.
 
 GitHub attributes operations to the shared App bot. CetiRun audit identifies
-the Agent, connection and binding. Branch restrictions and merge approvals still
-need GitHub rulesets; these permissions do not provide directory-level controls
-or a guarantee that an Agent can open a PR but cannot merge it. Public information
-accessible without authentication is not made private by a repository allowlist.
+the Agent, the connection, and the binding. For branch restrictions and merge
+approvals, GitHub rulesets are still necessary. These permissions do not give
+directory-level controls, or a guarantee that an Agent can open a PR but cannot
+merge it. If information is public and accessible without authentication, a
+repository allowlist does not make it private.
 
-For a functional test, use disposable private repositories: allow one Agent to
-read repository A, another to manage Issues in repository B, and verify that
-ungranted writes and cross-repository requests fail. Repeat after editing or
-removing Agent access. Do not use customer data for acceptance tests.
+For a functional test, use disposable private repositories:
+
+- Allow one Agent to read repository A.
+- Allow another Agent to manage Issues in repository B.
+- Make sure that ungranted writes and cross-repository requests fail.
+
+Repeat the test after you edit or remove Agent access. Do not use customer data
+for acceptance tests.

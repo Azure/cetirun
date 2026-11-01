@@ -5,20 +5,23 @@ weight: 60
 no_list: true
 ---
 
-Platform operations require a reviewed environment and explicit authority to
-change it. Begin with [troubleshooting](troubleshooting/) for a running instance;
-use the infrastructure guides when preparing or changing a deployment.
+To do platform operations, you must have a reviewed environment and explicit
+authority to change it. For a running instance, start with
+[troubleshooting](troubleshooting/). When you prepare or change a deployment,
+use the infrastructure guides.
 
-Examples distinguish offline compilation/rendering, connected verification,
-and mutating deployment. A successful render checks neither Azure feature
-availability nor a running cluster. Deployment helpers can write resources
-before later checks fail; read their prerequisites and side effects first.
+The examples separate three types of steps: offline steps that compile or
+render, connected checks, and deployment steps that change resources. A
+successful render does not examine Azure feature availability. It also does
+not examine a running cluster. Deployment helpers can write resources before
+later checks fail. Before you use a deployment helper, read its prerequisites
+and side effects.
 
 ## Install
 
 - [Install CetiRun](../getting-started/platform/) — prerequisites and installation order
 - [Infrastructure](infrastructure/) — AKS and Azure Blob NFS
-- [Policy-bound Teams](policy-teams/) — the cluster, admission and platform registration that Sandbox Agents need
+- [Policy-bound Teams](policy-teams/) — the cluster, admission and platform registration that Sandbox Agents must have
 - [Agent Identity setup](agent-identity/) — encryption, workload trust, certificates, provider registrations and rollout
 
 ## Configuration
@@ -34,8 +37,8 @@ before later checks fail; read their prerequisites and side effects first.
 ## Troubleshooting
 
 Use [Troubleshooting](troubleshooting/) to identify problems with
-reconciliation, storage, routing, and integrations. Look up resource fields,
-Helm values, and command options in [Reference](../reference/).
+reconciliation, storage, routing, and integrations. Find resource fields, Helm
+values, and command options in [Reference](../reference/).
 
 Do not paste full logs, Helm values, Secret output, or browser profiles into
-public issues. See [data and credential boundaries](../security/).
+public issues. Refer to [data and credential boundaries](../security/).

@@ -1,12 +1,12 @@
 ---
 title: "Overview"
-description: "CetiRun features, components, and deployment requirements."
+description: "This page describes the CetiRun features and components, and the items that a deployment must have."
 weight: 10
 no_list: true
 ---
 
-CetiRun gives an agent a persistent workspace with authenticated access, while
-platform operators control its infrastructure and lifecycle.
+CetiRun gives an agent a persistent workspace with authenticated access.
+Platform operators control its infrastructure and lifecycle.
 
 ## Features
 
@@ -23,23 +23,25 @@ platform operators control its infrastructure and lifecycle.
 
 ## Deployment requirements
 
-An Azure subscription and suitable AKS capacity, container and chart artifacts
-accessible to that cluster, DNS, TLS, Entra ID configuration, storage, and
-operational ownership. Model-provider accounts and entitlements belong to the
-users or deploying organization.
+A deployment must have an Azure subscription, suitable AKS capacity, and
+container and chart artifacts that the cluster can access. It must also have
+DNS, TLS, Entra ID configuration, storage, and operational ownership. The
+model-provider accounts and entitlements belong to the users or to the
+organization that deploys CetiRun.
 
 CetiRun runs in your organization's infrastructure. Review the
-[installation requirements](../getting-started/platform/) and configure
+[installation prerequisites](../getting-started/platform/). Then configure
 registry access, identity, networking, and storage for your environment.
 
 Authentication depends on the deployed gateway and its trusted identity
-headers. Verify namespace isolation, network policies, and the selected
-RuntimeClass before granting access. Runtime logging is enabled by default
-and can include conversation content. Read [Security](../security/) and
-[PRIVACY.md]({{< repo "PRIVACY.md" >}}) before granting access.
+headers. Before you grant access, examine the namespace isolation, the network
+policies, and the selected RuntimeClass. Runtime logging is enabled by default
+and can include conversation content. Before you grant access, read
+[Security](../security/) and [PRIVACY.md]({{< repo "PRIVACY.md" >}}).
 
 ## Next steps
 
-Read [architecture](../concepts/architecture/) to understand the request path,
-[first instance](../getting-started/first-instance/) if your platform already
-exists, or [Security](../security/) before granting access.
+To understand the request path, read [architecture](../concepts/architecture/).
+If your platform already exists, read
+[first instance](../getting-started/first-instance/). Before you grant access,
+read [Security](../security/).
