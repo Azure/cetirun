@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability privately
     url: https://aka.ms/SECURITY.md
-    about: Follow Microsoft's MSRC reporting guidance. Do not open a public issue.
+    about: Follow Microsoft's MSRC instructions to report a vulnerability. Do not open a public issue.
   - name: Code of Conduct and conduct concerns
     url: https://opensource.microsoft.com/codeofconduct/
-    about: Read the Microsoft Open Source Code of Conduct and reporting guidance.
+    about: Read the Microsoft Open Source Code of Conduct and the instructions to report a concern.
