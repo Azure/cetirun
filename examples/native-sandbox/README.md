@@ -126,6 +126,12 @@ This applies to OpenClaw and Hermes as well as Custom. Publish the required
 content through the approved source contract; do not bypass the hold with a
 raw chart value.
 
+For a policy-authorized Custom request, unavailable materialization blocks the
+existing Gateway key and holds compute instead of revoking that key. Removing
+the unmaterialized request can recover with the same key and spend record.
+An out-of-policy request still revokes access. This does not automatically
+replace a key that was already revoked or lost.
+
 When Memory Context is enabled, reconciled OpenClaw and Hermes lifetimes
 compose the common instructions and Memory skills into the read-only
 `$HOME/.agents` view during HOME initialization. With a shared publication,

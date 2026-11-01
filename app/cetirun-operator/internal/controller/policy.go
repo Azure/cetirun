@@ -22,6 +22,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -176,7 +177,7 @@ type policyReconcileResult struct {
 	identityPending       bool
 }
 
-// policyDependencyError distinguishes an unavailable control-plane read
+// policyDependencyError distinguishes an unavailable policy/runtime dependency
 // from a definitive authorization denial. The former must fence access while
 // preserving the key so recovery can continue with the same spend record.
 type policyDependencyError struct{ err error }
@@ -370,6 +371,9 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	}
 	sandboxRevision, err := r.desiredSandboxPolicyRevision(ctx, agent, team)
 	if err != nil {
+		if errors.Is(err, runtimebindings.ErrSkillsMaterializationPending) {
+			return nil, policyDependency("%w", err)
+		}
 		return nil, err
 	}
 	return &policyResolution{team: team, policy: policy, gatewayRevision: gatewayRevision, credentialRevision: credentialRevision, sandboxRevision: sandboxRevision}, nil
