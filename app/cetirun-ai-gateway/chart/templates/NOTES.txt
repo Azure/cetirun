@@ -11,11 +11,12 @@ Models configured at install: {{ len .Values.models }}
 
 {{- if .Values.auth.adminUI.enabled }}
 
-Admin console. The chart creates no Ingress, so reach it through a port-forward:
+Admin console. The chart creates no Ingress. Use a port-forward to reach the
+console:
 
   kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "cetirun-ai-gateway.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
 
-Then open http://localhost:{{ .Values.service.port }}/ui and sign in as {{ .Values.auth.adminUI.username }}.
+Then open http://localhost:{{ .Values.service.port }}/ui in a browser. Sign in as {{ .Values.auth.adminUI.username }}.
 {{- if not .Values.auth.adminUI.passwordSecret.existingSecret }}
 
   kubectl --namespace {{ .Release.Namespace }} get secret {{ include "cetirun-ai-gateway.secretName" . }} -o jsonpath='{.data.ui-password}' | base64 -d
@@ -31,38 +32,39 @@ Admin API key, for the management API:
 
 {{- if not .Values.auth.saltKey.existingSecret }}
 
-The chart generated a salt key and will preserve it across upgrades. It encrypts
-provider credentials stored in the database and cannot be rotated: if the Secret
-{{ include "cetirun-ai-gateway.secretName" . }} is deleted, every model added
-through the console becomes unreadable and the Gateway will not tell you. Back
-it up:
+The chart generated a salt key and keeps it across upgrades. The salt key
+encrypts provider credentials stored in the database. You cannot rotate it. If
+the Secret {{ include "cetirun-ai-gateway.secretName" . }} is deleted, every
+model added through the console becomes unreadable. The Gateway does not tell
+you about this. Back up the salt key:
 
   kubectl --namespace {{ .Release.Namespace }} get secret {{ include "cetirun-ai-gateway.secretName" . }} -o jsonpath='{.data.salt-key}' | base64 -d
 
-For the same reason, `helm uninstall` leaves that Secret in place, and a later
-install under this release name reuses it. Delete it yourself only if you are
-discarding the database as well.
+For the same reason, `helm uninstall` keeps that Secret. A later installation
+under this release name uses it again. Delete the Secret yourself only if you
+also discard the database.
 {{- end }}
 
 {{- if .Values.postgresql.bundled.enabled }}
 
-PostgreSQL is bundled: {{ include "cetirun-ai-gateway.postgresqlName" . }}, one instance on a
-persistent volume. `helm uninstall` keeps the volume and its password Secret, so
-a later install under this release name finds the data again. For anything
-that needs backups or high availability, use a managed database instead
-(postgresql.bundled.enabled=false and postgresql.urlSecret).
+The chart bundles PostgreSQL as {{ include "cetirun-ai-gateway.postgresqlName" . }}. It is one
+instance on a persistent volume. `helm uninstall` keeps the volume and its
+password Secret. As a result, a later installation under this release name
+finds the data again. If backups or high availability are necessary, use a
+managed database instead (postgresql.bundled.enabled=false and
+postgresql.urlSecret).
 {{- end }}
 
 {{- if .Values.redis.bundled.enabled }}
 
-Valkey, the Redis-compatible server, is bundled: {{ include "cetirun-ai-gateway.valkeyName" . }}.
-It holds only in-flight coordination, so it has no persistence.
+The chart bundles Valkey, the Redis-compatible server, as {{ include "cetirun-ai-gateway.valkeyName" . }}.
+Valkey has no persistence because it contains only in-flight coordination data.
 {{- else if eq (int .Values.replicaCount) 1 }}
 
-Running a single replica, so Redis is not required. Before scaling up, enable
-the bundled Valkey or set redis.host: each replica otherwise keeps its own copy
-of every key budget and rate limit, which multiplies the effective limit by the
-replica count.
+Redis is not necessary because the Gateway runs a single replica. Before you
+increase the replica count, enable the bundled Valkey or set redis.host. If you
+do not, each replica keeps its own copy of every key budget and rate limit.
+This multiplies the effective limit by the replica count.
 {{- end }}
 
 {{- $settings := include "cetirun-ai-gateway.logsAndMetrics" . | fromJson }}
@@ -75,19 +77,19 @@ carries no request or response content.
 
 {{- if not $settings.spendLogs.enabled }}
 
-LiteLLM writes no row per call to LiteLLM_SpendLogs, so the console's request
-log pages stay empty. Spend, budgets and daily usage totals are kept. An image
-built before the request log keeps writing those rows.
+LiteLLM writes no row per call to LiteLLM_SpendLogs. As a result, the console's
+request log pages stay empty. Spend, budgets and daily usage totals are kept.
+An image built before the request log still writes those rows.
 {{- end }}
 
 {{- if $settings.metrics.enabled }}
 
 Prometheus metrics are served on port {{ include "cetirun-ai-gateway.metricsPort" . }} of each Gateway pod, at
 /metrics, without authentication. They name every key, user and Team with its
-spend; keep that port away from workloads that should not read them.
+spend. Keep that port away from workloads that are not allowed to read them.
 {{- if and $settings.metrics.podMonitor.enabled (not (include "cetirun-ai-gateway.podMonitorAvailable" .)) }}
 
-No PodMonitor was created: the cluster does not serve {{ $settings.metrics.podMonitor.apiVersion }}/PodMonitor.
-On AKS, enable Azure Monitor managed Prometheus and upgrade the release.
+The chart created no PodMonitor because the cluster does not serve {{ $settings.metrics.podMonitor.apiVersion }}/PodMonitor.
+On AKS, enable Azure Monitor managed Prometheus. Then upgrade the release.
 {{- end }}
 {{- end }}
