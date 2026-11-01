@@ -6,23 +6,23 @@ This document describes how to manually deploy and test the `cetirun-operator` a
 
 | Requirement | Notes |
 |-------------|-------|
-| `kubectl` configured to target cluster | `kubectl get nodes` should succeed |
+| `kubectl` configured to target cluster | `kubectl get nodes` must succeed |
 | Operator image built and pushed |  |
-| Istio installed (optional) | VirtualService tests require it; skip if absent |
-| Azure Disk CSI driver and `default` StorageClass | Required for default HOME volumes — see Step 0 |
-| Azure Blob CSI driver enabled (optional) | Required when enabling shared Blob skills storage |
+| Istio installed (optional) | Necessary for VirtualService tests. If Istio is absent, skip these tests. |
+| Azure Disk CSI driver and `default` StorageClass | Necessary for default HOME volumes — see Step 0 |
+| Azure Blob CSI driver enabled (optional) | Necessary when you enable shared Blob skills storage |
 | Dedicated workload nodepool | Node with label `workload=openclaw` and taint `workload=openclaw:NoSchedule` — see Step 0 |
 
 ---
 
 ## Step 0 — One-Time Cluster Setup
 
-These steps are required once when setting up a new AKS cluster for cetirun-operator.
+When you prepare a new AKS cluster for cetirun-operator, do these steps one time.
 
 ### 0a. Check HOME Storage and Optional Shared Skills
 
-HOME defaults to `default`, `100Gi`, and `ReadWriteOnce`. On AKS, this is an
-Azure Disk class with `WaitForFirstConsumer` binding:
+By default, HOME uses `default`, `100Gi`, and `ReadWriteOnce`. On AKS, this is
+an Azure Disk class with `WaitForFirstConsumer` binding:
 
 ```bash
 kubectl get storageclass default
@@ -30,7 +30,7 @@ kubectl get csidriver disk.csi.azure.com
 ```
 
 Shared skills still use `azureblob-nfs-premium`. If shared skills are enabled
-and the Blob CSI driver is missing, enable the AKS blob storage addon:
+and the Blob CSI driver is absent, enable the AKS blob storage addon:
 
 ```bash
 az aks update \
@@ -39,7 +39,7 @@ az aks update \
   --enable-blob-driver
 ```
 
-Verify the driver pods are running before proceeding:
+Before you continue, make sure that the driver pods are in the Running state:
 
 ```bash
 kubectl get pods -n kube-system | grep csi-azureblob
@@ -47,12 +47,12 @@ kubectl get pods -n kube-system | grep csi-azureblob
 ```
 
 > **Note:** This operation takes a few minutes. The command updates the cluster in-place and
-> does not restart existing workloads.
+> does not restart workloads that already exist.
 
 ### 0b. Enable Istio (AKS Service Mesh Addon)
 
 The operator creates Istio `VirtualService` resources to route external traffic to each instance.
-Istio must be installed before the `cetirun-gateway` Gateway resource can be applied.
+You must install Istio before you can apply the `cetirun-gateway` Gateway resource.
 
 ```bash
 # Install Istio via AKS addon
@@ -68,7 +68,7 @@ az aks mesh enable-ingress-gateway \
   --ingress-gateway-type External
 ```
 
-Verify:
+Make sure that the result is correct:
 
 ```bash
 kubectl get pods -n aks-istio-ingress
@@ -78,14 +78,14 @@ kubectl get svc -n aks-istio-ingress
 # Expected: aks-istio-ingressgateway-external with an EXTERNAL-IP assigned
 ```
 
-Then deploy the shared Istio infrastructure (Gateway, OAuth2 Proxy, EnvoyFilters) via `infra/istio/deploy.sh`.
-The `cetirun-gateway` Gateway is created in `aks-istio-ingress` with HTTPS/443 for `*.example.com`.
+Then deploy the shared Istio infrastructure (Gateway, OAuth2 Proxy, EnvoyFilters) with `infra/istio/deploy.sh`.
+The script creates the `cetirun-gateway` Gateway in `aks-istio-ingress` with HTTPS/443 for `*.example.com`.
 
 ```bash
 cd infra/istio && ./deploy.sh
 ```
 
-Verify:
+Make sure that the result is correct:
 
 ```bash
 kubectl get gateway -n aks-istio-ingress
@@ -94,7 +94,7 @@ kubectl get gateway -n aks-istio-ingress
 
 ### 0c. Add a Dedicated Workload Nodepool
 
-OpenClaw instances are scheduled exclusively on nodes with `workload=openclaw`. Add a dedicated
+OpenClaw instances are scheduled only on nodes with `workload=openclaw`. Add a dedicated
 nodepool and configure its labels and taints:
 
 **Option A — Create nodepool with labels/taints in one command:**
@@ -118,7 +118,7 @@ kubectl label node <node-name> workload=openclaw --overwrite
 kubectl taint node <node-name> workload=openclaw:NoSchedule --overwrite
 ```
 
-Verify:
+Make sure that the result is correct:
 
 ```bash
 kubectl get nodes -l workload=openclaw
@@ -129,10 +129,10 @@ kubectl describe node <node-name> | grep -A5 Taints
 
 ## Step 1 — Apply Cluster Prerequisites
 
-Run once per cluster before installing the operator. The script checks the
-StorageClass and Istio Gateway (if Istio is present), then installs the operator
-via Helm. The chart creates the CetiRun CRDs on its first installation. Every
-step is idempotent and safe to re-run.
+Before you install the operator, run this script one time for each cluster. The
+script examines the StorageClass and the Istio Gateway (if Istio is present).
+Then it installs the operator through Helm. The chart creates the CetiRun CRDs
+on its first installation. Every step is idempotent and safe to run again.
 
 ```bash
 cd app/cetirun-operator
@@ -162,7 +162,7 @@ helm install cetirun-operator app/cetirun-operator/chart \
 ```
 
 > **Testing on another cluster?** If a StorageClass named `default` does not exist,
-> override the StorageClass when creating instances via `spec.helm.values`:
+> override the StorageClass with `spec.helm.values` when you create instances:
 > ```yaml
 > helm:
 >   values:
@@ -241,12 +241,12 @@ kubectl get virtualservice -n cetirun-alice cetirun-alice -o yaml
 
 ## Step 4b — Test Istio Ingress (End-to-End)
 
-This step verifies the full traffic path: Internet → Istio Ingress Gateway → VirtualService → OpenClaw pod.
+This step examines the full traffic path: Internet → Istio Ingress Gateway → VirtualService → OpenClaw pod.
 
 ### Prerequisites
 
 - `cetirun-gateway` Gateway applied (Step 0b)
-- Instance is in `Ready` phase with `IngressReady=True`
+- The instance is in the `Ready` phase with `IngressReady=True`
 
 ### Get the Gateway IP and token
 
@@ -270,13 +270,13 @@ curl -v "http://$GATEWAY_IP/?token=$TOKEN" \
   -H "Host: alice.example.com"
 ```
 
-The `-H "Host: ..."` header is required because Istio VirtualService matches on the
-`:authority` header (i.e. `Host`). Sending the request directly to the IP without this
-header will result in a 404.
+The `-H "Host: ..."` header is necessary because Istio VirtualService matches on the
+`:authority` header (that is, `Host`). If you send the request directly to the IP without
+this header, the response will be a 404.
 
 ### Verify routing isolation
 
-Each instance only accepts requests matching its own hostname. Confirm that bob's token
+Each instance accepts only requests that match its own hostname. Make sure that bob's token
 does not work on alice's hostname (expect 401 or 403):
 
 ```bash
@@ -306,7 +306,7 @@ kubectl get virtualservice cetirun-alice -n cetirun-alice -o yaml
 kubectl delete agent alice
 ```
 
-Expected cleanup sequence (visible in operator logs):
+You can see the expected cleanup sequence in the operator logs:
 
 1. Helm uninstall `openclaw-alice`
 2. VirtualService `cetirun-alice` deleted from `cetirun-alice`
@@ -339,8 +339,8 @@ kubectl delete crd agents.cetirun.microsoft.com
 ```
 
 Do not delete the cluster-managed `default` StorageClass or shared skills
-storage as part of operator cleanup. The default Azure Disk reclaim policy
-can delete disks when their PVCs are deleted; preserve any required test data.
+storage as part of operator cleanup. When PVCs are deleted, the default Azure
+Disk reclaim policy can delete their disks. Keep any necessary test data.
 
 ---
 
@@ -348,11 +348,11 @@ can delete disks when their PVCs are deleted; preserve any required test data.
 
 | Symptom | Check |
 |---------|-------|
-| Pod stuck in `Provisioning` | Check operator logs for Helm install errors |
-| `HelmInstallFailed` condition | `helm status openclaw-<alias> --namespace cetirun-<alias>`; check the configured OCI chart reference and pull access |
-| `VirtualServiceFailed` condition | Expected if Istio is not installed; safe to ignore for non-ingress testing |
-| PVC unbound / pod Pending | `kubectl describe pvc -n cetirun-<alias>`; check the StorageClass and Pod scheduling events. `WaitForFirstConsumer` needs a schedulable Pod; review storage overrides if the class is absent. |
-| Pod crashes on startup | Check `kubectl describe pod -n cetirun-system`; likely image pull or secret mount issue |
+| Pod stuck in `Provisioning` | Examine the operator logs for Helm install errors |
+| `HelmInstallFailed` condition | Run `helm status openclaw-<alias> --namespace cetirun-<alias>`. Then examine the configured OCI chart reference and pull access. |
+| `VirtualServiceFailed` condition | If Istio is not installed, this condition is expected. For non-ingress tests, you can safely ignore it. |
+| PVC unbound / pod Pending | Run `kubectl describe pvc -n cetirun-<alias>`. Then examine the StorageClass and Pod scheduling events. `WaitForFirstConsumer` must have a schedulable Pod. If the class is absent, review storage overrides. |
+| Pod crashes on startup | Examine the output of `kubectl describe pod -n cetirun-system`. The cause is probably an image pull or secret mount problem. |
 | `couldn't find key OPENCLAW_GATEWAY_TOKEN in Secret` | The `gateway-token` secret must use `OPENCLAW_GATEWAY_TOKEN` as the key name. If you pre-created the secret manually, recreate it: `kubectl create secret generic gateway-token -n cetirun-<alias> --from-literal=OPENCLAW_GATEWAY_TOKEN=<token>` |
-| CR stuck with finalizer after `kubectl delete` | Check operator logs; if operator is down, manually remove finalizer: `kubectl patch agent <name> -p '{"metadata":{"finalizers":[]}}' --type=merge` |
-| GitHub Copilot auth not working | Complete **Sign in with GitHub** from the Portal Overview, then inspect the Agent's Copilot proxy and AI Gateway conditions. |
+| CR stuck with finalizer after `kubectl delete` | Examine the operator logs. If the operator is down, manually remove the finalizer: `kubectl patch agent <name> -p '{"metadata":{"finalizers":[]}}' --type=merge` |
+| GitHub Copilot auth does not work | Complete **Sign in with GitHub** from the Portal Overview. Then inspect the Agent's Copilot proxy and AI Gateway conditions. |
