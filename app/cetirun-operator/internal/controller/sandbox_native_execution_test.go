@@ -384,15 +384,10 @@ func TestNativeSandboxReadinessToleratesAPIBindingAndStatusChurn(t *testing.T) {
 		switch source.Kind {
 		case "PersistentVolumeClaim":
 			claim := &corev1.PersistentVolumeClaim{}
+			if err := bindNativeTestClaim(context.Background(), f.kube, key); err != nil {
+				t.Fatal(err)
+			}
 			if err := f.kube.Get(context.Background(), key, claim); err != nil {
-				t.Fatal(err)
-			}
-			claim.Spec.VolumeName = "synthetic-volume-" + claim.Name
-			if err := f.kube.Update(context.Background(), claim); err != nil {
-				t.Fatal(err)
-			}
-			claim.Status.Phase = corev1.ClaimBound
-			if err := f.kube.Status().Update(context.Background(), claim); err != nil {
 				t.Fatal(err)
 			}
 			if claim.ResourceVersion == source.ResourceVersion {
@@ -685,7 +680,41 @@ type nativeSandboxFixture struct {
 
 func newNativeSandboxFixture(t *testing.T, native bool) *nativeSandboxFixture {
 	t.Helper()
-	return newNativeSandboxSkillsFixture(t, native, []string{"example-skill"})
+	return newSandboxRuntimeFixtureForAgent(t, native, nil, false, "openclaw", true, false,
+		withNativePublishedSkills(t))
+}
+
+func withNativePublishedSkills(t *testing.T) func(*AgentReconciler, client.Client) {
+	t.Helper()
+	return func(r *AgentReconciler, kube client.Client) {
+		t.Helper()
+		teams := &api.TeamList{}
+		if err := kube.List(context.Background(), teams); err != nil || len(teams.Items) != 1 {
+			t.Fatal("publication requires exactly one fixture Team:", err)
+		}
+		team := &teams.Items[0]
+		raw, err := json.Marshal(map[string]any{
+			"version": "v1", "teams": map[string]any{team.Name: map[string]any{
+				"teamUID": team.UID, "revision": "published-v1",
+				"source": map[string]any{
+					"resourceGroup": "skills-example", "storageAccount": "publishedskills",
+					"containerName": "skills-v1", "storageClassName": "azureblob-nfs-premium", "storageSize": "1Gi",
+				},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		catalog := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "skills-catalog", Namespace: r.OperatorNamespace},
+			Data:       map[string]string{SandboxSkillsCatalogKey: string(raw)},
+		}
+		if err := kube.Create(context.Background(), catalog); err != nil {
+			t.Fatal(err)
+		}
+		r.SandboxPreparation.bootstrap.SkillsCatalogConfigMapName = catalog.Name
+		r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites).SkillsCatalogConfigMapName = catalog.Name
+	}
 }
 
 func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *nativeSandboxFixture {
@@ -717,7 +746,7 @@ func newSandboxRuntimeFixtureForAgent(t *testing.T, native bool, skills []string
 	if err := f.kube.Create(context.Background(), serviceAccount); err != nil && !(reconciled && apierrors.IsAlreadyExists(err)) {
 		t.Fatal(err)
 	}
-	if len(skills) != 0 {
+	if len(skills) != 0 && f.r.SandboxPreparation.bootstrap.SkillsCatalogConfigMapName == "" {
 		claim := input.Input.Skills.DeepCopy()
 		claim.UID, claim.ResourceVersion = "", ""
 		claim.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Team", Name: input.Team.Name, UID: input.Team.UID}}
@@ -879,6 +908,33 @@ func (f *nativeSandboxFixture) reconcileOK(t *testing.T) {
 	t.Helper()
 	if _, err := f.reconcile(); err != nil {
 		t.Fatal("reconcile native Sandbox:", err)
+	}
+}
+
+func (f *nativeSandboxFixture) finishNamespaceGC(t *testing.T) {
+	t.Helper()
+	f.reconcileOK(t)
+	if _, err := f.reconcile(); err == nil || !strings.Contains(err.Error(), "Sandbox skills claim must be absent") {
+		t.Fatal("publication cleanup did not wait for namespace garbage collection:", err)
+	}
+	ctx := context.Background()
+	namespace := instanceNamespace(f.agent.Name)
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: namespace}, &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+		t.Fatal("cannot complete namespace GC before ordinary namespace deletion:", err)
+	}
+	pods := &corev1.PodList{}
+	if err := f.kube.List(ctx, pods, client.InNamespace(namespace)); err != nil || len(pods.Items) != 0 {
+		t.Fatal("cannot complete namespace GC while Pods remain:", err)
+	}
+	// The fake API has no namespace controller to remove namespaced claims.
+	claims := &corev1.PersistentVolumeClaimList{}
+	if err := f.kube.List(ctx, claims, client.InNamespace(namespace)); err != nil {
+		t.Fatal(err)
+	}
+	for i := range claims.Items {
+		if err := f.kube.Delete(ctx, &claims.Items[i]); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

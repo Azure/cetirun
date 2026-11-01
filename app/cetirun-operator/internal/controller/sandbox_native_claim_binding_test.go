@@ -234,7 +234,9 @@ func bindNativeTestClaim(ctx context.Context, c client.Client, key client.Object
 	if err := c.Get(ctx, key, claim); err != nil {
 		return err
 	}
-	claim.Spec.VolumeName = "bound-example-volume"
+	if claim.Spec.VolumeName == "" {
+		claim.Spec.VolumeName = "bound-example-volume"
+	}
 	if !slices.Contains(claim.Finalizers, "kubernetes.io/pvc-protection") {
 		claim.Finalizers = append(claim.Finalizers, "kubernetes.io/pvc-protection")
 	}

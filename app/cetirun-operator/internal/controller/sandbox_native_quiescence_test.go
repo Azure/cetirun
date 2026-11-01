@@ -188,7 +188,7 @@ func TestNativeSandboxCleanupWaitsWithoutForceDeletingPods(t *testing.T) {
 	if err := f.kube.Delete(ctx, pod); err != nil {
 		t.Fatal(err)
 	}
-	f.reconcileOK(t)
+	f.finishNamespaceGC(t)
 	f.reconcileOK(t)
 	if podDeletes != 0 {
 		t.Fatal("Operator issued a Pod deletion during normal RWOP cleanup")

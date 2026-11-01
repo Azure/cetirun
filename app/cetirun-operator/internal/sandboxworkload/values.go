@@ -152,10 +152,10 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	} else if gateway["enabled"] == true {
 		return nil, fmt.Errorf("native Gateway requires a typed authorized key projection")
 	}
-	if b.input.SkillsMode == SkillsModeEmpty && out["skills"] != nil {
+	if out["skills"] != nil {
 		skills, ok := out["skills"].(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("empty skills require a skills object without package requests")
+			return nil, fmt.Errorf("protected skills require a skills object without package requests")
 		}
 		for _, field := range []string{"npm", "clawHub"} {
 			if skills[field] == nil {
@@ -163,10 +163,10 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 			}
 			requested, ok := skills[field].([]any)
 			if !ok || len(requested) != 0 {
-				return nil, fmt.Errorf("empty skills cannot discard skills.%s requests", field)
+				return nil, fmt.Errorf("SkillsMaterializationPending: protected workloads require published skills, not runtime skills.%s requests", field)
 			}
 		}
-		if claim, present := skills["existingClaim"]; present && claim != "" {
+		if claim, present := skills["existingClaim"]; b.input.SkillsMode == SkillsModeEmpty && present && claim != "" {
 			return nil, fmt.Errorf("empty skills cannot also select skills.existingClaim")
 		}
 	}

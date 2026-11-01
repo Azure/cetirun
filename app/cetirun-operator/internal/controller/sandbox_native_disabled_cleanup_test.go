@@ -181,7 +181,7 @@ func TestNativeCleanupAfterDisableReleasesRecordedReservation(t *testing.T) {
 	if err := f.kube.Delete(ctx, f.pod(t)); err != nil {
 		t.Fatal(err)
 	}
-	f.reconcileOK(t)
+	f.finishNamespaceGC(t)
 	f.reconcileOK(t)
 	if _, found, err := original.ReadNative(ctx, f.agent.UID); err != nil || found {
 		t.Fatal("recorded reservation did not finish cleanup after disablement:", err)

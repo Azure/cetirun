@@ -34,7 +34,7 @@ func TestNativeSandboxForegroundDeletionRetainsLifetimeState(t *testing.T) {
 	if err := f.kube.Delete(ctx, pod); err != nil {
 		t.Fatal(err)
 	}
-	f.reconcileOK(t)
+	f.finishNamespaceGC(t)
 	f.reconcileOK(t)
 	if err := f.kube.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatal("foreground deletion left the initial Pod protected:", err)
