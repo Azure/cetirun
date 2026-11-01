@@ -49,8 +49,8 @@ func configureRolloutStableIngress(t *testing.T, kind string) func(*AgentReconci
 
 func TestNativeSandboxIngressRolloutDoesNotRestartAgent(t *testing.T) {
 	ctx := context.Background()
-	f := newSandboxRuntimeFixtureForAgent(t, true, []string{"example-skill"}, false, "openclaw", true, false,
-		configureRolloutStableIngress(t, "openclaw"))
+	f := newSandboxRuntimeFixtureForAgent(t, true, nil, false, "openclaw", true, false,
+		withNativePublishedSkills(t), configureRolloutStableIngress(t, "openclaw"))
 	gateway := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "gateway-before-rollout", Namespace: "aks-istio-ingress", UID: "old-gateway-pod-uid",

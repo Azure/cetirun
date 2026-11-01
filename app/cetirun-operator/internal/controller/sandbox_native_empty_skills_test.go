@@ -29,6 +29,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+func TestNativePublishedSkillsRejectsRuntimePackageRequests(t *testing.T) {
+	for _, selection := range []string{"example-skill", "npm:example-package"} {
+		t.Run(selection, func(t *testing.T) {
+			f := newSandboxRuntimeFixtureForAgent(t, true, []string{selection}, false, "openclaw", true, false,
+				withNativePublishedSkills(t))
+			f.projectGateway(t)
+			err := f.r.prepareSandboxHeld(context.Background(), f.current(t))
+			if err == nil || !strings.Contains(err.Error(), "SkillsMaterializationPending") {
+				t.Fatal("published PVC silently accepted an unmaterialized package request:", err)
+			}
+			f.assertNotReady(t)
+			if f.installer.stages != 0 {
+				t.Fatal("unsupported package request staged a workload")
+			}
+		})
+	}
+}
+
 func TestNativeSandboxEmptySkillsLifecycle(t *testing.T) {
 	f := newNativeSandboxSkillsFixture(t, true, nil)
 	ctx := context.Background()
