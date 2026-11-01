@@ -4,46 +4,47 @@ description: "Prepare a cluster so that the Agents of a Team with an Agent Polic
 weight: 15
 ---
 
-A Team created in the Portal has an Agent Policy and one or more Sandboxes.
-Its Agents run in a Sandbox: each in a Kata virtual machine, with the Policy's
-network rules compiled into Cilium network policies and every write checked by
-the Sandbox admission webhook. The platform chart leaves this off. Until it is
-on, the Portal refuses to create an Agent for such a Team, and an Agent created
-for one with `kubectl` is held and never starts.
+A Team that is created in the Portal has an Agent Policy and one or more
+Sandboxes. Its Agents run in a Sandbox, each in a Kata virtual machine. The
+Policy's network rules are compiled into Cilium network policies, and the
+Sandbox admission webhook examines every write. The platform chart keeps this
+disabled. Until it is enabled, the Portal refuses to create an Agent for such a
+Team. An Agent that is created for such a Team with `kubectl` is held and never
+starts.
 
-This page turns it on for an installation made with
+The steps on this page enable it for an installation that was made with
 [Install CetiRun](../../getting-started/platform/), in the release namespace
 `cetirun-system`:
 
-1. [Check the cluster](#the-cluster).
+1. [Examine the cluster](#the-cluster).
 2. [Create a HOME StorageClass](#home-storage).
 3. [Issue the admission certificate](#the-admission-certificate).
-4. [Turn on admission without enforcement](#admission-without-enforcement).
+4. [Enable admission without enforcement](#admission-without-enforcement).
 5. [Register the platform](#the-platform-registration).
 6. [Label the peers](#peer-labels).
 7. [Enforce admission and run Sandboxes](#enforce-admission-and-run-sandboxes).
-8. [Check with a Sandbox, a Policy and a Team](#check-the-setup).
+8. [Test the setup with a Sandbox, a Policy, and a Team](#check-the-setup).
 
-Then follow [Smart routing](../smart-routing/) for a Team whose Agents use a
-smart-routing model, or [Configure a team](../../guides/teams/) for the other
-Team settings.
+Then, for a Team whose Agents use a smart-routing model, follow
+[Smart routing](../smart-routing/). For the other Team settings, follow
+[Configure a team](../../guides/teams/).
 
 ## The cluster
 
 - **Kubernetes 1.37 or later.** The operator chart refuses Sandbox admission on
-  an older cluster. The [cluster template](../infrastructure/) defaults to
-  `1.34`: set `kubernetesVersion` in your parameter file to a 1.37 or later
-  version your region offers.
-- **Kata.** Agent node pools with `workloadRuntime: KataVmIsolation`, as the
-  template's two agent pools have, provide the `kata-vm-isolation`
-  RuntimeClass.
-- **Cilium.** Azure CNI powered by Cilium, the template's networking. The
-  operator writes a CiliumNetworkPolicy for each Agent.
+  an older cluster. The default of the [cluster template](../infrastructure/)
+  is `1.34`. In your parameter file, set `kubernetesVersion` to a 1.37 or later
+  version that your region offers.
+- **Kata.** Agent node pools with `workloadRuntime: KataVmIsolation` supply the
+  `kata-vm-isolation` RuntimeClass. The two agent pools of the template have
+  this setting.
+- **Cilium.** Azure CNI powered by Cilium, which is the networking of the
+  template. The operator writes a CiliumNetworkPolicy for each Agent.
 - **Two nodes for the admission server.** Its two replicas run on different
-  nodes, and every write to Agents, Teams, Sandboxes and Agent Policies waits
-  for one of them.
-- **ReadWriteOncePod storage.** Each Agent's HOME is a volume only its Pod may
-  mount. Azure Disk supports it.
+  nodes. Every write to Agents, Teams, Sandboxes, and Agent Policies waits for
+  one of them.
+- **ReadWriteOncePod storage.** Each Agent's HOME is a volume that only its Pod
+  can mount. Azure Disk supports it.
 
 ## HOME storage
 
@@ -62,14 +63,14 @@ volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 ```
 
-A Sandbox names this class, and the platform registration below pins it.
+A Sandbox names this class. The platform registration below pins it.
 
 ## The admission certificate
 
 The admission server serves TLS under its Service name,
 `cetirun-sandbox-admission.cetirun-system.svc`. The chart does not issue a
-certificate: create a CA, a serving certificate for that name, and a TLS
-Secret, for example with OpenSSL:
+certificate. Create a CA, a server certificate for that name, and a TLS Secret.
+For example, use OpenSSL:
 
 ```bash
 SERVICE=cetirun-sandbox-admission.cetirun-system.svc
@@ -86,17 +87,17 @@ base64 -w0 ca.crt > ca-bundle.txt
 ```
 
 `ca-bundle.txt` holds the CA bundle for the enforcement step. Keep `ca.key`
-outside the cluster, and renew the certificate before it expires: an expired
-certificate makes the admission server unready, and once admission is enforced,
-every write it checks is refused. The operator README describes
-[rotating the CA]({{< repo "app/cetirun-operator/README.md" >}}#availability-and-bootstrap).
+outside the cluster. Renew the certificate before it expires. An expired
+certificate makes the admission server unready. After admission is enforced,
+every write that it examines is then refused. The operator README describes
+[how to rotate the CA]({{< repo "app/cetirun-operator/README.md" >}}#availability-and-bootstrap).
 
 ## Admission without enforcement
 
-Install admission without enforcement first, so that it runs and answers
-before its refusals count; installing it enforced from the start is not
-supported. Add to your platform values file, and run the deployment helper
-again:
+First, install admission without enforcement. This lets admission run and
+answer before its refusals have an effect. An installation with enforcement
+from the start is not supported. Add the values below to your platform values
+file. Then run the deployment helper again.
 
 ```yaml
 cetirun-operator:
@@ -111,10 +112,10 @@ cetirun-operator:
       - "<admin-group-object-id>"  # an Entra ID group's object ID
 ```
 
-List at least one administrator in `adminUsers` or `adminGroups`. They can
-write policy-bound configuration with `kubectl`, and reauthorize an Agent, for
-which the Portal has no page. Then check that both replicas are ready, on
-different nodes:
+List at least one administrator in `adminUsers` or `adminGroups`. These
+administrators can write policy-bound configuration with `kubectl`. They can
+also reauthorize an Agent. The Portal has no page for this. Then make sure that
+both replicas are ready and that they run on different nodes:
 
 ```bash
 kubectl rollout status deployment/cetirun-sandbox-admission -n cetirun-system
@@ -123,12 +124,13 @@ kubectl get pods -n cetirun-system -l app.kubernetes.io/name=cetirun-sandbox-adm
 
 ## The platform registration
 
-The operator and the admission webhook read what the cluster provides from a
-ConfigMap you write, `platform.json` in `sandbox-platform` in the operator's
-namespace. They accept a Sandbox only with the RuntimeClass and StorageClass
-pinned here, and build each Agent's network policy from the peers here: DNS,
-the AI Gateway and the ingress gateway. Unknown fields, and fields left out
-that a Sandbox needs, are refused.
+The operator and the admission webhook read what the cluster supplies from a
+ConfigMap that you write. This is `platform.json` in `sandbox-platform`, in
+the operator's namespace. They accept a Sandbox only with the RuntimeClass and
+StorageClass that are pinned here. They build the network policy of each Agent
+from the peers here: DNS, the AI Gateway, and the ingress gateway. Unknown
+fields are refused. Fields that a Sandbox must have and that are left out are
+also refused.
 
 ```json
 {
@@ -204,7 +206,7 @@ that a Sandbox needs, are refused.
 }
 ```
 
-Fill in the placeholders from the cluster:
+Replace the placeholders with values from the cluster:
 
 | Placeholder | Command |
 | --- | --- |
@@ -216,25 +218,26 @@ Fill in the placeholders from the cluster:
 | `<INGRESS_DEPLOYMENT_UID>` | `kubectl get deploy -n aks-istio-ingress -l app=aks-istio-ingressgateway-external -o jsonpath='{.items[0].metadata.uid}'` |
 | `<API_SERVER_IP>` | `kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes -o jsonpath='{.items[*].endpoints[*].addresses[*]}'`, one entry each |
 | `<RUNTIMECLASS_UID>`, `<RUNTIMECLASS_HANDLER>` | `kubectl get runtimeclass kata-vm-isolation -o jsonpath='{.metadata.uid} {.handler}'` |
-| `<STORAGECLASS_UID>` | `kubectl get storageclass sandbox-home -o jsonpath='{.metadata.uid}'`; `Provisioner` is its `provisioner` |
+| `<STORAGECLASS_UID>` | `kubectl get storageclass sandbox-home -o jsonpath='{.metadata.uid}'`. `Provisioner` is its `provisioner` |
 
 The CIDRs are the cluster template's defaults: Pods `10.244.0.0/16`, Services
 `172.16.0.0/16`, and the nodes' AKS-managed virtual network `10.224.0.0/12`.
-Use your cluster's own ranges if they differ; `trustedProxyCIDRs` has to lie
-within `podCIDRs`. The `uid` of the DNS and Gateway peers is a name you choose:
-their Pods carry it as a label, below. The `revision` fields are labels you
-change whenever you change what they describe.
+If your cluster has different ranges, use its own ranges. `trustedProxyCIDRs`
+must be within `podCIDRs`. The `uid` of the DNS and Gateway peers is a name
+that you select. Their Pods carry it as a label, as the next section shows. The
+`revision` fields are labels that you change each time that you change what
+they describe.
 
-The ingress entry selects the AKS-managed ingress gateway's Pods by their own
-label, so a gateway rollout needs no change here. The ports are OpenClaw's UI
-(`18789`), the terminal (`7681`), and Hermes' API and Dashboard (`8642`,
-`9119`). See [rollout-stable managed ingress]({{< repo "examples/native-sandbox/README.md" >}}#rollout-stable-managed-ingress)
-for its conditions, and the
-[capability registration]({{< repo "app/cetirun-operator/README.md" >}}#retained-single-start-profile-and-capability-registration)
-for every field.
+The ingress entry selects the Pods of the AKS-managed ingress gateway by their
+own label. As a result, you do not have to change this entry after a gateway
+rollout. The ports are OpenClaw's UI (`18789`), the terminal (`7681`), and
+Hermes' API and Dashboard (`8642`, `9119`). For its conditions, see
+[rollout-stable managed ingress]({{< repo "examples/native-sandbox/README.md" >}}#rollout-stable-managed-ingress).
+For every field, see the
+[capability registration]({{< repo "app/cetirun-operator/README.md" >}}#retained-single-start-profile-and-capability-registration).
 
-Create the ConfigMap, and protect it as cluster configuration: whoever can
-write it decides what Agents may reach.
+Create the ConfigMap. Protect it as cluster configuration. Anyone who can
+write it decides what Agents can reach.
 
 ```bash
 kubectl create configmap sandbox-platform -n cetirun-system --from-file=platform.json
@@ -242,10 +245,10 @@ kubectl create configmap sandbox-platform -n cetirun-system --from-file=platform
 
 ## Peer labels
 
-Cilium lets an Agent reach the Pods of the DNS and Gateway peers only when they
-carry the label `sandbox.cetirun.microsoft.com/peer-uid`, whose value is the
-peer's `uid`; their addresses alone are not enough. Label CoreDNS and the AI
-Gateway:
+Cilium lets an Agent reach the Pods of the DNS and Gateway peers only when
+these Pods carry the label `sandbox.cetirun.microsoft.com/peer-uid`. The value
+of this label is the peer's `uid`. Their addresses alone are not sufficient.
+Label CoreDNS and the AI Gateway:
 
 ```bash
 kubectl label pods -n kube-system -l k8s-app=kube-dns \
@@ -255,14 +258,14 @@ kubectl label pods -n cetirun-system \
   sandbox.cetirun.microsoft.com/peer-uid=ai-gateway --overwrite
 ```
 
-The label belongs to the Pods, not to their Deployments: label the new Pods
-again after an AKS update replaces CoreDNS, and after every Gateway upgrade or
-restart, as soon as the new Pods start. Until then, Agents' model requests and
-name lookups fail. The ingress gateway's Pods need no label.
+The label belongs to the Pods, not to their Deployments. After an AKS update
+replaces CoreDNS, label the new Pods again as soon as they start. Do this also
+after every Gateway upgrade or restart. Until then, Agents' model requests and
+name lookups fail. A label is not necessary on the Pods of the ingress gateway.
 
 ## Enforce admission and run Sandboxes
 
-Once admission answers, enforce it and turn on Sandbox execution in one more
+After admission answers, enforce it and enable Sandbox execution in one more
 upgrade. Your values file then has:
 
 ```yaml
@@ -293,50 +296,52 @@ chart and the OpenClaw or Hermes image of the same release.
 
 In the Portal, under **Admin**:
 
-1. **Sandboxes → New Sandbox**: Kata, the `sandbox-home` StorageClass, the
-   default sizes. The helper memory limit of `2Gi` the form suggests leaves
-   room for OpenClaw's initialization.
-2. **Agent policies → New policy**: the harnesses Agents may run, the shared
-   models they may use, and their monthly Gateway budget, which is required
-   once they may use a model.
-3. **Teams → New Team**: the Policy, and the Sandbox as the allowed and
-   default Sandbox.
+1. **Sandboxes → New Sandbox**: select Kata, the `sandbox-home` StorageClass,
+   and the default sizes. The form suggests a helper memory limit of `2Gi`.
+   This limit leaves room for OpenClaw's initialization.
+2. **Agent policies → New policy**: select the harnesses that Agents can run and
+   the shared models that they can use. Also set their monthly Gateway budget.
+   This budget is necessary if they can use a model.
+3. **Teams → New Team**: select the Policy. Select the Sandbox as the allowed
+   and default Sandbox.
 
-The Sandbox has to report ready and the Policy accepted:
+Make sure that the Sandbox reports ready and that the Policy reports accepted:
 
 ```bash
 kubectl get sandboxes.cetirun.microsoft.com,agentpolicies.cetirun.microsoft.com,teams.cetirun.microsoft.com
 ```
 
-A Sandbox that is not ready names the cause in its conditions, such as a
-StorageClass the registration does not pin (`UnapprovedStorage`); an Agent
-Policy that is not accepted names the setting the registration does not
-support. Members can then create Agents for the Team, as in
+If a Sandbox is not ready, it names the cause in its conditions. An example is
+a StorageClass that the registration does not pin (`UnapprovedStorage`). If an
+Agent Policy is not accepted, it names the setting that the registration does
+not support. Members can then create Agents for the Team, as in
 [Your first instance](../../getting-started/first-instance/).
 
 ### Team operations rejected by admission
 
-An HTTP 403 can come from the Sandbox admission webhook even when the Portal
+An HTTP 403 can come from the Sandbox admission webhook, even when the Portal
 ServiceAccount has permission to create or update Teams. The Portal reports
 these webhook refusals as `admission_rejected`, separately from
-`rbac_forbidden`. Check the selected Policy, Sandbox and registered topology,
-then consult the administrator-only Portal diagnostics. Do not broaden
-ClusterRole permissions merely to address a conflicting network requirement.
-The response omits raw webhook details; admission and RBAC enforcement are
-unchanged.
+`rbac_forbidden`. Examine the selected Policy, Sandbox, and registered
+topology. Then refer to the administrator-only Portal diagnostics. Do not
+increase ClusterRole permissions only to solve a network conflict. The response
+does not include raw webhook details, and admission and RBAC enforcement do not
+change.
 
 ## What changes for Agents
 
 - Tailscale is not available to Sandbox Agents.
-- Custom harnesses, Entra projection and Agent Identity/Connections require the
-  separate approved-image and identity setup in the
-  [Custom contract](../../reference/agent-harness/#policy-governed-custom-execution);
-  the basic configuration above does not enable them.
-- Changing a Policy's model access, budget, network or security settings
-  restarts its running Agents once. Changing only its request limits does not.
+- Custom harnesses, Entra projection, and Agent Identity/Connections must have
+  the separate approved-image and identity setup in the
+  [Custom contract](../../reference/agent-harness/#policy-governed-custom-execution).
+  The basic configuration above does not enable them.
+- A change to the model access, budget, network, or security settings of a
+  Policy restarts its running Agents one time. A change to only its request
+  limits does not.
 - Concurrent updates to the shared native reservation use bounded retries for
-  definite Kubernetes resource-version conflicts. Each retry rereads the
-  authority; stopping/source conflicts and uncertain writes are not bypassed.
+  definite Kubernetes resource-version conflicts. Each retry reads the
+  authority again. The retries do not bypass stop or source conflicts, or
+  uncertain writes.
 - An Agent moves to another Team only when an administrator reauthorizes it
   with `kubectl`.
 

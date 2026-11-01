@@ -1,24 +1,28 @@
 ---
 title: "Agent Identity setup"
-description: "Prepare the identity, encryption, certificates, provider registrations, and platform configuration used by Agent connections."
+description: "Prepare the identity, encryption, certificates, provider registrations, and platform configuration that Agent connections use."
 weight: 25
 ---
 
-Use this guide to prepare a CetiRun environment for Agent connections. It is
-for platform administrators; users follow [Agent identities](../../guides/agent-identity/)
-after installation. Start with [Install CetiRun](../../getting-started/platform/)
-for the cluster, ingress, runtime, storage, images, and model prerequisites.
-The cluster Bicep and platform chart do not create the external identities,
-provider registrations, encryption key, or certificates described here.
+Use this guide to prepare a CetiRun environment for Agent connections. This
+guide is for platform administrators. After installation, users follow
+[Agent identities](../../guides/agent-identity/). For the cluster, ingress,
+runtime, storage, images, and model prerequisites, start with
+[Install CetiRun](../../getting-started/platform/). The cluster Bicep and the
+platform chart do not create the external identities, provider registrations,
+encryption key, or certificates that this guide describes.
 
 ## Choose the capabilities
 
-Portal login identifies the person managing an Agent. A **Connection** stores
-that person's provider authorization. An Agent's **Identities** associates
-selected connections with that Agent. A Microsoft Entra **Agent Identity** is
-a separate directory identity, needed for independent Azure and Microsoft
-delegated access. GitHub and Google connections do not require that directory
-identity, but still require authenticated Portal ownership and encrypted storage.
+Portal login identifies the person who manages an Agent. A **Connection**
+stores that person's provider authorization. An Agent's **Identities**
+associates selected connections with that Agent.
+
+A Microsoft Entra **Agent Identity** is a separate directory identity. It is
+necessary for independent Azure and Microsoft delegated access. That directory
+identity is not necessary for GitHub and Google connections. But authenticated
+Portal ownership and encrypted storage are still necessary for these
+connections.
 
 | Capability | Preparation beyond the common foundation |
 | --- | --- |
@@ -29,87 +33,97 @@ identity, but still require authenticated Portal ownership and encrypted storage
 | Azure or Microsoft Graph, personal account | Entra lifecycle plus [delegated authorization setup](../entra-agent-identity/), consent and downstream permissions |
 
 The baseline below enables GitHub/Google connections and explicitly disables
-both Broker Entra modes. Add the Entra overlays only after completing their
-prerequisites. Broker chart defaults enable both modes, so omitting those flags
-does not produce a GitHub/Google-only deployment.
+both Broker Entra modes. Add the Entra overlays only after you complete their
+prerequisites. The Broker chart defaults enable both modes. As a result, if
+you omit those flags, you do not get a GitHub/Google-only deployment.
 
 ## 1. Prepare access and record the coordinates
 
 Use an authorized Azure CLI session and an explicit Kubernetes context. The
-administrator needs resource provisioning and role-assignment authority for
-the encryption resources, Kubernetes permission to install the charts and
-Secrets, and provider-specific registration/consent authority. Entra directory
-roles and Azure subscription roles are different permissions. The examples
-use Azure CLI, kubectl, Helm, Bash, OpenSSL 3 and jq; install these tools before
-starting and keep environment values and credentials outside the checkout.
+administrator must have these permissions:
 
-Complete these prerequisites before enabling the Portal feature:
+- Authority to provision the encryption resources and to assign roles for them
+- Kubernetes permission to install the charts and Secrets
+- Registration and consent authority that is specific to each provider
 
-- AKS OIDC issuer and Workload Identity webhook; retain the exact issuer URL,
-  including its trailing slash. See [AKS Workload Identity](https://learn.microsoft.com/en-us/azure/aks/workload-identity-deploy-cluster).
-- Managed Istio, namespace injection, DNS, a working HTTPS Portal, and the
+Entra directory roles and Azure subscription roles are different permissions.
+The examples use Azure CLI, kubectl, Helm, Bash, OpenSSL 3 and jq. Install
+these tools before you start. Keep environment values and credentials outside
+the checkout.
+
+Before you enable the Portal feature, complete these prerequisites:
+
+- AKS OIDC issuer and Workload Identity webhook. Keep the exact issuer URL,
+  with its trailing slash. Refer to [AKS Workload Identity](https://learn.microsoft.com/en-us/azure/aks/workload-identity-deploy-cluster).
+- Managed Istio, namespace injection, DNS, an HTTPS Portal that works, and the
   [Portal login app and group admission](../istio/#prepare-identity-dns-and-tls).
   OAuth2 Proxy must forward its verified ID token to the Portal. The Portal
-  checks the token signature, tenant, audience and immutable owner identity;
-  email headers alone are insufficient.
+  examines the token signature, tenant, audience and immutable owner identity.
+  Email headers alone are not sufficient.
 - A supported Hermes or OpenClaw workload and an operational platform, or a
-  governed Custom image implementing the [Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads).
-  Custom additionally requires `custom` in each runtime allowlist below and the
-  native common-executor configuration; changing a type list alone grants nothing.
+  governed Custom image that implements the [Custom client contract]({{< repo "app/cetirun-connections-mcp/README.md" >}}#governed-custom-workloads).
+  For Custom, `custom` must also be in each runtime allowlist below. The native
+  common-executor configuration is also necessary for Custom. A change to a
+  type list alone grants nothing.
 - Network access from the Broker to Kubernetes, Entra sign-in, its Key Vault,
-  and configured providers; from MCP to Kubernetes, the Broker and the fixed
-  provider API origins. DNS, mesh control-plane access and image pulls must
-  also work. Review [Istio egress](../istio/#egress-and-logging) and the Broker/MCP
-  NetworkPolicies; a ServiceEntry alone does not grant network access.
+  and configured providers. Network access from MCP to Kubernetes, the Broker
+  and the fixed provider API origins. DNS, mesh control-plane access and image
+  pulls must also work. Examine [Istio egress](../istio/#egress-and-logging)
+  and the Broker/MCP NetworkPolicies. A ServiceEntry alone does not grant
+  network access.
 
 Provider endpoints include `github.com` and `api.github.com`,
 `accounts.google.com`, `oauth2.googleapis.com`, `openidconnect.googleapis.com`,
 `gmail.googleapis.com`, `www.googleapis.com`, `login.microsoftonline.com`,
-`graph.microsoft.com` and `management.azure.com`, as applicable. Permit the
-deployment's Key Vault hostname. Browser authorization and server-side token
-exchange need different endpoints; check both paths.
+`graph.microsoft.com` and `management.azure.com`, as applicable. Allow the
+deployment's Key Vault hostname. Different endpoints are necessary for browser
+authorization and for server-side token exchange. Examine both paths.
 
-The examples use the following coordinates. Keep them consistent if you rename
-anything, and use your existing platform release name during upgrades. Replace
-the ID placeholders with the actual GUIDs from your deployment.
+The examples use these coordinates. If you rename anything, keep them
+consistent. During upgrades, use the name of your current platform release.
+Replace the ID placeholders with the actual GUIDs from your deployment.
 
 | Resource | Example and configuration consumer |
 | --- | --- |
-| Portal origin | `https://portal.example.com`; provider redirects and Broker Portal URLs |
-| Tenant ID | `<tenant-id>`; Portal, Broker, optional Operator Entra configuration |
-| Portal login application client ID | `<portal-client-id>`; OAuth2 Proxy and Portal `agentIdentity.portalClientId` |
-| Broker encryption managed identity client ID | `<encryption-client-id>`; Broker `agentIdentity.encryptionClientId` |
-| Encryption managed identity principal/object ID | Returned by Azure; used for the Key Vault role assignment, not the client-ID Helm field |
+| Portal origin | `https://portal.example.com`. Provider redirects and Broker Portal URLs |
+| Tenant ID | `<tenant-id>`. Portal, Broker, optional Operator Entra configuration |
+| Portal login application client ID | `<portal-client-id>`. OAuth2 Proxy and Portal `agentIdentity.portalClientId` |
+| Broker encryption managed identity client ID | `<encryption-client-id>`. Broker `agentIdentity.encryptionClientId` |
+| Encryption managed identity principal/object ID | Azure returns this ID. It is for the Key Vault role assignment, not for the client-ID Helm field |
 | Broker namespace / ServiceAccount | `cetirun-credentials` / `cetirun-agent-broker` |
-| Platform namespace | `cetirun-system`; Operator, Portal and MCP in the umbrella deployment |
+| Platform namespace | `cetirun-system`. Operator, Portal and MCP in the umbrella deployment |
 | Operator / Portal / MCP ServiceAccounts | `cetirun-operator-controller-manager` / `cetirun-portal` / `cetirun-connections-mcp` |
-| Kubernetes workload audience | `cetirun-connections-mcp`; must match Broker, MCP and Operator |
-| Entra federation audience | `api://AzureADTokenExchange`; distinct from the MCP workload audience |
+| Kubernetes workload audience | `cetirun-connections-mcp`. It must match Broker, MCP and Operator |
+| Entra federation audience | `api://AzureADTokenExchange`. It is different from the MCP workload audience |
 | Istio revision | `asm-example` is a placeholder for the installed revision |
 
-Prepare private files outside the repository. Commands below create cloud or
-cluster resources only where explicitly marked; offline rendering is separate.
-Use `umask 077`, avoid shell tracing, and keep credential values out of command
-arguments, Helm values, logs and support attachments.
+Prepare private files outside the repository. The commands below create cloud
+or cluster resources only where they are explicitly marked. The offline render
+is a separate step. Use `umask 077`. Avoid shell tracing. Keep credential
+values out of command arguments, Helm values, logs and support attachments.
 
 ## 2. Create the encryption foundation
 
-The Broker uses envelope encryption: connection records are Kubernetes Secrets
-containing ciphertext, and a Key Vault RSA key wraps their data-encryption keys.
-This foundation is required even with both Entra modes disabled. It does not
-require a Blueprint or Microsoft delegated authorization client.
+The Broker uses envelope encryption. Connection records are Kubernetes Secrets
+that contain ciphertext, and a Key Vault RSA key wraps their data-encryption
+keys. This foundation is necessary even when both Entra modes are disabled. A
+Blueprint or a Microsoft delegated authorization client is not necessary for
+this foundation.
 
 Use a dedicated user-assigned managed identity for encryption. Its federated
 credential trusts the Broker ServiceAccount, with the AKS issuer and
-`api://AzureADTokenExchange` audience. The identity only needs the Key Vault
-crypto operations required by the Broker; it does not need subscription-wide
-Contributor or Graph application-management permissions.
+`api://AzureADTokenExchange` audience. Only the Key Vault crypto operations
+that the Broker uses are necessary for the identity. Subscription-wide
+Contributor or Graph application-management permissions are not necessary for
+it.
 
-**Connected, mutating setup example.** Replace the inputs, select the reviewed
-subscription, and use an existing approved resource group. The person creating
-the key must already have Key Vault data-plane key-management authority
-(for example, Key Vault Crypto Officer); resource-group Contributor alone is
-insufficient. Your network policy must permit the Broker to reach the vault.
+**Connected, mutating setup example.** Replace the inputs. Select the reviewed
+subscription. Use an approved resource group that exists.
+
+The person who creates the key must already have Key Vault data-plane
+key-management authority (for example, Key Vault Crypto Officer).
+Resource-group Contributor alone is not sufficient. Your network policy must
+allow the Broker to reach the vault.
 
 ```bash
 umask 077
@@ -158,35 +172,41 @@ az role assignment create --assignee-object-id "$ENCRYPTION_PRINCIPAL_ID" \
 ```
 
 Allow several minutes for new role assignments to propagate. If key creation
-returns an authorization error, confirm the signed-in provisioning principal,
-assignment scope and vault network access, then retry only the key-creation
-step after propagation. Do not proceed to deployment until it succeeds.
+returns an authorization error, examine the signed-in principal that
+provisions the resources. Also examine the assignment scope and the vault
+network access. After propagation, retry only the key-creation step. Do not
+start the deployment until that step succeeds.
 
 The [Key Vault Crypto Service Encryption User role](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/security#key-vault-crypto-service-encryption-user)
-provides key metadata read and wrap/unwrap operations. Scope it to the intended
-key. Configure `https://<vault-name>.vault.azure.net/keys/connection-records`
-as `agentIdentity.keyVaultKeyUrl`; this versionless URL allows new records to
-use a rotated version while old records retain the exact key version needed
-for decryption. Keep old versions enabled and accessible while any saved
-records or backups depend on them. A Key Vault **secret** URL is not a key URL.
+includes key metadata read and wrap/unwrap operations. Scope it to the
+intended key.
+
+Configure `https://<vault-name>.vault.azure.net/keys/connection-records` as
+`agentIdentity.keyVaultKeyUrl`. This versionless URL lets new records use a
+rotated version. Old records keep the exact key version that is necessary for
+decryption. While any saved records or backups depend on old versions, keep
+these versions enabled and accessible. A Key Vault **secret** URL is not a key
+URL.
 
 For a vault with private access, provision its network path and DNS before
-deployment. The example creates the vault but does not implement that network
-design. Reuse an approved vault instead when one already exists; do not
-overwrite its access configuration with the creation example.
+deployment. The example creates the vault, but it does not implement that
+network design. If an approved vault already exists, use that vault instead.
+Do not overwrite its access configuration with the creation example.
 
 ## 3. Prepare namespaces and TLS
 
 Keep the Broker in its private credential namespace. The platform chart rejects
-installing it beside MCP. The Broker may read encrypted records and provider
-Secrets; MCP has no Kubernetes Secret API access. The Operator creates scoped
-Broker record permissions in Agent namespaces when `connectionsMCP.brokerNamespace`
-and `brokerServiceAccount` are set. Keep those fields until cleanup is complete.
+a Broker installation beside MCP. The Broker can read encrypted records and
+provider Secrets. MCP has no Kubernetes Secret API access. When
+`connectionsMCP.brokerNamespace` and `brokerServiceAccount` are set, the
+Operator creates scoped Broker record permissions in Agent namespaces. Keep
+those fields until cleanup is complete.
 
-Create missing namespaces and label both for the installed Istio revision.
-For an existing namespace, inspect its injection configuration before changing
-labels; do not combine legacy `istio-injection` selection with a different
-revision. **These commands mutate the selected cluster:**
+Create the namespaces that do not exist. Label both namespaces for the
+installed Istio revision. For a namespace that already exists, examine its
+injection configuration before you change labels. Do not combine legacy
+`istio-injection` selection with a different revision.
+**These commands mutate the selected cluster:**
 
 ```bash
 kubectl create namespace cetirun-credentials
@@ -196,29 +216,31 @@ kubectl label namespace cetirun-credentials istio.io/rev=your-installed-revision
 kubectl label namespace cetirun-system istio.io/rev=your-installed-revision
 ```
 
-There are two TLS layers: Istio mTLS identifies workload peers, and application
-TLS authenticates the MCP endpoint and its private Broker connection. Both are
-required. Portal/Operator use Broker HTTP port 8080 inside the authenticated
-mesh; MCP uses Broker HTTPS service port 443, targeting container port 8443.
-Do not expose Broker or MCP through the public ingress.
+There are two TLS layers. Istio mTLS identifies workload peers. Application
+TLS authenticates the MCP endpoint and its private Broker connection. Both
+layers are necessary.
 
-Request the following PEM certificates from your private PKI. Leaf certificates
-need a valid chain, matching private key, and the indicated extended key usage.
-The charts do not issue certificates.
+Portal/Operator use Broker HTTP port 8080 inside the authenticated mesh. MCP
+uses Broker HTTPS service port 443, which targets container port 8443. Do not
+expose Broker or MCP through the public ingress.
+
+Request these PEM certificates from your private PKI. Leaf certificates must
+have a valid chain, a private key that matches, and the extended key usage
+that the table shows. The charts do not issue certificates.
 
 | Material | Required identity | Destination |
 | --- | --- | --- |
-| Broker server certificate | DNS `cetirun-agent-broker.cetirun-credentials.svc.cluster.local`, `serverAuth` | Broker Secret `broker-tls`: `tls.crt`, `tls.key`, `ca.crt` trusting the MCP client issuer |
+| Broker server certificate | DNS `cetirun-agent-broker.cetirun-credentials.svc.cluster.local`, `serverAuth` | Broker Secret `broker-tls`: `tls.crt`, `tls.key`, `ca.crt` that trusts the MCP client issuer |
 | MCP server certificate | DNS `cetirun-connections-mcp.cetirun-system.svc.cluster.local`, `serverAuth` | Platform Secret `connections-mcp-tls`: `tls.crt`, `tls.key` |
-| MCP's Broker client certificate | Exactly one URI SAN: `spiffe://cluster.local/ns/cetirun-system/sa/cetirun-connections-mcp`, `clientAuth` | Platform Secret `broker-client-tls`: `tls.crt`, `tls.key`, `ca.crt` trusting the Broker server issuer |
-| MCP server CA bundle | Public CA certificates only, no private key | Operator namespace Secret `connections-mcp-ca`: `ca.crt`, distributed by the Operator to Agent workloads |
+| MCP's Broker client certificate | Exactly one URI SAN: `spiffe://cluster.local/ns/cetirun-system/sa/cetirun-connections-mcp`, `clientAuth` | Platform Secret `broker-client-tls`: `tls.crt`, `tls.key`, `ca.crt` that trusts the Broker server issuer |
+| MCP server CA bundle | Public CA certificates only, no private key | Operator namespace Secret `connections-mcp-ca`: `ca.crt`, which the Operator distributes to Agent workloads |
 
-For a private environment that manages its own dedicated CA, the following
-**local file-generation example** supplies all three certificates. Use your
-organization's approved issuance process instead if it owns the PKI. Keep
-the CA private key outside Kubernetes and protect it independently of leaf keys.
-Choose a new directory under an existing private parent; this example refuses
-to overwrite an existing directory.
+For a private environment that manages its own dedicated CA, this
+**local file-generation example** supplies all three certificates. If your
+organization owns the PKI, use its approved issuance process instead. Keep the
+CA private key outside Kubernetes. Protect it independently of leaf keys.
+Select a new directory under a private parent directory that exists. This
+example refuses to overwrite a directory that exists.
 
 ```bash
 umask 077
@@ -254,8 +276,9 @@ for leaf in broker-server mcp-server mcp-client; do
 done
 ```
 
-Install the files as Secrets. **Connected, mutating commands** for the single-CA
-example above; with separate issuers, use the appropriate CA bundle in each place:
+Install the files as Secrets. **Connected, mutating commands** for the
+single-CA example above. If you use separate issuers, use the correct CA bundle
+in each place:
 
 ```bash
 kubectl --namespace cetirun-credentials create secret generic broker-tls \
@@ -272,35 +295,37 @@ kubectl --namespace cetirun-system create secret generic connections-mcp-ca \
   --from-file=ca.crt="$IDENTITY_TLS_DIR/ca.crt"
 ```
 
-These are creation commands, not a rotation mechanism. A Secret with the same
-name causes creation to fail; update it through your reviewed Secret-management
-process. Do not copy the CA private key into any Secret or Agent namespace.
+These are creation commands, not a rotation mechanism. If a Secret with the
+same name exists, the creation fails. Update that Secret through your reviewed
+Secret-management process. Do not copy the CA private key into any Secret or
+Agent namespace.
 
 ## 4. Register the selected providers
 
 Complete [Identity providers](../identity-providers/) for GitHub App, GitHub
 OAuth and Google. For Azure/Microsoft access, also complete
 [Entra Agent Identity setup](../entra-agent-identity/). Store provider Secrets
-in `cetirun-credentials` and retain only their names in Helm values.
+in `cetirun-credentials`. Keep only their names in Helm values.
 
-There are distinct browser return paths:
+There are different browser return paths:
 
 | Purpose | Exact example URL |
 | --- | --- |
 | Portal sign-in, OAuth2 Proxy | `https://portal.example.com/oauth2/callback` |
-| Broker-managed provider authorization, including Entra delegated sign-in | `https://portal.example.com/api/v1/connections/callback` |
+| Broker-managed provider authorization, for example Entra delegated sign-in | `https://portal.example.com/api/v1/connections/callback` |
 | GitHub App installation setup | `https://portal.example.com/api/v1/connections/github-app/setup` |
 
-The latter two go through the Portal; they are not public Broker addresses.
-Register the actual HTTPS origin and exact path without a trailing slash.
+The last two paths go through the Portal. They are not public Broker
+addresses. Register the actual HTTPS origin and the exact path, without a
+trailing slash.
 
 ## 5. Assemble values
 
-Keep values outside the repository. The following **Broker baseline**, saved
-as `broker-identity.yaml`, supplies all required identity settings for the
-GitHub/Google-only path. Replace the illustrative IDs, vault and Istio revision;
-select reviewed image versions/digests separately. Add only the provider
-overlays you configured in step 4.
+Keep values outside the repository. Save this **Broker baseline** as
+`broker-identity.yaml`. It supplies all necessary identity settings for the
+GitHub/Google-only path. Replace the illustrative IDs, vault and Istio
+revision. Select reviewed image versions/digests separately. Add only the
+provider overlays that you configured in step 4.
 
 ```yaml
 identityModes:
@@ -335,11 +360,11 @@ istio:
   revision: asm-example
 ```
 
-Save the following **platform overlay** as `platform-identity.yaml`. It augments
-your complete, reviewed platform values; it does not replace image/runtime,
-registry, AI Gateway, model, admission, storage or administrator configuration.
-In particular, identity setup alone does not supply a usable Agent model or
-qualify a Sandbox execution profile.
+Save this **platform overlay** as `platform-identity.yaml`. It adds to your
+complete, reviewed platform values. It does not replace image/runtime,
+registry, AI Gateway, model, admission, storage or administrator
+configuration. For example, identity setup alone does not supply a usable
+Agent model. It also does not qualify a Sandbox execution profile.
 
 ```yaml
 istio:
@@ -390,18 +415,20 @@ cetirun-portal:
     runtimeTypes: [hermes, openclaw]
 ```
 
-For standalone component releases, remove the corresponding umbrella key and
-use its contents as that component's values. Adjust the Portal namespace in
-the Broker's trust configuration if it runs in `cetirun-portal` instead.
-Match all ServiceAccount names, MCP certificate SANs and URLs to the rendered
-resources. Retain the same runtime allowlist in Portal, Broker and Operator.
+For a standalone component release, remove the umbrella key for the
+component. Use the contents of that key as the values of the component. If
+the Portal runs in `cetirun-portal` instead, adjust the Portal namespace in the
+Broker's trust configuration. Match all ServiceAccount names, MCP certificate
+SANs and URLs to the rendered resources. Keep the same runtime allowlist in
+Portal, Broker and Operator.
 
 ## 6. Render, then deploy
 
-From a checkout containing the selected feature versions, build the umbrella's
-local chart dependencies. **Offline rendering** below does not create resources
-or resolve Secrets. Redirected manifests may include other platform secrets
-from your base values, so store them privately and never attach them to a PR.
+From a checkout that contains the selected feature versions, build the local
+chart dependencies of the umbrella. The **Offline rendering** below does not
+create resources or resolve Secrets. Redirected manifests can include other
+platform secrets from your base values. For this reason, store these manifests
+privately. Never attach them to a PR.
 
 ```bash
 IDENTITY_CONFIG_DIR=/absolute/private/cetirun-identity
@@ -416,13 +443,15 @@ helm template cetirun-platform app/cetirun-platform \
   -f "$IDENTITY_CONFIG_DIR/platform-identity.yaml" > /dev/null
 ```
 
-`broker-providers.yaml` is the combined provider overlay from step 4; use `{}`
-if none is configured yet. For Entra, append its Broker and platform overlay
-files after these baseline files in **both rendering and deployment**. Helm
-merges maps in order; lists are replaced. An existing Entra deployment must
-retain its Entra overlays when applying this baseline.
+`broker-providers.yaml` is the combined provider overlay from step 4. If no
+provider overlay is configured yet, use `{}`. For Entra, append its Broker and
+platform overlay files after these baseline files in
+**both rendering and deployment**. Helm merges maps in order. Lists are
+replaced. When you apply this baseline, an Entra deployment that already
+exists must keep its Entra overlays.
 
-Once the cluster and credentials are ready, **connected, mutating installation**:
+When the cluster and credentials are ready, run the
+**connected, mutating installation**:
 
 ```bash
 helm upgrade --install cetirun-agent-broker app/cetirun-agent-broker/chart \
@@ -435,44 +464,49 @@ helm upgrade --install cetirun-platform app/cetirun-platform \
   -f "$IDENTITY_CONFIG_DIR/platform-identity.yaml" --wait --timeout 10m
 ```
 
-Use the existing release names for an upgrade and pass the complete reviewed
-values, including your pinned images. Do not create a second platform release
-or rely on `--reuse-values` to infer missing trust settings. Direct Helm does
-not configure the shared Istio external authorization provider: complete the
-[Istio installation](../istio/#direct-helm-installation) first, with its Portal
-ownership target pointing at `cetirun-system` for this layout.
+For an upgrade, use the current release names. Pass the complete reviewed
+values, with your pinned images. Do not create a second platform release. Do
+not rely on `--reuse-values` to infer absent trust settings.
+
+Direct Helm does not configure the shared Istio external authorization
+provider. First, complete the [Istio installation](../istio/#direct-helm-installation).
+For this layout, point its Portal ownership target at `cetirun-system`.
 
 ## 7. Verify the environment
 
-Perform acceptance checks with disposable resources and accounts. Readiness
-and a successful chart render do not prove provider authorization works.
+Do acceptance checks with disposable resources and accounts. Readiness and a
+successful chart render do not prove that provider authorization works.
 
-1. Check Broker, MCP, Operator and Portal rollouts. Verify Istio sidecars and
-   the Broker's injected Azure workload token mount without reading tokens.
-   Broker `/readyz` is a local check and does not qualify Key Vault or GitHub.
-2. Sign in to the Portal and open **Connections** at `/connections`. Verify
-   only the signed-in owner's connections appear. Another owner must not be
-   able to select them.
-3. Connect each configured provider and finish its callback. Successful
-   persistence exercises the encryption foundation; a provider error page is
+1. Examine the Broker, MCP, Operator and Portal rollouts. Examine the Istio
+   sidecars and the Broker's injected Azure workload token mount. Do not read
+   tokens. Broker `/readyz` is a local check. It does not qualify Key Vault or
+   GitHub.
+2. Sign in to the Portal. Open **Connections** at `/connections`. Make sure
+   that only the connections of the signed-in owner appear. It must not be
+   possible for another owner to select them.
+3. Connect each configured provider. Finish its callback. Successful
+   persistence exercises the encryption foundation. A provider error page is
    not a completed connection. For GitHub App, also select the installation.
-4. On a ready supported Agent, use **Identities → Add identity** and explicitly
-   confirm access. Check `connections_status` and `services_list` through the
-   native MCP integration. Creating a Connection alone must not grant an Agent
-   access.
-5. Execute a small allowed request. For GitHub App, verify an unselected private
-   repository and an ungranted write are rejected. Personal OAuth is governed
-   by its broader scopes, not the App's repository selection controls.
-6. With Entra enabled, wait for the Agent Identity to be Ready, assign a narrow
-   Azure role to its principal, then test autonomous Azure separately from
-   delegated sign-in. Test the actual Microsoft Graph permission you granted.
-7. Remove the Agent binding and confirm new requests stop. Test reauthentication
-   after consent revocation or refresh expiry. Local connection removal does
-   not revoke provider-wide consent or uninstall a GitHub App.
+4. On a ready supported Agent, use **Identities → Add identity**. Explicitly
+   confirm access. Examine `connections_status` and `services_list` through the
+   native MCP integration. Creation of a Connection alone must not grant an
+   Agent access.
+5. Run a small allowed request. For GitHub App, make sure that an unselected
+   private repository and an ungranted write are rejected. Personal OAuth is
+   governed by its broader scopes, not by the App's repository selection
+   controls.
+6. If Entra is enabled, wait until the Agent Identity is Ready. Assign a narrow
+   Azure role to its principal. Then test autonomous Azure separately from
+   delegated sign-in. Test the actual Microsoft Graph permission that you
+   granted.
+7. Remove the Agent binding. Make sure that new requests stop. Test
+   reauthentication after consent revocation or refresh expiry. Local
+   connection removal does not revoke provider-wide consent. It also does not
+   uninstall a GitHub App.
 
-These checks require live authorization and are not part of offline
-development tests. Already-sent provider requests and previously issued tokens
-are not recalled by local revocation.
+Live authorization is necessary for these checks. They are not part of
+offline development tests. Local revocation does not recall provider requests
+that were already sent, or tokens that were issued previously.
 
 ## Troubleshooting
 
@@ -480,12 +514,12 @@ are not recalled by local revocation.
 | --- | --- |
 | Connections absent or owner verification fails | Portal `agentToolsEnabled`, correct login app client ID/tenant, forwarded verified ID token, HTTPS origin and supported runtime |
 | OAuth redirect mismatch | Exact provider callback, public origin and the distinction from `/oauth2/callback` |
-| Broker cannot persist or decrypt | Encryption identity client ID, exact issuer/subject/audience, Key Vault key URL, wrap/unwrap role propagation, DNS/firewall and retained old key versions |
+| Broker cannot persist or decrypt | Encryption identity client ID, exact issuer/subject/audience, Key Vault key URL, wrap/unwrap role propagation, DNS/firewall and old key versions that are kept |
 | Portal or Operator gets Broker 403 | Actual namespace/ServiceAccount against Broker `portal`/`operator`, sidecar injection and Istio policy |
 | MCP cannot reach Broker | HTTPS service port 443, DNS server SAN, CA direction, client `clientAuth` and exact SPIFFE URI, Broker `toolService` identity |
-| MCP rejects an Agent | Audience alignment, live Pod/ServiceAccount/Agent binding, supported runtime and current Agent state; do not substitute a manually copied token |
+| MCP rejects an Agent | Audience alignment, live Pod/ServiceAccount/Agent binding, supported runtime and current Agent state. Do not use a manually copied token as a substitute |
 | Agent has no MCP connection | Operator URL/CA source, runtime allowlists, workload configuration and Agent namespace Broker permissions |
-| Entra identity or delegated exchange fails | Follow the [Entra checks](../entra-agent-identity/); Key Vault encryption authority does not grant Blueprint lifecycle authority |
+| Entra identity or delegated exchange fails | Follow the [Entra checks](../entra-agent-identity/). Key Vault encryption authority does not grant Blueprint lifecycle authority |
 | Provider returns 401/403 | Current installation, owner/Admin authority, scopes, consent, resource RBAC, organization policy and token expiry |
 
 Use correlation IDs and sanitized status/errors. Do not collect Secret bodies,
@@ -493,78 +527,87 @@ token files, full Helm values or browser cookies for a public diagnostic bundle.
 
 ## Rotation, shutdown and recovery
 
-- Update provider client-secret files and their Secrets, then restart the Broker
-  to reload environment variables. The GitHub App signing key is file-backed;
-  account for Secret projection delay and verify the replacement before
-  revoking the old key. See the [provider guide](../identity-providers/).
-- Mount TLS Secrets as whole volumes. Broker/MCP reload mounted TLS material;
-  invalid updates retain the last valid snapshot. Introduce overlapping CA
-  trust first, rotate leaf certificates, distribute the MCP CA source to
-  Agent workloads, verify new connections, then retire the previous CA.
-  Check Agent reconciliation and native-client reload/restart requirements
-  before removing old trust; server reload alone does not update every client.
+- Update provider client-secret files and their Secrets. Then restart the
+  Broker to reload environment variables. The GitHub App signing key is
+  file-backed. Allow time for the Secret projection delay. Before you revoke
+  the old key, make sure that the replacement works. Refer to the
+  [provider guide](../identity-providers/).
+- Mount TLS Secrets as whole volumes. Broker/MCP reload mounted TLS material.
+  If an update is not valid, the last valid snapshot is kept.
+- First, add overlapping CA trust. Then rotate leaf certificates. Distribute
+  the MCP CA source to Agent workloads. Make sure that new connections work.
+  Then retire the previous CA.
+- Before you remove old trust, examine Agent reconciliation and the
+  reload/restart conditions of native clients. Server reload alone does not
+  update every client.
 - Back up encrypted records together with a recovery plan for their Key Vault
-  key versions and identity permissions. Use the [restore procedure below](#restore-with-fresh-owner-authorization)
-  before returning a recovered environment to service. Encryption does not
-  establish that a backup reflects current owner consent or prevent an
-  administrator with decryption authority from using credentials.
-- To retire Entra, stop new identity creation while retaining Operator
+  key versions and identity permissions. Before you return a recovered
+  environment to service, use the [restore procedure below](#restore-with-fresh-owner-authorization).
+  Encryption does not prove that a backup reflects current owner consent. It
+  also does not prevent the use of credentials by an administrator who has
+  decryption authority.
+- To retire Entra, stop new identity creation. Keep Operator
   `agentIdentity.cleanupEnabled`, Blueprint federation and Broker access until
-  existing identities and Agent records have been cleaned up. Preserve the
-  Operator's Broker namespace/ServiceAccount settings during cleanup.
-- Remove Agent grants before unused Connections. Revoke provider consent or
-  uninstall the App separately when appropriate. Remove deployments, federation,
-  certificates and encryption authority only after dependent records, Agents
-  and retained backups have been handled; do not delete the credential namespace
-  or Key Vault as a first troubleshooting step.
+  the identities and Agent records that exist are cleaned up. During cleanup,
+  keep the Operator's Broker namespace/ServiceAccount settings.
+- Remove Agent grants before you remove unused Connections. When applicable,
+  revoke provider consent or uninstall the App separately. Remove deployments,
+  federation, certificates and encryption authority only after you handle the
+  dependent records, Agents and backups that you keep. When you troubleshoot,
+  do not delete the credential namespace or Key Vault as a first step.
 
 ### Restore with fresh owner authorization
 
-Exclude saved authorization records from routine restores and require fresh
-owner authorization. Encryption and revision checks do not provide protection
-against restoring older authorization state, including superseded grants and
-revocation tombstones. A successful decryption or readiness check is not
+Do not include saved authorization records in routine restores. Make fresh
+owner authorization necessary. Encryption and revision checks do not protect
+against a restore of older authorization state, for example superseded grants
+and revocation tombstones. A successful decryption or readiness check is not
 approval to resume access.
 
 If a whole-cluster or namespace restore includes those records, use this order:
 
-1. **Keep execution closed before restoring.** Block Agent-to-MCP requests
-   and Broker credential issuance, including internal cluster traffic. Quiesce
-   authorization writes and in-flight requests; ensure restored workloads and
-   controllers cannot reopen these paths during recovery. Closing only the
-   public Portal ingress does not stop native MCP access.
-2. **Inventory authorization records in both storage locations.** Cover the
-   Broker credential namespace and every Agent workload namespace, including
-   any older centrally stored bindings. Broker-managed Secret metadata uses
+1. **Keep execution closed before you restore.** Block Agent-to-MCP requests
+   and Broker credential issuance. This includes internal cluster traffic.
+   Quiesce authorization writes and in-flight requests. Make sure that
+   restored workloads and controllers cannot reopen these paths during
+   recovery. If you close only the public Portal ingress, native MCP access
+   does not stop.
+2. **Inventory authorization records in both storage locations.** Include the
+   Broker credential namespace, every Agent workload namespace, and any older
+   bindings that are stored centrally. Broker-managed Secret metadata uses
    `app.kubernetes.io/managed-by=cetirun-agent-broker` and
    `agenttools.cetirun.microsoft.com/record-type`. The record types to exclude
    or clear are `connection`, `binding`, `grant` (legacy), `authorization`
-   (OAuth transactions), `account-index`, and `connection-reference`. Inspect
-   metadata without exporting Secret bodies. These records are distinct from
-   provider client configuration, TLS Secrets, Key Vault keys and Agent
+   (OAuth transactions), `account-index`, and `connection-reference`. Examine
+   the metadata, but do not export Secret bodies. These records are different
+   from provider client configuration, TLS Secrets, Key Vault keys and Agent
    lifecycle metadata.
-3. **Clear restored authorization state before enabling management writes.**
-   Remove the restored records identified above from both storage locations;
-   do not resume old OAuth transactions or restore their indexes/references
-   later. When recovering into an existing environment, preserve its newer
-   revocation tombstones and never replace them with older snapshots. This is
-   a recovery reset, not routine tombstone garbage collection. Retain the
-   infrastructure credentials and lifecycle metadata needed for current Entra
-   identity reconciliation and cleanup; do not delete whole namespaces.
-4. **Rebuild access through current owners.** Restore management access while
-   keeping general Agent execution blocked. Owners recreate required
-   Connections, sign in again where required, select GitHub App installations,
-   and explicitly grant each Agent its services, repositories and permissions.
-   Verify current Agent UIDs, owners and any Entra identity state before
-   granting access. An old binding or a restored provider credential is not a
-   substitute for this owner action.
-5. **Validate before reopening traffic.** Through isolated recovery checks,
-   verify that Agents without a new grant cannot use the services or obtain
-   credentials, including Agents whose UID survived the restore. Verify a
-   newly granted Agent's allowed access and that **Remove access** blocks new
-   requests. Reopen general execution only after the record inventory and
-   these checks pass. Previously sent provider requests or issued tokens are
-   not recalled by this reset; handle provider-side revocation separately.
+3. **Clear restored authorization state before you enable management writes.**
+   Remove the restored records that you identified above from both storage
+   locations. Do not resume old OAuth transactions or restore their
+   indexes/references later. When you recover into an environment that
+   exists, keep its newer revocation tombstones and never replace them with
+   older snapshots. This is a recovery reset, not routine tombstone garbage
+   collection.
+
+   Keep the infrastructure credentials and lifecycle metadata that are
+   necessary for current Entra identity reconciliation and cleanup. Do not
+   delete whole namespaces.
+4. **Rebuild access through current owners.** Restore management access, but
+   keep general Agent execution blocked. Owners recreate the necessary
+   Connections and sign in again where necessary. Owners also select GitHub
+   App installations and explicitly grant each Agent its services,
+   repositories and permissions. Before you grant access, examine the current
+   Agent UIDs, owners and any Entra identity state. An old binding or a
+   restored provider credential is not a substitute for this owner action.
+5. **Validate before you reopen traffic.** Through isolated recovery checks,
+   make sure that Agents without a new grant cannot use the services or get
+   credentials. This also applies to Agents whose UID survived the restore.
+   Make sure that a newly granted Agent has its allowed access and that
+   **Remove access** blocks new requests. Reopen general execution only after
+   the record inventory and these checks pass. Handle provider-side revocation
+   separately, because this reset does not recall previously sent provider
+   requests or issued tokens.
 
 Configuration sources: [Broker values]({{< repo "app/cetirun-agent-broker/chart/values.yaml" >}}),
 [MCP values]({{< repo "app/cetirun-connections-mcp/chart/values.yaml" >}}),
