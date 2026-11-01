@@ -115,10 +115,16 @@ already exists.
 
 This minimal example selects no skills. If no skills catalog is configured, the
 native profile supplies an empty read-only skills directory. In that case, a
-shared skills PVC or NFS publication is not necessary. When any skill is
-selected, configure the current validated publication/catalog instead.
+shared skills PVC or NFS publication is not necessary. To expose
+already-published shared files, configure the validated publication/catalog.
 Requested skills are never silently dropped. A configured catalog still uses
-its normal validation and storage path.
+its normal validation and storage path. An existing published-skills PVC does
+not prove that an npm or ClawHub package request was materialized. Protected
+rendering rejects those requests with `SkillsMaterializationPending` instead
+of clearing the package list and starting with unrelated published content.
+This applies to OpenClaw and Hermes as well as Custom. Publish the required
+content through the approved source contract; do not bypass the hold with a
+raw chart value.
 
 In the Operator values, explicitly select:
 

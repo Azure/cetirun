@@ -81,6 +81,36 @@ func TestEmptySkillsBundleNeverDiscardsRequestedPackages(t *testing.T) {
 	}
 }
 
+func TestPublishedSkillsBundleNeverDiscardsRequestedPackages(t *testing.T) {
+	for _, harness := range []string{"openclaw", "hermes"} {
+		t.Run(harness, func(t *testing.T) {
+			bundle, err := w.Build(testfixture.New(harness).Input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"npm", "clawHub"} {
+				values := map[string]any{
+					"secrets": map[string]any{"existingSecret": "runtime-secret"},
+					"skills":  map[string]any{field: []string{"synthetic-selected-skill"}},
+				}
+				if _, err := bundle.Apply(values); err == nil || !strings.Contains(err.Error(), "SkillsMaterializationPending") {
+					t.Fatalf("published PVC silently discarded %s selection: %v", field, err)
+				}
+			}
+			values, err := bundle.Apply(map[string]any{
+				"secrets": map[string]any{"existingSecret": "runtime-secret"},
+				"skills":  map[string]any{"npm": []string{}, "clawHub": []string{}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if values["skills"].(map[string]any)["existingClaim"] != "skills-example" {
+				t.Fatal("valid published skills source was not retained")
+			}
+		})
+	}
+}
+
 func TestSkillsModePreservesDefaultSerializedShapes(t *testing.T) {
 	input := testfixture.New("openclaw").Input
 	for _, value := range []any{input, w.Expectation{Skills: w.ObjectIdentity{Name: input.Skills.Name, UID: input.Skills.UID}}} {
