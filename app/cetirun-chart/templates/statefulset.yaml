@@ -202,7 +202,7 @@ spec:
             - name: empty-skills
               mountPath: /home/vibe/.aks/skills
               readOnly: true
-            {{- else if and .Values.skills.shared (or .Values.sandboxWorkload (not (include "cetirun.context.enabled" .))) }}
+            {{- else if and .Values.skills.shared (not (include "cetirun.context.enabled" .)) }}
             - name: shared-skills
               mountPath: {{ .Values.skills.mountPath }}
               readOnly: true

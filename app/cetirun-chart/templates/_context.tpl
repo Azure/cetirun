@@ -3,7 +3,8 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 */}}
 {{- define "cetirun.context.enabled" -}}
-{{- if and (not .Values.sandboxWorkload) (or .Values.memoryContext.enabled (and (eq (include "cetirun.agent.type" .) "custom") .Values.skills.shared)) -}}true{{- end -}}
+{{- $nativeReconciled := and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled (ne (include "cetirun.agent.type" .) "custom") -}}
+{{- if and (or (not .Values.sandboxWorkload) $nativeReconciled) (or .Values.memoryContext.enabled (and (eq (include "cetirun.agent.type" .) "custom") .Values.skills.shared)) -}}true{{- end -}}
 {{- end -}}
 
 {{- define "cetirun.context.home" -}}
@@ -42,7 +43,7 @@ Licensed under the MIT License.
 {{- end -}}
 
 {{- define "cetirun.context.initEnv" -}}
-{{- if not .Values.sandboxWorkload }}
+{{- if or (not .Values.sandboxWorkload) (and .Values.sandboxWorkload.reconciled (ne (include "cetirun.agent.type" .) "custom")) }}
 {{- if include "cetirun.context.enabled" . }}
 - name: CETIRUN_CONTEXT_VIEW
   value: /etc/cetirun-context-view
@@ -59,7 +60,7 @@ Licensed under the MIT License.
 {{- end -}}
 
 {{- define "cetirun.context.initMounts" -}}
-{{- if not .Values.sandboxWorkload }}
+{{- if or (not .Values.sandboxWorkload) (and .Values.sandboxWorkload.reconciled (ne (include "cetirun.agent.type" .) "custom")) }}
 {{- if include "cetirun.context.enabled" . }}
 - name: context-view
   mountPath: /etc/cetirun-context-view

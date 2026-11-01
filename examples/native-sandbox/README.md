@@ -126,6 +126,14 @@ This applies to OpenClaw and Hermes as well as Custom. Publish the required
 content through the approved source contract; do not bypass the hold with a
 raw chart value.
 
+When Memory Context is enabled, reconciled OpenClaw and Hermes lifetimes
+compose the common instructions and Memory skills into the read-only
+`$HOME/.agents` view during HOME initialization. With a shared publication,
+the shared skills alias exposes that same composed view, rather than masking
+it with a separate PVC mount. The temporary context volume keeps the Sandbox
+scratch size bound. Disabling Memory preserves the existing direct shared
+skills mount; legacy single-start lifetimes do not enable this context path.
+
 In the Operator values, explicitly select:
 
 ```yaml

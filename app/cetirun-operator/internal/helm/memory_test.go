@@ -210,6 +210,82 @@ func TestMemoryDisabledPreservesLiveSharedSkillsMount(t *testing.T) {
 	}
 }
 
+func TestReconciledNativeMemoryHasComposedContext(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, shared := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/shared=%t", kind, shared), func(t *testing.T) {
+				fixture := gatewayHeldFixture(kind)
+				fixture.Input.Reconciled = true
+				if !shared {
+					fixture.Input.SkillsMode = w.SkillsModeEmpty
+					fixture.Input.Skills = nil
+				}
+				bundle, err := w.Build(fixture.Input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := sampleInput(kind, "openai", false)
+				input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+				input["memoryOptions"] = MemoryOptions{Enabled: true, Image: "registry.example.com/memory:1.2.3"}
+				prepared, err := PrepareSandboxChart(testChart(t), input, nil, bundle)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pod := registryRenderedTemplate(t, prepared).Spec
+				if !slices.ContainsFunc(pod.Containers[0].VolumeMounts, func(mount corev1.VolumeMount) bool {
+					return reflect.DeepEqual(mount, runtimebindings.ContextMount("/home/vibe"))
+				}) {
+					t.Fatal("native Memory cannot load the composed Agent context")
+				}
+				foundInitializer := false
+				for _, container := range pod.InitContainers {
+					if container.Name != "init-home-data" {
+						continue
+					}
+					foundInitializer = true
+					for _, mount := range runtimebindings.ContextInitMounts(shared, true) {
+						if !slices.ContainsFunc(container.VolumeMounts, func(actual corev1.VolumeMount) bool {
+							return reflect.DeepEqual(actual, mount)
+						}) {
+							t.Fatalf("context initializer is missing mount %+v", mount)
+						}
+					}
+					for _, env := range runtimebindings.ContextInitEnvironment(shared, true) {
+						if !slices.ContainsFunc(container.Env, func(actual corev1.EnvVar) bool {
+							return reflect.DeepEqual(actual, env)
+						}) {
+							t.Fatalf("context initializer is missing environment %s", env.Name)
+						}
+					}
+				}
+				if !foundInitializer {
+					t.Fatal("native Memory has no context initializer")
+				}
+				if shared && !slices.ContainsFunc(pod.Containers[0].VolumeMounts, func(mount corev1.VolumeMount) bool {
+					return reflect.DeepEqual(mount, corev1.VolumeMount{
+						Name: "context-view", MountPath: "/home/vibe/.aks/skills", SubPath: "current/skills", ReadOnly: true,
+					})
+				}) {
+					t.Fatal("native shared skills alias must use the composed context")
+				}
+				seen := map[string]bool{}
+				for _, mount := range pod.Containers[0].VolumeMounts {
+					if seen[mount.MountPath] {
+						t.Fatalf("duplicate mount hides composed context: %s", mount.MountPath)
+					}
+					seen[mount.MountPath] = true
+				}
+				if !slices.ContainsFunc(pod.Volumes, func(volume corev1.Volume) bool {
+					return volume.Name == "context-view" && volume.EmptyDir != nil &&
+						volume.EmptyDir.SizeLimit != nil && volume.EmptyDir.SizeLimit.String() == fixture.Input.Resolution.Sandbox.Storage.Scratch.SizeLimit.String()
+				}) {
+					t.Fatal("composed context lost its Sandbox scratch accounting bound")
+				}
+			})
+		}
+	}
+}
+
 func TestSharedSkillAliasDoesNotReplaceCommonContext(t *testing.T) {
 	for _, path := range []string{"", "/home/vibe/team-skills"} {
 		t.Run(fmt.Sprintf("alias=%s", path), func(t *testing.T) {
