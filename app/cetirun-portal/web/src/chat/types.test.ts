@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { buildContext, byteLength, LIMITS, type Turn } from "./types";
-import { EventParser } from "./api";
+import { ChatError, EventParser, sendChat } from "./api";
 
 const turn = (id: string, resultState: Turn["resultState"] = "completed") =>
   ({ id, resultState }) as Turn;
@@ -72,6 +72,40 @@ describe("SSE framing", () => {
     expect(parser.push(": heartbeat\r\ndata: {\r")).toEqual([]);
     expect(parser.push('\ndata: "a":1}\r\n\r\n')).toEqual(['{\n"a":1}']);
     expect(parser.push("data: [DONE]\n\n")).toEqual(["[DONE]"]);
+  });
+
+  describe("chat terminal failures", () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it.each(["agent_reported_error", "agent_stream_interrupted"])(
+      "preserves %s without trusting the upstream message or replaying",
+      async (code) => {
+        const fetcher = vi.fn().mockResolvedValue(
+          new Response(
+            `data: ${JSON.stringify({ error: { code, message: "secret-sentinel" } })}\n\n`,
+            { headers: { "Content-Type": "text/event-stream" } },
+          ),
+        );
+        vi.stubGlobal("fetch", fetcher);
+        const result = sendChat(
+          { name: "fixture", uid: "fixture-uid", scope: "fixture-scope" },
+          "fixture-model",
+          [{ role: "user", content: "Synthetic request." }],
+          "fixture-request",
+          new AbortController().signal,
+          async () => {},
+        );
+        await expect(result).rejects.toBeInstanceOf(ChatError);
+        await expect(result).rejects.toMatchObject({
+          code,
+          message:
+            code === "agent_reported_error"
+              ? "The Agent reported a failed response. Earlier tool actions may have completed; the request will not be replayed."
+              : "The response was interrupted. The Agent may still be running.",
+        });
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      },
+    );
   });
   it("does not mistake a network chunk for a complete event", () => {
     const parser = new EventParser();

@@ -9,6 +9,20 @@ expose the same tool. A call carries only a command and its payload:
 {"command":"query","payload":{"queryTerms":["example title"]}}
 ```
 
+The native adapters and stdio MCP server publish the same payload field
+descriptions from `adapters/common/payload-schema.json`. In particular, `query`
+requires `queryTerms`, not a free-form `criteria` field, and `capture` requires
+`note` or `observation`, not an arbitrary preference key. The schema describes
+the existing protocol; the helper still validates every command, scope, source,
+restriction and budget. It does not make a captured claim authorization or
+guarantee that the Agent chooses to capture an ordinary input.
+
+The private runtime context supplies the exact project scope, current UTC time
+and `noCapture` restriction even before the first capture. Copy that scope into
+the note; a topic name is not a project scope. Every note must include
+`revalidation`, such as `{"mode":"on-change"}` for a stable owner preference.
+A restricted context does not advertise writes as enabled.
+
 The adapter binds the native session, the current project directory, the opportunity and any restrictive
 flags, and it resolves the current generation before a write. Tool arguments cannot supply
 `requestContext`, source assurance or evaluation receipts. On some hosts the tool is found

@@ -11,7 +11,7 @@ import test from "node:test";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { approvedResources } from "../pi-resources.mjs";
 import { createPiServices } from "../pi-runtime.mjs";
-import { memoryResources, verifyMemoryAssets } from "../memory-runtime.mjs";
+import { memoryBridge, memoryResources, verifyMemoryAssets } from "../memory-runtime.mjs";
 import { invoke } from "../../../app/cetirun-memory-context/assets/adapters/common/bridge.mjs";
 
 async function fixture(t) {
@@ -31,6 +31,7 @@ async function fixture(t) {
   await writeFile(path.join(home, ".agents/skills/cetirun-memory/SKILL.md"), "---\nname: cetirun-memory\ndescription: Platform view fixture.\n---\nLoad this assembled view.");
   const files = {
     "adapters/common/bridge.mjs": await readFile(new URL("../../../app/cetirun-memory-context/assets/adapters/common/bridge.mjs", import.meta.url), "utf8"),
+    "adapters/common/payload-schema.json": await readFile(new URL("../../../app/cetirun-memory-context/assets/adapters/common/payload-schema.json", import.meta.url), "utf8"),
     "AGENTS.md": "Fixed Memory contract; private data is not stored in this prompt.",
     "skills/cetirun-memory/SKILL.md": "---\nname: cetirun-memory\ndescription: Controlled fixture.\n---\nUse the controlled fixture helper.",
     "bin/cetirun-memory": `#!${process.execPath}
@@ -81,6 +82,13 @@ test("Memory assets are digest-checked without changing shared skill discovery",
   await unlink(path.join(f.root, "AGENTS.md"));
   await symlink(path.join(f.home, ".agents/AGENTS.md"), path.join(f.root, "AGENTS.md"));
   await assert.rejects(verifyMemoryAssets(f.root), /Invalid Memory asset/);
+});
+
+test("modified Memory payload guidance is rejected before invoking the helper", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, "adapters/common/payload-schema.json"), '{"type":"object"}');
+  await assert.rejects(memoryBridge({ root: f.root }, f.home, f.env), /MemoryAssetMismatch/);
+  await assert.rejects(readFile(path.join(f.home, "calls.jsonl")), { code: "ENOENT" });
 });
 
 test("the native helper bridge bounds output, handles cancellation, and reports failure", async t => {

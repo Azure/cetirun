@@ -55,3 +55,37 @@ func TestMCPInitializeAcceptsNewerClientInfo(t *testing.T) {
 		t.Fatalf("initialize without a protocol version or client was accepted: %s", out.String())
 	}
 }
+
+func TestMCPDescribesMemoryPayloads(t *testing.T) {
+	store := memory.New(memory.Config{Root: t.TempDir()})
+	var out bytes.Buffer
+	input := "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n"
+	if code := runMCP(context.Background(), strings.NewReader(input), &out, store, memory.NativeBinding{}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var reply struct {
+		Result struct {
+			Tools []struct {
+				InputSchema struct {
+					Properties struct {
+						Payload struct {
+							Properties map[string]json.RawMessage `json:"properties"`
+						} `json:"payload"`
+					} `json:"properties"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.Result.Tools) != 1 {
+		t.Fatalf("unexpected tool list: %s", out.String())
+	}
+	properties := reply.Result.Tools[0].InputSchema.Properties.Payload.Properties
+	for _, field := range []string{"queryTerms", "note", "observation", "procedure", "ref"} {
+		if len(properties[field]) == 0 {
+			t.Fatalf("tool payload does not describe %s", field)
+		}
+	}
+}

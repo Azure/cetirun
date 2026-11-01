@@ -30,6 +30,55 @@ func (f fixture) native(t *testing.T, b NativeBinding, event, command string, pa
 	return out
 }
 
+func TestNativeContextSuppliesScopeAndRestrictions(t *testing.T) {
+	for _, initialized := range []bool{false, true} {
+		for _, noCapture := range []bool{false, true} {
+			t.Run(fmt.Sprintf("initialized=%t/noCapture=%t", initialized, noCapture), func(t *testing.T) {
+				home := t.TempDir()
+				root := filepath.Join(home, ".cetirun", "memory")
+				f := fixture{store: New(Config{Root: root}), home: home}
+				f.store.now = func() time.Time { return time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC) }
+				b := nativeBinding(f)
+				if initialized {
+					note := testNote("existing scoped note")
+					note.Scope = Scope{"project": b.CWD}
+					f.native(t, b, "tool", "capture", captureInput{Note: &note})
+				}
+				b.NoCapture = noCapture
+				out := f.native(t, b, "context", "", map[string]any{})
+				data, ok := out.Data.(map[string]any)
+				if !ok {
+					t.Fatalf("unexpected context data: %T", out.Data)
+				}
+				text, ok := data["context"].(string)
+				if !ok {
+					t.Fatal("missing context text")
+				}
+				scope, _ := json.Marshal(Scope{"project": b.CWD})
+				for _, want := range []string{string(scope), fmt.Sprintf("noCapture=%t", noCapture), "2026-10-31T18:00:00Z"} {
+					if !strings.Contains(text, want) {
+						t.Fatalf("runtime context lacks %q: %s", want, text)
+					}
+				}
+				if noCapture && strings.Contains(text, "read/write and bounded learning are enabled") {
+					t.Fatal("restricted context incorrectly advertises writes")
+				}
+				if !initialized {
+					if _, err := os.Stat(root); !os.IsNotExist(err) {
+						t.Fatal("context read initialized the private store", err)
+					}
+				}
+				blocked := b
+				blocked.Audience = "shared"
+				denied, code := f.store.NativeEvent(context.Background(), nativeEvent(blocked, "context", "", map[string]any{}), "canonical")
+				if code != 4 || denied.Data != nil {
+					t.Fatal("runtime metadata escaped the private context", denied)
+				}
+			})
+		}
+	}
+}
+
 func TestNativeHarnessesShareDefaultsAndObservedFeedback(t *testing.T) {
 	for _, entrypoint := range []string{"openclaw", "hermes", "pi-http", "pi-tui", "custom"} {
 		t.Run(entrypoint, func(t *testing.T) {

@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
+import payloadSchema from "./payload-schema.json" with { type: "json" };
 
 export const ADAPTER_VERSION = "memory-adapter/v1";
 export const MEMORY_TOOL = {
@@ -14,7 +15,7 @@ export const MEMORY_TOOL = {
     type: "object", additionalProperties: false,
     properties: {
       command: { type: "string", enum: ["status", "query", "capture", "prepare", "commit", "propose", "check", "advance", "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source", "evaluate"] },
-      payload: { type: "object", description: "The command payload only. References must come from a prior successful helper response. Do not include requestContext, audience, root, commands to execute, or approval claims." },
+      payload: payloadSchema,
     }, required: ["command", "payload"],
   },
 };

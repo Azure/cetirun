@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { createPiRuntime } from "../pi-runtime.mjs";
 import { gatewayConfiguration } from "../gateway-runtime.mjs";
+import { createServers } from "../server.mjs";
 
 async function fixture(t, options = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "cetirun-pi-gateway-"));
@@ -37,12 +38,13 @@ async function fixture(t, options = {}) {
     if (options.modelStatus) { response.writeHead(options.modelStatus); response.end("private-provider-error"); return; }
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     const event = (delta, finish_reason = null) => response.write(`data: ${JSON.stringify({ id: "test-completion", object: "chat.completion.chunk", created: 1, model: body.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
-    if (options.tool && requests === 1) {
-      event({ role: "assistant", tool_calls: [{ index: 0, id: "call_write", type: "function", function: { name: "write", arguments: JSON.stringify({ path: "gateway-proof.txt", content: "synthetic-tool-output" }) } }] });
+    if (requests <= (options.toolRounds ?? (options.tool ? 1 : 0))) {
+      const file = options.toolRounds ? `gateway-proof-${requests}.txt` : "gateway-proof.txt";
+      event({ role: "assistant", tool_calls: [{ index: 0, id: `call_write_${requests}`, type: "function", function: { name: "write", arguments: JSON.stringify({ path: file, content: "synthetic-tool-output" }) } }] });
       event({}, "tool_calls");
     } else {
       event({ role: "assistant", content: "Synthetic Gateway answer." });
-      event({}, "stop");
+      event({}, options.finishReason ?? "stop");
     }
     response.end("data: [DONE]\n\n");
   });
@@ -80,6 +82,55 @@ test("real Pi tools run behind the Gateway and return their result to that same 
   assert.equal(answer.toolCalls, 1);assert.equal(f.requests(), 2);
   assert.equal(await readFile(path.join(f.home, "workspace/gateway-proof.txt"), "utf8"), "synthetic-tool-output");
   assert.ok(f.inputs[1].messages.some(message => message.role === "tool"));
+});
+
+test("the real Pi HTTP adapter permits eight tools but reports a ninth as a failed task", async t => {
+  for (const toolRounds of [8, 9]) {
+    await t.test(`${toolRounds} requested tools`, async t => {
+      const f = await fixture(t, { toolRounds });
+      const servers = createServers(f.runtime);
+      await new Promise(resolve => servers.api.listen(0, "127.0.0.1", resolve));
+      t.after(() => servers.close());
+      const response = await fetch(`http://127.0.0.1:${servers.api.address().port}/v1/chat/completions`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "shared-example", messages: [{ role: "user", content: "Write the synthetic numbered proof files." }], stream: true }),
+        signal: AbortSignal.timeout(10000),
+      });
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.equal(f.requests(), 9, "completed tool calls are not replayed");
+      const files = (await readdir(path.join(f.home, "workspace"))).sort();
+      assert.deepEqual(files, Array.from({ length: 8 }, (_, index) => `gateway-proof-${index + 1}.txt`));
+      if (toolRounds === 8) {
+        assert.match(text, /"finish_reason":"stop"/);
+        assert.equal(text.split("data: [DONE]").length, 2);
+      } else {
+        const failure = text.split("\n").filter(line => line.startsWith("data: "))
+          .map(line => JSON.parse(line.slice(6))).find(event => event.error);
+        assert.equal(failure?.error.code, "tool_budget_exceeded");
+        assert.doesNotMatch(text, /"finish_reason":"stop"|\[DONE\]/);
+      }
+    });
+  }
+});
+
+test("the real Pi HTTP adapter preserves an output-limit finish reason", async t => {
+  const f = await fixture(t, { finishReason: "length" });
+  const servers = createServers(f.runtime);
+  await new Promise(resolve => servers.api.listen(0, "127.0.0.1", resolve));
+  t.after(() => servers.close());
+  for (const stream of [false, true]) {
+    const response = await fetch(`http://127.0.0.1:${servers.api.address().port}/v1/chat/completions`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "shared-example", messages: [{ role: "user", content: "Synthetic output-limit task." }], stream }),
+      signal: AbortSignal.timeout(10000),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.match(text, /"finish_reason":"length"/);
+    assert.doesNotMatch(text, /"finish_reason":"stop"/);
+  }
+  assert.equal(f.requests(), 2);
 });
 
 test("Gateway model failure is not retried by the Pi SDK or sent to a native provider", async t => {
