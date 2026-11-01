@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -174,6 +175,79 @@ class SkillInitializationTests(unittest.TestCase):
         result = self.run_init("")
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(result.stderr)
+        self.assertEqual(self.requests, [])
+
+    def test_sigkill_copy_is_reclaimed_before_the_next_install(self):
+        self.assert_ok(self.run_init("cetirun-fixture@1.0.0"))
+        self.fail_copy('kill -KILL "$PPID"\nexit 137')
+        interrupted = self.run_init("cetirun-fixture@1.0.1")
+        self.assertEqual(interrupted.returncode, -signal.SIGKILL, interrupted.stdout + interrupted.stderr)
+        abandoned = list(self.skills.glob(".stage.*"))
+        self.assertEqual(len(abandoned), 1)
+        self.assertEqual((self.skills / "cetirun-fixture/.installed-version").read_text(), "cetirun-fixture@1.0.0\n")
+        self.assertEqual((self.skills / "cetirun-fixture/SKILL.md").read_text(), "Synthetic cetirun-fixture 1.0.0\n")
+
+        tools = self.root / "tools"
+        (tools / "cp").unlink()
+        npm = tools / "npm"
+        npm.write_text(
+            '#!/bin/sh\n'
+            'for old in "$SKILLS_DIR"/.stage.??????; do\n'
+            '  [ ! -d "$old" ] || { echo "abandoned copy still consumes retry space" >&2; exit 28; }\n'
+            'done\n'
+            f'exec "{shutil.which("npm")}" "$@"\n'
+        )
+        npm.chmod(0o700)
+        self.assert_ok(self.run_init("cetirun-fixture@1.0.1"))
+        self.assertEqual(list(self.skills.glob(".stage.*")), [])
+        self.assertEqual((self.skills / "cetirun-fixture/.installed-version").read_text(), "cetirun-fixture@1.0.1\n")
+        self.assertEqual((self.skills / "cetirun-fixture/SKILL.md").read_text(), "Synthetic cetirun-fixture 1.0.1\n")
+
+    def test_empty_selection_reclaims_only_reserved_staging_directories(self):
+        self.skills.mkdir()
+        for name in (".stage.aB12cD", ".stage.012345"):
+            stage = self.skills / name
+            stage.mkdir()
+            (stage / "partial").write_text("Disposable initializer copy")
+        for name in (".stage.keep-notes", ".unrelated"):
+            directory = self.skills / name
+            directory.mkdir()
+            (directory / "keep").write_text("Unrelated hidden data")
+        self.assert_ok(self.run_init(""))
+        self.assertFalse((self.skills / ".stage.aB12cD").exists())
+        self.assertFalse((self.skills / ".stage.012345").exists())
+        for name in (".stage.keep-notes", ".unrelated"):
+            self.assertEqual((self.skills / name / "keep").read_text(), "Unrelated hidden data")
+        self.assertEqual(self.requests, [])
+
+    def test_unexpected_stage_link_is_not_followed_or_silently_deleted(self):
+        self.skills.mkdir()
+        other = self.root / "unrelated"
+        other.mkdir()
+        (other / "keep").write_text("Unrelated content")
+        (self.skills / ".stage.abcdef").symlink_to(other, target_is_directory=True)
+        result = self.run_init("cetirun-fixture@1.0.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAILED", (self.skills / ".errors.log").read_text())
+        self.assertTrue((self.skills / ".stage.abcdef").is_symlink())
+        self.assertEqual((other / "keep").read_text(), "Unrelated content")
+        self.assertEqual(self.requests, [])
+
+    def test_failed_stage_reclamation_stops_before_installation(self):
+        self.skills.mkdir()
+        stage = self.skills / ".stage.abcdef"
+        stage.mkdir()
+        (stage / "partial").write_text("Disposable copy")
+        tools = self.root / "tools"
+        tools.mkdir()
+        wrapper = tools / "rm"
+        wrapper.write_text('#!/bin/sh\necho "synthetic removal failure" >&2\nexit 1\n')
+        wrapper.chmod(0o700)
+        self.env["PATH"] = str(tools) + os.pathsep + os.environ["PATH"]
+        result = self.run_init("cetirun-fixture@1.0.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAILED reclaiming", (self.skills / ".errors.log").read_text())
+        self.assertTrue((stage / "partial").exists())
         self.assertEqual(self.requests, [])
 
 

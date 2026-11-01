@@ -35,6 +35,17 @@ ERRORS_LOG="${SKILLS_DIR}/.errors.log"
 mkdir -p "$SKILLS_DIR" "$NPM_CACHE_DIR"
 : > "$ERRORS_LOG"
 
+# These names are reserved for disposable copies from prior init attempts.
+for abandoned in "$SKILLS_DIR"/.stage.??????; do
+  [ -e "$abandoned" ] || [ -L "$abandoned" ] || continue
+  name=${abandoned##*/}
+  case "${name#.stage.}" in *[!a-zA-Z0-9]*) continue;; esac
+  if [ -L "$abandoned" ] || [ ! -d "$abandoned" ] || ! rm -rf "$abandoned"; then
+    echo "[init-skills] FAILED reclaiming prior staging directory" | tee -a "$ERRORS_LOG" >&2
+    exit 1
+  fi
+done
+
 # Sanitize a package spec into a directory name:
 #   "@scope/name@1.2.3" -> "@scope__name"
 #   "matrix"            -> "matrix"

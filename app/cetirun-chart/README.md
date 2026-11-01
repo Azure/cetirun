@@ -25,6 +25,23 @@ For public npm/PyPI defaults and alternate mirrors, see
 For runtime package and Git settings, see
 [configuration and skills](../../site/content/en/docs/concepts/configuration.md).
 
+## Native npm initialization
+
+The ordinary native runtime installs `skills.npm` packages into its private
+HOME. The initializer copies each package into a temporary directory and checks
+the completion marker before it replaces an installed package. A failed copy
+does not publish a completed installation.
+
+The `.stage.<six-alphanumeric-characters>` names in the npm skills directory are
+reserved for the initializer. Each attempt reclaims these disposable copies
+before it downloads or copies a package. Thus, a copy interrupted by SIGKILL or
+node loss does not consume the space needed for the next attempt. An unexpected
+link or a cleanup failure stops initialization with an error. Other hidden
+entries are not staging directories and are left unchanged.
+
+This does not enable runtime package installation for protected or Custom
+workloads. Those workloads require approved, published skill material.
+
 ## Protected Sandbox rendering
 
 The Operator's `sandboxworkload` adapter uses the shared Sandbox resolution and
