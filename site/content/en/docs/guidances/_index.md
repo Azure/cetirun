@@ -6,7 +6,7 @@ no_list: true
 ---
 
 Install and operate CetiRun in your organization's infrastructure.
-Start with the [Operations overview](../operations/), or choose a task:
+Start with the [Operations overview](../operations/), or select a task:
 
 - [Install CetiRun](../getting-started/platform/)
 - [Configure the runtime and shared skills](../concepts/configuration/)

@@ -1,18 +1,19 @@
 ---
 title: "Using agents"
-description: "Choose a model and manage your agent workspace."
+description: "Select a model and manage your agent workspace."
 weight: 40
 no_list: true
 ---
 
-These guides assume an existing deployment with working routing, storage, and
-the selected runtime image. Instance users can follow the portal paths;
-Kubernetes, Azure, and tailnet changes require platform authorization.
-Replace the example names with your instance and deployment settings.
+These guides are for a deployment that already exists, with routing and
+storage that work and with the selected runtime image. Instance users can
+follow the portal paths. For Kubernetes, Azure, and tailnet changes, platform
+authorization is necessary. Replace the example names with your instance and
+deployment settings.
 
 - [Choose a model](models/)
 - [Chat with a Custom Agent](custom-chat/) — chat without a native Web UI and keep history in your browser
-- [Manage lifecycle](lifecycle/) — check readiness, update, suspend, and delete instances
+- [Manage lifecycle](lifecycle/) — examine readiness, update, suspend, and delete instances
 
 ## Integrations
 
