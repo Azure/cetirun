@@ -50,6 +50,10 @@ type fakeHelmClient struct {
 	disableChatContract bool
 }
 
+func (f *fakeHelmClient) ResolveImageUpgrade(_, _, _, _, image, _ string) (string, error) {
+	return image, nil
+}
+
 // requireLegacyDirectRuntime identifies compatibility tests for Agents that
 // have never opted into Sandbox or AgentPolicy execution.
 func requireLegacyDirectRuntime(t *testing.T) {

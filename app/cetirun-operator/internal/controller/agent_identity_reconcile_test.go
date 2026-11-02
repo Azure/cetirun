@@ -35,6 +35,10 @@ type suspensionHelmClient struct {
 	lastValues    map[string]any
 }
 
+func (f *suspensionHelmClient) ResolveImageUpgrade(_, _, _, _, image, _ string) (string, error) {
+	return image, nil
+}
+
 func (f *suspensionHelmClient) Prepare(_ string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
 	return &helm.PreparedRelease{Values: values, ChartVersion: chartVersion}, nil
 }

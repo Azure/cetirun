@@ -39,6 +39,10 @@ type sharedSandboxInstaller struct {
 	beforeApply func(*helm.PreparedRelease) error
 }
 
+func (i *sharedSandboxInstaller) ResolveImageUpgrade(_, _, _, _, image, _ string) (string, error) {
+	return image, nil
+}
+
 func (i *sharedSandboxInstaller) Prepare(_ string, values map[string]any, version string) (*helm.PreparedRelease, error) {
 	if version != i.chart.Metadata.Version {
 		return nil, fmt.Errorf("unexpected chart version")

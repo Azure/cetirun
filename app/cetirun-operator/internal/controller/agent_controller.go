@@ -482,6 +482,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 	}
 
+	if changed, err := r.upgradeDefaultImage(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	} else if changed {
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	var prepared *helm.PreparedRelease
 	if !commonCustom && (instance.Spec.Agent.Image == nil || instance.Spec.Agent.Port == nil) {
 		var err error

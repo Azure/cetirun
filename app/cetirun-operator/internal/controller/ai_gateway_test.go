@@ -2103,6 +2103,10 @@ type chartHelm struct {
 	uninstalls int
 }
 
+func (h *chartHelm) ResolveImageUpgrade(_, _, _, _, image, _ string) (string, error) {
+	return image, nil
+}
+
 func (h *chartHelm) Prepare(_ string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
 	chrt, err := loader.Load("../../../cetirun-chart")
 	if err != nil {
