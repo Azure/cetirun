@@ -186,4 +186,11 @@ type AIGatewayModelRouterStatus struct {
 	ContextWindow int64 `json:"contextWindow,omitempty"`
 	// +optional
 	MaxTokens int64 `json:"maxTokens,omitempty"`
+
+	// Vision reports that the Agent is configured to send images to the
+	// router: every model that the router sends requests to answer accepts
+	// them. The Agent's own GitHub Copilot routes under the names of these
+	// models count too.
+	// +optional
+	Vision bool `json:"vision,omitempty"`
 }

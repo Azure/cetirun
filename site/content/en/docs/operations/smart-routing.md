@@ -168,7 +168,9 @@ restarts the Agent again.
 The Agent's page lists the router among its models, or it shows why the Agent
 cannot use the router. OpenClaw and Hermes show the router's name. Each Agent
 is configured with the smallest context window and output limit among the tier
-models. As a result, a request fits every tier.
+models. As a result, a request fits every tier. The Agent sends images to the
+router only when every tier model accepts images. Refer to
+[Images](../../guides/models/#images).
 
 ## 5. Check where requests go
 

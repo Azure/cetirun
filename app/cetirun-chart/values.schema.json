@@ -292,6 +292,13 @@
                         }
                     }
                 },
+                "visionModels": {
+                    "type": "array",
+                    "description": "Ids of the models in models that accept images",
+                    "default": [],
+                    "maxItems": 256,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256}
+                },
                 "hermes": {
                     "type": "object",
                     "description": "Hermes on the Gateway",

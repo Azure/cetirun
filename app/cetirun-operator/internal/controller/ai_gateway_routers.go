@@ -614,6 +614,7 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 		if status.Reason == "" {
 			status.Granted, status.Model = true, plan.gatewayName
 			status.ContextWindow, status.MaxTokens = modelRouterLimits(instance, plan, shared, routes)
+			status.Vision = modelRouterVision(plan, shared, routes)
 			groups = append(groups, plan.gatewayName)
 		}
 		statuses = append(statuses, status)
@@ -692,6 +693,32 @@ func modelRouterLimits(instance *api.Agent, plan modelRouterPlan, shared []aiGat
 	return contextWindow, maxTokens
 }
 
+// modelRouterVision reports whether the Agent can send images to the router:
+// whether every tier accepts them. A tier counts as the Gateway name it is
+// registered as, as for the limits: the shared model of that name, when it is
+// one, and the Agent's own Copilot routes registered under it, when it has
+// any, must all accept images. A tier that is neither does not. The router
+// does not look at images when it picks a tier, and a model that refuses
+// them fails the request.
+func modelRouterVision(plan modelRouterPlan, shared []aiGatewayCatalogModel, routes []api.AIGatewayCopilotRoute) bool {
+	sharedVision := map[string]bool{}
+	for _, model := range shared {
+		sharedVision[model.Name] = model.Vision
+	}
+	routeVision := aiGatewayCopilotRouteVision(routes)
+	for _, model := range plan.router.Tiers.Models() {
+		if name, ok := plan.tierNames[model]; ok {
+			model = name
+		}
+		fromShared, isShared := sharedVision[model]
+		fromRoutes, isRoute := routeVision[model]
+		if !isShared && !isRoute || isShared && !fromShared || isRoute && !fromRoutes {
+			return false
+		}
+	}
+	return true
+}
+
 // aiGatewayAgentTeam reads the Agent's Team for its routers; nil without one.
 func (r *AgentReconciler) aiGatewayAgentTeam(ctx context.Context, instance *api.Agent) (*api.Team, error) {
 	if instance.Spec.Team == "" {
@@ -759,7 +786,7 @@ func aiGatewayRouterEntries(instance *api.Agent) []aiGatewayModelEntry {
 				id = router.Alias
 			}
 			entries = append(entries, aiGatewayModelEntry{
-				ID: id, Name: router.Name, ContextWindow: router.ContextWindow, MaxTokens: router.MaxTokens,
+				ID: id, Name: router.Name, ContextWindow: router.ContextWindow, MaxTokens: router.MaxTokens, Vision: router.Vision,
 			})
 		}
 	}
@@ -797,12 +824,16 @@ func aiGatewayRouterDefault(instance *api.Agent) string {
 }
 
 // aiGatewayRouterRevision is the part of the Agent's model configuration the
-// routers contribute beyond their names in status.models: their names and
-// limits, so a change to either rolls the configuration.
+// routers contribute beyond their names in status.models: their names, limits
+// and whether they accept images, so a change to any rolls the configuration.
 func aiGatewayRouterRevision(instance *api.Agent) string {
 	var parts []string
 	for _, entry := range aiGatewayRouterEntries(instance) {
-		parts = append(parts, fmt.Sprintf("%s=%s:%d:%d", entry.ID, entry.Name, entry.ContextWindow, entry.MaxTokens))
+		part := fmt.Sprintf("%s=%s:%d:%d", entry.ID, entry.Name, entry.ContextWindow, entry.MaxTokens)
+		if entry.Vision {
+			part += ":vision"
+		}
+		parts = append(parts, part)
 	}
 	if len(parts) == 0 {
 		return ""
@@ -822,7 +853,7 @@ func (r *AgentReconciler) refreshAIGatewayRouterGrant(ctx context.Context, clien
 		return nil
 	}
 	groups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, grant.team, grant.policy, grant.copilot)
-	routers = withSharedRouterStatuses(routers, grant.sharedRouters)
+	routers = withSharedRouterStatuses(routers, r.currentSharedRouterStatuses(instance, grant.sharedRouters))
 	if slices.Equal(groups, grant.routerGroups) {
 		status.ModelRouters = routers
 		return nil

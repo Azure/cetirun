@@ -331,6 +331,22 @@ The chart does not set LiteLLM's `drop_params`. If it is set, each 400 becomes
 a request that is sent without the reasoning effort, and nothing tells the
 client.
 
+### Images
+
+LiteLLM reports for each deployment if its model accepts images, as
+`supports_vision` in `/model/info`. It takes the value from its price table,
+for the deployment's `model_info.base_model` or its `litellm_params.model`. A
+value in the deployment's own `model_info` replaces the value from the table.
+For a model that accepts images under a name that is not in the table, set
+`model_info.supports_vision: true`. An example is a model behind another
+OpenAI-compatible endpoint.
+
+With `operatorIntegration`, the CetiRun operator reads this value. OpenClaw and
+Hermes then send images with a request to the models that accept them. For the
+other models, OpenClaw uses its own model catalog, and Hermes has a model
+describe each image first. Refer to
+[Serving CetiRun Agents](#serving-cetirun-agents).
+
 ## Budgets and unpriced models
 
 LiteLLM calculates spend from a built-in price table. It multiplies the price
@@ -1852,6 +1868,18 @@ the Agent's key. These aliases listed each Copilot model a second time in the
 model list of the key. Other aliases on the key are kept. When the shared
 models change, the operator registers the routes again with the names and
 fields that then apply.
+
+The operator configures an Agent to send images with a request to a model
+only when every model that can answer the request accepts images
+([Images](#images)). For a shared model, every deployment must accept images.
+The Agent's own Copilot route under the model's name must also accept them; a
+Copilot route takes the value of the price table entry that it is billed as.
+For a router, every model of its tiers, its default model, and its context
+compaction model must accept images. By default, a router does not examine
+images when it selects a model (LiteLLM's `modality_routing` is off). As a
+result, a request with images can go to any of these models, and a model that
+does not accept images can refuse the request. Agents do not send images to a
+router whose configuration the operator cannot read completely.
 
 LiteLLM validates a key against the requested model only. A fallback that is
 configured for the Gateway in `router_settings` or in the console is selected
