@@ -212,10 +212,16 @@ Team. The member keeps **Use shared models** enabled. As the
 **Default model (optional)**, the member selects `auto-team (smart routing)`,
 or `auto` for the Gateway's router.
 
-The Agents of the Team that already run also get a new router of the Team. The
-addition of the router restarts them one time. Their owners can make the
-router the default model in the **Models** section of the Agent's page. This
-restarts the Agent again.
+The Agents of the Team that already run also get a new router if their policy
+allows it. A change to an Agent's available models can restart that Agent to
+update its model configuration. Editing only the Team's router definitions
+does not invalidate Sandbox execution or restart Agents whose model
+configuration is unchanged. Router status updates also do not interrupt
+Sandbox bootstrap; changes to shared runtime context or selected policy still
+require current execution approval.
+
+Owners can make a router the default model in the **Models** section of the
+Agent's page. This restarts the Agent.
 
 An Agent without a Team gets each Gateway router whose models are all shared
 models, `auto` included. To examine `auto` without a policy-bound Team, keep
