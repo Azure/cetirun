@@ -122,6 +122,7 @@ cetirun-ai-gateway:
   # log pages read, kept for seven days (the Gateway chart's
   # spendLogs.retention). The Gateway's request log on stdout records each call
   # as well, and the cluster's log collection keeps it outside the database.
-  # Prompts and responses are stored in neither.
+  # The database rows also hold each call's prompt and response unless
+  # spendLogs.storePrompts is false. The stdout request log never does.
   spendLogs:
     enabled: true
