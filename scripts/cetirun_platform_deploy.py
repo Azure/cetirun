@@ -41,6 +41,9 @@ AGENT_POLICY_MARKERS = (
     '{{range $key,$value := .metadata.annotations}}{{if or (eq $key "cetirun.microsoft.com/sandbox-authorization") '
     '(eq $key "cetirun.microsoft.com/sandbox-reauthorize")}}protected{{end}}{{end}}'
 )
+# The Operator reads customRuntime strictly and stops at startup on a field it does not know.
+OPERATOR_VALUES = ROOT / "app/cetirun-operator/chart/values.yaml"
+REMOVED_CUSTOM_FIELDS = {"agentManagedModel", "gatewayImages"}
 
 
 def load_helper(filename):
@@ -139,8 +142,11 @@ def configuration(path):
     raw_custom = get_value(config, "platform.values.cetirun-operator.customRuntime")
     if type(raw_custom.get("fsGroup")) is not int or not 1 <= raw_custom["fsGroup"] <= 2147483647:
         raise ValueError("customRuntime.fsGroup must explicitly name the qualified non-root storage group")
-    if type(raw_custom.get("agentManagedModel")) is not bool:
-        raise ValueError("customRuntime.agentManagedModel must be an explicit boolean")
+    unknown = sorted(set(raw_custom) - set(yaml_file(OPERATOR_VALUES)["customRuntime"]))
+    if unknown:
+        note = " Every approved Custom image uses the AI Gateway binding." if REMOVED_CUSTOM_FIELDS & set(unknown) else ""
+        raise ValueError("Remove " + ", ".join(f"customRuntime.{field}" for field in unknown) + " from the environment file: "
+                         "the Operator stops at startup on a customRuntime field that it does not know." + note)
 
     values = {name: merge(yaml_file(ROOT / chart / "values.yaml"), config[name].get("values", {}))
               for name, chart in CHARTS.items()}
@@ -246,8 +252,6 @@ def configuration(path):
     custom = operator["customRuntime"]
     if not custom["approvedImages"] or any(not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", image) for image in custom["approvedImages"]):
         raise ValueError("Custom runtime requires explicitly qualified approvedImages pinned by digest")
-    if not set(custom["gatewayImages"]).issubset(custom["approvedImages"]) or (not custom["agentManagedModel"] and set(custom["gatewayImages"]) != set(custom["approvedImages"])):
-        raise ValueError("Every Custom image needs explicit model access; gatewayImages must be approvedImages")
     skills = mapping(config.get("sharedSkills"), "sharedSkills")
     for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
         required(skills, field)

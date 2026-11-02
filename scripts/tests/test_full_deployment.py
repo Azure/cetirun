@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,13 @@ SPEC = importlib.util.spec_from_file_location("full_deployment", ROOT / "scripts
 DEPLOY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DEPLOY)
 FIXTURE = ROOT / "app/cetirun-platform/ci/deployment-example.yaml"
+
+
+def operator_custom_runtime_fields():
+    """Return the JSON fields that the Operator's strict customRuntime parser accepts."""
+    source = (ROOT / "app/cetirun-operator/internal/controller/custom_provider.go").read_text()
+    body = re.search(r"type CustomRuntimeConfig struct \{(.*?)\n\}", source, re.S)[1]
+    return set(re.findall(r'json:"([^",]+)', body))
 
 
 class SyntheticCluster(DEPLOY.Deployment):
@@ -260,6 +268,22 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("target.context", result.stderr)
         self.assertNotIn("ready", result.stdout)
+
+    def test_custom_runtime_fields_unknown_to_the_operator_stop_before_tools(self):
+        image = self.config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"][0]
+        for field, value, removed in (("agentManagedModel", True, True), ("gatewayImages", [image], True),
+                                      ("imageAllowlist", [image], False)):
+            with self.subTest(field=field):
+                config = copy.deepcopy(self.config)
+                config["platform"]["values"]["cetirun-operator"]["customRuntime"][field] = value
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                    with self.assertRaisesRegex(ValueError, f"Remove customRuntime.{field} from the environment file") as failure:
+                        self.configure(config)
+                self.assertEqual("AI Gateway" in str(failure.exception), removed)
+
+    def test_operator_chart_custom_runtime_has_only_fields_the_operator_accepts(self):
+        chart = yaml.safe_load((ROOT / "app/cetirun-operator/chart/values.yaml").read_text())["customRuntime"]
+        self.assertLessEqual(set(chart), operator_custom_runtime_fields())
 
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
@@ -514,6 +538,16 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         self.config["platform"]["values"]["cetirun-connections-mcp"]["enabled"] = False
         with self.assertRaisesRegex(ValueError, "conflicts with the complete deployment"):
             self.deployment()
+
+    def test_rendered_custom_runtime_has_only_fields_the_operator_accepts(self):
+        deployment = self.deployment()
+        operator = next(doc for doc in deployment.documents["platform"]
+                        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "cetirun-operator")
+        environment = {item["name"]: item.get("value") for container in operator["spec"]["template"]["spec"]["containers"]
+                       for item in container.get("env", [])}
+        rendered = json.loads(environment["CETIRUN_CUSTOM_RUNTIME"])
+        self.assertIs(rendered["enabled"], True)
+        self.assertLessEqual(set(rendered), operator_custom_runtime_fields())
 
     def test_cli_reports_a_rollout_failure_as_failure(self):
         deployment = self.deployment()

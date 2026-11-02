@@ -75,9 +75,6 @@ platform:
         approvedImages:
           - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           - registry.example.com/cetirun-vscode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-        agentManagedModel: true
-        gatewayImages:
-          - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         storageClass: example-home
         storageSize: 100Gi
         accessMode: ReadWriteOnce
