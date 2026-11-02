@@ -1287,7 +1287,11 @@ With a system prompt of approximately 40,000 tokens, every classification
 failed. The router then used the default classifier, and it did not report an
 error. Only the response header `x-litellm-complexity-router-cause` and the
 `routing_cause` of the request log show this. They show `heuristic_scorer`
-instead of `jev_classifier`.
+instead of `jev_classifier`. The Gateway now shortens such a request to fit
+the decision model, and a router with `classifier_type: jev` sends a request
+that it still cannot classify to its default model. Refer to
+[The guard callback](#the-guard-callback) and to "The agent keeps its
+conversation and its limits" above.
 
 **A conversation can change model.** Each request is classified separately. As
 a result, one conversation can move between tiers. On the same Azure OpenAI
@@ -1415,14 +1419,18 @@ LiteLLM limits these prompts. For more information, see "One router per
 licensed capability" above.
 
 A model classifier can fail, or not answer in its `timeout_ms` (3000 by
-default). In these cases, the router classifies the request with `heuristic`
-instead, and does not report an error. After a timeout, the router skips the
+default). In these cases, a router with `classifier_type: llm` classifies the
+request with `heuristic` instead, and does not report an error. A router with
+`classifier_type: jev` sends the request to its default model, unless it sets
+its own `classifier_fallback`. After a timeout, the router skips the
 classifier for 30 seconds.
 
 `routing_cause` in the request log and the response header
 `x-litellm-complexity-router-cause` show which classifier decided. For a model
 classifier, they show `llm_classifier` or `jev_classifier`. For the local
-scorer, they show `heuristic_scorer` or `reasoning_override`.
+scorer, they show `heuristic_scorer` or `reasoning_override`. For a request
+that went to the default model after a failed classification, they show
+`default_model_fallback`.
 
 #### A router across providers
 

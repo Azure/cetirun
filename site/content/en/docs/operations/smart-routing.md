@@ -19,10 +19,10 @@ are for an administrator of the Portal, on an installation that runs
 A router is defined in one of two places:
 
 - **On a Team**, in the Portal: the Team's own routers, which its Agents use. No
-  change to the Gateway is necessary, and the classifier is `heuristic` or
-  `llm`.
+  change to the Gateway is necessary. The classifier is `heuristic`, `llm`, or
+  `jev` with a decision model.
 - **In the Gateway's values**: routers that every Team's Policy can grant. They
-  can use any classifier that LiteLLM offers, such as a decision model. See
+  can use any classifier that LiteLLM offers. See
   [Routers in the Gateway](#routers-in-the-gateway).
 
 ## 1. Offer the tier models
@@ -97,8 +97,9 @@ as the allowed and default Sandbox. Under **Smart routing**, select
 **Add smart-routing model**:
 
 - **Model name**: `auto`.
-- **Classifier**: the heuristic, or a model classifier with a shared chat model
-  as **Classifier model**. See [Choose a classifier](#choose-a-classifier).
+- **Classifier**: the heuristic, a model classifier with a shared chat model as
+  **Classifier model**, or a decision model. See
+  [Choose a classifier](#choose-a-classifier).
 - **Simple tier** `gpt-mini`, **Medium tier** `gpt-main`, **Complex tier**
   `gpt-main`, **Reasoning tier** `o3`. The reasoning tier can stay empty. In
   that case, it uses the complex tier.
@@ -190,7 +191,7 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | `model` | The name of the router, or `cetirun-router-<hash>` for a Team's router. The Team's `status.modelRouters[].gatewayModel` shows this name |
 | `routing_tier` | The tier that the router selected |
 | `provider_model` | The deployment that answered, such as `azure/my-gpt-deployment` |
-| `routing_cause` | What made the decision. `llm_classifier` or `jev_classifier` is for a model classifier. `heuristic_scorer` or `reasoning_override` is for the local scorer. On a router with a model classifier, these values mean that the classifier failed |
+| `routing_cause` | What made the decision. `llm_classifier` or `jev_classifier` is for a model classifier. `heuristic_scorer` or `reasoning_override` is for the local scorer. On a router with an `llm` classifier, these values mean that the classifier failed. `default_model_fallback` means that a `jev` classifier failed, and the request went to the router's default model |
 | `spend` | What the request cost |
 
 For Container Insights, the Gateway chart README has Log Analytics queries for
@@ -218,7 +219,7 @@ router's internal name.
 | --- | --- | --- | --- |
 | `heuristic` | Scores English keywords and the length of the request, without a model call | None | Team and Gateway routers |
 | `llm` | A shared chat model reads the request and selects the tier | One model call per request, charged to the Agent | Team and Gateway routers |
-| `jev` | A decision model, such as Microsoft-Decision-1, selects the tier | One call per request, charged to the Agent | Gateway routers |
+| `jev` | A decision model, such as Microsoft-Decision-1, selects the tier | One call per request, charged to the Agent | Team and Gateway routers |
 
 The default, `heuristic`, is free and adds no latency, but it does not place
 hard requests well. In a measurement on 40 prompts, ten for each tier, it
@@ -243,9 +244,26 @@ model, such as `gpt-mini` here:
         complex: o3
 ```
 
-If a model classifier fails or does not answer within three seconds, the router
-uses `heuristic` for that request instead, without an error. After a timeout,
-the router skips the classifier for 30 seconds. `routing_cause` shows this.
+If an `llm` classifier fails or does not answer within three seconds, the
+router uses `heuristic` for that request instead, without an error. If a `jev`
+classifier fails, the router sends the request to its default model, the
+`medium` tier of a Team's router. After a timeout, the router skips the
+classifier for 30 seconds. `routing_cause` shows this.
+
+For `jev` on a Team, select a decision model that the Gateway offers as a
+shared model, such as `decision-1` in [Routers in the Gateway](#routers-in-the-gateway):
+
+```yaml
+  modelRouters:
+    - name: auto
+      classifier:
+        type: jev
+        model: decision-1
+      tiers:
+        simple: gpt-mini
+        medium: gpt-main
+        complex: o3
+```
 
 ## Routers in the Gateway
 
@@ -296,8 +314,9 @@ cetirun-ai-gateway:
 The Policy then lists `auto-decision`, `gpt-mini`, `gpt-main`, and `o3`. It is
 not necessary to list the decision model. Microsoft-Decision-1 reads the Agent's
 whole system prompt and its latest messages. It refuses a request that does not
-fit its 32,768-token context. For such a request, the router uses `heuristic`,
-without an error.
+fit its 32,768-token context. The Gateway shortens such a request to fit, and
+keeps the newest message whole when it can. If the classification fails
+anyway, the router sends the request to its default model, without an error.
 The [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-classifier)
 describes the settings of the classifiers.
 
