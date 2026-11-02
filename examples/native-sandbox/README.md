@@ -118,13 +118,14 @@ native profile supplies an empty read-only skills directory. In that case, a
 shared skills PVC or NFS publication is not necessary. To expose
 already-published shared files, configure the validated publication/catalog.
 Requested skills are never silently dropped. A configured catalog still uses
-its normal validation and storage path. An existing published-skills PVC does
-not prove that an npm or ClawHub package request was materialized. Protected
-rendering rejects those requests with `SkillsMaterializationPending` instead
-of clearing the package list and starting with unrelated published content.
-This applies to OpenClaw and Hermes as well as Custom. Publish the required
-content through the approved source contract; do not bypass the hold with a
-raw chart value.
+its normal validation and storage path.
+
+A published-skills PVC that already exists does not prove that an npm or
+ClawHub package request was materialized. Protected rendering rejects those
+requests with `SkillsMaterializationPending`. It does not clear the package
+list, and the Agent does not start with unrelated published content. This
+applies to OpenClaw, Hermes, and Custom. Publish the necessary content through
+the approved source contract. Do not bypass the hold with a raw chart value.
 
 For a policy-authorized Custom request, unavailable materialization blocks the
 existing Gateway key and holds compute instead of revoking that key. Removing

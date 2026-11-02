@@ -31,9 +31,11 @@ output limits still apply. Keepalives do not extend a task or replay a request.
 If a run fails after streaming starts, the adapter sends one bounded, redacted
 SSE error. It ends the response without a successful finish or `[DONE]`.
 The error codes are `tool_budget_exceeded`, `deadline_exceeded`,
-`output_limit_exceeded`, and `run_failed`. If the client has disconnected or
+`output_limit_exceeded`, and `run_failed`. If the client disconnected, or if
 there is no output capacity, the connection can end without that event.
-Earlier tool actions may have completed. Do not replay the request to find out.
+It is possible that earlier tool actions completed. Do not replay the request
+to find which actions completed.
+
 Portal Chat records a reported error as failed, not as an unknown transport
 interruption. A model response that reaches its output-token limit keeps
 `finish_reason: length`. It is not a successfully completed answer.
@@ -48,7 +50,7 @@ For the platform rules beyond this example, see the
 | [server.mjs](server.mjs) | Image entrypoint: start the API and private auth listener. Stop them on shutdown. |
 | [agent-api.mjs](agent-api.mjs) | HTTP contract, input validation, streaming, limits, and cancellation. |
 | [pi-runtime.mjs](pi-runtime.mjs) | Pi SDK sessions, model discovery, and tool execution. |
-| [run-error.mjs](run-error.mjs) | Fixed error codes and messages shared by the runtime and HTTP adapter. No provider text is returned. |
+| [run-error.mjs](run-error.mjs) | Fixed error codes and messages that the runtime and the HTTP adapter share. The errors contain no provider text. |
 | [gateway-runtime.mjs](gateway-runtime.mjs) | Model discovery and requests through the platform AI Gateway, with memory-only credentials and no automatic retries. |
 | [connections-runtime.mjs](connections-runtime.mjs) | Lazy native MCP client with a workload proof that rotates, explicit TLS trust, bounded requests, and no automatic replay. |
 | [pi-resources.mjs](pi-resources.mjs) | Load the common `$HOME/.agents` view and connect Memory through the Pi SDK. |

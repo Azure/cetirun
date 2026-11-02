@@ -28,19 +28,20 @@ For runtime package and Git settings, see
 ## Native npm initialization
 
 The ordinary native runtime installs `skills.npm` packages into its private
-HOME. The initializer copies each package into a temporary directory and checks
-the completion marker before it replaces an installed package. A failed copy
-does not publish a completed installation.
+HOME. The initializer copies each package into a temporary directory and
+examines the completion marker before it replaces an installed package. A
+failed copy does not publish a completed installation.
 
 The `.stage.<six-alphanumeric-characters>` names in the npm skills directory are
-reserved for the initializer. Each attempt reclaims these disposable copies
-before it downloads or copies a package. Thus, a copy interrupted by SIGKILL or
-node loss does not consume the space needed for the next attempt. An unexpected
-link or a cleanup failure stops initialization with an error. Other hidden
-entries are not staging directories and are left unchanged.
+for the initializer only. Each run of the initializer removes the temporary
+copies with these names before it downloads or copies a package. As a result,
+if SIGKILL or a node loss stops a copy, that copy does not use the space for
+the next run. An unexpected link or a cleanup failure stops initialization with
+an error. Other hidden entries are not temporary copies, and the initializer
+does not change them.
 
 This does not enable runtime package installation for protected or Custom
-workloads. Those workloads require approved, published skill material.
+workloads. Those workloads must use approved, published skill material.
 
 ## Protected Sandbox rendering
 
