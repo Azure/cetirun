@@ -383,8 +383,13 @@ name. The operator offers each model through its deployment ID and access
 group. It offers every model to Agents without a policy, and it offers
 policy-bound Agents the models that their AgentPolicy grants. If the Gateway
 blocks models that do not have a price, as it does by default, each model must
-also have a price. In this example, the provider key is in a Secret that you
-create in the release namespace:
+also have a price.
+
+In this example, the provider key is in a Secret that you create in the release
+namespace. With `make deploy`, put the same entries under
+`platform.values.cetirun-ai-gateway` in the environment file. `make deploy`
+also requires the `auto` and `decision-1` entries that
+[Deploy the platform](#deploy-the-platform) describes:
 
 ```yaml
 cetirun-ai-gateway:
@@ -413,9 +418,11 @@ Also, an upgrade of the Gateway does not interrupt the Agents. The Gateway pods
 keep the configuration that they started with until they are replaced. The
 operator applies a changed model list after the rollout ends.
 
-Shared models are optional. Without shared models, OpenClaw Agents use their
-owners' GitHub Copilot. With `cetirun-operator.aiGateway.copilotProxy.enabled`
-disabled, the Portal creates no OpenClaw Agent until a shared model is offered.
+Shared models are optional for a direct install of this chart. `make deploy`
+requires them, because it requires `auto`. Without shared models, OpenClaw
+Agents use their owners' GitHub Copilot. With
+`cetirun-operator.aiGateway.copilotProxy.enabled` disabled, the Portal creates
+no OpenClaw Agent until a shared model is offered.
 The Gateway's health checks do not probe the Agents' GitHub Copilot routes
 because each probe is a real call on the owner's Copilot allowance.
 `cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` enables their
@@ -433,7 +440,8 @@ kubectl port-forward -n cetirun-system svc/cetirun-ai-gateway 4000:4000
 
 Then open <http://localhost:4000/ui> and sign in as `admin`.
 
-You can use a separately installed Gateway instead. To do this, set
+You can use a separately installed Gateway instead, but not with `make deploy`,
+which installs the bundled one. To do this, set
 `cetirun-ai-gateway.enabled=false`. Install the Gateway in the operator
 namespace under the name `cetirun-ai-gateway`, with
 `operatorIntegration: true`. If you install the Gateway elsewhere, set
@@ -441,8 +449,9 @@ namespace under the name `cetirun-ai-gateway`, with
 copy its master key into the operator namespace as the
 `cetirun-ai-gateway-auth` Secret.
 
-New Agents must have a Team. Before users create Agents, create a Team in the
-Portal's administration pages or with a manifest:
+A Team is optional for a new Agent. Without a Team, the Agent can use every
+shared model. Policy-bound Teams are created in the Portal's administration
+pages. A Team without a policy can also be created with a manifest:
 
 ```bash
 kubectl apply -f - <<'EOF'

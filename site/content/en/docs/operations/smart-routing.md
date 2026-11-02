@@ -105,8 +105,10 @@ platform:
 `make deploy` needs the entries `decision-1` and `auto` in this form. `auto`
 must be a router with a `jev` classifier, `deployment_name: decision-1`, and
 all four tiers. `decision-1` uses LiteLLM's `azure_ai` provider,
-Microsoft-Decision-1 as its `base_model`, and `mode: evaluation`. `base_model`
-gives each model LiteLLM's price for that model. The
+`azure_ai/Microsoft-Decision-1` as its `base_model`, and `mode: evaluation`.
+`base_model` gives each model LiteLLM's price for that model. Without the
+`azure_ai/` prefix, LiteLLM finds no price for Microsoft-Decision-1, the
+operator does not offer the classifier, and `auto` does not work. The
 [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#pricing-a-deployment)
 shows how to set a price yourself.
 
@@ -247,7 +249,7 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | Field | Meaning |
 | --- | --- |
 | `model` | The name of the router, or `cetirun-router-<hash>` for a Team's router. The Team's `status.modelRouters[].gatewayModel` shows this name |
-| `routing_cause` | What made the decision. `llm_classifier` or `jev_classifier` is for a model classifier. `heuristic_scorer` or `reasoning_override` is for the local scorer. On a router with an `llm` classifier, these two values mean that the classifier failed. `default_model_fallback` means that a `jev` classification failed. The request then went to the router's default model, and the line has no `routing_tier` |
+| `routing_cause` | What made the decision. `llm_classifier` or `jev_classifier` is for a model classifier. `heuristic_scorer` or `reasoning_override` is for the local scorer. On a router with an `llm` classifier, these two values mean that the classifier failed. `default_model_fallback` means that a `jev` classification failed. The request then went to the router's default model, and the line has no `routing_tier`. `health_failover` and `health_default_fallback` mean that the model of the tier had no healthy deployment. The request then went to another model of the router's tiers, or to the router's default model |
 | `routing_tier` | The tier that the router selected |
 | `provider_model` | The deployment that answered, such as `azure/my-gpt-deployment` |
 | `spend` | What the request cost |

@@ -96,7 +96,13 @@ and Team. Unless `spendLogs.enabled` is `false`, the database also keeps
 LiteLLM's own record of each call in `LiteLLM_SpendLogs`. The recorded calls
 also include health-check probes. Each record contains the call's metadata, for
 example the key, user, Team, model, token counts, spend, timing, and the error
-of a failed call. It does not contain the prompt or response of the call.
+of a failed call.
+
+By default, each record also contains the prompt and the response of the call.
+Anyone who can read the database or the request log pages of the Gateway
+console can read them. Set `spendLogs.storePrompts` to `false` to keep only the
+metadata. The request log on the Gateway's stdout never contains the prompt or
+the response.
 
 When these rows and the stored health-check results are older than
 `spendLogs.retention`, LiteLLM deletes them. The default value is seven days,
