@@ -4,15 +4,22 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
 func TestAgentTeamRuntimeInputPredicateAndFingerprint(t *testing.T) {
@@ -130,6 +137,94 @@ func TestAgentReconcileIgnoresTeamCompatibilityRefresh(t *testing.T) {
 	}
 	if f.installer.stages != stages {
 		t.Fatalf("compatibility refresh installed the native runtime %d additional times", f.installer.stages-stages)
+	}
+}
+
+func TestReconciledSandboxCompatibilityRefreshBetweenTeamReadsDoesNotHoldOrApply(t *testing.T) {
+	ctx := context.Background()
+	f := newReconciledKubernetesFixture(t, "openclaw", corev1.ReadWriteOncePod)
+	workload := f.workload(t)
+	workload.Status.ObservedGeneration = workload.Generation
+	workload.Status.Replicas, workload.Status.ReadyReplicas, workload.Status.UpdatedReplicas = 1, 1, 1
+	if err := f.kube.Status().Update(ctx, workload); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcileOK(t)
+	if agent := f.current(t); agent.Status.Phase != api.PhaseReady || agent.Status.AccessURL == "" {
+		t.Fatal("fixture did not reach common reconciled Ready state")
+	}
+	workload, stages := f.workload(t), f.installer.stages
+	changed, teamReads := false, 0
+	spy := interceptor.NewClient(f.kube, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, object, opts...); err != nil {
+				return err
+			}
+			if team, ok := object.(*api.Team); ok && team.Name == f.current(t).Spec.Team {
+				teamReads++
+			}
+			if team, ok := object.(*api.Team); ok && team.Name == f.current(t).Spec.Team && teamReads == 1 {
+				changed = true
+				updated := &api.Team{}
+				if err := c.Get(ctx, key, updated); err != nil {
+					return err
+				}
+				updated.Status.Compatibility = &api.TeamCompatibilityStatus{
+					State: api.CompatibilityCompatible,
+					Team:  api.CompatibilityReference{Name: updated.Name, UID: string(updated.UID), Generation: updated.Generation},
+				}
+				if err := c.Status().Update(ctx, updated); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+	f.r.APIReader = spy
+	f.r.SandboxPreparation.Prerequisites.(*KubernetesSandboxPrerequisites).APIReader = spy
+	if _, err := f.reconcile(); err != nil {
+		t.Fatalf("compatibility refresh between common Team reads held the Sandbox (Team reads=%d): %v", teamReads, err)
+	}
+	if !changed || f.installer.stages != stages {
+		t.Fatalf("compatibility refresh changed common runtime application: changed=%v stages=%d want=%d", changed, f.installer.stages, stages)
+	}
+	after := f.workload(t)
+	if after.UID != workload.UID || after.Spec.Replicas == nil || workload.Spec.Replicas == nil ||
+		*after.Spec.Replicas != *workload.Spec.Replicas || slices.Contains(f.current(t).Finalizers, sandbox.HoldFinalizer) {
+		t.Fatal("compatibility refresh stopped the common Sandbox workload")
+	}
+}
+
+func TestReconciledSandboxBootstrapGuardRejectsTeamExecutionReadbackChanges(t *testing.T) {
+	for _, change := range []struct {
+		name   string
+		mutate func(*api.Team)
+	}{
+		{"spec", func(team *api.Team) { team.Spec.Skills = append(team.Spec.Skills, "npm:changed") }},
+		{"UID", func(team *api.Team) { team.UID = "replacement-team-uid" }},
+		{"deletion", func(team *api.Team) { now := metav1.Now(); team.DeletionTimestamp = &now }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			f := newSandboxRuntimeFixture(t, true, nil, true)
+			attempt, err := f.r.resolveSandboxInputs(context.Background(), f.current(t), false, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.r.APIReader = interceptor.NewClient(f.kube, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, key, object, opts...); err != nil {
+						return err
+					}
+					if team, ok := object.(*api.Team); ok && team.Name == attempt.team.Name {
+						change.mutate(team)
+					}
+					return nil
+				},
+			})
+			if err := f.r.sandboxBootstrapGuard(context.Background(), attempt); !errors.Is(err, errSandboxSourceChanged) {
+				t.Fatalf("meaningful Team readback change bypassed common bootstrap guard: %v", err)
+			}
+		})
 	}
 }
 
