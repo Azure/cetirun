@@ -66,6 +66,9 @@ policy-controlled. Common Custom terminals also retain the exact
 Agent-UID-bound exec admission gate used by registry credential isolation.
 This allows private-image credential repair and rotation after the terminal
 starts, without weakening the registry checks or replacing the running Pod.
+Before Registry synchronization, common Custom reconciliation repairs this gate
+even if a pending credential operation does not yet match the source Secret.
+Gate repair does not complete that operation or grant terminal exec permissions.
 The common Sandbox admission checks continue to apply independently.
 Changes to pull references use the common executor's sealed desired manifest.
 The legacy deferred-rollout flag must not change those values after sealing.

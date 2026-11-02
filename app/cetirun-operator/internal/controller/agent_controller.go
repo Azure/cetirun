@@ -465,6 +465,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 				return result, stderrors.Join(err, holdErr)
 			}
 		}
+		// An unmatched Registry operation must not prevent repair of its exec gate.
+		// Terminal permissions are still installed only during workload preparation.
+		if commonCustom {
+			if err := r.ensureCommonTerminalExecPolicy(ctx, instance); err != nil {
+				result, waitErr := r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
+				return result, stderrors.Join(err, waitErr)
+			}
+		}
 		// Credential rotation must not pull the runtime chart or enter Helm.
 		sa := "default"
 		if !commonCustom {
