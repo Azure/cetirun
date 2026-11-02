@@ -23,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
@@ -97,6 +98,37 @@ func sandboxConfigurationFixture() (*api.Sandbox, controller.SandboxConfiguratio
 		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "example-home", UID: "example-storage-uid"}, Provisioner: "csi.example.com"},
 	}
 	return object, snapshot, objects
+}
+
+func TestConfigurationChangePredicateIgnoresStatusOnlyUpdates(t *testing.T) {
+	filter := controller.ConfigurationChangePredicate()
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 3}}
+	statusOnly := team.DeepCopy()
+	statusOnly.Status.Compatibility = &api.TeamCompatibilityStatus{State: api.CompatibilityCompatible}
+	if filter.Update(event.UpdateEvent{ObjectOld: team, ObjectNew: statusOnly}) {
+		t.Fatal("status-only update requeued Team compatibility reconciliation")
+	}
+	for name, changed := range map[string]*api.Team{
+		"generation": func() *api.Team { object := team.DeepCopy(); object.Generation++; return object }(),
+		"uid":        func() *api.Team { object := team.DeepCopy(); object.UID = "replacement-uid"; return object }(),
+		"deletion": func() *api.Team {
+			object := team.DeepCopy()
+			object.DeletionTimestamp = &metav1.Time{Time: time.Now().UTC()}
+			return object
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !filter.Update(event.UpdateEvent{ObjectOld: team, ObjectNew: changed}) {
+				t.Fatal("meaningful configuration update was filtered")
+			}
+		})
+	}
+	if !filter.Create(event.CreateEvent{Object: team}) || !filter.Delete(event.DeleteEvent{Object: team}) {
+		t.Fatal("create or delete event was filtered")
+	}
+	if filter.Generic(event.GenericEvent{Object: team}) {
+		t.Fatal("generic event must not bypass configuration refresh cadence")
+	}
 }
 
 func nativePolicyHarnesses() api.AgentPolicyHarnesses {

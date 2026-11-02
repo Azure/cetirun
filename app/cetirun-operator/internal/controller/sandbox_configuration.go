@@ -20,8 +20,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -101,10 +104,30 @@ func (r *TeamReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&api.Team{}).
-		Watches(&api.AgentPolicy{}, handler.EnqueueRequestsFromMapFunc(r.enqueueTeamsForAgentPolicy)).
-		Watches(&api.Sandbox{}, handler.EnqueueRequestsFromMapFunc(r.enqueueTeamsForSandbox)).
+		For(&api.Team{}, builder.WithPredicates(ConfigurationChangePredicate())).
+		Watches(&api.AgentPolicy{}, handler.EnqueueRequestsFromMapFunc(r.enqueueTeamsForAgentPolicy), builder.WithPredicates(ConfigurationChangePredicate())).
+		Watches(&api.Sandbox{}, handler.EnqueueRequestsFromMapFunc(r.enqueueTeamsForSandbox), builder.WithPredicates(ConfigurationChangePredicate())).
 		Complete(r)
+}
+
+// ConfigurationChangePredicate prevents status writes from immediately
+// requeueing configuration reconcilers. Creates and deletes remain observable;
+// updates are meaningful only when the persisted configuration identity,
+// generation, or deletion state changes.
+func ConfigurationChangePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(event.CreateEvent) bool { return true },
+		DeleteFunc: func(event.DeleteEvent) bool { return true },
+		UpdateFunc: func(update event.UpdateEvent) bool {
+			if update.ObjectOld == nil || update.ObjectNew == nil {
+				return true
+			}
+			return update.ObjectOld.GetGeneration() != update.ObjectNew.GetGeneration() ||
+				update.ObjectOld.GetUID() != update.ObjectNew.GetUID() ||
+				!reflect.DeepEqual(update.ObjectOld.GetDeletionTimestamp(), update.ObjectNew.GetDeletionTimestamp())
+		},
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
 }
 
 func (r *TeamReconciler) enqueueTeams(ctx context.Context, matches func(*api.Team) bool) []reconcile.Request {
