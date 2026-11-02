@@ -61,9 +61,9 @@ Web Terminal (ttyd):
 {{- else }}
   To reach ttyd through a port-forward, run this command:
 
-  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.ttyd.port }}:{{ .Values.ttyd.port }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "cetirun.fullname" . }} {{ .Values.ttyd.port }}:{{ .Values.ttyd.port }}
 
-  Then open http://localhost:{{ .Values.ttyd.port }} in your browser.
+  Then open http://localhost:{{ .Values.ttyd.port }}{{ regexReplaceAll "/+$" (.Values.ttyd.basePath | default "") "" }}/ in your browser.
 {{- end }}
 {{- end }}
 {{- end }}
