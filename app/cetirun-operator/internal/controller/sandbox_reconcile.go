@@ -172,7 +172,6 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		values["memoryOptions"] = r.memoryOptions()
 		if agent.Spec.Suspended {
 			values["replicaCount"] = 0
-			values["ttyd"] = map[string]any{"enabled": false}
 		}
 	}
 	configuration, ok := r.SandboxPreparation.Configuration.(*sandboxplatform.KubernetesSource)
