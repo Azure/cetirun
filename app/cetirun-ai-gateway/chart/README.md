@@ -1169,9 +1169,11 @@ These fallbacks do not replace other fallbacks:
 The response names the model that answered, not the router. It has the
 `x-litellm-attempted-fallbacks` header, but no `x-litellm-complexity-router-*`
 headers. The request log writes a `failure` line for the tier, with the
-router's name as `model`. It then writes a line for the model that answered.
-This line has `fallback_from` (the router's name), `attempted_fallbacks`, and
-`fallback_cause` (the error class of the first failure).
+router's name as `model` and the tier as `routing_tier`. It then writes a line
+for the model that answered. This line has `fallback_from` (the router's name),
+`fallback_cause` (the error class of the first failure), and
+`attempted_fallbacks`. `attempted_fallbacks` counts each time LiteLLM sent the
+request on, also to another deployment of the same model (`router.failover`).
 
 A measurement on LiteLLM 1.105.6 used mock models. The simple tier of a router
 answered 503. Before the change, the client got the 503 after one upstream
@@ -1180,6 +1182,12 @@ the Chat Completions API, streamed or not, and on the Responses and Anthropic
 Messages APIs, also with a Team router's internal name. With every model of
 the router down, each model got one call, and the client got the 503 of the
 first model.
+
+On the e2e cluster, the GitHub Copilot proxy of an Agent was scaled to zero.
+Its Team's router had `copilot/claude-opus-5.5` as its medium tier. Six coding
+requests went to that tier, and the Azure OpenAI model of the router's other
+tiers answered each of them, after 8 to 12 seconds. A request for the Copilot
+model by its own name got 503, without internal names in the message.
 
 **Errors do not show LiteLLM's internal names.** LiteLLM adds its internal
 names to the errors that it returns: the model groups of a request, their
@@ -2558,9 +2566,11 @@ records this metadata of the call:
 
 A call that LiteLLM makes itself carries its origin in `call_origin`. For
 example, a background health check probe is `"health_check"`. As a result,
-usage figures can omit it. A call that LiteLLM makes as a fallback, after the
-model of the request failed, carries `fallback_from`, `attempted_fallbacks`,
-and `fallback_cause`. This is a shortened example of a line:
+usage figures can omit it. A call that LiteLLM makes after an attempt of the
+request failed, to another model or to another deployment of the same model,
+carries `fallback_from` (the model that the request was for),
+`attempted_fallbacks`, and `fallback_cause`. This is a shortened example of a
+line:
 
 ```json
 {"log_type":"cetirun.ai_gateway.request","schema_version":1,"time":"2026-10-08T13:13:27.780Z","status":"success","route":"/v1/chat/completions","stream":false,"model":"gpt-4o","provider_model":"azure/prod-gpt-4o","prompt_tokens":1000,"completion_tokens":1000,"cached_tokens":800,"spend":0.014,"key_alias":"cetirun-alice-agent-1234","user_id":"alice","team_alias":"research","key_metadata":{"cetirun_agent":"alice-agent","cetirun_team":"research"},"duration_ms":686}

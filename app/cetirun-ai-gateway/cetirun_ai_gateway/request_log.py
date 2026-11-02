@@ -18,9 +18,10 @@ why, and its score; the model it chose is the call's provider model. A call
 LiteLLM makes itself is marked with its origin in call_origin: the call an auto
 router makes to classify a request, when the router uses a model for that, is
 a line of its own with the classifier's origin, and a background health check
-probe is "health_check", so usage figures can leave probes out. A call LiteLLM
-made as a fallback, after the model the request was for failed, records that
-model, how many fallbacks it attempted and the class of the first failure.
+probe is "health_check", so usage figures can leave probes out. A call
+LiteLLM made after an attempt of the request failed, to another model or to
+another deployment of the same model, records the model the request was for,
+how many times LiteLLM sent it on and the class of the first failure.
 
 A client can ask LiteLLM for per-request debug output with
 litellm_request_debug, which makes LiteLLM print that request's prompt and the
@@ -84,10 +85,11 @@ def call_origin(kwargs):
 
 def fallback(kwargs):
     """(the model the request asked for, the number of fallbacks, the class of the first failure) of a call
-    LiteLLM made as a fallback after the requested model failed, or None for any other call.
+    LiteLLM made after an attempt of the request failed, to another model (a fallback) or to another
+    deployment of the same model (a failover), or None for any other call.
 
     LiteLLM records them in the call's own metadata, not in the logging payload: the model group the
-    request was for, how many fallbacks it attempted, and each failed attempt.
+    request was for, how many times it sent the request on, and each failed attempt.
     """
     params = as_dict(kwargs.get("litellm_params"))
     for name in ("litellm_metadata", "metadata"):
@@ -322,8 +324,8 @@ class RequestLog(CustomLogger):
         }
         if fallback_details is not None:
             requested, attempts, cause = fallback_details
-            # The model failed and LiteLLM sent the request on: model is the
-            # fallback's, fallback_from the model the request was for, such
+            # An attempt failed and LiteLLM sent the request on: model is
+            # the call's, fallback_from the model the request was for, such
             # as an auto router whose tier's model failed.
             record.update(
                 {
