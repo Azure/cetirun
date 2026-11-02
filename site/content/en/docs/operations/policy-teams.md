@@ -7,23 +7,24 @@ weight: 15
 A Team that is created in the Portal has an Agent Policy and one or more
 Sandboxes. Its Agents run in a Sandbox, each in a Kata virtual machine. The
 Policy's network rules are compiled into Cilium network policies, and the
-Sandbox admission webhook examines every write. The platform chart keeps this
-disabled. Until it is enabled, the Portal refuses to create an Agent for such a
-Team. An Agent that is created for such a Team with `kubectl` is held and never
-starts.
+Sandbox admission webhook examines every write. `make deploy` installs and
+enforces Sandbox admission, but it keeps Sandbox execution disabled. Until you
+enable it, the Portal refuses to create an Agent for such a Team. An Agent that
+is created for such a Team with `kubectl` is held and never starts.
 
-The steps on this page enable it for an installation that was made with
-[Install CetiRun](../../getting-started/platform/), in the release namespace
-`cetirun-system`:
+The steps on this page enable Sandbox execution for an installation that
+`make deploy` makes, as in [Install CetiRun](../../getting-started/platform/),
+in the release namespace `cetirun-system`. Do steps 1 to 3 before the first
+`make deploy`, because it needs the admission certificate. Do the other steps
+after the first run:
 
 1. [Examine the cluster](#the-cluster).
 2. [Create a HOME StorageClass](#home-storage).
-3. [Issue the admission certificate](#the-admission-certificate).
-4. [Enable admission without enforcement](#admission-without-enforcement).
-5. [Register the platform](#the-platform-registration).
-6. [Label the peers](#peer-labels).
-7. [Enforce admission and run Sandboxes](#enforce-admission-and-run-sandboxes).
-8. [Test the setup with a Sandbox, a Policy, and a Team](#check-the-setup).
+3. [Issue the admission certificate and select the administrators](#the-admission-certificate).
+4. [Register the platform](#the-platform-registration).
+5. [Label the peers](#peer-labels).
+6. [Enable Sandbox execution](#enable-sandbox-execution).
+7. [Test the setup with a Sandbox, a Policy, and a Team](#check-the-setup).
 
 Then, for a Team whose Agents use a smart-routing model, follow
 [Smart routing](../smart-routing/). For the other Team settings, follow
@@ -31,9 +32,9 @@ Then, for a Team whose Agents use a smart-routing model, follow
 
 ## The cluster
 
-- **Kubernetes 1.37 or later.** The operator chart refuses Sandbox admission on
-  an older cluster. The default of the [cluster template](../infrastructure/)
-  is `1.34`. In your parameter file, set `kubernetesVersion` to a 1.37 or later
+- **Kubernetes 1.37 or later.** `make deploy` and the operator chart refuse an
+  older cluster. The default of the [cluster template](../infrastructure/) is
+  `1.34`. In your parameter file, set `kubernetesVersion` to a 1.37 or later
   version that your region offers.
 - **Kata.** Agent node pools with `workloadRuntime: KataVmIsolation` supply the
   `kata-vm-isolation` RuntimeClass. The two agent pools of the template have
@@ -73,6 +74,7 @@ certificate. Create a CA, a server certificate for that name, and a TLS Secret.
 For example, use OpenSSL:
 
 ```bash
+kubectl create namespace cetirun-system --dry-run=client -o yaml | kubectl apply -f -
 SERVICE=cetirun-sandbox-admission.cetirun-system.svc
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
   -subj "/CN=cetirun-sandbox-admission-ca" -keyout ca.key -out ca.crt
@@ -86,43 +88,53 @@ kubectl create secret tls cetirun-sandbox-admission-tls -n cetirun-system \
 base64 -w0 ca.crt > ca-bundle.txt
 ```
 
-`ca-bundle.txt` holds the CA bundle for the enforcement step. Keep `ca.key`
-outside the cluster. Renew the certificate before it expires. An expired
-certificate makes the admission server unready. After admission is enforced,
-every write that it examines is then refused. The operator README describes
-[how to rotate the CA]({{< repo "app/cetirun-operator/README.md" >}}#availability-and-bootstrap).
+`ca-bundle.txt` holds the CA bundle on one line. Keep `ca.key` outside the
+cluster. Renew the certificate before it expires. An expired certificate makes
+the admission server unready. Because `make deploy` enforces admission, the
+webhook then refuses every write that it examines. The operator README
+describes [how to rotate the CA]({{< repo "app/cetirun-operator/README.md" >}}#availability-and-bootstrap).
 
-## Admission without enforcement
-
-First, install admission without enforcement. This lets admission run and
-answer before its refusals have an effect. An installation with enforcement
-from the start is not supported. Add the values below to your platform values
-file. Then run the deployment helper again.
+In the environment file of `make deploy`, name the Secret and the CA bundle.
+Also name the administrators:
 
 ```yaml
-cetirun-operator:
-  sandboxAdmission:
-    enabled: true
-    podsEnabled: true
-    tlsSecretName: cetirun-sandbox-admission-tls
-    # Who may write policy-bound configuration with kubectl, by the names
-    # the cluster's authentication gives them. The Portal's service account
-    # is added for you. Blanket groups such as system:authenticated are refused.
-    adminGroups:
-      - "<admin-group-object-id>"  # an Entra ID group's object ID
+platform:
+  values:
+    cetirun-operator:
+      sandboxAdmission:
+        tlsSecretName: cetirun-sandbox-admission-tls
+        caBundle: <the contents of ca-bundle.txt>
+        # Who can write policy-bound configuration with kubectl, by the names
+        # that the cluster's authentication gives them. The Portal's service
+        # account is added for you. Blanket groups such as
+        # system:authenticated are refused.
+        adminGroups:
+          - "<admin-group-object-id>"  # an Entra ID group's object ID
 ```
 
 List at least one administrator in `adminUsers` or `adminGroups`. These
 administrators can write policy-bound configuration with `kubectl`. They can
-also reauthorize an Agent. The Portal has no page for this. Then make sure that
-both replicas are ready and that they run on different nodes:
+also reauthorize an Agent. The Portal has no page for this. Select them before
+the first run, because a later `make deploy` stops if they change.
+
+On a new installation, `make deploy` starts the admission server without
+enforcement. After the server is ready, it enforces admission. After the run,
+make sure that both replicas are ready and that they run on different nodes:
 
 ```bash
 kubectl rollout status deployment/cetirun-sandbox-admission -n cetirun-system
 kubectl get pods -n cetirun-system -l app.kubernetes.io/name=cetirun-sandbox-admission -o wide
 ```
 
+If you install the platform chart directly with Helm, install admission
+without enforcement first. Enforce it in a later upgrade, after the webhook
+answers. Refer to the operator README's
+[availability and bootstrap]({{< repo "app/cetirun-operator/README.md" >}}#availability-and-bootstrap).
+
 ## The platform registration
+
+Write the registration after the first `make deploy`, because it uses the
+addresses of the DNS and Gateway Pods that run.
 
 The operator and the admission webhook read what the cluster supplies from a
 ConfigMap that you write. This is `platform.json` in `sandbox-platform`, in
@@ -260,37 +272,38 @@ kubectl label pods -n cetirun-system \
 
 The label belongs to the Pods, not to their Deployments. After an AKS update
 replaces CoreDNS, label the new Pods again as soon as they start. Do this also
-after every Gateway upgrade or restart. Until then, Agents' model requests and
+after every Gateway upgrade or restart, for example after a `make deploy` run
+that changes the Gateway's models. Until then, Agents' model requests and
 name lookups fail. A label is not necessary on the Pods of the ingress gateway.
 
-## Enforce admission and run Sandboxes
+## Enable Sandbox execution
 
-After admission answers, enforce it and enable Sandbox execution in one more
-upgrade. Your values file then has:
+Add these values to the `platform.values` of the environment file, and keep
+the values that are already there. Then run `make deploy` again. Keep these
+values in every later run. `make deploy` stops if a run removes the operator
+values.
 
 ```yaml
-cetirun-operator:
-  sandboxAdmission:
-    enabled: true
-    podsEnabled: true
-    enforce: true
-    tlsSecretName: cetirun-sandbox-admission-tls
-    caBundle: <the contents of ca-bundle.txt>
-    adminGroups:
-      - "<admin-group-object-id>"
-  sandboxSources:
-    enabled: true
-    nativeExecution: true
-    bootstrapOwnedPrerequisites: true
-    platformConfigMapName: sandbox-platform
-cetirun-portal:
-  # The Portal creates Sandbox Agents with the image and chart the operator
-  # runs; without it, it needs sandboxRuntimeProfiles for each harness.
-  sandboxRuntimeDefaultsFromController: true
+platform:
+  values:
+    cetirun-operator:
+      sandboxAdmission:
+        podsEnabled: true
+      sandboxSources:
+        enabled: true
+        nativeExecution: true
+        bootstrapOwnedPrerequisites: true
+        platformConfigMapName: sandbox-platform
+    cetirun-portal:
+      # The Portal creates Sandbox Agents with the image and chart that the
+      # operator runs. Without this value, the Portal needs
+      # sandboxRuntimeProfiles for each harness.
+      sandboxRuntimeDefaultsFromController: true
 ```
 
-Run the deployment helper again. A Sandbox Agent runs the operator's runtime
-chart and the OpenClaw or Hermes image of the same release.
+Before it writes, `make deploy` makes sure that the `sandbox-platform`
+ConfigMap exists. A Sandbox Agent runs the operator's runtime chart and the
+OpenClaw or Hermes image of the same release.
 
 ## Check the setup
 

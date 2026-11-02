@@ -52,8 +52,9 @@ REGISTRY=<registry> bash scripts/ai-gateway-helm-release.sh
 
 Both scripts take `<version>` from the release version of the repository,
 unless `VERSION` is set. The chart runs the image of its own version.
-`make publish REGISTRY=<registry>` publishes them together with every other
-CetiRun image and chart. The master key, the salt key, and the console password
+`make publish REGISTRY=<registry> ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true`
+publishes them together with every other CetiRun image and chart, the VS Code
+Server image included. The master key, the salt key, and the console password
 are generated. Refer to [Credentials](#credentials). To call the Gateway, refer
 to [Calling the Gateway](#calling-the-gateway).
 
@@ -1209,11 +1210,13 @@ Microsoft-Decision-1 refuses a request that is larger than its context of
 32,768 tokens. In a direct measurement, an English prompt of 32,065 tokens was
 classified. A prompt that was 1,000 words longer was refused.
 
-With a system prompt of approximately 40,000 tokens, every classification
-failed. The router then used the default classifier, and it did not report an
-error. Only the response header `x-litellm-complexity-router-cause` and the
-`routing_cause` of the request log show this. They show `heuristic_scorer`
-instead of `jev_classifier`.
+Without the guard, every classification failed with a system prompt of
+approximately 40,000 tokens. The router then used the default classifier, and
+it did not report an error. The guard now shortens these requests so that they
+fit. Refer to [The guard callback](#the-guard-callback). If a classification
+fails anyway, the router sends the request to its default model. The response
+header `x-litellm-complexity-router-cause` and the `routing_cause` of the
+request log then show `default_model_fallback`, with no tier.
 
 **A conversation can change model.** Each request is classified separately. As
 a result, one conversation can move between tiers. On the same Azure OpenAI
@@ -1341,14 +1344,17 @@ LiteLLM limits these prompts. For more information, see "One router per
 licensed capability" above.
 
 A model classifier can fail, or not answer in its `timeout_ms` (3000 by
-default). In these cases, the router classifies the request with `heuristic`
-instead, and does not report an error. After a timeout, the router skips the
-classifier for 30 seconds.
+default). In these cases, a router with an `llm` classifier classifies the
+request with `heuristic` instead. A router with a `jev` classifier sends the
+request to its default model, as `classifier_fallback: default_model` above
+describes. Neither router reports an error. After a timeout, the router skips
+the classifier for 30 seconds.
 
 `routing_cause` in the request log and the response header
 `x-litellm-complexity-router-cause` show which classifier decided. For a model
 classifier, they show `llm_classifier` or `jev_classifier`. For the local
-scorer, they show `heuristic_scorer` or `reasoning_override`.
+scorer, they show `heuristic_scorer` or `reasoning_override`. After a failed
+`jev` classification, they show `default_model_fallback`.
 
 #### A router across providers
 
@@ -1630,8 +1636,10 @@ curl -si http://localhost:4000/v1/chat/completions \
 
 A response through a router tells how it was routed.
 `x-litellm-complexity-router-tier` names the tier. `-cause` names what decided
-the tier, and `-score` gives the heuristic score, if there is one. The request
-log has the model that answered. Refer to [Smart routing](#smart-routing).
+the tier, and `-score` gives the heuristic score, if there is one. After a
+failed `jev` classification, the response has no tier, and `-cause` is
+`default_model_fallback`. The request log has the model that answered. Refer to
+[Smart routing](#smart-routing).
 
 ### Revoking a key takes up to a minute to reach every replica
 
