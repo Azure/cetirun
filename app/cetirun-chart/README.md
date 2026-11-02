@@ -62,7 +62,12 @@ identity. It reuses the HOME claim that already exists and projects immutable
 canonical context at its actual HOME. HTTP modes use the static probe that is
 packaged in the approved terminal image. Headless mode has no probes. The
 optional isolated terminal is rendered separately, is resource-bounded, and is
-policy-controlled. For registration, artifact pins, and unsupported
+policy-controlled. Common Custom terminals also retain the exact
+Agent-UID-bound exec admission gate used by registry credential isolation.
+This allows private-image credential repair and rotation after the terminal
+starts, without weakening the registry checks or replacing the running Pod.
+The common Sandbox admission checks continue to apply independently.
+For registration, artifact pins, and unsupported
 combinations, see the
 [governed Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
 
