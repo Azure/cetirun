@@ -737,35 +737,60 @@ func (r *AgentReconciler) aiGatewayPolicySharedModels(ctx context.Context, model
 }
 
 // aiGatewayRouterEntries are the Agent's granted Team routers as configured
-// models: the internal name the Agent sends and the router's own name to
-// show. A granted router configured in the Gateway is a shared model, which
-// the Agent is configured with as such.
+// models: the name the Agent sends and the router's own name to show. A
+// granted router configured in the Gateway is a shared model, which the Agent
+// is configured with as such.
+//
+// The Agent sends the router's internal name, or, for a Hermes Agent whose
+// key has the router's alias, the router's name. Hermes shows a model by the
+// name it sends. OpenClaw shows the router's name in any case, and keeps the
+// internal name, which its sessions hold.
 func aiGatewayRouterEntries(instance *api.Agent) []aiGatewayModelEntry {
 	status := instance.Status.AIGateway
 	if status == nil {
 		return nil
 	}
+	hermes := instance.Spec.Agent.Type == api.AgentTypeHermes
 	var entries []aiGatewayModelEntry
 	for _, router := range status.ModelRouters {
 		if router.Granted && strings.HasPrefix(router.Model, aiGatewayRouterPrefix) {
+			id := router.Model
+			if hermes && router.Alias != "" {
+				id = router.Alias
+			}
 			entries = append(entries, aiGatewayModelEntry{
-				ID: router.Model, Name: router.Name, ContextWindow: router.ContextWindow, MaxTokens: router.MaxTokens,
+				ID: id, Name: router.Name, ContextWindow: router.ContextWindow, MaxTokens: router.MaxTokens,
 			})
 		}
 	}
 	return entries
 }
 
-// aiGatewayRouterDefault is the internal name of the granted router the
-// Agent names as its model, by the router's name or its internal name.
+// aiGatewayRouterDefault is the name the Agent sends for the granted router
+// it names as its model, by the router's name or its internal name.
 func aiGatewayRouterDefault(instance *api.Agent) string {
 	model := strings.TrimSpace(instance.Spec.Model)
 	if model == "" {
 		return ""
 	}
-	for _, entry := range aiGatewayRouterEntries(instance) {
+	entries := aiGatewayRouterEntries(instance)
+	if len(entries) == 0 {
+		return ""
+	}
+	for _, entry := range entries {
 		if entry.Name == model || entry.ID == model {
 			return entry.ID
+		}
+	}
+	// The internal name of a router the Agent is configured with under its
+	// alias.
+	for _, router := range instance.Status.AIGateway.ModelRouters {
+		if router.Granted && router.Model == model {
+			for _, entry := range entries {
+				if entry.Name == router.Name {
+					return entry.ID
+				}
+			}
 		}
 	}
 	return ""

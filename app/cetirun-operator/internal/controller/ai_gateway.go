@@ -342,6 +342,7 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 	if err != nil {
 		return aiGatewayGrant{}, err
 	}
+	limits = r.withTeamRouterModelLimits(limits, resolution.team)
 	return aiGatewayGrant{
 		groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true,
 		team: resolution.team, policy: resolution.policy, routerGroups: routerGroups, routers: routers, routersEvaluated: true,
@@ -868,11 +869,13 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	// Copilot registration problems are reported on the Copilot status and
 	// never block the key: shared models keep working.
 	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended)
-	r.reconcileAIGatewayKeyAliases(ctx, client, instance, token, key)
 	if err := r.refreshAIGatewayRouterGrant(ctx, client, instance, grant); err != nil {
 		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayModelRoutersFailed",
 			"Updating the AI Gateway key's model routers after the GitHub Copilot registration failed: %v", err)
 	}
+	// After the routers are granted, and the Copilot routes they must not
+	// shadow are registered.
+	r.reconcileAIGatewayKeyAliases(ctx, client, instance, token, key)
 	r.refreshAIGatewayCatalog(ctx, client)
 	if routed {
 		entries, defaultModel, omitted := r.aiGatewayModelEntries(instance)

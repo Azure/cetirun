@@ -55,6 +55,48 @@ func cloneLimit(value *int64) *int64 {
 	return &copied
 }
 
+// withTeamRouterModelLimits keys a per-model limit the policy sets for a
+// router of the Agent's Team, by the router's name, under the router's
+// internal name. The Gateway counts a router's requests under its internal
+// name, also those the Agent sends by the router's alias, since LiteLLM
+// counts a request after it resolves the alias. A limit for both names keeps
+// the smaller value. A name that is also a shared model stays the shared
+// model's: such a router is misconfigured and never granted.
+func (r *AgentReconciler) withTeamRouterModelLimits(limits aigateway.KeyLimits, team *cetirunv1alpha1.Team) aigateway.KeyLimits {
+	if team == nil || len(team.Spec.ModelRouters) == 0 || (len(limits.ModelRPM) == 0 && len(limits.ModelTPM) == 0) {
+		return limits
+	}
+	shared := r.aiGatewayCatalog.sharedRouters().shared
+	internal := map[string]string{}
+	for _, router := range team.Spec.ModelRouters {
+		if !shared[router.Name] {
+			internal[router.Name] = modelRouterGatewayName(team.Name, router.Name)
+		}
+	}
+	limits.ModelRPM = renamedModelLimits(limits.ModelRPM, internal)
+	limits.ModelTPM = renamedModelLimits(limits.ModelTPM, internal)
+	return limits
+}
+
+// renamedModelLimits renames the models of values that names maps, keeping
+// the smaller value where two end up under one name.
+func renamedModelLimits(values map[string]int64, names map[string]string) map[string]int64 {
+	if len(values) == 0 {
+		return values
+	}
+	renamed := make(map[string]int64, len(values))
+	for model, value := range values {
+		if name, ok := names[model]; ok {
+			model = name
+		}
+		if current, ok := renamed[model]; ok && current <= value {
+			continue
+		}
+		renamed[model] = value
+	}
+	return renamed
+}
+
 // reconcileAIGatewayKeyLimits brings an existing policy-bound key's request
 // limits to the policy's values without replacing or blocking the key, so its
 // spend and other settings are kept. Legacy keys are never changed: an

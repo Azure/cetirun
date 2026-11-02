@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -520,6 +521,203 @@ func TestPolicyBoundAgentGetsAllowedRouter(t *testing.T) {
 	}
 	if slices.Contains(lastKeyModels(gateway), gatewayName) || slices.Contains(agent.Status.AIGateway.Models, gatewayName) {
 		t.Fatalf("the router must be withdrawn: key %v models %v", lastKeyModels(gateway), agent.Status.AIGateway.Models)
+	}
+}
+
+// keyAliases are the aliases of the Agent's key in the fake Gateway.
+func keyAliases(t *testing.T, r *AgentReconciler, gateway *fakeAIGateway) map[string]string {
+	t.Helper()
+	token := aigateway.Token(string(readSecret(t, r.Client, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))
+	key := gateway.keys[token]
+	if key == nil {
+		t.Fatal("no key")
+	}
+	return key.Aliases
+}
+
+// The key keeps an alias for each granted Team router, from the router's name
+// to its internal name. A Hermes Agent is configured with the router under its
+// name, which Hermes shows; OpenClaw keeps the internal name and shows the
+// router's name anyway.
+func TestTeamRouterAliasLetsHermesUseTheRoutersName(t *testing.T) {
+	for _, harness := range []api.AgentType{api.AgentTypeHermes, api.AgentTypeOpenClaw} {
+		t.Run(string(harness), func(t *testing.T) {
+			team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne))
+			agent := aiGatewayTestAgent(testAIGatewayTeam)
+			agent.Spec.Agent.Type = harness
+			agent.Spec.Model = testRouterName
+			r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+			addSmallSharedModel(gateway)
+			allowTestPolicyModels(t, kube, testSmallModel, testRouterName)
+			reconcileRouters(t, r, kube, testAIGatewayTeam)
+			ctx := context.Background()
+			if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+				t.Fatal(err)
+			}
+			gatewayName := modelRouterGatewayName(testAIGatewayTeam, testRouterName)
+			if aliases := keyAliases(t, r, gateway); !maps.Equal(aliases, map[string]string{testRouterName: gatewayName}) {
+				t.Fatalf("aliases %v", aliases)
+			}
+			if router := routerStatuses(agent)[testRouterName]; router.Alias != testRouterName || router.Model != gatewayName {
+				t.Fatalf("router %+v", router)
+			}
+			sent := gatewayName
+			if harness == api.AgentTypeHermes {
+				sent = testRouterName
+			}
+			status := agent.Status.AIGateway
+			if !slices.Contains(status.Models, sent) || status.DefaultModel != sent {
+				t.Fatalf("models %v default %q, want %s", status.Models, status.DefaultModel, sent)
+			}
+			// The internal name as the Agent's model selects the same router.
+			agent.Spec.Model = gatewayName
+			if _, defaultModel, _ := r.aiGatewayModelEntries(agent); defaultModel != sent {
+				t.Fatalf("default for the internal name %q, want %s", defaultModel, sent)
+			}
+			agent.Spec.Model = testRouterName
+			// A steady pass leaves the aliases alone.
+			updates := len(gateway.aliasUpdates)
+			if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+				t.Fatal(err)
+			}
+			if len(gateway.aliasUpdates) != updates || routerStatuses(agent)[testRouterName].Alias != testRouterName {
+				t.Fatalf("alias updates %d -> %d, router %+v", updates, len(gateway.aliasUpdates), routerStatuses(agent)[testRouterName])
+			}
+		})
+	}
+}
+
+// A name the key already reaches another model by keeps that model: the
+// router then has no alias, and Hermes uses its internal name.
+func TestTeamRouterAliasLeavesAnotherModelsName(t *testing.T) {
+	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne))
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Spec.Agent.Type = api.AgentTypeHermes
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	addSmallSharedModel(gateway)
+	allowTestPolicyModels(t, kube, testSmallModel, testRouterName)
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	gatewayName := modelRouterGatewayName(testAIGatewayTeam, testRouterName)
+	token := aigateway.Token(string(readSecret(t, r.Client, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))
+	// An administrator's alias of the same name.
+	gateway.keys[token].Aliases = map[string]string{testRouterName: testSharedModelOne}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if aliases := keyAliases(t, r, gateway); !maps.Equal(aliases, map[string]string{testRouterName: testSharedModelOne}) {
+		t.Fatalf("the administrator's alias must stay: %v", aliases)
+	}
+	if router := routerStatuses(agent)[testRouterName]; router.Alias != "" || !router.Granted ||
+		!slices.Contains(agent.Status.AIGateway.Models, gatewayName) {
+		t.Fatalf("router %+v models %v", router, agent.Status.AIGateway.Models)
+	}
+
+	// The Gateway refuses the update: the router keeps its internal name.
+	gateway.keys[token].Aliases = nil
+	gateway.aliasErr = errors.New("synthetic outage")
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if router := routerStatuses(agent)[testRouterName]; router.Alias != "" || !slices.Contains(agent.Status.AIGateway.Models, gatewayName) {
+		t.Fatalf("router %+v models %v", router, agent.Status.AIGateway.Models)
+	}
+	gateway.aliasErr = nil
+
+	// The policy withdraws the router: its alias goes with it.
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if aliases := keyAliases(t, r, gateway); !maps.Equal(aliases, map[string]string{testRouterName: gatewayName}) {
+		t.Fatalf("aliases %v", aliases)
+	}
+	policy := &api.AgentPolicy{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.ModelAccess.SharedModels.Allowed = slices.DeleteFunc(policy.Spec.ModelAccess.SharedModels.Allowed, func(name string) bool { return name == testRouterName })
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if aliases := keyAliases(t, r, gateway); len(aliases) != 0 {
+		t.Fatalf("a withdrawn router keeps no alias: %v", aliases)
+	}
+}
+
+// An Agent's own GitHub Copilot model of the router's name keeps the name.
+func TestTeamRouterAliasLeavesACopilotModelsName(t *testing.T) {
+	team := routerTeam(testRouter("gpt-5.5", testSmallModel, testSharedModelOne, testSharedModelOne))
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Spec.Agent.Type = api.AgentTypeHermes
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace(), readyProxy(1))
+	addSmallSharedModel(gateway)
+	allowTestPolicyModels(t, kube, testSmallModel, "gpt-5.5")
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	signIn(t, kube, agent, testCopilotModels)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(agent.Status.AIGateway.Copilot.Routes, func(route api.AIGatewayCopilotRoute) bool { return route.Name == "gpt-5.5" }) {
+		t.Fatalf("the test needs a Copilot route of the router's name: %+v", agent.Status.AIGateway.Copilot.Routes)
+	}
+	if router := routerStatuses(agent)["gpt-5.5"]; !router.Granted || router.Alias != "" {
+		t.Fatalf("router %+v", router)
+	}
+	if aliases := keyAliases(t, r, gateway); len(aliases) != 0 {
+		t.Fatalf("aliases %v", aliases)
+	}
+}
+
+// A per-model limit a policy sets for a Team router's name is set on the key
+// under the router's internal name, which the Gateway counts.
+func TestPolicyLimitForATeamRoutersNameUsesItsInternalName(t *testing.T) {
+	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne))
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
+	addSmallSharedModel(gateway)
+	allowTestPolicyModels(t, kube, testSmallModel, testRouterName)
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	gatewayName := modelRouterGatewayName(testAIGatewayTeam, testRouterName)
+	ctx := context.Background()
+	policy := &api.AgentPolicy{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	five, three, nine, tpm := int64(5), int64(3), int64(9), int64(50000)
+	policy.Spec.ModelAccess.RateLimits = &api.AgentPolicyRateLimits{PerModel: map[string]api.AgentPolicyModelRateLimit{
+		testRouterName: {RPM: &nine, TPM: &tpm},
+		gatewayName:    {RPM: &five},
+		testSmallModel: {RPM: &three},
+	}}
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(string(readSecret(t, r.Client, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))
+	limits := gateway.keys[token].Limits
+	if !maps.Equal(limits.ModelRPM, map[string]int64{gatewayName: 5, testSmallModel: 3}) ||
+		!maps.Equal(limits.ModelTPM, map[string]int64{gatewayName: 50000}) {
+		t.Fatalf("limits %+v", limits)
 	}
 }
 

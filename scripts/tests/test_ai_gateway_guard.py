@@ -264,6 +264,55 @@ class GuardTest(unittest.TestCase):
 
     def test_without_litellms_affinity_check_nothing_is_installed(self):
         self.assertFalse(self.module.install_failover_past_affinity())
+
+    # ----- a Team router listed under its alias -----
+
+    INTERNAL = "cetirun-router-0123456789abcdef"
+
+    def install_listing(self, proxy_loaded):
+        """LiteLLM's listing module, whose alias_listing_entries adds a row for each alias whose target is
+        listed, as LiteLLM 1.105.6 does; and the proxy module that imported it by name."""
+        name = "litellm.proxy.common_utils.model_listing_utils"
+
+        def alias_listing_entries(entries, aliases):
+            listed = {model for _, model in entries}
+            return (*entries, *((alias, target) for alias, target in aliases.items() if target in listed))
+
+        module = types.ModuleType(name)
+        module.alias_listing_entries = alias_listing_entries
+        previous = sys.modules.get(name)
+        sys.modules[name] = module
+        self.addCleanup(lambda: sys.modules.__setitem__(name, previous) if previous else sys.modules.pop(name, None))
+        if proxy_loaded:
+            proxy = types.ModuleType(PROXY_SERVER)
+            proxy.alias_listing_entries = alias_listing_entries
+            sys.modules[PROXY_SERVER] = proxy
+        return module
+
+    def test_a_team_router_is_listed_under_its_alias_only(self):
+        for proxy_loaded in (False, True):
+            with self.subTest(proxy_loaded=proxy_loaded):
+                listing = self.install_listing(proxy_loaded)
+                self.assertTrue(self.module.install_router_alias_listing())
+                self.assertTrue(self.module.install_router_alias_listing())  # once only
+                entries = (("gpt-4o", "gpt-4o"), (self.INTERNAL, self.INTERNAL), ("cetirun-router-ffff", "cetirun-router-ffff"))
+                aliases = {"auto": self.INTERNAL, "fast": "gpt-4o"}
+                expected = (("gpt-4o", "gpt-4o"), ("cetirun-router-ffff", "cetirun-router-ffff"), ("auto", self.INTERNAL),
+                            ("fast", "gpt-4o"))
+                self.assertEqual(listing.alias_listing_entries(entries, aliases), expected)
+                if proxy_loaded:
+                    self.assertIs(sys.modules[PROXY_SERVER].alias_listing_entries, listing.alias_listing_entries)
+
+    def test_without_litellms_listing_nothing_is_replaced(self):
+        self.assertFalse(self.module.install_router_alias_listing())
+        self.assertEqual(self.module.PATCHED, {"mark_form": False, "failover_past_affinity": False,
+                                               "router_alias_listing": False})
+
+    def test_loading_the_guard_replaces_the_listing(self):
+        listing = self.install_listing(proxy_loaded=False)
+        module = load_guard()
+        self.assertIs(module.PATCHED["router_alias_listing"], True)
+        self.assertTrue(listing.alias_listing_entries.cetirun_router_aliases)
     # ----- request fields -----
 
     def test_client_debug_output_is_always_dropped(self):

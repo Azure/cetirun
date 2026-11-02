@@ -247,6 +247,16 @@ section also show the router under that name. The Team's
 `status.modelRouters[].gatewayModel` gives the router that each name belongs
 to.
 
+The key of each instance that can use a router also has an alias for it: the
+router's name for its internal name. As a result, the instance can send
+requests to the router by its name. The model list of the key
+(`GET /v1/models`) shows the router by its name only. A Hermes instance is
+configured with the router under its name, which Hermes shows in its model
+picker. An OpenClaw instance keeps the internal name, and shows the router's
+name. If the instance reaches another model by the router's name, for example
+one of its GitHub Copilot models, that model keeps the name. Then the instance
+uses the router by its internal name.
+
 An instance gets a router only when it can use every model that the router
 sends requests to. The Gateway also enforces this rule for the router. If a
 router sends a request to a model outside the instance's key, the Gateway

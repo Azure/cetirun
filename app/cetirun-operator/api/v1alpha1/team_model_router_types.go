@@ -166,6 +166,15 @@ type AIGatewayModelRouterStatus struct {
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
+	// Alias is the router's name when the Agent's key also reaches a Team's
+	// router under it, through a key alias the operator keeps for each
+	// granted Team router. A Hermes Agent is configured with the router under
+	// this name. Empty when another model the key reaches, such as one of the
+	// Agent's GitHub Copilot models or an alias that an administrator set,
+	// has the name; the Agent then uses the internal name.
+	// +optional
+	Alias string `json:"alias,omitempty"`
+
 	// ContextWindow and MaxTokens are the limits the Agent is configured with
 	// for the router. They are the smallest known limits of the models that
 	// the router sends requests to: its tier models and, for a router

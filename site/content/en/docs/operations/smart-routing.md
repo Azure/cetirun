@@ -165,10 +165,9 @@ router the default model in the **Models** section of the Agent's page. This
 restarts the Agent again.
 
 The Agent's page lists the router among its models, or it shows why the Agent
-cannot use the router. OpenClaw shows the router's name. Hermes shows the
-internal name of the router. Each Agent is configured with the smallest context
-window and output limit among the tier models. As a result, a request fits
-every tier.
+cannot use the router. OpenClaw and Hermes show the router's name. Each Agent
+is configured with the smallest context window and output limit among the tier
+models. As a result, a request fits every tier.
 
 ## 5. Check where requests go
 

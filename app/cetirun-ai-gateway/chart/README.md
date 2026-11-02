@@ -1969,6 +1969,16 @@ these actions:
 
   The operator also omits them from the Agent's configuration. Other callers
   see the list that LiteLLM gives.
+- It lists a Team's router under the router's name only, for a key that has
+  an alias for the router. The CetiRun operator gives an Agent's key such an
+  alias for each Team router that the Agent can use: the router's name for its
+  internal `cetirun-router-` name. LiteLLM lists a key alias next to its
+  target, so the router was listed twice, once under the internal name.
+  `GET /v1/models/<internal name>` still answers. A measurement on LiteLLM
+  1.105.6 with such a key gave these results. `GET /v1/models` listed the
+  router once, by its name. A chat request for the router's name was routed.
+  A per-model limit under the internal name applied to these requests, and a
+  limit under the router's name did not apply.
 - While `router.encryptedContentAffinity` is on, it removes the encrypted
   content of some Responses API reasoning items, but it keeps their summaries.
   It removes this content from items that carry no mark of the deployment that

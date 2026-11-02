@@ -40,6 +40,10 @@ Team's router, the model group is its internal name. The guard turns that off
 (litellm.expose_router_debug_in_errors) when it is loaded; litellm_settings in
 the Gateway's configuration can turn it on again.
 
+A key the CetiRun operator gives an alias for a Team's router, the router's
+name for its internal name, lists the router under its name only: LiteLLM
+lists a key alias next to its target in GET /v1/models.
+
 A per-Agent GitHub Copilot route, a deployment in an access group named
 cetirun-copilot-<Agent UID>, is offered only to a key that holds that group.
 LiteLLM lets a key granted every model, such as the master key, reach every
@@ -125,6 +129,7 @@ user chose or to auto; with a reasoning model each failed, out of the user's
 sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
+import importlib
 import json
 import re
 import sys
@@ -324,6 +329,51 @@ def install_failover_past_affinity():
 
     async_filter_deployments.cetirun_failover = True
     DeploymentAffinityCheck.async_filter_deployments = async_filter_deployments
+    return True
+
+
+# The internal names the CetiRun operator registers a Team's routers under.
+TEAM_ROUTER_PREFIX = "cetirun-router-"
+LISTING_MODULE = "litellm.proxy.common_utils.model_listing_utils"
+
+
+def without_aliased_routers(entries):
+    """The (listed name, model) rows of a model listing without a Team router's internal name where the
+    caller's alias lists the router."""
+    aliased = {model for listed, model in entries
+               if listed != model and isinstance(model, str) and model.startswith(TEAM_ROUTER_PREFIX)}
+    return tuple(entry for entry in entries if not (entry[0] == entry[1] and entry[0] in aliased))
+
+
+def install_router_alias_listing():
+    """List a Team's router that a key reaches under an alias only under the alias.
+
+    The CetiRun operator gives an Agent's key an alias for each Team router the Agent may use: the router's
+    name for its internal name, cetirun-router-<hash>. LiteLLM 1.105.6 lists a key alias next to its
+    target in GET /v1/models, so the router was listed twice, once under a name that means nothing to the
+    Agent's owner. LiteLLM's alias_listing_entries, which adds the aliases' rows, is replaced by one that
+    then leaves the internal name out. The proxy module imports the function by name, so it is replaced
+    there too when the proxy is already loaded. A lookup of the internal name still answers.
+    """
+    try:
+        listing = importlib.import_module(LISTING_MODULE)
+    except Exception:  # noqa: BLE001
+        return False
+    current = getattr(listing, "alias_listing_entries", None)
+    if current is None:
+        return False
+    if not getattr(current, "cetirun_router_aliases", False):
+        original = current
+
+        def alias_listing_entries(entries, aliases):
+            return without_aliased_routers(original(entries, aliases))
+
+        alias_listing_entries.cetirun_router_aliases = True
+        listing.alias_listing_entries = alias_listing_entries
+        current = alias_listing_entries
+    proxy = sys.modules.get(PROXY_SERVER_MODULE)
+    if proxy is not None and getattr(proxy, "alias_listing_entries", current) is not current:
+        proxy.alias_listing_entries = current
     return True
 
 def marked_content(content):
@@ -1125,9 +1175,13 @@ class Guard(CustomLogger):
 
 handler = Guard()
 # The entrypoint imports this module before the proxy loads its configuration,
-# so LiteLLM writes the Gateway's form of the mark from the first request, and
-# litellm_settings in the configuration can still turn the router's details
-# in errors on again.
-install_mark_form()
-install_failover_past_affinity()
+# so LiteLLM writes the Gateway's form of the mark from the first request, the
+# proxy imports the replaced listing function, and litellm_settings in the
+# configuration can still turn the router's details in errors on again. The
+# image build checks that each replacement took.
+PATCHED = {
+    "mark_form": install_mark_form(),
+    "failover_past_affinity": install_failover_past_affinity(),
+    "router_alias_listing": install_router_alias_listing(),
+}
 hide_router_details()
