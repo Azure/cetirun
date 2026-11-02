@@ -285,6 +285,33 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         chart = yaml.safe_load((ROOT / "app/cetirun-operator/chart/values.yaml").read_text())["customRuntime"]
         self.assertLessEqual(set(chart), operator_custom_runtime_fields())
 
+    def test_failed_command_names_the_step_without_output_files_or_context(self):
+        config, values = self.configure(self.config)
+        deployment = DEPLOY.Deployment(config, values, self.root)
+        marker = "synthetic-tool-output"
+        helper = [sys.executable, "-B", str(ROOT / "scripts/ensure-oauth2-proxy-id-token-header.py"), "--context", "example-context",
+                  "--namespace", "aks-istio-system", "--name", "istio-shared-configmap-asm-example", "--service", "oauth2-proxy.example"]
+        cases = (
+            (lambda: deployment.kubectl("rollout", "status", "deployment/cetirun-operator", "--namespace", "cetirun-system", "--timeout=600s"),
+             "kubectl rollout status deployment/cetirun-operator --namespace cetirun-system --timeout=600s failed with exit 1;"),
+            (lambda: deployment.kubectl("get", "secret", "gateway-provider-keys", "--namespace", "cetirun-system", "-o", "go-template={{.data}}"),
+             "kubectl get secret gateway-provider-keys --namespace cetirun-system failed with exit 1;"),
+            (lambda: deployment.helm("upgrade", "--install", "cetirun-platform", str(self.root / "app/cetirun-platform"), "--namespace",
+                                     "cetirun-system", "--values", str(self.root / "platform-values.json"), "--timeout", "10m"),
+             "helm upgrade cetirun-platform --namespace cetirun-system --timeout 10m failed with exit 1;"),
+            (lambda: deployment.run(helper),
+             "ensure-oauth2-proxy-id-token-header.py --namespace aks-istio-system --name istio-shared-configmap-asm-example failed with exit 1;"),
+        )
+        with patch.object(DEPLOY.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, marker, marker)):
+            for call, expected in cases:
+                with self.subTest(expected=expected):
+                    with self.assertRaises(ValueError) as failure:
+                        call()
+                    message = str(failure.exception)
+                    self.assertTrue(message.startswith(expected), message)
+                    for private in (marker, "example-context", str(self.root), "{{", "oauth2-proxy.example"):
+                        self.assertNotIn(private, message)
+
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
 class FullDeploymentTests(DeploymentFixture, unittest.TestCase):

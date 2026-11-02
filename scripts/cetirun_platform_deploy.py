@@ -44,6 +44,30 @@ AGENT_POLICY_MARKERS = (
 # The Operator reads customRuntime strictly and stops at startup on a field it does not know.
 OPERATOR_VALUES = ROOT / "app/cetirun-operator/chart/values.yaml"
 REMOVED_CUSTOM_FIELDS = {"agentManagedModel", "gatewayImages"}
+# An error names a failed command by its tool, its operands and these options. Other option
+# values can be templates or local files. Tool output can hold rendered Secrets, so it is not shown.
+NAMED_OPTIONS = {"--namespace", "--name", "--timeout", "--version", "--dry-run"}
+FLAG_OPTIONS = {"--install", "--ignore-not-found", "--reuse-values", "--skip-refresh", "--minify", "-noout",
+                "--deployed", "--failed", "--pending", "--uninstalling", "--uninstalled", "--superseded"}
+
+
+def step(command):
+    """Name a command for an error message, without its output, local files or templates."""
+    words = [str(word) for word in command]
+    while words[0] == sys.executable or words[0].startswith("-"):
+        words = words[1:]
+    if words[1:2] in (["--context"], ["--kube-context"]):
+        words = words[:1] + words[3:]
+    shown, rest = [Path(words[0]).name], iter(words[1:])
+    for word in rest:
+        if word.split("=", 1)[0] in NAMED_OPTIONS:
+            shown.append(word if "=" in word else f"{word} {next(rest, '')}".rstrip())
+        elif word.startswith("-"):
+            if "=" not in word and word not in FLAG_OPTIONS:
+                next(rest, None)
+        elif not Path(word).is_absolute():
+            shown.append(word)
+    return " ".join(shown)
 
 
 def load_helper(filename):
@@ -301,8 +325,8 @@ class Deployment:
     def run(self, command, *, env=None, input_text=None):
         result = subprocess.run(command, cwd=ROOT, env=env, input=input_text, text=True, capture_output=True)
         if result.returncode:
-            # Do not echo Helm-rendered Secrets or external tool response bodies.
-            raise ValueError(f"{command[0]} {command[1]} failed with exit {result.returncode}; deployment did not complete")
+            # Name the step, but do not echo Helm-rendered Secrets or external tool response bodies.
+            raise ValueError(f"{step(command)} failed with exit {result.returncode}; deployment did not complete")
         return result.stdout
 
     def kubectl(self, *args, input_text=None):
