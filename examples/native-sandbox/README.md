@@ -127,19 +127,20 @@ list, and the Agent does not start with unrelated published content. This
 applies to OpenClaw, Hermes, and Custom. Publish the necessary content through
 the approved source contract. Do not bypass the hold with a raw chart value.
 
-For a policy-authorized Custom request, unavailable materialization blocks the
-existing Gateway key and holds compute instead of revoking that key. Removing
-the unmaterialized request can recover with the same key and spend record.
-An out-of-policy request still revokes access. This does not automatically
-replace a key that was already revoked or lost.
+For a Custom request that the policy authorizes, unavailable materialization
+does not revoke the Gateway key that exists. It blocks that key and holds
+compute. When you remove the unmaterialized request, recovery can use the same
+key and spend record. A request that is outside the policy still revokes
+access. This does not automatically replace a key that was already revoked or
+lost.
 
 When Memory Context is enabled, reconciled OpenClaw and Hermes lifetimes
 compose the common instructions and Memory skills into the read-only
 `$HOME/.agents` view during HOME initialization. With a shared publication,
-the shared skills alias exposes that same composed view, rather than masking
-it with a separate PVC mount. The temporary context volume keeps the Sandbox
-scratch size bound. Disabling Memory preserves the existing direct shared
-skills mount; legacy single-start lifetimes do not enable this context path.
+the shared skills alias exposes that same composed view. No separate PVC mount
+hides that view. The temporary context volume keeps the Sandbox scratch size
+bound. If you disable Memory, the shared skills mount is direct, as before.
+Legacy single-start lifetimes do not enable this context path.
 
 In the Operator values, explicitly select:
 
