@@ -662,21 +662,21 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "conflicts with the complete deployment"):
                         self.configure(config)
 
-    def test_decision_accepts_both_metadata_forms_and_optional_api_version(self):
-        for base_model in ("Microsoft-Decision-1", "azure_ai/Microsoft-Decision-1"):
-            for api_version in (None, "2024-05-01-preview"):
-                with self.subTest(base_model=base_model, api_version=api_version):
-                    config = copy.deepcopy(self.config)
-                    model = config["platform"]["values"]["cetirun-ai-gateway"]["models"][2]
-                    model["model_info"]["base_model"] = base_model
-                    model["litellm_params"].pop("api_version")
-                    if api_version:
-                        model["litellm_params"]["api_version"] = api_version
-                    _, values = self.configure(config)
-                    self.assertEqual(values["platform"]["cetirun-ai-gateway"]["models"][2], model)
+    def test_decision_accepts_the_priced_base_model_and_optional_api_version(self):
+        for api_version in (None, "2024-05-01-preview"):
+            with self.subTest(api_version=api_version):
+                config = copy.deepcopy(self.config)
+                model = config["platform"]["values"]["cetirun-ai-gateway"]["models"][2]
+                self.assertEqual(model["model_info"]["base_model"], "azure_ai/Microsoft-Decision-1")
+                model["litellm_params"].pop("api_version")
+                if api_version:
+                    model["litellm_params"]["api_version"] = api_version
+                _, values = self.configure(config)
+                self.assertEqual(values["platform"]["cetirun-ai-gateway"]["models"][2], model)
 
     def test_decision_rejects_wrong_model_or_missing_provider_inputs(self):
-        for field, value in (("model_info.base_model", "azure_ai/Other-Model"), ("model_info.mode", "chat"),
+        for field, value in (("model_info.base_model", "azure_ai/Other-Model"), ("model_info.base_model", "Microsoft-Decision-1"),
+                             ("model_info.mode", "chat"),
                              ("litellm_params.model", "azure_ai/"), ("litellm_params.api_base", ""),
                              ("litellm_params.api_key", ""), ("litellm_params.api_key", "os.environ/"),
                              ("litellm_params.api_version", False)):

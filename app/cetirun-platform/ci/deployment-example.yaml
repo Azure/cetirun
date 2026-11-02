@@ -128,7 +128,7 @@ platform:
             api_key: os.environ/AZURE_DECISION_KEY
             api_version: 2024-05-01-preview
           model_info:
-            base_model: Microsoft-Decision-1
+            base_model: azure_ai/Microsoft-Decision-1
             mode: evaluation
         - model_name: auto
           litellm_params:

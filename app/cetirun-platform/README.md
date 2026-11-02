@@ -59,11 +59,14 @@ does not establish that qualification.
 Configure the logical model `auto` with `auto_router/complexity_router`,
 `classifier_type: jev`, and `jev_classifier_config.deployment_name: decision-1`.
 The separate `decision-1` entry refers to the real `azure_ai/<deployment>` and
-uses `model_info.base_model: Microsoft-Decision-1` or
-`azure_ai/Microsoft-Decision-1` with `mode: evaluation`. Its `api_version` is
-optional. Omission keeps the provider's default, and an explicit value is
-passed through. The endpoint and Secret environment reference are still
-necessary.
+uses `model_info.base_model: azure_ai/Microsoft-Decision-1` with
+`mode: evaluation`. Its `api_version` is optional. Omission keeps the
+provider's default, and an explicit value is passed through. The endpoint and
+Secret environment reference are still necessary.
+
+Do not remove the `azure_ai/` prefix from the base model. LiteLLM has no price
+for the name without the prefix. With the default `blockUnpricedModels: true`,
+the Operator does not offer an unpriced model, and then `auto` does not work.
 
 Put all four tiers and the real provider deployments in the environment file.
 The router's price fields are necessary guard metadata, not an average of route

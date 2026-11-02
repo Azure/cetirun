@@ -296,9 +296,10 @@ def configuration(path):
             or router.get("jev_classifier_config", {}).get("deployment_name") != "decision-1"):
         raise ValueError("models must configure auto with the existing jev classifier and logical decision-1 deployment")
     if (not decision.get("litellm_params", {}).get("model", "").startswith("azure_ai/")
-            or decision.get("model_info", {}).get("base_model") not in ("Microsoft-Decision-1", "azure_ai/Microsoft-Decision-1")
+            or decision.get("model_info", {}).get("base_model") != "azure_ai/Microsoft-Decision-1"
             or decision.get("model_info", {}).get("mode") != "evaluation"):
-        raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, Microsoft-Decision-1 base_model and evaluation mode")
+        raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, base_model azure_ai/Microsoft-Decision-1 and evaluation mode. "
+                         "LiteLLM prices the model only by that name, and the Operator does not offer an unpriced classifier to auto")
     decision_params = decision["litellm_params"]
     if not decision_params["model"].removeprefix("azure_ai/"):
         raise ValueError("decision-1 requires a real Azure deployment name")
