@@ -293,9 +293,10 @@ result, this prototype must not be connected to execution authorization.
   See [storage](../../operations/storage/).
 - `infra/istio/deploy.sh`: identity/TLS, Helm, and shared mesh configuration.
   See [Istio](../../operations/istio/).
-- `scripts/cetirun-platform-deploy.sh`: examine independent Istio
-  prerequisites, label the target namespace, install the operator/portal
-  umbrella, and wait for its deployments.
+- `scripts/cetirun-platform-deploy.sh`, which `make deploy` runs: examine the
+  target cluster, references, certificates, and published artifacts. Then
+  install the CetiRun Istio, Broker, and platform releases, and wait for their
+  workloads.
 - `app/cetirun-operator/deploy/deploy.sh`: examine StorageClass/gateway
   prerequisites, then install the operator chart with its packaged CRDs.
 - `app/cetirun-portal/deploy/deploy.sh`: portal namespace injection and Helm.
@@ -311,9 +312,11 @@ Portal deployment also uses `ISTIO_HOST`, `ISTIO_REV`, `NOTICE_BANNER`,
 `ADMIN_ALIASES`, and `MAX_INSTANCES_PER_USER`. The helpers default to
 deployment-specific OCI locations. Configure actual, accessible artifacts.
 
-The platform helper uses `DOMAIN`, `VALUES_FILE`, `NAMESPACE`, `RELEASE_NAME`,
-`ISTIO_REVISION`, and separate Gateway resource/workload inputs. See
+The platform helper reads one environment file: `--config <file>`. With
+`--plan`, it validates the file and renders the charts offline. It does not
+read `DOMAIN`, `VALUES_FILE`, or the other variables of the earlier helper. See
 [platform installation](../../getting-started/platform/#platform-chart).
+
 For the development helper `scripts/cetirun-dev-deploy.sh`, an explicit
 `REGISTRY` and alias argument are necessary. It does not insert a default user
 team label. For the available modes, use its `--help`.

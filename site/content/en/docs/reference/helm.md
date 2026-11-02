@@ -337,10 +337,10 @@ values are nested under `cetirun-operator`, `cetirun-portal`, and
 | Value | Purpose / default |
 | --- | --- |
 | `istio.enabled` | `false`. It must be `true` to acknowledge the separately installed Istio prerequisites. It does not install Istio. |
-| `istio.oauth2Proxy.name`, `namespace` | `oauth2-proxy`, `cetirun-istio`. The deployment helper examines these values. |
+| `istio.oauth2Proxy.name`, `namespace` | `oauth2-proxy`, `cetirun-istio`. `make deploy` sets `namespace` to the namespace of the CetiRun Istio release. |
 | `cetirun-operator.enabled`, `cetirun-portal.enabled` | `true`. You can disable each component. |
 | `cetirun-operator.namespace` | `cetirun-system`. Align it with the Helm release namespace. This is necessary for the bundled AI Gateway. |
-| `cetirun-portal.aiGateway.catalogNamespace` | `cetirun-system`. It must equal `cetirun-operator.namespace`, where the operator publishes the shared models. The deployment helper sets both from `NAMESPACE`. A standalone portal keeps its own value. |
+| `cetirun-portal.aiGateway.catalogNamespace` | `cetirun-system`. It must equal `cetirun-operator.namespace`, where the operator publishes the shared models. `make deploy` sets both from `platform.namespace`. A standalone portal keeps its own value. |
 | `cetirun-ai-gateway.enabled` | `true`. Disable it only when a Gateway is installed separately in the operator namespace. |
 | `cetirun-ai-gateway.operatorIntegration` | `true`. It is necessary while the Gateway is installed. It reserves `copilot/` model names. Team routers use this name form for GitHub Copilot models. It also validates router fallback targets against the caller's key. Also set it on a separately installed Gateway. |
 | `cetirun-ai-gateway.tpmReservation` | `false`. Tokens-per-minute limits, for example an AgentPolicy's `rateLimits.tpm`, count the tokens of finished requests. `true` first reserves the input of each request plus its maximum output. Under a small limit, this refuses long OpenClaw conversations. See [AgentPolicy rate limits](../crds/#agentpolicy-rate-limits). |
@@ -367,15 +367,16 @@ values are nested under `cetirun-operator`, `cetirun-portal`, and
 The chart does not own managed Istio, the independent CetiRun Istio release,
 certificates, credentials, agent instances, or agent data that is kept. If you
 set `istio.enabled`, this does not prove that those prerequisites run. Before
-installation, the
-[deployment helper]({{< repo "scripts/cetirun-platform-deploy.sh" >}})
-does connected checks and labels the namespace.
+it writes, `make deploy` does connected checks. It also creates and labels the
+namespaces, and it installs the CetiRun Istio and Broker releases with the
+platform. See [Install CetiRun](../../getting-started/platform/#platform-chart).
 
 For direct Helm use, build the locked local dependencies. Also label the target
 namespace for the installed Istio revision separately. Configure the ownership
 endpoint of the independent Istio chart for the actual namespace of the portal.
 Do not install the umbrella chart over resources that standalone releases own.
-See [Install CetiRun](../../getting-started/platform/#platform-chart).
+See the platform chart README's
+[Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).
 
 ## Operator chart
 
@@ -395,10 +396,10 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `image` | The operator image pin. The pull policy is `IfNotPresent`. An empty tag uses `appVersion`. |
 | `imagePullSecrets` | The values declare it, but the chart does not render it into the operator Deployment. |
 | `azure.clientId` | Optional. It overrides the client ID of the operator workload identity. |
-| `sandboxAdmission.enabled`, `sandboxAdmission.podsEnabled` | `false`. They run the Sandbox admission webhook for configuration and Agent writes, and for Sandbox Pods. Kubernetes 1.37 or later, `tlsSecretName`, and an administrator are necessary. See [Policy-bound Teams](../../operations/policy-teams/) |
+| `sandboxAdmission.enabled`, `sandboxAdmission.podsEnabled` | `false`. They run the Sandbox admission webhook for configuration and Agent writes, and for Sandbox Pods. Kubernetes 1.37 or later, `tlsSecretName`, and an administrator are necessary. `make deploy` sets `enabled`. See [Policy-bound Teams](../../operations/policy-teams/) |
 | `sandboxAdmission.tlsSecretName` | Empty. A `kubernetes.io/tls` Secret that already exists, for `cetirun-sandbox-admission.<namespace>.svc`. The chart issues no certificate. |
-| `sandboxAdmission.enforce`, `sandboxAdmission.caBundle` | `false` and empty. They make the refusals of the webhook binding, with the base64 PEM bundle of the CA that issued its certificate. Do not enable enforcement on the first install. Enable it after the webhook answers. |
-| `sandboxAdmission.adminUsers`, `sandboxAdmission.adminGroups` | `[]`. The identities that can write policy-bound configuration directly and reauthorize Agents. At least one identity is necessary. Blanket groups such as `system:authenticated` are refused. |
+| `sandboxAdmission.enforce`, `sandboxAdmission.caBundle` | `false` and empty. They make the refusals of the webhook binding, with the base64 PEM bundle of the CA that issued its certificate. `make deploy` sets `enforce` and needs `caBundle` on the first run. On a new installation, it starts the admission server without enforcement first. For a direct Helm install, do not enable enforcement on the first install. Enable it after the webhook answers. |
+| `sandboxAdmission.adminUsers`, `sandboxAdmission.adminGroups` | `[]`. The identities that can write policy-bound configuration directly and reauthorize Agents. At least one identity is necessary. Blanket groups such as `system:authenticated` are refused. A later `make deploy` stops if they change. |
 | `sandboxSources.enabled` | `false`. It opts in to Kubernetes capability declarations for configuration admission, and to sources for held native Sandbox preparation. |
 | `sandboxSources.nativeExecution` | `false`. It selects the common OpenClaw/Hermes reconciliation for new lifetimes, with owned bootstrap, enforced admission, and the AI Gateway. |
 | `sandboxSources.plannedMigration` | `false`. It allows new moves from a healthy source that an administrator requests, with one CSI/RWOP HOME. It must have `nativeExecution` and upgraded CRD/Operator/admission/Portal readers. When it is disabled, the current checkpoints and cleanup permissions stay. |

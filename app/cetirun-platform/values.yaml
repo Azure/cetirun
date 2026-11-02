@@ -47,8 +47,8 @@ cetirun-operator:
       # NetworkPolicies. It must match the namespace in istioGateway.
       networkPolicy:
         istioIngressNamespace: aks-istio-ingress
-  # Required for instance URLs and VirtualServices. The deployment helper sets
-  # this from DOMAIN.
+  # Required for instance URLs and VirtualServices. make deploy sets this from
+  # domain in its environment file.
   domainSuffix: ""
   # OpenClaw and Hermes Agents take their models from the AI Gateway; the
   # platform requires it.
@@ -83,7 +83,7 @@ cetirun-portal:
   aiGateway:
     # The operator publishes the shared models in its own namespace, where
     # the Portal reads them: keep this equal to cetirun-operator.namespace.
-    # The deployment helper sets both from NAMESPACE.
+    # make deploy sets both from platform.namespace.
     catalogNamespace: cetirun-system
   # Keep these values identical to cetirun-operator.sandboxAdmission's
   # coordination authority when strict configuration coordination is enabled.

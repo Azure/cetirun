@@ -268,17 +268,18 @@ For CRDs that were previously unmanaged, and for ownership transfers across
 releases, a separately reviewed handover is still necessary. This chart does
 not forcibly adopt them.
 
-The deployment helper accepts `ISTIO_GATEWAY_NAME` and
-`ISTIO_GATEWAY_NAMESPACE` for the Gateway resource. For the Gateway workload
-identity, it accepts `ISTIO_INGRESS_NAMESPACE` and
-`ISTIO_GATEWAY_SERVICE_ACCOUNT`. By default, the ingress namespace is the
-Gateway namespace.
+For a different Gateway resource, set `cetirun-operator.istioGateway` and
+`cetirun-portal.istio.gateway`. For its workload identity, set
+`cetirun-portal.istio.gatewayNamespace` and `gatewayServiceAccount`, as the
+command above shows. `make deploy` sets these values from its `istio` inputs:
+the Gateway `cetirun-gateway` in `istio.ingressNamespace`, and
+`istio.ingressServiceAccount`.
 
 To install in a namespace other than `cetirun-system`, set both
 `cetirun-operator.namespace` and `cetirun-portal.aiGateway.catalogNamespace` to
 that namespace. The operator publishes the shared models in its own namespace,
-and the Portal reads them from there. The deployment helper sets both values
-from `NAMESPACE`. The chart refuses a Portal that looks for the models in a
+and the Portal reads them from there. `make deploy` sets both values from
+`platform.namespace`. The chart refuses a Portal that looks for the models in a
 different namespace.
 
 When you use the umbrella, configure the separate Istio release to reach the

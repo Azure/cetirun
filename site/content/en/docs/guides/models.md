@@ -286,8 +286,9 @@ and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login
 
 A Team can also define its own smart-routing models in the Portal. See
 [Configure a team](../teams/#smart-routing). An instance that can use one of
-these models lists it under its name, such as `auto`. The create form offers
-the names that the Team's Policy allows as the default model. The instance's
+these models lists it under its name, such as `auto-team`. The create form
+offers the names that the Team's Policy allows as the default model, with
+`(smart routing)` after each name. The instance's
 configuration carries the router's internal Gateway name as the model ID.
 OpenClaw shows the router's name, but Hermes lists the internal name.
 
