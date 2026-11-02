@@ -39,6 +39,17 @@ func (r *AgentReconciler) holdPolicyDenied(ctx context.Context, agent *api.Agent
 	if r.AIGateway.configured() {
 		revokeErr = r.revokeAIGatewayKey(ctx, agent)
 	}
+	// An absent Gateway cannot confirm revocation of a previously issued key.
+	// In that case retain the normal pending hold instead of claiming suspension
+	// completed.
+	revocationConfirmed := revokeErr == nil && (r.AIGateway.configured() || !aiGatewayKeyWasIssued(agent))
+	if revocationConfirmed && agent.Spec.Suspended {
+		reconciled, reconcileErr := r.usesReconciledSandbox(ctx, agent)
+		if reconciled && reconcileErr == nil {
+			result, holdErr := r.holdReconciledSandboxForDeniedSuspension(ctx, agent)
+			return result, holdErr
+		}
+	}
 	result, holdErr := r.holdSandbox(ctx, agent)
 	if revokeErr != nil || holdErr != nil {
 		return result, errors.Join(revokeErr, holdErr)

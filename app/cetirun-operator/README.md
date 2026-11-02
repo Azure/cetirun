@@ -191,6 +191,12 @@ stop, or a status write fails, suspension still tries the other shutdown
 operations. A shutdown that is not acknowledged still keeps its source
 reservation. Normal Kubernetes stop requests are not physical fencing.
 
+If policy denial has already requested deletion of the Gateway key, suspension
+retries that revocation instead of trying to block the deleted key. It reports
+`Suspended` only after revocation and shutdown succeed, while retaining the
+denied policy and the recorded key identity. Resuming does not recreate a
+missing key or restore access under a denied policy.
+
 Loss of bootstrap or runtime prerequisites also holds a reconciled Agent that
 already runs and is not suspended. The hold blocks its key, stops the owned
 components, and withdraws ingress, but it keeps HOME and spend. After a status
