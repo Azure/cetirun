@@ -596,8 +596,9 @@ curl -si http://localhost:4000/v1/chat/completions \
   -d '{"model": "auto", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
 ```
 
-The list contains the names of `models`, but not `decision-1`. The answer from
-`auto` has the header `x-litellm-complexity-router-tier`, and
+The list contains the names of `models`. Agents do not see `decision-1`,
+because the Gateway lists it only for keys that the operator did not issue. The
+answer from `auto` has the header `x-litellm-complexity-router-tier`, and
 `x-litellm-complexity-router-cause` is `jev_classifier`. Any other cause shows
 that the classifier did not decide. Then examine the `decision-1` entry, its
 key, and the Gateway's log. Stop the port-forward after the test.

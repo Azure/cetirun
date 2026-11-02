@@ -384,7 +384,7 @@ evidence that matches.
 
 | Field | Contract |
 | --- | --- |
-| `modelAccess.sharedModels.allowed` | Exact Gateway model names that the Agents of the policy can use, routers included. For a router, also list the models of its tiers and its default model. Each name has at most 256 characters, without whitespace |
+| `modelAccess.sharedModels.allowed` | Exact Gateway model names that the Agents of the policy can use, routers included. For a router, also list the models of its tiers, its default model, and its context compaction model, if it has one. Each name has at most 256 characters, without whitespace |
 | `modelAccess.copilot.allowed` | Boolean. Lets the Agents use their owners' GitHub Copilot. The Portal shows it as **Allow GitHub Copilot** |
 | `modelAccess.gatewayBudget.defaultMonthlyUSD`, `maxMonthlyUSD` | Monthly budgets in US dollars, as decimal strings above zero with at most six decimals. Necessary when the policy allows a shared model or Copilot. Not allowed otherwise. The default budget must not exceed the maximum |
 | `modelAccess.rateLimits` | Request limits on the key of each Agent. See [AgentPolicy rate limits](#agentpolicy-rate-limits) |

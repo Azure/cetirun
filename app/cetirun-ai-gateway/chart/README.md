@@ -204,7 +204,8 @@ redis:
 ```
 
 The chart cannot connect to Redis with TLS yet. As a result, it cannot use
-Azure Cache for Redis, which requires TLS. Refer to [Known gaps](#known-gaps).
+Azure Cache for Redis with its default settings, which accept only TLS
+connections. Refer to [Known gaps](#known-gaps).
 
 The bundled PostgreSQL behaves like an external database across the lifecycle
 of the release. `helm uninstall` keeps its volume and its password Secret. As a
