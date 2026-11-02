@@ -35,6 +35,10 @@ import (
 
 type agentMutationHelm struct{ HelmInstaller }
 
+func (*agentMutationHelm) ResolveImageUpgrade(_, _, _, _, _, _ string) (string, error) {
+	return "registry.example.com/agent:2", nil
+}
+
 func (*agentMutationHelm) Prepare(string, map[string]any, string) (*helm.PreparedRelease, error) {
 	return &helm.PreparedRelease{Agent: agents.ResolvedAgent{
 		Type: "hermes", Image: "registry.example.com/agent:1", Port: ptr.To[int32](18789),
@@ -149,6 +153,12 @@ func TestAgentSpecAndFinalizerPatchesPreserveFutureFields(t *testing.T) {
 		run      func(*AgentReconciler, *api.Agent) error
 		want     func(*api.Agent)
 	}{
+		{"upgrade-default-image", false, func(*api.Agent) {},
+			func(r *AgentReconciler, a *api.Agent) error {
+				a.Status.HelmReleaseName = helmReleaseName(a.Name)
+				_, err := r.upgradeDefaultImage(ctx, a)
+				return err
+			}, func(a *api.Agent) { a.Spec.Agent.Image = ptr.To("registry.example.com/agent:2") }},
 		{"remove-finalizer", true, func(*api.Agent) {}, reconcile, func(a *api.Agent) { a.Finalizers = []string{"example.com/retain"} }},
 		{"custom-ownership-finalizer", false, func(a *api.Agent) {
 			a.Spec.Agent.Type, a.Spec.GatewayTokenSecretRef = api.AgentTypeCustom, ""

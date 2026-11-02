@@ -15,6 +15,7 @@ import (
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -175,4 +176,26 @@ func pinAgentDefaults(spec *api.HarnessSpec, resolved agents.ResolvedAgent) bool
 		changed = true
 	}
 	return changed
+}
+
+func (r *AgentReconciler) upgradeDefaultImage(ctx context.Context, instance *api.Agent) (bool, error) {
+	if instance.Spec.Agent.Type == api.AgentTypeCustom || instance.Spec.Agent.Image == nil ||
+		instance.Status.HelmReleaseName != helmReleaseName(instance.Name) || instance.Status.ObservedGeneration == instance.Generation {
+		return false, nil
+	}
+	image, err := r.HelmClient.ResolveImageUpgrade(instanceNamespace(instance.Name), helmReleaseName(instance.Name),
+		instance.Spec.Helm.Version, string(instance.Spec.Agent.Type), *instance.Spec.Agent.Image, r.ChartRegistry)
+	if err != nil {
+		_, err = r.preparationFailed(ctx, instance, err)
+		return false, err
+	}
+	if image == *instance.Spec.Agent.Image {
+		return false, nil
+	}
+	before := instance.DeepCopy()
+	instance.Spec.Agent.Image = &image
+	if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		return false, fmt.Errorf("upgrade default agent image: %w", err)
+	}
+	return true, nil
 }
