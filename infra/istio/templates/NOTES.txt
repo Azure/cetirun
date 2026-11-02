@@ -1,4 +1,4 @@
-CetiRun Istio infrastructure deployed.
+The CetiRun Istio infrastructure is deployed.
 
 ── Ingress Authentication ──
   - OAuth2 Proxy: Deployment, Service, ServiceAccount, Cookie Secret ({{ .Release.Namespace }})
@@ -16,13 +16,15 @@ CetiRun Istio infrastructure deployed.
 {{- if .Values.egress.accessLog.enabled }}
   - EnvoyFilter: JSON access logging on all sidecars ({{ .Values.egress.namespace }})
 {{- end }}
-  - Agent egress enforcement belongs to AgentPolicy, not shared mesh filters.
-    Older kept blacklist filters require explicit ownership-checked cleanup;
-    see scripts/cetirun-istio-cleanup.py and the Istio operations guide.
+  - AgentPolicy enforces Agent egress. Shared mesh filters do not enforce it.
+    For older kept blacklist filters, an explicit cleanup with an ownership
+    check is necessary. Refer to scripts/cetirun-istio-cleanup.py and the
+    Istio operations guide.
 
-IMPORTANT: The ext_authz extension provider must be configured separately.
-If you used deploy.sh, this was handled automatically.
-Otherwise, patch the Istio shared configmap manually — see deploy.sh for details.
+IMPORTANT: You must configure the ext_authz extension provider separately.
+If you used deploy.sh, the script did this automatically.
+If you did not use deploy.sh, patch the Istio shared configmap manually.
+For details, refer to deploy.sh.
 
 Verify:
   kubectl get pods -n {{ .Release.Namespace }} -l app=oauth2-proxy
