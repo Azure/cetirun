@@ -41,6 +41,14 @@ subscriptions, or change `current-context`. Every cluster operation uses
 `target.context`. Before a write, the helper examines the cluster name, API
 origin, and cluster UID of that context.
 
+AKS managed Istio adds the revision to the names of the control plane
+Deployment, the ingress gateway Deployment, and the shared mesh ConfigMap. An
+example is `aks-istio-ingressgateway-external-asm-1-30`. The ingress
+ServiceAccount has no revision in its name. Read the names from the cluster.
+Before a write, the helper stops if a configured Deployment does not exist. It
+also stops if `istio.meshConfigMap` does not exist but
+`istio-shared-configmap-<revision>` exists.
+
 Use the available Helm values under the `values` field of each release. The
 helper connects component URLs, namespaces, image coordinates, and identity
 fields from the common inputs. Custom images must have digest-pinned

@@ -369,6 +369,33 @@ values itself, for example the registry, the version, the namespaces, the
 domain, and the Istio Gateway. Do not set these values in the file, because a
 different value stops the run.
 
+The `istio` section names the managed Istio resources that already exist. AKS
+adds the Istio revision to the names of the control plane Deployment, the
+ingress gateway Deployment, and the shared mesh ConfigMap. The name of the
+ingress gateway ServiceAccount has no revision. Read the revision and the names
+from the cluster:
+
+```bash
+kubectl get pods -n aks-istio-system -l app=istiod \
+  -o jsonpath='{.items[0].metadata.labels.istio\.io/rev}'
+kubectl get deployments,configmaps -n aks-istio-system
+kubectl get deployments,serviceaccounts -n aks-istio-ingress
+```
+
+| Input | Name on AKS |
+| --- | --- |
+| `istio.revision` | The revision, for example `asm-1-30` |
+| `istio.controlPlaneDeployment` | `istiod-<revision>` |
+| `istio.ingressDeployment` | `aks-istio-ingressgateway-external-<revision>` |
+| `istio.ingressServiceAccount` | `aks-istio-ingressgateway-external` |
+| `istio.meshConfigMap` | `istio-shared-configmap-<revision>`. With `istio.mode: manage`, `make deploy` creates it if it does not exist |
+
+Before it writes, `make deploy` makes sure that the two Deployments exist. If a
+Deployment does not exist, the run stops and names the input. If the name with
+the revision exists, the message also gives that name. The run also stops if
+`istio.meshConfigMap` does not exist but `istio-shared-configmap-<revision>`
+exists.
+
 Make a decision about these inputs before the first run:
 
 - `ownerAlias` is the portal administrator. Portal administrators create Teams,
