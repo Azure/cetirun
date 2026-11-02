@@ -166,10 +166,13 @@ type AIGatewayModelRouterStatus struct {
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
-	// ContextWindow and MaxTokens are, for a Team router, the smallest limits
-	// among its tier models that the Gateway reports, which the Agent is
-	// configured with. A router configured in the Gateway has the limits the
-	// Gateway reports for it.
+	// ContextWindow and MaxTokens are the limits the Agent is configured with
+	// for the router. They are the smallest known limits of the models that
+	// the router sends requests to: its tier models and, for a router
+	// configured in the Gateway, its default model. The Agent's own GitHub
+	// Copilot routes under the names of these models count too. For a router
+	// configured in the Gateway, limits that the router itself sets replace
+	// those of its models.
 	// +optional
 	ContextWindow int64 `json:"contextWindow,omitempty"`
 	// +optional

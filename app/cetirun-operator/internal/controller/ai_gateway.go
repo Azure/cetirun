@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -1484,23 +1483,38 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 	}
 	if shared, known := r.aiGatewayCatalog.shared(); known && instance.Spec.SharedModelsEnabled() {
 		// The limits reach the Agent's configuration too, so a change to them
-		// alone must roll it.
+		// alone must roll it. A router configured in the Gateway counts here by
+		// its name only: its limits follow from those of the models it uses
+		// (fillRouterLimits), so a change to those models can change them, and
+		// they count below, for the Agents configured with the router only.
+		gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
 		models := make([]string, 0, len(shared))
 		for _, model := range shared {
+			if _, isRouter := gatewayRouters[model.Name]; isRouter {
+				models = append(models, model.Name+":router")
+				continue
+			}
 			models = append(models, fmt.Sprintf("%s:%d:%d", model.Name, model.ContextWindow, model.MaxOutputTokens))
 		}
 		parts = append(parts, "shared", strings.Join(models, ","))
-		// A router configured in the Gateway takes smaller limits from the
-		// Agent's Copilot routes under its models' names; a change to the
-		// router's models alone can change them, so they count on their own.
+		// The limits of each router configured in the Gateway that the Agent
+		// is configured with, lowered by the Agent's Copilot routes under its
+		// models' names, as in its configuration.
 		if entitled, ok := r.aiGatewayEntitledShared(instance); ok {
 			folds := r.aiGatewayRouterLimitFolds(instance, entitled, r.aiGatewayConfiguredCopilotRoutes(instance))
-			if len(folds) > 0 {
-				limits := make([]string, 0, len(folds))
-				for _, name := range slices.Sorted(maps.Keys(folds)) {
-					limits = append(limits, fmt.Sprintf("%s:%d:%d", name, folds[name][0], folds[name][1]))
+			var limits []string
+			for _, model := range entitled {
+				if _, isRouter := gatewayRouters[model.Name]; !isRouter {
+					continue
 				}
-				parts = append(parts, "router-limits", strings.Join(limits, ","))
+				contextWindow, maxTokens := model.ContextWindow, model.MaxOutputTokens
+				if fold, folded := folds[model.Name]; folded {
+					contextWindow, maxTokens = fold[0], fold[1]
+				}
+				limits = append(limits, fmt.Sprintf("%s:%d:%d", model.Name, contextWindow, maxTokens))
+			}
+			if len(limits) > 0 {
+				parts = append(parts, "gateway-router-limits", strings.Join(limits, ","))
 			}
 		}
 	}

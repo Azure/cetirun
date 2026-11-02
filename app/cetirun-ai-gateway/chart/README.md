@@ -1002,10 +1002,6 @@ models:
           COMPLEX: gpt-4o
           REASONING: o3
       complexity_router_default_model: gpt-4o
-    model_info:
-      # The smallest of its models', for agents that read the limits.
-      max_input_tokens: 128000
-      max_output_tokens: 16384
 ```
 
 The chart supplies the mechanism. The tiers, their models, and the keyword
@@ -1115,6 +1111,20 @@ model list of the Gateway. As a result, a changed router gets to the keys at
 the next listing. This occurs in approximately two minutes or less. The
 configuration of a router is not part of the Gateway projection of an
 AgentPolicy.
+
+**An Agent gets the router's limits.** With `operatorIntegration`, the
+operator configures each Agent that gets a router with a context window and
+an output limit for it. These are the smallest `max_input_tokens` and
+`max_output_tokens` among the models of the router's tiers and its default
+model. A model without these values does not count, and neither does a
+classifier model. A request that the Agent sizes for the router then fits
+whichever model the router selects. Without these limits, the Agent used its
+own default, for example 200,000 tokens for OpenClaw, which can be more than
+the model of a tier holds. To use other values, set `max_input_tokens` and
+`max_output_tokens` in the `model_info` of the router. A router that the
+operator cannot read completely gets no limits. When these limits change, for
+example because a tier gets another model, the Agents that use the router are
+configured again, which restarts them.
 
 **Models that answer no conversation are not offered to Agents.** Some shared
 models have a `model_info.mode` other than `chat`, `completion` or

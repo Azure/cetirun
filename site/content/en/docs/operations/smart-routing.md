@@ -242,7 +242,9 @@ the router skips the classifier for 30 seconds. `routing_cause` shows this.
 A router can also be an entry in the Gateway's `models`, next to the tier
 models. Every Agent Policy that lists the router's name, its tier models, and
 its default model grants the router. A Gateway upgrade is necessary for a
-change. The change reaches Agents within about two minutes.
+change. The change reaches Agents within about two minutes. Each Agent that
+gets the router is configured with the smallest context window and output
+limit among its tier models and its default model, as for a Team's router.
 
 Such a router can use a decision model. Microsoft-Decision-1 is deployed in an
 Azure AI Foundry resource, not in an Azure OpenAI resource. It is reached with

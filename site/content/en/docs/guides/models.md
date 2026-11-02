@@ -297,8 +297,11 @@ among the router's tier models that the Gateway reports. As a result, a request
 sized for the router fits every tier. When the owner's GitHub Copilot model is
 merged into a tier's shared model, the instance's requests for that tier can
 also reach its Copilot route. As a result, the router's limits include the
-limits of the route, as the instance's entry for that shared model does. The
-same is true for a router configured in the Gateway.
+limits of the route, as the instance's entry for that shared model does. A
+router configured in the Gateway gets its limits in the same way, from the
+models of its tiers and from its default model. If the router sets its own
+`max_input_tokens` and `max_output_tokens` in `model_info`, these values are
+used instead.
 
 Each request is charged to the instance's key at the price of the tier model
 that it is sent to. The calls of an `llm` or `jev` classifier are also charged.
