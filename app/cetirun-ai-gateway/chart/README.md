@@ -1069,6 +1069,15 @@ the blocks between these markers. With these markers, the request for code
 went to the medium tier. OpenClaw called the router through Chat Completions,
 without reasoning settings.
 
+OpenClaw also sends the images of a tool result, such as a screenshot of its
+`computer` tool, in a user message of their own to a model that accepts
+images. This message starts with a label, for example `Image(s) from tool
+result #1 (computer):`. The classifier read that label as the newest request:
+a request for a design that the router put in the medium tier went to the
+simple tier after one screenshot. The chart also adds a pair for this label
+(`Image(s) from tool result #` to the next `:`). A router with a `jev`
+classifier kept the complex tier with the label as well.
+
 The `reminder_markers` of a router replace the markers of the chart. These
 markers must be a list of `{open, close}` pairs, because LiteLLM 1.105.1
 accepts only that format. Each pair must have two different strings that are

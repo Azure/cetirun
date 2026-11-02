@@ -65,12 +65,16 @@ func routerTierGatewayName(model string, mergedName func(string) string) string 
 }
 
 // aiGatewayRouterReminderMarkers are the blocks a router leaves out when it
-// classifies a request: OpenClaw's own context, and the system reminders
-// LiteLLM recognizes by default. The Gateway chart gives its own routers the
-// same pairs.
+// classifies a request: OpenClaw's own context, the system reminders LiteLLM
+// recognizes by default, and the label of the user message in which OpenClaw
+// passes on the images of a tool result, such as a screenshot of the computer
+// tool, to a model that accepts images: "Image(s) from tool result #1
+// (computer):". Read as the newest ask, that label put a request for a design
+// in the simple tier. The Gateway chart gives its own routers the same pairs.
 var aiGatewayRouterReminderMarkers = []map[string]string{
 	{"open": "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>", "close": "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"},
 	{"open": "<system-reminder>", "close": "</system-reminder>"},
+	{"open": "Image(s) from tool result #", "close": ":"},
 }
 
 // modelRouterGatewayName is the internal model name of a Team's router. It
