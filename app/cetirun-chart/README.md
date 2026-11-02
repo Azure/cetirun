@@ -67,6 +67,8 @@ Agent-UID-bound exec admission gate used by registry credential isolation.
 This allows private-image credential repair and rotation after the terminal
 starts, without weakening the registry checks or replacing the running Pod.
 The common Sandbox admission checks continue to apply independently.
+Changes to pull references use the common executor's sealed desired manifest.
+The legacy deferred-rollout flag must not change those values after sealing.
 For registration, artifact pins, and unsupported
 combinations, see the
 [governed Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
