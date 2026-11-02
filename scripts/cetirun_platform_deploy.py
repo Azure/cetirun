@@ -699,8 +699,15 @@ class Deployment:
         for kind in ("gateways.networking.istio.io", "virtualservices.networking.istio.io", "authorizationpolicies.security.istio.io"):
             if not self.resource("customresourcedefinition", kind):
                 raise ValueError(f"Managed Istio prerequisite is missing: {kind}")
-        for namespace, deployment in ((c["istio"]["controlPlaneNamespace"], c["istio"]["controlPlaneDeployment"]),
-                                      (c["istio"]["ingressNamespace"], c["istio"]["ingressDeployment"])):
+        for field in ("controlPlane", "ingress"):
+            namespace, deployment = c["istio"][f"{field}Namespace"], c["istio"][f"{field}Deployment"]
+            # A missing Deployment would only fail rollout status, whose output is
+            # withheld. AKS managed Istio adds the revision to these names.
+            if not self.resource("deployment", deployment, namespace):
+                revisioned = f"{deployment}-{c['istio']['revision']}"
+                hint = f"; AKS managed Istio adds the revision to the name, and {revisioned} exists" \
+                    if self.resource("deployment", revisioned, namespace) else ""
+                raise ValueError(f"The configured istio.{field}Deployment {namespace}/{deployment} does not exist{hint}")
             self.kubectl("rollout", "status", f"deployment/{deployment}", "--namespace", namespace, "--timeout=180s")
         if not self.resource("serviceaccount", c["istio"]["ingressServiceAccount"], c["istio"]["ingressNamespace"]):
             raise ValueError("The configured Istio ingress ServiceAccount is missing")
@@ -751,8 +758,16 @@ class Deployment:
             _, changed = MESH.configmap_patch(document, self.oauth_service())
             if changed and c["istio"].get("mode", "manage") == "external":
                 raise ValueError("External Istio has no matching OAuth2 provider/header configuration")
-        elif c["istio"].get("mode", "manage") == "external":
-            raise ValueError("External Istio requires the existing OAuth2 mesh provider")
+        else:
+            # The helper creates a missing ConfigMap. AKS managed Istio reads only
+            # istio-shared-configmap-<revision>, so another name leaves the OAuth2
+            # provider out of the mesh.
+            shared = f"istio-shared-configmap-{c['istio']['revision']}"
+            if shared != c["istio"]["meshConfigMap"] and self.resource("configmap", shared, c["istio"]["controlPlaneNamespace"]):
+                raise ValueError(f"The configured istio.meshConfigMap {c['istio']['controlPlaneNamespace']}/{c['istio']['meshConfigMap']} "
+                                 f"does not exist, and AKS managed Istio reads {shared}, which exists")
+            if c["istio"].get("mode", "manage") == "external":
+                raise ValueError("External Istio requires the existing OAuth2 mesh provider")
         if c["istio"].get("mode", "manage") == "external" and "istio" not in self.existing_releases:
             raise ValueError("istio.mode=external requires the named existing CetiRun Istio release")
         tls = self.resource("Secret", "cetirun-tls", c["istio"]["ingressNamespace"])

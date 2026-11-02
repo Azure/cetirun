@@ -288,7 +288,9 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 		}
 		pullOnly := registryBindingOnly(previous, chrt, values)
 		noHooks := pullOnly || nativeNoopUpgrade(previous, chrt, values)
-		if pullOnly {
+		// The common Sandbox renderer must apply its already-authorized
+		// manifest, not a late mutation of the sealed input values.
+		if pullOnly && prepared.sandboxReconcile == nil {
 			ensureObject(values, "runtime")["preserveRunningPod"] = true
 		}
 		upgrade := action.NewUpgrade(cfg)

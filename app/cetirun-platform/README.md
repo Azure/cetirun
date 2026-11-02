@@ -41,6 +41,14 @@ subscriptions, or change `current-context`. Every cluster operation uses
 `target.context`. Before a write, the helper examines the cluster name, API
 origin, and cluster UID of that context.
 
+AKS managed Istio adds the revision to the names of the control plane
+Deployment, the ingress gateway Deployment, and the shared mesh ConfigMap. An
+example is `aks-istio-ingressgateway-external-asm-1-30`. The ingress
+ServiceAccount has no revision in its name. Read the names from the cluster.
+Before a write, the helper stops if a configured Deployment does not exist. It
+also stops if `istio.meshConfigMap` does not exist but
+`istio-shared-configmap-<revision>` exists.
+
 Use the available Helm values under the `values` field of each release. The
 helper connects component URLs, namespaces, image coordinates, and identity
 fields from the common inputs. Custom images must have digest-pinned
@@ -268,17 +276,18 @@ For CRDs that were previously unmanaged, and for ownership transfers across
 releases, a separately reviewed handover is still necessary. This chart does
 not forcibly adopt them.
 
-The deployment helper accepts `ISTIO_GATEWAY_NAME` and
-`ISTIO_GATEWAY_NAMESPACE` for the Gateway resource. For the Gateway workload
-identity, it accepts `ISTIO_INGRESS_NAMESPACE` and
-`ISTIO_GATEWAY_SERVICE_ACCOUNT`. By default, the ingress namespace is the
-Gateway namespace.
+For a different Gateway resource, set `cetirun-operator.istioGateway` and
+`cetirun-portal.istio.gateway`. For its workload identity, set
+`cetirun-portal.istio.gatewayNamespace` and `gatewayServiceAccount`, as the
+command above shows. `make deploy` sets these values from its `istio` inputs:
+the Gateway `cetirun-gateway` in `istio.ingressNamespace`, and
+`istio.ingressServiceAccount`.
 
 To install in a namespace other than `cetirun-system`, set both
 `cetirun-operator.namespace` and `cetirun-portal.aiGateway.catalogNamespace` to
 that namespace. The operator publishes the shared models in its own namespace,
-and the Portal reads them from there. The deployment helper sets both values
-from `NAMESPACE`. The chart refuses a Portal that looks for the models in a
+and the Portal reads them from there. `make deploy` sets both values from
+`platform.namespace`. The chart refuses a Portal that looks for the models in a
 different namespace.
 
 When you use the umbrella, configure the separate Istio release to reach the

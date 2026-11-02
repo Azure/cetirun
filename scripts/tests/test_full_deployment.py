@@ -42,6 +42,9 @@ class SyntheticCluster(DEPLOY.Deployment):
         self.fail = ""
         self.mesh = {"metadata": {"name": config["istio"]["meshConfigMap"], "uid": "mesh-uid", "resourceVersion": "1"},
                      "data": {"mesh": yaml.safe_dump({"extensionProviders": [DEPLOY.MESH._oauth2_proxy_provider(self.oauth_service())], "trustDomain": "example.local"})}}
+        # Deployments of the managed Istio that exists before the deployment.
+        self.istio_deployments = {(config["istio"]["controlPlaneNamespace"], config["istio"]["controlPlaneDeployment"]),
+                                  (config["istio"]["ingressNamespace"], config["istio"]["ingressDeployment"])}
         for namespace in (config["platform"]["namespace"], config["broker"]["namespace"]):
             self.objects[("namespace", "", namespace)] = {"name": namespace, "uid": f"uid-{namespace}", "labels": {}}
 
@@ -178,8 +181,10 @@ class SyntheticCluster(DEPLOY.Deployment):
                 return json.dumps({"uid": self.config["target"]["clusterUID"]})
             if (kind == "customresourcedefinition" and name.endswith(".istio.io")) or (kind == "serviceaccount" and name == self.config["istio"]["ingressServiceAccount"]):
                 return json.dumps({"name": name, "uid": "external-prerequisite"})
+            if kind == "deployment" and (namespace, name) in self.istio_deployments:
+                return json.dumps({"name": name, "uid": "external-prerequisite"})
             if kind == "configmap" and name == self.config["istio"]["meshConfigMap"]:
-                return json.dumps(self.mesh)
+                return json.dumps(self.mesh) if self.mesh else ""
             if any(str(arg).startswith("go-template=") for arg in args):
                 return "\n".join(sorted(self.keys.get((namespace, name), set())))
             if any(str(arg).startswith("jsonpath={.data.") for arg in args):
@@ -595,6 +600,43 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not match"):
             deployment.execute()
         self.assertEqual(deployment.writes, [])
+
+    def test_missing_istio_deployment_is_named_before_rollout_status(self):
+        istio = self.config["istio"]
+        # AKS managed Istio names the ingress gateway Deployment with the revision.
+        istio["ingressDeployment"] = "aks-istio-ingressgateway-external"
+        revisioned = f"aks-istio-ingressgateway-external-{istio['revision']}"
+        deployment = self.deployment()
+        deployment.istio_deployments = {(istio["controlPlaneNamespace"], istio["controlPlaneDeployment"]),
+                                        (istio["ingressNamespace"], revisioned)}
+        with self.assertRaisesRegex(ValueError, "istio.ingressDeployment aks-istio-ingress/aks-istio-ingressgateway-external "
+                                                f"does not exist; AKS managed Istio adds the revision to the name, and {revisioned} exists$"):
+            deployment.execute()
+        self.assertEqual(deployment.writes, [])
+        self.assertNotIn("deployment/aks-istio-ingressgateway-external", [arg for command in deployment.commands for arg in command])
+        # Without a Deployment of the revision, the message names only the input.
+        deployment.istio_deployments = {(istio["ingressNamespace"], revisioned)}
+        with self.assertRaisesRegex(ValueError, f"istio.controlPlaneDeployment {istio['controlPlaneNamespace']}/"
+                                                f"{istio['controlPlaneDeployment']} does not exist$"):
+            deployment.execute()
+        self.assertEqual(deployment.writes, [])
+
+    def test_mesh_configmap_without_the_revision_stops_before_writes(self):
+        istio = self.config["istio"]
+        istio["meshConfigMap"] = "istio-shared-configmap"
+        shared = f"istio-shared-configmap-{istio['revision']}"
+        deployment = self.deployment()
+        deployment.mesh = None
+        deployment.objects[("configmap", istio["controlPlaneNamespace"], shared)] = {"name": shared, "uid": "uid-shared"}
+        with self.assertRaisesRegex(ValueError, f"istio.meshConfigMap {istio['controlPlaneNamespace']}/istio-shared-configmap "
+                                                f"does not exist, and AKS managed Istio reads {shared}, which exists$"):
+            deployment.execute()
+        self.assertEqual(deployment.writes, [])
+        # Without that ConfigMap, the helper creates the configured one, as before.
+        deployment.objects.pop(("configmap", istio["controlPlaneNamespace"], shared))
+        deployment.execute()
+        self.assertTrue(any("ensure-oauth2-proxy-id-token-header.py" in " ".join(map(str, command))
+                            and "istio-shared-configmap" in command for command in deployment.writes))
 
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")

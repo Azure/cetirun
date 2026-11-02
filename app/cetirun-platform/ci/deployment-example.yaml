@@ -28,7 +28,7 @@ istio:
   controlPlaneNamespace: aks-istio-system
   controlPlaneDeployment: istiod-asm-example
   ingressNamespace: aks-istio-ingress
-  ingressDeployment: aks-istio-ingressgateway-external
+  ingressDeployment: aks-istio-ingressgateway-external-asm-example
   ingressServiceAccount: aks-istio-ingressgateway-external
   meshConfigMap: istio-shared-configmap-asm-example
   values:

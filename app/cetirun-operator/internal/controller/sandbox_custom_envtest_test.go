@@ -12,6 +12,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +42,28 @@ func TestCommonCustomTerminalAPIServer(t *testing.T) {
 			expected := reconciledExpectationForTest(t, h.nativeSandboxFixture)
 			if expected.Terminal == nil || len(expected.Workloads) != 2 {
 				t.Fatal("served common terminal did not join the protected workload inventory")
+			}
+			gate := &admissionv1.ValidatingAdmissionPolicy{}
+			gateBinding := &admissionv1.ValidatingAdmissionPolicyBinding{}
+			gateKey := client.ObjectKey{Name: instanceServiceName(h.agent.Name) + "-" + expected.Namespace.Name + "-deny-exec"}
+			if err := h.admin.Get(h.ctx, gateKey, gate); err != nil {
+				t.Fatal("common terminal exec gate was not served:", err)
+			}
+			if err := h.admin.Get(h.ctx, gateKey, gateBinding); err != nil {
+				t.Fatal("common terminal exec binding was not served:", err)
+			}
+			gateVersion, bindingVersion := gate.ResourceVersion, gateBinding.ResourceVersion
+			if err := h.r.ensureCommonTerminalExecPolicy(h.ctx, h.current(t)); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.admin.Get(h.ctx, gateKey, gate); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.admin.Get(h.ctx, gateKey, gateBinding); err != nil {
+				t.Fatal(err)
+			}
+			if gate.ResourceVersion != gateVersion || gateBinding.ResourceVersion != bindingVersion {
+				t.Fatal("API defaults caused a steady terminal exec gate write")
 			}
 			observed := *h.nativeSandboxFixture
 			observed.kube = h.admin
