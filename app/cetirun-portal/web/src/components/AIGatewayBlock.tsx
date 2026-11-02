@@ -232,6 +232,11 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
               Not offered because a shared model already has their name: {copilot.skipped.join(", ")}
             </Text>
           )}
+          {copilot.notAllowed && copilot.notAllowed.length > 0 && (
+            <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+              Not offered because the Agent Policy does not allow these models: {copilot.notAllowed.join(", ")}
+            </Text>
+          )}
           <div>
             <Button
               appearance={copilotPhase === "SignInRequired" ? "primary" : "secondary"}

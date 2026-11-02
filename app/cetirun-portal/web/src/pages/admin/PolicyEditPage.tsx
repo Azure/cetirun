@@ -198,7 +198,7 @@ export function PolicyEditPage() {
       const copilot = data.checked;
       setForm({ ...form, copilot, budgetEnabled: copilot || form.sharedModels.trim() !== "" ? form.budgetEnabled : false });
     }} />
-    <Field label="Allowed shared models" hint="Enter one exact Gateway catalog model name per line; commas are not separators."><Textarea rows={4} value={form.sharedModels} onChange={(_, data) => {
+    <Field label="Allowed shared models" hint="Enter one exact Gateway catalog model name per line; commas are not separators. These models also decide the owners' GitHub Copilot models that are the same models: a Copilot model is offered only when this list allows a shared model that is that model."><Textarea rows={4} value={form.sharedModels} onChange={(_, data) => {
       const sharedModels = data.value;
       setForm({ ...form, sharedModels, budgetEnabled: form.copilot || sharedModels.trim() !== "" ? form.budgetEnabled : false });
     }} placeholder={"gpt-4.1\ngpt-4o-mini"} /></Field>

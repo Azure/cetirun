@@ -197,9 +197,12 @@ func copilotRouteFormat(healthChecks bool) string {
 // model routes in line with the owner's sign-in. The proxy reads the token
 // Secret, which the Portal writes; the Portal also records the account's
 // models on the Agent. Each model becomes a Gateway route to this Agent's
-// proxy in the Agent's own access group. Problems are reported on the
-// Copilot status; they never fail the key reconcile.
-func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, active bool) {
+// proxy in the Agent's own access group, but for a model that the Agent's
+// AgentPolicy, policy, does not allow (placeCopilotModels); policy is nil for
+// an Agent without one. Problems are reported on the Copilot status; they
+// never fail the key reconcile.
+func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, active bool,
+	policy *cetirunv1alpha1.AgentPolicy) {
 	logger := log.FromContext(ctx)
 	status := instance.Status.AIGateway
 	if !active {
@@ -274,7 +277,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	}
 
 	desired := map[string]copilotRegistration{}
-	var unpriced, skipped []string
+	var unpriced, skipped, notAllowed []string
 	if len(wanted) > 0 {
 		priced, err := r.pricedModels(ctx, client)
 		if err != nil {
@@ -286,12 +289,12 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 		if _, known := r.aiGatewayCatalog.copilotMergeSnapshot(); !known {
 			r.refreshAIGatewayCatalogWithin(ctx, client, aiGatewayCatalogMaxAge)
 		}
-		placements, skippedModels, ok := r.placeCopilotModels(instance, wanted, priced)
+		placements, skippedModels, notAllowedModels, ok := r.placeCopilotModels(instance, wanted, priced, policy)
 		if !ok {
 			degraded("CatalogUnavailable", fmt.Errorf("the AI Gateway's models have not been listed"))
 			return
 		}
-		skipped = skippedModels
+		skipped, notAllowed = skippedModels, notAllowedModels
 		proxyURL := copilotProxyURL(instance)
 		format := copilotRouteFormat(r.AIGateway.CopilotHealthChecks)
 		for _, model := range wanted {
@@ -402,6 +405,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	copilot.Routes = routes
 	copilot.Unpriced = unpriced
 	copilot.Skipped = skipped
+	copilot.NotAllowed = notAllowed
 	switch {
 	case failed != nil:
 		degraded("RouteRegistrationFailed", failed)

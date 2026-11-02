@@ -489,6 +489,17 @@ spec:
                           type: string
                         type: array
                         x-kubernetes-list-type: atomic
+                      notAllowed:
+                        description: |-
+                          NotAllowed lists the account's models left out because the Agent's
+                          AgentPolicy does not allow them: each is the same model as a shared
+                          model, and the policy lists none of the shared models that are that
+                          model. The policy's shared models apply to the owner's Copilot models
+                          too.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
                       phase:
                         description: |-
                           Phase is SignInRequired until the owner signs in to GitHub Copilot

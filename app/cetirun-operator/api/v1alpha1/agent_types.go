@@ -539,6 +539,15 @@ type AIGatewayCopilotStatus struct {
 	// +optional
 	Skipped []string `json:"skipped,omitempty"`
 
+	// NotAllowed lists the account's models left out because the Agent's
+	// AgentPolicy does not allow them: each is the same model as a shared
+	// model, and the policy lists none of the shared models that are that
+	// model. The policy's shared models apply to the owner's Copilot models
+	// too.
+	// +listType=atomic
+	// +optional
+	NotAllowed []string `json:"notAllowed,omitempty"`
+
 	// ProxyKeyID identifies the proxy's master key without revealing it: the
 	// first characters of the key's SHA-256 hash. The proxy reads the key
 	// when it starts, so a new key restarts it.

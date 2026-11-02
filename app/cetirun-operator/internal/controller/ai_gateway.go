@@ -867,8 +867,13 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	status.ModelRouters = withSharedRouterStatuses(grant.routers, grant.sharedRouters)
 
 	// Copilot registration problems are reported on the Copilot status and
-	// never block the key: shared models keep working.
-	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended)
+	// never block the key: shared models keep working. With an AgentPolicy,
+	// its shared models decide the Copilot models that are the same models.
+	var policy *cetirunv1alpha1.AgentPolicy
+	if grant.policyBound {
+		policy = grant.policy
+	}
+	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended, policy)
 	r.reconcileAIGatewayKeyAliases(ctx, client, instance, token, key)
 	if err := r.refreshAIGatewayRouterGrant(ctx, client, instance, grant); err != nil {
 		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayModelRoutersFailed",
