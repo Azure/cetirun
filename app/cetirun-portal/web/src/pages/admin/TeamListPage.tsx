@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -26,6 +26,7 @@ import {
 } from "@fluentui/react-components";
 import { Add20Regular, Delete20Regular, Edit20Regular } from "@fluentui/react-icons";
 import { listTeams, deleteTeam, type TeamDTO } from "../../api/adminTeam";
+import { CompatibilityBadge, CompatibilityReport } from "../../components/CompatibilityReport";
 
 export function TeamListPage() {
   const navigate = useNavigate();
@@ -33,9 +34,11 @@ export function TeamListPage() {
   const { data: teams, isLoading, error } = useQuery<TeamDTO[], Error>({
     queryKey: ["admin", "teams"],
     queryFn: listTeams,
+    refetchInterval: 15_000,
   });
   const [pendingDelete, setPendingDelete] = useState<TeamDTO | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const delMutation = useMutation({
     mutationFn: deleteTeam,
@@ -78,6 +81,7 @@ export function TeamListPage() {
               <TableHeaderCell>Role</TableHeaderCell>
               <TableHeaderCell>Agent Policy</TableHeaderCell>
               <TableHeaderCell>Default Sandbox</TableHeaderCell>
+              <TableHeaderCell>Compatibility</TableHeaderCell>
               <TableHeaderCell>Skills</TableHeaderCell>
               <TableHeaderCell style={{ width: 120 }}>Actions</TableHeaderCell>
             </TableRow>
@@ -85,23 +89,26 @@ export function TeamListPage() {
           <TableBody>
             {teams.length === 0 && (
               <TableRow>
-                  <TableCell colSpan={6}>
+                  <TableCell colSpan={7}>
                   <Text>No teams yet.</Text>
                 </TableCell>
               </TableRow>
             )}
-            {teams.map((t) => (
-              <TableRow key={t.name}>
+            {teams.map((t) => <Fragment key={t.name}>
+              <TableRow>
                 <TableCell>{t.name}</TableCell>
                 <TableCell>{t.role || "—"}</TableCell>
                 <TableCell>{t.agentPolicyRef || "—"}</TableCell>
                 <TableCell>{t.defaultSandboxRef || "—"}</TableCell>
+                <TableCell><CompatibilityBadge team={t} /></TableCell>
                 <TableCell>{t.skills?.length ?? 0}</TableCell>
                 <TableCell>
+                  <Button size="small" appearance="subtle" onClick={() => setExpanded(expanded === t.name ? null : t.name)} aria-expanded={expanded === t.name} aria-label={`Show compatibility for ${t.name}`}>Details</Button>
                   <Button
                     size="small"
                     icon={<Edit20Regular />}
                     appearance="subtle"
+                    disabled={t.deleting}
                     onClick={() => navigate(`/admin/teams/${encodeURIComponent(t.name)}/edit`)}
                     aria-label={`Edit ${t.name}`}
                   />
@@ -109,6 +116,7 @@ export function TeamListPage() {
                     size="small"
                     icon={<Delete20Regular />}
                     appearance="subtle"
+                    disabled={t.deleting}
                     onClick={() => {
                       setDeleteError(null);
                       setPendingDelete(t);
@@ -117,7 +125,8 @@ export function TeamListPage() {
                   />
                 </TableCell>
               </TableRow>
-            ))}
+              {expanded === t.name && <TableRow><TableCell colSpan={7}><CompatibilityReport team={t} /></TableCell></TableRow>}
+            </Fragment>)}
           </TableBody>
         </Table>
       )}

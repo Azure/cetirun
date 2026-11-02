@@ -256,6 +256,228 @@ spec:
           status:
             description: TeamStatus defines the observed state of Team.
             properties:
+              compatibility:
+                description: |-
+                  Compatibility is the latest configuration-only assessment of this Team's
+                  Policy and selected Sandboxes. It does not authorize an Agent or prove
+                  that a workload, Gateway key, or credential projection is applied.
+                properties:
+                  checkedAt:
+                    format: date-time
+                    type: string
+                  issues:
+                    items:
+                      description: |-
+                        CompatibilityIssue is safe for administrative display and for Kubernetes
+                        admission details. It contains no platform topology or credential data.
+                      properties:
+                        code:
+                          type: string
+                        field:
+                          type: string
+                        message:
+                          type: string
+                        policy:
+                          description: |-
+                            CompatibilityReference pins a configuration object that an assessment read.
+                            A Portal must not show a compatible result after any of these values changes.
+                          properties:
+                            generation:
+                              format: int64
+                              type: integer
+                            name:
+                              type: string
+                            uid:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        sandbox:
+                          description: |-
+                            CompatibilityReference pins a configuration object that an assessment read.
+                            A Portal must not show a compatible result after any of these values changes.
+                          properties:
+                            generation:
+                              format: int64
+                              type: integer
+                            name:
+                              type: string
+                            uid:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        team:
+                          description: |-
+                            CompatibilityReference pins a configuration object that an assessment read.
+                            A Portal must not show a compatible result after any of these values changes.
+                          properties:
+                            generation:
+                              format: int64
+                              type: integer
+                            name:
+                              type: string
+                            uid:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                      required:
+                      - code
+                      - message
+                      type: object
+                    type: array
+                  message:
+                    type: string
+                  policy:
+                    description: |-
+                      CompatibilityReference pins a configuration object that an assessment read.
+                      A Portal must not show a compatible result after any of these values changes.
+                    properties:
+                      generation:
+                        format: int64
+                        type: integer
+                      name:
+                        type: string
+                      uid:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  reason:
+                    type: string
+                  sandboxes:
+                    items:
+                      description: SandboxCompatibilityStatus reports one selected
+                        Sandbox within a Team.
+                      properties:
+                        issues:
+                          items:
+                            description: |-
+                              CompatibilityIssue is safe for administrative display and for Kubernetes
+                              admission details. It contains no platform topology or credential data.
+                            properties:
+                              code:
+                                type: string
+                              field:
+                                type: string
+                              message:
+                                type: string
+                              policy:
+                                description: |-
+                                  CompatibilityReference pins a configuration object that an assessment read.
+                                  A Portal must not show a compatible result after any of these values changes.
+                                properties:
+                                  generation:
+                                    format: int64
+                                    type: integer
+                                  name:
+                                    type: string
+                                  uid:
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              sandbox:
+                                description: |-
+                                  CompatibilityReference pins a configuration object that an assessment read.
+                                  A Portal must not show a compatible result after any of these values changes.
+                                properties:
+                                  generation:
+                                    format: int64
+                                    type: integer
+                                  name:
+                                    type: string
+                                  uid:
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              team:
+                                description: |-
+                                  CompatibilityReference pins a configuration object that an assessment read.
+                                  A Portal must not show a compatible result after any of these values changes.
+                                properties:
+                                  generation:
+                                    format: int64
+                                    type: integer
+                                  name:
+                                    type: string
+                                  uid:
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                            required:
+                            - code
+                            - message
+                            type: object
+                          type: array
+                        reason:
+                          type: string
+                        sandbox:
+                          description: |-
+                            CompatibilityReference pins a configuration object that an assessment read.
+                            A Portal must not show a compatible result after any of these values changes.
+                          properties:
+                            generation:
+                              format: int64
+                              type: integer
+                            name:
+                              type: string
+                            uid:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        state:
+                          description: |-
+                            CompatibilityState is the configuration compatibility of a Team and its
+                            selected Sandboxes. It deliberately does not describe runtime enforcement.
+                          enum:
+                          - Compatible
+                          - Incompatible
+                          - Unknown
+                          type: string
+                      required:
+                      - sandbox
+                      - state
+                      type: object
+                    type: array
+                  state:
+                    description: |-
+                      CompatibilityState is the configuration compatibility of a Team and its
+                      selected Sandboxes. It deliberately does not describe runtime enforcement.
+                    enum:
+                    - Compatible
+                    - Incompatible
+                    - Unknown
+                    type: string
+                  team:
+                    description: |-
+                      CompatibilityReference pins a configuration object that an assessment read.
+                      A Portal must not show a compatible result after any of these values changes.
+                    properties:
+                      generation:
+                        format: int64
+                        type: integer
+                      name:
+                        type: string
+                      uid:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  validUntil:
+                    format: date-time
+                    type: string
+                required:
+                - checkedAt
+                - policy
+                - state
+                - team
+                - validUntil
+                type: object
               conditions:
                 description: Conditions contains the latest available observations
                   of the team's state.

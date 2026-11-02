@@ -220,6 +220,59 @@ func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
 	}
 }
 
+func TestNativeTopologyFailureReturnsSafeCompatibilityCause(t *testing.T) {
+	f, cm := newPlatformFixture(t)
+	var document sandboxplatform.Configuration
+	if err := json.Unmarshal([]byte(cm.Data[sandboxplatform.ConfigurationKey]), &document); err != nil {
+		t.Fatal(err)
+	}
+	registration := document.Registrations[api.SandboxKata]
+	registration.Capabilities.Profile = sandbox.ProfileNativeSingleStart
+	registration.Capabilities.EnforcementObservation, registration.Capabilities.RestrictiveFailure = false, false
+	document.Registrations[api.SandboxKata] = registration
+	platform := document.Platforms[api.SandboxKata]
+	platform.Adapter.Name, platform.Adapter.Qualified = sandboxpolicy.Cilium, false
+	document.Platforms[api.SandboxKata] = platform
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm.Data[sandboxplatform.ConfigurationKey] = string(raw)
+	if err := f.client.Update(context.Background(), cm); err != nil {
+		t.Fatal(err)
+	}
+	config := platformFixtureConfig()
+	config.NativeExecution = true
+	f.handler, err = NewHandler(f.client, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.policy.Spec.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{{CIDR: "192.168.0.0/16", Ports: []api.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}}}}
+	if err := f.client.Update(context.Background(), f.policy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.handler.platformSource.Snapshot(context.Background()); err != nil {
+		t.Fatalf("platform snapshot: %v", err)
+	}
+	response := f.handler.Validate(context.Background(), requestFor(t, admissionv1.Create, f.team, nil, "administrator"))
+	if response.Allowed || response.Result == nil || response.Result.Details == nil {
+		t.Fatalf("native grant response = %+v", response)
+	}
+	for _, cause := range response.Result.Details.Causes {
+		if cause.Type != metav1.CauseType("CetiRunCompatibility") {
+			continue
+		}
+		var issue api.CompatibilityIssue
+		if err := json.Unmarshal([]byte(cause.Message), &issue); err != nil {
+			t.Fatal(err)
+		}
+		if issue.Valid() && issue.Code == "network_control_unsupported" {
+			return
+		}
+	}
+	t.Fatalf("native grant compatibility causes = %+v", response.Result.Details.Causes)
+}
+
 func TestPlatformAdmissionScopesExecutionProfiles(t *testing.T) {
 	for _, source := range []string{"platform", "injected"} {
 		t.Run(source, func(t *testing.T) {

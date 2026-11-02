@@ -152,8 +152,9 @@ type ErrorResponse struct {
 
 // ErrorDetail holds error code and message.
 type ErrorDetail struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string                               `json:"code"`
+	Message string                               `json:"message"`
+	Details []cetirunv1alpha1.CompatibilityIssue `json:"details,omitempty"`
 }
 
 // StatusResponse is the JSON response for GET /api/v1/instance/status.

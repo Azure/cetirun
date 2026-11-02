@@ -272,6 +272,41 @@ Skills. The Team DTO returns these fields together with `uid` and
 stale version returns `409 Conflict`, and a request without those version fields
 returns `428 Precondition Required`.
 
+The Teams list shows compatibility for the saved Policy and all selected
+Sandboxes. Expand a Team to see each combination, its reasons, and the check
+time. The Policy and Sandbox lists also show their referencing Teams. A Policy's
+configuration acceptance and a Sandbox's prerequisites are separate from Team
+compatibility. None of these observations proves that an Agent applied its
+Policy or is ready to run.
+
+The Operator records this report in the optional `Team.status.compatibility`
+field. It checks saved configurations every 15 seconds and after Policy or
+Sandbox changes. The report identifies the Team, Policy, and each Sandbox by
+name, UID, and generation, with `checkedAt` and `validUntil` timestamps. The
+report expires after 30 seconds. The Portal shows `Pending` when no report
+exists and `Unknown` when an observation expires or a referenced version
+changes. Teams without Policy configuration show `Not configured`.
+
+The report is for display. It does not change the existing Team `Accepted`
+condition or authorize Agent execution. The admin Team API includes the report,
+the Team generation, and deletion state. The Sandbox API also returns
+generation, observed generation, and conditions.
+
+Editing pages show field validation and errors from the current save. They do
+not check unsaved drafts or display saved status as a draft result. Kubernetes
+admission checks the submitted configuration before it is stored. For a known
+compatibility rejection, the Portal returns `422 configuration_incompatible`
+with an optional `error.details` list of field and combination diagnostics.
+The editor keeps the unsaved input. Version, permission, and coordination
+errors remain separate. Saving successfully does not imply that the Operator
+has already checked the new version.
+
+When upgrading, update the CRD schema and all strict Team readers, including
+admission, before running the Operator that writes compatibility status. No
+migration of existing Teams is necessary; they receive a report on reconciliation.
+Older objects without the optional field remain readable. Do not downgrade a
+strict reader until it can tolerate the new status field.
+
 The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
 runtime type, Agent and helper resource requests and limits, HOME storage, and
 scratch size. They use these admin-only endpoints:
@@ -554,7 +589,8 @@ the
 An accepted API value does not qualify the actual network path.
 
 The Operator keeps the Policy's `Accepted` condition for controller decisions
-and diagnostics. The Portal list and editor do not show this status.
+and diagnostics. The Portal list shows the condition for the current generation;
+the editor shows only field validation and save errors.
 `Accepted=True` describes only configuration acceptance. Sandbox compatibility,
 Agent authorization, and runtime enforcement must still succeed. If you save a
 Policy, the save does not prove that its consumers applied it. If you edit a

@@ -66,8 +66,11 @@ type AgentPolicyReconciler struct {
 // structurally complete.
 type TeamReconciler struct {
 	client.Client
-	APIReader client.Reader
-	Now       func() time.Time
+	NativeExecution bool
+	APIReader       client.Reader
+	Source          SandboxConfigurationSource
+	Now             func() time.Time
+	MaxSnapshotAge  time.Duration
 }
 
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -166,12 +169,210 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	condition.Type, condition.ObservedGeneration, condition.LastTransitionTime = api.ConditionTeamAccepted, team.Generation, metav1.NewTime(now)
 	apimeta.SetStatusCondition(&team.Status.Conditions, condition)
 	team.Status.ObservedGeneration = team.Generation
+	if team.DeletionTimestamp != nil {
+		team.Status.Compatibility = nil
+	} else {
+		compatibility, compatibilityErr := r.assessCompatibility(ctx, team, now)
+		if compatibilityErr != nil {
+			team.Status.Compatibility = r.unknownCompatibility(team, now)
+			observeErr = errors.Join(observeErr, compatibilityErr)
+		} else {
+			team.Status.Compatibility = compatibility
+		}
+	}
 	if !reflect.DeepEqual(before.Status, team.Status) {
 		if err := r.Status().Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, err)
 		}
 	}
-	return ctrl.Result{}, observeErr
+	if observeErr != nil {
+		return ctrl.Result{}, observeErr
+	}
+	if team.Spec.PolicyConfigured() && team.DeletionTimestamp == nil {
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+// assessCompatibility reports the saved Team configuration only. It never
+// releases an execution hold or replaces the Agent controller's authorization
+// and enforcement checks.
+func (r *TeamReconciler) assessCompatibility(ctx context.Context, team *api.Team, now time.Time) (*api.TeamCompatibilityStatus, error) {
+	if !team.Spec.PolicyConfigured() {
+		return nil, nil
+	}
+	reader := configurationReader(r.APIReader, r.Client)
+	resources := sandbox.Resources{Sandboxes: map[string]*api.Sandbox{}, AgentPolicies: map[string]*api.AgentPolicy{}}
+	if team.Spec.AgentPolicyRef != "" {
+		policy := &api.AgentPolicy{}
+		if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.AgentPolicyRef}, policy); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return nil, fmt.Errorf("read Team AgentPolicy compatibility input: %w", err)
+			}
+		} else {
+			resources.AgentPolicies[policy.Name] = policy
+		}
+	}
+	for _, name := range team.Spec.SandboxRefs {
+		box := &api.Sandbox{}
+		if err := reader.Get(ctx, types.NamespacedName{Name: name}, box); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return nil, fmt.Errorf("read Team Sandbox compatibility input: %w", err)
+			}
+			continue
+		}
+		resources.Sandboxes[box.Name] = box
+	}
+	if r.Source == nil {
+		return r.unknownCompatibility(team, now), nil
+	}
+	snapshot, err := r.Source.Snapshot(ctx)
+	if err != nil {
+		return r.unknownCompatibility(team, now), nil
+	}
+	// Capture the assessment time after Snapshot: a synchronous source may have
+	// observed its inventory between the caller's previous clock read and now.
+	now = configurationNow(r.Now)
+	if err := configurationSnapshotTime(snapshot.ObservedAt, now, r.MaxSnapshotAge); err != nil {
+		return r.unknownCompatibility(team, now), nil
+	}
+	report := sandbox.TeamCompatibilityReport(team, resources, snapshot.Registrations, r.NativeExecution)
+	if err := r.assessNativeCompatibility(ctx, &report, resources, snapshot); err != nil {
+		if errors.Is(err, sandboxpolicy.ErrUnavailable) {
+			return r.unknownCompatibility(team, now), nil
+		}
+		return nil, err
+	}
+	report.CheckedAt, report.ValidUntil = metav1.NewTime(now), metav1.NewTime(now.Add(30*time.Second))
+	if err := r.verifyCompatibilityInputs(ctx, team, resources, snapshot, report); err != nil {
+		return r.unknownCompatibility(team, now), nil
+	}
+	return &report, nil
+}
+
+func (r *TeamReconciler) assessNativeCompatibility(ctx context.Context, report *api.TeamCompatibilityStatus, resources sandbox.Resources, snapshot SandboxConfigurationSnapshot) error {
+	policy := resources.AgentPolicies[report.Policy.Name]
+	if policy == nil {
+		return nil
+	}
+	reader := configurationReader(r.APIReader, r.Client)
+	for index := range report.Sandboxes {
+		status := &report.Sandboxes[index]
+		box := resources.Sandboxes[status.Sandbox.Name]
+		if box == nil || status.State == api.CompatibilityIncompatible {
+			continue
+		}
+		normalized, errs := sandbox.NormalizeSandbox(box.Spec)
+		if len(errs) != 0 {
+			continue
+		}
+		registration, found := snapshot.Registrations[normalized.Type]
+		if !found {
+			continue
+		}
+		platform, found := snapshot.Platforms[normalized.Type]
+		if !found {
+			return sandboxpolicy.ErrUnavailable
+		}
+		if err := sandboxpolicy.ValidateNativeTeamPolicyBinding(ctx, policy, registration.Capabilities, platform, reader, r.NativeExecution); err != nil {
+			if errors.Is(err, sandboxpolicy.ErrUnavailable) {
+				return err
+			}
+			code := "sandbox_incompatible"
+			if policy.Spec.KubernetesAccess != nil {
+				code = "kubernetes_access_unsupported"
+			}
+			message, _ := api.CompatibilityIssueMessage(code)
+			issue := api.CompatibilityIssue{Code: code, Field: "spec.agentPolicyRef", Message: message,
+				Team: &report.Team, Policy: &report.Policy, Sandbox: &status.Sandbox}
+			status.State, status.Reason = api.CompatibilityIncompatible, "PlatformControlUnsupported"
+			status.Issues = append(status.Issues, issue)
+			report.Issues = append(report.Issues, issue)
+			report.State, report.Reason, report.Message = api.CompatibilityIncompatible, "ConfigurationIncompatible", "The Team Policy and selected Sandboxes are incompatible."
+		}
+	}
+	return nil
+}
+
+func (r *TeamReconciler) verifyCompatibilityInputs(ctx context.Context, team *api.Team, resources sandbox.Resources, snapshot SandboxConfigurationSnapshot, report api.TeamCompatibilityStatus) error {
+	reader := configurationReader(r.APIReader, r.Client)
+	if team.Spec.AgentPolicyRef != "" {
+		expected := resources.AgentPolicies[team.Spec.AgentPolicyRef]
+		current := &api.AgentPolicy{}
+		err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.AgentPolicyRef}, current)
+		if (expected == nil && !apierrors.IsNotFound(err)) || (expected != nil && (err != nil || current.UID != expected.UID || current.Generation != expected.Generation || !current.DeletionTimestamp.IsZero())) {
+			return fmt.Errorf("Team compatibility AgentPolicy changed during assessment")
+		}
+	}
+	for _, name := range team.Spec.SandboxRefs {
+		expected := resources.Sandboxes[name]
+		current := &api.Sandbox{}
+		err := reader.Get(ctx, types.NamespacedName{Name: name}, current)
+		if (expected == nil && !apierrors.IsNotFound(err)) || (expected != nil && (err != nil || current.UID != expected.UID || current.Generation != expected.Generation || !current.DeletionTimestamp.IsZero())) {
+			return fmt.Errorf("Team compatibility Sandbox changed during assessment")
+		}
+	}
+	if r.Source == nil {
+		return fmt.Errorf("Team compatibility platform inventory is unavailable")
+	}
+	current, err := r.Source.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if err := configurationSnapshotTime(current.ObservedAt, configurationNow(r.Now), r.MaxSnapshotAge); err != nil {
+		return err
+	}
+	snapshot.ObservedAt, current.ObservedAt = time.Time{}, time.Time{}
+	if !reflect.DeepEqual(snapshot, current) {
+		return fmt.Errorf("Team compatibility platform inventory changed during assessment")
+	}
+	if policy := resources.AgentPolicies[team.Spec.AgentPolicyRef]; policy != nil && policy.Spec.KubernetesAccess != nil {
+		// The initial assessment has already classified static platform controls.
+		// Re-read grants only for bindings that were compatible then, so a stable
+		// unsupported control remains an actionable Incompatible result rather
+		// than being downgraded to Unknown by this race check.
+		for _, status := range report.Sandboxes {
+			if status.State != api.CompatibilityCompatible {
+				continue
+			}
+			box := resources.Sandboxes[status.Sandbox.Name]
+			if box == nil {
+				continue
+			}
+			normalized, errs := sandbox.NormalizeSandbox(box.Spec)
+			if len(errs) != 0 {
+				continue
+			}
+			registration, registered := current.Registrations[normalized.Type]
+			platform, supported := current.Platforms[normalized.Type]
+			if !registered || !supported {
+				return sandboxpolicy.ErrUnavailable
+			}
+			if err := sandboxpolicy.ValidateNativeTeamPolicyBinding(ctx, policy, registration.Capabilities, platform, reader, r.NativeExecution); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *TeamReconciler) unknownCompatibility(team *api.Team, now time.Time) *api.TeamCompatibilityStatus {
+	if !team.Spec.PolicyConfigured() {
+		return nil
+	}
+	report := &api.TeamCompatibilityStatus{
+		State: api.CompatibilityUnknown, Reason: "DependenciesUnavailable",
+		Message:   "Current platform compatibility cannot be verified.",
+		Team:      api.CompatibilityReference{Name: team.Name, UID: string(team.UID), Generation: team.Generation},
+		Policy:    api.CompatibilityReference{Name: team.Spec.AgentPolicyRef},
+		CheckedAt: metav1.NewTime(now), ValidUntil: metav1.NewTime(now.Add(30 * time.Second)),
+	}
+	for _, name := range team.Spec.SandboxRefs {
+		report.Sandboxes = append(report.Sandboxes, api.SandboxCompatibilityStatus{
+			Sandbox: api.CompatibilityReference{Name: name}, State: api.CompatibilityUnknown, Reason: "DependenciesUnavailable",
+		})
+	}
+	return report
 }
 
 func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
