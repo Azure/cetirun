@@ -559,6 +559,14 @@ request into four upstream calls. The image's guard callback drops those
 fields. The entrypoint always registers this callback, and the cluster test
 examines this behavior. Refer to [The guard callback](#the-guard-callback).
 
+The guard also drops the same fields from `router_settings_override`. LiteLLM
+adds these router settings to the request after the guard runs. They are the
+router settings of the key or of its team. If neither has router settings,
+LiteLLM takes them from the request body. On LiteLLM 1.105.6, a request body
+with `router_settings_override: {"num_retries": 2}` made one failed request
+three upstream calls. With the guard, it made one call. As a result, the
+retry settings of a key or a team also do not apply.
+
 When a failed request goes to another deployment of the same model, this is not
 a retry. Refer to [Routing](#routing).
 
@@ -895,6 +903,11 @@ too long for the context window of the model. An earlier measurement used a
 model with two deployments, and one of them was unreachable. Without a fallback
 group, 6 of 30 requests failed. With a fallback group, no request failed.
 
+A request to a router goes to its other models when the model of its tier
+fails, without this setting. Fallbacks in `router.fallbacks` for a model of
+the router, or for the router's name, apply instead. Refer to
+[Smart routing](#smart-routing).
+
 ### Health checks
 
 `router.healthChecks.enabled` is on by default. It probes every deployment at
@@ -1125,6 +1138,57 @@ the model of a tier holds. To use other values, set `max_input_tokens` and
 operator cannot read completely gets no limits. When these limits change, for
 example because a tier gets another model, the Agents that use the router are
 configured again, which restarts them.
+
+**A failed tier goes to the router's other models.** The model of the tier
+that the router selects can fail. For example, the GitHub Copilot proxy of an
+Agent can be down. The image's guard callback then lets LiteLLM send the
+request to the other models of the router, in this order:
+
+1. The other models of the same tier.
+2. The models of the higher tiers, from the lowest.
+3. The default model of the router.
+4. The models of the lower tiers, from the highest.
+
+LiteLLM uses only the models that the key of the caller can use. It sends the
+request to another model only before a response starts. Errors of all kinds
+count, for example a 503, a timeout, a 429, or a 400 from the model. A refusal
+by the guard does not count, for example the 403 for a model that the key
+cannot use. The guard adds these fallbacks to the request only. It does not
+change a setting of the Gateway.
+
+These fallbacks do not replace other fallbacks:
+
+- The fallbacks in `router.fallbacks` for a model of the router, or for the
+  router's name.
+- The fallbacks that a request names, or `disable_fallbacks` in a request.
+- The fallbacks in the router settings of a key or its team.
+- After an `invalid_encrypted_content` refusal, the request goes to no other
+  model. Refer to
+  [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource).
+
+The response names the model that answered, not the router. It has the
+`x-litellm-attempted-fallbacks` header, but no `x-litellm-complexity-router-*`
+headers. The request log writes a `failure` line for the tier, with the
+router's name as `model`. It then writes a line for the model that answered.
+This line has `fallback_from` (the router's name), `attempted_fallbacks`, and
+`fallback_cause` (the error class of the first failure).
+
+A measurement on LiteLLM 1.105.6 used mock models. The simple tier of a router
+answered 503. Before the change, the client got the 503 after one upstream
+call. With the change, the medium tier answered the request. This occurred on
+the Chat Completions API, streamed or not, and on the Responses and Anthropic
+Messages APIs, also with a Team router's internal name. With every model of
+the router down, each model got one call, and the client got the 503 of the
+first model.
+
+**Errors do not show LiteLLM's internal names.** LiteLLM adds its internal
+names to the errors that it returns: the model groups of a request, their
+fallbacks, and timeouts. For a Team's router, such a model group is the
+router's internal name, for example "model group 'tier-down ->
+cetirun-router-0123456789abcdef'". The guard sets LiteLLM's
+`expose_router_debug_in_errors` to false when it starts. The client then gets
+the error of the model only. The Gateway's own log keeps LiteLLM's message
+about the fallbacks.
 
 **Models that answer no conversation are not offered to Agents.** Some shared
 models have a `model_info.mode` other than `chat`, `completion` or
@@ -1439,7 +1503,7 @@ than one Gateway writes to the workspace, add
 `| where PodNamespace == "<namespace>"` under the line that contains
 `ContainerLogV2`.
 
-The first four queries count only the calls that clients sent. A call that
+The first five queries count only the calls that clients sent. A call that
 LiteLLM makes itself carries a `call_origin`, for example a health check probe
 or a classifier call. A routed call has a `routing_cause`. A routed call
 without a `routing_tier` went to the router's default model, for example
@@ -1470,6 +1534,21 @@ routed
 | project router, tier, model, answered, share_pct = round(100.0 * answered / router_answered, 1),
     failed, escalated
 | order by router asc, answered desc
+```
+
+A request whose tier failed, and that another model then answered, is not in
+`answered`. Its answered line has no routing fields, and its `fallback_from`
+names the router. The next query counts these calls by the model that the
+request was for and by the model that answered:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isnotempty(tostring(LogMessage.fallback_from))
+| summarize calls = count() by requested = tostring(LogMessage.fallback_from), model = tostring(LogMessage.model),
+    cause = tostring(LogMessage.fallback_cause), status = tostring(LogMessage.status)
+| order by requested asc, calls desc
 ```
 
 The next query shows what each tier spent, in total and for each answered call.
@@ -1790,7 +1869,11 @@ these actions:
 - It drops request fields that a caller can use to change the Gateway for its
   own call. These fields are `litellm_request_debug` and the retry fields that
   are described in
-  [Upstream errors are not retried](#upstream-errors-are-not-retried).
+  [Upstream errors are not retried](#upstream-errors-are-not-retried), also in
+  `router_settings_override`.
+- It gives a request to a router fallbacks to the router's other models, and it
+  keeps LiteLLM's internal names out of errors. Refer to
+  [Smart routing](#smart-routing).
 - It excludes the per-Agent GitHub Copilot routes from a request, unless the
   caller's key holds the route's access group, `cetirun-copilot-<Agent UID>`.
   A key granted every model, such as the master key, reaches none of these
@@ -2457,7 +2540,9 @@ records this metadata of the call:
 
 A call that LiteLLM makes itself carries its origin in `call_origin`. For
 example, a background health check probe is `"health_check"`. As a result,
-usage figures can omit it. This is a shortened example of a line:
+usage figures can omit it. A call that LiteLLM makes as a fallback, after the
+model of the request failed, carries `fallback_from`, `attempted_fallbacks`,
+and `fallback_cause`. This is a shortened example of a line:
 
 ```json
 {"log_type":"cetirun.ai_gateway.request","schema_version":1,"time":"2026-10-08T13:13:27.780Z","status":"success","route":"/v1/chat/completions","stream":false,"model":"gpt-4o","provider_model":"azure/prod-gpt-4o","prompt_tokens":1000,"completion_tokens":1000,"cached_tokens":800,"spend":0.014,"key_alias":"cetirun-alice-agent-1234","user_id":"alice","team_alias":"research","key_metadata":{"cetirun_agent":"alice-agent","cetirun_team":"research"},"duration_ms":686}

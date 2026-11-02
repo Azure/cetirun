@@ -202,6 +202,17 @@ that calls the Gateway with its own key also gets the tier in response headers.
 See
 [Calling the Gateway]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#calling-the-gateway).
 
+### When a tier fails
+
+The model of a tier can fail, for example when the GitHub Copilot proxy of an
+Agent is down. The Gateway then sends the request to the router's other models:
+first the other models of the tier, then the higher tiers, then the router's
+default model, and then the lower tiers. It uses only the models that the
+Agent's key can use. In the log, the tier's line has the status `failure`. The
+line of the model that answered has `fallback_from`, which names the router.
+The error that the Agent gets when every model fails does not contain the
+router's internal name.
+
 ## Choose a classifier
 
 | Classifier | How it decides | Cost | Where |

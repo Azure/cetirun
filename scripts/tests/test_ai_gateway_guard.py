@@ -52,7 +52,7 @@ class HTTPException(Exception):
         self.headers = headers
 
 
-def load_guard():
+def load_guard(litellm_attributes=None):
     stubs = {
         "fastapi": types.ModuleType("fastapi"),
         "litellm": types.ModuleType("litellm"),
@@ -62,6 +62,8 @@ def load_guard():
         "litellm.proxy": types.ModuleType("litellm.proxy"),
         "litellm.proxy._types": types.ModuleType("litellm.proxy._types"),
     }
+    for name, value in (litellm_attributes or {}).items():
+        setattr(stubs["litellm"], name, value)
     stubs["fastapi"].HTTPException = HTTPException
     stubs["litellm._logging"].verbose_proxy_logger = logging.getLogger(LOGGER)
     stubs["litellm.integrations.custom_logger"].CustomLogger = CustomLogger
@@ -286,6 +288,137 @@ class GuardTest(unittest.TestCase):
 
     def test_requests_that_are_not_bodies_are_left_alone(self):
         self.assertIsNone(asyncio.run(self.guard.async_pre_call_hook(None, None, None, "acompletion")))
+
+    def test_router_settings_lose_their_retries(self):
+        # LiteLLM merges router_settings_override into the request after the
+        # callback: the key's or team's router settings, or the body's own
+        # when neither has any. Measured on 1.105.6: num_retries 2 there made
+        # one failing request three upstream calls.
+        override = {"num_retries": 2, "model_group_retry_policy": {"gpt-4o": {"TimeoutErrorRetries": 2}},
+                    "timeout": 30, "fallbacks": [{"gpt-4o": ["gpt-4o-mini"]}]}
+        data = {"model": "gpt-4o", "router_settings_override": override}
+        asyncio.run(self.guard.async_pre_call_hook(None, None, data, "acompletion"))
+        self.assertEqual(data["router_settings_override"], {"timeout": 30, "fallbacks": [{"gpt-4o": ["gpt-4o-mini"]}]})
+        self.assertEqual(override["num_retries"], 2, "the key's own settings object is not changed")
+        kept = {"model": "gpt-4o", "router_settings_override": {"timeout": 30}}
+        asyncio.run(self.guard.async_pre_call_hook(None, None, kept, "acompletion"))
+        self.assertEqual(kept, {"model": "gpt-4o", "router_settings_override": {"timeout": 30}})
+
+    def test_litellm_shows_no_router_details_in_errors(self):
+        module = load_guard({"expose_router_debug_in_errors": True})
+        self.assertIs(module.litellm.expose_router_debug_in_errors, False)
+        # LiteLLM without the setting: nothing to change.
+        self.assertFalse(hasattr(self.module.litellm, "expose_router_debug_in_errors"))
+
+    # ----- fallbacks of a router's tiers -----
+
+    def router_proxy(self, models, fallbacks=None):
+        """The proxy module with a live router serving these model entries and router fallbacks."""
+
+        class Router:
+            def __init__(self):
+                self.fallbacks = fallbacks
+
+            def get_model_list(self, model_name=None):
+                return [model for model in models if model["model_name"] == model_name]
+
+        proxy = types.ModuleType(PROXY_SERVER)
+        proxy.llm_router = Router()
+        sys.modules[PROXY_SERVER] = proxy
+        return proxy.llm_router
+
+    @staticmethod
+    def complexity_router(name, tiers, default=None, **config):
+        params = {"model": "auto_router/complexity_router", "complexity_router_config": {"tiers": tiers, **config}}
+        if default:
+            params["complexity_router_default_model"] = default
+        return {"model_name": name, "litellm_params": params, "model_info": {"id": f"{name}-id"}}
+
+    def hooked(self, data):
+        asyncio.run(self.guard.async_pre_call_hook(None, None, data, "acompletion"))
+        return data
+
+    FOUR_TIERS = {"SIMPLE": "small", "MEDIUM": "mid", "COMPLEX": "big", "REASONING": "think"}
+
+    def test_a_routers_tiers_fall_back_to_the_tiers_above_then_the_default_then_below(self):
+        self.router_proxy([self.complexity_router("auto", dict(reversed(self.FOUR_TIERS.items())), "mid"),
+                           chart_model("small", "a1"), chart_model("mid", "a2")])
+        for api in ("acompletion", "aresponses", "anthropic_messages"):
+            with self.subTest(api=api):
+                data = {"model": "auto", "messages": [{"role": "user", "content": "hi"}]}
+                asyncio.run(self.guard.async_pre_call_hook(None, None, data, api))
+                self.assertEqual(data["fallbacks"], [
+                    {"small": ["mid", "big", "think"]},
+                    {"mid": ["big", "think", "small"]},
+                    {"big": ["think", "mid", "small"]},
+                    {"think": ["mid", "big", "small"]},
+                ])
+
+    def test_a_default_model_outside_the_tiers_is_tried_and_falls_back_like_the_medium_tier(self):
+        self.router_proxy([self.complexity_router("auto", {"SIMPLE": "small", "MEDIUM": "mid"}, "other")])
+        self.assertEqual(self.hooked({"model": "auto"})["fallbacks"], [
+            {"small": ["mid", "other"]}, {"mid": ["other", "small"]}, {"other": ["mid", "small"]}])
+
+    def test_without_a_default_model_litellms_choice_counts(self):
+        # LiteLLM takes the first model of the fallback_tier, else of MEDIUM, else of SIMPLE.
+        for config, default in (({}, "mid"), ({"fallback_tier": "SIMPLE"}, "small")):
+            with self.subTest(config=config):
+                self.router_proxy([self.complexity_router("auto", self.FOUR_TIERS, **config)])
+                chains = [entry for entry in self.hooked({"model": "auto"})["fallbacks"] if "think" in entry]
+                self.assertEqual(chains, [{"think": [default] + [m for m in ("big", "mid", "small") if m != default]}])
+        self.router_proxy([self.complexity_router("auto", {"SIMPLE": "small", "COMPLEX": "big"})])
+        self.assertEqual(self.hooked({"model": "auto"})["fallbacks"], [{"small": ["big"]}, {"big": ["small"]}])
+        # A router with one model has nothing to fall back to.
+        self.router_proxy([self.complexity_router("auto", {"SIMPLE": "small"})])
+        self.assertNotIn("fallbacks", self.hooked({"model": "auto"}))
+
+    def test_tiers_listing_several_models_and_routers_as_tiers(self):
+        self.router_proxy([
+            self.complexity_router("auto", {"SIMPLE": ["small", {"model_name": "small-2"}], "MEDIUM": "nested",
+                                            "COMPLEX": "big"}, "big"),
+            self.complexity_router("nested", {"SIMPLE": "small"}),
+        ])
+        self.assertEqual(self.hooked({"model": "auto"})["fallbacks"], [
+            {"small": ["small-2", "big"]}, {"small-2": ["small", "big"]}, {"big": ["small", "small-2"]}])
+
+    def test_the_administrators_fallbacks_apply_instead(self):
+        configured = [{"small": ["fixed"]}, {"*": ["generic"]}]
+        self.router_proxy([self.complexity_router("auto", {"SIMPLE": "small", "MEDIUM": "mid"}, "mid")], configured)
+        self.assertEqual(self.hooked({"model": "auto"})["fallbacks"],
+                         [{"small": ["fixed"]}, {"*": ["generic"]}, {"mid": ["small", "generic"]}])
+        # Fallbacks for the router's name: the administrator decided for every tier.
+        self.router_proxy([self.complexity_router("auto", {"SIMPLE": "small"}, "mid")], [{"auto": ["mid"]}])
+        self.assertNotIn("fallbacks", self.hooked({"model": "auto"}))
+
+    def test_a_request_that_chooses_its_fallbacks_keeps_them(self):
+        self.router_proxy([self.complexity_router("auto", self.FOUR_TIERS, "mid")])
+        for data in ({"model": "auto", "fallbacks": []}, {"model": "auto", "fallbacks": None},
+                     {"model": "auto", "fallbacks": ["mid"]}, {"model": "auto", "disable_fallbacks": True},
+                     {"model": "auto", "router_settings_override": {"fallbacks": [{"small": ["mid"]}]}}):
+            with self.subTest(data=data):
+                expected = copy.deepcopy(data)
+                self.assertEqual(self.hooked(data), expected)
+
+    def test_other_models_get_no_fallbacks(self):
+        self.router_proxy([chart_model("small", "a1"), {"model_name": "other-router",
+                                                        "litellm_params": {"model": "auto_router/adaptive_router"}}])
+        for model in ("small", "missing", "other-router", None):
+            with self.subTest(model=model):
+                self.assertNotIn("fallbacks", self.hooked({"model": model}))
+        sys.modules.pop(PROXY_SERVER, None)
+        self.assertNotIn("fallbacks", self.hooked({"model": "auto"}))
+
+    def test_a_router_lookup_that_fails_leaves_the_request_alone(self):
+        class Router:
+            fallbacks = None
+
+            def get_model_list(self, model_name=None):
+                raise RuntimeError("not ready")
+
+        proxy = types.ModuleType(PROXY_SERVER)
+        proxy.llm_router = Router()
+        sys.modules[PROXY_SERVER] = proxy
+        self.assertEqual(self.hooked({"model": "auto"}), {"model": "auto"})
 
     # ----- Copilot routes -----
 

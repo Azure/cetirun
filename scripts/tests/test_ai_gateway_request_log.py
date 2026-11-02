@@ -426,6 +426,42 @@ class RequestLogTest(unittest.TestCase):
         asyncio.run(handler.async_log_success_event(kwargs, None, None, None))
         self.assertEqual(json.loads(handler.stream.getvalue())["call_origin"], "autorouter_classifier")
 
+    def test_a_fallback_records_the_model_the_request_was_for(self):
+        # LiteLLM 1.105.6 keeps these in the call's metadata, chat completions
+        # in metadata, the Responses and Messages APIs in litellm_metadata.
+        handler = self.handler()
+        for bucket in ("metadata", "litellm_metadata"):
+            kwargs = {
+                "standard_logging_object": success_payload(model_group="gpt-4o"),
+                "litellm_params": {bucket: {
+                    "original_model_group": "auto", "attempted_fallbacks": 1,
+                    "previous_models": [{"model_group": "auto", "exception_type": "ServiceUnavailableError",
+                                         "exception_string": "no healthy upstream"}],
+                }},
+            }
+            asyncio.run(handler.async_log_success_event(kwargs, None, None, None))
+        for line in handler.stream.getvalue().splitlines():
+            record = json.loads(line)
+            self.assertEqual(record["model"], "gpt-4o")
+            self.assertEqual(record["fallback_from"], "auto")
+            self.assertEqual(record["attempted_fallbacks"], 1)
+            self.assertEqual(record["fallback_cause"], "ServiceUnavailableError")
+            self.assertNotIn("no healthy upstream", line)
+
+    def test_a_first_attempt_is_no_fallback(self):
+        # LiteLLM records the requested model and no attempt before the first try.
+        handler = self.handler()
+        kwargs = {
+            "standard_logging_object": success_payload(),
+            "litellm_params": {"metadata": {"original_model_group": "auto", "attempted_fallbacks": 0}},
+        }
+        asyncio.run(handler.async_log_success_event(kwargs, None, None, None))
+        asyncio.run(handler.async_log_success_event({"standard_logging_object": success_payload()}, None, None, None))
+        for line in handler.stream.getvalue().splitlines():
+            record = json.loads(line)
+            for name in ("fallback_from", "attempted_fallbacks", "fallback_cause"):
+                self.assertNotIn(name, record)
+
     def test_no_content_setting_remains(self):
         source = (PACKAGE / "request_log.py").read_text(encoding="utf-8")
         self.assertNotIn("CETIRUN_REQUEST_LOG_CONTENT", source)
