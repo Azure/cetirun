@@ -52,9 +52,9 @@ also stops if `istio.meshConfigMap` does not exist but
 Use the available Helm values under the `values` field of each release. The
 helper connects component URLs, namespaces, image coordinates, and identity
 fields from the common inputs. Custom images must have digest-pinned
-`approvedImages`, an explicit model-access mode, and the storage settings whose
-UID/GID behavior you qualified. The publication of an image does not establish
-that qualification.
+`approvedImages` and the storage settings whose UID/GID behavior you qualified.
+Each approved image uses the AI Gateway binding. The publication of an image
+does not establish that qualification.
 
 Configure the logical model `auto` with `auto_router/complexity_router`,
 `classifier_type: jev`, and `jev_classifier_config.deployment_name: decision-1`.
