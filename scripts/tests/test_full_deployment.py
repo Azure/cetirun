@@ -317,6 +317,31 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
                     for private in (marker, "example-context", str(self.root), "{{", "oauth2-proxy.example"):
                         self.assertNotIn(private, message)
 
+    def test_offline_render_names_the_charts_refusal_and_nothing_else(self):
+        config, values = self.configure(self.config)
+        deployment = DEPLOY.Deployment(config, values, self.root)
+        refusal = ("Error: execution error at (cetirun-platform/charts/cetirun-ai-gateway/templates/configmap.yaml:21:4): "
+                   "auto router auto sends requests to elsewhere, which is not a model configured in models.\n"
+                   "Use --debug flag to render out invalid YAML\n")
+        render = ["helm", "template", "cetirun-platform", str(self.root / "app/cetirun-platform"), "--namespace", "cetirun-system",
+                  "--values", str(self.root / "platform-values.json")]
+        with patch.object(DEPLOY.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", refusal)):
+            with self.assertRaises(ValueError) as failure:
+                deployment.run(render)
+            self.assertEqual(str(failure.exception),
+                             "helm template cetirun-platform --namespace cetirun-system failed with exit 1; "
+                             "cetirun-platform/charts/cetirun-ai-gateway/templates/configmap.yaml:21:4: auto router auto "
+                             "sends requests to elsewhere, which is not a model configured in models.; deployment did not complete")
+            # A live Helm or kubectl call keeps its output to itself, a chart refusal included.
+            with self.assertRaises(ValueError) as failure:
+                deployment.helm("upgrade", "--install", "cetirun-platform", str(self.root / "app/cetirun-platform"))
+            self.assertNotIn("elsewhere", str(failure.exception))
+        other = "Error: YAML parse error on cetirun-platform/templates/secret.yaml: sk-synthetic-marker\n"
+        with patch.object(DEPLOY.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", other)):
+            with self.assertRaises(ValueError) as failure:
+                deployment.run(render)
+            self.assertNotIn("sk-synthetic-marker", str(failure.exception))
+
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
 class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
@@ -580,6 +605,12 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         rendered = json.loads(environment["CETIRUN_CUSTOM_RUNTIME"])
         self.assertIs(rendered["enabled"], True)
         self.assertLessEqual(set(rendered), operator_custom_runtime_fields())
+
+    def test_plan_reports_the_gateway_charts_refusal(self):
+        auto = next(model for model in self.config["platform"]["values"]["cetirun-ai-gateway"]["models"] if model["model_name"] == "auto")
+        auto["litellm_params"]["complexity_router_config"]["tiers"]["SIMPLE"] = "elsewhere"
+        with self.assertRaisesRegex(ValueError, r"^helm template cetirun-platform .*auto router auto sends requests to elsewhere"):
+            self.deployment()
 
     def test_cli_reports_a_rollout_failure_as_failure(self):
         deployment = self.deployment()

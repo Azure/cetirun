@@ -49,6 +49,9 @@ REMOVED_CUSTOM_FIELDS = {"agentManagedModel", "gatewayImages"}
 NAMED_OPTIONS = {"--namespace", "--name", "--timeout", "--version", "--dry-run"}
 FLAG_OPTIONS = {"--install", "--ignore-not-found", "--reuse-values", "--skip-refresh", "--minify", "-noout",
                 "--deployed", "--failed", "--pending", "--uninstalling", "--uninstalled", "--superseded"}
+# A chart's own refusal during the offline render, from its fail or required call. Charts
+# word these messages with value names, never with Secret material.
+CHART_REFUSAL = re.compile(r"execution error at \(([^)\n]+)\): ([^\n]+)")
 
 
 def step(command):
@@ -327,7 +330,10 @@ class Deployment:
         result = subprocess.run(command, cwd=ROOT, env=env, input=input_text, text=True, capture_output=True)
         if result.returncode:
             # Name the step, but do not echo Helm-rendered Secrets or external tool response bodies.
-            raise ValueError(f"{step(command)} failed with exit {result.returncode}; deployment did not complete")
+            # Only the offline render reports the chart's own refusal.
+            refusals = CHART_REFUSAL.findall(result.stderr or "") if list(map(str, command[:2])) == ["helm", "template"] else []
+            reason = "".join(f"; {template}: {message.strip()}" for template, message in refusals)
+            raise ValueError(f"{step(command)} failed with exit {result.returncode}{reason}; deployment did not complete")
         return result.stdout
 
     def kubectl(self, *args, input_text=None):
