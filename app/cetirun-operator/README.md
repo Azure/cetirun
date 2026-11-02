@@ -2071,6 +2071,20 @@ objects, and changed ownership, recovery is necessary. Automatic recreation
 does not occur. Similarly, if you change the native type, Secret name, or
 approved chart, an explicit handoff is necessary.
 
+The operator can migrate one known older bootstrap Role in place: the complete
+rule set from before mTLS support, whose Istio rule lacks `destinationrules`.
+It checks the recorded Namespace, Role, and RoleBinding identities, ownership,
+protection, and current bootstrap inputs before and after an optimistic patch.
+Other rule differences remain errors; this is not a general RBAC repair.
+
+If an upgrade left an Agent held with `Sandbox bootstrap operator Role changed`,
+install an operator that includes this migration and let normal reconciliation
+retry. A matching recorded Role is updated without deleting the Agent,
+namespace, HOME, or Gateway key. Agents already held can recover with the same
+budget and spend identity. Do not delete and recreate the Agent, clear
+finalizers, or replace its storage to work around this error. Unrecognized
+rules, missing objects, or changed identities still require reviewed recovery.
+
 Every bootstrap-owned resource has its own finalizer. The reason is that Agent
 finalizers and `blockOwnerDeletion` do not stop the deletion of dependents by
 foreground garbage collection. Also, a namespace finalizer alone does not keep
