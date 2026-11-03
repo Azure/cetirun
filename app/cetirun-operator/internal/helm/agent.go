@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -24,11 +26,12 @@ import (
 // It is removed before values are passed to Helm.
 type AgentRequest struct {
 	agents.Request
-	Registry         string `json:"registry,omitempty"`
-	UIPrefix         string `json:"uiPrefix,omitempty"`
-	TailscaleEnabled bool   `json:"tailscaleEnabled,omitempty"`
-	ReleaseName      string `json:"releaseName,omitempty"`
-	PullSecretName   string `json:"pullSecretName,omitempty"`
+	Registry         string                       `json:"registry,omitempty"`
+	UIPrefix         string                       `json:"uiPrefix,omitempty"`
+	TailscaleEnabled bool                         `json:"tailscaleEnabled,omitempty"`
+	ReleaseName      string                       `json:"releaseName,omitempty"`
+	PullSecretName   string                       `json:"pullSecretName,omitempty"`
+	CetiAdmin        *cetiadmin.RuntimeProjection `json:"cetiadmin,omitempty"`
 }
 
 type PreparedRelease struct {
@@ -39,6 +42,8 @@ type PreparedRelease struct {
 	WorkloadHash          string
 	basePlanHash          string
 	releaseName           string
+	namespace             string
+	maintenance           *maintenanceMode
 	manifestHash          string
 	manifest              []byte
 	sealedInput           string
@@ -131,7 +136,11 @@ func (p *PreparedRelease) Rebuild(input map[string]any) (*PreparedRelease, error
 	if p.sandboxBundle != nil {
 		return nil, fmt.Errorf("Sandbox rebuild requires separately validated user inputs and a current bundle")
 	}
-	return PrepareChart(p.chart, input)
+	prepared, err := PrepareChart(p.chart, input)
+	if err == nil {
+		prepared.namespace = p.namespace
+	}
+	return prepared, err
 }
 
 // PrepareChart is also used by offline rendering tests. It has no Kubernetes or
@@ -148,6 +157,9 @@ func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) 
 	if input["runtime"] != nil {
 		return nil, fmt.Errorf("runtime is reserved for the platform")
 	}
+	if input["cetiadmin"] != nil {
+		return nil, fmt.Errorf("cetiadmin is reserved for the platform")
+	}
 	return prepareRuntimeChart(chrt, input, validateRender)
 }
 
@@ -159,6 +171,31 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	}
 	if err := json.Unmarshal(requestJSON, &request); err != nil {
 		return nil, fmt.Errorf("invalid agent runtime request")
+	}
+	if request.CetiAdmin != nil {
+		if request.Type != "hermes" || input[sandboxworkload.ValuesKey] != nil {
+			return nil, fmt.Errorf("CetiAdmin requires the ordinary Hermes runtime")
+		}
+		if !declaresValuePath(chrt.Values, []string{"cetiadmin", "enabled"}) {
+			return nil, fmt.Errorf("the selected runtime chart does not support CetiAdmin")
+		}
+		if err := request.CetiAdmin.Validate(); err != nil {
+			return nil, err
+		}
+		copy := make(map[string]any, len(input)+1)
+		for key, value := range input {
+			copy[key] = value
+		}
+		encoded, err := json.Marshal(request.CetiAdmin)
+		if err != nil {
+			return nil, err
+		}
+		var projection map[string]any
+		if err := json.Unmarshal(encoded, &projection); err != nil {
+			return nil, err
+		}
+		copy["cetiadmin"] = projection
+		input = copy
 	}
 	if request.PullSecretName != "" && chrt.Metadata.Annotations["cetirun.microsoft.com/registry-credentials"] != "v1" {
 		return nil, fmt.Errorf("the selected chart does not support managed registry credentials; upgrade the pinned chart first")
@@ -210,6 +247,39 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	secrets := object(values["secrets"])
 	native := object(values[descriptor.Type])
 	config := object(native["config"])
+	if request.CetiAdmin != nil {
+		projection := request.CetiAdmin
+		values["serviceAccount"] = map[string]any{"create": false, "name": projection.ServiceAccountName, "role": "", "automountToken": false}
+		values["azureWorkloadIdentity"] = map[string]any{"enabled": projection.AzureWorkloadIdentity.Enabled, "clientId": projection.AzureWorkloadIdentity.ClientID}
+		if object(values["connectionsMCP"])["enabled"] == true && text(object(values["connectionsMCP"])["audience"]) == projection.Kubernetes.APIAudience {
+			return nil, fmt.Errorf("CetiAdmin Kubernetes and MCP audiences must differ")
+		}
+		skillConfig := ensureObject(config, "skills")
+		directories := array(skillConfig["external_dirs"])
+		const legacySharedPath = "/home/vibe/.aks/skills"
+		shared := object(values["skills"])
+		explicit := array(object(object(object(input[descriptor.Type])["config"])["skills"])["external_dirs"])
+		if (shared["shared"] != true || text(shared["mountPath"]) != legacySharedPath) && !slices.Contains(explicit, any(legacySharedPath)) {
+			// The chart's legacy default is not a source when its alias is unmounted.
+			kept := make([]any, 0, len(directories))
+			for _, directory := range directories {
+				if directory != legacySharedPath {
+					kept = append(kept, directory)
+				}
+			}
+			directories = kept
+		}
+		found := false
+		for _, directory := range directories {
+			if directory == cetiadmin.AssetsMountPath+"/skills" {
+				found = true
+			}
+		}
+		if !found {
+			directories = append(directories, cetiadmin.AssetsMountPath+"/skills")
+		}
+		skillConfig["external_dirs"] = directories
+	}
 	if descriptor.PreserveUIPrefix {
 		gateway := ensureObject(config, "gateway")
 		gateway["port"] = *resolved.Port
@@ -248,6 +318,10 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 			ContextWindow: integer(model["contextWindow"]), MaxTokens: integer(model["maxTokens"]),
 		})
 	}
+	var visionModels []string
+	for _, item := range array(gateway["visionModels"]) {
+		visionModels = append(visionModels, text(item))
+	}
 	bindings := agents.Bindings{
 		MemoryEnabled:     (values[sandboxworkload.ValuesKey] == nil || object(values[sandboxworkload.ValuesKey])["reconciled"] == true) && object(values["memoryContext"])["enabled"] == true,
 		DesktopEnabled:    object(values["desktop"])["enabled"] == true,
@@ -259,13 +333,14 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		ReconciledSandbox: object(values[sandboxworkload.ValuesKey])["reconciled"] == true,
 		ConnectionsMCP:    agents.ConnectionsMCPBinding{Enabled: object(values["connectionsMCP"])["enabled"] == true, URL: text(object(values["connectionsMCP"])["url"])},
 		Model: agents.ModelBinding{
-			Provider:      provider,
-			Name:          text(secrets["model"]),
-			BaseURL:       text(secrets["apiBase"]),
-			AuthMode:      text(secrets["authMode"]),
-			Gateway:       gateway["enabled"] == true,
-			GatewayModels: gatewayModels,
-			GatewayKeyEnv: text(object(gateway["hermes"])["keyEnv"]),
+			Provider:            provider,
+			Name:                text(secrets["model"]),
+			BaseURL:             text(secrets["apiBase"]),
+			AuthMode:            text(secrets["authMode"]),
+			Gateway:             gateway["enabled"] == true,
+			GatewayModels:       gatewayModels,
+			GatewayKeyEnv:       text(object(gateway["hermes"])["keyEnv"]),
+			GatewayVisionModels: visionModels,
 		},
 		Skills: agents.SkillsBinding{
 			Shared:    skills["shared"] == true,
@@ -328,6 +403,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		Values:       values,
 		Agent:        resolved,
 		ChartVersion: chrt.Metadata.Version,
+		releaseName:  request.ReleaseName,
 		chart:        chrt,
 	}, nil
 }

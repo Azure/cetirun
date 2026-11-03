@@ -7,11 +7,13 @@ statement that a particular deployment was inspected. It is also not a promise
 about third-party services or a substitute for the operator's own privacy
 notice.
 
-**The default configuration can collect conversation content in container logs.**
-The agent chart enables the session logger. The infrastructure templates enable
-Container Insights and managed Prometheus configuration. Before you allow
-sensitive workloads, examine these settings. There is no single CetiRun setting
-that disables logging, telemetry, and network activity across every component.
+**The default configuration can collect conversation content in container logs
+and in the AI Gateway's database.** The agent chart enables the session logger.
+The infrastructure templates enable Container Insights and managed Prometheus
+configuration. The AI Gateway keeps the request and the response of each model
+call in its database for seven days. Before you allow sensitive workloads,
+examine these settings. There is no single CetiRun setting that disables
+logging, telemetry, and network activity across every component.
 
 ## Data processed by CetiRun
 
@@ -19,7 +21,7 @@ that disables logging, telemetry, and network activity across every component.
 | --- | --- | --- |
 | Portal and sign-in | User alias, preferred username, display name, email claims, group authorization, and administrator status. These items are used to identify users and authorize access. | Browser, OAuth2 Proxy/identity provider, portal request context, and application logs. Instance ownership/profile fields are also stored in Kubernetes resources. |
 | Workspace management | Instance and team names, owner alias, model selection, profile information, configuration, status, events, and resource identifiers | Portal, operator, Kubernetes API objects, Helm release state, and operational logs |
-| Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and workspace storage. Configured model, tool, and channel services. Possibly container logs. |
+| Agent activity | Prompts, responses, files, tool arguments/results, session history, and user/team context | Agent process and workspace storage. Configured model, tool, and channel services. The AI Gateway's database, for seven days by default. Possibly container logs. |
 | Authentication material | Gateway/API keys, provider credentials, OAuth device-flow state, and optional Tailscale credentials | Kubernetes Secrets, mounted configuration, agent home files, process memory, and the services that authenticate them |
 | Browser and terminal | Commands/output, visited pages, downloads, screenshots, browsing history, and browser login state | Workspace processes and storage. Websites or services that the browser/tools contact. Terminal/desktop streams that go to the user. |
 
@@ -96,7 +98,20 @@ and Team. Unless `spendLogs.enabled` is `false`, the database also keeps
 LiteLLM's own record of each call in `LiteLLM_SpendLogs`. The recorded calls
 also include health-check probes. Each record contains the call's metadata, for
 example the key, user, Team, model, token counts, spend, timing, and the error
-of a failed call. It does not contain the prompt or response of the call.
+of a failed call.
+
+By default (`spendLogs.storePrompts: true`), each record also contains the
+request and the response of the call. These include the messages, images,
+tool calls, and tool results that an Agent sends, and the model's answer.
+LiteLLM shortens each value that is longer than 2,048 characters, and keeps its
+start and its end. As a result, a long message or an image is stored only in
+part. The Gateway console's request log pages show these records. Anyone who
+can sign in to the console, use the Gateway's master key, or read its database
+or its backups can read them.
+
+With `spendLogs.storePrompts: false`, each record contains only the metadata.
+This setting does not remove the content of records that are already stored.
+A `general_settings` block that is saved in the console can override it.
 
 When these rows and the stored health-check results are older than
 `spendLogs.retention`, LiteLLM deletes them. The default value is seven days,
@@ -106,7 +121,9 @@ Source: [Gateway chart defaults](app/cetirun-ai-gateway/chart/values.yaml),
 [platform chart defaults](app/cetirun-platform/values.yaml),
 [request log callback](app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py),
 the [entrypoint that registers it](app/cetirun-ai-gateway/entrypoint.py),
-and [LiteLLM configuration](app/cetirun-ai-gateway/chart/templates/configmap.yaml).
+[LiteLLM configuration](app/cetirun-ai-gateway/chart/templates/configmap.yaml),
+and the Gateway chart's
+[spend log section](app/cetirun-ai-gateway/chart/README.md#litellms-spend-log).
 
 ### Infrastructure collection and traffic metadata
 

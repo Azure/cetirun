@@ -34,7 +34,10 @@ func (h *Handler) creationTeam(request admission.Request, agent *api.Agent) (str
 	return assigned, assigned, nil
 }
 
-func (h *Handler) memberAuthority(request admission.Request, agent *api.Agent) error {
+func (h *Handler) memberAuthority(ctx context.Context, request admission.Request, agent *api.Agent) error {
+	if h.cetiAdminMember(ctx, request) {
+		return nil
+	}
 	assigned, err := h.config.assignedTeam(request.UserInfo)
 	if err != nil {
 		return err
@@ -67,7 +70,7 @@ func (h *Handler) defaultAgentCreation(ctx context.Context, request admission.Re
 		return admission.Patched("legacy Agent; preserve any trusted Team assignment", patches...)
 	}
 	if !h.config.administrator(request.UserInfo) {
-		if err := h.memberAuthority(request, desired); err != nil {
+		if err := h.memberAuthority(ctx, request, desired); err != nil {
 			return admission.Denied(err.Error())
 		}
 	}

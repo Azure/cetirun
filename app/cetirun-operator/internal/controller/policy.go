@@ -205,6 +205,40 @@ func isPolicyDependencyError(err error) bool {
 	return errors.As(err, &dependency)
 }
 
+func (r *AgentReconciler) verifyTeamAcceptance(ctx context.Context, team *api.Team) error {
+	accepted := meta.FindStatusCondition(team.Status.Conditions, api.ConditionTeamAccepted)
+	if team.Status.ObservedGeneration != team.Generation {
+		config := r.SandboxPreparation
+		if config == nil || !config.NativeExecution || config.Configuration == nil ||
+			accepted == nil || accepted.Status != metav1.ConditionTrue ||
+			accepted.ObservedGeneration != team.Status.ObservedGeneration ||
+			team.Status.ObservedGeneration <= 0 || team.Status.ObservedGeneration >= team.Generation ||
+			!team.DeletionTimestamp.IsZero() {
+			return policyDependency("Team observation is pending for generation %d", team.Generation)
+		}
+		// Router edits can precede their status observation. Recheck the same
+		// bindings as the Team controller; execution digests still fence changes.
+		assessor := &TeamReconciler{APIReader: configurationReader(r.APIReader, r.Client)}
+		if err := assessor.validate(ctx, team); err != nil {
+			return policyDependency("reassess pending Team: %w", err)
+		}
+		return nil
+	}
+	if accepted == nil {
+		return policyDependency("Team acceptance observation is unavailable")
+	}
+	if accepted.ObservedGeneration != team.Generation || accepted.Status == metav1.ConditionUnknown {
+		return policyDependency("Team acceptance observation is unavailable for generation %d", team.Generation)
+	}
+	if accepted.Status == metav1.ConditionFalse {
+		return fmt.Errorf("Team policy assignment is not accepted")
+	}
+	if accepted.Status != metav1.ConditionTrue {
+		return policyDependency("Team acceptance observation has an unrecognized status")
+	}
+	return nil
+}
+
 func (r *AgentReconciler) verifyPolicyAcceptance(ctx context.Context, policy *api.AgentPolicy) error {
 	accepted := meta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
 	if policy.Status.ObservedGeneration != policy.Generation {
@@ -262,21 +296,8 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if team.Spec.DefaultSandboxRef == "" || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) || !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef) {
 		return nil, fmt.Errorf("Agent Sandbox is not permitted by the current Team")
 	}
-	if team.Status.ObservedGeneration != team.Generation {
-		return nil, policyDependency("Team observation is pending for generation %d", team.Generation)
-	}
-	teamAccepted := meta.FindStatusCondition(team.Status.Conditions, api.ConditionTeamAccepted)
-	if teamAccepted == nil {
-		return nil, policyDependency("Team acceptance observation is unavailable")
-	}
-	if teamAccepted.ObservedGeneration != team.Generation || teamAccepted.Status == metav1.ConditionUnknown {
-		return nil, policyDependency("Team acceptance observation is unavailable for generation %d", team.Generation)
-	}
-	if teamAccepted.Status == metav1.ConditionFalse {
-		return nil, fmt.Errorf("Team policy assignment is not accepted")
-	}
-	if teamAccepted.Status != metav1.ConditionTrue {
-		return nil, policyDependency("Team acceptance observation has an unrecognized status")
+	if err := r.verifyTeamAcceptance(ctx, team); err != nil {
+		return nil, err
 	}
 	policyRef := team.Spec.AgentPolicyRef
 	if policyRef == "" {

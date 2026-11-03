@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,13 @@ SPEC = importlib.util.spec_from_file_location("full_deployment", ROOT / "scripts
 DEPLOY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DEPLOY)
 FIXTURE = ROOT / "app/cetirun-platform/ci/deployment-example.yaml"
+
+
+def operator_custom_runtime_fields():
+    """Return the JSON fields that the Operator's strict customRuntime parser accepts."""
+    source = (ROOT / "app/cetirun-operator/internal/controller/custom_provider.go").read_text()
+    body = re.search(r"type CustomRuntimeConfig struct \{(.*?)\n\}", source, re.S)[1]
+    return set(re.findall(r'json:"([^",]+)', body))
 
 
 class SyntheticCluster(DEPLOY.Deployment):
@@ -208,6 +216,7 @@ class DeploymentFixture:
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.config = yaml.safe_load(FIXTURE.read_text())
+        self.config["platform"]["values"]["cetirun-operator"]["cetiadmin"] = {"enabled": False}
 
     def deployment(self, config=None, name="charts"):
         path = self.root / ("environment.json" if name == "charts" else f"{name}.json")
@@ -225,6 +234,36 @@ class DeploymentFixture:
 
 
 class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
+    def test_current_custom_config_does_not_require_retired_model_fields(self):
+        config = copy.deepcopy(self.config)
+        custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
+        custom.pop("agentManagedModel", None)
+        custom.pop("gatewayImages", None)
+        before = copy.deepcopy(config)
+        with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("configuration ran a command")):
+            _, values = self.configure(config)
+        emitted = values["platform"]["cetirun-operator"]["customRuntime"]
+        self.assertEqual(set(emitted), {
+            "enabled", "approvedImages", "imageUsers", "storageClass", "storageSize",
+            "accessMode", "fsGroup", "context",
+        })
+        self.assertTrue(emitted["enabled"])
+        self.assertEqual(emitted["approvedImages"], custom["approvedImages"])
+        self.assertEqual(config, before)
+
+    def test_retired_custom_model_fields_fail_before_external_commands(self):
+        for field, value in (("agentManagedModel", False), ("agentManagedModel", True),
+                             ("gatewayImages", ["registry.example.com/approved@sha256:" + "a" * 64])):
+            with self.subTest(field=field, value=value):
+                config = copy.deepcopy(self.config)
+                custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
+                custom.pop("agentManagedModel", None)
+                custom.pop("gatewayImages", None)
+                custom[field] = value
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("configuration ran a command")):
+                    with self.assertRaisesRegex(ValueError, f"Remove customRuntime.{field} from the environment file"):
+                        self.configure(config)
+
     def test_invalid_yaml_does_not_echo_credentials(self):
         marker = "sk-synthetic-marker"
         path = self.root / "malformed.yaml"
@@ -241,10 +280,12 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         marker = "sk-rendered-marker"
         with self.assertRaises(yaml.YAMLError) as failure:
             yaml.safe_load("api_key: '" + marker)
+        fixture = self.root / "explicit-disabled.json"
+        fixture.write_text(json.dumps(self.config))
         with patch.object(DEPLOY.Deployment, "render", side_effect=failure.exception), \
                 patch("sys.stdout", new_callable=io.StringIO) as stdout, \
                 patch("sys.stderr", new_callable=io.StringIO) as stderr:
-            self.assertEqual(DEPLOY.main(["--config", str(FIXTURE), "--plan"]), 1)
+            self.assertEqual(DEPLOY.main(["--config", str(fixture), "--plan"]), 1)
         self.assertNotIn(marker, stdout.getvalue() + stderr.getvalue())
         self.assertIn("YAML", stderr.getvalue())
 
@@ -266,9 +307,93 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         self.assertIn("target.context", result.stderr)
         self.assertNotIn("ready", result.stdout)
 
+    def test_custom_runtime_fields_unknown_to_the_operator_stop_before_tools(self):
+        image = self.config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"][0]
+        for field, value, removed in (("agentManagedModel", True, True), ("gatewayImages", [image], True),
+                                      ("imageAllowlist", [image], False)):
+            with self.subTest(field=field):
+                config = copy.deepcopy(self.config)
+                config["platform"]["values"]["cetirun-operator"]["customRuntime"][field] = value
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                    with self.assertRaisesRegex(ValueError, f"Remove customRuntime.{field} from the environment file") as failure:
+                        self.configure(config)
+                self.assertEqual("AI Gateway" in str(failure.exception), removed)
+
+    def test_operator_chart_custom_runtime_has_only_fields_the_operator_accepts(self):
+        chart = yaml.safe_load((ROOT / "app/cetirun-operator/chart/values.yaml").read_text())["customRuntime"]
+        self.assertLessEqual(set(chart), operator_custom_runtime_fields())
+
+    def test_failed_command_names_the_step_without_output_files_or_context(self):
+        config, values = self.configure(self.config)
+        deployment = DEPLOY.Deployment(config, values, self.root)
+        marker = "synthetic-tool-output"
+        helper = [sys.executable, "-B", str(ROOT / "scripts/ensure-oauth2-proxy-id-token-header.py"), "--context", "example-context",
+                  "--namespace", "aks-istio-system", "--name", "istio-shared-configmap-asm-example", "--service", "oauth2-proxy.example"]
+        cases = (
+            (lambda: deployment.kubectl("rollout", "status", "deployment/cetirun-operator", "--namespace", "cetirun-system", "--timeout=600s"),
+             "kubectl rollout status deployment/cetirun-operator --namespace cetirun-system --timeout=600s failed with exit 1;"),
+            (lambda: deployment.kubectl("get", "secret", "gateway-provider-keys", "--namespace", "cetirun-system", "-o", "go-template={{.data}}"),
+             "kubectl get secret gateway-provider-keys --namespace cetirun-system failed with exit 1;"),
+            (lambda: deployment.helm("upgrade", "--install", "cetirun-platform", str(self.root / "app/cetirun-platform"), "--namespace",
+                                     "cetirun-system", "--values", str(self.root / "platform-values.json"), "--timeout", "10m"),
+             "helm upgrade cetirun-platform --namespace cetirun-system --timeout 10m failed with exit 1;"),
+            (lambda: deployment.run(helper),
+             "ensure-oauth2-proxy-id-token-header.py --namespace aks-istio-system --name istio-shared-configmap-asm-example failed with exit 1;"),
+        )
+        with patch.object(DEPLOY.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, marker, marker)):
+            for call, expected in cases:
+                with self.subTest(expected=expected):
+                    with self.assertRaises(ValueError) as failure:
+                        call()
+                    message = str(failure.exception)
+                    self.assertTrue(message.startswith(expected), message)
+                    for private in (marker, "example-context", str(self.root), "{{", "oauth2-proxy.example"):
+                        self.assertNotIn(private, message)
+
+    def test_offline_render_names_the_charts_refusal_and_nothing_else(self):
+        config, values = self.configure(self.config)
+        deployment = DEPLOY.Deployment(config, values, self.root)
+        refusal = ("Error: execution error at (cetirun-platform/charts/cetirun-ai-gateway/templates/configmap.yaml:21:4): "
+                   "auto router auto sends requests to elsewhere, which is not a model configured in models.\n"
+                   "Use --debug flag to render out invalid YAML\n")
+        render = ["helm", "template", "cetirun-platform", str(self.root / "app/cetirun-platform"), "--namespace", "cetirun-system",
+                  "--values", str(self.root / "platform-values.json")]
+        with patch.object(DEPLOY.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", refusal)):
+            with self.assertRaises(ValueError) as failure:
+                deployment.run(render)
+            self.assertEqual(str(failure.exception),
+                             "helm template cetirun-platform --namespace cetirun-system failed with exit 1; "
+                             "cetirun-platform/charts/cetirun-ai-gateway/templates/configmap.yaml:21:4: auto router auto "
+                             "sends requests to elsewhere, which is not a model configured in models.; deployment did not complete")
+            # A live Helm or kubectl call keeps its output to itself, a chart refusal included.
+            with self.assertRaises(ValueError) as failure:
+                deployment.helm("upgrade", "--install", "cetirun-platform", str(self.root / "app/cetirun-platform"))
+            self.assertNotIn("elsewhere", str(failure.exception))
+        other = "Error: YAML parse error on cetirun-platform/templates/secret.yaml: sk-synthetic-marker\n"
+        with patch.object(DEPLOY.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", other)):
+            with self.assertRaises(ValueError) as failure:
+                deployment.run(render)
+            self.assertNotIn("sk-synthetic-marker", str(failure.exception))
+
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
 class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
+
+    def test_rendered_operator_custom_config_matches_current_inputs(self):
+        config = copy.deepcopy(self.config)
+        custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
+        custom.pop("agentManagedModel", None)
+        custom.pop("gatewayImages", None)
+        deployment = self.deployment(config)
+        operator = next(document for document in deployment.documents["platform"]
+                        if document["kind"] == "Deployment" and document["metadata"]["name"] == "cetirun-operator")
+        manager = next(container for container in operator["spec"]["template"]["spec"]["containers"]
+                       if container["name"] == "manager")
+        raw = next(item["value"] for item in manager["env"] if item["name"] == "CETIRUN_CUSTOM_RUNTIME")
+        self.assertEqual(json.loads(raw), deployment.values["platform"]["cetirun-operator"]["customRuntime"])
+        self.assertNotIn("agentManagedModel", json.loads(raw))
+        self.assertNotIn("gatewayImages", json.loads(raw))
+        self.assertFalse(deployment.writes)
 
     def test_plan_omits_credential_references_and_extra_input_fields(self):
         marker = "private-provider-reference"
@@ -520,6 +645,22 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicts with the complete deployment"):
             self.deployment()
 
+    def test_rendered_custom_runtime_has_only_fields_the_operator_accepts(self):
+        deployment = self.deployment()
+        operator = next(doc for doc in deployment.documents["platform"]
+                        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "cetirun-operator")
+        environment = {item["name"]: item.get("value") for container in operator["spec"]["template"]["spec"]["containers"]
+                       for item in container.get("env", [])}
+        rendered = json.loads(environment["CETIRUN_CUSTOM_RUNTIME"])
+        self.assertIs(rendered["enabled"], True)
+        self.assertLessEqual(set(rendered), operator_custom_runtime_fields())
+
+    def test_plan_reports_the_gateway_charts_refusal(self):
+        auto = next(model for model in self.config["platform"]["values"]["cetirun-ai-gateway"]["models"] if model["model_name"] == "auto")
+        auto["litellm_params"]["complexity_router_config"]["tiers"]["SIMPLE"] = "elsewhere"
+        with self.assertRaisesRegex(ValueError, r"^helm template cetirun-platform .*auto router auto sends requests to elsewhere"):
+            self.deployment()
+
     def test_cli_reports_a_rollout_failure_as_failure(self):
         deployment = self.deployment()
         deployment.fail = "rollout status deployment/cetirun-agent-broker"
@@ -601,21 +742,21 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "conflicts with the complete deployment"):
                         self.configure(config)
 
-    def test_decision_accepts_both_metadata_forms_and_optional_api_version(self):
-        for base_model in ("Microsoft-Decision-1", "azure_ai/Microsoft-Decision-1"):
-            for api_version in (None, "2024-05-01-preview"):
-                with self.subTest(base_model=base_model, api_version=api_version):
-                    config = copy.deepcopy(self.config)
-                    model = config["platform"]["values"]["cetirun-ai-gateway"]["models"][2]
-                    model["model_info"]["base_model"] = base_model
-                    model["litellm_params"].pop("api_version")
-                    if api_version:
-                        model["litellm_params"]["api_version"] = api_version
-                    _, values = self.configure(config)
-                    self.assertEqual(values["platform"]["cetirun-ai-gateway"]["models"][2], model)
+    def test_decision_accepts_the_priced_base_model_and_optional_api_version(self):
+        for api_version in (None, "2024-05-01-preview"):
+            with self.subTest(api_version=api_version):
+                config = copy.deepcopy(self.config)
+                model = config["platform"]["values"]["cetirun-ai-gateway"]["models"][2]
+                self.assertEqual(model["model_info"]["base_model"], "azure_ai/Microsoft-Decision-1")
+                model["litellm_params"].pop("api_version")
+                if api_version:
+                    model["litellm_params"]["api_version"] = api_version
+                _, values = self.configure(config)
+                self.assertEqual(values["platform"]["cetirun-ai-gateway"]["models"][2], model)
 
     def test_decision_rejects_wrong_model_or_missing_provider_inputs(self):
-        for field, value in (("model_info.base_model", "azure_ai/Other-Model"), ("model_info.mode", "chat"),
+        for field, value in (("model_info.base_model", "azure_ai/Other-Model"), ("model_info.base_model", "Microsoft-Decision-1"),
+                             ("model_info.mode", "chat"),
                              ("litellm_params.model", "azure_ai/"), ("litellm_params.api_base", ""),
                              ("litellm_params.api_key", ""), ("litellm_params.api_key", "os.environ/"),
                              ("litellm_params.api_version", False)):
@@ -959,7 +1100,11 @@ class PublicTLSPreflightTests(unittest.TestCase):
     def deployment(self, name):
         directory = self.directory / name
         directory.mkdir()
-        config, values = DEPLOY.configuration(FIXTURE)
+        fixture = yaml.safe_load(FIXTURE.read_text())
+        fixture["platform"]["values"]["cetirun-operator"]["cetiadmin"] = {"enabled": False}
+        path = directory / "environment.json"
+        path.write_text(json.dumps(fixture))
+        config, values = DEPLOY.configuration(path)
         deployment = SyntheticCluster(config, values, directory / "charts")
         deployment.render()
         deployment.seed_references()

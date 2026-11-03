@@ -154,6 +154,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	// decision is false for a name once one of its shared deployments is not
 	// a decision model.
 	decision := map[string]bool{}
+	// vision is false for a name once one of its shared deployments does not
+	// accept images.
+	vision := map[string]bool{}
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
 		for _, group := range deployment.AccessGroups {
@@ -198,10 +201,27 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		if isDecision, seen := decision[deployment.ModelName]; !seen || isDecision {
 			decision[deployment.ModelName] = aigateway.DecisionModel(deployment.Mode)
 		}
+		// A request for the name may reach any deployment behind it, so the
+		// name accepts images only when every one of them does.
+		if accepts, seen := vision[deployment.ModelName]; !seen || accepts {
+			vision[deployment.ModelName] = deployment.Vision
+		}
 		if policyBoundShared {
 			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
 		}
 	}
+	// Only shared routers are granted by the shared-router rule; the
+	// operator's own Team routers are not shared models.
+	maps.DeleteFunc(routers, func(name string, _ aigateway.Router) bool {
+		_, isShared := byName[name]
+		return !isShared
+	})
+	for name, model := range byName {
+		model.Vision = vision[name]
+		byName[name] = model
+	}
+	fillRouterLimits(byName, routers)
+	fillRouterVision(byName, routers)
 	shared := make([]aiGatewayCatalogModel, 0, len(byName))
 	nonChat := map[string]bool{}
 	for name, model := range byName {
@@ -217,12 +237,6 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		slices.Sort(groups)
 		modelGroups[name] = slices.Compact(groups)
 	}
-	// Only shared routers are granted by the shared-router rule; the
-	// operator's own Team routers are not shared models.
-	maps.DeleteFunc(routers, func(name string, _ aigateway.Router) bool {
-		_, isShared := byName[name]
-		return !isShared
-	})
 	fingerprint := aiGatewayCatalogFingerprint(modelGroups)
 	routerFingerprint := aiGatewayRouterFingerprint(routers)
 	c.mu.Lock()
@@ -368,7 +382,8 @@ func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel, decision []strin
 	c.sharedSet, c.seeded = make([]aiGatewayCatalogModel, len(shared)), true
 	for i, model := range shared {
 		// Router models are published for the Portal; the listing supplies them here.
-		c.sharedSet[i] = aiGatewayCatalogModel{Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens}
+		c.sharedSet[i] = aiGatewayCatalogModel{Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens,
+			Vision: model.Vision}
 	}
 	// A decision model is a shared model no Agent is configured with. Seeded
 	// as one, it stays out of the Agents' models, a catalog published again
@@ -406,6 +421,81 @@ func aiGatewaySharedModelUsable(name string) bool {
 	lower := strings.ToLower(name)
 	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(lower, "cetirun-") &&
 		!strings.HasPrefix(lower, aiGatewayCopilotModelPrefix)
+}
+
+// fillRouterLimits gives each shared router that states no limit of its own
+// the smallest limit among the models it sends requests to answer: its tier
+// models and its default model. An Agent configured with these limits sizes
+// each request to fit whichever of those models the router picks, as for a
+// Team's router (modelRouterLimits). Without them, the Agent took its own
+// default, which can be larger than a tier's model. The limits in the
+// router's own model_info, set by the administrator, are kept. A model whose
+// limits the Gateway does not report, a model that is itself a router, the
+// classifier and the context compaction model do not count. A router whose
+// configuration the operator cannot read completely gets no limits: it may
+// send requests to models the operator does not know.
+func fillRouterLimits(models map[string]aiGatewayCatalogModel, routers map[string]aigateway.Router) {
+	for name, router := range routers {
+		model, ok := models[name]
+		if !ok || router.Unverifiable != "" || (model.ContextWindow > 0 && model.MaxOutputTokens > 0) {
+			continue
+		}
+		var contextWindow, maxTokens int64
+		for _, used := range router.Models {
+			if used.Use != aigateway.RouterTier && used.Use != aigateway.RouterDefault {
+				continue
+			}
+			if _, isRouter := routers[used.Name]; isRouter {
+				continue
+			}
+			limits := models[used.Name]
+			contextWindow = smallerPositive(contextWindow, limits.ContextWindow)
+			maxTokens = smallerPositive(maxTokens, limits.MaxOutputTokens)
+		}
+		if model.ContextWindow <= 0 {
+			model.ContextWindow = contextWindow
+		}
+		if model.MaxOutputTokens <= 0 {
+			model.MaxOutputTokens = maxTokens
+		}
+		models[name] = model
+	}
+}
+
+// fillRouterVision decides whether each shared router accepts images: only
+// when every model it sends requests to answer does, its tier models, its
+// default model and its context compaction model, which reads the
+// conversation, images included. By default a router does not look at images
+// when it picks a model (LiteLLM's modality_routing is off), so a request
+// with images can reach any of them, and a model that refuses images fails
+// the request. A router whose configuration the operator cannot read
+// completely, or that sends requests to a model that is a router itself or
+// not a shared model, does not. The router's own model info is not read:
+// LiteLLM reports nothing there for a router.
+func fillRouterVision(models map[string]aiGatewayCatalogModel, routers map[string]aigateway.Router) {
+	// The models' own values, before any router's is decided.
+	accepts := make(map[string]bool, len(models))
+	for name, model := range models {
+		_, isRouter := routers[name]
+		accepts[name] = model.Vision && !isRouter
+	}
+	for name, router := range routers {
+		model, ok := models[name]
+		if !ok {
+			continue
+		}
+		vision := router.Unverifiable == ""
+		answers := false
+		for _, used := range router.Models {
+			if used.Use == aigateway.RouterClassifier {
+				continue
+			}
+			answers = true
+			vision = vision && accepts[used.Name]
+		}
+		model.Vision = vision && answers
+		models[name] = model
+	}
 }
 
 func smallerPositive(current, next int64) int64 {
@@ -915,5 +1005,5 @@ func (r *AgentReconciler) notifyAIGatewayAgents(ctx context.Context, after strin
 // sameCatalogModel compares two shared models of the operator's own view.
 func sameCatalogModel(a, b aiGatewayCatalogModel) bool {
 	return a.Name == b.Name && a.ContextWindow == b.ContextWindow && a.MaxOutputTokens == b.MaxOutputTokens &&
-		slices.Equal(a.RouterModels, b.RouterModels) && a.RouterUnverifiable == b.RouterUnverifiable
+		slices.Equal(a.RouterModels, b.RouterModels) && a.RouterUnverifiable == b.RouterUnverifiable && a.Vision == b.Vision
 }

@@ -8,8 +8,11 @@ import base64
 from collections import Counter
 import copy
 from datetime import datetime, timezone
+import hashlib
 import importlib.util
+import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -17,6 +20,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
+from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -41,6 +47,57 @@ AGENT_POLICY_MARKERS = (
     '{{range $key,$value := .metadata.annotations}}{{if or (eq $key "cetirun.microsoft.com/sandbox-authorization") '
     '(eq $key "cetirun.microsoft.com/sandbox-reauthorize")}}protected{{end}}{{end}}'
 )
+CETIADMIN_SOURCE = "cetirun-cetiadmin-config"
+CETIADMIN_SOURCE_UID = "cetirun.microsoft.com/cetiadmin-source-uid"
+CETIADMIN_FIELDS = {
+    "owner": {"alias", "tenantID", "objectID"},
+    "kubernetes": {"apiServer", "apiAudience", "caConfigMapName", "apiEgressCIDRs"},
+    "model": {"default", "initialMonthlyBudgetUSD", "githubCopilot"},
+    "runtime": {"version", "image", "port"},
+    "azureWorkloadIdentity": {"enabled", "clientId"},
+    "sharedSkills": {"enabled"},
+    "monitor": {"enabled", "schedule", "timezone", "deliver", "slackChannel", "slackSecretName"},
+}
+CETIADMIN_AGENT_FIELDS = ("spec.suspended", "status.phase", "status.accessUrl", "spec.helm.maintenance", "status.helmMaintenance")
+CETIADMIN_WRITER_FIELDS = {
+    "pods": ("metadata.uid", "metadata.deletionTimestamp", "status.phase"),
+    "statefulsets": ("metadata.uid", "spec.replicas", "status.replicas"),
+    "deployments": ("metadata.uid", "spec.replicas", "status.replicas"),
+    "replicasets": ("metadata.uid", "spec.replicas", "status.replicas"),
+    "daemonsets": ("metadata.uid",),
+    "jobs": ("metadata.uid", "status.active", "status.conditions"),
+    "cronjobs": ("metadata.uid", "spec.suspend", "status.active[*].uid"),
+}
+# The Operator reads customRuntime strictly and stops at startup on a field it does not know.
+OPERATOR_VALUES = ROOT / "app/cetirun-operator/chart/values.yaml"
+REMOVED_CUSTOM_FIELDS = {"agentManagedModel", "gatewayImages"}
+# An error names a failed command by its tool, its operands and these options. Other option
+# values can be templates or local files. Tool output can hold rendered Secrets, so it is not shown.
+NAMED_OPTIONS = {"--namespace", "--name", "--timeout", "--version", "--dry-run"}
+FLAG_OPTIONS = {"--install", "--ignore-not-found", "--reuse-values", "--skip-refresh", "--minify", "-noout",
+                "--deployed", "--failed", "--pending", "--uninstalling", "--uninstalled", "--superseded"}
+# A chart's own refusal during the offline render, from its fail or required call. Charts
+# word these messages with value names, never with Secret material.
+CHART_REFUSAL = re.compile(r"execution error at \(([^)\n]+)\): ([^\n]+)")
+
+
+def step(command):
+    """Name a command for an error message, without its output, local files or templates."""
+    words = [str(word) for word in command]
+    while words[0] == sys.executable or words[0].startswith("-"):
+        words = words[1:]
+    if words[1:2] in (["--context"], ["--kube-context"]):
+        words = words[:1] + words[3:]
+    shown, rest = [Path(words[0]).name], iter(words[1:])
+    for word in rest:
+        if word.split("=", 1)[0] in NAMED_OPTIONS:
+            shown.append(word if "=" in word else f"{word} {next(rest, '')}".rstrip())
+        elif word.startswith("-"):
+            if "=" not in word and word not in FLAG_OPTIONS:
+                next(rest, None)
+        elif not Path(word).is_absolute():
+            shown.append(word)
+    return " ".join(shown)
 
 
 def load_helper(filename):
@@ -103,6 +160,232 @@ def yaml_file(path):
     return mapping(yaml.load(path.read_text(), Loader=MESH.UniqueKeyLoader), str(path))
 
 
+def resource_name(value, *, label=False, limit=253):
+    return (isinstance(value, str) and 0 < len(value) <= limit
+            and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part)
+                    for part in value.split(".")) and (not label or "." not in value))
+
+
+def object_uid(value):
+    return isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value))
+
+
+def nonzero_uuid(value):
+    try:
+        return isinstance(value, str) and str(UUID(value)).lower() == value.lower() and UUID(value).int != 0
+    except (ValueError, AttributeError):
+        return False
+
+
+def forbidden_api_address(address):
+    address = getattr(address, "ipv4_mapped", None) or address
+    return address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified
+
+
+def validate_cetiadmin(config, operator):
+    """Validate deployment inputs without querying identities, credentials or APIs."""
+    admin = mapping(operator.get("cetiadmin"), "cetiadmin")
+    allowed = set(CETIADMIN_FIELDS) | {"enabled", "legacyDisabledSource", "instanceName", "platformReadNamespaces", "retainedAgentUID", "migrationSource", "hookTimeoutSeconds"}
+    if set(admin) - allowed:
+        raise ValueError("cetiadmin contains unsupported fields")
+    for field, fields in CETIADMIN_FIELDS.items():
+        section = mapping(admin.get(field), "cetiadmin." + field)
+        if set(section) - fields:
+            raise ValueError("cetiadmin." + field + " contains unsupported fields")
+    if type(admin.get("enabled")) is not bool:
+        raise ValueError("cetiadmin.enabled must be an explicit boolean")
+    legacy = admin.get("legacyDisabledSource", False)
+    if type(legacy) is not bool or (legacy and admin["enabled"]):
+        raise ValueError("cetiadmin.legacyDisabledSource requires a boolean and cetiadmin.enabled=false")
+    if not resource_name(admin.get("instanceName"), label=True, limit=44):
+        raise ValueError("cetiadmin.instanceName must be a DNS label of at most 44 characters for the openclaw- Helm release")
+    timeout = admin.get("hookTimeoutSeconds")
+    if type(timeout) is not int or not 1 <= timeout <= 3600:
+        raise ValueError("cetiadmin.hookTimeoutSeconds must be an integer from 1 to 3600")
+    if admin.get("retainedAgentUID") and not object_uid(admin["retainedAgentUID"]):
+        raise ValueError("cetiadmin.retainedAgentUID must be an exact existing Agent UID")
+    if not admin["enabled"]:
+        return
+    owner = admin["owner"]
+    if (not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", str(owner.get("alias", "")))
+            or owner["alias"] != config["ownerAlias"]):
+        raise ValueError(
+            "CetiAdmin is enabled by default: cetiadmin.owner.alias must match the explicit platform ownerAlias; "
+            "configure its owner, budget and API access, or set cetiadmin.enabled=false"
+        )
+    if not nonzero_uuid(owner.get("tenantID")) or owner["tenantID"].lower() != config["identity"]["tenantId"].lower():
+        raise ValueError("cetiadmin.owner.tenantID must match the explicit platform identity.tenantId")
+    if not nonzero_uuid(owner.get("objectID")):
+        raise ValueError("cetiadmin.owner.objectID requires the real owner's nonzero Entra object UUID")
+    model = admin["model"]
+    budget = model.get("initialMonthlyBudgetUSD")
+    if (not isinstance(budget, str) or not re.fullmatch(r"(0|[1-9][0-9]*)(\.[0-9]{1,6})?", budget)
+            or not math.isfinite(float(budget))):
+        raise ValueError("cetiadmin.model.initialMonthlyBudgetUSD must be an explicit nonnegative decimal string")
+    if len(required({"cetiadmin": admin}, "cetiadmin.model.default")) > 256:
+        raise ValueError("cetiadmin.model.default is too long")
+    for field in ("model.githubCopilot", "azureWorkloadIdentity.enabled", "sharedSkills.enabled", "monitor.enabled"):
+        if type(get_value(admin, field)) is not bool:
+            raise ValueError("cetiadmin." + field + " must be a boolean")
+    namespaces = admin.get("platformReadNamespaces", [])
+    if not isinstance(namespaces, list) or any(not resource_name(name, label=True, limit=63) for name in namespaces):
+        raise ValueError("cetiadmin.platformReadNamespaces must contain valid namespace names")
+    access = admin["kubernetes"]
+    server = access.get("apiServer")
+    try:
+        parsed = urlsplit(server)
+        if (not isinstance(server, str) or parsed.scheme != "https" or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None or parsed.path not in ("", "/")
+                or parsed.query or parsed.fragment or parsed.hostname.lower() == "localhost"
+                or (parsed.port is not None and parsed.port < 1) or any(char.isspace() for char in server)):
+            raise ValueError()
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            address = None
+        if address is not None and forbidden_api_address(address):
+            raise ValueError()
+        origin = (parsed.hostname.lower(), parsed.port or 443)
+        target = urlsplit(config["target"]["server"])
+        allowed_origins = {(target.hostname.lower(), target.port or 443)} | {
+            (host, 443) for host in ("kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local")}
+        if origin not in allowed_origins:
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("cetiadmin.kubernetes.apiServer must select this target's HTTPS API origin or its in-cluster Service") from None
+    audience = access.get("apiAudience")
+    if (not isinstance(audience, str) or not audience or any(char.isspace() for char in audience)
+            or audience == operator["connectionsMCP"]["audience"]):
+        raise ValueError("cetiadmin.kubernetes.apiAudience must be explicit and distinct from the MCP audience")
+    if not resource_name(access.get("caConfigMapName")):
+        raise ValueError("cetiadmin.kubernetes.caConfigMapName must name the cluster CA ConfigMap")
+    cidrs = access.get("apiEgressCIDRs")
+    if not isinstance(cidrs, list) or not cidrs:
+        raise ValueError("cetiadmin.kubernetes.apiEgressCIDRs requires verified single-host API CIDRs")
+    for value in cidrs:
+        try:
+            prefix = ipaddress.ip_network(value, strict=True) if isinstance(value, str) and "/" in value else None
+            if prefix is None or prefix.prefixlen != prefix.max_prefixlen or forbidden_api_address(prefix.network_address):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ValueError("cetiadmin.kubernetes.apiEgressCIDRs must be /32 or /128 and exclude loopback, link-local, multicast and unspecified addresses") from None
+    runtime = admin["runtime"]
+    for field in ("version", "image"):
+        if not isinstance(runtime.get(field), str):
+            raise ValueError("cetiadmin.runtime." + field + " must be a string")
+    version = runtime.get("version") or config["release"]["version"]
+    if version != config["release"]["version"]:
+        raise ValueError("cetiadmin.runtime.version must match the Operator/runtime release")
+    if runtime.get("port") is not None and (type(runtime["port"]) is not int or runtime["port"] != 8642):
+        raise ValueError("cetiadmin.runtime.port must match the Hermes profile port 8642")
+    image = runtime.get("image", "")
+    if image and (image.startswith("-") or any(char.isspace() for char in image)
+                  or not (image.endswith(":" + version) or re.search(r"@sha256:[0-9a-f]{64}$", image))):
+        raise ValueError("cetiadmin.runtime.image must select the matching version or a qualified digest")
+    identity = admin["azureWorkloadIdentity"]
+    if identity["enabled"] and not nonzero_uuid(identity.get("clientId")):
+        raise ValueError("cetiadmin.azureWorkloadIdentity.clientId must name an existing managed identity")
+    monitor = admin["monitor"]
+    if monitor.get("deliver") not in ("local", "slack"):
+        raise ValueError("cetiadmin.monitor.deliver must be local or slack")
+    try:
+        if not monitor.get("timezone") or monitor["timezone"] == "Local":
+            raise ValueError()
+        ZoneInfo(monitor["timezone"])
+    except (ValueError, TypeError, ZoneInfoNotFoundError):
+        raise ValueError("cetiadmin.monitor.timezone must be an IANA timezone") from None
+    if monitor["enabled"]:
+        if not isinstance(monitor.get("schedule"), str) or not monitor["schedule"].strip():
+            raise ValueError("cetiadmin.monitor.schedule is required")
+        if monitor["deliver"] == "slack" and (not isinstance(monitor.get("slackChannel"), str)
+                or not re.fullmatch(r"[CG][A-Z0-9]{8,31}", monitor["slackChannel"])
+                or not resource_name(monitor.get("slackSecretName"))):
+            raise ValueError("cetiadmin.monitor requires an exact Slack channel and existing Secret name")
+    if admin.get("migrationSource") is not None:
+        source = mapping(admin["migrationSource"], "cetiadmin.migrationSource")
+        if set(source) != {"agent", "namespace"}:
+            raise ValueError("cetiadmin.migrationSource requires Agent and namespace identities")
+        for field in ("agent", "namespace"):
+            item = mapping(source[field], "cetiadmin.migrationSource." + field)
+            if (set(item) - {"name", "namespace", "uid"} or item.get("namespace")
+                    or not resource_name(item.get("name"), label=field == "namespace") or not object_uid(item.get("uid"))):
+                raise ValueError("cetiadmin.migrationSource requires exact names and UIDs, not an inferred source")
+        if source["agent"]["name"] == admin["instanceName"]:
+            raise ValueError("cetiadmin.migrationSource requires a distinct new instanceName and HOME")
+
+
+def cetiadmin_config_hash(value):
+    """Match cetiadmin.Config JSON field order, defaults and omitempty rules."""
+    mapping(value, "cetiadmin configuration")
+    for section, fields in CETIADMIN_FIELDS.items():
+        if section in value and (not isinstance(value[section], dict) or set(value[section]) - fields):
+            raise ValueError("cetiadmin configuration has unsupported fields or types")
+    defaults = {
+        "enabled": True, "instanceName": "cetiadmin", "owner": {"alias": "", "tenantID": "", "objectID": ""},
+        "platformReadNamespaces": [],
+        "kubernetes": {"apiServer": "https://kubernetes.default.svc", "apiAudience": "", "caConfigMapName": "kube-root-ca.crt", "apiEgressCIDRs": None},
+        "model": {"default": "auto", "initialMonthlyBudgetUSD": "", "githubCopilot": False},
+        "runtime": {"version": "", "image": "", "port": None},
+        "azureWorkloadIdentity": {"enabled": False, "clientId": ""}, "sharedSkills": {"enabled": False},
+        "monitor": {"enabled": False, "schedule": "", "timezone": "UTC", "deliver": "local", "slackChannel": "", "slackSecretName": ""},
+        "retainedAgentUID": "", "migrationSource": None,
+    }
+    if set(value) - (set(defaults) | {"hookTimeoutSeconds", "legacyDisabledSource"}):
+        raise ValueError("cetiadmin configuration has unsupported fields")
+    canonical = merge(defaults, {key: item for key, item in value.items() if key not in ("hookTimeoutSeconds", "legacyDisabledSource")})
+    namespaces = canonical["platformReadNamespaces"]
+    if namespaces is not None and (not isinstance(namespaces, list) or any(not isinstance(name, str) for name in namespaces)):
+        raise ValueError("cetiadmin.platformReadNamespaces must be a list of namespace names")
+    for section, fields in {"runtime": ("version", "image", "port"),
+                            "azureWorkloadIdentity": ("clientId",), "monitor": ("schedule", "slackChannel", "slackSecretName")}.items():
+        for field in fields:
+            if canonical[section].get(field) in (None, "", []):
+                canonical[section].pop(field, None)
+    for field in ("platformReadNamespaces", "retainedAgentUID", "migrationSource"):
+        if not canonical[field]:
+            canonical.pop(field)
+    if canonical.get("migrationSource"):
+        canonical["migrationSource"] = {
+            key: {field: canonical["migrationSource"][key][field] for field in ("name", "namespace", "uid")
+                  if canonical["migrationSource"][key].get(field)} for key in ("agent", "namespace")}
+    encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
+    for char in ("<", ">", "&", "\u2028", "\u2029"):
+        encoded = encoded.replace(char, "\\u" + format(ord(char), "04x"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def cetiadmin_identity(metadata, expected):
+    if (not isinstance(metadata, dict) or not isinstance(expected, dict) or not object_uid(expected.get("uid"))
+            or not resource_name(expected.get("name")) or not metadata.get("resourceVersion")
+            or metadata.get("deletionTimestamp") or any(metadata.get(key, "") != expected.get(key, "") for key in ("name", "namespace", "uid"))):
+        raise ValueError("CetiAdmin identity is missing, replaced or terminating")
+
+
+def cetiadmin_owned(metadata, agent):
+    if not any(owner.get("apiVersion") == "cetirun.microsoft.com/v1alpha1" and owner.get("kind") == "Agent"
+               and owner.get("name") == agent["name"] and owner.get("uid") == agent["uid"]
+               for owner in metadata.get("ownerReferences", [])):
+        raise ValueError("CetiAdmin namespace or ServiceAccount ownership changed")
+
+
+def validate_cetiadmin_writers(kind, rows):
+    for row in rows:
+        if not row[0]:
+            raise ValueError("CetiAdmin writer identity is unavailable")
+        stopped = False
+        if kind == "pods":
+            stopped = not row[1] and row[2] in ("Succeeded", "Failed")
+        elif kind in ("statefulsets", "deployments", "replicasets"):
+            stopped = row[1] == "0" and row[2] in ("", "0")
+        elif kind == "jobs":
+            conditions = json.loads(row[2] or "[]")
+            stopped = row[1] in ("", "0") and any(item.get("status") == "True" and item.get("type") in ("Complete", "Failed") for item in conditions)
+        elif kind == "cronjobs":
+            stopped = row[1] == "true" and not row[2]
+        if not stopped:
+            raise ValueError("CetiAdmin writers have not stopped: " + kind)
+
+
 def configuration(path):
     config = yaml_file(path)
     for field in ("target.context", "target.cluster", "target.server", "target.clusterUID",
@@ -129,7 +412,7 @@ def configuration(path):
     if config["istio"].get("tlsMode", "external") not in ("external", "retain"):
         raise ValueError("istio.tlsMode must be external or retain for an existing chart-owned certificate")
     if config.get("instances"):
-        raise ValueError("Instance creation and CetiAdmin ServiceAccount/token coexistence are not part of this deployment; existing Agents and HOME are preserved")
+        raise ValueError("Arbitrary Instance creation is not part of this deployment; configure CetiAdmin through cetirun-operator.cetiadmin")
     for field in ("tenantId", "portalClientId", "blueprintClientId", "authorizationClientId", "encryptionClientId", "keyVaultKeyUrl"):
         required(config, f"identity.{field}")
     for field in ("customRuntime.storageClass", "customRuntime.storageSize", "customRuntime.accessMode"):
@@ -139,8 +422,11 @@ def configuration(path):
     raw_custom = get_value(config, "platform.values.cetirun-operator.customRuntime")
     if type(raw_custom.get("fsGroup")) is not int or not 1 <= raw_custom["fsGroup"] <= 2147483647:
         raise ValueError("customRuntime.fsGroup must explicitly name the qualified non-root storage group")
-    if type(raw_custom.get("agentManagedModel")) is not bool:
-        raise ValueError("customRuntime.agentManagedModel must be an explicit boolean")
+    unknown = sorted(set(raw_custom) - set(yaml_file(OPERATOR_VALUES)["customRuntime"]))
+    if unknown:
+        note = " Every approved Custom image uses the AI Gateway binding." if REMOVED_CUSTOM_FIELDS & set(unknown) else ""
+        raise ValueError("Remove " + ", ".join(f"customRuntime.{field}" for field in unknown) + " from the environment file: "
+                         "the Operator stops at startup on a customRuntime field that it does not know." + note)
 
     values = {name: merge(yaml_file(ROOT / chart / "values.yaml"), config[name].get("values", {}))
               for name, chart in CHARTS.items()}
@@ -151,6 +437,12 @@ def configuration(path):
     pns, bns, ins = (config[name]["namespace"] for name in ("platform", "broker", "istio"))
     identity, registry, version = config["identity"], config["release"]["registry"], config["release"]["version"]
     domain, revision = config["domain"], config["istio"]["revision"]
+    operator_enabled = platform["cetirun-operator"]["enabled"]
+    if type(operator_enabled) is not bool:
+        raise ValueError("cetirun-operator.enabled must be a boolean")
+    if not operator_enabled and (get_value(config, "platform.values.cetirun-operator.cetiadmin.enabled") is not False
+            or get_value(config, "platform.values.global.portalChat.enabled") is not False):
+        raise ValueError("Operator removal requires explicit cetiadmin.enabled=false and global.portalChat.enabled=false after retained shutdown")
     gateway = f"{config['istio']['ingressNamespace']}/cetirun-gateway"
     broker_http = f"http://cetirun-agent-broker.{bns}.svc.cluster.local:8080"
     assignments = {
@@ -164,7 +456,7 @@ def configuration(path):
                    "agentIdentity.portalOrigin": f"https://{domain}", "agentIdentity.portalBaseUrl": f"https://{domain}",
                    "agentIdentity.redirectUri": f"https://{domain}/api/v1/connections/callback"},
         "platform": {"global.registry": registry, "global.version": version,
-                     "global.portalChat.enabled": True, "global.portalChat.identityRealm": config["identityRealm"],
+                     "global.portalChat.enabled": operator_enabled, "global.portalChat.identityRealm": config["identityRealm"],
                      "global.memoryContext.image": f"{registry}/cetirun-memory-context:{version}",
                      "istio.enabled": True, "istio.oauth2Proxy.namespace": ins,
                      "cetirun-operator.namespace": pns, "cetirun-operator.domainSuffix": domain,
@@ -232,7 +524,7 @@ def configuration(path):
     if bns == platform["global"]["registryCredentialNamespace"]:
         raise ValueError("Registry credentials must not share the Broker credential namespace")
     for component in ("operator", "portal", "ai-gateway", "connections-mcp"):
-        if platform[f"cetirun-{component}"].get("enabled", True) is not True:
+        if component != "operator" and platform[f"cetirun-{component}"].get("enabled", True) is not True:
             raise ValueError(f"The default deployment requires cetirun-{component}.enabled=true")
     if not values["broker"]["identityModes"]["microsoftDelegated"]["enabled"]:
         raise ValueError("The default deployment requires the Broker Auth SDK")
@@ -246,8 +538,6 @@ def configuration(path):
     custom = operator["customRuntime"]
     if not custom["approvedImages"] or any(not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", image) for image in custom["approvedImages"]):
         raise ValueError("Custom runtime requires explicitly qualified approvedImages pinned by digest")
-    if not set(custom["gatewayImages"]).issubset(custom["approvedImages"]) or (not custom["agentManagedModel"] and set(custom["gatewayImages"]) != set(custom["approvedImages"])):
-        raise ValueError("Every Custom image needs explicit model access; gatewayImages must be approvedImages")
     skills = mapping(config.get("sharedSkills"), "sharedSkills")
     for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
         required(skills, field)
@@ -268,9 +558,10 @@ def configuration(path):
             or router.get("jev_classifier_config", {}).get("deployment_name") != "decision-1"):
         raise ValueError("models must configure auto with the existing jev classifier and logical decision-1 deployment")
     if (not decision.get("litellm_params", {}).get("model", "").startswith("azure_ai/")
-            or decision.get("model_info", {}).get("base_model") not in ("Microsoft-Decision-1", "azure_ai/Microsoft-Decision-1")
+            or decision.get("model_info", {}).get("base_model") != "azure_ai/Microsoft-Decision-1"
             or decision.get("model_info", {}).get("mode") != "evaluation"):
-        raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, Microsoft-Decision-1 base_model and evaluation mode")
+        raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, base_model azure_ai/Microsoft-Decision-1 and evaluation mode. "
+                         "LiteLLM prices the model only by that name, and the Operator does not offer an unpriced classifier to auto")
     decision_params = decision["litellm_params"]
     if not decision_params["model"].removeprefix("azure_ai/"):
         raise ValueError("decision-1 requires a real Azure deployment name")
@@ -284,6 +575,7 @@ def configuration(path):
         params = entry.get("litellm_params", {})
         if "api_key" in params and not re.fullmatch(r"os\.environ/[A-Za-z_][A-Za-z0-9_]*", str(params["api_key"])):
             raise ValueError("Model api_key must reference a provider Secret environment variable")
+    validate_cetiadmin(config, operator)
     return config, values
 
 
@@ -293,12 +585,17 @@ class Deployment:
         self.documents, self.files, self.charts = {}, {}, {}
         self.existing_releases, self.namespaces = set(), {}
         self.mesh_uid = None
+        self.cetiadmin_stop_pin = None
+        self.cetiadmin_migration_receipt = None
 
     def run(self, command, *, env=None, input_text=None):
         result = subprocess.run(command, cwd=ROOT, env=env, input=input_text, text=True, capture_output=True)
         if result.returncode:
-            # Do not echo Helm-rendered Secrets or external tool response bodies.
-            raise ValueError(f"{command[0]} {command[1]} failed with exit {result.returncode}; deployment did not complete")
+            # Name the step, but do not echo Helm-rendered Secrets or external tool response bodies.
+            # Only the offline render reports the chart's own refusal.
+            refusals = CHART_REFUSAL.findall(result.stderr or "") if list(map(str, command[:2])) == ["helm", "template"] else []
+            reason = "".join(f"; {template}: {message.strip()}" for template, message in refusals)
+            raise ValueError(f"{step(command)} failed with exit {result.returncode}{reason}; deployment did not complete")
         return result.stdout
 
     def kubectl(self, *args, input_text=None):
@@ -313,6 +610,193 @@ class Deployment:
             args += ["--namespace", namespace]
         raw = self.kubectl(*args)
         return json.loads(raw) if raw.strip() else None
+
+    def selected_fields(self, kind, name, fields, namespace=""):
+        projection = "jsonpath=" + "".join("{." + field + '}{"\\n"}' for field in fields)
+        args = ["get", kind, name, "-o", projection]
+        if namespace:
+            args += ["--namespace", namespace]
+        rows = self.kubectl(*args).removesuffix("\n").split("\n")
+        if len(rows) != len(fields):
+            raise ValueError("CetiAdmin selected fields could not be read safely")
+        return rows
+
+    def selected_rows(self, kind, fields, namespace="", all_namespaces=False):
+        projection = 'jsonpath={range .items[*]}' + '{"\\t"}'.join("{." + field + "}" for field in fields) + '{"\\n"}{end}'
+        args = ["get", kind, "-o", projection]
+        if all_namespaces:
+            args += ["--all-namespaces"]
+        elif namespace:
+            args += ["--namespace", namespace]
+        rows = [row.split("\t") for row in self.kubectl(*args).splitlines()]
+        if any(len(row) != len(fields) for row in rows):
+            raise ValueError("CetiAdmin selected list fields could not be read safely")
+        return rows
+
+    def cetiadmin_binding(self):
+        namespace = self.config["platform"]["namespace"]
+        binding_name = "cetiadmin-binding-" + hashlib.sha256((namespace + "/" + CETIADMIN_SOURCE).encode()).hexdigest()[:24]
+        source, checkpoint = self.resource("configmap", CETIADMIN_SOURCE, namespace), self.resource("configmap", binding_name, namespace)
+        if not source or not checkpoint:
+            raise ValueError("CetiAdmin requires its retained source and installation checkpoint; absence is not stopped")
+        for metadata, name in ((source, CETIADMIN_SOURCE), (checkpoint, binding_name)):
+            cetiadmin_identity(metadata, {"name": name, "namespace": namespace, "uid": metadata.get("uid")})
+        annotations = source.get("annotations", {})
+        if (annotations.get("meta.helm.sh/release-name"), annotations.get("meta.helm.sh/release-namespace")) != (self.config["platform"]["release"], namespace):
+            raise ValueError("CetiAdmin source belongs to another release")
+        raw = self.selected_fields("configmap", CETIADMIN_SOURCE, (r"data.config\.json",), namespace)[0]
+        saved = self.selected_fields("configmap", binding_name, (r"data.binding\.json",), namespace)[0]
+        try:
+            current, state = json.loads(raw), json.loads(saved)
+            cetiadmin_identity(source, state["source"])
+            digest = cetiadmin_config_hash(current)
+            if (type(state.get("schemaVersion")) is not int or state["schemaVersion"] != 1 or "hookTimeoutSeconds" in current
+                    or any(field in state for field in ("targets", "readNamespaces", "accessHash"))
+                    or state.get("configHash") != digest
+                    or cetiadmin_config_hash(state["configuration"]) != digest
+                    or checkpoint.get("annotations", {}).get(CETIADMIN_SOURCE_UID) != source["uid"]
+                    or (state.get("recordUID") and state["recordUID"] != checkpoint["uid"])):
+                raise ValueError()
+        except (ValueError, KeyError, TypeError):
+            raise ValueError("CetiAdmin source/configuration/checkpoint binding is not current") from None
+        return source, checkpoint, current, state
+
+    def cetiadmin_agent(self, identity):
+        if not resource_name(identity.get("name")) or not object_uid(identity.get("uid")) or identity.get("namespace"):
+            raise ValueError("CetiAdmin Agent identity is not an exact cluster-scoped name and UID")
+        metadata = self.resource("agent", identity.get("name", ""))
+        cetiadmin_identity(metadata, identity)
+        fields = self.selected_fields("agent", identity["name"], CETIADMIN_AGENT_FIELDS)
+        return metadata, {"suspended": fields[0] == "true", "phase": fields[1], "accessUrl": fields[2],
+                          "request": json.loads(fields[3] or "null"), "maintenance": json.loads(fields[4] or "null")}
+
+    def check_cetiadmin_writers(self, namespace):
+        for kind, fields in CETIADMIN_WRITER_FIELDS.items():
+            validate_cetiadmin_writers(kind, self.selected_rows(kind, fields, namespace))
+
+    def check_cetiadmin_grants(self, account):
+        username = "system:serviceaccount:" + account["namespace"] + ":" + account["name"]
+        for kind in ("rolebindings", "clusterrolebindings"):
+            for namespace, encoded in self.selected_rows(kind, ("metadata.namespace", "subjects"), all_namespaces=kind == "rolebindings"):
+                for subject in json.loads(encoded or "[]"):
+                    if ((subject.get("kind") == "ServiceAccount" and subject.get("name") == account["name"]
+                         and (subject.get("namespace") or namespace) == account["namespace"])
+                            or (subject.get("kind") == "User" and subject.get("name") == username)):
+                        raise ValueError("CetiAdmin management access has not been revoked")
+
+    def check_cetiadmin_maintenance(self):
+        fields = ("metadata.generation", "spec.suspended", "spec.helm.maintenance", "status.helmMaintenance")
+        for generation, suspended, raw_request, raw_maintenance in self.selected_rows("agents.cetirun.microsoft.com", fields):
+            request, maintenance = json.loads(raw_request or "null"), json.loads(raw_maintenance or "null")
+            if request is not None or (maintenance is not None and (maintenance.get("phase") != "Released"
+                    or (suspended == "true" and str(maintenance.get("observedGeneration")) != generation))):
+                raise ValueError("CetiAdmin target Helm maintenance is unresolved")
+        markers = tuple(r"metadata.annotations.cetirun\.microsoft\.com/helm-maintenance-" + key
+                        for key in ("agent", "agent-uid", "request-id"))
+        if any(any(row) for row in self.selected_rows("namespaces", markers)):
+            raise ValueError("CetiAdmin target still has a maintenance startup block")
+
+    def check_cetiadmin_migration(self):
+        self.cetiadmin_migration_receipt = None
+        admin = self.values["platform"]["cetirun-operator"]["cetiadmin"]
+        source = admin.get("migrationSource") if admin["enabled"] else None
+        if not source:
+            return
+        metadata, observation = self.cetiadmin_agent(source["agent"])
+        namespace = self.resource("namespace", source["namespace"]["name"])
+        cetiadmin_identity(namespace, source["namespace"])
+        cetiadmin_owned(namespace, source["agent"])
+        runtime, account, gateway = self.selected_fields("agent", source["agent"]["name"],
+            ("spec.agent.type", "spec.helm.values.serviceAccount.name", "status.aiGateway"))
+        model = json.loads(gateway or "null")
+        if (runtime not in ("hermes", "openclaw") or not observation["suspended"] or observation["phase"] != "Suspended"
+                or observation["accessUrl"] or observation["request"] is not None
+                or (observation["maintenance"] is not None and observation["maintenance"].get("phase") != "Released")
+                or (model is not None and (model.get("blocked") is not True or model.get("routed", False)))):
+            raise ValueError("CetiAdmin migration source must have confirmed retained suspension, blocked model access and resolved maintenance")
+        self.check_cetiadmin_writers(namespace["name"])
+        if account:
+            if not resource_name(account, label=True):
+                raise ValueError("CetiAdmin migration source ServiceAccount is invalid")
+            sa = self.resource("serviceaccount", account, namespace["name"])
+            cetiadmin_identity(sa, {"name": account, "namespace": namespace["name"], "uid": (sa or {}).get("uid")})
+            self.check_cetiadmin_grants({"name": account, "namespace": namespace["name"]})
+            self.cetiadmin_migration_receipt = metadata
+
+    def check_cetiadmin_stopped(self):
+        source, checkpoint, current, state = self.cetiadmin_binding()
+        desired = copy.deepcopy(self.values["platform"]["cetirun-operator"]["cetiadmin"])
+        desired["runtime"]["version"] = desired["runtime"].get("version") or self.config["release"]["version"]
+        if (current.get("enabled") is not False or state.get("phase") != "Disabled" or state.get("hold") is not True
+                or state.get("pendingCreate") or state.get("creation") or state.get("bootstrapReleasePending")
+                or cetiadmin_config_hash(desired) != state["configHash"]):
+            raise ValueError("CetiAdmin disable must already be confirmed for this unchanged configuration")
+        operator = self.resource("deployment", "cetirun-operator", source["namespace"])
+        if not operator or operator.get("deletionTimestamp") or not operator.get("uid"):
+            raise ValueError("CetiAdmin stop requires the current Operator to remain available")
+        replicas, raw_status, image, source_name = self.selected_fields("deployment", "cetirun-operator",
+            ("spec.replicas", "status", 'spec.template.spec.containers[?(@.name=="manager")].image',
+             'spec.template.spec.containers[?(@.name=="manager")].env[?(@.name=="CETIRUN_CETIADMIN_CONFIG_MAP")].value'), source["namespace"])
+        status = json.loads(raw_status or "{}")
+        if (not replicas.isdecimal() or int(replicas) < 1 or operator.get("generation", 0) < 1
+                or status.get("observedGeneration") != operator["generation"]
+                or any(status.get(field) != int(replicas) for field in ("updatedReplicas", "readyReplicas", "availableReplicas"))
+                or not image or image != state.get("operatorImage") or source_name != CETIADMIN_SOURCE):
+            raise ValueError("CetiAdmin stop requires the current Operator image and rollout to be Ready")
+        self.check_cetiadmin_maintenance()
+        agent, namespace, account = (state.get(field) or {} for field in ("agent", "namespace", "serviceAccount"))
+        if agent.get("uid"):
+            _, observation = self.cetiadmin_agent(agent)
+            if observation["accessUrl"]:
+                raise ValueError("CetiAdmin retained suspension and route shutdown are not confirmed")
+            if namespace.get("uid"):
+                if observation["phase"] != "Suspended":
+                    raise ValueError("CetiAdmin retained suspension is not confirmed")
+                if not resource_name(namespace.get("name"), label=True):
+                    raise ValueError("CetiAdmin namespace identity is invalid")
+                ns = self.resource("namespace", namespace["name"])
+                cetiadmin_identity(ns, namespace)
+                cetiadmin_owned(ns, agent)
+                if account.get("namespace") != namespace["name"] or not resource_name(account.get("name"), label=True):
+                    raise ValueError("CetiAdmin ServiceAccount namespace is not bound")
+                sa = self.resource("serviceaccount", account.get("name", ""), namespace["name"])
+                cetiadmin_identity(sa, account)
+                cetiadmin_owned(sa, agent)
+                self.check_cetiadmin_grants(account)
+                self.check_cetiadmin_writers(namespace["name"])
+            elif not observation["suspended"] or state.get("bootstrapped") or account.get("uid") or state.get("resources"):
+                raise ValueError("CetiAdmin partial installation has unconfirmed resources")
+        elif state.get("bootstrapped") or state.get("resources") or account.get("uid") or namespace.get("uid"):
+            raise ValueError("CetiAdmin has unconfirmed retained identities")
+        pin = (source["uid"], source["resourceVersion"], checkpoint["uid"], state["configHash"])
+        if self.cetiadmin_stop_pin is not None and self.cetiadmin_stop_pin != pin:
+            raise ValueError("CetiAdmin source or installation changed since preflight")
+        for metadata in (source, checkpoint):
+            latest = self.resource("configmap", metadata["name"], metadata["namespace"])
+            if not latest or any(latest.get(field) != metadata.get(field) for field in ("uid", "resourceVersion")):
+                raise ValueError("CetiAdmin stop observation changed during readback")
+        self.cetiadmin_stop_pin = pin
+
+    def check_operator_removal_controls(self):
+        # CetiAdmin shutdown cannot authorize removal of independent governance.
+        for kind, name in (("ValidatingWebhookConfiguration", "cetirun-sandbox-admission"),
+                           ("ValidatingWebhookConfiguration", "cetirun-sandbox-pods"),
+                           ("ValidatingWebhookConfiguration", "cetirun-sandbox-placement"),
+                           ("MutatingWebhookConfiguration", "cetirun-sandbox-admission")):
+            if self.resource(kind, name):
+                raise ValueError("Preserve existing admission protection; Operator removal needs a separate approved governance handover")
+        operator = self.current_control("cetirun-operator", "manager", ("CETIRUN_SANDBOX_SOURCES", "CONNECTIONS_MCP_NATIVE_ENABLED"))
+        if operator is None:
+            raise ValueError("Operator removal requires the existing Operator controls")
+        sources = self.control_json(operator, "CETIRUN_SANDBOX_SOURCES")
+        if (any(sources.get(field) for field in ("enabled", "nativeExecution", "plannedMigration", "coordinationConfigMapName", "coordinationConfigMapUID"))
+                or operator["env"]["CONNECTIONS_MCP_NATIVE_ENABLED"].lower() == "true"):
+            raise ValueError("Preserve existing native execution protection before Operator removal")
+        coordination = ("CONFIGURATION_COORDINATION_NAMESPACE", "CONFIGURATION_COORDINATION_NAME", "CONFIGURATION_COORDINATION_UID")
+        portal = self.current_control("cetirun-portal", "portal", coordination)
+        mcp = self.current_control("cetirun-connections-mcp", "cetirun-connections-mcp", ("OPERATOR_NAMESPACE",))
+        if (portal and any(portal["env"].values())) or (mcp and mcp["env"]["OPERATOR_NAMESPACE"]):
+            raise ValueError("Preserve existing Portal coordination and native MCP identity before Operator removal")
 
     def render(self):
         for entry in RELEASE.inventory()["charts"]:
@@ -338,6 +822,8 @@ class Deployment:
             raw = self.run(["helm", "template", section["release"], str(self.charts[name]), "--namespace", section["namespace"],
                             "--kube-version", "1.37.0", "--values", str(render_values)], env=offline)
             self.documents[name] = [doc for doc in yaml.safe_load_all(raw) if doc]
+        if not self.values["platform"]["cetirun-operator"]["enabled"]:
+            return
         # Render the bootstrap too, before any cluster writes.
         bootstrap = copy.deepcopy(self.values["platform"])
         admission = bootstrap["cetirun-operator"]["sandboxAdmission"]
@@ -373,6 +859,10 @@ class Deployment:
                         refs.add(("Secret", namespace, secret["name"], ""))
         c, p = self.config, self.values["platform"]
         operator, mcp, broker = p["cetirun-operator"], p["cetirun-connections-mcp"], self.values["broker"]
+        admin = operator["cetiadmin"]
+        if admin["enabled"] and admin["monitor"]["enabled"] and admin["monitor"]["deliver"] == "slack":
+            for key in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"):
+                refs.add(("Secret", "cetirun-" + admin["instanceName"], admin["monitor"]["slackSecretName"], key))
         for namespace, name, keys in (
             (c["istio"]["ingressNamespace"], "cetirun-tls", ("tls.crt", "tls.key")),
             (c["broker"]["namespace"], broker["tls"]["secretName"], (broker["tls"]["certKey"], broker["tls"]["keyKey"], broker["tls"]["clientCAKey"])),
@@ -476,6 +966,13 @@ class Deployment:
             token_required = token.lower() == "true" if token else defaults.get("automountToken") is True
             if not (account or role or token_required):
                 continue
+            receipt = self.cetiadmin_migration_receipt
+            if receipt and receipt["name"] == name:
+                current = self.resource("agent", name)
+                cetiadmin_identity(current, {key: receipt[key] for key in ("name", "uid")})
+                if current["resourceVersion"] != receipt["resourceVersion"]:
+                    raise ValueError("CetiAdmin migration source changed after preflight")
+                continue
             if self.kubectl("get", "agent", name, "-o", "go-template=" + AGENT_POLICY_MARKERS).strip():
                 continue
             if team:
@@ -484,7 +981,7 @@ class Deployment:
                         'go-template={{with .spec}}{{if or .agentPolicyRef .sandboxRefs .defaultSandboxRef}}protected{{end}}{{end}}').strip()
                 if team_policy[team]:
                     continue
-            raise ValueError(f"Agent {name}: MCP would replace its ServiceAccount/API token settings; CetiAdmin ServiceAccount/token coexistence needs a separate approved change")
+            raise ValueError(f"Agent {name}: MCP would replace its ServiceAccount/API token settings; only an exact stopped CetiAdmin migration source can be exempted")
 
     def current_control(self, name, container, environment):
         namespace = self.config["platform"]["namespace"]
@@ -527,6 +1024,10 @@ class Deployment:
 
     def check_existing_controls(self):
         platform, operator = self.values["platform"], self.values["platform"]["cetirun-operator"]
+        if not operator["enabled"]:
+            self.check_operator_removal_controls()
+            self.enforced = True
+            return
         admission = operator["sandboxAdmission"]
         has_webhook, has_pod_rules = False, False
         for kind, name in (("ValidatingWebhookConfiguration", "cetirun-sandbox-admission"),
@@ -712,7 +1213,12 @@ class Deployment:
                     raise ValueError(f"External Istio is missing required {kind} {namespace}/{metadata['name']}")
                 elif name in self.existing_releases and kind == "Secret":
                     raise ValueError(f"Retained Secret {namespace}/{metadata['name']} is missing; refusing regeneration")
+        if not self.values["platform"]["cetirun-operator"]["enabled"]:
+            if "platform" not in self.existing_releases:
+                raise ValueError("Operator removal requires the existing platform release")
+            self.check_cetiadmin_stopped()
         self.check_existing_controls()
+        self.check_cetiadmin_migration()
         self.check_agent_mcp_conflicts()
         for kind, namespace, name, key in self.references():
             metadata = self.resource(kind, name, namespace)
@@ -758,6 +1264,9 @@ class Deployment:
             self.run(["docker", "buildx", "imagetools", "inspect", f"{c['release']['registry']}/{entry['name']}:{c['release']['version']}"])
         for image in self.values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"]:
             self.run(["docker", "buildx", "imagetools", "inspect", image])
+        admin = self.values["platform"]["cetirun-operator"]["cetiadmin"]
+        if admin["enabled"] and admin["runtime"].get("image"):
+            self.run(["docker", "buildx", "imagetools", "inspect", admin["runtime"]["image"]])
         for entry in RELEASE.inventory()["charts"]:
             self.run(["helm", "show", "chart", f"oci://{c['release']['registry']}/helm/{entry['name']}", "--version", c["release"]["version"]])
 
@@ -766,9 +1275,16 @@ class Deployment:
 
     def upgrade(self, name, values=None):
         section = self.config[name]
+        if name == "platform" and not self.values["platform"]["cetirun-operator"]["enabled"]:
+            self.check_cetiadmin_stopped()
+        elif name == "platform":
+            self.check_cetiadmin_migration()
         print(f"==> Upgrade {section['namespace']}/{section['release']}", flush=True)
+        timeout = "10m"
+        if name == "platform":
+            timeout = str(max(600, self.values["platform"]["cetirun-operator"]["cetiadmin"]["hookTimeoutSeconds"] + 60)) + "s"
         args = ["upgrade", "--install", section["release"], str(self.charts[name]), "--namespace", section["namespace"],
-                "--values", str(self.files[values or name]), "--timeout", "10m"]
+                "--values", str(self.files[values or name]), "--timeout", timeout]
         if name == "istio" and section.get("tlsMode") == "retain":
             args.append("--reuse-values")
         self.helm(*args)
@@ -810,6 +1326,11 @@ class Deployment:
             self.run(command)
         self.upgrade("broker")
         self.ready("broker")
+        if not self.values["platform"]["cetirun-operator"]["enabled"]:
+            self.upgrade("platform")
+            self.ready("platform")
+            print("Operator subchart removed after current CetiAdmin stop checks. Retained Agent and HOME data were not deleted.")
+            return
         # Never withdraw existing admission protection during an upgrade.
         if not self.enforced:
             self.upgrade("platform", "bootstrap")
@@ -821,24 +1342,29 @@ class Deployment:
         probe = {"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Team",
                  "metadata": {"name": "cetirun-admission-deployment-check"}, "spec": {}}
         self.kubectl("create", "--dry-run=server", "-f", "-", input_text=json.dumps(probe))
-        print("Platform releases are ready and the admission dry-run succeeded. This helper did not create or replace Agents, HOME or user keys.")
-        print("Not qualified by this check: model calls, OAuth login, native Sandbox execution/physical fencing, or CetiAdmin token coexistence.")
+        print("Platform releases and their Helm checks are ready, and the admission dry-run succeeded. CetiAdmin lifecycle is owned by the Operator.")
+        print("Not qualified by this check: live model/OAuth calls, native Sandbox execution/physical fencing, or end-to-end CetiAdmin operations.")
 
     def plan(self):
         references = {(kind, namespace, name) for kind, namespace, name, _ in self.references()}
         return {"target": {key: self.config["target"][key] for key in ("context", "cluster", "server", "clusterUID")},
                 "release": {key: self.config["release"][key] for key in ("registry", "version", "gitSHA")},
                 "stages": ["verify target, managed Istio, references, ownership and all artifacts",
+                           "confirm retained CetiAdmin shutdown before any Operator removal; recheck immediately before its upgrade",
                            "CetiRun Istio/OAuth2 release and mesh provider", "isolated Broker/Auth SDK release",
                            "platform data services, Operator, Portal Chat, MCP, Custom/terminal and Memory bindings",
-                           "admission server/TLS readiness before fail-closed webhooks", "all workloads ready and admission server dry-run"],
+                           "dedicated CetiAdmin protection; global Sandbox enforcement after admission readiness",
+                           "all workloads and CetiAdmin installation checks ready; admission server dry-run"],
                 "releases": {name: {"namespace": self.config[name]["namespace"], "release": self.config[name]["release"],
                                      "workloads": [doc["metadata"]["name"] for doc in docs if doc["kind"] in ("Deployment", "StatefulSet")]}
                              for name, docs in self.documents.items()},
                 "artifacts": {kind: [entry["name"] for entry in entries] for kind, entries in RELEASE.inventory().items() if kind in ("images", "charts")},
                 "referenceCounts": dict(Counter(kind for kind, _, _ in references)),
-                "preserves": ["existing Agents", "HOME/PVCs", "OAuth cookie and database keys", "other Helm releases"],
-                "notQualified": ["native Sandbox execution and physical fencing", "CetiAdmin token coexistence", "live model/OAuth calls"]}
+                "cetiadmin": {"enabled": self.values["platform"]["cetirun-operator"]["cetiadmin"]["enabled"],
+                              "operatorRemovalRequested": not self.values["platform"]["cetirun-operator"]["enabled"],
+                              "stopConfirmed": False},
+                "preserves": ["existing Agents and HOME/PVCs except the explicit CetiAdmin retained lifecycle", "OAuth cookie and database keys", "other Helm releases"],
+                "notQualified": ["native Sandbox execution and physical fencing", "end-to-end CetiAdmin operations", "live model/OAuth calls"]}
 
 
 def main(argv=None):

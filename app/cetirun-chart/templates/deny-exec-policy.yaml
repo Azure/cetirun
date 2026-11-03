@@ -16,10 +16,6 @@ metadata:
     {{- include "cetirun.labels" . | nindent 4 }}
 spec:
   failurePolicy: Fail
-  matchConditions:
-    - name: "exclude-adminclaw"
-      expression: >-
-        request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"
   matchConstraints:
     resourceRules:
       - apiGroups: [""]

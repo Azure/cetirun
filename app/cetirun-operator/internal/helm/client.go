@@ -5,11 +5,13 @@ package helm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -50,6 +52,8 @@ func (ref *ChartReference) Validate() error {
 // Client wraps the Helm action configuration and provides high-level install/upgrade/uninstall operations.
 type Client struct {
 	chartRef ChartReference
+	writesMu sync.Mutex
+	writes   map[string]*releaseWriteState
 }
 
 // NewClient creates a new Helm client that loads the chart based on the provided ChartReference.
@@ -214,6 +218,7 @@ func (c *Client) Prepare(namespace string, values map[string]any, chartVersion s
 	if err != nil {
 		return nil, configurationError(err)
 	}
+	prepared.namespace = namespace
 	if prepared.custom {
 		if err := prepared.prepareCustomAction(cfg, namespace, prepared.releaseName); err != nil {
 			return nil, err
@@ -232,8 +237,20 @@ func (c *Client) Prepare(namespace string, values map[string]any, chartVersion s
 }
 
 // InstallOrUpgrade applies the already-prepared chart without waiting for Pod readiness.
-func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *PreparedRelease) error {
-	return c.installOrUpgrade(namespace, releaseName, prepared, actionConfig)
+func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *PreparedRelease) (err error) {
+	state, done, err := c.beginReleaseWrite(namespace, releaseName)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, done()) }()
+	return c.installOrUpgrade(namespace, releaseName, prepared, func(namespace string) (*action.Configuration, error) {
+		cfg, err := actionConfig(namespace)
+		if err != nil {
+			return nil, err
+		}
+		trackReleaseWrites(cfg, state)
+		return cfg, nil
+	})
 }
 
 func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *PreparedRelease,
@@ -241,6 +258,13 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 ) error {
 	if prepared == nil || prepared.chart == nil {
 		return fmt.Errorf("release must be prepared before installation")
+	}
+	ctx := context.Background()
+	if prepared.maintenance != nil {
+		ctx = prepared.maintenance.ctx
+		if err := prepared.maintenance.check(); err != nil {
+			return err
+		}
 	}
 	if (prepared.sandboxBundle != nil || prepared.Values[sandboxworkload.ValuesKey] != nil) && prepared.sandboxReconcile == nil {
 		return sandboxworkload.ErrExecutionHeld
@@ -263,8 +287,14 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 	if err != nil {
 		return err
 	}
-	if prepared.custom {
+	if prepared.custom && prepared.maintenance == nil {
 		return prepared.installOrUpgradeCustom(cfg, namespace, releaseName)
+	}
+	if prepared.maintenance != nil {
+		cfg, err = prepared.maintenance.prepare(cfg, prepared)
+		if err != nil {
+			return err
+		}
 	}
 	if prepared.sandboxReconcile != nil {
 		guarded := *cfg
@@ -286,7 +316,7 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 		if err != nil {
 			return fmt.Errorf("read previous release for registry rollout classification")
 		}
-		pullOnly := registryBindingOnly(previous, chrt, values)
+		pullOnly := prepared.maintenance == nil && registryBindingOnly(previous, chrt, values)
 		noHooks := pullOnly || nativeNoopUpgrade(previous, chrt, values)
 		// The common Sandbox renderer must apply its already-authorized
 		// manifest, not a late mutation of the sealed input values.
@@ -299,11 +329,15 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 		upgrade.Wait = false
 		upgrade.MaxHistory = 10
 		upgrade.DisableHooks = noHooks
+		if prepared.maintenance != nil {
+			upgrade.DisableHooks = true
+			upgrade.MaxHistory = 0
+		}
 		if prepared.sandboxReconcile != nil {
 			upgrade.DisableHooks = true
 			upgrade.PostRenderer = reconciledSandboxRenderer{prepared}
 		}
-		if _, err := upgrade.Run(releaseName, chrt, values); err != nil {
+		if _, err := upgrade.RunWithContext(ctx, releaseName, chrt, values); err != nil {
 			return fmt.Errorf("helm upgrade %s: %w", releaseName, err)
 		}
 	} else {
@@ -312,11 +346,16 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 		install.ReleaseName = releaseName
 		install.CreateNamespace = false
 		install.Wait = false
+		if prepared.maintenance != nil {
+			// Maintenance requires an existing revision; never turn a lost read
+			// or release deletion into a fresh installation.
+			return fmt.Errorf("Helm maintenance release disappeared before apply")
+		}
 		if prepared.sandboxReconcile != nil {
 			install.DisableHooks = true
 			install.PostRenderer = reconciledSandboxRenderer{prepared}
 		}
-		_, err := install.Run(chrt, values)
+		_, err := install.RunWithContext(ctx, chrt, values)
 		if err != nil {
 			// Another reconcile loop may have raced us to the install.
 			// Treat "already exists" as success — the release is there.
@@ -325,6 +364,9 @@ func (c *Client) installOrUpgrade(namespace, releaseName string, prepared *Prepa
 			}
 			return fmt.Errorf("helm install %s: %w", releaseName, err)
 		}
+	}
+	if prepared.maintenance != nil {
+		return prepared.maintenance.verify(cfg)
 	}
 	return nil
 }
@@ -335,6 +377,11 @@ func (c *Client) Refresh(prepared *PreparedRelease, values map[string]any) (*Pre
 
 // Uninstall removes a Helm release.
 func (c *Client) Uninstall(namespace, releaseName string) error {
+	_, done, err := c.beginReleaseWrite(namespace, releaseName)
+	if err != nil {
+		return err
+	}
+	defer done()
 	cfg, err := actionConfig(namespace)
 	if err != nil {
 		return err

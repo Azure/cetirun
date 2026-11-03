@@ -1,5 +1,6 @@
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $admission := .Values.sandboxAdmission -}}
+{{- $cetiAdmin := include "cetirun-operator.cetiadminAdmission" . -}}
 {{- $placementName := $admission.placementConfigMapName -}}
 {{- $coordinationName := get $admission "coordinationConfigMapName" -}}
 {{- $coordinationUID := get $admission "coordinationConfigMapUID" -}}
@@ -37,17 +38,17 @@
 {{- if and $admission.enforce (not $admission.enabled) -}}
 {{- fail "sandboxAdmission.enforce requires sandboxAdmission.enabled=true" -}}
 {{- end -}}
-{{- if $admission.enabled -}}
+{{- if or $admission.enabled $cetiAdmin -}}
 {{- if not (has $admission.validationMode (list "compatible" "strict")) -}}
 {{- fail "sandboxAdmission.validationMode must be compatible or strict" -}}
 {{- end -}}
 {{- if not (semverCompare ">=1.37.0-0" .Capabilities.KubeVersion.Version) -}}
-{{- fail "sandboxAdmission.enabled requires Kubernetes >= 1.37 (validated admission minimum)" -}}
+{{- fail "Sandbox or CetiAdmin admission requires Kubernetes >= 1.37 (validated admission minimum)" -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[0-9]+$" (toString $admission.replicaCount))) (lt (int64 $admission.replicaCount) 2) -}}
 {{- fail "sandboxAdmission.replicaCount must be an integer >= 2" -}}
 {{- end -}}
-{{- $tlsSecretName := required "sandboxAdmission.tlsSecretName is required when enabled" ($admission.tlsSecretName | trim) -}}
+{{- $tlsSecretName := required "sandboxAdmission.tlsSecretName is required for Sandbox or CetiAdmin admission" ($admission.tlsSecretName | trim) -}}
 {{- range $field, $identities := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups -}}
 {{- if not (kindIs "slice" $identities) -}}
 {{- fail (printf "sandboxAdmission.%s must be a list of nonempty strings" $field) -}}
@@ -94,6 +95,12 @@
 {{- end -}}
 {{- end -}}
 {{- $config := dict "adminUsers" $adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "validationMode" $admission.validationMode -}}
+{{- if $cetiAdmin -}}
+{{- if or (has (include "cetirun-operator.cetiadminUsername" .) $adminUsers) (has (printf "system:serviceaccount:%s:cetirun-cetiadmin-stop" $controllerNamespace) $adminUsers) -}}
+{{- fail "CetiAdmin and its stop hook must not be included in sandboxAdmission.adminUsers" -}}
+{{- end -}}
+{{- $_ := set $config "cetiadmin" (dict "namespace" $controllerNamespace "configMapName" (include "cetirun-operator.cetiadminConfigName" .) "runtimeUsername" (include "cetirun-operator.cetiadminUsername" .) "stopUsername" (printf "system:serviceaccount:%s:cetirun-cetiadmin-stop" $controllerNamespace) "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups) -}}
+{{- end -}}
 {{- if $placementName -}}
 {{- $_ := set $config "placementConfigMapName" $placementName -}}
 {{- end -}}
@@ -173,6 +180,17 @@ rules:
   - apiGroups: ["cetirun.microsoft.com"]
     resources: ["agents", "teams", "sandboxes", "agentpolicies"]
     verbs: ["get", "list"]
+  {{- if $cetiAdmin }}
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "serviceaccounts", "persistentvolumeclaims", "services", "nodes"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments", "replicasets", "daemonsets", "controllerrevisions"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get"]
+  {{- end }}
   {{- if $admission.podsEnabled }}
   - apiGroups: [""]
     resources: ["namespaces", "pods", "persistentvolumeclaims", "serviceaccounts"]

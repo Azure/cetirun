@@ -334,6 +334,12 @@ before it writes:
   PostgreSQL, and for shared skills. Also the Blob storage of shared skills.
   Refer to [Storage](../../operations/storage/).
 - The Secrets of the AI Gateway, as the next paragraph shows.
+- The Microsoft-Decision-1 deployment that the smart-routing model `auto`
+  uses to classify requests. Deploy the model in an Azure AI Foundry resource,
+  not in an Azure OpenAI resource. Record the deployment name, the endpoint of
+  the resource, for example `https://<resource>.services.ai.azure.com`, and its
+  key. Refer to
+  [Foundry Models sold by Azure](https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure).
 - The digests of the Custom images that you approve. Examples are the Pi and
   VS Code Server images that `make publish` pushed. To read a digest, use
   `docker buildx imagetools inspect <image>:<version>`.
@@ -341,7 +347,9 @@ before it writes:
 The AI Gateway reads the provider keys of its models from a Secret. It also
 uses a Secret with its master key, salt key, and console password, and a
 Secret with the password of its Valkey. Create the namespace and these Secrets.
-Give the master key the `sk-` prefix, as the chart does when it generates one:
+Use the namespace of `platform.namespace` and the context of `target.context`.
+The commands use the default namespace, `cetirun-system`. Give the master key
+the `sk-` prefix, as the chart does when it generates one:
 
 ```bash
 kubectl create namespace cetirun-system --dry-run=client -o yaml | kubectl apply -f -
@@ -359,6 +367,16 @@ kubectl create secret generic gateway-valkey-auth -n cetirun-system \
 Do not change the salt key later. If it changes, the models that were added in
 the Gateway's console disappear. Refer to the Gateway chart's
 [Credentials]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#credentials).
+
+The `--from-literal` options put the provider keys in your shell history. To
+prevent this, write each key to a file outside the repository. Then use
+`--from-file=AZURE_OPENAI_KEY=<file>` instead, and delete the files after the
+command.
+
+Each `api_key: os.environ/<NAME>` in the models reads the key `<NAME>` of the
+provider-key Secret. The example environment file uses `AZURE_OPENAI_KEY` for
+the chat models and `AZURE_DECISION_KEY` for `decision-1`. If you rename a key,
+rename it in both places.
 
 Write the environment file outside the repository. Start from the
 [synthetic example]({{< repo "app/cetirun-platform/ci/deployment-example.yaml" >}}),
@@ -408,8 +426,18 @@ Make a decision about these inputs before the first run:
   [the admission certificate](../../operations/policy-teams/#the-admission-certificate).
 - `platform.values.cetirun-ai-gateway.models` holds the shared models. It must
   contain the smart-routing model `auto`, which uses the decision model
-  `decision-1` as its classifier. Refer to
+  `decision-1` as its classifier. The `base_model` of `decision-1` must be
+  `azure_ai/Microsoft-Decision-1`. Refer to
   [Smart routing](../../operations/smart-routing/).
+- `platform.values.cetirun-ai-gateway.postgresql.bundled.persistence` sets the
+  StorageClass and the size of the Gateway's database. A later run cannot
+  change them. Refer to the Gateway chart's
+  [Bundled or your own]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#bundled-or-your-own).
+- LiteLLM's spend log in the Gateway's database keeps the prompt and the
+  response of each call. By default, it keeps them for seven days. To keep
+  only the metadata of each call, set
+  `platform.values.cetirun-ai-gateway.spendLogs.storePrompts: false`. Refer to
+  [the platform values](../../reference/helm/#platform-chart).
 
 Run the offline plan first. Then run the deployment:
 
@@ -419,19 +447,29 @@ make deploy DEPLOY_CONFIG=/absolute/path/environment.yaml
 ```
 
 The plan validates the inputs and renders the charts locally. It does not
-connect to the cluster or to the registry.
+connect to the cluster or to the registry. If a chart refuses its values, the
+plan stops and shows the message of the chart. An example is a router tier that
+is not in `models`.
 
 Before it writes, `make deploy` examines the target cluster, the references,
 the certificates, and the published artifacts. Then it installs the three
 releases and waits for their workloads. On a new installation, it starts the
 admission server before it enforces admission. At the end, it does a
-server-side dry run of a Team. It does not create Agents.
+server-side dry run of a Team. It does not create Agents or send a request to a
+model.
+
+If a step fails, the message names the command of that step.
 
 Run `make deploy` again after each change to the environment file. A run does
 not change the admission administrators, and it does not remove the Sandbox
 settings that are in effect. If the file tries to do this, the run stops.
 Sandbox execution stays disabled until you enable it, as
 [Policy-bound Teams](../../operations/policy-teams/) shows.
+
+A change to the models replaces the Gateway's Pods. When a shared model is
+added or removed, or when its limits change, the Agents that use shared models
+restart one time. Refer to
+[Choose a model](../../guides/models/#runtime-configuration).
 
 With `istio.mode: external`, `make deploy` does not upgrade the CetiRun Istio
 release. Configure that release to reach the portal: use
@@ -543,6 +581,27 @@ kubectl rollout status deployment/cetirun-operator -n cetirun-system --timeout=1
 kubectl rollout status deployment/cetirun-portal -n cetirun-system --timeout=120s
 kubectl rollout status deployment/cetirun-ai-gateway -n cetirun-system --timeout=300s
 ```
+
+`make deploy` sends no request to a model. Send one to the AI Gateway with its
+master key: list the models, and ask `auto` a question. These commands use the
+default namespace and do not print the key:
+
+```bash
+kubectl port-forward -n cetirun-system svc/cetirun-ai-gateway 4000:4000 &
+MASTER_KEY="$(kubectl get secret cetirun-ai-gateway-auth -n cetirun-system \
+  -o jsonpath='{.data.master-key}' | base64 -d)"
+curl -s http://localhost:4000/v1/models -H "Authorization: Bearer ${MASTER_KEY}"
+curl -si http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer ${MASTER_KEY}" -H 'Content-Type: application/json' \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
+```
+
+The list contains the names of `models`. Agents do not see `decision-1`,
+because the Gateway lists it only for keys that the operator did not issue. The
+answer from `auto` has the header `x-litellm-complexity-router-tier`, and
+`x-litellm-complexity-router-cause` is `jev_classifier`. Any other cause shows
+that the classifier did not decide. Then examine the `decision-1` entry, its
+key, and the Gateway's log. Stop the port-forward after the test.
 
 A Team is optional for a new agent. An agent without a Team can use every
 shared model, which includes the smart-routing model `auto`. An administrator

@@ -71,12 +71,15 @@ func TestCommonCustomTerminalAllowsRegistryIsolation(t *testing.T) {
 			agent := f.current(t)
 			namespace, workload := instanceNamespace(agent.Name), instanceServiceName(agent.Name)
 			reviewer := terminalRegistryClient(t, f)
-			if err := registryauth.CheckIsolation(ctx, reviewer, registryauth.DefaultNamespace, namespace, workload, "registry-source-example"); err != nil {
-				t.Fatalf("the governed common terminal prevents private Registry repair or rotation: %v", err)
-			}
 			policy := &admissionv1.ValidatingAdmissionPolicy{}
 			if err := f.kube.Get(ctx, client.ObjectKey{Name: workload + "-" + namespace + "-deny-exec"}, policy); err != nil {
 				t.Fatal(err)
+			}
+			if len(policy.Spec.MatchConditions) != 0 {
+				t.Fatal("protected common terminal must not exempt a legacy administration account")
+			}
+			if err := registryauth.CheckIsolation(ctx, reviewer, registryauth.DefaultNamespace, namespace, workload, "registry-source-example"); err != nil {
+				t.Fatalf("the governed common terminal prevents private Registry repair or rotation: %v", err)
 			}
 			policy.Spec.Validations[0].Expression = "true"
 			if err := f.kube.Update(ctx, policy); err != nil {

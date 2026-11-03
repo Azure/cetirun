@@ -14,7 +14,6 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -125,11 +124,10 @@ func TestReconciledSandboxPendingPolicySourceChangesStillFence(t *testing.T) {
 			}
 			gateway := &policyLimitBlockRecorder{fakeAIGateway: f.gateway}
 			f.r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return gateway, nil }
-			stages, changed := f.installer.stages, false
+			stages, changed, policyRead := f.installer.stages, false, false
 			f.r.APIReader = interceptor.NewClient(f.kube, interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
-					if metadata, ok := object.(*metav1.PartialObjectMetadata); !changed && ok &&
-						metadata.Kind == "Team" && key.Name == agent.Spec.Team {
+					if _, ok := object.(*api.Team); !changed && policyRead && ok && key.Name == agent.Spec.Team {
 						changed = true
 						policy := &api.AgentPolicy{}
 						if err := c.Get(ctx, client.ObjectKey{Name: agent.Status.Policy.EffectivePolicyRef.Name}, policy); err != nil {
@@ -150,7 +148,12 @@ func TestReconciledSandboxPendingPolicySourceChangesStillFence(t *testing.T) {
 							return err
 						}
 					}
-					return c.Get(ctx, key, object, opts...)
+					err := c.Get(ctx, key, object, opts...)
+					if policy, ok := object.(*unstructured.Unstructured); err == nil && ok &&
+						policy.GetKind() == "AgentPolicy" && key.Name == agent.Status.Policy.EffectivePolicyRef.Name {
+						policyRead = true
+					}
+					return err
 				},
 			})
 			_, reconcileErr := f.reconcile()
