@@ -43,6 +43,12 @@ func TestAgentPolicyMutationsUseConfiguredCoordination(t *testing.T) {
 		Spec: api.AgentPolicySpec{
 			Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
 			Network:   api.AgentPolicyNetwork{BlockedCIDRs: []string{"10.0.0.0/8"}},
+			AgentIdentity: api.AgentPolicyAgentIdentity{
+				Allowed:            true,
+				Required:           true,
+				CredentialServices: []string{"azure-resource-manager"},
+			},
+			EntraID: api.AgentPolicyEntraID{Enabled: true},
 		},
 	}
 	storage := newFakeClient(policy)
@@ -55,6 +61,8 @@ func TestAgentPolicyMutationsUseConfiguredCoordination(t *testing.T) {
 	portal.SetConfigurationCoordination(coordination)
 	desired := current.Spec
 	desired.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+	desired.AgentIdentity = api.AgentPolicyAgentIdentity{}
+	desired.EntraID = api.AgentPolicyEntraID{}
 	updated, err := portal.UpdateAgentPolicySpec(ctx, current.Name, desired, AgentPolicyVersion{
 		UID: current.UID, ResourceVersion: current.ResourceVersion,
 	})
@@ -68,6 +76,9 @@ func TestAgentPolicyMutationsUseConfiguredCoordination(t *testing.T) {
 	}
 	if got := updated.Spec.Network.BlockedCIDRs; len(got) != 1 || got[0] != "10.0.0.0/8" {
 		t.Fatalf("coordinated update discarded an unmanaged field: %+v", updated.Spec)
+	}
+	if updated.Spec.AgentIdentity.Allowed || updated.Spec.AgentIdentity.Required || len(updated.Spec.AgentIdentity.CredentialServices) != 0 || updated.Spec.EntraID.Enabled {
+		t.Fatalf("coordinated update did not apply identity fields: %+v", updated.Spec)
 	}
 	if err := portal.DeleteAgentPolicy(ctx, updated.Name, AgentPolicyVersion{UID: updated.UID, ResourceVersion: updated.ResourceVersion}); err != nil {
 		t.Fatal(err)

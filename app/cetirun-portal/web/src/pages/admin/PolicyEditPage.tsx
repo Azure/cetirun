@@ -27,12 +27,14 @@ export interface PolicyFormState {
   copilot: boolean; sharedModels: string; budgetEnabled: boolean; defaultMonthlyUSD: string; maxMonthlyUSD: string;
   allowMultiple: boolean; readOnlyRootFilesystem: boolean; blockedCIDRs: string; blockedPorts: AgentPolicyPort[];
   allowedInternalCIDRs: InternalNetworkRule[]; ingressMode: "authenticated" | "disabled"; limits: RateLimitForm;
+  agentIdentityMode: "disabled" | "optional" | "required"; entraIDEnabled: boolean;
 }
 
 const emptyForm: PolicyFormState = {
   name: "", uid: "", resourceVersion: "", openclaw: true, hermes: false, custom: false, skills: "", copilot: false,
   sharedModels: "", budgetEnabled: false, defaultMonthlyUSD: "", maxMonthlyUSD: "", allowMultiple: false,
   readOnlyRootFilesystem: true, blockedCIDRs: "", blockedPorts: [], allowedInternalCIDRs: [], ingressMode: "authenticated", limits: emptyRateLimitForm,
+  agentIdentityMode: "disabled", entraIDEnabled: false,
 };
 
 function lines(value: string): string[] { return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); }
@@ -86,6 +88,8 @@ export function fromPolicyDTO(policy: AgentPolicyDTO): PolicyFormState {
     blockedCIDRs: (policy.network?.blockedCIDRs || []).join("\n"), blockedPorts: policy.network?.blockedPorts || [],
     allowedInternalCIDRs: formatInternalNetworkRules(policy.network?.allowedInternalCIDRs || []), ingressMode: policy.network?.ingress?.mode || "authenticated",
     limits: rateLimitFormFrom(policy.modelAccess?.rateLimits),
+    agentIdentityMode: policy.agentIdentity?.required ? "required" : policy.agentIdentity?.allowed ? "optional" : "disabled",
+    entraIDEnabled: !!policy.entraID?.enabled,
   };
 }
 
@@ -99,6 +103,11 @@ export function toPolicyRequest(form: PolicyFormState, baseline?: PolicyFormStat
     harnesses: { allowed }, skills: { allowed: lines(form.skills) },
     modelAccess: { copilot: { allowed: form.copilot }, sharedModels: { allowed: lines(form.sharedModels) } },
     sandboxSelection: { allowMultiple: form.allowMultiple }, security: { readOnlyRootFilesystem: form.readOnlyRootFilesystem },
+    agentIdentity: {
+      allowed: form.agentIdentityMode !== "disabled", required: form.agentIdentityMode === "required",
+      credentialServices: form.agentIdentityMode === "disabled" ? [] : ["azure-resource-manager"],
+    },
+    entraID: { enabled: form.entraIDEnabled },
   };
   // Omit untouched network fields before parsing. Stored legacy lists may
   // contain duplicates that must not block unrelated edits or be rewritten.
@@ -263,6 +272,18 @@ export function PolicyEditPage() {
     <div>
       <Button type="button" disabled={form.limits.perModel.length >= MAX_MODEL_LIMITS} onClick={() => setLimits({ perModel: [...form.limits.perModel, { model: "", rpm: "", tpm: "" }] })}>Add per-model limit</Button>
     </div>
+    <Divider />
+    <section aria-label="Identity" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Text weight="semibold">Identity</Text>
+      <Field label="Agent Identity" hint="An independent Microsoft Entra directory identity for access through Connections. Optional lets users choose; Required enables it for every new Agent.">
+        <Select value={form.agentIdentityMode} onChange={(event) => setForm({ ...form, agentIdentityMode: event.target.value as PolicyFormState["agentIdentityMode"] })}>
+          <option value="disabled">Disabled</option><option value="optional">Optional</option><option value="required">Required</option>
+        </Select>
+      </Field>
+      {form.agentIdentityMode !== "disabled" && <Text size={200}>Credential service: Azure Resource Manager. The platform must have Agent Identity and Connections configured.</Text>}
+      <Switch checked={form.entraIDEnabled} label="Entra workload identity" onChange={(_, data) => setForm({ ...form, entraIDEnabled: data.checked })} />
+      <Text size={200}>Provides a token and Azure SDK configuration to the main application container. Requires a platform-approved identity and federation. This is independent of Agent Identity.</Text>
+    </section>
     <Divider /><Text weight="semibold">Sandbox selection and security</Text>
     <Switch checked={form.allowMultiple} label="Allow multiple Sandboxes per Team" onChange={(_, data) => setForm({ ...form, allowMultiple: data.checked })} />
     <Switch checked={form.readOnlyRootFilesystem} label="Use a read-only root filesystem" onChange={(_, data) => setForm({ ...form, readOnlyRootFilesystem: data.checked })} />
@@ -296,7 +317,7 @@ export function PolicyEditPage() {
           </>}
         </> : <Text>No Kubernetes API access is configured in this policy.</Text>}
       </section>
-      <Text>Agent identity: allowed {String(!!existing?.agentIdentity?.allowed)}, required {String(!!existing?.agentIdentity?.required)}, credential services {(existing?.agentIdentity?.credentialServices || []).join(", ") || "none"}.</Text><Text>Entra ID enabled: {String(!!existing?.entraID?.enabled)}.</Text><Text>Blocked FQDNs: {(readonlyNetwork?.blockedFQDNs || []).join(", ") || "none"}.</Text><Text>Ingress mTLS required: {String(!!readonlyNetwork?.ingress?.requireMTLS)}.</Text>
+      <Text>Blocked FQDNs: {(readonlyNetwork?.blockedFQDNs || []).join(", ") || "none"}.</Text><Text>Ingress mTLS required: {String(!!readonlyNetwork?.ingress?.requireMTLS)}.</Text>
     </section>
     {submitError && <AdminConfigurationErrorMessage error={submitError} />}
     {needsReload && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

@@ -12,6 +12,8 @@ const request: AgentPolicyUpsertRequest = {
   uid: "policy-uid",
   resourceVersion: "42",
   harnesses: { allowed: ["openclaw"] },
+  agentIdentity: { allowed: true, required: false, credentialServices: ["azure-resource-manager"] },
+  entraID: { enabled: false },
 };
 
 describe("admin policy API", () => {

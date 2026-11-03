@@ -241,7 +241,6 @@ func TestCreateCustomSandboxModelSelection(t *testing.T) {
 func TestCreationIdentityRequiredAndAvailable(t *testing.T) {
 	team, policy := creationPolicy()
 	policy.Spec.AgentIdentity = api.AgentPolicyAgentIdentity{Allowed: true, Required: true, CredentialServices: []string{"azure-resource-manager"}}
-	policy.Spec.EntraID.Enabled = true
 	h, fc := creationPolicyHandler(team, policy)
 	options := readCreateOptions(t, h, team.Name)
 	if !options.AgentIdentity.Required || !options.AgentIdentity.Allowed || options.Blocked != nil {
