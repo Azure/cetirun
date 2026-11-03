@@ -7,6 +7,7 @@
 IMG ?= cetirun.azurecr.io/cetirun-operator:latest
 
 # Go build settings
+PYTHON ?= python3
 GOFLAGS ?=
 CGO_ENABLED ?= 0
 VERSION ?= dev
@@ -19,6 +20,10 @@ CONTROLLER_GEN ?= controller-gen
 GO_TEST_TIMEOUT := 30m
 # Envtest also runs the unit suite; the combined regressions exceed 30m in CI.
 GO_ENVTEST_TIMEOUT := 40m
+GO_TEST_SHARD_INDEX ?= 1
+GO_TEST_SHARD_COUNT ?= 1
+GO_TEST_RUNNER = $(PYTHON) -B ../../scripts/ci/go_test.py \
+	--shard-index $(GO_TEST_SHARD_INDEX) --shard-count $(GO_TEST_SHARD_COUNT) --
 
 .PHONY: all build build-terminal build-node-guard build-sandbox-config-change test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
@@ -50,7 +55,7 @@ build-sandbox-config-change:
 
 ## Run unit tests
 test:
-	go test ./... -v -count=1 -timeout=$(GO_TEST_TIMEOUT)
+	$(GO_TEST_RUNNER) ./... -v -count=1 -timeout=$(GO_TEST_TIMEOUT)
 
 ## Run go vet
 vet:
@@ -109,7 +114,7 @@ verify-generated: generate manifests
 ## Uses only a local API server and etcd; never connects to an existing cluster.
 test-envtest:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" && test -x "$(KUBEBUILDER_ASSETS)/kubectl" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries, including kubectl"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination ./cmd/sandbox-config-change -count=1 -v -timeout=$(GO_ENVTEST_TIMEOUT)
+	USE_EXISTING_CLUSTER=false $(GO_TEST_RUNNER) -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination ./cmd/sandbox-config-change -count=1 -v -timeout=$(GO_ENVTEST_TIMEOUT)
 
 ## Local Sandbox bootstrap and Gateway rejection; not runtime qualification.
 test-sandbox-integration:

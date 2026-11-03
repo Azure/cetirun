@@ -63,7 +63,8 @@ Install tools only for the component that you change:
   and the pinned Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, as in its CI configuration.
 - Helm to lint and render charts locally.
-- Python 3 for the standard-library tests under `scripts/tests/`.
+- Python 3 for the Operator test runner and the standard-library tests under
+  `scripts/tests/`.
 
 When you update tool versions, examine the component manifests and CI. Keep
 dependency changes separate from unrelated work.
@@ -124,23 +125,37 @@ go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
 
-The full unit target of the Operator uses a bounded Go timeout of 30 minutes
-for each package. This is because the combined controller regressions take
-more than 20 minutes on CI runners. The full envtest target uses 40 minutes
-because it also runs the unit suite together with isolated API-server
-regressions. Together, these take more than 30 minutes on CI runners.
+The Operator unit target keeps a bounded Go timeout of 30 minutes per package,
+and the envtest target keeps 40 minutes. Envtest includes the unit suite along
+with isolated API-server regressions. Their combined controller test times can
+exceed these budgets on CI runners, so Operator CI runs each target across four
+independent shards rather than increasing the timeouts.
 
-Root Go test gates and CI use the same component targets. Neither target
-excludes tests. These budgets do not change individual test assertions or
-runtime/lifecycle deadlines.
+Root Go test gates and CI use the same component targets. By default, local
+`make test` and `make test-envtest` still run the entire suite without filtering.
+To reproduce one CI shard, set its one-based index and the total shard count:
 
-Operator CI runs unit/build checks and API admission checks in separate,
-independent jobs. Each job keeps a 60-minute limit. The `Operator Go checks`
-status that already exists combines both jobs and fails unless both succeed.
-For example, the status fails if a job fails, is skipped, or is cancelled.
-With this design, the two full suites do not share one job deadline. The
-design also does not drop the generated-API, Portal, build, or vulnerability
-checks.
+```bash
+make -C app/cetirun-operator test GO_TEST_SHARD_INDEX=1 GO_TEST_SHARD_COUNT=4
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  make -C app/cetirun-operator test-envtest GO_TEST_SHARD_INDEX=1 GO_TEST_SHARD_COUNT=4
+```
+
+Run indices 1 through 4 to cover a full sharded suite. The shared runner in
+`scripts/ci/go_test.py` discovers tests with `go test -json -list .` using the
+same packages and build tags, then assigns each top-level test name to exactly
+one shard with a stable hash. New tests are included automatically. Identical
+names in different packages stay in the same shard. Every selected test runs
+all its subtests; examples and fuzz seed tests are included, but benchmarks
+are not enabled. Discovery failures, invalid indices, empty shards, and test
+failures fail the command. No test assertions or runtime/lifecycle deadlines
+change.
+
+Each CI worker keeps its 60-minute job limit, and a failure does not cancel
+the remaining shards. The existing `Operator Go checks` status combines both
+job matrices and fails unless every shard succeeds, including when a worker
+fails, is skipped, or is cancelled. Generated-API, Portal, build, and
+vulnerability checks remain in their existing worker jobs.
 
 The build writes `app/cetirun-operator/bin/manager`. It does not start the
 operator. The component's `make test` and `make vet` targets are also

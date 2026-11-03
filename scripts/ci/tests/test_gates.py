@@ -342,6 +342,13 @@ class WorkflowContractTests(unittest.TestCase):
         makefile = (validate.ROOT / "app/cetirun-operator/Makefile").read_text()
         self.assertIn("GO_TEST_TIMEOUT := 30m", makefile)
         self.assertIn("GO_ENVTEST_TIMEOUT := 40m", makefile)
+        self.assertIn("GO_TEST_SHARD_INDEX ?= 1", makefile)
+        self.assertIn("GO_TEST_SHARD_COUNT ?= 1", makefile)
+        self.assertIn("$(PYTHON) -B ../../scripts/ci/go_test.py", makefile)
+        self.assertIn(
+            "--shard-index $(GO_TEST_SHARD_INDEX) --shard-count $(GO_TEST_SHARD_COUNT) --",
+            makefile,
+        )
         for target, timeout in (
             ("test", "GO_TEST_TIMEOUT"),
             ("test-envtest", "GO_ENVTEST_TIMEOUT"),
@@ -350,6 +357,7 @@ class WorkflowContractTests(unittest.TestCase):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
                 self.assertIn(f"-timeout=$({timeout})", commands)
                 self.assertIn("-count=1", commands)
+                self.assertIn("$(GO_TEST_RUNNER)", commands)
                 self.assertNotIn("-run", commands)
                 self.assertNotIn("|| true", commands)
         for target in ("test-envtest", "test-sandbox-lifecycle"):
@@ -357,8 +365,9 @@ class WorkflowContractTests(unittest.TestCase):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
                 self.assertIn("./cmd/sandbox-config-change", commands)
                 self.assertIn('test -x "$(KUBEBUILDER_ASSETS)/kubectl"', commands)
-                self.assertIn("USE_EXISTING_CLUSTER=false go test -tags=envtest", commands)
-        self.assertIn("go test ./... -v", makefile)
+                self.assertIn("USE_EXISTING_CLUSTER=false", commands)
+                self.assertIn("-tags=envtest", commands)
+        self.assertIn("$(GO_TEST_RUNNER) ./... -v", makefile)
         for name in ("operator-ci.yml", "operator-release.yml"):
             with self.subTest(workflow=name):
                 text = (validate.ROOT / ".github/workflows" / name).read_text()
@@ -378,7 +387,7 @@ class WorkflowContractTests(unittest.TestCase):
             steps["Run go test"],
         )
 
-    def test_operator_go_check_requires_both_bounded_workers(self):
+    def test_operator_go_check_requires_all_shards_of_both_bounded_workers(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
         jobs = dict(re.findall(
             r"(?ms)^  ([a-z][\w-]*):\n(.*?)(?=^  [a-z][\w-]*:|\Z)", text
@@ -397,6 +406,11 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn("working-directory: app/cetirun-operator", jobs[job])
                 self.assertIn("go-version-file: .go-version", jobs[job])
                 self.assertIn("persist-credentials: false", jobs[job])
+                self.assertIn("fail-fast: false", jobs[job])
+                self.assertIn("shard: [1, 2, 3, 4]", jobs[job])
+                self.assertIn("GO_TEST_SHARD_INDEX: ${{ matrix.shard }}", jobs[job])
+                self.assertIn("GO_TEST_SHARD_COUNT: ${{ strategy.job-total }}", jobs[job])
+                self.assertNotIn("exclude:", jobs[job])
                 self.assertNotIn("needs:", jobs[job])
                 self.assertNotIn("if:", jobs[job])
                 self.assertNotIn("continue-on-error", jobs[job])
