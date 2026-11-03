@@ -25,7 +25,9 @@ const (
 // its classifier picks. Administrators define routers; an Agent receives a
 // router only when everything the router uses is available to it.
 type TeamModelRouter struct {
-	// Name is the model name Agents request, such as auto or auto-claude.
+	// Name is the model name Agents request, such as auto-team or auto-claude.
+	// It must differ from the name of every shared model of the AI Gateway,
+	// such as the Gateway's own router auto that make deploy configures.
 	// It has no whitespace or slash and must not start with the reserved
 	// prefix cetirun- (in any letter case).
 	// +kubebuilder:validation:MinLength=1

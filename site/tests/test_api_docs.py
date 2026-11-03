@@ -64,7 +64,11 @@ class ApiDocumentationTests(unittest.TestCase):
     def test_installation_documents_platform_and_crd_boundaries(self):
         install = (SITE / "content/en/docs/getting-started/platform.md").read_text()
         reference = (SITE / "content/en/docs/reference/crds.md").read_text()
+        self.assertIn("make deploy DEPLOY_CONFIG=", install)
+        self.assertIn("make deploy-plan DEPLOY_CONFIG=", install)
         self.assertIn("scripts/cetirun-platform-deploy.sh", install)
+        # The helper reads only its environment file since make deploy.
+        self.assertNotIn("VALUES_FILE=", install)
         self.assertIn("PORTAL_AUTH_NAMESPACE=cetirun-system", install)
         self.assertIn("Helm upgrades the CRDs", install)
         self.assertIn("does not convert, adopt, or delete", reference)

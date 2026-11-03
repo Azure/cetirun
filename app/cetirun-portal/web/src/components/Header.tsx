@@ -100,68 +100,74 @@ export function Header() {
             CetiRun Portal
           </Text>
         </Link>
-        <div
-          className="portal-header-actions"
-          style={{ display: "flex", alignItems: "center", gap: "8px" }}
-        >
-          {account?.scope && !account.checking && (
-            <Button
-              appearance="subtle"
-              size="small"
-              onClick={() => setHistoryOpen(true)}
-            >
-              Local history
+        <div className="portal-header-actions">
+          {(features?.agentToolsEnabled || me?.isAdmin) && (
+            <nav className="portal-header-navigation" aria-label="Main navigation">
+              {me?.isAdmin && (
+                <NavLink
+                  to="/admin"
+                  style={({ isActive }) => ({
+                    textDecoration: "none",
+                    padding: "4px 8px",
+                    borderRadius: "4px",
+                    fontSize: "14px",
+                    color: isActive
+                      ? tokens.colorBrandForeground1
+                      : tokens.colorNeutralForeground1,
+                    fontWeight: isActive ? 600 : 400,
+                  })}
+                >
+                  Admin
+                </NavLink>
+              )}
+              {features?.agentToolsEnabled && (
+                <NavLink
+                  to="/connections"
+                  style={({ isActive }) => ({
+                    textDecoration: "none",
+                    padding: "4px 8px",
+                    borderRadius: "4px",
+                    fontSize: "14px",
+                    color: isActive
+                      ? tokens.colorBrandForeground1
+                      : tokens.colorNeutralForeground1,
+                    fontWeight: isActive ? 600 : 400,
+                  })}
+                >
+                  Connections
+                </NavLink>
+              )}
+            </nav>
+          )}
+          <div className="portal-header-utilities">
+            {account?.scope && !account.checking && (
+              <Button
+                appearance="subtle"
+                size="small"
+                onClick={() => setHistoryOpen(true)}
+              >
+                Local history
+              </Button>
+            )}
+            <label className="portal-header-theme">
+              <Text size={200}>Theme</Text>
+              <Select
+                size="small"
+                aria-label="Theme"
+                value={themeMode}
+                onChange={(_, data) => {
+                  if (isThemeMode(data.value)) setThemeMode(data.value);
+                }}
+              >
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </Select>
+            </label>
+            <Button appearance="subtle" size="small" onClick={handleSignOut}>
+              Sign out
             </Button>
-          )}
-          {features?.agentToolsEnabled && (
-            <NavLink
-              to="/connections"
-              style={({ isActive }) => ({
-                textDecoration: "none",
-                padding: "4px 8px",
-                borderRadius: "4px",
-                fontSize: "14px",
-                color: isActive
-                  ? tokens.colorBrandForeground1
-                  : tokens.colorNeutralForeground1,
-                fontWeight: isActive ? 600 : 400,
-              })}
-            >
-              Connections
-            </NavLink>
-          )}
-          {me?.isAdmin && (
-            <NavLink
-              to="/admin"
-              style={({ isActive }) => ({
-                textDecoration: "none",
-                padding: "4px 8px",
-                borderRadius: "4px",
-                fontSize: "14px",
-                color: isActive
-                  ? tokens.colorBrandForeground1
-                  : tokens.colorNeutralForeground1,
-                fontWeight: isActive ? 600 : 400,
-              })}
-            >
-              Admin
-            </NavLink>
-          )}
-          <Select
-            size="small"
-            aria-label="Theme"
-            value={themeMode}
-            onChange={(_, data) => {
-              if (isThemeMode(data.value)) setThemeMode(data.value);
-            }}
-          >
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </Select>
-          <Button appearance="subtle" size="small" onClick={handleSignOut}>
-            Sign out
-          </Button>
+          </div>
         </div>
       </div>
       {account?.scope && !account.checking && historyOpen && (

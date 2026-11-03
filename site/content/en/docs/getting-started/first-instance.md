@@ -7,9 +7,10 @@ weight: 10
 ## Before you begin
 
 You must have access to a configured CetiRun portal. You must also be a member
-of the Entra ID group that the portal allows. You must also have an account
-with the model provider that you intend to use. Ask your administrator for the
-actual portal URL. In these docs, `https://example.com/` is only a placeholder.
+of the Entra ID group that the portal allows. Agents take their models from the
+AI Gateway: the models that your administrators share, or the models of your
+own GitHub Copilot subscription. Ask your administrator for the actual portal
+URL. In these docs, `https://example.com/` is only a placeholder.
 
 The portal's **Sign out** action uses `/oauth2/sign_out` on the portal origin.
 As part of the deployment, we recommend that your administrator make sure that
@@ -27,19 +28,20 @@ sign-out clears the session. For the necessary routing, refer to
    you leave the name empty, the portal uses your alias as the name. For the
    synthetic owner `alice`, a suffix such as `example` gives `alice-example`.
    To let the platform generate the gateway token, leave the token empty.
-4. Select a **Team**. Every platform installation includes the AI Gateway, and
-   a Team is necessary for the AI Gateway. **Create Agent** stays disabled
-   until you select a Team. The portal rejects a request without a Team. If
-   the list is empty, ask an administrator to create a Team in the portal's
-   administration pages.
-5. Select the models. To use the models that your administrators share, enable
-   **Use shared models**. To use your own Copilot subscription, enable
-   **Use GitHub Copilot**. You can enable both, but at least one stays enabled.
-   If the form says that the deployment offers neither, ask an administrator
-   to add a shared model. With shared models enabled, you can select the
-   default model or keep the deployment default.
-6. Select **Microsoft Entra Agent Identity** only when the deployment enables
-   it and delegated Azure access is necessary for you. Then select
+4. Optionally, select a **Team**. A Team can select the policy and the Sandbox
+   of the agent, and it can offer its own smart-routing models. To create the
+   agent without a Team, keep **(none)**.
+5. Select the models. The form shows **Use shared models** only when your
+   administrators share models. It shows **Use GitHub Copilot** only when the
+   deployment offers GitHub Copilot. The Policy of the selected Team can limit
+   both. At least one source stays enabled. If the form says that no models are
+   available, ask an administrator to examine model access.
+
+   In **Default model (optional)**, select a model, or keep **(automatic)** for
+   the deployment default. A Team's smart-routing models show
+   `(smart routing)` after their names.
+6. Select **Enable Microsoft Entra Agent Identity** only when the form shows it
+   and delegated Azure access is necessary for you. Then select
    **Create Agent**. Wait until the platform provisions the instance. If the
    instance does not become ready, an administrator can examine the individual
    readiness conditions.
@@ -65,9 +67,11 @@ sign-out clears the session. For the necessary routing, refer to
 The deployment controls the offered agent types, the visibility of Tailscale,
 and the number of instances that each user can create. By default, the portal
 chart allows one instance per user. This is a portal creation limit, not a
-Kubernetes resource quota or a restriction on direct CR creation. An instance
-of a Team with an Agent Policy runs in the Team's Sandbox. Tailscale and Agent
-Identity are not available in this Sandbox. Refer to
+Kubernetes resource quota or a restriction on direct CR creation.
+
+An instance of a Team with an Agent Policy runs in the Team's Sandbox.
+Tailscale is not available in this Sandbox. Agent Identity is available only
+when the Team's Policy allows it. Refer to
 [Policy-bound Teams](../../operations/policy-teams/).
 
 Sources: [creation form]({{< repo "app/cetirun-portal/web/src/components/CreateForm.tsx" >}})
@@ -91,6 +95,8 @@ spec:
   sandboxRef: standard
   agent:
     type: hermes
+  modelAccess:
+    sharedModels: true
   gatewayTokenSecretRef: gateway-token
   user:
     alias: alice
@@ -105,6 +111,11 @@ Do not use `ui`, because the controller reserves it.
 an administrator defines. You must set `spec.agent`. If you do not set its
 `type`, Hermes is the default. The effective type and runtime username cannot
 change after creation.
+
+An agent with `spec.sandboxRef` must request its model sources. Without
+`modelAccess.sharedModels: true` or `modelAccess.githubCopilot: true`, it gets
+no model. The Policy of the Team must also allow each source that the agent
+requests.
 
 Validate the manifest against the cluster's installed CRD. This command does
 not save the manifest:
@@ -141,8 +152,14 @@ Secret for diagnosis. If you supply a Secret that already exists, make sure
 that its OpenClaw token is valid. The name of a Secret alone does not validate
 its contents.
 
-`spec.model` is optional for Copilot, because the operator supplies its
-deployment default. If `spec.helm.version` is empty, it is set to the
+`spec.model` is optional. It names the default model of the agent, as the AI
+Gateway offers it, for example `auto`. Without it, the operator supplies its
+deployment default. For an agent of a policy-bound Team, the Policy must allow
+the model. If it does not, the agent does not run. Its `PolicyResolved`
+condition is then `False` with the reason `PolicyDenied`, and the message names
+the model.
+
+If `spec.helm.version` is empty, it is set to the
 operator's runtime chart version at the first reconciliation. This pins the
 instance chart. A change to only the operator's default chart version does not
 upgrade the instances that already exist.

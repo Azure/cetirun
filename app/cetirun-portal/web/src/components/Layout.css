@@ -13,17 +13,36 @@ body,
 .portal-header-inner {
   padding: 12px 48px;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .portal-header-brand {
   white-space: nowrap;
 }
 .portal-header-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+.portal-header-navigation,
+.portal-header-utilities,
+.portal-header-theme {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.portal-header-utilities {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.portal-header-theme {
+  white-space: nowrap;
 }
 @media (max-width: 700px) {
   .portal-header-inner {
     padding: 8px 12px;
-    flex-wrap: wrap;
   }
   .portal-header-brand img {
     width: 32px;

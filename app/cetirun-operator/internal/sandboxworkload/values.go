@@ -263,7 +263,7 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		}
 		if terminal := b.input.Terminal; terminal != nil {
 			control["terminal"] = map[string]any{
-				"enabled": terminalEnabled, "image": terminal.Image, "port": terminal.Port,
+				"enabled": terminalEnabled && !b.input.Suspended, "image": terminal.Image, "port": terminal.Port,
 				"sessionSeconds": terminal.SessionSeconds, "serviceAccountName": terminal.ServiceAccountName,
 			}
 		}

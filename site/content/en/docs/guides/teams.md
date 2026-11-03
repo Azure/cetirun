@@ -133,10 +133,10 @@ each member instance. Accepted Team configuration is not runtime enforcement.
 ## Smart routing
 
 A Team can define up to ten smart-routing models (`spec.modelRouters`). Each
-is a model name, such as `auto`, `auto-gpt` or `auto-claude`, that the Team's
-instances can select like any other model. For each request, the AI Gateway
-classifies how difficult the request is and sends it to the model of that
-tier.
+is a model name, such as `auto-team`, `auto-gpt` or `auto-claude`, that the
+Team's instances can select like any other model. For each request, the AI
+Gateway classifies how difficult the request is and sends it to the model of
+that tier.
 
 Administrators define routers on the Team page in the Portal, under
 **Smart routing**. Members see only if they can use a router name. They never
@@ -151,7 +151,8 @@ Each router has:
 
 - A **name** of 1 to 64 characters, without spaces or slashes. The name does
   not start with the reserved `cetirun-` prefix, and it is not the name of a
-  shared model.
+  shared model. On an installation that `make deploy` made, `auto` is the name
+  of a shared model, because it is the Gateway's router.
 - A **classifier**. `heuristic` (the default) scores each request locally
   without a model call. `llm` asks a shared chat model to classify each
   request. `jev` asks a shared decision model, such as Microsoft-Decision-1, to
@@ -166,10 +167,13 @@ Each router has:
   checks of the instance's key. If the classifier is a router, the router
   forwards the call to a model of its own choice.
 - Four **tiers**, `simple`, `medium`, `complex` and `reasoning`. Each tier
-  names a shared model that answers conversations and is not itself a router,
-  or `copilot/<model>` for a GitHub Copilot model. You can leave `reasoning`
-  empty to use the `complex` model. Requests that the router cannot classify
-  go to the `medium` model.
+  names a shared model that answers conversations and is not itself a router.
+  A tier can also name `copilot/<model>` for a GitHub Copilot model. You can
+  leave `reasoning` empty to use the `complex` model.
+
+  The `medium` model is also the router's default model. For example, a
+  request goes to it when its `jev` classification fails. If an `llm`
+  classifier fails, the router classifies the request with `heuristic` instead.
 
 If the model of a `copilot/<model>` tier is the same model as a shared model,
 the tier is registered as that shared model. GitHub Copilot routes of that
@@ -182,7 +186,7 @@ ID is granted only to instances whose owner's Copilot model has that name.
 ```yaml
 spec:
   modelRouters:
-    - name: auto
+    - name: auto-team
       tiers:
         simple: small-model
         medium: medium-model
@@ -208,16 +212,20 @@ spec:
 
 LiteLLM sends a `jev` classifier the instance's whole system prompt and its
 latest user messages. Microsoft-Decision-1 takes at most 32,768 tokens. The
-AI Gateway shortens a longer classifier request to as many bytes as the
-decision model takes tokens. This number is its `model_info.max_input_tokens`,
-or 32,768 when that is not set. If the newest user message fits, the Gateway
-keeps it whole. It also keeps the start and the end of the rest.
+AI Gateway shortens a longer classifier request so that it fits.
+
+The limit in bytes is the number of tokens that the decision model takes, less
+the size of LiteLLM's questions and 512 bytes. The number of tokens is the
+model's `model_info.max_input_tokens`, or 32,768 when that is not set. If the
+newest user message fits, the Gateway keeps it whole. It also keeps the start
+and the end of the rest.
 
 When a classification fails anyway, the router sends the request to its
 `medium` model. For example, this occurs while the decision model is
 unavailable. The response header `x-litellm-complexity-router-cause` and the
 request log's `routing_cause` show `jev_classifier`. After a failed
-classification, they show `default_model_fallback`.
+classification, they show `default_model_fallback`, and the request log has no
+`routing_tier`.
 
 The operator registers each router in the AI Gateway under an internal name
 and reports it on the Team. `status.modelRouters` lists each router as ready,
@@ -284,9 +292,11 @@ refuses the request with HTTP 403. As a result:
 An instance that cannot use a router reports the reason in
 `status.aiGateway.modelRouters`, and its Portal page shows the reason. A
 change to the tiers or the classifier of a router updates instance keys and
-registrations. It does not change the Policy's Gateway projection. Only the
-limits that the instance is configured with for the router follow the tiers,
-as described in [Choose a model](../models/#smart-routing-models).
+registrations. It does not change the Policy's Gateway projection. Each change
+to a Team, its routers included, restarts the Team's running Sandbox Agents one
+time. The Team is an input of their Sandbox. Only the limits that the instance
+is configured with for the router follow the tiers, as described in
+[Choose a model](../models/#smart-routing-models).
 
 Without a LiteLLM license, LiteLLM limits some router features to a single
 router per Gateway. These features are:
