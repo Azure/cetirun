@@ -2616,6 +2616,12 @@ metadata, prompt, and response. The default of `spendLogs.storePrompts` is
 with the selected boolean. This default applies to new installs and to upgrades
 that have no explicit value for `storePrompts`. It can store sensitive content.
 
+The prompt is the request body of the call: the messages, with images and tool
+results, and the tools. LiteLLM shortens each value in it, and in the response,
+that is longer than 2,048 characters, its `MAX_STRING_LENGTH_PROMPT_IN_DB`
+default. It keeps the start and the end of the value. As a result, an image is
+stored only in part.
+
 To keep the call metadata, but not to store prompts or responses, use these
 values:
 
