@@ -110,6 +110,13 @@ Licensed under the MIT License.
 {{- if .maxTokens }}
 {{- $_ := set $entry "maxTokens" (int .maxTokens) }}
 {{- end }}
+{{- /* A model the Gateway reports as accepting images gets them with a
+   request. Without input, OpenClaw takes the value from its own catalog,
+   which knows only some model names; for the rest, another model describes
+   images. */}}
+{{- if has .id (dig "visionModels" (list) $.Values.aiGateway) }}
+{{- $_ := set $entry "input" (list "text" "image") }}
+{{- end }}
 {{- if eq .id $model }}
 {{- $listed = true }}
 {{- end }}

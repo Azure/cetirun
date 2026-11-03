@@ -77,7 +77,14 @@ annotations:
   checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
   checksum/secret: {{ include (print .Template.BasePath "/secret.yaml") . | sha256sum }}
   {{- end }}
-  {{- with .Values.podAnnotations }}
+  {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
+  {{- if .Values.cetiadmin.enabled }}
+  {{- $_ := set $annotations "checksum/cetiadmin" (toJson .Values.cetiadmin | sha256sum) }}
+  {{- if .Values.cetiadmin.azureWorkloadIdentity.enabled }}
+  {{- $_ := set $annotations "azure.workload.identity/skip-containers" (include "cetirun.cetiadmin.azureSkipContainers" .) }}
+  {{- end }}
+  {{- end }}
+  {{- with $annotations }}
   {{- toYaml . | nindent 2 }}
   {{- end }}
 labels:
@@ -85,7 +92,7 @@ labels:
   {{- with .Values.sandboxWorkload }}
   {{- toYaml .podLabels | nindent 2 }}
   {{- end }}
-  {{- if and (not $bindings) .Values.azureWorkloadIdentity.enabled }}
+  {{- if and (not $bindings) (or .Values.azureWorkloadIdentity.enabled (and .Values.cetiadmin.enabled .Values.cetiadmin.azureWorkloadIdentity.enabled)) }}
   azure.workload.identity/use: "true"
   {{- end }}
 {{- end }}

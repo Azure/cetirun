@@ -72,6 +72,136 @@ func routerStatuses(agent *api.Agent) map[string]api.AIGatewayModelRouterStatus 
 	return statuses
 }
 
+// limitedSharedModel is a shared model of the Gateway chart's models with the
+// given limits, as the catalog lists it.
+func limitedSharedModel(name string, contextWindow, maxTokens int64) aigateway.Deployment {
+	return aigateway.Deployment{ID: managedTestDeploymentID(name, 3), ModelName: name, AccessGroups: []string{gatewayRouterGroup(name)},
+		DatabaseSourceKnown: true, Priced: true, MaxInputTokens: contextWindow, MaxOutputTokens: maxTokens}
+}
+
+// A router configured in the Gateway that states no limits gets the smallest
+// limits among its tier models and its default model, so an Agent configured
+// with it sizes each request to fit whichever model the router picks.
+func TestAIGatewayCatalogGivesAGatewayRouterTheSmallestLimitsOfItsModels(t *testing.T) {
+	defaultModel := aigateway.RouterModel{Use: aigateway.RouterDefault, Name: "default-model"}
+	classifier := aigateway.RouterModel{Use: aigateway.RouterClassifier, Name: "classifier-model"}
+	compactor := aigateway.RouterModel{Use: aigateway.RouterCompactor, Name: "compactor-model"}
+	models := []aigateway.Deployment{
+		limitedSharedModel("small", 400000, 16384),
+		limitedSharedModel("large", 1000000, 32768),
+		limitedSharedModel("default-model", 600000, 8192),
+		// Models that answer no request of the Agent, and one without limits.
+		limitedSharedModel("classifier-model", 1000, 10),
+		limitedSharedModel("compactor-model", 2000, 20),
+		limitedSharedModel("no-limits", 0, 0),
+	}
+	everything := gatewayRouter("auto-all", tierModel("SIMPLE", "small"), tierModel("MEDIUM", "large"),
+		tierModel("COMPLEX", "no-limits"), defaultModel, classifier, compactor)
+	// The administrator set the router's context window: it is kept, and its
+	// output limit still comes from its models.
+	ownWindow := gatewayRouter("auto-own", tierModel("SIMPLE", "small"))
+	ownWindow.MaxInputTokens = 100000
+	unknown := gatewayRouter("auto-unknown", tierModel("SIMPLE", "small"))
+	unknown.Router.Unverifiable = "it runs routing plugins, code the operator cannot check"
+	// A router named as a tier is not a model, and its limits do not count.
+	nested := gatewayRouter("auto-nested", tierModel("SIMPLE", "auto-all"), tierModel("MEDIUM", "large"))
+	onlyUnknown := gatewayRouter("auto-no-limits", tierModel("SIMPLE", "no-limits"))
+	listing := append(slices.Clone(models), everything, ownWindow, unknown, nested, onlyUnknown)
+	want := map[string][2]int64{
+		"auto-all":       {400000, 8192},
+		"auto-own":       {100000, 16384},
+		"auto-unknown":   {0, 0},
+		"auto-nested":    {1000000, 32768},
+		"auto-no-limits": {0, 0},
+		"small":          {400000, 16384},
+	}
+	check := func(order string, listing []aigateway.Deployment) {
+		t.Helper()
+		var catalog aiGatewayCatalog
+		catalog.update(listing, false, time.Now())
+		shared, _ := catalog.shared()
+		got := map[string][2]int64{}
+		for _, model := range shared {
+			got[model.Name] = [2]int64{model.ContextWindow, model.MaxOutputTokens}
+		}
+		for name, limits := range want {
+			if got[name] != limits {
+				t.Errorf("%s: %s limits = %v, want %v", order, name, got[name], limits)
+			}
+		}
+		// The published catalog carries them, for the Portal and for a catalog
+		// seeded from it.
+		for _, model := range catalog.sharedRouters().describe(shared) {
+			if model.Name == "auto-all" && (model.ContextWindow != 400000 || model.MaxOutputTokens != 8192) {
+				t.Errorf("%s: published %+v", order, model)
+			}
+		}
+	}
+	check("listed", listing)
+	reversed := slices.Clone(listing)
+	slices.Reverse(reversed)
+	check("reversed", reversed)
+}
+
+// The Agents configured with a router configured in the Gateway get its
+// limits, and only they are reconfigured when a change to its models changes
+// them.
+func TestAgentIsConfiguredWithTheLimitsOfAGatewayRouter(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: testLegacyRouterTeam, Generation: 1}}
+	legacy := aiGatewayTestAgent(testLegacyRouterTeam)
+	legacy.Spec.SandboxRef, legacy.Status.Policy = "", nil
+	legacy.Spec.ModelAccess = modelAccess(true, false)
+	bound := aiGatewayTestAgent(testAIGatewayTeam)
+	bound.Name, bound.UID = "bob", types.UID("00000000-0000-0000-0000-00000000b0b0")
+	bobNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instanceNamespace("bob"), UID: "test-agent-namespace-uid-bob"}}
+	r, kube, gateway := aiGatewayTestReconciler(t, legacy, bound, team, aiGatewayNamespace(), bobNamespace)
+	addSmallSharedModel(gateway)
+	gateway.shared = append(gateway.shared, limitedSharedModel("tiny", 100000, 4096),
+		gatewayRouter(testGatewayRouter, tierModel("SIMPLE", testSmallModel), tierModel("MEDIUM", testSharedModelOne)))
+	// The policy allows the small model, not the router.
+	allowTestPolicyModels(t, kube, testSmallModel)
+	ctx := context.Background()
+	for _, agent := range []*api.Agent{legacy, bound} {
+		if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, _, _ := r.aiGatewayModelEntries(legacy)
+	i := slices.IndexFunc(entries, func(entry aiGatewayModelEntry) bool { return entry.ID == testGatewayRouter })
+	if i < 0 || entries[i].ContextWindow != 400000 || entries[i].MaxTokens != 16384 {
+		t.Fatalf("entries %+v", entries)
+	}
+	if revision := r.aiGatewayRevision(legacy); !strings.Contains(revision, "gateway-router-limits|"+testGatewayRouter+":400000:16384") ||
+		!strings.Contains(revision, testGatewayRouter+":router") {
+		t.Fatalf("revision %s", revision)
+	}
+	legacyRevision, boundRevision := r.aiGatewayRevision(legacy), r.aiGatewayRevision(bound)
+
+	// The medium tier moves to a model with smaller limits.
+	setRouter(t, gateway, testGatewayRouter, aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", testSmallModel), tierModel("MEDIUM", "tiny")}})
+	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
+	if r.aiGatewayRevision(legacy) == legacyRevision {
+		t.Fatal("new limits of a router the Agent is configured with must reconfigure it")
+	}
+	if r.aiGatewayRevision(bound) != boundRevision {
+		t.Fatal("an Agent the router is not granted to must not be reconfigured for its limits")
+	}
+	entries, _, _ = r.aiGatewayModelEntries(legacy)
+	i = slices.IndexFunc(entries, func(entry aiGatewayModelEntry) bool { return entry.ID == testGatewayRouter })
+	if i < 0 || entries[i].ContextWindow != 100000 || entries[i].MaxTokens != 4096 {
+		t.Fatalf("entries %+v", entries)
+	}
+
+	// A policy that allows the router: its status reports the limits.
+	allowTestPolicyModels(t, kube, testGatewayRouter, "tiny")
+	if err := r.reconcileAIGateway(ctx, bound, true); err != nil {
+		t.Fatal(err)
+	}
+	if router := routerStatuses(bound)[testGatewayRouter]; !router.Granted || router.ContextWindow != 100000 || router.MaxTokens != 4096 {
+		t.Fatalf("router status %+v", router)
+	}
+}
+
 // The rule for a router configured in the Gateway, on its own.
 func TestGatewayRouterRefusalFollowsEveryModelTheRouterUses(t *testing.T) {
 	routerOf := func(models ...aigateway.RouterModel) aigateway.Router { return aigateway.Router{Models: models} }
@@ -166,7 +296,9 @@ func TestPolicyBoundAgentGetsAGatewayRouterOnlyWithEveryModelItUses(t *testing.T
 		t.Fatalf("router statuses %+v", status.ModelRouters)
 	}
 	routers := routerStatuses(agent)
-	if router := routers[testGatewayRouter]; !router.Granted || router.Model != testGatewayRouter || router.Reason != "" {
+	// The router's limits are the smallest of its tiers and its default model.
+	if router := routers[testGatewayRouter]; !router.Granted || router.Model != testGatewayRouter || router.Reason != "" ||
+		router.ContextWindow != 400000 || router.MaxTokens != 16384 {
 		t.Fatalf("%s = %+v", testGatewayRouter, router)
 	}
 	for name, reason := range map[string]string{
@@ -337,11 +469,12 @@ func TestLegacyAgentGetsEveryGatewayRouterButAMisconfiguredOne(t *testing.T) {
 	}
 
 	// A tier the Gateway does not serve: the next reconcile of the Agent is
-	// the full one, without a configuration change, and withdraws the router.
+	// the full one, and withdraws the router. The router's limits leave the
+	// Agent's configuration with it.
 	setRouter(t, gateway, testGatewayRouter, aigateway.Router{Models: []aigateway.RouterModel{tierModel("SIMPLE", "missing-model")}})
 	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
-	if !r.aiGatewayReconcileDue(agent, time.Now()) || r.aiGatewayRevision(agent) != revision {
-		t.Fatal("a withdrawn router must make the full reconcile due, without a configuration change")
+	if !r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("a withdrawn router must make the full reconcile due")
 	}
 	reconcile()
 	if slices.Contains(lastKeyModels(gateway), gatewayRouterGroup(testGatewayRouter)) || slices.Contains(agent.Status.AIGateway.Models, testGatewayRouter) {

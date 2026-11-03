@@ -95,6 +95,8 @@ spec:
   sandboxRef: standard
   agent:
     type: hermes
+  modelAccess:
+    sharedModels: true
   gatewayTokenSecretRef: gateway-token
   user:
     alias: alice
@@ -109,6 +111,11 @@ Do not use `ui`, because the controller reserves it.
 an administrator defines. You must set `spec.agent`. If you do not set its
 `type`, Hermes is the default. The effective type and runtime username cannot
 change after creation.
+
+An agent with `spec.sandboxRef` must request its model sources. Without
+`modelAccess.sharedModels: true` or `modelAccess.githubCopilot: true`, it gets
+no model. The Policy of the Team must also allow each source that the agent
+requests.
 
 Validate the manifest against the cluster's installed CRD. This command does
 not save the manifest:
@@ -147,7 +154,12 @@ its contents.
 
 `spec.model` is optional. It names the default model of the agent, as the AI
 Gateway offers it, for example `auto`. Without it, the operator supplies its
-deployment default. If `spec.helm.version` is empty, it is set to the
+deployment default. For an agent of a policy-bound Team, the Policy must allow
+the model. If it does not, the agent does not run. Its `PolicyResolved`
+condition is then `False` with the reason `PolicyDenied`, and the message names
+the model.
+
+If `spec.helm.version` is empty, it is set to the
 operator's runtime chart version at the first reconciliation. This pins the
 instance chart. A change to only the operator's default chart version does not
 upgrade the instances that already exist.

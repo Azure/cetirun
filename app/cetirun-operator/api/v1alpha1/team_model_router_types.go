@@ -25,7 +25,9 @@ const (
 // its classifier picks. Administrators define routers; an Agent receives a
 // router only when everything the router uses is available to it.
 type TeamModelRouter struct {
-	// Name is the model name Agents request, such as auto or auto-claude.
+	// Name is the model name Agents request, such as auto-team or auto-claude.
+	// It must differ from the name of every shared model of the AI Gateway,
+	// such as the Gateway's own router auto that make deploy configures.
 	// It has no whitespace or slash and must not start with the reserved
 	// prefix cetirun- (in any letter case).
 	// +kubebuilder:validation:MinLength=1
@@ -166,12 +168,31 @@ type AIGatewayModelRouterStatus struct {
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
-	// ContextWindow and MaxTokens are, for a Team router, the smallest limits
-	// among its tier models that the Gateway reports, which the Agent is
-	// configured with. A router configured in the Gateway has the limits the
-	// Gateway reports for it.
+	// Alias is the router's name when the Agent's key also reaches a Team's
+	// router under it, through a key alias the operator keeps for each
+	// granted Team router. A Hermes Agent is configured with the router under
+	// this name. Empty when another model the key reaches, such as one of the
+	// Agent's GitHub Copilot models or an alias that an administrator set,
+	// has the name; the Agent then uses the internal name.
+	// +optional
+	Alias string `json:"alias,omitempty"`
+
+	// ContextWindow and MaxTokens are the limits the Agent is configured with
+	// for the router. They are the smallest known limits of the models that
+	// the router sends requests to: its tier models and, for a router
+	// configured in the Gateway, its default model. The Agent's own GitHub
+	// Copilot routes under the names of these models count too. For a router
+	// configured in the Gateway, limits that the router itself sets replace
+	// those of its models.
 	// +optional
 	ContextWindow int64 `json:"contextWindow,omitempty"`
 	// +optional
 	MaxTokens int64 `json:"maxTokens,omitempty"`
+
+	// Vision reports that the Agent is configured to send images to the
+	// router: every model that the router sends requests to answer accepts
+	// them. The Agent's own GitHub Copilot routes under the names of these
+	// models count too.
+	// +optional
+	Vision bool `json:"vision,omitempty"`
 }

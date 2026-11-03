@@ -60,6 +60,22 @@ platform:
   namespace: cetirun-system
   values:
     cetirun-operator:
+      # Enabled by default. Set enabled: false to opt out before installation.
+      cetiadmin:
+        enabled: true
+        owner:
+          alias: example-owner
+          tenantID: "11111111-1111-1111-1111-111111111111"
+          objectID: "88888888-8888-8888-8888-888888888888"
+        kubernetes:
+          apiServer: https://kubernetes.default.svc
+          apiAudience: https://kubernetes.default.svc.cluster.local
+          caConfigMapName: kube-root-ca.crt
+          # Replace with the target API endpoint addresses after Service DNAT.
+          apiEgressCIDRs: [192.0.2.10/32]
+        model:
+          default: auto
+          initialMonthlyBudgetUSD: "100"
       # This belongs to the Operator, not the Broker blueprint identity.
       azure:
         clientId: 77777777-7777-7777-7777-777777777777
@@ -72,12 +88,10 @@ platform:
         caSecretName: connections-ca
       customRuntime:
         # Replace with the digests whose UID, HOME and model access you qualified.
+        # The Operator configures AI Gateway access for these images.
         approvedImages:
           - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           - registry.example.com/cetirun-vscode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-        agentManagedModel: true
-        gatewayImages:
-          - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         storageClass: example-home
         storageSize: 100Gi
         accessMode: ReadWriteOnce
@@ -131,7 +145,7 @@ platform:
             api_key: os.environ/AZURE_DECISION_KEY
             api_version: 2024-05-01-preview
           model_info:
-            base_model: Microsoft-Decision-1
+            base_model: azure_ai/Microsoft-Decision-1
             mode: evaluation
         - model_name: auto
           litellm_params:

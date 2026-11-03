@@ -83,9 +83,14 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 		}
 		gatewayModels = append(gatewayModels, entry)
 	}
+	visionModels := make([]any, 0, len(bindings.Model.GatewayVisionModels))
+	for _, id := range bindings.Model.GatewayVisionModels {
+		visionModels = append(visionModels, id)
+	}
 	gateway := map[string]any{
-		"enabled": bindings.Model.Gateway,
-		"models":  gatewayModels,
+		"enabled":      bindings.Model.Gateway,
+		"models":       gatewayModels,
+		"visionModels": visionModels,
 	}
 	// Hermes' provider names the variable the chart puts the key in.
 	if bindings.Model.GatewayKeyEnv != "" {

@@ -124,16 +124,17 @@ go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
 
-The full unit target of the Operator uses a bounded Go timeout of 30 minutes
-for each package. This is because the combined controller regressions take
-more than 20 minutes on CI runners. The full envtest target includes those unit
-tests and isolated API-server regressions. Together, they can exceed 40 minutes
-in one Go test process.
+The unit target discovers all packages with `go list ./...`. It tests the
+controller package in two complementary groups because the combined suite has
+exceeded 30 minutes on CI runners. One invocation selects the lifecycle test
+prefixes in `GO_CONTROLLER_TEST_GROUP`; the next skips exactly those prefixes.
+Every controller test runs once, and every other package runs in full. Each
+package or controller group keeps a 30-minute timeout.
 
 `make test-envtest` runs the same seven packages in two complementary passes:
 test names that match `APIServer`, then all remaining tests with that pattern
 excluded. Both passes keep the `envtest` build tag, disable cached results, and
-use a bounded 40-minute timeout per package. This is a timing split, not a
+use main's bounded 50-minute timeout per package. This is a timing split, not a
 classification of every API test: API tests with other names run in the second
 pass. A failure in either pass fails the target.
 

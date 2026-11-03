@@ -98,16 +98,19 @@ fullnameOverride: ""
 #
 # An entry whose litellm_params.model is auto_router/complexity_router is a
 # router: LiteLLM sends each request to the model configured for the tier it
-# picks. Its tiers, default model and classifier model have to be models in
-# this list, and its own name needs input_cost_per_token and
-# output_cost_per_token above zero in litellm_params; calls are charged at the
+# picks. Its tiers, default model and classifier model
+# (classifier_llm_config.model, or jev_classifier_config.deployment_name for a
+# jev classifier) have to be models in this list, and its own name needs
+# input_cost_per_token and output_cost_per_token above zero in litellm_params;
+# calls are charged at the
 # price of the model picked. With operatorIntegration, the CetiRun operator
 # gives an Agent the router only when the Agent may use every model the router
 # sends requests to. Unless it sets reminder_markers, the chart adds the
-# markers around OpenClaw's own context, so the router classifies what was
-# asked; unless it sets them, context_compaction and max_tokens_from_tier_model
-# are off and enable_context_window_escalation is on. See the README's Smart
-# routing section.
+# markers around OpenClaw's own context and the label of OpenClaw's tool-result
+# images, so the router classifies what was asked; unless it sets them,
+# context_compaction and max_tokens_from_tier_model are off and
+# enable_context_window_escalation is on. See the README's Smart routing
+# section.
 #
 # Example:
 #   models:

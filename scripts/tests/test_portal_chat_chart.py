@@ -104,7 +104,7 @@ class PortalChatChartTests(unittest.TestCase):
             objects = self.render(base / "cetirun-platform", {
                 "istio": {"enabled": True},
                 "global": {"portalChat": {"enabled": True, "identityRealm": "synthetic"}},
-                "cetirun-operator": {"domainSuffix": "agents.example.com", "namespace": "test-platform"},
+                "cetirun-operator": {"domainSuffix": "agents.example.com", "namespace": "test-platform", "cetiadmin": {"enabled": False}},
                 "cetirun-portal": {"istio": {"host": "portal.example.com"}, "aiGateway": {"catalogNamespace": "test-platform"}},
             })
             portal = self.deployment_env(objects, "cetirun-portal")
