@@ -17,7 +17,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,7 +51,7 @@ func TestReconciledSandboxPendingRateLimitsAPIServer(t *testing.T) {
 			policies := &AgentPolicyReconciler{
 				Client: h.kube, APIReader: h.kube, NativeExecution: true, Source: h.r.SandboxPreparation.Configuration,
 			}
-			catchUp, stopWrites := false, 0
+			catchUp, policyRead, stopWrites := false, false, 0
 			checkStop := func(object client.Object) {
 				if current, ok := object.(*appsv1.StatefulSet); ok && current.UID == workload.UID &&
 					ptr.Deref(current.Spec.Replicas, 1) == 0 {
@@ -60,14 +60,18 @@ func TestReconciledSandboxPendingRateLimitsAPIServer(t *testing.T) {
 			}
 			writer := interceptor.NewClient(h.kube, interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
-					if metadata, ok := object.(*metav1.PartialObjectMetadata); catchUp && ok &&
-						metadata.Kind == "Team" && key.Name == agent.Spec.Team {
+					if _, ok := object.(*api.Team); catchUp && policyRead && ok && key.Name == agent.Spec.Team {
 						catchUp = false
 						if _, err := policies.Reconcile(ctx, ctrl.Request{NamespacedName: policyKey}); err != nil {
 							return err
 						}
 					}
-					return c.Get(ctx, key, object, opts...)
+					err := c.Get(ctx, key, object, opts...)
+					if policy, ok := object.(*unstructured.Unstructured); err == nil && ok &&
+						policy.GetKind() == "AgentPolicy" && key == policyKey {
+						policyRead = true
+					}
+					return err
 				},
 				Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
 					checkStop(object)
@@ -105,7 +109,7 @@ func TestReconciledSandboxPendingRateLimitsAPIServer(t *testing.T) {
 				if _, err := store.ReconcileChange(h.ctx, change, adapter); err != nil {
 					t.Fatal("commit limits-only policy update:", err)
 				}
-				catchUp = true
+				catchUp, policyRead = true, false
 				h.reconcileOK(t)
 				if err := h.admin.Get(h.ctx, policyKey, after); err != nil {
 					t.Fatal(err)
