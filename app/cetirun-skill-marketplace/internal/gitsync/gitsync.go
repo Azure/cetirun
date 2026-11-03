@@ -238,8 +238,15 @@ func (s Source) Fetch(ctx context.Context, ref plumbing.ReferenceName, maxBytes 
 		return nil, err
 	}
 	var total int64
-	if err := tree.Files().ForEach(func(file *object.File) error {
-		total += file.Size
+	if err := walkTree(tree, func(_ string, entry object.TreeEntry) error {
+		if !entry.Mode.IsFile() {
+			return nil
+		}
+		size, err := storage.EncodedObjectSize(entry.Hash)
+		if err != nil {
+			return err
+		}
+		total += size
 		if total > maxBytes {
 			return fmt.Errorf("the repository commit holds more than %d bytes of files", maxBytes)
 		}
@@ -248,6 +255,28 @@ func (s Source) Fetch(ctx context.Context, ref plumbing.ReferenceName, maxBytes 
 		return nil, err
 	}
 	return &Snapshot{Commit: commit.Hash.String(), tree: tree, store: storage}, nil
+}
+
+// walkTree visits every entry of tree, parents first. Unlike go-git's
+// checkout walks, it does not stop at a name that is unsafe to write to a
+// file system: the skills package rejects the skill that holds it, and the
+// service writes no other entry.
+func walkTree(tree *object.Tree, fn func(name string, entry object.TreeEntry) error) error {
+	walker := object.NewTreeWalker(tree, true, nil)
+	defer walker.Close()
+	walker.SkipPathValidation()
+	for {
+		name, entry, err := walker.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := fn(name, entry); err != nil {
+			return err
+		}
+	}
 }
 
 func (s Source) sanitize(err error) error {
@@ -272,16 +301,7 @@ func (s *Snapshot) Walk(root string, fn func(skills.Entry) error) error {
 		}
 		tree = sub
 	}
-	walker := object.NewTreeWalker(tree, true, nil)
-	defer walker.Close()
-	for {
-		name, entry, err := walker.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
+	return walkTree(tree, func(name string, entry object.TreeEntry) error {
 		full := name
 		if root != "" {
 			full = path.Join(root, name)
@@ -307,10 +327,8 @@ func (s *Snapshot) Walk(root string, fn func(skills.Entry) error) error {
 			item.Size = blob.Size
 			item.Open = func() (io.ReadCloser, error) { return blob.Reader() }
 		}
-		if err := fn(item); err != nil {
-			return err
-		}
-	}
+		return fn(item)
+	})
 }
 
 // TreeHash implements skills.Tree.

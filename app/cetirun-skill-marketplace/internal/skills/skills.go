@@ -202,7 +202,7 @@ func validate(tree Tree, all []Entry, dir string, limits Limits, reserved []stri
 		}
 		rel := strings.TrimPrefix(entry.Path, prefix)
 		for _, segment := range strings.Split(rel, "/") {
-			if segment == "" || segment == "." || segment == ".." || strings.IndexFunc(segment, unicode.IsControl) >= 0 || !utf8.ValidString(segment) {
+			if unsafeName(segment) {
 				return Skill{}, fmt.Sprintf("the file name %q is not allowed", rel)
 			}
 		}
@@ -254,6 +254,19 @@ func validate(tree Tree, all []Entry, dir string, limits Limits, reserved []stri
 	skill.Version = hash[:12]
 	sort.Slice(skill.Files, func(i, j int) bool { return skill.Files[i].RelPath < skill.Files[j].RelPath })
 	return skill, ""
+}
+
+// unsafeName reports whether a file or directory name of a skill must not be
+// published: it is empty, a dot name, not valid UTF-8, contains a control
+// character or a backslash, or Git would treat it as its own directory
+// (.git, also in other case or with trailing dots or spaces, and git~1).
+func unsafeName(name string) bool {
+	if name == "" || name == "." || name == ".." || !utf8.ValidString(name) ||
+		strings.IndexFunc(name, unicode.IsControl) >= 0 || strings.ContainsRune(name, '\\') {
+		return true
+	}
+	git := strings.ToLower(strings.TrimRight(name, ". "))
+	return git == ".git" || git == "git~1"
 }
 
 func readAll(open func() (io.ReadCloser, error), limit int64) ([]byte, error) {

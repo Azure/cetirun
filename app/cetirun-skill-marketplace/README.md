@@ -34,6 +34,8 @@ these cases:
   join. Or the name has more than 64 characters.
 - The name is reserved (`cetirun-memory`, `connected-services`).
 - The directory contains a symbolic link or a submodule.
+- A file or directory name has a control character or a backslash. Or it is
+  a name that Git uses for its own directory, such as `.git`.
 - The directory has more than 500 files or more than 5 MiB. Or its `SKILL.md`
   is larger than 256 KiB, or it has files nested deeper than 8 levels.
 - Another skill directory has the same name. Both are rejected.

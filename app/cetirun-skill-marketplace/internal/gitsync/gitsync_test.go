@@ -7,11 +7,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/skills"
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -121,5 +125,109 @@ func TestTokenIsReadFromTheCredentialsDirectory(t *testing.T) {
 	}
 	if _, err := (Source{URL: "git@h:x", Auth: AuthSSH, CredentialsDir: dir}).auth(); err == nil {
 		t.Fatal("SSH without a key and known_hosts must fail")
+	}
+}
+
+// commitRawTree commits files without go-git's worktree, which refuses the
+// unsafe names that a crafted repository can still contain.
+func commitRawTree(t *testing.T, dir string, files map[string]string) string {
+	t.Helper()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := func(object interface {
+		Encode(plumbing.EncodedObject) error
+	}, kind plumbing.ObjectType) plumbing.Hash {
+		encoded := repo.Storer.NewEncodedObject()
+		encoded.SetType(kind)
+		if err := object.Encode(encoded); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := repo.Storer.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	var build func(prefix string) plumbing.Hash
+	build = func(prefix string) plumbing.Hash {
+		entries := map[string]object.TreeEntry{}
+		for name, content := range files {
+			if !strings.HasPrefix(name, prefix) {
+				continue
+			}
+			part, _, nested := strings.Cut(strings.TrimPrefix(name, prefix), "/")
+			if nested {
+				if _, ok := entries[part]; !ok {
+					entries[part] = object.TreeEntry{Name: part, Mode: filemode.Dir, Hash: build(prefix + part + "/")}
+				}
+				continue
+			}
+			blob := repo.Storer.NewEncodedObject()
+			blob.SetType(plumbing.BlobObject)
+			writer, _ := blob.Writer()
+			_, _ = writer.Write([]byte(content))
+			_ = writer.Close()
+			hash, err := repo.Storer.SetEncodedObject(blob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries[part] = object.TreeEntry{Name: part, Mode: filemode.Regular, Hash: hash}
+		}
+		tree := &object.Tree{}
+		for _, entry := range entries {
+			tree.Entries = append(tree.Entries, entry)
+		}
+		sort.Slice(tree.Entries, func(i, j int) bool {
+			key := func(e object.TreeEntry) string {
+				if e.Mode == filemode.Dir {
+					return e.Name + "/"
+				}
+				return e.Name
+			}
+			return key(tree.Entries[i]) < key(tree.Entries[j])
+		})
+		return store(tree, plumbing.TreeObject)
+	}
+	signature := object.Signature{Name: "test", Email: "test@example.invalid", When: time.Now()}
+	commit := store(&object.Commit{Author: signature, Committer: signature, Message: "raw", TreeHash: build("")}, plumbing.CommitObject)
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(plumbing.Master, commit)); err != nil {
+		t.Fatal(err)
+	}
+	return commit.String()
+}
+
+func TestAnUnsafeNameRejectsOnlyItsSkill(t *testing.T) {
+	dir := t.TempDir()
+	commit := commitRawTree(t, dir, map[string]string{
+		"skills/good/SKILL.md":       "---\nname: good\ndescription: Valid\n---\n",
+		"skills/control/SKILL.md":    "---\nname: control\ndescription: Unsafe file name\n---\n",
+		"skills/control/bad\x01name": "x",
+		"skills/dot-git/SKILL.md":    "---\nname: dot-git\ndescription: Holds a .git directory\n---\n",
+		"skills/dot-git/.git/config": "[core]\n",
+		"docs/bad\x02name.md":        "outside every skill",
+	})
+	source := Source{URL: dir, Auth: AuthNone}
+	ctx := context.Background()
+	ref, _, err := source.Resolve(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := source.Fetch(ctx, ref, 1<<20)
+	if err != nil || snapshot.Commit != commit {
+		t.Fatalf("an unsafe name must not stop the sync: %v", err)
+	}
+	found, problems, err := skills.Discover(snapshot, "skills", skills.DefaultLimits, nil)
+	if err != nil || len(found) != 1 || found[0].Name != "good" {
+		t.Fatalf("discover: %+v %v", found, err)
+	}
+	rejected := map[string]string{}
+	for _, problem := range problems {
+		rejected[problem.Path] = problem.Reason
+	}
+	if len(rejected) != 2 || !strings.Contains(rejected["skills/control"], "not allowed") ||
+		!strings.Contains(rejected["skills/dot-git"], "not allowed") {
+		t.Fatalf("problems: %+v", problems)
 	}
 }

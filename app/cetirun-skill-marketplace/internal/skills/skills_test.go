@@ -164,6 +164,49 @@ func TestDiscoverRootSkillIsRejected(t *testing.T) {
 	}
 }
 
+func TestDiscoverRejectsOnlyTheSkillWithAnUnsafeName(t *testing.T) {
+	files := map[string]string{
+		"skills/good/SKILL.md":    skillMD("good", "Valid"),
+		"docs/bad\x01name.md":     "outside every skill",
+		"docs/.git/config":        "outside every skill",
+		"skills/good/.github/x":   "a dot directory that is not .git",
+		"skills/good/notes\u00e9": "a non-ASCII name",
+	}
+	bad := map[string]string{
+		"control":   "bad\x01name.txt",
+		"delete":    "bad\x7fname.txt",
+		"c1":        "bad\u0085name.txt",
+		"dot-git":   ".git/config",
+		"upper-git": ".GIT/config",
+		"git-dots":  ".git. /hooks/post-checkout",
+		"short-git": "GIT~1/config",
+		"backslash": "a\\b.txt",
+	}
+	for name, file := range bad {
+		files["skills/"+name+"/SKILL.md"] = skillMD(name, "Has an unsafe name")
+		files["skills/"+name+"/"+file] = "x"
+	}
+	found, problems, err := Discover(newTree(files), "skills", DefaultLimits, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Name != "good" || len(found[0].Files) != 3 {
+		t.Fatalf("only the valid skill must be found: %+v", found)
+	}
+	reasons := map[string]string{}
+	for _, problem := range problems {
+		reasons[problem.Path] = problem.Reason
+	}
+	for name := range bad {
+		if !strings.Contains(reasons["skills/"+name], "is not allowed") {
+			t.Errorf("%s: reason %q", name, reasons["skills/"+name])
+		}
+	}
+	if len(problems) != len(bad) {
+		t.Fatalf("names outside every skill must not be problems: %+v", problems)
+	}
+}
+
 func TestFrontmatter(t *testing.T) {
 	for _, tc := range []struct{ content, reason string }{
 		{"---\r\nname: a\r\ndescription: b\r\n---\r\n", ""},
