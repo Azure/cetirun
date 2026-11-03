@@ -126,9 +126,9 @@ make -C app/cetirun-operator build
 
 The full unit target of the Operator uses a bounded Go timeout of 30 minutes
 for each package. This is because the combined controller regressions take
-more than 20 minutes on CI runners. The full envtest target uses 40 minutes
-because it also runs the unit suite together with isolated API-server
-regressions. Together, these take more than 30 minutes on CI runners.
+more than 20 minutes on CI runners. The full envtest target uses 50 minutes
+for each package. It runs the unit suite together with isolated API-server
+regressions, and the combined controller package has exceeded 40 minutes in CI.
 
 Root Go test gates and CI use the same component targets. Neither target
 excludes tests. These budgets do not change individual test assertions or
