@@ -39,7 +39,10 @@ describe("TeamListPage compatibility", () => {
     expect(await screen.findByText("research")).toBeInTheDocument();
     expect(screen.getByText("Compatible")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show compatibility for research" }));
-    expect(screen.getByLabelText("Compatibility report for research")).toHaveTextContent("kata: Compatible");
+    const report = screen.getByLabelText("Compatibility report for research");
+    expect(report).toHaveTextContent("Compatibility: Compatible");
+    expect(report).toHaveTextContent("Policy: standard");
+    expect(report).toHaveTextContent("Sandbox: kata");
   });
 
   it("does not show an expired report as compatible", async () => {

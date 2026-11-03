@@ -60,7 +60,10 @@ describe("PolicyListPage", () => {
     render(<QueryClientProvider client={client}><MemoryRouter><PolicyListPage /></MemoryRouter></QueryClientProvider>);
     expect(await screen.findByText("Accepted")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show Teams using standard" }));
-    expect(await screen.findByLabelText("Compatibility report for research")).toHaveTextContent("kata: Compatible");
+    const report = await screen.findByLabelText("Compatibility report for research");
+    expect(report).toHaveTextContent("Compatibility: Compatible");
+    expect(report).toHaveTextContent("Sandbox: kata");
+    expect(screen.getAllByRole("link", { name: "standard" })).toHaveLength(1);
     expect(screen.queryByText("Applied")).not.toBeInTheDocument();
   });
 

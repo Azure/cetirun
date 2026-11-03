@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { TeamDTO } from "../api/adminTeam";
@@ -13,6 +13,17 @@ function team(checkedAt: string): TeamDTO {
     compatibility: { state: "Compatible", team: { name: "research", uid: "team-uid", generation: 1 }, policy: { name: "standard", uid: "policy-uid", generation: 1 },
       sandboxes: [{ sandbox: { name: "kata", uid: "sandbox-uid", generation: 1 }, state: "Compatible" }], checkedAt, validUntil: "2026-01-01T00:00:06Z" },
   };
+}
+
+function mixedCompatibilityTeam(): TeamDTO {
+  const result = team("2026-01-01T00:00:00Z");
+  result.sandboxRefs.push("restricted");
+  result.compatibility!.state = "Incompatible";
+  result.compatibility!.sandboxes!.push({
+    sandbox: { name: "restricted", uid: "restricted-uid", generation: 1 }, state: "Incompatible",
+    issues: [{ code: "ingress_unsupported", message: "The Sandbox does not support the Policy ingress configuration." }],
+  });
+  return result;
 }
 
 describe("CompatibilityBadge", () => {
@@ -54,5 +65,27 @@ describe("CompatibilityBadge", () => {
     delete report.compatibility!.sandboxes;
     render(<CompatibilityBadge team={report} />);
     expect(screen.getByText("Compatible")).toBeInTheDocument();
+  });
+
+  it("distinguishes the overall result from each Policy and Sandbox combination", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    render(<MemoryRouter><CompatibilityReport team={mixedCompatibilityTeam()} /></MemoryRouter>);
+    expect(screen.getByLabelText("Compatibility report for research")).toHaveTextContent("Compatibility: Incompatible");
+    const table = screen.getByRole("table", { name: "Sandbox compatibility with Policy standard" });
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Sandbox", "Compatibility", "Reason"]);
+    expect(within(table).getByRole("row", { name: /kata/ })).toHaveTextContent("Compatible");
+    expect(within(table).getByRole("row", { name: /restricted/ })).toHaveTextContent("Incompatible");
+    expect(within(table).getByRole("row", { name: /restricted/ })).toHaveTextContent("The Sandbox does not support the Policy ingress configuration.");
+  });
+
+  it("keeps Team and selected Sandbox results distinct on the Sandbox page", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    render(<MemoryRouter><CompatibilityReport team={mixedCompatibilityTeam()} sandboxName="kata" /></MemoryRouter>);
+    expect(screen.getByLabelText("Compatibility report for research")).toHaveTextContent("Team compatibility: Incompatible");
+    const table = screen.getByRole("table", { name: "Sandbox compatibility with Policy standard" });
+    expect(within(table).getByRole("row", { name: /kata/ })).toHaveTextContent("Compatible");
+    expect(within(table).queryByRole("row", { name: /restricted/ })).not.toBeInTheDocument();
   });
 });

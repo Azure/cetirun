@@ -273,8 +273,12 @@ stale version returns `409 Conflict`, and a request without those version fields
 returns `428 Precondition Required`.
 
 The Teams list shows compatibility for the saved Policy and all selected
-Sandboxes. Expand a Team to see each combination, its reasons, and the check
-time. The Policy and Sandbox lists also show their referencing Teams. A Policy's
+Sandboxes. Expand a Team to see its overall compatibility, labeled Policy and
+Sandbox references, reasons, and check time. Multiple Sandboxes appear in a
+table with a separate compatibility result for each Policy and Sandbox
+combination. The Policy and Sandbox lists also show their referencing Teams;
+the Sandbox view distinguishes the overall Team result from that Sandbox's
+result. A Policy's
 configuration acceptance and a Sandbox's prerequisites are separate from Team
 compatibility. None of these observations proves that an Agent applied its
 Policy or is ready to run.

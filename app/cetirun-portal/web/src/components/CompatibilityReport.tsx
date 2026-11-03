@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { useEffect, useState } from "react";
-import { Badge, Text } from "@fluentui/react-components";
+import { Badge, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text } from "@fluentui/react-components";
 import { Link } from "react-router-dom";
 import type { SandboxCompatibilityStatus, TeamCompatibilityStatus, TeamDTO } from "../api/adminTeam";
 
@@ -84,31 +84,47 @@ export function CompatibilityBadge({ team }: { team: TeamDTO }) {
   return <Badge appearance="filled" color={color(presentation.state)}>{presentation.state}</Badge>;
 }
 
-function SandboxReport({ status }: { status: SandboxCompatibilityStatus }) {
-  return <li>
-    <Text weight="semibold"><Link to={`/admin/sandboxes/${encodeURIComponent(status.sandbox.name)}/edit`}>{status.sandbox.name}</Link></Text>{": "}{status.state}
-    {status.reason && ` — ${status.reason}`}
+function SandboxIssues({ status }: { status: SandboxCompatibilityStatus }) {
+  return <>
+    {status.reason && <Text size={200}>{status.reason}</Text>}
     {status.issues?.map((issue, index) => <div key={`${issue.code}-${issue.field}-${index}`}><Text size={200}>{issue.message}</Text></div>)}
-  </li>;
+  </>;
 }
 
 export function CompatibilityReport({ team, sandboxName, dependency }: { team: TeamDTO; sandboxName?: string; dependency?: CompatibilityDependency }) {
   const now = useCompatibilityNow(team.compatibility?.validUntil);
   const presentation = compatibilityPresentation(team, now, dependency);
   const report = presentation.report;
-  if (!report) return <Text size={200}>{presentation.reason || presentation.state}</Text>;
-  const sandboxes = report.sandboxes ?? [];
+  const sandboxes = report?.sandboxes ?? [];
   const displayedSandboxes = sandboxName ? sandboxes.filter(({ sandbox }) => sandbox.name === sandboxName) : sandboxes;
-  const topIssues = report.issues?.filter((issue) => !issue.sandbox);
+  const topIssues = report?.issues?.filter((issue) => !issue.sandbox);
   return <div aria-label={`Compatibility report for ${team.name}`} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-    <Text size={200}>Checked {new Date(report.checkedAt).toLocaleString()}.</Text>
+    <Text size={200}>
+      {sandboxName && team.sandboxRefs.length > 1 ? "Team compatibility" : "Compatibility"}:{" "}
+      <Badge appearance="filled" color={color(presentation.state)}>{presentation.state}</Badge>
+    </Text>
+    <Text size={200}>Policy: {team.agentPolicyRef
+      ? <Link to={`/admin/policies/${encodeURIComponent(team.agentPolicyRef)}/edit`}>{team.agentPolicyRef}</Link>
+      : "Not configured"}</Text>
     {presentation.reason && <Text size={200}>{presentation.reason}</Text>}
-    <Text size={200}>Policy: <Link to={`/admin/policies/${encodeURIComponent(report.policy.name)}/edit`}>{report.policy.name}</Link></Text>
-    <ul style={{ margin: 0, paddingLeft: 24 }}>
-      {displayedSandboxes.map((status) => <SandboxReport key={status.sandbox.uid || status.sandbox.name} status={status} />)}
-    </ul>
+    {sandboxes.length === 1 ? displayedSandboxes.map((status) => <div key={status.sandbox.uid || status.sandbox.name}>
+      <Text size={200}>Sandbox: <Link to={`/admin/sandboxes/${encodeURIComponent(status.sandbox.name)}/edit`}>{status.sandbox.name}</Link></Text>
+      <div><SandboxIssues status={status} /></div>
+    </div>) : displayedSandboxes.length > 0 && <Table size="small" aria-label={`Sandbox compatibility with Policy ${team.agentPolicyRef}`}>
+      <TableHeader><TableRow>
+        <TableHeaderCell>Sandbox</TableHeaderCell>
+        <TableHeaderCell>Compatibility</TableHeaderCell>
+        <TableHeaderCell>Reason</TableHeaderCell>
+      </TableRow></TableHeader>
+      <TableBody>{displayedSandboxes.map((status) => <TableRow key={status.sandbox.uid || status.sandbox.name}>
+        <TableCell><Link to={`/admin/sandboxes/${encodeURIComponent(status.sandbox.name)}/edit`}>{status.sandbox.name}</Link></TableCell>
+        <TableCell><Badge appearance="filled" color={color(status.state)}>{status.state}</Badge></TableCell>
+        <TableCell>{status.reason || status.issues?.length ? <SandboxIssues status={status} /> : "—"}</TableCell>
+      </TableRow>)}</TableBody>
+    </Table>}
     {topIssues?.map((issue, index) =>
       <Text key={`${issue.code}-${issue.field}-${index}`} size={200}>{issue.message}</Text>)}
+    {report && <Text size={200}>Checked: {new Date(report.checkedAt).toLocaleString()}</Text>}
   </div>;
 }
 
@@ -117,7 +133,6 @@ export function CompatibilityReferences({ teams, sandboxName, dependency }: { te
   return <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
     {teams.map((team) => <div key={team.name}>
       <Text weight="semibold"><Link to={`/admin/teams/${encodeURIComponent(team.name)}/edit`}>{team.name}</Link></Text>
-      <Text size={200}>Policy: <Link to={`/admin/policies/${encodeURIComponent(team.agentPolicyRef)}/edit`}>{team.agentPolicyRef || "Not configured"}</Link></Text>
       <CompatibilityReport team={team} sandboxName={sandboxName} dependency={dependency} />
     </div>)}
   </div>;
