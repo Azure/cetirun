@@ -355,7 +355,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_operator_suite_budget_is_bounded_and_shared_by_all_entrypoints(self):
         makefile = (validate.ROOT / "app/cetirun-operator/Makefile").read_text()
         self.assertIn("GO_TEST_TIMEOUT := 30m", makefile)
-        self.assertIn("GO_ENVTEST_TIMEOUT := 40m", makefile)
+        self.assertIn("GO_ENVTEST_TIMEOUT := 50m", makefile)
         for target, timeout in (
             ("test", "GO_TEST_TIMEOUT"),
             ("test-envtest", "GO_ENVTEST_TIMEOUT"),
