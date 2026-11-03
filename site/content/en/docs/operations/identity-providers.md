@@ -21,6 +21,11 @@ client secrets in local files that have access control. Create the Kubernetes
 Secret only in the Broker namespace. Do not commit credentials or put them in
 Helm values. Do not paste a Secret manifest or command output into a ticket.
 
+With `make deploy`, put the Broker overlays of this page under `broker.values`
+in the environment file. `make deploy` requires each provider Secret that the
+environment file names. Remove the entries of the providers that you do not
+register.
+
 ## Shared GitHub App
 
 Use a shared GitHub App when selected repositories and explicit Contents, Pull
