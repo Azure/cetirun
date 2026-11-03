@@ -350,12 +350,15 @@ class WorkflowContractTests(unittest.TestCase):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
                 self.assertIn(f"-timeout=$({timeout})", commands)
                 self.assertIn("-count=1", commands)
-                self.assertNotIn("-run", commands)
+                if target == "test":
+                    self.assertNotIn("-run", commands)
+                    self.assertNotIn("-skip", commands)
                 self.assertNotIn("|| true", commands)
         for target in ("test-envtest", "test-sandbox-lifecycle"):
             with self.subTest(target=target):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
-                self.assertIn("./cmd/sandbox-config-change", commands)
+                if target == "test-sandbox-lifecycle":
+                    self.assertIn("./cmd/sandbox-config-change", commands)
                 self.assertIn('test -x "$(KUBEBUILDER_ASSETS)/kubectl"', commands)
                 self.assertIn("USE_EXISTING_CLUSTER=false go test -tags=envtest", commands)
         self.assertIn("go test ./... -v", makefile)
@@ -377,6 +380,63 @@ class WorkflowContractTests(unittest.TestCase):
             "go -C ../internal test ./... -v -count=1",
             steps["Run go test"],
         )
+
+    def test_operator_envtest_partitions_preserve_coverage_and_failures(self):
+        packages = [
+            "./test/integration", "./internal/helm", "./internal/admission",
+            "./internal/controller", "./internal/sandboxwriter",
+            "./internal/sandboxcoordination", "./cmd/sandbox-config-change",
+        ]
+        with tempfile.TemporaryDirectory(prefix="cetirun-envtest-command-") as directory:
+            root = Path(directory)
+            tools = root / "bin"
+            tools.mkdir()
+            for name in ("kube-apiserver", "etcd", "kubectl"):
+                binary = tools / name
+                binary.write_text("#!/bin/sh\nexit 0\n")
+                binary.chmod(0o755)
+            go = tools / "go"
+            go.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, sys
+                args = sys.argv[1:]
+                with open(os.environ["TEST_GO_LOG"], "a") as output:
+                    output.write(json.dumps({
+                        "args": args,
+                        "existing_cluster": os.environ.get("USE_EXISTING_CLUSTER"),
+                    }) + "\\n")
+                failed = os.environ["TEST_GO_FAIL_FILTER"]
+                if failed and any(arg.startswith(failed) for arg in args):
+                    sys.exit(9)
+                """))
+            go.chmod(0o755)
+            log = root / "calls.jsonl"
+            for failure, count in (("", 2), ("-run=", 1), ("-skip=", 2)):
+                with self.subTest(failure=failure):
+                    log.write_text("")
+                    run = subprocess.run(
+                        ["make", "-s", "-C",
+                         str(validate.ROOT / "app/cetirun-operator"),
+                         "test-envtest", f"KUBEBUILDER_ASSETS={tools}"],
+                        env={
+                            **os.environ,
+                            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                            "TEST_GO_LOG": str(log),
+                            "TEST_GO_FAIL_FILTER": failure,
+                        },
+                        text=True, capture_output=True, timeout=10,
+                    )
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(run.returncode == 0, failure == "",
+                                     run.stdout + run.stderr)
+                    self.assertEqual(len(calls), count, calls)
+                    for index, call in enumerate(calls):
+                        selector = "-run=APIServer" if index == 0 else "-skip=APIServer"
+                        self.assertEqual(call["args"], [
+                            "test", "-tags=envtest", *packages, selector,
+                            "-count=1", "-v", "-timeout=40m",
+                        ])
+                        self.assertEqual(call["existing_cluster"], "false")
 
     def test_operator_go_check_requires_both_bounded_workers(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
