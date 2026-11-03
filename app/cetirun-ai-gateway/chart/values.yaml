@@ -370,7 +370,8 @@ postgresql:
       size: 100Gi
       # -- Storage class. Empty uses the cluster default.
       storageClass: ""
-    # -- Resource requests and limits
+    # -- Resource requests and limits of the PostgreSQL container. Empty, so
+    # nothing is reserved. See the README's Resources section.
     resources: {}
   # -- Your own PostgreSQL, when bundled.enabled is false. The connection URL,
   # in the form postgresql://user:password@host:5432/dbname, is read from a
@@ -407,7 +408,8 @@ redis:
       repository: mcr.microsoft.com/azurelinux/base/valkey
       tag: "8"
       digest: sha256:1f9457e9e325de0301c85d0c18765777820e06290c03849545868b4d22781496
-    # -- Resource requests and limits
+    # -- Resource requests and limits of the Valkey container. Empty, so
+    # nothing is reserved. See the README's Resources section.
     resources: {}
   # -- Your own Redis or Valkey hostname, when bundled.enabled is false
   host: ""
@@ -561,7 +563,10 @@ securityContext:
   seccompProfile:
     type: RuntimeDefault
 
-# -- Resource requests and limits
+# -- Resource requests and limits of the Gateway container, also used by its
+# migrate init container. Empty, so nothing is reserved. Each pod runs one
+# LiteLLM worker. See the README's Resources section for LiteLLM's sizing and
+# measured figures.
 resources: {}
 
 # -- Liveness probe settings

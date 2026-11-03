@@ -96,8 +96,15 @@ when you upgrade installations that used the old shared blacklist.
 `make deploy` installs the platform with Agent connections and Agent Identity.
 Before you run it, complete [Agent Identity setup](../../operations/agent-identity/).
 It covers the separate Broker, Key Vault, MCP certificates and trust, provider
-registrations, and optional Entra lifecycle configuration. `make deploy` does
-not provision these external resources.
+registrations, and Entra lifecycle configuration. `make deploy` does not
+provision these external resources.
+
+`make deploy` installs the Broker with Microsoft delegated access, and it
+enables the Agent Identity lifecycle of the operator. If the environment file
+turns off one of these features, the run stops. As a result, the Entra parts of
+that setup are not optional with `make deploy`. These parts are the Agent
+Identity Blueprint, the Authorization application, the encryption identity, and
+the Key Vault key. GitHub and Google connections stay optional.
 
 For a new installation, `make deploy` installs three Helm releases: the
 CetiRun Istio release, the Agent Broker, and the platform release. The platform
@@ -149,6 +156,12 @@ charts. Then the command pulls each chart back to examine it. Refer to the
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` records that you accept the VS Code
 Server license. Without it, the command builds no image. The command stops if
 a tag already exists.
+
+`VERSION` must be the same as the version in the source. To publish a
+different version, for example a test build of a branch, first run
+`make set-version VERSION=<version>`. This command changes the version in the
+charts and in the other source files. Commit the change, so that `GIT_SHA`
+names the source of the build.
 
 Use the same registry, version, and Git SHA in the `release` section of the
 environment file for `make deploy`. Before it writes, `make deploy` makes sure
@@ -242,8 +255,9 @@ ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
    Use `kubectl create`, not `kubectl apply`. The apply command also copies the
    credential into the `last-applied-configuration` annotation. Set
    `acrDockerSecret: acr-helm-pull` (`cetirun-operator.acrDockerSecret` in the
-   platform chart). Before the current one expires, generate a new password
-   and replace the Secret.
+   platform chart). In the environment file of `make deploy`, the field is
+   `platform.values.cetirun-operator.acrDockerSecret`. Before the current one
+   expires, generate a new password and replace the Secret.
 
 3. Fetch the chart with the same file, as the operator does. Then delete the
    file:
@@ -319,40 +333,70 @@ shared models and the Gateway console, refer to the
 The README also describes each input of the environment file, in
 [Deploy the platform]({{< repo "app/cetirun-platform/README.md" >}}#deploy-the-platform).
 
-Before the first run, these items must exist. `make deploy` examines the items
-in the cluster and in the registry. If one of them does not exist, it stops
-before it writes:
+Before the first run, make sure that these items exist:
 
 - Managed Istio, its external ingress gateway, and the `cetirun-tls` Secret
   for your domain. Refer to [Istio authentication](../../operations/istio/).
 - The Agent Identity resources: the Entra registrations, the Key Vault key, and
   the Broker and MCP certificates. Refer to
   [Agent Identity setup](../../operations/agent-identity/).
+- A client ID for `platform.values.cetirun-operator.azure.clientId`. Use the
+  client ID of the Agent Identity Blueprint, unless another operator
+  integration needs a different identity. `make deploy` stops if the value is
+  empty. Refer to
+  [Federate the AKS workloads to the Blueprint](../../operations/entra-agent-identity/#federate-the-aks-workloads-to-the-blueprint).
 - The Sandbox admission certificate. Refer to
   [the admission certificate](../../operations/policy-teams/#the-admission-certificate).
 - The StorageClasses for the HOME of Custom Agents, for the Gateway's
   PostgreSQL, and for shared skills. Also the Blob storage of shared skills.
   Refer to [Storage](../../operations/storage/).
-- The Secrets of the AI Gateway, as the next paragraph shows.
+- The Secrets of the AI Gateway. The commands below create them.
 - The Microsoft-Decision-1 deployment that the smart-routing model `auto`
   uses to classify requests. Deploy the model in an Azure AI Foundry resource,
   not in an Azure OpenAI resource. Record the deployment name, the endpoint of
   the resource, for example `https://<resource>.services.ai.azure.com`, and its
   key. Refer to
   [Foundry Models sold by Azure](https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure).
+
+  A subscription can have no quota for this model. Before you deploy it, find
+  the entries of Microsoft-Decision-1 in the output of
+  `az cognitiveservices usage list --location <region>`. If their limit is 0,
+  request more quota. To see if a region offers the model, use
+  `az cognitiveservices model list --location <region>`.
+
+  `make deploy` requires the `decision-1` entry, but it does not call the
+  deployment. If the deployment does not work, `auto` sends each request to its
+  default model. Each request to `auto` can cause a classifier call of up to
+  32,768 tokens. Size the capacity of the deployment for this traffic. Refer to
+  [Choose a classifier](../../operations/smart-routing/#choose-a-classifier).
 - The digests of the Custom images that you approve. Examples are the Pi and
   VS Code Server images that `make publish` pushed. To read a digest, use
-  `docker buildx imagetools inspect <image>:<version>`.
+  `docker buildx imagetools inspect <image>:<version>`. After each
+  `make publish` of a new version, read the digests again and update
+  `approvedImages`. `make deploy` makes sure only that each digest is in the
+  registry, so an old digest also passes.
+
+`make deploy` examines the objects of this list in the cluster, and the images
+and charts in the registry. If one of them does not exist, the run stops before
+it writes. `make deploy` does not call Azure or Microsoft Graph. As a result,
+it does not find a wrong Entra ID, a missing Key Vault key, or a Decision-1
+deployment that does not work. These problems occur only when a component uses
+the resource.
 
 The AI Gateway reads the provider keys of its models from a Secret. It also
 uses a Secret with its master key, salt key, and console password, and a
-Secret with the password of its Valkey. Create the namespace and these Secrets.
-Use the namespace of `platform.namespace` and the context of `target.context`.
-The commands use the default namespace, `cetirun-system`. Give the master key
-the `sk-` prefix, as the chart does when it generates one:
+Secret with the password of its Valkey. Create the namespace and these Secrets
+in the namespace of `platform.namespace`. The commands use the default
+namespace, `cetirun-system`.
+
+The commands use the current context of your kubeconfig. First make sure that
+`kubectl config current-context` shows the value of `target.context`. Refer to
+[Infrastructure](../../operations/infrastructure/). Give the master key the
+`sk-` prefix, as the chart does when it generates one:
 
 ```bash
-kubectl create namespace cetirun-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl get namespace cetirun-system >/dev/null 2>&1 ||
+  kubectl create namespace cetirun-system
 kubectl create secret generic gateway-provider-keys -n cetirun-system \
   --from-literal=AZURE_OPENAI_KEY='<key>' \
   --from-literal=AZURE_DECISION_KEY='<key>'
@@ -380,8 +424,11 @@ rename it in both places.
 
 Write the environment file outside the repository. Start from the
 [synthetic example]({{< repo "app/cetirun-platform/ci/deployment-example.yaml" >}}),
-and replace every value in it. The example refers to the Secrets above by
-their names. Put the Helm values of each release under its `values` field, for
+and replace every value in it. The example uses the Secret names of this page
+and of the pages that the list above links to. If you use other names, change
+them in the file.
+
+Put the Helm values of each release under its `values` field, for
 example `platform.values.cetirun-ai-gateway.models`. `make deploy` sets some
 values itself, for example the registry, the version, the namespaces, the
 domain, and the Istio Gateway. Do not set these values in the file, because a
@@ -408,6 +455,10 @@ kubectl get deployments,serviceaccounts -n aks-istio-ingress
 | `istio.ingressServiceAccount` | `aks-istio-ingressgateway-external` |
 | `istio.meshConfigMap` | `istio-shared-configmap-<revision>`. With `istio.mode: manage`, `make deploy` creates it if it does not exist |
 
+On a new cluster, `istio-shared-configmap-<revision>` does not exist yet. The
+listing of `aks-istio-system` shows the ConfigMap `istio-<revision>` instead.
+AKS manages that ConfigMap. Do not put its name in `istio.meshConfigMap`.
+
 Before it writes, `make deploy` makes sure that the two Deployments exist. If a
 Deployment does not exist, the run stops and names the input. If the name with
 the revision exists, the message also gives that name. The run also stops if
@@ -424,6 +475,12 @@ Make a decision about these inputs before the first run:
   configuration with `kubectl`. A later run cannot change these administrators.
   Refer to
   [the admission certificate](../../operations/policy-teams/#the-admission-certificate).
+- `platform.values.cetirun-operator.cetiadmin` configures CetiAdmin, the Hermes
+  administration Agent that the operator deploys. `make deploy` enables it by
+  default. Set its owner, its initial monthly budget, and its access to the
+  Kubernetes API, or set `enabled: false`. Its `owner.alias` must be the same as
+  `ownerAlias`. The default model of CetiAdmin is `auto`. Refer to
+  [Configure CetiAdmin]({{< repo "app/cetirun-platform/README.md" >}}#configure-cetiadmin).
 - `platform.values.cetirun-ai-gateway.models` holds the shared models. It must
   contain the smart-routing model `auto`, which uses the decision model
   `decision-1` as its classifier. The `base_model` of `decision-1` must be
@@ -431,8 +488,15 @@ Make a decision about these inputs before the first run:
   [Smart routing](../../operations/smart-routing/).
 - `platform.values.cetirun-ai-gateway.postgresql.bundled.persistence` sets the
   StorageClass and the size of the Gateway's database. A later run cannot
-  change them. Refer to the Gateway chart's
+  change them. `make deploy` always installs the Gateway with its bundled
+  PostgreSQL and Valkey. It refuses `bundled.enabled: false` for either of
+  them. For managed databases, install the platform chart directly. Refer to
+  the Gateway chart's
   [Bundled or your own]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#bundled-or-your-own).
+- `platform.values.cetirun-ai-gateway.resources` reserves CPU and memory for
+  each Gateway pod. The chart reserves none. Set it, and the resources of the
+  bundled PostgreSQL and Valkey, before you serve users. Refer to the Gateway
+  chart's [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resources).
 - LiteLLM's spend log in the Gateway's database keeps the prompt and the
   response of each call. By default, it keeps them for seven days. To keep
   only the metadata of each call, set
@@ -470,6 +534,11 @@ A change to the models replaces the Gateway's Pods. When a shared model is
 added or removed, or when its limits change, the Agents that use shared models
 restart one time. Refer to
 [Choose a model](../../guides/models/#runtime-configuration).
+
+Other changes also replace the Gateway's Pods, for example a new release
+version. The new Pods do not have the peer label that Sandbox execution needs.
+When Sandbox execution is enabled, label them again after such a run, as
+[Peer labels](../../operations/policy-teams/#peer-labels) shows.
 
 With `istio.mode: external`, `make deploy` does not upgrade the CetiRun Istio
 release. Configure that release to reach the portal: use

@@ -586,7 +586,7 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
 
     def test_missing_reference_or_foreign_owner_stops_before_writes(self):
         deployment = self.deployment()
-        missing = ("secret", "cetirun-system", "connections-ca")
+        missing = ("secret", "cetirun-system", "connections-mcp-ca")
         removed = deployment.objects.pop(missing)
         with self.assertRaisesRegex(ValueError, "reference is missing"):
             deployment.execute()
