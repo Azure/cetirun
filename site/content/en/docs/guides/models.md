@@ -76,14 +76,17 @@ its own Copilot model. Only the instance's own key reaches this Copilot model.
 
 For a policy-bound instance, the Agent Policy's shared models also apply to
 the owner's Copilot models that are the same models. Such a Copilot model is
-offered only when the Policy allows a shared model that is that model. For
-example, a Policy that does not allow a shared model `enterprise-sol` with the
-`base_model` `azure/gpt-6-sol` also keeps the owner's Copilot `gpt-6-sol` out
-of the instance. The comparison is the same as for the names above. A Copilot
-model with a date version is the same model only as the same version. The
-instance page lists such a model as not allowed by the Agent Policy. A Copilot
-model that is no shared model, for example a Claude model when the Gateway has
-no Claude deployment, needs only the Policy's **Allow GitHub Copilot**.
+offered only when the Policy allows a shared model that is that model. The
+comparison is the same as for the names above. A Copilot model with a date
+version is the same model only as the same version. The instance page lists
+such a model as not allowed by the Agent Policy.
+
+For example, the shared model `enterprise-sol` has the `base_model`
+`azure/gpt-6-sol`, and no other shared model is that model. If the Policy does
+not allow `enterprise-sol`, the instance does not get the owner's Copilot
+`gpt-6-sol`. A Copilot model that is not the same model as a shared model needs
+only the Policy's **Allow GitHub Copilot**. An example is a Claude model when
+the Gateway has no Claude deployment.
 
 The instance's key reaches a Copilot model only by that name. The
 `copilot/<model>` names of earlier versions are removed from the key. An

@@ -1896,12 +1896,12 @@ the route takes that name in the Agent's own access group. There, the Agent's
 key reaches only its own Copilot route, and never the shared deployments.
 
 For an Agent with an AgentPolicy, the policy's `sharedModels.allowed` also
-decides the Copilot models that are the same real models as shared models,
-by the comparison above. Such a Copilot model is registered only when the
-policy allows one of the shared models that are that model. Otherwise it is
-omitted and reported on the Agent (`status.aiGateway.copilot.notAllowed`). A
-Copilot model that is no shared model's real model needs only
-`modelAccess.copilot.allowed`.
+applies to Copilot models. It applies to each Copilot model that is the same
+real model as a shared model, by the comparison above. Such a Copilot model is
+registered only when the policy allows one of the shared models that are that
+model. Otherwise it is omitted and reported on the Agent
+(`status.aiGateway.copilot.notAllowed`). A Copilot model that is no shared
+model's real model needs only `modelAccess.copilot.allowed`.
 
 The operator removes the `copilot/<model>` aliases that earlier versions put on
 the Agent's key. These aliases listed each Copilot model a second time in the
