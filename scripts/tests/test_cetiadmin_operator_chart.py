@@ -351,9 +351,9 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("must not be included in sandboxAdmission.adminUsers", result.stderr)
 
-    def test_long_instance_names_match_the_existing_controller_account_name(self):
+    def test_instance_name_fits_helm_release_and_controller_account(self):
         inputs = self.values()
-        name = "a" * 50 + "----z"
+        name = "a" * 39 + "----z"
         inputs["cetiadmin"]["instanceName"] = name
         objects = self.render(inputs)
         account = ("openclaw-" + name + "-cetirun")[:63].rstrip("-")
@@ -362,6 +362,13 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
         self.assertEqual(condition["expression"], "request.userInfo.username == " + json.dumps(caller))
         rule = next(rule for rule in objects[("ClusterRole", "cetirun-cetiadmin-check")]["rules"] if "serviceaccounts" in rule["resources"])
         self.assertEqual(rule["resourceNames"], [account])
+        for enabled in (True, False):
+            for length in (45, 55):
+                with self.subTest(enabled=enabled, length=length):
+                    inputs["cetiadmin"].update(enabled=enabled, instanceName="a" * length)
+                    result = self.helm(inputs)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("cetiadmin.instanceName", result.stderr)
 
     def test_disabled_fresh_install_keeps_stop_path_without_identity_or_tls(self):
         objects = self.render({"cetiadmin": {"enabled": False}}, version="1.29.0")

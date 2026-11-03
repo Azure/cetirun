@@ -197,8 +197,8 @@ def validate_cetiadmin(config, operator):
     legacy = admin.get("legacyDisabledSource", False)
     if type(legacy) is not bool or (legacy and admin["enabled"]):
         raise ValueError("cetiadmin.legacyDisabledSource requires a boolean and cetiadmin.enabled=false")
-    if not resource_name(admin.get("instanceName"), label=True, limit=55):
-        raise ValueError("cetiadmin.instanceName must fit the retained Agent namespace")
+    if not resource_name(admin.get("instanceName"), label=True, limit=44):
+        raise ValueError("cetiadmin.instanceName must be a DNS label of at most 44 characters for the openclaw- Helm release")
     timeout = admin.get("hookTimeoutSeconds")
     if type(timeout) is not int or not 1 <= timeout <= 3600:
         raise ValueError("cetiadmin.hookTimeoutSeconds must be an integer from 1 to 3600")

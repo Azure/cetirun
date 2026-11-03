@@ -88,6 +88,39 @@ func TestDisabledConfigNeedsNoNewIdentity(t *testing.T) {
 	}
 }
 
+func TestConfigInstanceNameFitsHelmRelease(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		length  int
+		enabled bool
+	}{
+		{"maximum", 44, true},
+		{"too long", 45, true},
+		{"namespace limit", 55, true},
+		{"disabled maximum", 44, false},
+		{"disabled too long", 45, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := ParseConfig(validConfigJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config.InstanceName, config.Enabled = strings.Repeat("a", tt.length), tt.enabled
+			raw, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = ParseConfig(string(raw))
+			if tt.length <= 44 && err != nil {
+				t.Fatalf("valid Helm release name rejected: %v", err)
+			}
+			if tt.length > 44 && (err == nil || !strings.Contains(err.Error(), "instanceName")) {
+				t.Fatalf("oversized Helm release name accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestParseConfigRejectsInvalidInputs(t *testing.T) {
 	replace := func(old, next string) string { return strings.Replace(validConfigJSON, old, next, 1) }
 	appendField := func(field string) string { return strings.TrimSuffix(validConfigJSON, "}") + "," + field + "}" }

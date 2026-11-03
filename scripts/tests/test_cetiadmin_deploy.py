@@ -65,6 +65,21 @@ class CetiAdminInputTests(full.DeploymentFixture, unittest.TestCase):
             self.assertNotIn(field, admin)
         self.assertEqual(admin["platformReadNamespaces"], [])
 
+    def test_instance_name_fits_helm_release_before_tools(self):
+        for enabled in (True, False):
+            for length in (44, 45, 55):
+                with self.subTest(enabled=enabled, length=length):
+                    config = copy.deepcopy(self.config)
+                    admin = config["platform"]["values"]["cetirun-operator"]["cetiadmin"]
+                    admin.update(enabled=enabled, instanceName="a" * length)
+                    with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("configuration ran a command")):
+                        if length == 44:
+                            _, values = self.configure(config)
+                            self.assertEqual(values["platform"]["cetirun-operator"]["cetiadmin"]["instanceName"], "a" * length)
+                        else:
+                            with self.assertRaisesRegex(ValueError, "cetiadmin.instanceName"):
+                                self.configure(config)
+
     def test_legacy_wire_format_is_only_an_explicit_disabled_upgrade(self):
         self.admin.update(enabled=False, legacyDisabledSource=True)
         with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("configuration ran a command")):

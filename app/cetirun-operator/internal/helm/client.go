@@ -5,6 +5,7 @@ package helm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -236,12 +237,12 @@ func (c *Client) Prepare(namespace string, values map[string]any, chartVersion s
 }
 
 // InstallOrUpgrade applies the already-prepared chart without waiting for Pod readiness.
-func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *PreparedRelease) error {
+func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *PreparedRelease) (err error) {
 	state, done, err := c.beginReleaseWrite(namespace, releaseName)
 	if err != nil {
 		return err
 	}
-	defer done()
+	defer func() { err = errors.Join(err, done()) }()
 	return c.installOrUpgrade(namespace, releaseName, prepared, func(namespace string) (*action.Configuration, error) {
 		cfg, err := actionConfig(namespace)
 		if err != nil {

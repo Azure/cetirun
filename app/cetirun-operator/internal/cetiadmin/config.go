@@ -123,8 +123,8 @@ func ParseConfig(raw string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if len(validation.IsDNS1123Label(c.InstanceName)) != 0 {
-		return fmt.Errorf("instanceName must be a DNS label")
+	if len(validation.IsDNS1123Label(c.InstanceName)) != 0 || len(c.InstanceName) > 44 {
+		return fmt.Errorf("instanceName must be a DNS label of at most 44 characters for the openclaw- Helm release")
 	}
 	if !c.Enabled {
 		return nil
