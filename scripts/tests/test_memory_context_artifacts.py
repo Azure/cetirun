@@ -38,7 +38,7 @@ class MemoryArtifactTests(unittest.TestCase):
             with self.subTest(values=values):
                 result = subprocess.run(
                     ["helm", "template", "fixture", str(chart), "--values", "-", "--show-only", "templates/deployment.yaml"],
-                    input=json.dumps(values), capture_output=True, text=True, timeout=30,
+                    input=json.dumps({**values, "cetiadmin": {"enabled": False}}), capture_output=True, text=True, timeout=30,
                     env={**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.devnull},
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)

@@ -338,6 +338,7 @@ func newNativeStartAPIHarnessWithRuntime(t *testing.T, admissionNative, coordina
 	capabilities := chartutil.DefaultCapabilities.Copy()
 	capabilities.KubeVersion = chartutil.KubeVersion{Version: "v1.37.0", Major: "1", Minor: "37"}
 	values, err := chartutil.ToRenderValues(operatorChart, map[string]any{
+		"cetiadmin": map[string]any{"enabled": false},
 		"namespace": namespace, "serviceAccount": map[string]any{"name": controllerSA},
 		"sandboxSources": map[string]any{
 			"enabled": true, "nativeExecution": true, "bootstrapOwnedPrerequisites": true,

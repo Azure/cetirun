@@ -4,21 +4,27 @@ Deploy with `make deploy DEPLOY_CONFIG=/path/to/environment.yaml`.
 This command manages the CetiRun Istio/OAuth2 Proxy release, the Broker and
 Auth SDK in a private credential namespace, and the platform release. The
 platform includes the Operator, admission server, Portal, AI Gateway,
-PostgreSQL, Valkey, and Connections MCP. The same configuration enables Portal
+PostgreSQL, Valkey, and Connections MCP. The Operator installs CetiAdmin through
+its existing Hermes runtime and asset export path. The same configuration enables Portal
 Chat and supplies Custom runtime, terminal, Memory, and shared Skills/HOME
 references.
 
 The `cetirun-platform` Helm chart contains the platform components. Its
 switches stay available to chart consumers. The full set is necessary for the
-deployment script without a `--full` option. Cloud identities, certificates,
-Sandbox enrollment, and Agent creation are not part of this entry point.
+deployment script without a `--full` option. CetiAdmin is enabled by default
+and requires explicit owner, budget, and Kubernetes API inputs. Cloud
+identities, certificates, Sandbox enrollment, and arbitrary Agent creation
+are not part of this entry point. Operator removal has a separate, guarded
+configuration path described below.
 
 ## Deploy the platform
 
 Prepare an environment file outside the repository. The
-[synthetic example](ci/deployment-example.yaml) shows the input shape. Offline
-tests use this example. Its certificate framing, image digests, identities,
-prices, and owner are test data, not deployable credentials or qualification.
+[synthetic example](ci/deployment-example.yaml) shows the platform input shape.
+Add the CetiAdmin configuration below, or explicitly disable CetiAdmin. The
+example alone does not supply its owner and budget. Its certificate framing,
+image digests, identities, prices, and owner are test data, not deployable
+credentials or qualification.
 
 The file contains these inputs:
 
@@ -31,6 +37,7 @@ The file contains these inputs:
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
 | `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and optional references to provider credential Secrets |
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
+| `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
 | `sharedSkills` | The shared Skills storage fields that exist in the runtime chart, for example, storage class, resource group, account, and container |
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
@@ -55,6 +62,11 @@ fields from the common inputs. Custom images must have digest-pinned
 `approvedImages` and the storage settings whose UID/GID behavior you qualified.
 Each approved image uses the AI Gateway binding. The publication of an image
 does not establish that qualification.
+
+The `customRuntime.agentManagedModel` and `customRuntime.gatewayImages` fields
+are no longer supported. The helper rejects them before it runs external commands
+and does not convert their values. Before removing them from an older environment
+file, confirm the intended model access against the running Operator configuration.
 
 Configure the logical model `auto` with `auto_router/complexity_router`,
 `classifier_type: jev`, and `jev_classifier_config.deployment_name: decision-1`.
@@ -127,9 +139,20 @@ patch the mesh.
 Next, the Broker and its Auth SDK start in the credential namespace. Then the
 helper installs the platform. It waits for every Deployment and StatefulSet,
 which includes PostgreSQL, Valkey, MCP, and the admission server. On a new
-installation, the admission server starts before the fail-closed webhooks are
-installed. An upgrade never disables the admission enforcement that is already
-in effect.
+installation, the helper starts the admission server before activating global
+Sandbox enforcement. CetiAdmin's dedicated fail-closed webhooks are present
+during that bootstrap. The Operator withholds management grants until its
+admission checks pass. An upgrade never disables the admission enforcement
+that is already in effect.
+
+AKS adds two system-namespace exclusions to webhook namespace selectors.
+CetiAdmin accepts only those exact additions, with an independent namespace
+admission policy that prevents its authority namespaces and managed Agent
+namespaces from using the excluded labels. The Operator reads back that policy
+and confirms a real server-side dry-run denial before it grants access.
+Unrelated AKS namespaces keep their exclusions. Additional namespace selectors
+or object selectors are not accepted. The deployment does not disable the AKS
+admission enforcer or rewrite labels on an excluded namespace.
 
 At the end, a server-side dry-run of a Team creation examines the served
 admission path. This dry-run does not store a Team. If a read, render, upgrade,
@@ -154,11 +177,203 @@ conversation data. The helper rejects an ordinary Agent if it depends on a
 custom ServiceAccount, an API role, or an API token. The rejection occurs
 before the MCP enablement can override those settings.
 
+An explicitly pinned CetiAdmin migration source is exempt only after the helper
+confirms its retained suspension, blocked model key, stopped writers, and
+removal of direct ServiceAccount grants.
+
 Policy-bound Sandbox Agents use the separate native path. This check does not
 treat them as ordinary Agents. Kubernetes still returns complete objects for
 these projections. The helper only parses the selected fields. The caller must
 have permission to read these Agent, Team, Deployment, and webhook resources.
 The helper does not grant itself more permissions.
+
+### Configure CetiAdmin
+
+Merge this subtree into the environment file's existing platform values. These
+identities, budget, and API address are synthetic examples. Replace them with
+the environment's approved inputs before deployment.
+
+```yaml
+platform:
+  values:
+    cetirun-operator:
+      cetiadmin:
+        enabled: true
+        instanceName: cetiadmin
+        owner:
+          alias: example-owner
+          tenantID: "11111111-1111-1111-1111-111111111111"
+          objectID: "88888888-8888-8888-8888-888888888888"
+        platformReadNamespaces: [cetirun-system]
+        kubernetes:
+          apiServer: https://kubernetes.default.svc
+          apiAudience: https://kubernetes.default.svc.cluster.local
+          caConfigMapName: kube-root-ca.crt
+          apiEgressCIDRs: [192.0.2.10/32]
+        model:
+          default: auto
+          initialMonthlyBudgetUSD: "100"
+          githubCopilot: false
+        azureWorkloadIdentity:
+          enabled: false
+        sharedSkills:
+          enabled: false
+        monitor:
+          enabled: false
+          schedule: every 30m
+          timezone: UTC
+          deliver: local
+```
+
+`owner.alias` must equal the file's real `ownerAlias`, and `owner.tenantID` must
+equal `identity.tenantId`. Supply the existing owner's Entra object ID explicitly.
+The helper checks format and consistency. It does not query the directory,
+create an account, or treat an email address as proof of identity. Owner access
+still uses SSO claims that match the assigned identity.
+
+CetiAdmin automatically manages all ordinary Agents owned by this Operator,
+regardless of their Team. There is no Agent or Team allowlist. The optional
+`platformReadNamespaces` list adds read-only platform diagnostics. It does not
+select managed Agents and is not passed to the runtime. Omit it or use `[]` when
+no extra platform namespaces need diagnostics. New installation inputs and
+the deployment helper reject the removed `scope` field. An existing disabled
+installation has a separate, bounded upgrade path described below.
+
+A missing, terminating, or temporarily unavailable diagnostic namespace does
+not stop CetiAdmin. The Operator reports the error and retries that namespace's
+read-only binding without revoking unrelated management access. Installation
+identity failures still stop CetiAdmin. Disable and recovery paths also withdraw
+the diagnostic bindings, and never adopt or delete a binding with foreign subjects.
+
+CetiAdmin follows Hermes when an optional `skills.external_dirs` path does not
+exist: it skips that path and keeps the available built-in skill. Missing built-in
+registration and actual conflicting skill names still fail the startup check.
+
+The Operator and admission server resolve each target from current API objects
+and verify its UID and ownership. They do not use a saved target inventory or
+an access hash. Standard namespace RBAC still controls access. A new Agent
+receives its namespace bindings without stopping or restarting CetiAdmin.
+CetiAdmin itself, platform components, credential stores, and the retained
+migration source keep their existing protections. Protected Sandbox rules also
+still apply. Native Helm writes still require the maintenance handoff.
+
+The budget is an explicit nonnegative decimal string with at most six fractional
+digits. It initializes the model key for the new Agent UID. It does not reset
+existing keys or historical consumption on an upgrade. Provide the API audience
+accepted by this cluster, distinct from the Connections MCP audience, and its
+verified single-host `/32` or `/128` egress addresses. Loopback, link-local,
+multicast, and unspecified addresses are rejected. The API origin must be the
+configured target or the in-cluster Kubernetes Service. Format checks do not
+prove that the audience, network path, or owner is usable.
+
+CetiAdmin uses the existing Operator image and the same release's runtime chart.
+It does not add an image, chart, or publishing entry point. Optional
+`runtime.version`, `runtime.image`, and `runtime.port` must select that release
+and the qualified Hermes profile, whose port is 8642. An explicit image is also
+included in the normal artifact inspection. The Operator verifies the profile
+before granting access. Keep the existing admission TLS Secret and CA inputs;
+CetiAdmin does not relax them or enable native Sandbox execution.
+
+#### Upgrade an existing scope-format installation
+
+Use the same new release's existing images and charts for both upgrades. The
+old admission server cannot accept `platformReadNamespaces` before it has
+changed version. The old runtime chart also requires the old projection, so
+keep CetiAdmin stopped during this configuration transition.
+
+1. Keep the existing owner, instance name, retained identities and storage.
+   Set `cetiadmin.enabled=false` and `cetiadmin.legacyDisabledSource=true`, then
+   run a normal upgrade. This chart-only flag emits the old wire shape with
+   an explicit disabled value. The new Operator and hook accept it only for
+   the same recorded source and Agent. Wait for Disabled, revoked access and
+   stopped writers. Also wait for the admission Deployment rollout and for
+   old admission Pods and service endpoints to leave.
+2. Set `legacyDisabledSource=false` and restore the intended `enabled` value.
+   Run a second normal upgrade with the matching runtime chart and Hermes
+   image. The final configuration uses the new shape. Wait for the post-upgrade
+   check and verify that the retained Agent UID and HOME are unchanged.
+
+The compatibility flag defaults to false and cannot be used with
+`enabled=true`. It is not a first-install option or an Agent selection mode.
+Keep admission and hooks enabled throughout. Do not edit Helm release history.
+If the installation was user-paused, retain that pause instead of resuming it.
+
+Enable `sharedSkills.enabled` to use the existing top-level `sharedSkills`
+storage configuration. The built-in operations skill remains available when
+shared skills are disabled. Optional Workload Identity needs an existing
+`azureWorkloadIdentity.clientId` and federation for the new recorded
+ServiceAccount. It does not reuse the Operator identity automatically.
+
+Monitoring accepts only `local` or `slack`. Slack requires an exact channel and
+`monitor.slackSecretName` in `cetirun-<instanceName>`, with `SLACK_BOT_TOKEN` and
+`SLACK_APP_TOKEN` keys. The helper checks key names, not values. For a new
+namespace, install with monitoring disabled, provision the Secret through the
+approved workflow after the Operator creates the namespace, then enable
+monitoring. No Teams settings or credentials are accepted or created.
+
+For an existing OpenClaw administrator, retain its original Agent and HOME.
+Complete the approved backup and restoration checks, stop its monitoring and
+writers, resolve maintenance, and revoke its old administrative bindings first.
+Use a distinct new instance name and add both exact source identities:
+
+```yaml
+instanceName: cetiadmin-hermes
+migrationSource:
+  agent:
+    name: old-operations
+    uid: REPLACE_WITH_OBSERVED_AGENT_UID
+  namespace:
+    name: cetirun-old-operations
+    uid: REPLACE_WITH_OBSERVED_NAMESPACE_UID
+```
+
+These fields belong inside `cetiadmin`. Neither a familiar name nor a label is
+an adoption receipt. Preflight checks the supplied UIDs and stopped source; the
+Operator retains the migration identities and excludes the old namespace from
+automatic administration. No OpenClaw database, native credentials, HOME, or
+RBAC is copied. Replacing the pinned source Agent or namespace stops deployment.
+The helper does not create backups or establish that a backup can be restored.
+
+### Disable CetiAdmin before removing the Operator
+
+For normal CetiAdmin shutdown, keep `cetirun-operator.enabled: true` and change
+only `cetiadmin.enabled` to `false` in the same environment file. Run the normal
+plan and authorized deployment. The retained source and protection stay in
+place while the Operator revokes access and stops the Agent. The Helm check
+waits for the current disabled configuration to be confirmed. Keep the other
+CetiAdmin fields and its original UID records for recovery. A fresh installation
+may use only `cetiadmin: {enabled: false}` to avoid creating the Agent.
+
+If a separately approved change removes the Operator subchart, first complete
+that shutdown. Then explicitly set `cetirun-operator.enabled: false` and
+`global.portalChat.enabled: false` under `platform.values`. Keep the same
+CetiAdmin configuration and release coordinates. Do not combine removal with
+changes to the owner, `platformReadNamespaces`, runtime coordinates, or migration
+source.
+
+Before any write, and again immediately before the platform Helm upgrade, the
+helper requires the exact retained source UID, current configuration hash, and
+installation checkpoint in `Disabled` with no pending creation or access grant.
+It verifies the current Operator image, source selection, and rollout. It also
+checks the bound Agent, namespace, and ServiceAccount identities, absent direct
+RBAC grants, current Agent maintenance and namespace startup-block markers,
+and stopped Pods, StatefulSets, Deployments, ReplicaSets, DaemonSets, Jobs, and
+CronJobs. An unavailable Operator,
+missing record, changed source, unresolved maintenance, or failed read prevents
+removal. No pre-delete hook receipt is assumed from an umbrella upgrade.
+
+The deployer needs read access to those metadata, ConfigMap, RBAC, and workload
+fields, plus the current Agent and namespace lists. Maintenance checks do not
+depend on a retained target inventory and include orphaned namespace markers.
+Legacy authorization inventories are not accepted as stop evidence. The
+Operator must first reconcile its checkpoint to the current contract.
+No new permissions are granted. Existing independent admission,
+configuration coordination, and native execution controls still block Operator
+removal until their separately approved handover is complete. A normal full
+installation has such admission protection; CetiAdmin shutdown alone does not
+authorize its removal. The helper never disables that protection automatically.
+An offline plan reports removal intent with `stopConfirmed: false`; only a live
+preflight in an authorized deployment can establish the current stop state.
 
 ### Preserve certificates and retained data
 
@@ -181,7 +396,7 @@ cannot find a cookie or database Secret to keep, it fails before writes. It
 does not replace that Secret with new keys.
 
 Agents, HOME/PVCs, and user keys that already exist stay in place. If you run
-the command again, it reconciles the same releases. It does not disable
+the normal deployment again, it reconciles the same releases. It does not disable
 admission enforcement. Use a separately authorized environment test to examine
 the actual cookie, certificate, and database continuity.
 
@@ -199,12 +414,12 @@ qualification work. The default does not enable `sandboxSources`, and it does
 not create capability registrations. A native configuration that already
 exists must keep its real qualification inputs.
 
-The deployment does not add CetiAdmin assets. It does not resolve the
-coexistence of the CetiAdmin ServiceAccount/token with MCP. If an ordinary
-Agent that already exists has that conflict, the deployment stops before
-writes and names the dependency that is still there. The helper does not
-silently remove OpenClaw from the allowlist. Instance creation requests in this
-file are rejected.
+CetiAdmin's post-install and post-upgrade checks cover
+its current installation state. They do not prove end-to-end operations,
+model access, Slack delivery, backup restoration, or native runtime behavior.
+Other ordinary Agents with a ServiceAccount conflict still stop deployment
+before writes. The helper does not silently remove OpenClaw from the allowlist.
+Arbitrary instance creation requests in this file are rejected.
 
 ## Use the component chart directly
 
@@ -223,7 +438,12 @@ authorize deployment.
 
 The bundled Operator chart manages the four CetiRun CRDs as Helm templates. It
 also manages their schema upgrades. Use values that explicitly confirm the
-Istio prerequisites that are installed separately:
+Istio prerequisites that are installed separately. Supply `cetirun-operator.cetiadmin`
+and the shared admission TLS inputs in an umbrella values file, not the
+deployment environment file. For a fresh installation without CetiAdmin, set
+`cetirun-operator.cetiadmin.enabled: false` explicitly in that values file.
+
+After deployment is authorized, use that file with the existing chart:
 
 ```bash
 ISTIO_REVISION="$(kubectl get pods -n aks-istio-system -l app=istiod \
@@ -235,6 +455,8 @@ kubectl label namespace cetirun-system "istio.io/rev=${ISTIO_REVISION}" --overwr
 helm dependency build app/cetirun-platform
 helm upgrade --install cetirun-platform app/cetirun-platform \
   --namespace cetirun-system \
+  --timeout 15m \
+  --values /path/to/platform-values.yaml \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=cetirun.example.com \
   --set-string "cetirun-operator.istioRevision=${ISTIO_REVISION}" \

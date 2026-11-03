@@ -322,6 +322,42 @@ def test_hermes_null_generated_sections_preserve_home_lists(agent):
     assert actual["skills"]["external_dirs"] == ["/fixture/home-skills"]
 
 
+@pytest.mark.parametrize("admin,explicit_alias", [(True, False), (True, True), (False, False)])
+@pytest.mark.parametrize("source_state", ["missing", "directory", "dangling-link", "parent-link"])
+def test_hermes_cetiadmin_retires_only_unconfigured_default_skill_alias(agent, admin, explicit_alias, source_state):
+    if agent["kind"] != "hermes":
+        return
+    assert run(agent).returncode == 0
+    legacy = "/home/vibe/.aks/skills"
+    builtin = "/opt/cetirun/cetiadmin/skills"
+    source = agent["config"] / "hermes-config.yaml"
+    desired = yaml.safe_load(source.read_text())
+    paths = ([builtin] if admin else []) + ([legacy] if explicit_alias else [])
+    desired["skills"] = {"external_dirs": paths}
+    source.write_text(json.dumps(desired))
+    saved = read_config(agent)
+    saved["skills"] = {"external_dirs": [legacy, "/fixture/home-skills"]}
+    agent["config_file"].write_text(json.dumps(saved))
+    personal = agent["target"] / ".aks/skills/personal/SKILL.md"
+    if source_state == "directory":
+        personal.parent.mkdir(parents=True)
+        personal.write_text("User-owned skill contents.\n")
+    elif source_state == "dangling-link":
+        (agent["target"] / ".aks").mkdir()
+        (agent["target"] / ".aks/skills").symlink_to(agent["target"] / "unavailable")
+    elif source_state == "parent-link":
+        (agent["target"] / ".aks").symlink_to(agent["target"] / "unavailable")
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        current = read_config(agent)["skills"]["external_dirs"]
+        assert (legacy in current) == (not admin or explicit_alias or source_state != "missing")
+        assert "/fixture/home-skills" in current
+        assert (builtin in current) == admin
+        if source_state == "directory":
+            assert personal.read_text() == "User-owned skill contents.\n"
+
+
 def test_native_failure_after_seed_resumes_without_recopy(agent):
     source = agent["config"] / ("openclaw.json" if agent["kind"] == "openclaw" else "hermes-config.yaml")
     saved = source.read_text()
