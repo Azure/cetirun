@@ -1,0 +1,50 @@
+{{- $storage := .Values.storage -}}
+{{- $name := include "cetirun-skill-marketplace.storageName" . -}}
+# The service's own read-write mount of the marketplace container. Agents get
+# separate read-only claims, created by the service.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "cetirun-skill-marketplace.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  capacity:
+    storage: {{ $storage.size | quote }}
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ $storage.storageClassName | quote }}
+  volumeMode: Filesystem
+  claimRef:
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    namespace: {{ .Release.Namespace }}
+    name: {{ include "cetirun-skill-marketplace.fullname" . }}-storage
+  csi:
+    driver: blob.csi.azure.com
+    volumeHandle: {{ $name }}
+    volumeAttributes:
+      resourceGroup: {{ $storage.resourceGroup | quote }}
+      storageAccount: {{ $storage.storageAccount | quote }}
+      containerName: {{ $storage.containerName | quote }}
+      protocol: nfs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cetirun-skill-marketplace.fullname" . }}-storage
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-skill-marketplace.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: {{ $storage.storageClassName | quote }}
+  volumeMode: Filesystem
+  volumeName: {{ $name }}
+  resources:
+    requests:
+      storage: {{ $storage.size | quote }}

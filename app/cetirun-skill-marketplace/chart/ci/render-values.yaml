@@ -1,0 +1,9 @@
+# Synthetic render values for chart lint and template checks.
+repository:
+  url: https://git.example.invalid/skills.git
+  auth: token
+  existingSecret: skills-repository
+storage:
+  resourceGroup: example-skills-rg
+  storageAccount: exampleskills
+  containerName: marketplace

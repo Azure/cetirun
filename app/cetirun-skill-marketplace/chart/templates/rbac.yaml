@@ -1,0 +1,82 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cetirun-skill-marketplace.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-skill-marketplace.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: false
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cetirun-skill-marketplace.fullname" . }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-skill-marketplace.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["teams", "agents"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Agent claims: created once, never updated; volumes are removed when their claim is gone.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "cetirun-skill-marketplace.fullname" . }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-skill-marketplace.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "cetirun-skill-marketplace.fullname" . }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cetirun-skill-marketplace.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "cetirun-skill-marketplace.fullname" . }}-catalog
+  namespace: {{ include "cetirun-skill-marketplace.catalogNamespace" . }}
+  labels:
+    {{- include "cetirun-skill-marketplace.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cetirun-skill-marketplace"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "cetirun-skill-marketplace.fullname" . }}-catalog
+  namespace: {{ include "cetirun-skill-marketplace.catalogNamespace" . }}
+  labels:
+    {{- include "cetirun-skill-marketplace.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "cetirun-skill-marketplace.fullname" . }}-catalog
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cetirun-skill-marketplace.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

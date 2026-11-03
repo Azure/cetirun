@@ -1,0 +1,122 @@
+{{- $repository := .Values.repository -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cetirun-skill-marketplace.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-skill-marketplace.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "cetirun-skill-marketplace.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cetirun-skill-marketplace.selectorLabels" . | nindent 8 }}
+      annotations:
+        sidecar.istio.io/inject: {{ .Values.istio.sidecarInjection | quote }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "cetirun-skill-marketplace.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cetirun-skill-marketplace
+          image: {{ include "cetirun-skill-marketplace.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --repository-url={{ $repository.url }}
+            - --repository-ref={{ $repository.ref }}
+            - --repository-path={{ $repository.path }}
+            - --auth={{ $repository.auth }}
+            - --token-username={{ $repository.tokenUsername }}
+            - --allow-insecure-http={{ $repository.allowInsecureHTTP }}
+            - --sync-interval={{ $repository.syncInterval }}
+            - --storage-root=/var/lib/cetirun-skills
+            - --storage-resource-group={{ .Values.storage.resourceGroup }}
+            - --storage-account={{ .Values.storage.storageAccount }}
+            - --storage-container={{ .Values.storage.containerName }}
+            - --storage-class={{ .Values.storage.storageClassName }}
+            - --claim-name={{ .Values.agentClaims.claimName }}
+            - --claim-size={{ .Values.agentClaims.size }}
+            - --catalog-namespace={{ include "cetirun-skill-marketplace.catalogNamespace" . }}
+            - --reserved-names={{ join "," .Values.reservedNames }}
+            - --team-gc-grace={{ .Values.teamGCGrace }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/cetirun-skills
+            - name: tmp
+              mountPath: /tmp
+            {{- if ne $repository.auth "none" }}
+            - name: credentials
+              mountPath: /var/run/cetirun/git
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: {{ include "cetirun-skill-marketplace.fullname" . }}-storage
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- if ne $repository.auth "none" }}
+        - name: credentials
+          secret:
+            secretName: {{ $repository.existingSecret }}
+            defaultMode: 0440
+            items:
+              {{- if eq $repository.auth "token" }}
+              - key: token
+                path: token
+              {{- else }}
+              - key: ssh-privatekey
+                path: ssh-privatekey
+              - key: known_hosts
+                path: known_hosts
+              {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

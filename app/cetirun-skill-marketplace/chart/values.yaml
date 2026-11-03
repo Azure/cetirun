@@ -1,0 +1,80 @@
+# -- Install the Skill Marketplace. The platform chart uses this as its subchart condition.
+enabled: false
+
+image:
+  repository: ghcr.io/azure/cetirun-skill-marketplace
+  # -- Defaults to global.version, then the chart appVersion.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# -- One Git repository of skills for the installation. Every directory that
+# holds a SKILL.md below `path` is a skill. The service never executes
+# repository content.
+repository:
+  # -- https:// URL, or ssh:// / user@host:path with auth ssh. Never put credentials in the URL.
+  url: ""
+  # -- Branch, tag or full ref. Empty uses the remote HEAD.
+  ref: ""
+  # -- Directory of the repository that holds the skills. Empty is the root.
+  path: ""
+  syncInterval: 5m
+  # -- none, token or ssh.
+  auth: none
+  # -- Existing Secret in the release namespace: key `token` for auth token;
+  # keys `ssh-privatekey` and `known_hosts` for auth ssh.
+  existingSecret: ""
+  tokenUsername: x-access-token
+  # -- Allows an http:// URL. Only for tests inside a private network.
+  allowInsecureHTTP: false
+
+# -- The Blob NFS container that holds the Team releases. Use a storage account
+# that only private endpoints can reach: NFS 3.0 has no client authentication.
+storage:
+  resourceGroup: ""
+  storageAccount: ""
+  containerName: ""
+  storageClassName: azureblob-nfs-premium
+  size: 100Gi
+
+# -- The read-only claim that the service creates in each policy-bound Agent
+# namespace. claimName must equal the operator's sandboxSources.skillsClaimName.
+agentClaims:
+  claimName: skills
+  size: 1Gi
+
+catalog:
+  # -- Namespace of the catalog ConfigMap. Empty uses the release namespace,
+  # which must be the operator namespace.
+  namespace: ""
+
+# -- Skill names that the platform or images supply.
+reservedNames:
+  - cetirun-memory
+  - connected-services
+
+# -- Delay before the releases of a deleted Team are removed.
+teamGCGrace: 1h
+
+serviceAccount:
+  create: true
+  name: cetirun-skill-marketplace
+  annotations: {}
+
+istio:
+  # -- The service talks only to the Kubernetes API, the Git remote and its NFS mount.
+  sidecarInjection: false
+
+podAnnotations: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
