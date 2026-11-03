@@ -98,6 +98,10 @@ type AgentReconciler struct {
 	SandboxNativeCoordination   *sandboxcoordination.Store
 	RegistryCredentialNamespace string
 
+	// SkillMarketplace is the CETIRUN_SKILL_MARKETPLACE switch: every Team and
+	// Agent skill entry without the npm: prefix names a Skill Marketplace skill.
+	SkillMarketplace bool
+
 	// Microsoft Entra Agent Identity deployment configuration.
 	AgentIdentityEnabled               bool
 	AgentIdentityTenantID              string
@@ -476,7 +480,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// Credential rotation must not pull the runtime chart or enter Helm.
 		sa := "default"
 		if !commonCustom {
-			values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
+			values, err := r.builtinHelmValues(instance, team, AgentIdentityHelmConfig{})
 			if err != nil {
 				return r.registryWaiting(ctx, instance, "RegistryRuntimeConfigRejected")
 			}
@@ -881,7 +885,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		helmValues = prepared.Values
 	} else {
 		// Rebuild from current bindings without reloading the versioned chart.
-		helmValues, err = buildHelmValuesWithAgentIdentity(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel, AgentIdentityHelmConfig{
+		helmValues, err = r.builtinHelmValues(instance, team, AgentIdentityHelmConfig{
 			Enabled:                    r.AgentIdentityEnabled,
 			BrokerURL:                  r.AgentIdentityBrokerURL,
 			ConnectionsMCPURL:          r.ConnectionsMCPURL,
@@ -928,7 +932,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			if reconciledSandbox && stderrors.Is(err, errSandboxSourceChanged) {
 				return r.reconciledSandboxFailure(ctx, instance, err)
 			}
+			if reconciledSandbox && stderrors.Is(err, errSkillsClaimPending) {
+				// The Skill Marketplace has not created the skills claim yet.
+				// Nothing is installed, held or stopped while waiting for it.
+				return r.waitForSkillsClaim(ctx, instance, err)
+			}
 			return r.rejectAgentConfig(ctx, instance, err)
+		}
+		if reconciledSandbox {
+			endSkillsClaimWait(instance)
 		}
 	}
 	if instance.Spec.Suspended {

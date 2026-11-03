@@ -22,6 +22,7 @@ import (
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -186,6 +187,101 @@ func TestSandboxSkillsCatalogChartRejectsInvalidConfiguration(t *testing.T) {
 			test.edit(sources)
 			if _, err := renderSandboxSourcesChart(t, values); err == nil || !strings.Contains(err.Error(), test.message) {
 				t.Fatal("invalid catalog chart setting was accepted or misclassified:", err)
+			}
+		})
+	}
+}
+
+// skillMarketplaceChartValues are valid native Sandbox sources without a
+// published skills catalog, which the Skill Marketplace requires.
+func skillMarketplaceChartValues(t *testing.T) map[string]any {
+	t.Helper()
+	values := sandboxSourcesChartValues(t)
+	values["sandboxSources"].(map[string]any)["nativeExecution"] = true
+	return values
+}
+
+func operatorChartDeployment(t *testing.T, objects map[string]*unstructured.Unstructured) appsv1.Deployment {
+	t.Helper()
+	var deployment appsv1.Deployment
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(objects["Deployment/cetirun-operator"].Object, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	return deployment
+}
+
+// The Skill Marketplace switch renders CETIRUN_SKILL_MARKETPLACE only while it
+// is on, and changes nothing else that the operator chart renders.
+func TestSkillMarketplaceChartSwitch(t *testing.T) {
+	values := skillMarketplaceChartValues(t)
+	baseline, err := renderSandboxSourcesChart(t, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isSwitch := func(env corev1.EnvVar) bool { return env.Name == "CETIRUN_SKILL_MARKETPLACE" }
+	if slices.ContainsFunc(operatorChartDeployment(t, baseline).Spec.Template.Spec.Containers[0].Env, isSwitch) {
+		t.Fatal("the Skill Marketplace was configured by default")
+	}
+	// Off, and absent as after a --reuse-values upgrade from an older chart.
+	for _, setting := range []any{map[string]any{"enabled": false}, nil} {
+		values["skillMarketplace"] = setting
+		disabled, err := renderSandboxSourcesChart(t, values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(disabled, baseline) {
+			t.Fatalf("skillMarketplace %v changed the operator chart", setting)
+		}
+	}
+	values["skillMarketplace"] = map[string]any{"enabled": true}
+	enabled, err := renderSandboxSourcesChart(t, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment := operatorChartDeployment(t, enabled)
+	env := deployment.Spec.Template.Spec.Containers[0].Env
+	index := slices.IndexFunc(env, isSwitch)
+	if index < 0 || env[index].Value != `{"enabled":true}` || env[index].ValueFrom != nil {
+		t.Fatalf("operator environment = %+v, want CETIRUN_SKILL_MARKETPLACE {\"enabled\":true}", env)
+	}
+	deployment.Spec.Template.Spec.Containers[0].Env = slices.Delete(env, index, index+1)
+	if !reflect.DeepEqual(deployment, operatorChartDeployment(t, baseline)) {
+		t.Fatal("the switch changed the operator Deployment beyond its variable")
+	}
+	delete(baseline, "Deployment/cetirun-operator")
+	delete(enabled, "Deployment/cetirun-operator")
+	if !reflect.DeepEqual(enabled, baseline) {
+		t.Fatal("the switch changed other operator chart objects")
+	}
+}
+
+func TestSkillMarketplaceChartRejectsInvalidConfiguration(t *testing.T) {
+	const replaced = "the Skill Marketplace supplies Team skills claims and replaces the published skills catalog"
+	for _, test := range []struct {
+		name, message string
+		sources       map[string]any
+		marketplace   any
+	}{
+		{"without sources", replaced, map[string]any{"enabled": false, "nativeExecution": false, "bootstrapOwnedPrerequisites": false}, map[string]any{"enabled": true}},
+		{"held execution", replaced, map[string]any{"nativeExecution": false}, map[string]any{"enabled": true}},
+		{"published catalog", replaced, map[string]any{"skillsCatalogConfigMapName": "published-skills"}, map[string]any{"enabled": true}},
+		{"not an object", "skillMarketplace must be an object", nil, true},
+		{"not a boolean", "skillMarketplace.enabled must be a boolean", nil, map[string]any{"enabled": "true"}},
+		{"unknown field", "unsupported skillMarketplace field enable", nil, map[string]any{"enable": true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			values := skillMarketplaceChartValues(t)
+			sources := values["sandboxSources"].(map[string]any)
+			for key, value := range test.sources {
+				sources[key] = value
+			}
+			// The same sources render without the marketplace.
+			if _, err := renderSandboxSourcesChart(t, values); err != nil {
+				t.Fatal(err)
+			}
+			values["skillMarketplace"] = test.marketplace
+			if _, err := renderSandboxSourcesChart(t, values); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatal("invalid Skill Marketplace chart setting was accepted or misclassified:", err)
 			}
 		})
 	}

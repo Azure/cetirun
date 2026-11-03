@@ -38,9 +38,11 @@ type TeamSpec struct {
 	MemberContext TeamContextSpec `json:"memberContext,omitempty"`
 
 	// Skills is the list of default skills for all team members.
-	// Each entry is a ClawHub package ID (e.g. "@anthropic/mcp-server-fetch")
-	// or an npm package prefixed with "npm:" (e.g. "npm:@openclaw/matrix").
-	// +kubebuilder:validation:MaxItems=20
+	// Each entry is a Skill Marketplace skill name (when the marketplace is
+	// enabled), or an npm package prefixed with "npm:" (e.g. "npm:@openclaw/matrix").
+	// Without the marketplace, other entries are passed to the reserved
+	// ClawHub list and are not installed.
+	// +kubebuilder:validation:MaxItems=100
 	// +kubebuilder:validation:items:Pattern=`^(npm:)?(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.+-]+)?$`
 	// +listType=set
 	// +optional

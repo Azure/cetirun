@@ -140,7 +140,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 }
 
 func (r *AgentReconciler) prepareAgent(instance *api.Agent, team *api.Team) (*helm.PreparedRelease, error) {
-	values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
+	values, err := r.builtinHelmValues(instance, team, AgentIdentityHelmConfig{})
 	if err != nil {
 		return nil, err
 	}

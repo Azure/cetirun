@@ -99,7 +99,9 @@ func (r *AgentReconciler) customRuntimeValues(instance *api.Agent, team *api.Tea
 	for key, value := range r.CetiRunHelmValues {
 		values[key] = deepMerge(values[key], value)
 	}
-	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, r.SkillsStorageAccount); err != nil {
+	// With the Skill Marketplace, Team marketplace skills are dropped here, not
+	// passed as ClawHub installs, which Custom refuses below.
+	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, r.SkillsStorageAccount, r.SkillMarketplace); err != nil {
 		return nil, err
 	}
 	if err := runtimebindings.ValidateCustomSkills(values["skills"]); err != nil {

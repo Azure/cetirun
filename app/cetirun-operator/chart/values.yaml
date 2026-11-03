@@ -234,6 +234,17 @@ sandboxSources:
     logger: false
     desktop: false
 
+skillMarketplace:
+  # -- Use the Skill Marketplace (cetirun-skill-marketplace) for Team skills of
+  # policy-bound Agents. On, every skill entry without the npm: prefix names a
+  # marketplace skill: the operator stops passing such Team entries to the
+  # reserved ClawHub list, and refuses an Agent whose skillOverrides add or
+  # remove one (marketplace skills are selected on the Team). Requires
+  # sandboxSources.enabled and sandboxSources.nativeExecution, and an empty
+  # sandboxSources.skillsCatalogConfigMapName: the marketplace supplies the
+  # Agents' skills claims and replaces the published skills catalog.
+  enabled: false
+
 # -- Native MCP runtime integration and optional access to Agent credential records.
 connectionsMCP:
   # Opt-in common-executor integration, using current/default SA source pins.

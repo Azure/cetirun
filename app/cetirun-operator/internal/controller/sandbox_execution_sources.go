@@ -28,7 +28,8 @@ func (r *AgentReconciler) readSandboxExecutionPolicy(ctx context.Context, name s
 		return nil, "", fmt.Errorf("%w: AgentPolicy source key changed", errSandboxSourceChanged)
 	}
 	// Capture the wire image before typed resolution so unknown controls cannot
-	// disappear from the comparison. Only Gateway rate limits are excluded.
+	// disappear from the comparison. Only Gateway rate limits and the skill
+	// allowlist are excluded.
 	digest, err := w.ExecutionObjectDigest(object)
 	if err != nil {
 		return nil, "", err

@@ -156,6 +156,37 @@ Otherwise: repository:tag
 {{- end }}
 
 {{/*
+CETIRUN_SKILL_MARKETPLACE: {"enabled":true} while the Skill Marketplace is on,
+empty otherwise. A release upgraded with --reuse-values from a chart without
+the setting keeps it off. The marketplace supplies the skills claims of native
+Agents, so it needs native Sandbox execution and no published skills catalog.
+*/}}
+{{- define "cetirun-operator.skillMarketplaceConfig" -}}
+{{- $marketplace := .Values.skillMarketplace -}}
+{{- if kindIs "invalid" $marketplace -}}
+{{- $marketplace = dict -}}
+{{- end -}}
+{{- if not (kindIs "map" $marketplace) -}}
+{{- fail "skillMarketplace must be an object" -}}
+{{- end -}}
+{{- range $key, $_ := $marketplace -}}
+{{- if ne $key "enabled" -}}
+{{- fail (printf "unsupported skillMarketplace field %s" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $marketplace "enabled") (not (kindIs "bool" $marketplace.enabled)) -}}
+{{- fail "skillMarketplace.enabled must be a boolean" -}}
+{{- end -}}
+{{- if $marketplace.enabled -}}
+{{- $sources := .Values.sandboxSources -}}
+{{- if or (not $sources.enabled) (not $sources.nativeExecution) $sources.skillsCatalogConfigMapName -}}
+{{- fail "skillMarketplace.enabled requires sandboxSources.enabled and sandboxSources.nativeExecution, and an empty sandboxSources.skillsCatalogConfigMapName: the Skill Marketplace supplies Team skills claims and replaces the published skills catalog" -}}
+{{- end -}}
+{{- toJson (dict "enabled" true) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Image of the per-Agent GitHub Copilot proxy: the AI Gateway image, from the
 same registry and release as the rest of CetiRun. Empty when the proxy is off.
 */}}

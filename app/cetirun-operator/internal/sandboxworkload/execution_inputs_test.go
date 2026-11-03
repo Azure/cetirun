@@ -255,6 +255,81 @@ func TestAgentPolicyExecutionDigestIgnoresGatewayRateLimits(t *testing.T) {
 	}
 }
 
+func TestAgentPolicyExecutionDigestIgnoresSkillAllowlist(t *testing.T) {
+	policy := executionPolicyFixture()
+	initial, err := ExecutionObjectDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Earlier operators recorded the digest of the API body with its empty
+	// allowlist; excluding the allowlist must not change that digest.
+	body := runtime.DeepCopyJSON(policy.Object)
+	for _, key := range []string{"apiVersion", "kind", "metadata", "status"} {
+		delete(body, key)
+	}
+	recorded, err := inputDigest(struct {
+		Body     map[string]any
+		Metadata executionMetadata
+	}{body, effectiveMetadata(policy)})
+	if err != nil || recorded != initial {
+		t.Fatal("excluding the skill allowlist changed the digest of a policy without one:", err)
+	}
+	for _, skills := range []map[string]any{
+		{"allowed": []any{"example-skill"}},
+		{"allowed": []any{"npm:@example/skill", "example-skill", "another-skill"}},
+		{"allowed": []any{}},
+		{},
+		nil,
+	} {
+		current := policy.DeepCopy()
+		if skills == nil {
+			unstructured.RemoveNestedField(current.Object, "spec", "skills")
+		} else if err := unstructured.SetNestedMap(current.Object, skills, "spec", "skills"); err != nil {
+			t.Fatal(err)
+		}
+		current.SetResourceVersion("2")
+		current.SetGeneration(2)
+		typed := &api.AgentPolicy{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(current.Object, typed); err != nil {
+			t.Fatal(err)
+		}
+		beforeRaw, beforeTyped := current.DeepCopy(), typed.DeepCopy()
+		rawDigest, err := ExecutionObjectDigest(current)
+		if err != nil || rawDigest != initial {
+			t.Fatalf("the skill allowlist changed raw execution inputs: skills=%v err=%v", skills, err)
+		}
+		typedDigest, err := ExecutionObjectDigest(typed)
+		if err != nil || typedDigest != initial {
+			t.Fatalf("the skill allowlist changed typed execution inputs: skills=%v err=%v", skills, err)
+		}
+		if !reflect.DeepEqual(current, beforeRaw) || !reflect.DeepEqual(typed, beforeTyped) {
+			t.Fatal("digest calculation mutated the policy or discarded its skill allowlist")
+		}
+	}
+	for _, change := range []struct {
+		name  string
+		path  []string
+		value any
+	}{
+		{"read-only root", []string{"security", "readOnlyRootFilesystem"}, false},
+		{"hostname", []string{"network", "blockedFQDNs"}, []any{"blocked.example.com"}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			changed := policy.DeepCopy()
+			if err := unstructured.SetNestedSlice(changed.Object, []any{"example-skill"}, "spec", "skills", "allowed"); err != nil {
+				t.Fatal(err)
+			}
+			if err := unstructured.SetNestedField(changed.Object, change.value, append([]string{"spec"}, change.path...)...); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ExecutionObjectDigest(changed)
+			if err != nil || got == initial {
+				t.Fatal("an execution control edited together with the skill allowlist was dropped:", err)
+			}
+		})
+	}
+}
+
 func TestTeamEffectiveSelectionExcludesUnrelatedSlots(t *testing.T) {
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "team-uid", ResourceVersion: "1"},
 		Spec: api.TeamSpec{AgentPolicyRef: "policy",

@@ -196,6 +196,17 @@ func main() {
 		setupLog.Error(err, "invalid Sandbox source configuration")
 		os.Exit(1)
 	}
+	skillMarketplaceConfig, err := controller.ParseSkillMarketplaceConfig(os.Getenv("CETIRUN_SKILL_MARKETPLACE"))
+	if err != nil {
+		setupLog.Error(err, "invalid Skill Marketplace configuration")
+		os.Exit(1)
+	}
+	if skillMarketplaceConfig.Enabled {
+		setupLog.Info("Skill Marketplace enabled: skill entries without the npm: prefix name Skill Marketplace skills")
+	}
+	// The marketplace creates the skills claims of native Agents; prerequisites
+	// wait for a missing claim instead of refusing the Agent.
+	sandboxSourcesConfig.SkillMarketplace = skillMarketplaceConfig.Enabled
 
 	agentIdentityEnabled := strings.EqualFold(os.Getenv("AGENT_ID_ENABLED"), "true")
 	agentIdentityCleanupEnabled := strings.EqualFold(os.Getenv("AGENT_ID_CLEANUP_ENABLED"), "true")
@@ -278,6 +289,7 @@ func main() {
 		IstioGateway:                       istioGateway,
 		DomainSuffix:                       domainSuffix,
 		SkillsStorageAccount:               skillsStorageAccount,
+		SkillMarketplace:                   skillMarketplaceConfig.Enabled,
 		CetiRunHelmValues:                  cetirunHelmValues,
 		MemoryImage:                        memoryImage,
 		MemoryEnabled:                      memoryEnabled,

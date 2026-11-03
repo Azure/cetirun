@@ -48,6 +48,10 @@ type KubernetesSandboxPrerequisites struct {
 	Now                        func() time.Time
 	WriterExclusion            SandboxWriterExclusionSource
 	NativeQuiescence           *KubernetesNativeQuiescence
+	// SkillMarketplace reports a missing skills claim of a common-executor
+	// built-in Agent as errSkillsClaimPending: the Skill Marketplace creates
+	// that claim after the operator bootstraps the Agent's namespace.
+	SkillMarketplace bool
 }
 
 var _ SandboxPreparationSource = (*KubernetesSandboxPrerequisites)(nil)
@@ -172,7 +176,7 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 		namespace.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) {
 		return empty, fmt.Errorf("Sandbox prerequisite namespace protection and exact Agent ownership are required")
 	}
-	mode := sandboxSkillsMode(source.NativeExecution, source.SkillsCatalogConfigMapName, agent, team)
+	mode := sandboxSkillsMode(source.NativeExecution, source.SkillsCatalogConfigMapName, source.SkillMarketplace, agent, team)
 	home := &corev1.PersistentVolumeClaim{}
 	var skills *corev1.PersistentVolumeClaim
 	claims := []struct {
@@ -192,6 +196,9 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 	for _, claim := range claims {
 		if err := source.readPrerequisite(ctx, client.ObjectKey{Namespace: namespace.Name, Name: claim.name}, claim.object); err != nil {
 			if claim.object == skills {
+				if source.skillsClaimPending(err, agent, reconciled) {
+					return empty, fmt.Errorf("%w: %w", errSkillsClaimPending, err)
+				}
 				return empty, fmt.Errorf("Sandbox skills require the configured skills PVC or validated publication: %w", err)
 			}
 			return empty, err
