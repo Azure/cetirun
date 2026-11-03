@@ -330,23 +330,56 @@ func copilotDefaultModelAllowed(model string) bool {
 
 // aiGatewayKeyAliases is the key's alias map without the copilot/<ID> aliases
 // earlier versions kept, each naming an Agent's Copilot model the way it was
-// named before Copilot models took their Gateway names. The operator renders
-// every Agent with the Gateway names, and the aliases also listed each Copilot
-// model a second time in the key's model list, so they are removed; other
-// aliases, such as an administrator's, are kept.
+// named before Copilot models took their Gateway names, and without the
+// aliases of the Agent's Team routers, which aiGatewayRouterAliases sets. The
+// operator renders every Agent with the Gateway names, and the copilot/
+// aliases also listed each Copilot model a second time in the key's model
+// list, so they are removed; other aliases, such as an administrator's, are
+// kept.
 func aiGatewayKeyAliases(current map[string]string) map[string]string {
 	aliases := map[string]string{}
 	for name, target := range current {
-		if !strings.HasPrefix(name, aiGatewayCopilotModelPrefix) {
+		if !strings.HasPrefix(name, aiGatewayCopilotModelPrefix) && !strings.HasPrefix(target, aiGatewayRouterPrefix) {
 			aliases[name] = target
 		}
 	}
 	return aliases
 }
 
-// reconcileAIGatewayKeyAliases removes the copilot/<ID> aliases an earlier
-// version put on the key and reads the key back. A failure is reported on the
-// Copilot status; it never fails the key reconcile.
+// aiGatewayRouterAliases are the aliases the key keeps for the Agent's granted
+// Team routers: each router's name for its internal name, so the Agent can
+// request the router, and list it, by the name the Team defined. A name the
+// key reaches another model by keeps that model: one of the Agent's GitHub
+// Copilot routes, or an alias of other (an administrator's). A router
+// configured in the Gateway is a model of its own name and needs none.
+func aiGatewayRouterAliases(instance *cetirunv1alpha1.Agent, other map[string]string) map[string]string {
+	status := instance.Status.AIGateway
+	if status == nil {
+		return nil
+	}
+	taken := map[string]bool{}
+	for _, route := range copilotRoutes(status.Copilot) {
+		taken[route.Name] = true
+	}
+	aliases := map[string]string{}
+	for _, router := range status.ModelRouters {
+		if !router.Granted || !strings.HasPrefix(router.Model, aiGatewayRouterPrefix) || router.Name == "" {
+			continue
+		}
+		if _, isOther := other[router.Name]; isOther || taken[router.Name] {
+			continue
+		}
+		aliases[router.Name] = router.Model
+	}
+	return aliases
+}
+
+// reconcileAIGatewayKeyAliases keeps the key's aliases for the Agent's granted
+// Team routers, removes the copilot/<ID> aliases an earlier version put on the
+// key, and reads the key back. It records each router alias the key has on the
+// router's status. Call it after the routers are granted. A failure leaves the
+// routers without aliases, so the Agent uses their internal names, and is
+// reported on the Copilot status; it never fails the key reconcile.
 func (r *AgentReconciler) reconcileAIGatewayKeyAliases(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, token string, key *aigateway.Key) {
 	status := instance.Status.AIGateway
 	var copilot *cetirunv1alpha1.AIGatewayCopilotStatus
@@ -358,22 +391,35 @@ func (r *AgentReconciler) reconcileAIGatewayKeyAliases(ctx context.Context, clie
 		current = key.Aliases
 	}
 	wanted := aiGatewayKeyAliases(current)
-	if maps.Equal(current, wanted) || len(current) == 0 && len(wanted) == 0 {
-		return
-	}
-	err := client.UpdateKeyAliases(ctx, token, wanted)
-	if err == nil {
-		var readBack *aigateway.Key
-		readBack, err = client.GetKey(ctx, token)
-		if err == nil && (readBack == nil || !maps.Equal(readBack.Aliases, wanted) && !(len(readBack.Aliases) == 0 && len(wanted) == 0)) {
-			err = fmt.Errorf("the AI Gateway key still has the earlier copilot/ model aliases")
+	routers := aiGatewayRouterAliases(instance, wanted)
+	maps.Copy(wanted, routers)
+	confirmed := routers
+	if !maps.Equal(current, wanted) && !(len(current) == 0 && len(wanted) == 0) {
+		err := client.UpdateKeyAliases(ctx, token, wanted)
+		if err == nil {
+			var readBack *aigateway.Key
+			readBack, err = client.GetKey(ctx, token)
+			if err == nil && (readBack == nil || !maps.Equal(readBack.Aliases, wanted) && !(len(readBack.Aliases) == 0 && len(wanted) == 0)) {
+				err = fmt.Errorf("the AI Gateway key does not have the model aliases it was given")
+			}
+		}
+		if err != nil {
+			confirmed = nil
+			log.FromContext(ctx).Error(err, "updating the AI Gateway key's model aliases failed", "instance", instance.Name)
+			if copilot != nil {
+				copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
+				copilot.Reason = "KeyAliasUpdateFailed"
+			}
 		}
 	}
-	if err != nil {
-		log.FromContext(ctx).Error(err, "removing the AI Gateway key's earlier Copilot model aliases failed", "instance", instance.Name)
-		if copilot != nil {
-			copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
-			copilot.Reason = "KeyAliasUpdateFailed"
+	if status == nil {
+		return
+	}
+	for i := range status.ModelRouters {
+		router := &status.ModelRouters[i]
+		router.Alias = ""
+		if target, ok := confirmed[router.Name]; ok && target == router.Model {
+			router.Alias = router.Name
 		}
 	}
 }

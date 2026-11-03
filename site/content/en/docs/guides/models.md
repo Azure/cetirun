@@ -309,9 +309,12 @@ A Team can also define its own smart-routing models in the Portal. See
 [Configure a team](../teams/#smart-routing). An instance that can use one of
 these models lists it under its name, such as `auto-team`. The create form
 offers the names that the Team's Policy allows as the default model, with
-`(smart routing)` after each name. The instance's
-configuration carries the router's internal Gateway name as the model ID.
-OpenClaw shows the router's name, but Hermes lists the internal name.
+`(smart routing)` after each name.
+
+The instance's key reaches the router under its name and under its internal
+Gateway name. Hermes is configured with the router's name. OpenClaw is
+configured with the internal name as the model ID, and it shows the router's
+name.
 
 If you select the router's name as the default model, you select the router.
 The instance is configured with the smallest context window and output limit
@@ -319,16 +322,21 @@ among the router's tier models that the Gateway reports. As a result, a request
 sized for the router fits every tier. When the owner's GitHub Copilot model is
 merged into a tier's shared model, the instance's requests for that tier can
 also reach its Copilot route. As a result, the router's limits include the
-limits of the route, as the instance's entry for that shared model does. The
-same is true for a router configured in the Gateway.
+limits of the route, as the instance's entry for that shared model does. A
+router configured in the Gateway gets its limits in the same way, from the
+models of its tiers and from its default model. If the router sets its own
+`max_input_tokens` and `max_output_tokens` in `model_info`, these values are
+used instead.
 
 Each request is charged to the instance's key at the price of the tier model
 that it is sent to. The calls of an `llm` or `jev` classifier are also charged.
 The router's own price in the Gateway only satisfies the check for unpriced
-models. The key's budget applies as usual. A per-model rate limit is matched
-against the model name that the instance requests, which is the router's
-internal name. As a result, a per-model limit on a tier model does not apply to
-requests that go through a router.
+models. The key's budget applies as usual.
+
+A per-model rate limit is matched against the model name that the Gateway
+counts, which is the router's internal name. A limit that a Policy sets for the
+router's name is also set under that internal name. A per-model limit on a tier
+model does not apply to requests that go through a router.
 
 An instance that cannot use one of its Team's routers shows why on its page.
 For example:

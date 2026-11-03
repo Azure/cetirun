@@ -232,6 +232,7 @@ func (r *AgentReconciler) aiGatewaySharedRouterGrant(instance *api.Agent, policy
 			allowed[name] = true
 		}
 	}
+	limits := r.aiGatewaySharedRouterLimits(instance)
 	for _, name := range view.names() {
 		reason := view.refusal(name, allowed)
 		if reason != "" {
@@ -242,11 +243,32 @@ func (r *AgentReconciler) aiGatewaySharedRouterGrant(instance *api.Agent, policy
 			status := api.AIGatewayModelRouterStatus{Name: name, Granted: reason == "", Reason: reason}
 			if status.Granted {
 				status.Model = name
+				status.ContextWindow, status.MaxTokens = limits[name][0], limits[name][1]
 			}
 			decision.statuses = append(decision.statuses, status)
 		}
 	}
 	return decision
+}
+
+// aiGatewaySharedRouterLimits are the limits the Agent is configured with for
+// each router configured in the Gateway, by name: those of the router's entry
+// in the catalog (fillRouterLimits), lowered by the Agent's own Copilot routes
+// registered under the names of the router's models
+// (aiGatewayRouterLimitFolds), as in the Agent's configuration.
+func (r *AgentReconciler) aiGatewaySharedRouterLimits(instance *api.Agent) map[string][2]int64 {
+	shared, known := r.aiGatewayCatalog.shared()
+	if !known {
+		return nil
+	}
+	limits := make(map[string][2]int64, len(shared))
+	for _, model := range shared {
+		limits[model.Name] = [2]int64{model.ContextWindow, model.MaxOutputTokens}
+	}
+	for name, fold := range r.aiGatewayRouterLimitFolds(instance, shared, r.aiGatewayConfiguredCopilotRoutes(instance)) {
+		limits[name] = fold
+	}
+	return limits
 }
 
 // withoutGroups leaves the given groups out of groups.

@@ -597,12 +597,24 @@ spec:
                         was granted it, and if not why. A router is granted only when the Agent may
                         use every model it sends requests to.
                       properties:
+                        alias:
+                          description: |-
+                            Alias is the router's name when the Agent's key also reaches a Team's
+                            router under it, through a key alias the operator keeps for each
+                            granted Team router. A Hermes Agent is configured with the router under
+                            this name. Empty when another model the key reaches, such as one of the
+                            Agent's GitHub Copilot models or an alias that an administrator set,
+                            has the name; the Agent then uses the internal name.
+                          type: string
                         contextWindow:
                           description: |-
-                            ContextWindow and MaxTokens are, for a Team router, the smallest limits
-                            among its tier models that the Gateway reports, which the Agent is
-                            configured with. A router configured in the Gateway has the limits the
-                            Gateway reports for it.
+                            ContextWindow and MaxTokens are the limits the Agent is configured with
+                            for the router. They are the smallest known limits of the models that
+                            the router sends requests to: its tier models and, for a router
+                            configured in the Gateway, its default model. The Agent's own GitHub
+                            Copilot routes under the names of these models count too. For a router
+                            configured in the Gateway, limits that the router itself sets replace
+                            those of its models.
                           format: int64
                           type: integer
                         granted:

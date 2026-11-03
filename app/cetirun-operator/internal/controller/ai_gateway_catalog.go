@@ -202,6 +202,13 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
 		}
 	}
+	// Only shared routers are granted by the shared-router rule; the
+	// operator's own Team routers are not shared models.
+	maps.DeleteFunc(routers, func(name string, _ aigateway.Router) bool {
+		_, isShared := byName[name]
+		return !isShared
+	})
+	fillRouterLimits(byName, routers)
 	shared := make([]aiGatewayCatalogModel, 0, len(byName))
 	nonChat := map[string]bool{}
 	for name, model := range byName {
@@ -217,12 +224,6 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		slices.Sort(groups)
 		modelGroups[name] = slices.Compact(groups)
 	}
-	// Only shared routers are granted by the shared-router rule; the
-	// operator's own Team routers are not shared models.
-	maps.DeleteFunc(routers, func(name string, _ aigateway.Router) bool {
-		_, isShared := byName[name]
-		return !isShared
-	})
 	fingerprint := aiGatewayCatalogFingerprint(modelGroups)
 	routerFingerprint := aiGatewayRouterFingerprint(routers)
 	c.mu.Lock()
@@ -406,6 +407,45 @@ func aiGatewaySharedModelUsable(name string) bool {
 	lower := strings.ToLower(name)
 	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(lower, "cetirun-") &&
 		!strings.HasPrefix(lower, aiGatewayCopilotModelPrefix)
+}
+
+// fillRouterLimits gives each shared router that states no limit of its own
+// the smallest limit among the models it sends requests to answer: its tier
+// models and its default model. An Agent configured with these limits sizes
+// each request to fit whichever of those models the router picks, as for a
+// Team's router (modelRouterLimits). Without them, the Agent took its own
+// default, which can be larger than a tier's model. The limits in the
+// router's own model_info, set by the administrator, are kept. A model whose
+// limits the Gateway does not report, a model that is itself a router, the
+// classifier and the context compaction model do not count. A router whose
+// configuration the operator cannot read completely gets no limits: it may
+// send requests to models the operator does not know.
+func fillRouterLimits(models map[string]aiGatewayCatalogModel, routers map[string]aigateway.Router) {
+	for name, router := range routers {
+		model, ok := models[name]
+		if !ok || router.Unverifiable != "" || (model.ContextWindow > 0 && model.MaxOutputTokens > 0) {
+			continue
+		}
+		var contextWindow, maxTokens int64
+		for _, used := range router.Models {
+			if used.Use != aigateway.RouterTier && used.Use != aigateway.RouterDefault {
+				continue
+			}
+			if _, isRouter := routers[used.Name]; isRouter {
+				continue
+			}
+			limits := models[used.Name]
+			contextWindow = smallerPositive(contextWindow, limits.ContextWindow)
+			maxTokens = smallerPositive(maxTokens, limits.MaxOutputTokens)
+		}
+		if model.ContextWindow <= 0 {
+			model.ContextWindow = contextWindow
+		}
+		if model.MaxOutputTokens <= 0 {
+			model.MaxOutputTokens = maxTokens
+		}
+		models[name] = model
+	}
 }
 
 func smallerPositive(current, next int64) int64 {
