@@ -1179,12 +1179,16 @@ request to the other models of the router, in this order:
 3. The default model of the router.
 4. The models of the lower tiers, from the highest.
 
-LiteLLM uses only the models that the key of the caller can use. It sends the
-request to another model only before a response starts. Errors of all kinds
-count, for example a 503, a timeout, a 429, or a 400 from the model. A refusal
-by the guard does not count, for example the 403 for a model that the key
-cannot use. The guard adds these fallbacks to the request only. It does not
-change a setting of the Gateway.
+With `operatorIntegration`, LiteLLM uses only the models that the key of the
+caller can use. Without it, as on a standalone Gateway, LiteLLM does not
+examine the key for these fallbacks. They give the key no new model, because
+the router can select each of its models for the key's requests.
+
+LiteLLM sends the request to another model only before a response starts.
+Errors of all kinds count, for example a 503, a timeout, a 429, or a 400 from
+the model. A refusal by the guard does not count, for example the 403 for a
+model that the key cannot use. The guard adds these fallbacks to the request
+only. It does not change a setting of the Gateway.
 
 These fallbacks do not replace other fallbacks:
 
