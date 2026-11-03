@@ -269,8 +269,9 @@ auto_router/. A router's own name is checked against the unpriced-model block
 like any model, so it needs a price; measured, each call is still charged at the
 price of the model the router picks, and budgets hold. A price above zero is
 required, so that LiteLLM never takes the router for a free model. A complexity
-router's tiers, default model and classifier model have to be models configured
-here: LiteLLM's own defaults name models this Gateway may not serve. Without a
+router's tiers, default model and classifier model (classifier_llm_config.model,
+or jev_classifier_config.deployment_name for a jev classifier) have to be models
+configured here: LiteLLM's own defaults name models this Gateway may not serve. Without a
 LiteLLM licence, LiteLLM 1.105.1 lets at most one complexity router claim each
 licensed capability: classifier_type heuristic_v2, classifier_type capability,
 classifier_type llm_v2, and its own tier_definitions or classifier prompt; the
@@ -323,6 +324,17 @@ have to be {open, close} pairs, as LiteLLM 1.105.1 requires.
 {{- end -}}
 {{- with get $llm "model" -}}
 {{- $targets = append $targets . -}}
+{{- end -}}
+{{- /* A jev classifier names its decision model in jev_classifier_config. A
+       name that is not configured here is not refused by LiteLLM: with the
+       default_model fallback below, every request then goes quietly to the
+       default model. */ -}}
+{{- if eq (toString (get $config "classifier_type" | default "heuristic")) "jev" -}}
+{{- $decision := get (get $config "jev_classifier_config" | default dict) "deployment_name" -}}
+{{- if not $decision -}}
+{{- fail (printf "auto router %s uses the jev classifier and needs jev_classifier_config.deployment_name, the name of a decision model configured in models." $name) -}}
+{{- end -}}
+{{- $targets = append $targets $decision -}}
 {{- end -}}
 {{- range $targets -}}
 {{- if not (has (toString .) $plain) -}}
