@@ -48,11 +48,7 @@ func bootstrapRoleUpgradeFixture(t *testing.T, kind, backend string) (*nativeSan
 	if err := f.kube.Get(ctx, client.ObjectKey{Namespace: receipt.Namespace, Name: receipt.Objects[1].Name}, role); err != nil {
 		t.Fatal(err)
 	}
-	for i := range role.Rules {
-		if slices.Equal(role.Rules[i].APIGroups, []string{"networking.istio.io"}) {
-			role.Rules[i].Resources = []string{"virtualservices", "sidecars"}
-		}
-	}
+	role.Rules = readHistoricalBootstrapRBAC(t).Role.Rules
 	if err := f.kube.Update(ctx, role); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +329,7 @@ func TestSandboxBootstrapRoleUpgradeSupportsHeldSingleStart(t *testing.T) {
 	if err := f.kube.Get(ctx, client.ObjectKey{Namespace: receipt.Namespace, Name: receipt.Objects[1].Name}, role); err != nil {
 		t.Fatal(err)
 	}
-	role.Rules, _ = sandboxBootstrapMTLSRoleRules()
+	role.Rules = readHistoricalBootstrapRBAC(t).Role.Rules
 	if err := f.kube.Update(ctx, role); err != nil {
 		t.Fatal(err)
 	}
