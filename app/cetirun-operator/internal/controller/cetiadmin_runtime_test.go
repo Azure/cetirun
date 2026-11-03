@@ -209,7 +209,9 @@ func TestCetiAdminSkillPathsKeepMountedAndExplicitSources(t *testing.T) {
 		{name: "disabled", mount: "/home/vibe/.aks/skills"},
 		{name: "disabled-with-memory", memory: true, mount: "/home/vibe/.aks/skills"},
 		{name: "shared-default", shared: true, mount: "/home/vibe/.aks/skills", wantLegacy: true},
-		{name: "shared-with-memory", shared: true, memory: true, mount: "/home/vibe/.aks/skills", wantLegacy: true},
+		// With Memory, the composed ~/.agents/skills holds the shared skills,
+		// and the same view at the mount path would list each skill twice.
+		{name: "shared-with-memory", shared: true, memory: true, mount: "/home/vibe/.aks/skills"},
 		{name: "shared-other-mount", shared: true, mount: "/home/vibe/shared-skills"},
 		{name: "explicit-user-source", mount: "/home/vibe/.aks/skills", explicit: []any{"/home/vibe/user-skills"}},
 		{name: "explicit-legacy-source", mount: "/home/vibe/.aks/skills", explicit: []any{"/home/vibe/.aks/skills"}, wantLegacy: true},
@@ -255,7 +257,7 @@ func TestCetiAdminSkillPathsKeepMountedAndExplicitSources(t *testing.T) {
 			if contains("/home/vibe/.aks/skills") != test.wantLegacy || !contains(cetiadmin.AssetsMountPath+"/skills") || contains("/home/vibe/.agents/skills") != test.memory {
 				t.Fatalf("skill roots disagree with current bindings: %v", native.Skills.ExternalDirs)
 			}
-			if test.shared && !contains(test.mount) {
+			if test.shared && !test.memory && !contains(test.mount) {
 				t.Fatalf("active shared skill source is not registered: %s", test.mount)
 			}
 			for _, expected := range test.explicit {
