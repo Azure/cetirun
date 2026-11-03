@@ -661,6 +661,15 @@ skills:
   # -- Use a separately owned skills PVC without creating a PV or PVC.
   # Native protected rendering sets this only when adopting an existing claim.
   # existingClaim: ""
+  # -- Team subtree of the shared skills claim, set by the operator for a
+  # Skill Marketplace Team: "teams/<team-uid>". Only the HOME initializer
+  # mounts it, read-only. Requires skills.shared and the composed Agent context.
+  # subPath: ""
+  # -- Skill Marketplace selection, set by the operator together with subPath.
+  # selectionDigest is the Team selection digest "sha256:<64 hex>" that the
+  # HOME initializer waits for.
+  # marketplace:
+  #   selectionDigest: ""
   # -- StorageClass for the shared skills PV/PVC
   storageClassName: azureblob-nfs-premium
   # -- Install-time-only Blob CSI protocol. Use fuse2 for HTTPS-only storage accounts.

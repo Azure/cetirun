@@ -14,6 +14,19 @@ Licensed under the MIT License.
 {{- end -}}
 
 {{- define "cetirun.context.validate" -}}
+{{- $marketplaceSubPath := .Values.skills.subPath -}}
+{{- $marketplaceSelection := (.Values.skills.marketplace | default dict).selectionDigest -}}
+{{- if or $marketplaceSubPath $marketplaceSelection -}}
+{{- if not (include "cetirun.context.enabled" .) -}}
+{{- fail "Skill Marketplace skills require the composed Agent context" -}}
+{{- end -}}
+{{- if not (and $marketplaceSubPath $marketplaceSelection) -}}
+{{- fail "Skill Marketplace skills require both skills.subPath and skills.marketplace.selectionDigest" -}}
+{{- end -}}
+{{- if not .Values.skills.shared -}}
+{{- fail "Skill Marketplace skills require skills.shared" -}}
+{{- end -}}
+{{- end -}}
 {{- if include "cetirun.context.enabled" . -}}
 {{- $root := printf "%s/.agents" (include "cetirun.context.home" .) -}}
 {{- if and .Values.skills.shared (ne .Values.skills.mountPath (printf "%s/skills" $root)) -}}
@@ -51,6 +64,10 @@ Licensed under the MIT License.
 {{- if and .Values.skills.shared (include "cetirun.context.enabled" .) }}
 - name: CETIRUN_SHARED_SKILLS_DIR
   value: /etc/cetirun-shared-skills
+{{- with (.Values.skills.marketplace | default dict).selectionDigest }}
+- name: CETIRUN_SKILLS_RELEASE_SELECTION
+  value: {{ . | quote }}
+{{- end }}
 {{- end }}
 {{- if .Values.memoryContext.enabled }}
 - name: CETIRUN_MEMORY_ASSETS
@@ -69,6 +86,9 @@ Licensed under the MIT License.
 - name: shared-skills
   mountPath: /etc/cetirun-shared-skills
   readOnly: true
+{{- with .Values.skills.subPath }}
+  subPath: {{ . | quote }}
+{{- end }}
 {{- end }}
 {{- include "cetirun.memory.mounts" . }}
 {{- end }}

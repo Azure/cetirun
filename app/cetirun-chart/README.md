@@ -111,6 +111,15 @@ The protected inventory includes:
   names. The compiler's bound ingress mode must also match the shared
   resolution.
 
+For a Skill Marketplace Team, the operator sets two values. `skills.subPath`
+is the Team subtree of the skills claim (`teams/<team-uid>`).
+`skills.marketplace.selectionDigest` is the Team selection digest. Only the
+HOME initializer mounts that subtree, read-only. It receives the digest as
+`CETIRUN_SKILLS_RELEASE_SELECTION` and waits for the matching Team release.
+No other container mounts the claim. The render fails unless both values are
+set, `skills.shared` is true, and the composed Agent context is enabled. When
+both values are empty, the render does not change.
+
 The legacy pre-upgrade orphan/re-adoption hook is absent from protected
 renders. If a StatefulSet that already exists uses `volumeClaimTemplates`, a
 separately approved stopped-workload transition is necessary. A render never
