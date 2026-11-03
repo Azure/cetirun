@@ -356,6 +356,7 @@ class WorkflowContractTests(unittest.TestCase):
         makefile = (validate.ROOT / "app/cetirun-operator/Makefile").read_text()
         self.assertIn("GO_TEST_TIMEOUT := 30m", makefile)
         self.assertIn("GO_ENVTEST_TIMEOUT := 50m", makefile)
+        self.assertRegex(makefile, r"(?m)^GO_CONTROLLER_TEST_GROUP := \^Test\([A-Za-z|]+\)$")
         for target, timeout in (
             ("test", "GO_TEST_TIMEOUT"),
             ("test-envtest", "GO_ENVTEST_TIMEOUT"),
@@ -364,15 +365,26 @@ class WorkflowContractTests(unittest.TestCase):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
                 self.assertIn(f"-timeout=$({timeout})", commands)
                 self.assertIn("-count=1", commands)
-                self.assertNotIn("-run", commands)
+                if target == "test-envtest":
+                    self.assertNotIn("-run", commands)
                 self.assertNotIn("|| true", commands)
+        unit = makefile.split("\ntest:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn(
+            "go list -f '{{if ne .ImportPath \"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller\"}}{{.ImportPath}}{{end}}' ./...",
+            unit,
+        )
+        self.assertIn('test -n "$$packages"', unit)
+        self.assertIn("go test $$packages -v -count=1 -timeout=$(GO_TEST_TIMEOUT)", unit)
+        controller = "go test ./internal/controller -v -count=1 -timeout=$(GO_TEST_TIMEOUT)"
+        self.assertIn(f"{controller} -run '$(GO_CONTROLLER_TEST_GROUP)'", unit)
+        self.assertIn(f"{controller} -skip '$(GO_CONTROLLER_TEST_GROUP)'", unit)
+        self.assertEqual(unit.count("go test "), 3)
         for target in ("test-envtest", "test-sandbox-lifecycle"):
             with self.subTest(target=target):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
                 self.assertIn("./cmd/sandbox-config-change", commands)
                 self.assertIn('test -x "$(KUBEBUILDER_ASSETS)/kubectl"', commands)
                 self.assertIn("USE_EXISTING_CLUSTER=false go test -tags=envtest", commands)
-        self.assertIn("go test ./... -v", makefile)
         for name in ("operator-ci.yml", "operator-release.yml"):
             with self.subTest(workflow=name):
                 text = (validate.ROOT / ".github/workflows" / name).read_text()
