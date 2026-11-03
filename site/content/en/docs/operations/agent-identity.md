@@ -41,7 +41,8 @@ example when a user connects a provider or an Agent requests its identity.
 With `make deploy`, do steps 1 to 4 of this guide. Then, instead of steps 5 and
 6, put the values above and the names of the step 3 Secrets in the environment
 file. `make deploy` sets the Broker, Operator, Portal, and MCP values from
-them. Use the names that you created:
+them. The synthetic example environment file uses these names. If you created
+other names, use them:
 
 | Secret from step 3 | Environment file field |
 | --- | --- |
