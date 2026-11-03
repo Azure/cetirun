@@ -197,7 +197,7 @@ type aiGatewayKeyClient interface {
 	BlockUnpricedModels(context.Context) (bool, error)
 	AddModel(context.Context, aigateway.ModelRequest) error
 	DeleteModel(context.Context, string) error
-	PricedModels(context.Context) (map[string]bool, error)
+	PriceTable(context.Context) (aigateway.PriceTable, error)
 	UpdateKeyAliases(context.Context, string, map[string]string) error
 }
 
@@ -263,6 +263,9 @@ type aiGatewayGrant struct {
 	copilot     bool
 	active      bool
 	policyBound bool
+	// An installed CetiAdmin initializes its own budget once and requires its
+	// configured model; ordinary legacy Agents keep the existing fallback.
+	cetiAdminModel string
 	// Team model routers (ai_gateway_routers.go): the inputs of the router
 	// grant, the router groups in groups and each router's status.
 	team             *cetirunv1alpha1.Team
@@ -343,6 +346,7 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 	if err != nil {
 		return aiGatewayGrant{}, err
 	}
+	limits = r.withTeamRouterModelLimits(limits, resolution.team)
 	return aiGatewayGrant{
 		groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true,
 		team: resolution.team, policy: resolution.policy, routerGroups: routerGroups, routers: routers, routersEvaluated: true,
@@ -375,8 +379,23 @@ func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, clien
 	routerGroups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, team, nil, copilot)
 	groups = append(groups, routerGroups...)
 	slices.Sort(groups)
+	budget, cetiAdminModel := r.AIGateway.DefaultBudget, ""
+	if r.CetiAdmin != nil {
+		binding, managed, err := r.CetiAdmin.BindingForAgent(ctx, instance)
+		if managed {
+			if err != nil {
+				return aiGatewayGrant{}, err
+			}
+			model := binding.Config().Model
+			budget, err = strconv.ParseFloat(model.InitialMonthlyBudgetUSD, 64)
+			if err != nil || math.IsInf(budget, 0) || math.IsNaN(budget) || budget < 0 || instance.Spec.Model != model.Default {
+				return aiGatewayGrant{}, fmt.Errorf("CetiAdmin model and initial budget must match the current installation")
+			}
+			cetiAdminModel = model.Default
+		}
+	}
 	return aiGatewayGrant{
-		groups: slices.Compact(groups), budget: r.AIGateway.DefaultBudget, copilot: copilot, active: true,
+		groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, cetiAdminModel: cetiAdminModel,
 		team: team, routerGroups: routerGroups, routers: routers, routersEvaluated: true,
 	}, nil
 }
@@ -423,6 +442,9 @@ const (
 	// aiGatewayChartSignInValue identifies the sign-in whose models the Agent
 	// uses on the proxy's Pod template; older charts do not declare it.
 	aiGatewayChartSignInValue = "signInGeneration"
+	// aiGatewayChartVisionValue lists the models the Agent can send images
+	// to; older charts do not declare it, and would reject it.
+	aiGatewayChartVisionValue = "visionModels"
 )
 
 // chartValuePaths is the part of a prepared release that reports the values
@@ -683,6 +705,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	if err != nil {
 		return aiGatewayDegraded(instance, "GatewayUnavailable", err)
 	}
+	createdCetiAdminKey := key == nil && status.KeyID == "" && grant.cetiAdminModel != ""
 	switch {
 	case key == nil && status.KeyID != "":
 		return aiGatewayDegraded(instance, aiGatewayReasonKeyRecordLost,
@@ -801,6 +824,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		(grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration)) {
 		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the AI Gateway key does not match its resolved grant"))
 	}
+	if createdCetiAdminKey && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration) {
+		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the CetiAdmin key's initial budget was not applied"))
+	}
 	if instance.Spec.Suspended {
 		if !key.Blocked {
 			return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the suspended Agent key is not blocked"))
@@ -869,11 +895,13 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	// Copilot registration problems are reported on the Copilot status and
 	// never block the key: shared models keep working.
 	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended)
-	r.reconcileAIGatewayKeyAliases(ctx, client, instance, token, key)
 	if err := r.refreshAIGatewayRouterGrant(ctx, client, instance, grant); err != nil {
 		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayModelRoutersFailed",
 			"Updating the AI Gateway key's model routers after the GitHub Copilot registration failed: %v", err)
 	}
+	// After the routers are granted, and the Copilot routes they must not
+	// shadow are registered.
+	r.reconcileAIGatewayKeyAliases(ctx, client, instance, token, key)
 	r.refreshAIGatewayCatalog(ctx, client)
 	if routed {
 		entries, defaultModel, omitted := r.aiGatewayModelEntries(instance)
@@ -893,6 +921,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		}
 	} else {
 		status.Models, status.DefaultModel = nil, ""
+	}
+	if grant.cetiAdminModel != "" && (!routed || !slices.Contains(status.Models, grant.cetiAdminModel) || status.DefaultModel != grant.cetiAdminModel) {
+		return aiGatewayDegraded(instance, "ModelUnavailable", fmt.Errorf("the configured CetiAdmin model is not available to its virtual key"))
 	}
 
 	message := "AI Gateway virtual key is ready"
@@ -1034,6 +1065,11 @@ func (r *AgentReconciler) blockAIGatewayKeyIfPresent(ctx context.Context, client
 	}
 	status := ensureAIGatewayStatus(instance)
 	if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
+		if reason == aiGatewayReasonSuspended {
+			// Suspension is already enforced. Do not take ownership of an
+			// administrator's block or make it eligible for automatic resume.
+			return true, nil
+		}
 		return false, fmt.Errorf("the AI Gateway key is already blocked outside a CetiRun policy transition")
 	}
 	if status.Reason != reason {
@@ -1352,6 +1388,35 @@ func (r *AgentReconciler) applyCopilotChartValues(values map[string]any, instanc
 	}
 }
 
+// applyAIGatewayVisionModels tells a chart that takes it which of the Agent's
+// models accept images, so the harness sends images with a request to them
+// instead of having another model describe them. A model counts only when
+// every model the Agent's requests for it may reach accepts images
+// (aiGatewayModelEntries). The list is empty rather than absent when none
+// does, which keeps the release's values in one form.
+func (r *AgentReconciler) applyAIGatewayVisionModels(values map[string]any, instance *cetirunv1alpha1.Agent, prepared chartValuePaths) {
+	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartVisionValue) {
+		return
+	}
+	gateway, _ := values[aiGatewayChartValue].(map[string]any)
+	if gateway == nil {
+		return
+	}
+	entries, _, _ := r.aiGatewayModelEntries(instance)
+	ids := []string{}
+	for _, entry := range entries {
+		if entry.Vision {
+			ids = append(ids, entry.ID)
+		}
+	}
+	slices.Sort(ids)
+	vision := make([]any, 0, len(ids))
+	for _, id := range slices.Compact(ids) {
+		vision = append(vision, id)
+	}
+	gateway[aiGatewayChartVisionValue] = vision
+}
+
 // applyCopilotResponsesModels tells the proxy which registered models need
 // the Responses API bridge for chat-completion requests.
 func (r *AgentReconciler) applyCopilotResponsesModels(values map[string]any, instance *cetirunv1alpha1.Agent) {
@@ -1465,7 +1530,13 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 		if r.aiGatewayCopilotActive(instance) {
 			var routes []string
 			for _, route := range copilotRoutes(status.Copilot) {
-				routes = append(routes, route.Model+"="+route.Name)
+				part := route.Model + "=" + route.Name
+				// A route that accepts images lets the Agent send them under
+				// its name.
+				if route.Vision {
+					part += ":vision"
+				}
+				routes = append(routes, part)
 			}
 			// copilot-names: Copilot models are named by their Gateway
 			// name, not GitHub's display name; Agents configured with the
@@ -1484,23 +1555,55 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 	}
 	if shared, known := r.aiGatewayCatalog.shared(); known && instance.Spec.SharedModelsEnabled() {
 		// The limits reach the Agent's configuration too, so a change to them
-		// alone must roll it.
+		// alone must roll it. A router configured in the Gateway counts here by
+		// its name only: its limits follow from those of the models it uses
+		// (fillRouterLimits), so a change to those models can change them, and
+		// they count below, for the Agents configured with the router only.
+		gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
 		models := make([]string, 0, len(shared))
 		for _, model := range shared {
+			if _, isRouter := gatewayRouters[model.Name]; isRouter {
+				models = append(models, model.Name+":router")
+				continue
+			}
 			models = append(models, fmt.Sprintf("%s:%d:%d", model.Name, model.ContextWindow, model.MaxOutputTokens))
 		}
 		parts = append(parts, "shared", strings.Join(models, ","))
-		// A router configured in the Gateway takes smaller limits from the
-		// Agent's Copilot routes under its models' names; a change to the
-		// router's models alone can change them, so they count on their own.
+		// Which models accept images reaches the Agent's configuration too,
+		// with a chart that takes it. A router's value follows from those of
+		// the models it uses (fillRouterVision), so it changes with them.
+		var vision []string
+		for _, model := range shared {
+			if model.Vision {
+				vision = append(vision, model.Name)
+			}
+		}
+		if len(vision) > 0 {
+			parts = append(parts, "vision", strings.Join(vision, ","))
+		}
+		// The limits of each router configured in the Gateway that the Agent
+		// is configured with, lowered by the Agent's Copilot routes under its
+		// models' names, as in its configuration.
 		if entitled, ok := r.aiGatewayEntitledShared(instance); ok {
-			folds := r.aiGatewayRouterLimitFolds(instance, entitled, r.aiGatewayConfiguredCopilotRoutes(instance))
-			if len(folds) > 0 {
-				limits := make([]string, 0, len(folds))
-				for _, name := range slices.Sorted(maps.Keys(folds)) {
-					limits = append(limits, fmt.Sprintf("%s:%d:%d", name, folds[name][0], folds[name][1]))
+			routes := r.aiGatewayConfiguredCopilotRoutes(instance)
+			folds := r.aiGatewayRouterLimitFolds(instance, entitled, routes)
+			var limits []string
+			for _, model := range entitled {
+				if _, isRouter := gatewayRouters[model.Name]; !isRouter {
+					continue
 				}
-				parts = append(parts, "router-limits", strings.Join(limits, ","))
+				contextWindow, maxTokens := model.ContextWindow, model.MaxOutputTokens
+				if fold, folded := folds[model.Name]; folded {
+					contextWindow, maxTokens = fold[0], fold[1]
+				}
+				limits = append(limits, fmt.Sprintf("%s:%d:%d", model.Name, contextWindow, maxTokens))
+			}
+			if len(limits) > 0 {
+				parts = append(parts, "gateway-router-limits", strings.Join(limits, ","))
+			}
+			// The routers that accept images, but not for this Agent.
+			if visionFolds := r.aiGatewayRouterVisionFolds(entitled, routes); len(visionFolds) > 0 {
+				parts = append(parts, "gateway-router-vision", strings.Join(slices.Sorted(maps.Keys(visionFolds)), ","))
 			}
 		}
 	}

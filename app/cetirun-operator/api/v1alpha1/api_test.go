@@ -6,13 +6,16 @@ package v1alpha1
 import (
 	"bytes"
 	"encoding/json"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/engine"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
-	"text/template"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -251,35 +254,39 @@ func TestChartRBACContract(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			data, err := os.ReadFile(tc.path)
+			source, err := loader.Load(filepath.Join(filepath.Dir(tc.path), ".."))
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, rules, ok := strings.Cut(string(data), "\nrules:\n")
-			if !ok {
-				t.Fatal("missing RBAC rules")
+			var templates []*chart.File
+			for _, file := range source.Templates {
+				if file.Name == "templates/clusterrole.yaml" || strings.HasPrefix(filepath.Base(file.Name), "_") {
+					templates = append(templates, file)
+				}
 			}
-			source, err := template.New("rbac-rules").Parse(rules)
-			if err != nil {
-				t.Fatal(err)
-			}
+			source.Templates = templates
 			for _, option := range []struct {
 				name    string
 				enabled bool
 			}{{"default", false}, {"placement", true}} {
 				t.Run(option.name, func(t *testing.T) {
-					var rendered bytes.Buffer
-					if err := source.Execute(&rendered, map[string]any{"Values": map[string]any{
+					input, err := chartutil.ToRenderValues(source, map[string]any{
+						"cetiadmin":      map[string]any{"enabled": false},
 						"sandboxSources": map[string]any{"enabled": option.enabled, "placementConfigMapName": "sandbox-placement"},
-					}}); err != nil {
+					}, chartutil.ReleaseOptions{Name: "rbac-test", Namespace: "test", IsInstall: true}, chartutil.DefaultCapabilities)
+					if err != nil {
 						t.Fatal(err)
 					}
-					var parsed []rbacv1.PolicyRule
-					if err := yaml.Unmarshal(rendered.Bytes(), &parsed); err != nil {
+					rendered, err := engine.Render(source, input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var role rbacv1.ClusterRole
+					if err := yaml.Unmarshal([]byte(rendered[source.Name()+"/templates/clusterrole.yaml"]), &role); err != nil {
 						t.Fatal(err)
 					}
 					got := map[string][]string{}
-					for _, rule := range parsed {
+					for _, rule := range role.Rules {
 						if !slices.Contains(rule.APIGroups, GroupVersion.Group) {
 							continue
 						}

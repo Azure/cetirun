@@ -9,6 +9,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PolicyEditPage } from "./PolicyEditPage";
 import { fromPolicyDTO, toPolicyRequest } from "./PolicyEditPage";
 import * as policyAPI from "../../api/adminPolicy";
+import * as gatewayAPI from "../../api/aiGateway";
+
+vi.mock("../../api/aiGateway");
 
 vi.mock("../../api/adminPolicy", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../api/adminPolicy")>();
@@ -57,6 +60,9 @@ describe("PolicyEditPage", () => {
     vi.mocked(policyAPI.createPolicy).mockReset();
     vi.mocked(policyAPI.getPolicy).mockReset();
     vi.mocked(policyAPI.updatePolicy).mockReset();
+    vi.mocked(gatewayAPI.getAIGatewayCatalog).mockReset().mockResolvedValue({
+      known: true, sharedModels: [], githubCopilot: true, agentTypes: ["openclaw"],
+    });
   });
 
   it("preserves Custom policy permission and supports explicit removal", async () => {
@@ -70,7 +76,7 @@ describe("PolicyEditPage", () => {
     expect(custom).not.toBeChecked();
   });
 
-  it("shows one-per-line examples for list fields", () => {
+  it("keeps skill examples and offers a model picker", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={queryClient}>
@@ -86,11 +92,11 @@ describe("PolicyEditPage", () => {
       "placeholder",
       "skill-a\nnpm:@scope/skill-b\nskill-c@1.2.0",
     );
-    expect(screen.getByRole("textbox", { name: "Allowed shared models" })).toHaveAttribute(
+    expect(screen.getByRole("combobox", { name: "Allowed shared models" })).toHaveAttribute(
       "placeholder",
-      "gpt-4.1\ngpt-4o-mini",
+      "Search models",
     );
-    expect(screen.getAllByText(/commas are not separators/i)).toHaveLength(2);
+    expect(screen.getAllByText(/commas are not separators/i)).toHaveLength(1);
     const readonly = within(screen.getByRole("region", { name: "Read-only policy capabilities" }));
     const kubernetes = within(readonly.getByRole("region", { name: "Kubernetes API access" }));
     expect(kubernetes.getByText("No Kubernetes API access is configured in this policy.")).toBeInTheDocument();

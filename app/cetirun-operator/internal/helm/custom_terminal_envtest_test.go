@@ -74,7 +74,7 @@ func TestCustomTerminalRBACAndAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, err := chartutil.ToRenderValues(operatorChart, operatorChart.Values,
+	values, err := chartutil.ToRenderValues(operatorChart, map[string]any{"cetiadmin": map[string]any{"enabled": false}},
 		chartutil.ReleaseOptions{Name: "operator", Namespace: "cetirun-system", IsInstall: true}, chartutil.DefaultCapabilities)
 	if err != nil {
 		t.Fatal(err)

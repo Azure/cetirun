@@ -125,14 +125,22 @@ go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
 
-The Operator unit target keeps a bounded Go timeout of 30 minutes per package,
-and the envtest target keeps 40 minutes. Envtest includes the unit suite along
-with isolated API-server regressions. Their combined controller test times can
-exceed these budgets on CI runners, so Operator CI runs each target across four
-independent shards rather than increasing the timeouts.
+The default unit target discovers all packages with `go list ./...`. It tests the
+controller package in two complementary groups because the combined suite has
+exceeded 30 minutes on CI runners. One invocation selects the lifecycle test
+prefixes in `GO_CONTROLLER_TEST_GROUP`; the next skips exactly those prefixes.
+Every controller test runs once, and every other package runs in full. Each
+package or controller group keeps a 30-minute timeout.
+
+The envtest target keeps main's 50-minute timeout for each package. It runs the unit suite
+together with isolated API-server regressions, and the combined controller
+package has exceeded 40 minutes in CI. Operator CI distributes both targets
+across four independent hash shards within these existing budgets.
 
 Root Go test gates and CI use the same component targets. By default, local
-`make test` and `make test-envtest` still run the entire suite without filtering.
+`make test` and `make test-envtest` still cover the entire suite. The default
+unit run retains the complementary controller groups described above; CI shards
+use the shared test runner instead.
 To reproduce one CI shard, set its one-based index and the total shard count:
 
 ```bash

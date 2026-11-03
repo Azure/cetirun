@@ -85,6 +85,24 @@ func preRestartChart(t *testing.T) *chart.Chart {
 			}
 			template.Data = bytes.Replace(template.Data, []byte(addition), nil, 1)
 		}
+		for _, change := range [][2]string{
+			{`  {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
+  {{- if .Values.cetiadmin.enabled }}
+  {{- $_ := set $annotations "checksum/cetiadmin" (toJson .Values.cetiadmin | sha256sum) }}
+  {{- if .Values.cetiadmin.azureWorkloadIdentity.enabled }}
+  {{- $_ := set $annotations "azure.workload.identity/skip-containers" (include "cetirun.cetiadmin.azureSkipContainers" .) }}
+  {{- end }}
+  {{- end }}
+  {{- with $annotations }}
+`, `  {{- with .Values.podAnnotations }}
+`},
+			{`  {{- if and (not $bindings) (or .Values.azureWorkloadIdentity.enabled (and .Values.cetiadmin.enabled .Values.cetiadmin.azureWorkloadIdentity.enabled)) }}`, `  {{- if and (not $bindings) .Values.azureWorkloadIdentity.enabled }}`},
+		} {
+			if bytes.Count(template.Data, []byte(change[0])) != 1 {
+				t.Fatal("pre-restart fixture requires the exact later CetiAdmin addition")
+			}
+			template.Data = bytes.Replace(template.Data, []byte(change[0]), []byte(change[1]), 1)
+		}
 		// Exact public template at ef9ca7d421e360e07469d3ac63f5d50b82455e0d.
 		if fmt.Sprintf("%x", sha256.Sum256(template.Data)) != "b85759d050fe8f863eaa04997b942d61f3f7d21fd2eeace163f51fb8945919fa" {
 			t.Fatal("pre-restart chart fixture no longer matches its pinned source")

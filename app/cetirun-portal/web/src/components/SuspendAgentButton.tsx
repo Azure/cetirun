@@ -50,13 +50,13 @@ export function SuspendAgentButton({ instance }: { instance: Instance }) {
       {request && sent ? `Review ${action.toLowerCase()} request` : `${action} Agent`}
     </Button>
     {instance.suspended === false && !instance.suspendAvailable && instance.suspensionUnavailableReason &&
-      <Text role="status">{instance.suspensionUnavailableReason}</Text>}
-    {instance.suspended === true && <Text role="status">
+      <Text role="status" style={{ flexBasis: "100%", order: 1 }}>{instance.suspensionUnavailableReason}</Text>}
+    {instance.suspended === true && <Text role="status" style={{ flexBasis: "100%", order: 1 }}>
       Suspension requested. This view does not confirm Pod termination or removal of every access path.
       The Agent, HOME and Gateway key are retained.
     </Text>}
     {instance.suspended === false && instance.suspendAvailable && !instance.restartAvailable &&
-      <Text role={instance.phase === "Failed" ? "alert" : "status"}>
+      <Text role={instance.phase === "Failed" ? "alert" : "status"} style={{ flexBasis: "100%", order: 1 }}>
         {instance.phase === "Failed" ? "The workload has not recovered." : "Waiting for the current workload to become ready."}
         {" "}Check Status for progress or failures. An accepted resume is not readiness.
       </Text>}

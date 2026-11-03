@@ -118,6 +118,10 @@ class GateTests(unittest.TestCase):
             },
         )
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
+        for command in commands:
+            for value in ("cetiadmin.enabled=false", "cetirun-operator.cetiadmin.enabled=false"):
+                if value in command:
+                    self.assertEqual(command[command.index(value) - 1], "--set")
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)
         self.assertEqual(
@@ -140,6 +144,16 @@ class GateTests(unittest.TestCase):
         self.assertEqual(env["GOTOOLCHAIN"], "local")
         self.assertEqual(env["GOFLAGS"], "-mod=readonly")
         self.assertEqual(env["npm_config_offline"], "true")
+
+    def test_ci_gate_runs_the_operator_native_helpers(self):
+        directories = ("scripts/ci/tests", "scripts/tests", "app/cetirun-operator/internal/cetiadmin/tests")
+        for directory in directories:
+            target = self.root / directory
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "test_fixture.py").write_text("# synthetic gate input\n")
+        with patch.object(validate, "run") as run:
+            validate.ci_tests(self.root)
+        self.assertEqual([call.args[0][-2] for call in run.call_args_list], list(directories))
 
     def test_missing_frontend_dependencies_fail(self):
         web = self.root / "app/cetirun-portal/web"
@@ -341,7 +355,8 @@ class WorkflowContractTests(unittest.TestCase):
     def test_operator_suite_budget_is_bounded_and_shared_by_all_entrypoints(self):
         makefile = (validate.ROOT / "app/cetirun-operator/Makefile").read_text()
         self.assertIn("GO_TEST_TIMEOUT := 30m", makefile)
-        self.assertIn("GO_ENVTEST_TIMEOUT := 40m", makefile)
+        self.assertIn("GO_ENVTEST_TIMEOUT := 50m", makefile)
+        self.assertRegex(makefile, r"(?m)^GO_CONTROLLER_TEST_GROUP := \^Test\([A-Za-z|]+\)$")
         self.assertIn("GO_TEST_SHARD_INDEX ?= 1", makefile)
         self.assertIn("GO_TEST_SHARD_COUNT ?= 1", makefile)
         self.assertIn("$(PYTHON) -B ../../scripts/ci/go_test.py", makefile)
@@ -358,8 +373,21 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn(f"-timeout=$({timeout})", commands)
                 self.assertIn("-count=1", commands)
                 self.assertIn("$(GO_TEST_RUNNER)", commands)
-                self.assertNotIn("-run", commands)
+                if target == "test-envtest":
+                    self.assertNotIn("-run", commands)
                 self.assertNotIn("|| true", commands)
+        unit = makefile.split("\ntest:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("ifeq ($(GO_TEST_SHARD_INDEX)/$(GO_TEST_SHARD_COUNT),1/1)", unit)
+        self.assertIn(
+            "go list -f '{{if ne .ImportPath \"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller\"}}{{.ImportPath}}{{end}}' ./...",
+            unit,
+        )
+        self.assertIn('test -n "$$packages"', unit)
+        self.assertIn("go test $$packages -v -count=1 -timeout=$(GO_TEST_TIMEOUT)", unit)
+        controller = "go test ./internal/controller -v -count=1 -timeout=$(GO_TEST_TIMEOUT)"
+        self.assertIn(f"{controller} -run '$(GO_CONTROLLER_TEST_GROUP)'", unit)
+        self.assertIn(f"{controller} -skip '$(GO_CONTROLLER_TEST_GROUP)'", unit)
+        self.assertEqual(unit.count("go test "), 3)
         for target in ("test-envtest", "test-sandbox-lifecycle"):
             with self.subTest(target=target):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
@@ -386,6 +414,62 @@ class WorkflowContractTests(unittest.TestCase):
             "go -C ../internal test ./... -v -count=1",
             steps["Run go test"],
         )
+
+    def test_operator_default_unit_groups_and_shards_use_distinct_paths(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-unit-command-") as directory:
+            root = Path(directory)
+            go = root / "go"
+            go.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, sys
+                args = sys.argv[1:]
+                with open(os.environ["TEST_GO_LOG"], "a") as output:
+                    output.write(json.dumps(args) + "\\n")
+                failure = os.environ["TEST_GO_FAIL"]
+                if failure and any(arg.startswith(failure) for arg in args):
+                    sys.exit(9)
+                if args[0] == "list":
+                    print("example.invalid/unit")
+                elif "-list" in args:
+                    for index in range(32):
+                        print(json.dumps({
+                            "Action": "output",
+                            "Output": "TestFixture" + str(index) + "\\n",
+                        }))
+                """))
+            go.chmod(0o755)
+            log = root / "calls.jsonl"
+            for index, count, failure, expected_calls, success in (
+                (1, 1, "", 4, True),
+                (1, 1, "list", 1, False),
+                (1, 1, "-run", 3, False),
+                (1, 1, "-skip", 4, False),
+                (2, 4, "", 2, True),
+                (2, 1, "", 0, False),
+            ):
+                with self.subTest(index=index, count=count, failure=failure):
+                    log.write_text("")
+                    result = subprocess.run(
+                        ["make", "-s", "-C", str(validate.ROOT / "app/cetirun-operator"),
+                         "test", f"GO_TEST_SHARD_INDEX={index}", f"GO_TEST_SHARD_COUNT={count}"],
+                        env={
+                            **os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                            "TEST_GO_LOG": str(log), "TEST_GO_FAIL": failure,
+                        },
+                        text=True, capture_output=True, timeout=10,
+                    )
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                    self.assertEqual(len(calls), expected_calls, calls)
+                    if success and count == 1:
+                        self.assertEqual(calls[0][0], "list")
+                        self.assertIn("example.invalid/unit", calls[1])
+                        self.assertEqual(calls[2][-2], "-run")
+                        self.assertEqual(calls[3][-2], "-skip")
+                        self.assertEqual(calls[2][-1], calls[3][-1])
+                    elif success:
+                        self.assertIn("-list", calls[0])
+                        self.assertTrue(calls[1][-1].startswith("-run=^("), calls)
 
     def test_operator_go_check_requires_all_shards_of_both_bounded_workers(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()

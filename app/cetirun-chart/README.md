@@ -184,6 +184,7 @@ The Operator supplies this contract:
 | `openclaw.image.repository`, `tag`, optional `digest` | The Agent and its initializers use the same OpenClaw image that already exists. Shared registry/version overrides stay supported |
 | `aiGateway.enabled: true`, `keySecretName`, `keySecretKey` | The Agent's virtual key, passed as `OPENAI_API_KEY` through a Secret reference only in the main container |
 | `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default, and Gateway endpoint. If an endpoint is not set, or a default is outside that list, the render fails |
+| `aiGateway.visionModels` | The IDs of the models that accept images. OpenClaw gets `input: ["text", "image"]` and Hermes gets `supports_vision: true` for these models only |
 | `openclaw.config.gateway` | Controller-selected ingress/auth configuration, copied without persisted auth overrides on each native start |
 
 Protected Gateway traffic uses compiler-owned network policy. As a result,

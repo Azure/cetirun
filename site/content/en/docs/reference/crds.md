@@ -141,7 +141,7 @@ check does not prove that an override will reconcile successfully.
 | `plannedMigration` | Controller-owned source and storage identity and acknowledgment checkpoint. The phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, and `Completed`. It is not a physical-fencing receipt, and it does not give permission to edit status |
 | `observedOperatorHash` | Fingerprint of the applied configuration, for use by the reconciliation cache. It includes the content hash of the gateway Secret and the resource version of the referenced team |
 | `lastReconcileTime` | Timestamp that a full Ready or suspension pass writes. It can also be written when the ingress removal for a suspension fails |
-| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`). It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has the `model` name that the instance sends. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a Team router also has its configured limits. If the router is not granted, the `reason` tells why |
+| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`), and `vision` when the model accepts images. It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has its `model` name in the Gateway. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a granted Team router also has `alias`, the router's name, when the key reaches the router under that name. A Hermes instance sends that name, other instances send the internal name. Each granted entry also has its configured limits, and `vision` when the instance sends images to the router. If the router is not granted, the `reason` tells why |
 | `registryCredentials` | Receipt that identifies the UID and resourceVersion of the synchronized source Secret and the UID of the local pull Secret. It is not credential data or proof of a successful image pull |
 | `sandbox` | Last binding that was found correct: `teamUID`, `sandboxUID`, `agentPolicyUID`, and `appliedRevision`. Omitted before enforcement succeeds |
 | `policy` | Resolved effective policy, and the desired Sandbox, Gateway, and credential revisions |
@@ -422,6 +422,13 @@ sets `rpm`, `tpm`, or both. `maxParallelRequests` is at most 2,147,483,647,
 which is the largest value that the Gateway stores. The other limits have no
 upper bound. The values are not compared with the context window of a model.
 
+For a router of the Agent's Team, a `perModel` key can also be the name of the
+router. The operator then also sets the limit under the internal name of the
+router, which the Gateway counts for the router. The limit under the name of
+the router stays. It applies to another model that keeps the name, for example
+a GitHub Copilot model of the Agent. If the policy sets a limit for both names,
+the internal name gets the smaller value.
+
 The operator sets the limits when it creates a key. On every reconcile, it
 compares the stored limits of the key with the policy. When they are different,
 it updates the same key in place. A removed field is cleared on the key. Other
@@ -461,7 +468,9 @@ and admission readers. Do not manually change their saved digests.
 The total limits count every request on the key. This includes the Agent's
 GitHub Copilot models. A per-model limit applies to the model name that a
 request uses after model aliases. For an `auto` router, that is the name of the
-router, not the model that it routes to. A request over a limit gets HTTP 429
+router, not the model that it routes to. For a router of a Team, that is the
+internal name of the router, also when the Agent sends the router's name. A
+request over a limit gets HTTP 429
 with a `retry-after` header. Gateway replicas share the counters through Redis.
 
 The Gateway counts `tpm` from the tokens of each finished request. Cached input

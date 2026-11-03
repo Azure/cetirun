@@ -87,6 +87,11 @@ var laterAdditions = map[string][]string{
 // RestorePreProxyContract reconstructs the three chart assets changed by the
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
+	var err error
+	chrt.Schema, err = stripCetiAdminSchema(chrt.Schema)
+	if err != nil {
+		return err
+	}
 	if startup, ok := chrt.Values["startupProbe"].(map[string]any); ok {
 		startup["failureThreshold"] = 30
 	}
@@ -94,6 +99,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 		if proxy, ok := gateway["copilotProxy"].(map[string]any); ok {
 			delete(proxy, "replicaCount")
 		}
+		delete(gateway, "visionModels")
 	}
 	assets := map[string]*[]byte{"values.schema.json": &chrt.Schema}
 	for _, files := range [][]*chart.File{chrt.Files, chrt.Templates} {
@@ -387,8 +393,17 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			{`{{- $contextSkills := and (or (not .Values.sandboxWorkload) (dig "reconciled" false (.Values.sandboxWorkload | default dict))) (dig "enabled" false (.Values.memoryContext | default dict)) }}`,
 				`{{- $contextSkills := and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict)) }}`},
 			{"{{- if $contextSkills }}\n{{- $plugins :=", "{{- if and (not .Values.sandboxWorkload) (dig \"enabled\" false (.Values.memoryContext | default dict)) }}\n{{- $plugins :="},
+			{`{{- /* A model the Gateway reports as accepting images gets them with a
+   request. Without input, OpenClaw takes the value from its own catalog,
+   which knows only some model names; for the rest, another model describes
+   images. */}}
+{{- if has .id (dig "visionModels" (list) $.Values.aiGateway) }}
+{{- $_ := set $entry "input" (list "text" "image") }}
+{{- end }}
+`, ""},
 		},
 		"values.schema.json": {
+			{`"pattern": "^([0-9./]+|[0-9a-fA-F:]+/[0-9]{1,3})$"`, `"pattern": "^[0-9./]+$"`},
 			{`"type": ["integer", "null"],
                     "minimum": 1,
                     "default": null,
@@ -396,6 +411,14 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 				`"type": "integer",
                     "default": 30`},
 			{"                        \"replicaCount\": {\"type\": [\"integer\", \"null\"], \"minimum\": 0, \"maximum\": 1, \"default\": null},\n", ""},
+			{`                "visionModels": {
+                    "type": "array",
+                    "description": "Ids of the models in models that accept images",
+                    "default": [],
+                    "maxItems": 256,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256}
+                },
+`, ""},
 			{`"executionHeld": {"type": "boolean"},
                 "reconciled": {"const": true}`, `"executionHeld": {"const": true}`},
 			{`"agentType": {"enum": ["openclaw", "hermes", "custom"]}`, `"agentType": {"const": "openclaw"}`},
@@ -504,6 +527,20 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 		*data = original
 	}
 	return nil
+}
+
+func stripCetiAdminSchema(schema []byte) ([]byte, error) {
+	startMarker, endMarker := []byte("        \"cetiadmin\": {\n"), []byte("        \"memoryContext\": {\n")
+	start, end := bytes.Index(schema, startMarker), bytes.Index(schema, endMarker)
+	if start < 0 || end <= start || bytes.Count(schema, startMarker) != 1 || bytes.Count(schema, endMarker) != 1 {
+		return nil, fmt.Errorf("pre-proxy fixture requires the later CetiAdmin schema addition")
+	}
+	// Pin only the later addition being removed; the historical schema SHA below
+	// remains unchanged and still checks every retained byte.
+	if fmt.Sprintf("%x", sha256.Sum256(schema[start:end])) != "8fd902511e9b1effe4b0c46a2827eb1a91b2b1d42d46045c8bb96ab03101a45c" {
+		return nil, fmt.Errorf("pre-proxy fixture CetiAdmin schema addition changed")
+	}
+	return append(append([]byte(nil), schema[:start]...), schema[end:]...), nil
 }
 
 func restoreRemovedTeamsAssets(assets map[string]*[]byte) error {

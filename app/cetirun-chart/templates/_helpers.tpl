@@ -172,7 +172,7 @@ Validate Azure Workload Identity prerequisites
 {{- if not (regexMatch "^https://[a-z0-9-]+\\.[a-z0-9-]+\\.svc\\.cluster\\.local(:[0-9]+)?/mcp$" .Values.connectionsMCP.url) -}}
 {{- fail "connectionsMCP.url must be an in-cluster HTTPS MCP endpoint" -}}
 {{- end -}}
-{{- if or (and (not .Values.sandboxWorkload) (or (not .Values.serviceAccount.create) (gt (len .Values.serviceAccount.name) 63))) (not .Values.serviceAccount.name) (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
+{{- if or (and (not .Values.sandboxWorkload) (not .Values.cetiadmin.enabled) (or (not .Values.serviceAccount.create) (gt (len .Values.serviceAccount.name) 63))) (not .Values.serviceAccount.name) (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
 {{- fail "Connections MCP requires a dedicated explicitly named ServiceAccount without automount" -}}
 {{- end -}}
 {{- if and .Values.sandboxWorkload (or (gt (len .Values.serviceAccount.name) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" .Values.serviceAccount.name))) -}}
@@ -191,6 +191,7 @@ Validate Azure Workload Identity prerequisites
 
 {{/* Validate the platform AI Gateway wiring set by the CetiRun operator. */}}
 {{- define "cetirun.validateAIGateway" -}}
+{{- include "cetirun.cetiadmin.validate" . -}}
 {{- $gateway := .Values.aiGateway | default dict -}}
 {{- $proxy := $gateway.copilotProxy | default dict -}}
 {{- $agentType := include "cetirun.agent.type" . -}}
