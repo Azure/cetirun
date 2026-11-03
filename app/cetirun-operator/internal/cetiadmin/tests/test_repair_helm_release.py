@@ -23,7 +23,7 @@ NAMESPACE = "example-runtime"
 NAMESPACE_UID = "namespace-uid-001"
 RELEASE = "example-release"
 REQUEST = "repair-request-001"
-SECRET_NAME = f"sh.helm.release.v1.{RELEASE}.v1"
+RELEASE_RECORD_NAME = f"sh.helm.release.v1.{RELEASE}.v1"
 SENSITIVE = "synthetic-secret-never-print-this"
 OTHER_SENSITIVE = "unrelated-synthetic-secret-never-read-this"
 HISTORY_FIELDS = (
@@ -43,12 +43,12 @@ def encoded_release(raw):
     return base64.b64encode(base64.b64encode(gzip.compress(raw, mtime=0))).decode()
 
 
-def decoded_release(secret):
-    return gzip.decompress(base64.b64decode(base64.b64decode(secret["data"]["release"])))
+def decoded_release(record):
+    return gzip.decompress(base64.b64decode(base64.b64decode(record["data"]["release"])))
 
 
-def secret_bytes(secret):
-    return (json.dumps(secret, indent=2, ensure_ascii=False) + "\n").encode()
+def object_bytes(obj):
+    return (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode()
 
 
 def fixture():
@@ -85,9 +85,9 @@ def fixture():
         },
         "pods": {"apiVersion": "v1", "kind": "PodList", "metadata": {}, "items": []},
         "jobs": {"apiVersion": "batch/v1", "kind": "JobList", "metadata": {}, "items": []},
-        "secret": {
+        "release_record": {
             "apiVersion": "v1", "kind": "Secret", "type": "helm.sh/release.v1",
-            "metadata": {"name": SECRET_NAME, "namespace": NAMESPACE, "uid": "release-secret-uid-001",
+            "metadata": {"name": RELEASE_RECORD_NAME, "namespace": NAMESPACE, "uid": "release-secret-uid-001",
                          "resourceVersion": "100", "labels": {"owner": "helm", "name": RELEASE,
                                                                "version": "1", "status": "pending-install", "extra": "keep"},
                          "managedFields": [{"manager": "helm", "operation": "Update", "apiVersion": "v1"}],
@@ -116,15 +116,15 @@ def kubectl_double():
     if argv[:2] != ["--context=cetiadmin", "--request-timeout=15s"]:
         fail()
     args = argv[2:]
-    selected_secret = f"sh.helm.release.v1.{RELEASE}.v{state.get('requested_revision', 1)}"
+    record_name = f"sh.helm.release.v1.{RELEASE}.v{state.get('requested_revision', 1)}"
     commands = {
         "agent": ["get", "agents.cetirun.microsoft.com", AGENT, "-o=json"],
         "namespace": ["get", "namespace", NAMESPACE, "-o=json"],
         "pods": ["get", "pods", "--namespace", NAMESPACE, "-o=json"],
         "jobs": ["get", "jobs.batch", "--namespace", NAMESPACE, "-o=json"],
         "history": ["get", "secrets", "--namespace", NAMESPACE, "-o=" + HISTORY_FORMAT],
-        "secret": ["get", "secret", selected_secret, "--namespace", NAMESPACE, "--show-managed-fields=true", "-o=json"],
-        "patch": ["patch", "secret", selected_secret, "--namespace", NAMESPACE,
+        "release_record": ["get", "secret", record_name, "--namespace", NAMESPACE, "--show-managed-fields=true", "-o=json"],
+        "patch": ["patch", "secret", record_name, "--namespace", NAMESPACE,
                   "--type=json", "--patch-file=/dev/stdin", "-o=name"],
     }
     operation = next((key for key, command in commands.items() if command == args), None)
@@ -136,7 +136,7 @@ def kubectl_double():
     if operation == "agent" and count == 2 and state["mode"] == "stale-held":
         state["agent"]["metadata"]["generation"] += 1
     if operation == "history":
-        records = [*state["history"], state["secret"], {
+        records = [*state["history"], state["release_record"], {
             "metadata": {"name": "unrelated-auth", "namespace": NAMESPACE,
                          "uid": "unrelated-uid", "resourceVersion": "9",
                          "annotations": {"kubectl.kubernetes.io/last-applied-configuration": OTHER_SENSITIVE}},
@@ -157,11 +157,11 @@ def kubectl_double():
         sys.stdout.write("".join(rows))
     elif operation != "patch":
         save()
-        if operation == "secret" and state["patches"] and state["mode"] == "unreadable-result":
+        if operation == "release_record" and state["patches"] and state["mode"] == "unreadable-result":
             fail()
-        sys.stdout.buffer.write(secret_bytes(state[operation]))
+        sys.stdout.buffer.write(object_bytes(state[operation]))
     else:
-        if any(state["counts"].get(key, 0) < 2 for key in ("agent", "namespace", "pods", "jobs", "history", "secret")):
+        if any(state["counts"].get(key, 0) < 2 for key in ("agent", "namespace", "pods", "jobs", "history", "release_record")):
             fail()
         patch = json.load(sys.stdin)
         if not isinstance(patch, list) or any(item["op"] not in ("test", "replace") for item in patch):
@@ -170,11 +170,11 @@ def kubectl_double():
         if replacements != {("replace", "/metadata/labels/status"), ("replace", "/data/release")}:
             fail()
         tests = {item["path"]: item["value"] for item in patch if item["op"] == "test"}
-        original = state["secret"]
+        original = state["release_record"]
         if tests.get("/metadata/uid") != original["metadata"]["uid"] or tests.get("/metadata/resourceVersion") != original["metadata"]["resourceVersion"]:
             fail()
         backups = list(Path(state["backup_dir"]).rglob("original-secret.json"))
-        if len(backups) != 1 or backups[0].read_bytes() != secret_bytes(original):
+        if len(backups) != 1 or backups[0].read_bytes() != object_bytes(original):
             fail()
         if stat.S_IMODE(backups[0].stat().st_mode) != 0o600 or stat.S_IMODE(backups[0].parent.stat().st_mode) != 0o700:
             fail()
@@ -203,11 +203,11 @@ def kubectl_double():
             updated["metadata"]["annotations"]["example.com/keep"] = "changed"
         if state["mode"] == "label-only":
             updated["data"]["release"] = original["data"]["release"]
-        state["secret"] = updated
+        state["release_record"] = updated
         save()
         if state["mode"] == "lost-ack":
             fail()
-        print("secret/" + SECRET_NAME)
+        print("secret/" + RELEASE_RECORD_NAME)
 
 
 class RepairHelmReleaseTests(unittest.TestCase):
@@ -243,11 +243,13 @@ class RepairHelmReleaseTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-B", str(SCRIPT), *(self.arguments if arguments is None else arguments)],
                                 env=self.env, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
-        for sensitive in (SENSITIVE, OTHER_SENSITIVE, self.state["secret"]["data"]["release"]):
+        observed = self.read_state()
+        for sensitive in (SENSITIVE, OTHER_SENSITIVE, self.state["release_record"]["data"]["release"],
+                          observed["release_record"]["data"]["release"]):
             if not isinstance(sensitive, str) or not sensitive:
                 continue
             self.assertNotIn(sensitive, result.stdout + result.stderr)
-            self.assertNotIn(sensitive, json.dumps(self.read_state()["calls"]))
+            self.assertNotIn(sensitive, json.dumps(observed["calls"]))
         return result
 
     def assert_refused(self):
@@ -268,7 +270,7 @@ class RepairHelmReleaseTests(unittest.TestCase):
         self.assertEqual(self.read_state()["calls"], [])
 
     def test_repair_preserves_original_and_every_non_status_field(self):
-        original = copy.deepcopy(self.state["secret"])
+        original = copy.deepcopy(self.state["release_record"])
         previous_umask = os.umask(0)
         try:
             result = self.run_cli()
@@ -278,10 +280,10 @@ class RepairHelmReleaseTests(unittest.TestCase):
         self.assertEqual(output["status"], "repaired")
         backup = Path(output["backupFile"])
         self.assertTrue(backup.is_relative_to(self.backups))
-        self.assertEqual(backup.read_bytes(), secret_bytes(original))
+        self.assertEqual(backup.read_bytes(), object_bytes(original))
         self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(backup.parent.stat().st_mode), 0o700)
-        current = self.read_state()["secret"]
+        current = self.read_state()["release_record"]
         before = json.loads(decoded_release(original), parse_float=Decimal)
         after = json.loads(decoded_release(current), parse_float=Decimal)
         before["info"]["status"] = "failed"
@@ -340,10 +342,10 @@ class RepairHelmReleaseTests(unittest.TestCase):
         self.assertEqual(len(self.read_state()["patches"]), 1)
 
     def test_failed_secret_without_original_backup_is_not_recognized(self):
-        secret = self.state["secret"]
-        raw = decoded_release(secret).replace(b'"pending-install"', b'"failed"')
-        secret["data"]["release"] = encoded_release(raw)
-        secret["metadata"]["labels"]["status"] = "failed"
+        record = self.state["release_record"]
+        raw = decoded_release(record).replace(b'"pending-install"', b'"failed"')
+        record["data"]["release"] = encoded_release(raw)
+        record["metadata"]["labels"]["status"] = "failed"
         self.assert_refused()
 
     def test_target_and_namespace_identity_boundaries(self):
@@ -404,10 +406,10 @@ class RepairHelmReleaseTests(unittest.TestCase):
         ns = self.state["namespace"]["metadata"]
         ns.pop("ownerReferences")
         ns["annotations"] = {"cetirun.microsoft.com/agent-uid": AGENT_UID}
-        payload = json.loads(decoded_release(self.state["secret"]))
+        payload = json.loads(decoded_release(self.state["release_record"]))
         payload["config"]["runtime"] = {"bindings": {"agentName": AGENT, "agentUID": AGENT_UID,
                                                        "namespace": {"name": NAMESPACE, "uid": NAMESPACE_UID}}}
-        self.state["secret"]["data"]["release"] = encoded_release(json.dumps(payload).encode())
+        self.state["release_record"]["data"]["release"] = encoded_release(json.dumps(payload).encode())
 
     def test_ordinary_custom_uses_existing_namespace_and_release_bindings(self):
         self.custom_target()
@@ -416,7 +418,7 @@ class RepairHelmReleaseTests(unittest.TestCase):
 
     def test_ordinary_openclaw_and_complete_failed_history_are_supported(self):
         self.state["agent"]["spec"]["agent"]["type"] = "openclaw"
-        previous = copy.deepcopy(self.state["secret"])
+        previous = copy.deepcopy(self.state["release_record"])
         previous["metadata"]["labels"]["status"] = "failed"
         previous["metadata"]["uid"] = "previous-secret-uid"
         self.second_revision()
@@ -438,10 +440,10 @@ class RepairHelmReleaseTests(unittest.TestCase):
                 if field == "namespace_annotation":
                     self.state["namespace"]["metadata"]["annotations"].clear()
                 else:
-                    payload = json.loads(decoded_release(self.state["secret"]))
+                    payload = json.loads(decoded_release(self.state["release_record"]))
                     binding = payload["config"]["runtime"]["bindings"]
                     binding[field] = {"uid": "foreign"} if field == "namespace" else "foreign"
-                    self.state["secret"]["data"]["release"] = encoded_release(json.dumps(payload).encode())
+                    self.state["release_record"]["data"]["release"] = encoded_release(json.dumps(payload).encode())
                 self.assert_refused()
 
     def stopped_pod(self):
@@ -496,7 +498,7 @@ class RepairHelmReleaseTests(unittest.TestCase):
                 self.assert_refused()
 
     def test_revision_must_be_latest_and_history_must_not_have_gaps(self):
-        self.state["history"] = [copy.deepcopy(self.state["secret"])]
+        self.state["history"] = [copy.deepcopy(self.state["release_record"])]
         later = self.state["history"][0]
         later["metadata"]["name"] = f"sh.helm.release.v1.{RELEASE}.v2"
         later["metadata"]["labels"]["version"] = "2"
@@ -511,18 +513,18 @@ class RepairHelmReleaseTests(unittest.TestCase):
         self.state["requested_revision"] = 2
         self.state["agent"]["spec"]["helm"]["maintenance"]["expectedRevision"] = 2
         self.state["agent"]["status"]["helmMaintenance"]["revision"] = 2
-        secret = self.state["secret"]
-        secret["metadata"]["name"] = f"sh.helm.release.v1.{RELEASE}.v2"
-        secret["metadata"]["labels"]["version"] = "2"
-        payload = json.loads(decoded_release(secret))
+        record = self.state["release_record"]
+        record["metadata"]["name"] = f"sh.helm.release.v1.{RELEASE}.v2"
+        record["metadata"]["labels"]["version"] = "2"
+        payload = json.loads(decoded_release(record))
         payload["version"] = 2
-        secret["data"]["release"] = encoded_release(json.dumps(payload).encode())
+        record["data"]["release"] = encoded_release(json.dumps(payload).encode())
 
     def test_prior_success_or_uncertain_history_is_not_repairable(self):
         for status in ("deployed", "superseded", "uninstalled", "pending-upgrade", "pending-rollback", "unknown"):
             with self.subTest(status=status):
                 self.state = fixture()
-                previous = copy.deepcopy(self.state["secret"])
+                previous = copy.deepcopy(self.state["release_record"])
                 previous["metadata"]["labels"]["status"] = status
                 previous["metadata"]["uid"] = "previous-secret-uid"
                 self.second_revision()
@@ -533,7 +535,7 @@ class RepairHelmReleaseTests(unittest.TestCase):
         self.assert_refused()
 
     def test_bad_encoding_and_decompression_are_rejected_before_backup(self):
-        raw = decoded_release(self.state["secret"])
+        raw = decoded_release(self.state["release_record"])
         double = lambda data: base64.b64encode(base64.b64encode(data)).decode()
         cases = {
             "outer-base64": "!invalid!", "inner-base64": base64.b64encode(b"!invalid!").decode(),
@@ -549,7 +551,7 @@ class RepairHelmReleaseTests(unittest.TestCase):
         for name, data in cases.items():
             with self.subTest(name=name):
                 self.state = fixture()
-                self.state["secret"]["data"]["release"] = data
+                self.state["release_record"]["data"]["release"] = data
                 self.assert_refused()
 
     def test_secret_and_payload_identity_must_match(self):
@@ -557,21 +559,21 @@ class RepairHelmReleaseTests(unittest.TestCase):
                              ("version", 2), ("version", True), ("info", {"status": "pending-upgrade"})):
             with self.subTest(field=field):
                 self.state = fixture()
-                payload = json.loads(decoded_release(self.state["secret"]))
+                payload = json.loads(decoded_release(self.state["release_record"]))
                 payload[field] = value
-                self.state["secret"]["data"]["release"] = encoded_release(json.dumps(payload).encode())
+                self.state["release_record"]["data"]["release"] = encoded_release(json.dumps(payload).encode())
                 self.assert_refused()
         for field, value in (("owner", "foreign"), ("name", "other-release"), ("version", "01"), ("status", "deployed")):
             with self.subTest(label=field):
                 self.state = fixture()
-                self.state["secret"]["metadata"]["labels"][field] = value
+                self.state["release_record"]["metadata"]["labels"][field] = value
                 self.assert_refused()
         self.state = fixture()
-        self.state["secret"]["type"] = "Opaque"
+        self.state["release_record"]["type"] = "Opaque"
         self.assert_refused()
 
     def test_read_failures_never_mean_an_empty_healthy_inventory(self):
-        for resource in ("agent", "namespace", "pods", "jobs", "history", "secret"):
+        for resource in ("agent", "namespace", "pods", "jobs", "history", "release_record"):
             with self.subTest(resource=resource):
                 self.state = fixture()
                 self.state["fail_read"] = resource
@@ -654,9 +656,9 @@ class RepairHelmReleaseTests(unittest.TestCase):
         raw = original.read_bytes()
         changed = json.loads(raw)
         changed["metadata"]["annotations"]["example.com/keep"] = "changed-backup"
-        original.write_bytes(secret_bytes(changed))
+        original.write_bytes(object_bytes(changed))
         self.run_cli(success=False)
-        self.assertEqual(original.read_bytes(), secret_bytes(changed))
+        self.assertEqual(original.read_bytes(), object_bytes(changed))
         original.unlink()
         outside = self.root / "unrelated-original.json"
         outside.write_bytes(raw)
