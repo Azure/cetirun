@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import runpy
 import shutil
 import subprocess
 import sys
@@ -102,17 +101,6 @@ class SkillSourceBoundaryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(PRIVATE, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["code"], "native_version_mismatch")
-
-    def test_shipped_legacy_checksums_match_the_retired_source_when_available(self):
-        legacy = ROOT.parents[2] / "adminclaw/skills/adminclaw"
-        if not legacy.exists():
-            self.skipTest("legacy source retired; archival-mechanics cases use a synthetic allowlist")
-        manifest = runpy.run_path(str(CHECKSUMS))["MANIFEST"]
-        self.assertEqual(manifest["schemaVersion"], 1)
-        package = manifest["packages"][0]
-        self.assertEqual(package["sourceRevision"], "a86fbcd24e9d6fe02b6f33bc6a651957e888a9b7")
-        self.assertEqual(package["files"], {name: hashlib.sha256(data).hexdigest()
-                                            for name, data in tree_bytes(legacy).items()})
 
 
 @unittest.skipUnless(NATIVE_INSTALL, "set CETIADMIN_TEST_HERMES_INSTALL_DIR for real pinned-loader tests")
@@ -378,18 +366,6 @@ print(json.dumps({
         self.assertEqual(tree_bytes(destination), before)
         self.assertNotIn("adminclaw", self.native()["names"])
         self.assertEqual(self.archive.stat().st_mode & 0o777, 0o700)
-
-    def test_shipped_known_legacy_package_is_archived_when_source_is_available(self):
-        legacy = ROOT.parents[2] / "adminclaw/skills/adminclaw"
-        if not legacy.exists():
-            self.skipTest("legacy source retired; synthetic allowlist covers archival mechanics")
-        old = self.local / "adminclaw"
-        shutil.copytree(legacy, old)
-        before = tree_bytes(old)
-        self.assertEqual(self.check()["archived"], 1)
-        self.assertFalse(old.exists())
-        self.assertEqual(tree_bytes(self.archive / "adminclaw-a86fbcd24e9d/adminclaw"), before)
-        self.assertEqual(self.native()["candidateCount"], 1)
 
     def test_bundle_upgrade_keeps_existing_home_and_shared_content(self):
         shared = self.home.parent / ".agents/skills"
