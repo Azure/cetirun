@@ -7,6 +7,7 @@
 IMG ?= cetirun.azurecr.io/cetirun-operator:latest
 
 # Go build settings
+PYTHON ?= python3
 GOFLAGS ?=
 CGO_ENABLED ?= 0
 VERSION ?= dev
@@ -20,6 +21,10 @@ GO_TEST_TIMEOUT := 30m
 GO_CONTROLLER_TEST_GROUP := ^Test(Reconciled|Planned|Native|Container|Common)
 # Bound each complementary partition of the full tagged suite.
 GO_ENVTEST_TIMEOUT := 50m
+GO_TEST_SHARD_INDEX ?= 1
+GO_TEST_SHARD_COUNT ?= 1
+GO_TEST_RUNNER = $(PYTHON) -B ../../scripts/ci/go_test.py \
+	--shard-index $(GO_TEST_SHARD_INDEX) --shard-count $(GO_TEST_SHARD_COUNT) --
 GO_ENVTEST_PACKAGES := ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination ./cmd/sandbox-config-change
 GO_ENVTEST_SPLIT := APIServer
 
@@ -53,12 +58,16 @@ build-sandbox-config-change:
 
 ## Run unit tests
 test:
+ifeq ($(GO_TEST_SHARD_INDEX)/$(GO_TEST_SHARD_COUNT),1/1)
 	@set -eu; \
 		packages="$$(go list -f '{{if ne .ImportPath "github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"}}{{.ImportPath}}{{end}}' ./...)"; \
 		test -n "$$packages"; \
 		go test $$packages -v -count=1 -timeout=$(GO_TEST_TIMEOUT)
 	go test ./internal/controller -v -count=1 -timeout=$(GO_TEST_TIMEOUT) -run '$(GO_CONTROLLER_TEST_GROUP)'
 	go test ./internal/controller -v -count=1 -timeout=$(GO_TEST_TIMEOUT) -skip '$(GO_CONTROLLER_TEST_GROUP)'
+else
+	$(GO_TEST_RUNNER) ./... -v -count=1 -timeout=$(GO_TEST_TIMEOUT)
+endif
 
 ## Run go vet
 vet:
@@ -117,8 +126,12 @@ verify-generated: generate manifests
 ## Uses only a local API server and etcd; never connects to an existing cluster.
 test-envtest:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" && test -x "$(KUBEBUILDER_ASSETS)/kubectl" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries, including kubectl"; exit 1; }
+ifeq ($(GO_TEST_SHARD_INDEX)/$(GO_TEST_SHARD_COUNT),1/1)
 	USE_EXISTING_CLUSTER=false go test -tags=envtest $(GO_ENVTEST_PACKAGES) -run='$(GO_ENVTEST_SPLIT)' -count=1 -v -timeout=$(GO_ENVTEST_TIMEOUT)
 	USE_EXISTING_CLUSTER=false go test -tags=envtest $(GO_ENVTEST_PACKAGES) -skip='$(GO_ENVTEST_SPLIT)' -count=1 -v -timeout=$(GO_ENVTEST_TIMEOUT)
+else
+	USE_EXISTING_CLUSTER=false $(GO_TEST_RUNNER) -tags=envtest $(GO_ENVTEST_PACKAGES) -count=1 -v -timeout=$(GO_ENVTEST_TIMEOUT)
+endif
 
 ## Local Sandbox bootstrap and Gateway rejection; not runtime qualification.
 test-sandbox-integration:
