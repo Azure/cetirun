@@ -253,9 +253,13 @@ requests to the router by its name. The model list of the key
 (`GET /v1/models`) shows the router by its name only. A Hermes instance is
 configured with the router under its name, which Hermes shows in its model
 picker. An OpenClaw instance keeps the internal name, and shows the router's
-name. If the instance reaches another model by the router's name, for example
-one of its GitHub Copilot models, that model keeps the name. Then the instance
-uses the router by its internal name.
+name.
+
+If the instance reaches another model by the router's name, for example one of
+its GitHub Copilot models, that model keeps the name. Then the instance uses
+the router by its internal name. A per-model limit that the Agent Policy sets
+for the name applies to the other model. The operator also sets this limit
+under the internal name, for the router.
 
 An instance gets a router only when it can use every model that the router
 sends requests to. The Gateway also enforces this rule for the router. If a

@@ -396,13 +396,17 @@ schema rejects values below the minimums.
 | `perModel.<model>.tpm` | 4096 | `model_tpm_limit` in the key metadata |
 
 `perModel` limits at most 64 models. Its keys are the exact Gateway model names
-that the Agent requests (1 to 256 characters without whitespace). For a router
-of the Agent's Team, a key can also be the name of the router. The operator
-then sets the limit under the internal name of the router, which the Gateway
-counts. Each entry
+that the Agent requests (1 to 256 characters without whitespace). Each entry
 sets `rpm`, `tpm`, or both. `maxParallelRequests` is at most 2,147,483,647,
 which is the largest value that the Gateway stores. The other limits have no
 upper bound. The values are not compared with the context window of a model.
+
+For a router of the Agent's Team, a `perModel` key can also be the name of the
+router. The operator then also sets the limit under the internal name of the
+router, which the Gateway counts for the router. The limit under the name of
+the router stays. It applies to another model that keeps the name, for example
+a GitHub Copilot model of the Agent. If the policy sets a limit for both names,
+the internal name gets the smaller value.
 
 The operator sets the limits when it creates a key. On every reconcile, it
 compares the stored limits of the key with the policy. When they are different,

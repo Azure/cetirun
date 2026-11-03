@@ -100,8 +100,10 @@ type AgentPolicyRateLimits struct {
 	// PerModel limits requests for individual models. A key is the exact
 	// Gateway model name the Agent requests, not a display label. For a
 	// router of the Agent's Team, the router's name is also accepted: the
-	// operator sets the limit under the router's internal name, which the
-	// Gateway counts.
+	// operator also sets the limit under the router's internal name, which
+	// the Gateway counts for the router. The limit under the router's name
+	// stays. It applies to another model that keeps the name, for example a
+	// GitHub Copilot model of the Agent.
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(model, size(model) >= 1 && size(model) <= 256 && !model.matches('[[:space:]]'))",message="perModel keys must be Gateway model names of 1 to 256 characters without whitespace"
 	// +optional

@@ -307,11 +307,12 @@ used instead.
 Each request is charged to the instance's key at the price of the tier model
 that it is sent to. The calls of an `llm` or `jev` classifier are also charged.
 The router's own price in the Gateway only satisfies the check for unpriced
-models. The key's budget applies as usual. A per-model rate limit is matched
-against the model name that the Gateway counts, which is the router's internal
-name. A limit that a Policy sets for the router's name is set under that
-internal name. A per-model limit on a tier model does not apply to requests
-that go through a router.
+models. The key's budget applies as usual.
+
+A per-model rate limit is matched against the model name that the Gateway
+counts, which is the router's internal name. A limit that a Policy sets for the
+router's name is also set under that internal name. A per-model limit on a tier
+model does not apply to requests that go through a router.
 
 An instance that cannot use one of its Team's routers shows why on its page.
 For example:

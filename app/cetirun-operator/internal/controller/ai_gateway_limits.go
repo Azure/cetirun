@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -55,13 +56,18 @@ func cloneLimit(value *int64) *int64 {
 	return &copied
 }
 
-// withTeamRouterModelLimits keys a per-model limit the policy sets for a
-// router of the Agent's Team, by the router's name, under the router's
-// internal name. The Gateway counts a router's requests under its internal
-// name, also those the Agent sends by the router's alias, since LiteLLM
-// counts a request after it resolves the alias. A limit for both names keeps
-// the smaller value. A name that is also a shared model stays the shared
-// model's: such a router is misconfigured and never granted.
+// withTeamRouterModelLimits copies a per-model limit the policy sets for a
+// router of the Agent's Team, by the router's name, to the router's internal
+// name. The Gateway counts a router's requests under its internal name, also
+// those the Agent sends by the router's alias, since LiteLLM counts a request
+// after it resolves the alias. The limit also stays under the router's name:
+// a key without that alias can reach another model by the name, such as one
+// of the Agent's GitHub Copilot models, which the limit must still restrict.
+// The alias is decided later in the same pass, after the Copilot routes are
+// registered, so neither copy depends on it. Where the policy also limits the
+// internal name, the smaller value is kept. A name that is also a shared
+// model stays the shared model's only: such a router is misconfigured and
+// never granted.
 func (r *AgentReconciler) withTeamRouterModelLimits(limits aigateway.KeyLimits, team *cetirunv1alpha1.Team) aigateway.KeyLimits {
 	if team == nil || len(team.Spec.ModelRouters) == 0 || (len(limits.ModelRPM) == 0 && len(limits.ModelTPM) == 0) {
 		return limits
@@ -73,28 +79,30 @@ func (r *AgentReconciler) withTeamRouterModelLimits(limits aigateway.KeyLimits, 
 			internal[router.Name] = modelRouterGatewayName(team.Name, router.Name)
 		}
 	}
-	limits.ModelRPM = renamedModelLimits(limits.ModelRPM, internal)
-	limits.ModelTPM = renamedModelLimits(limits.ModelTPM, internal)
+	limits.ModelRPM = withCopiedModelLimits(limits.ModelRPM, internal)
+	limits.ModelTPM = withCopiedModelLimits(limits.ModelTPM, internal)
 	return limits
 }
 
-// renamedModelLimits renames the models of values that names maps, keeping
-// the smaller value where two end up under one name.
-func renamedModelLimits(values map[string]int64, names map[string]string) map[string]int64 {
+// withCopiedModelLimits returns values with the limit of each model that
+// names maps also set under the mapped name. Where the mapped name has a limit
+// already, the smaller value is kept. values is not changed.
+func withCopiedModelLimits(values map[string]int64, names map[string]string) map[string]int64 {
 	if len(values) == 0 {
 		return values
 	}
-	renamed := make(map[string]int64, len(values))
+	copied := maps.Clone(values)
 	for model, value := range values {
-		if name, ok := names[model]; ok {
-			model = name
-		}
-		if current, ok := renamed[model]; ok && current <= value {
+		name, ok := names[model]
+		if !ok {
 			continue
 		}
-		renamed[model] = value
+		if current, ok := copied[name]; ok && current <= value {
+			continue
+		}
+		copied[name] = value
 	}
-	return renamed
+	return copied
 }
 
 // reconcileAIGatewayKeyLimits brings an existing policy-bound key's request

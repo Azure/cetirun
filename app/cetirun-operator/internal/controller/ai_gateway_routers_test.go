@@ -17,6 +17,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -682,9 +683,11 @@ func TestTeamRouterAliasLeavesACopilotModelsName(t *testing.T) {
 	}
 }
 
-// A per-model limit a policy sets for a Team router's name is set on the key
-// under the router's internal name, which the Gateway counts.
-func TestPolicyLimitForATeamRoutersNameUsesItsInternalName(t *testing.T) {
+// A per-model limit a policy sets for a Team router's name is also set on the
+// key under the router's internal name, which the Gateway counts for the
+// router's requests. The name keeps its limit. Where the policy limits both
+// names, the internal name gets the smaller value, in either direction.
+func TestPolicyLimitForATeamRoutersNameAlsoLimitsItsInternalName(t *testing.T) {
 	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne))
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
@@ -697,12 +700,13 @@ func TestPolicyLimitForATeamRoutersNameUsesItsInternalName(t *testing.T) {
 	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
 		t.Fatal(err)
 	}
-	five, three, nine, tpm := int64(5), int64(3), int64(9), int64(50000)
-	policy.Spec.ModelAccess.RateLimits = &api.AgentPolicyRateLimits{PerModel: map[string]api.AgentPolicyModelRateLimit{
+	five, three, nine, tpm, internalTPM := int64(5), int64(3), int64(9), int64(50000), int64(80000)
+	perModel := map[string]api.AgentPolicyModelRateLimit{
 		testRouterName: {RPM: &nine, TPM: &tpm},
-		gatewayName:    {RPM: &five},
+		gatewayName:    {RPM: &five, TPM: &internalTPM},
 		testSmallModel: {RPM: &three},
-	}}
+	}
+	policy.Spec.ModelAccess.RateLimits = &api.AgentPolicyRateLimits{PerModel: perModel}
 	if err := kube.Update(ctx, policy); err != nil {
 		t.Fatal(err)
 	}
@@ -715,9 +719,75 @@ func TestPolicyLimitForATeamRoutersNameUsesItsInternalName(t *testing.T) {
 	}
 	token := aigateway.Token(string(readSecret(t, r.Client, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))
 	limits := gateway.keys[token].Limits
-	if !maps.Equal(limits.ModelRPM, map[string]int64{gatewayName: 5, testSmallModel: 3}) ||
-		!maps.Equal(limits.ModelTPM, map[string]int64{gatewayName: 50000}) {
+	if !maps.Equal(limits.ModelRPM, map[string]int64{testRouterName: 9, gatewayName: 5, testSmallModel: 3}) ||
+		!maps.Equal(limits.ModelTPM, map[string]int64{testRouterName: 50000, gatewayName: 50000}) {
 		t.Fatalf("limits %+v", limits)
+	}
+}
+
+// A Team router of the name of one of the Agent's GitHub Copilot models leaves
+// the name to the Copilot model, which the Agent still requests by that name.
+// A per-model limit the policy sets for that name stays on it, for requests
+// and for tokens, and also limits the router under its internal name. The
+// name keeps its limits when the policy withdraws the router.
+func TestPolicyLimitForARouterNameThatACopilotModelKeepsStaysOnTheName(t *testing.T) {
+	const name = "gpt-5.5"
+	team := routerTeam(testRouter(name, testSmallModel, testSharedModelOne, testSharedModelOne))
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Spec.Agent.Type = api.AgentTypeHermes
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace(), readyProxy(1))
+	addSmallSharedModel(gateway)
+	allowTestPolicyModels(t, kube, testSmallModel, name)
+	setTestPolicyRateLimits(t, kube, &api.AgentPolicyRateLimits{PerModel: map[string]api.AgentPolicyModelRateLimit{
+		name: {RPM: ptr.To[int64](7), TPM: ptr.To[int64](60000)},
+	}})
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	signIn(t, kube, agent, testCopilotModels)
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	copilotRoute := func() bool {
+		return slices.ContainsFunc(agent.Status.AIGateway.Copilot.Routes, func(route api.AIGatewayCopilotRoute) bool { return route.Name == name })
+	}
+	if !copilotRoute() {
+		t.Fatalf("the test needs a Copilot route of the router's name: %+v", agent.Status.AIGateway.Copilot.Routes)
+	}
+	if router := routerStatuses(agent)[name]; !router.Granted || router.Alias != "" {
+		t.Fatalf("router %+v", router)
+	}
+	gatewayName := modelRouterGatewayName(testAIGatewayTeam, name)
+	token := aigateway.Token(string(readSecret(t, r.Client, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))
+	wantRPM, wantTPM := map[string]int64{name: 7, gatewayName: 7}, map[string]int64{name: 60000, gatewayName: 60000}
+	if limits := gateway.keys[token].Limits; !maps.Equal(limits.ModelRPM, wantRPM) || !maps.Equal(limits.ModelTPM, wantTPM) {
+		t.Fatalf("limits %+v, want RPM %v and TPM %v", limits, wantRPM, wantTPM)
+	}
+
+	// The policy withdraws the router: the name is the Copilot model's only,
+	// and keeps its limits.
+	policy := &api.AgentPolicy{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.ModelAccess.SharedModels.Allowed = slices.DeleteFunc(policy.Spec.ModelAccess.SharedModels.Allowed, func(model string) bool { return model == name })
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if router := routerStatuses(agent)[name]; router.Granted || !copilotRoute() {
+		t.Fatalf("router %+v, Copilot routes %+v", router, agent.Status.AIGateway.Copilot.Routes)
+	}
+	if limits := gateway.keys[token].Limits; limits.ModelRPM[name] != 7 || limits.ModelTPM[name] != 60000 {
+		t.Fatalf("the Copilot model's limits must stay: %+v", limits)
 	}
 }
 
