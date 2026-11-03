@@ -604,11 +604,11 @@ func (r *AgentReconciler) aiGatewayConfiguredCopilotRoutes(instance *cetirunv1al
 
 // aiGatewayRouterLimitFolds are the limits of the routers configured in the
 // Gateway, among the given shared models, that the Agent's own Copilot routes
-// lower. Such a router declares the smallest limits of its models' shared
-// deployments, and a request the Agent sends through it may also reach the
-// Agent's Copilot route registered under one of those models' names. Only
-// routers whose limits change are listed: the configuration hash covers them
-// (aiGatewayRevision), and an Agent without such a route keeps its hash.
+// lower. Such a router has the smallest limits of its models' shared
+// deployments (fillRouterLimits) unless it sets its own, and a request the
+// Agent sends through it may also reach the Agent's Copilot route registered
+// under one of those models' names. Only routers whose limits change are
+// listed; the configuration hash covers the result (aiGatewayRevision).
 func (r *AgentReconciler) aiGatewayRouterLimitFolds(instance *cetirunv1alpha1.Agent, shared []aiGatewayCatalogModel, routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string][2]int64 {
 	routeLimits := aiGatewayCopilotRouteLimits(instance, routes)
 	if len(routeLimits) == 0 {

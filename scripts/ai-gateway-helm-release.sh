@@ -49,8 +49,9 @@ chart_ref="oci://${registry}/${chart_namespace}"
 chart_archive="${package_dir}/${chart_name}-${chart_version}.tgz"
 
 # Lint twice. With the chart's own defaults, which bundle PostgreSQL and
-# Valkey, and with the render values, which use external ones. Both need a
-# model, because an empty model list is rejected at install.
+# Valkey, and with the render values, which use external ones. Each lint
+# configures models, so that the model templates render as well. The chart
+# itself accepts an empty model list.
 echo "==> Linting Helm chart"
 helm lint --strict "${chart_dir}" \
   --set-string "models[0].model_name=lint-model" \

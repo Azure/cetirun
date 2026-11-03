@@ -41,6 +41,36 @@ AGENT_POLICY_MARKERS = (
     '{{range $key,$value := .metadata.annotations}}{{if or (eq $key "cetirun.microsoft.com/sandbox-authorization") '
     '(eq $key "cetirun.microsoft.com/sandbox-reauthorize")}}protected{{end}}{{end}}'
 )
+# The Operator reads customRuntime strictly and stops at startup on a field it does not know.
+OPERATOR_VALUES = ROOT / "app/cetirun-operator/chart/values.yaml"
+REMOVED_CUSTOM_FIELDS = {"agentManagedModel", "gatewayImages"}
+# An error names a failed command by its tool, its operands and these options. Other option
+# values can be templates or local files. Tool output can hold rendered Secrets, so it is not shown.
+NAMED_OPTIONS = {"--namespace", "--name", "--timeout", "--version", "--dry-run"}
+FLAG_OPTIONS = {"--install", "--ignore-not-found", "--reuse-values", "--skip-refresh", "--minify", "-noout",
+                "--deployed", "--failed", "--pending", "--uninstalling", "--uninstalled", "--superseded"}
+# A chart's own refusal during the offline render, from its fail or required call. Charts
+# word these messages with value names, never with Secret material.
+CHART_REFUSAL = re.compile(r"execution error at \(([^)\n]+)\): ([^\n]+)")
+
+
+def step(command):
+    """Name a command for an error message, without its output, local files or templates."""
+    words = [str(word) for word in command]
+    while words[0] == sys.executable or words[0].startswith("-"):
+        words = words[1:]
+    if words[1:2] in (["--context"], ["--kube-context"]):
+        words = words[:1] + words[3:]
+    shown, rest = [Path(words[0]).name], iter(words[1:])
+    for word in rest:
+        if word.split("=", 1)[0] in NAMED_OPTIONS:
+            shown.append(word if "=" in word else f"{word} {next(rest, '')}".rstrip())
+        elif word.startswith("-"):
+            if "=" not in word and word not in FLAG_OPTIONS:
+                next(rest, None)
+        elif not Path(word).is_absolute():
+            shown.append(word)
+    return " ".join(shown)
 
 
 def load_helper(filename):
@@ -139,8 +169,11 @@ def configuration(path):
     raw_custom = get_value(config, "platform.values.cetirun-operator.customRuntime")
     if type(raw_custom.get("fsGroup")) is not int or not 1 <= raw_custom["fsGroup"] <= 2147483647:
         raise ValueError("customRuntime.fsGroup must explicitly name the qualified non-root storage group")
-    if type(raw_custom.get("agentManagedModel")) is not bool:
-        raise ValueError("customRuntime.agentManagedModel must be an explicit boolean")
+    unknown = sorted(set(raw_custom) - set(yaml_file(OPERATOR_VALUES)["customRuntime"]))
+    if unknown:
+        note = " Every approved Custom image uses the AI Gateway binding." if REMOVED_CUSTOM_FIELDS & set(unknown) else ""
+        raise ValueError("Remove " + ", ".join(f"customRuntime.{field}" for field in unknown) + " from the environment file: "
+                         "the Operator stops at startup on a customRuntime field that it does not know." + note)
 
     values = {name: merge(yaml_file(ROOT / chart / "values.yaml"), config[name].get("values", {}))
               for name, chart in CHARTS.items()}
@@ -246,8 +279,6 @@ def configuration(path):
     custom = operator["customRuntime"]
     if not custom["approvedImages"] or any(not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", image) for image in custom["approvedImages"]):
         raise ValueError("Custom runtime requires explicitly qualified approvedImages pinned by digest")
-    if not set(custom["gatewayImages"]).issubset(custom["approvedImages"]) or (not custom["agentManagedModel"] and set(custom["gatewayImages"]) != set(custom["approvedImages"])):
-        raise ValueError("Every Custom image needs explicit model access; gatewayImages must be approvedImages")
     skills = mapping(config.get("sharedSkills"), "sharedSkills")
     for field in ("storageClassName", "resourceGroup", "storageAccount", "containerName"):
         required(skills, field)
@@ -268,9 +299,10 @@ def configuration(path):
             or router.get("jev_classifier_config", {}).get("deployment_name") != "decision-1"):
         raise ValueError("models must configure auto with the existing jev classifier and logical decision-1 deployment")
     if (not decision.get("litellm_params", {}).get("model", "").startswith("azure_ai/")
-            or decision.get("model_info", {}).get("base_model") not in ("Microsoft-Decision-1", "azure_ai/Microsoft-Decision-1")
+            or decision.get("model_info", {}).get("base_model") != "azure_ai/Microsoft-Decision-1"
             or decision.get("model_info", {}).get("mode") != "evaluation"):
-        raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, Microsoft-Decision-1 base_model and evaluation mode")
+        raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, base_model azure_ai/Microsoft-Decision-1 and evaluation mode. "
+                         "LiteLLM prices the model only by that name, and the Operator does not offer an unpriced classifier to auto")
     decision_params = decision["litellm_params"]
     if not decision_params["model"].removeprefix("azure_ai/"):
         raise ValueError("decision-1 requires a real Azure deployment name")
@@ -297,8 +329,11 @@ class Deployment:
     def run(self, command, *, env=None, input_text=None):
         result = subprocess.run(command, cwd=ROOT, env=env, input=input_text, text=True, capture_output=True)
         if result.returncode:
-            # Do not echo Helm-rendered Secrets or external tool response bodies.
-            raise ValueError(f"{command[0]} {command[1]} failed with exit {result.returncode}; deployment did not complete")
+            # Name the step, but do not echo Helm-rendered Secrets or external tool response bodies.
+            # Only the offline render reports the chart's own refusal.
+            refusals = CHART_REFUSAL.findall(result.stderr or "") if list(map(str, command[:2])) == ["helm", "template"] else []
+            reason = "".join(f"; {template}: {message.strip()}" for template, message in refusals)
+            raise ValueError(f"{step(command)} failed with exit {result.returncode}{reason}; deployment did not complete")
         return result.stdout
 
     def kubectl(self, *args, input_text=None):

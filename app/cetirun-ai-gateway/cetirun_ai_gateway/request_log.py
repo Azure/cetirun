@@ -18,7 +18,10 @@ why, and its score; the model it chose is the call's provider model. A call
 LiteLLM makes itself is marked with its origin in call_origin: the call an auto
 router makes to classify a request, when the router uses a model for that, is
 a line of its own with the classifier's origin, and a background health check
-probe is "health_check", so usage figures can leave probes out.
+probe is "health_check", so usage figures can leave probes out. A call
+LiteLLM made after an attempt of the request failed, to another model or to
+another deployment of the same model, records the model the request was for,
+how many times LiteLLM sent it on and the class of the first failure.
 
 A client can ask LiteLLM for per-request debug output with
 litellm_request_debug, which makes LiteLLM print that request's prompt and the
@@ -77,6 +80,26 @@ def call_origin(kwargs):
         origin = as_dict(params.get(name)).get(CALL_ORIGIN_KEY)
         if isinstance(origin, str) and origin:
             return origin
+    return None
+
+
+def fallback(kwargs):
+    """(the model the request asked for, the number of fallbacks, the class of the first failure) of a call
+    LiteLLM made after an attempt of the request failed, to another model (a fallback) or to another
+    deployment of the same model (a failover), or None for any other call.
+
+    LiteLLM records them in the call's own metadata, not in the logging payload: the model group the
+    request was for, how many times it sent the request on, and each failed attempt.
+    """
+    params = as_dict(kwargs.get("litellm_params"))
+    for name in ("litellm_metadata", "metadata"):
+        metadata = as_dict(params.get(name))
+        attempts = metadata.get("attempted_fallbacks")
+        if not finite(attempts) or attempts <= 0:
+            continue
+        failures = metadata.get("previous_models")
+        first = as_dict(failures[0]) if isinstance(failures, (list, tuple)) and failures else {}
+        return metadata.get("original_model_group"), attempts, first.get("exception_type")
     return None
 
 
@@ -224,10 +247,10 @@ class RequestLog(CustomLogger):
         if not isinstance(payload, dict):
             return
         stream = self.stream or sys.stdout
-        stream.write(self.line(payload, call_origin(kwargs)) + "\n")
+        stream.write(self.line(payload, call_origin(kwargs), fallback(kwargs)) + "\n")
         stream.flush()
 
-    def record(self, payload, origin=None):
+    def record(self, payload, origin=None, fallback_details=None):
         metadata = as_dict(payload.get("metadata"))
         hidden = as_dict(payload.get("hidden_params"))
         usage = as_dict(metadata.get("usage_object")) or as_dict(hidden.get("usage_object"))
@@ -299,6 +322,18 @@ class RequestLog(CustomLogger):
             "user_agent": clip(payload.get("user_agent") or metadata.get("user_agent")),
             "request_tags": tags,
         }
+        if fallback_details is not None:
+            requested, attempts, cause = fallback_details
+            # An attempt failed and LiteLLM sent the request on: model is
+            # the call's, fallback_from the model the request was for, such
+            # as an auto router whose tier's model failed.
+            record.update(
+                {
+                    "fallback_from": clip(requested),
+                    "attempted_fallbacks": first_number(attempts),
+                    "fallback_cause": clip(cause),
+                }
+            )
         if status == "failure":
             message = error.get("error_message") or payload.get("error_str")
             record.update(
@@ -313,9 +348,9 @@ class RequestLog(CustomLogger):
             )
         return without_empty(record)
 
-    def line(self, payload, origin=None):
+    def line(self, payload, origin=None, fallback_details=None):
         """The record as one line of JSON, never longer than MAX_LINE_BYTES."""
-        record = self.record(payload, origin)
+        record = self.record(payload, origin, fallback_details)
         text = dump(record)
         if len(text.encode("utf-8")) <= MAX_LINE_BYTES:
             return text
