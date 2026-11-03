@@ -1,12 +1,13 @@
 ---
 title: "Helm configuration"
-description: "This page gives the values and defaults for the agent, operator, and portal Helm charts."
+description: "This page gives the values and defaults for the agent, platform, AI Gateway, operator, and portal Helm charts."
 weight: 20
 ---
 
-There are separate charts for the agent, operator, portal, and shared Istio
-infrastructure. A chart render does not prove that their images, storage,
-RuntimeClass, or identity integrations are available.
+There are separate charts for the agent, the AI Gateway, the operator, the
+portal, and shared Istio infrastructure. The platform chart packages the
+operator, the portal, and the AI Gateway. A chart render does not prove that
+their images, storage, RuntimeClass, or identity integrations are available.
 
 ## Offline rendering
 
@@ -377,6 +378,37 @@ endpoint of the independent Istio chart for the actual namespace of the portal.
 Do not install the umbrella chart over resources that standalone releases own.
 See the platform chart README's
 [Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).
+
+## AI Gateway chart
+
+Source: [Gateway values]({{< repo "app/cetirun-ai-gateway/chart/values.yaml" >}}).
+You can install the AI Gateway chart without the rest of CetiRun. The platform
+chart installs it with the `cetirun-ai-gateway` values of
+[Platform chart](#platform-chart). The
+[Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}})
+describes each value and the measurements behind its default. These values
+are important when you install the chart alone:
+
+| Value | Source default |
+| --- | --- |
+| `global.registry`, `global.version` | Empty. With a registry, the image is `<registry>/cetirun-ai-gateway`. Without one, it is `image.repository`, `cetirun.azurecr.io/cetirun-ai-gateway`. The tag is `global.version`, then `image.tag`, then the `appVersion` of the chart. |
+| `imagePullSecrets` | `[]`. Set it when the cluster cannot pull from the registry without credentials. |
+| `replicaCount` | `2`. More than one replica needs Redis or Valkey. The bundled Valkey supplies it. |
+| `operatorIntegration` | `false`. The platform chart sets `true`. Keep `false` for a Gateway that does not serve CetiRun Agents. |
+| `models` | `[]`. LiteLLM model entries. An empty list is valid, and models can also be added in the console. |
+| `blockUnpricedModels` | `true`. The Gateway refuses a model that has no price. |
+| `providerCredentials.existingSecret` | Empty. A Secret whose keys become environment variables of the Gateway, for `api_key: os.environ/<key>`. |
+| `auth.masterKey`, `auth.saltKey`, `auth.adminUI.passwordSecret` | Each has `existingSecret`, empty, and `key`. Without a Secret, the chart generates the value and keeps it in its `-auth` Secret. Do not change the salt key after the installation. |
+| `postgresql.bundled.enabled`, `postgresql.urlSecret.existingSecret` | `true`, empty. To use your own PostgreSQL, set `false` and a Secret with the `database-url` key. `make deploy` refuses `false`. |
+| `postgresql.bundled.persistence.size`, `storageClass` | `100Gi`, empty for the default class of the cluster. Both are fixed at the installation. |
+| `redis.bundled.enabled`, `redis.host`, `redis.passwordSecret.existingSecret` | `true`, empty, empty. To use your own Redis or Valkey, set `false` and a host. The connection does not use TLS. `make deploy` refuses `false`. |
+| `service.type`, `service.port` | `ClusterIP`, `4000`. The chart creates no Ingress. |
+| `resources`, `postgresql.bundled.resources`, `redis.bundled.resources` | `{}`. Nothing is reserved. See [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resources). |
+| `metrics.enabled`, `metrics.podMonitor.enabled` | `false`, `false`. The platform chart sets both to `true`. |
+
+The other values, for example `priceTable`, `spendLogs`, `router`, and
+`budgetExceededStatusCode`, have the defaults that the `cetirun-ai-gateway`
+rows of [Platform chart](#platform-chart) give.
 
 ## Operator chart
 

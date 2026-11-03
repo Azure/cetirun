@@ -431,8 +431,15 @@ Make a decision about these inputs before the first run:
   [Smart routing](../../operations/smart-routing/).
 - `platform.values.cetirun-ai-gateway.postgresql.bundled.persistence` sets the
   StorageClass and the size of the Gateway's database. A later run cannot
-  change them. Refer to the Gateway chart's
+  change them. `make deploy` always installs the Gateway with its bundled
+  PostgreSQL and Valkey. It refuses `bundled.enabled: false` for either of
+  them. For managed databases, install the platform chart directly. Refer to
+  the Gateway chart's
   [Bundled or your own]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#bundled-or-your-own).
+- `platform.values.cetirun-ai-gateway.resources` reserves CPU and memory for
+  each Gateway pod. The chart reserves none. Set it, and the resources of the
+  bundled PostgreSQL and Valkey, before you serve users. Refer to the Gateway
+  chart's [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resources).
 - LiteLLM's spend log in the Gateway's database keeps the prompt and the
   response of each call. By default, it keeps them for seven days. To keep
   only the metadata of each call, set

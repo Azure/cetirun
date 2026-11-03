@@ -207,6 +207,12 @@ The chart cannot connect to Redis with TLS yet. As a result, it cannot use
 Azure Cache for Redis with its default settings, which accept only TLS
 connections. Refer to [Known gaps](#known-gaps).
 
+`make deploy` of the CetiRun platform does not accept this configuration. It
+installs the Gateway with the bundled PostgreSQL and Valkey, and it refuses
+`postgresql.bundled.enabled: false` or `redis.bundled.enabled: false`. To use
+managed services with CetiRun, install the platform chart directly. Refer to
+[Use the component chart directly](../../cetirun-platform/README.md#use-the-component-chart-directly).
+
 The bundled PostgreSQL behaves like an external database across the lifecycle
 of the release. `helm uninstall` keeps its volume and its password Secret. As a
 result, an installation under the same release name finds the data again. In a
@@ -250,6 +256,50 @@ Local connections inside the PostgreSQL container are trusted, as in the
 upstream image. Connections from other pods must supply the password.
 Measurements show that a wrong password from another pod is refused, and that
 Valkey refuses a client without one.
+
+### Resources
+
+The chart sets no resource requests or limits: `resources` for the Gateway,
+`postgresql.bundled.resources`, and `redis.bundled.resources` are empty. As a
+result, Kubernetes reserves no CPU or memory for these containers. When a node
+runs out of memory, the kubelet first evicts the pods that use more memory
+than they request. Set these values before you serve users.
+
+Each Gateway pod runs one LiteLLM worker, and the image refuses more workers.
+To scale, use `replicaCount`. For a pod with one worker, LiteLLM's
+[production guide](https://docs.litellm.ai/docs/proxy/prod#machine-specifications)
+gives 1 CPU and 4Gi of memory, as requests and as limits:
+
+```yaml
+resources:
+  requests:
+    cpu: "1"
+    memory: 4Gi
+  limits:
+    cpu: "1"
+    memory: 4Gi
+```
+
+The guide treats 4Gi as a minimum when the spend log stores prompts and
+responses, as this chart does by default. According to the guide, the memory
+of a pod grows to fit the largest database write that the pod made, and it
+does not decrease. The spend log rows with prompts and responses are the
+largest writes. With the default `replicaCount: 2`, these values reserve 2 CPU
+and 8Gi of memory.
+
+A test installation had four Agents and little traffic. After 15 hours, each
+Gateway container used about 800Mi of memory and less than 0.01 CPU. The
+bundled PostgreSQL used about 200Mi, and Valkey used less than 10Mi. These
+figures show the use at rest. They are not a recommendation.
+
+Measure the use under your own traffic with `kubectl top pods --containers`.
+Set each memory limit above the highest value that you see.
+
+For larger installations, LiteLLM also gives
+[Database Sizing](https://docs.litellm.ai/docs/proxy/db_sizing) and
+[Redis Sizing](https://docs.litellm.ai/docs/proxy/redis_sizing). In the
+database guide, a spend log row with the prompt and the response needs about
+ten times more storage.
 
 ### Response caching is off
 

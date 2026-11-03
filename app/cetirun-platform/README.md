@@ -60,9 +60,12 @@ Configure the logical model `auto` with `auto_router/complexity_router`,
 `classifier_type: jev`, and `jev_classifier_config.deployment_name: decision-1`.
 The separate `decision-1` entry refers to the real `azure_ai/<deployment>` and
 uses `model_info.base_model: azure_ai/Microsoft-Decision-1` with
-`mode: evaluation`. Its `api_version` is optional. Omission keeps the
-provider's default, and an explicit value is passed through. The endpoint and
-Secret environment reference are still necessary.
+`mode: evaluation`. The endpoint and the Secret environment reference are
+necessary. Its `api_version` is optional, and LiteLLM 1.105.6 does not send it.
+LiteLLM sends each decision request to
+`<endpoint>/providers/microsoft/v1/systemone`, without a query. Before that, it
+removes a `/models`, `/openai`, `/openai/v1`, or `/v1` suffix from the
+endpoint.
 
 Do not remove the `azure_ai/` prefix from the base model. LiteLLM has no price
 for the name without the prefix. With the default `blockUnpricedModels: true`,
