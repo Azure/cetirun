@@ -119,6 +119,9 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		return nil, err
 	}
 	if attempt.input.Terminal != nil && !attempt.agent.Spec.Suspended {
+		if err := r.ensureCommonTerminalExecPolicy(ctx, attempt.agent); err != nil {
+			return nil, err
+		}
 		if err := r.ensureTerminalReadRoles(ctx, attempt.agent); err != nil {
 			return nil, err
 		}
@@ -172,7 +175,6 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		values["memoryOptions"] = r.memoryOptions()
 		if agent.Spec.Suspended {
 			values["replicaCount"] = 0
-			values["ttyd"] = map[string]any{"enabled": false}
 		}
 	}
 	configuration, ok := r.SandboxPreparation.Configuration.(*sandboxplatform.KubernetesSource)
@@ -997,6 +999,45 @@ func (r *AgentReconciler) reconciledSandboxFailure(ctx context.Context, agent *a
 }
 
 func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	return r.holdReconciledSandboxWithStatus(ctx, agent, reconciledSandboxHoldStatus{
+		phase: api.PhasePending, reason: "SandboxHeld",
+		message: "Current Sandbox authorization or prerequisites are unavailable",
+	}, reconciledSandboxHoldStatus{
+		phase: api.PhasePending, reason: "SandboxHeld",
+		message: "Current Sandbox authorization or prerequisites are unavailable",
+	})
+}
+
+type reconciledSandboxHoldStatus struct {
+	phase              string
+	reason             string
+	message            string
+	conditions         []string
+	observedGeneration bool
+	verifiedSuspension bool
+}
+
+// holdReconciledSandboxForDeniedSuspension preserves a completed suspension
+// while the current policy remains denied. It is only called after the
+// revocation request has completed successfully; ordinary missing-key and
+// revocation failures continue through the generic pending hold.
+func (r *AgentReconciler) holdReconciledSandboxForDeniedSuspension(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	return r.holdReconciledSandboxWithStatus(ctx, agent, reconciledSandboxHoldStatus{
+		phase: api.PhaseSuspended, reason: "Suspended",
+		message:            "Suspension is confirmed; policy remains denied until a valid configuration is supplied",
+		conditions:         []string{api.ConditionReady, api.ConditionPodReady, api.ConditionSandboxReady, api.ConditionIngressReady},
+		observedGeneration: true,
+		verifiedSuspension: true,
+	}, reconciledSandboxHoldStatus{
+		phase: api.PhasePending, reason: "SuspensionPending",
+		message:            "Suspension requested; waiting for shutdown and access revocation",
+		conditions:         []string{api.ConditionReady, api.ConditionPodReady, api.ConditionSandboxReady, api.ConditionIngressReady},
+		observedGeneration: true,
+		verifiedSuspension: true,
+	})
+}
+
+func (r *AgentReconciler) holdReconciledSandboxWithStatus(ctx context.Context, agent *api.Agent, complete, incomplete reconciledSandboxHoldStatus) (ctrl.Result, error) {
 	var failures []error
 	if !controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) {
 		before := agent.DeepCopy()
@@ -1008,10 +1049,41 @@ func (r *AgentReconciler) holdReconciledSandbox(ctx context.Context, agent *api.
 	if controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
 		failures = append(failures, r.stopReconciledAuxiliaries(ctx, agent))
 	}
-	agent.Status.Phase, agent.Status.AccessURL = api.PhasePending, ""
-	for _, kind := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionIngressReady} {
+	cleanupErr := errors.Join(failures...)
+	status := complete
+	if cleanupErr != nil {
+		status = incomplete
+	}
+	agent.Status.Phase, agent.Status.AccessURL = status.phase, ""
+	conditions := status.conditions
+	if len(conditions) == 0 {
+		conditions = []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionIngressReady}
+	}
+	for _, kind := range conditions {
 		setCondition(&agent.Status.Conditions, kind, metav1.ConditionFalse,
-			"SandboxHeld", "Current Sandbox authorization or prerequisites are unavailable")
+			status.reason, status.message)
+	}
+	if status.verifiedSuspension {
+		if agent.Status.AIGateway != nil && agent.Status.AIGateway.Phase == api.AIGatewayPhaseDeleting {
+			setCondition(&agent.Status.Conditions, api.ConditionAIGatewayReady, metav1.ConditionFalse,
+				status.reason, status.message)
+			conditions = append(conditions, api.ConditionAIGatewayReady)
+		}
+		if agent.Spec.Agent.Type == api.AgentTypeCustom {
+			for _, kind := range []string{api.ConditionDesktopConfigured, api.ConditionTerminalConfigured} {
+				setCondition(&agent.Status.Conditions, kind, metav1.ConditionFalse,
+					status.reason, status.message)
+				conditions = append(conditions, kind)
+			}
+		}
+	}
+	if status.observedGeneration {
+		agent.Status.ObservedGeneration = agent.Generation
+		for index := range agent.Status.Conditions {
+			if slices.Contains(conditions, agent.Status.Conditions[index].Type) {
+				agent.Status.Conditions[index].ObservedGeneration = agent.Generation
+			}
+		}
 	}
 	failures = append(failures, r.updateStatus(ctx, agent))
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, errors.Join(failures...)
@@ -1039,16 +1111,24 @@ func (r *AgentReconciler) stopReconciledSandbox(ctx context.Context, agent *api.
 	}
 	var blockErr error
 	if r.AIGateway.configured() {
-		gateway, err := r.aiGatewayClient(ctx)
-		blockErr = err
-		if err == nil {
-			blocked, err := r.blockAIGatewayKeyIfPresent(ctx, gateway, agent, aiGatewayReasonSuspended)
+		if agent.Status.AIGateway != nil && agent.Status.AIGateway.Phase == api.AIGatewayPhaseDeleting {
+			// A denied policy revokes the key and records Deleting before the
+			// external side effect. Retrying that revocation proves the old key
+			// remains unavailable without recreating it. A Deleting phase alone
+			// is only intent, so every revoke error still keeps suspension pending.
+			blockErr = r.revokeAIGatewayKey(ctx, agent)
+		} else {
+			gateway, err := r.aiGatewayClient(ctx)
 			blockErr = err
-			if err == nil && !blocked && aiGatewayKeyWasIssued(agent) {
-				blockErr = fmt.Errorf("the previously issued AI Gateway key is missing during suspension")
-			}
-			if blockErr == nil && agent.Status.AIGateway != nil {
-				agent.Status.AIGateway.Blocked = blocked
+			if err == nil {
+				blocked, err := r.blockAIGatewayKeyIfPresent(ctx, gateway, agent, aiGatewayReasonSuspended)
+				blockErr = err
+				if err == nil && !blocked && aiGatewayKeyWasIssued(agent) {
+					blockErr = fmt.Errorf("the previously issued AI Gateway key is missing during suspension")
+				}
+				if blockErr == nil && agent.Status.AIGateway != nil {
+					agent.Status.AIGateway.Blocked = blocked
+				}
 			}
 		}
 	} else if aiGatewayKeyWasIssued(agent) {

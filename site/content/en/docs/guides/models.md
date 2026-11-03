@@ -125,15 +125,6 @@ part has Log Analytics queries that show how requests were routed. A Team's own
 routers are described under
 [Smart-routing models](#smart-routing-models).
 
-A shared model can also be a router that the administrator configures in the
-Gateway. For each request, the router picks one of several shared models, such
-as a cheaper model for simple requests. An instance that can use the router
-reaches every model that the router can pick. See the Gateway chart's
-[Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
-section. Its
-[Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
-part has Log Analytics queries that show how requests were routed.
-
 The create form offers both sources, and both are on by default. Every new
 Agent must have a model to use: shared models when at least one is offered, or
 GitHub Copilot when the deployment offers it. GitHub Copilot stays on when
@@ -152,6 +143,15 @@ The portal runs the GitHub device-code sign-in, stores the token for the
 instance's proxy, and records the account's chat models. The models appear
 after the proxy starts, usually within a few minutes. Then the instance
 restarts to get them.
+
+GitHub keeps at most ten of these tokens for each GitHub account. Each sign-in
+makes a new token. When an account has ten, the next sign-in revokes the
+oldest. Sign-ins with other tools that use the same GitHub app can also count.
+
+As a result, many sign-ins with one account can sign an older instance out of
+Copilot. That instance's Copilot models stop within a day, but the instance
+still shows Copilot as signed in. To restore it, sign in on that instance
+again.
 
 A model that the Gateway has no price for is listed as not offered, because the
 instance's budget cannot limit that model.
@@ -308,15 +308,39 @@ The instance's configuration lists the models that accept images
 value sends images as before. The instance takes the value when you upgrade it
 to a chart that has it.
 
+### When the budget runs out
+
+Each instance's key has a monthly budget in US dollars. For an instance of a
+policy-bound Team, the Policy sets the budget. For other instances, the key
+gets the operator's `aiGateway.defaultBudget` when it is created. An
+administrator can change this budget in the Gateway's console.
+
+When the spend of the key reaches the budget, the Gateway refuses every
+request of the key with HTTP 402. OpenClaw then reports a billing error of its
+model provider. Hermes says to add credits with the provider. Neither message
+says that the CetiRun budget is used up. The requests to the instance's GitHub
+Copilot models count against the same budget, so they stop too.
+
+The budget resets on the first day of each month, UTC, up to about ten minutes
+late. To restore the instance before that, an administrator raises the
+budget. For a policy-bound instance, the administrator raises the budget of the
+Policy, which restarts its running Agents one time. As an alternative, the
+administrator suspends the instance and sets its `modelAccess.monthlyBudgetUSD`,
+up to the maximum of the Policy. Refer to
+[AgentPolicy model access](../../reference/crds/#agentpolicy-model-access).
+
 ### Smart-routing models
 
 A Team can also define its own smart-routing models in the Portal. See
 [Configure a team](../teams/#smart-routing). An instance that can use one of
-these models lists it under its name, such as `auto`. The create form offers
-the names that the Team's Policy allows as the default model. The instance's
-key reaches the router under its name and under its internal Gateway name.
-Hermes is configured with the router's name. OpenClaw is configured with the
-internal name as the model ID, and it shows the router's name.
+these models lists it under its name, such as `auto-team`. The create form
+offers the names that the Team's Policy allows as the default model, with
+`(smart routing)` after each name.
+
+The instance's key reaches the router under its name and under its internal
+Gateway name. Hermes is configured with the router's name. OpenClaw is
+configured with the internal name as the model ID, and it shows the router's
+name.
 
 If you select the router's name as the default model, you select the router.
 The instance is configured with the smallest context window and output limit
@@ -333,11 +357,12 @@ used instead.
 Each request is charged to the instance's key at the price of the tier model
 that it is sent to. The calls of an `llm` or `jev` classifier are also charged.
 The router's own price in the Gateway only satisfies the check for unpriced
-models. The key's budget applies as usual. A per-model rate limit is matched
-against the model name that the Gateway counts, which is the router's internal
-name. A limit that a Policy sets for the router's name is set under that
-internal name. A per-model limit on a tier model does not apply to requests
-that go through a router.
+models. The key's budget applies as usual.
+
+A per-model rate limit is matched against the model name that the Gateway
+counts, which is the router's internal name. A limit that a Policy sets for the
+router's name is also set under that internal name. A per-model limit on a tier
+model does not apply to requests that go through a router.
 
 An instance that cannot use one of its Team's routers shows why on its page.
 For example:

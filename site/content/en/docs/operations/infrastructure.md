@@ -44,9 +44,11 @@ value.
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
 | Monitoring | Container Insights and Prometheus enabled |
 
-Agents of Teams that are created in the Portal run in a Sandbox. Kubernetes
-1.37 or later is necessary for a Sandbox. In your parameter file, set
-`kubernetesVersion` to 1.37 or later. See [Policy-bound Teams](../policy-teams/).
+`make deploy` refuses a cluster that runs a Kubernetes version older than 1.37,
+because Sandbox admission must have this version. In your parameter file, set
+`kubernetesVersion` to 1.37 or later. See
+[Install CetiRun](../../getting-started/platform/#platform-chart) and
+[Policy-bound Teams](../policy-teams/).
 
 The initial pool counts total **20 nodes**. This is not a small demonstration
 cluster. The system pool has `CriticalAddonsOnly=true:NoSchedule`. Both agent

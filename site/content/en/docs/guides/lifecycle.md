@@ -395,14 +395,15 @@ with a different name or namespace, a reviewed workflow is necessary. If you
 change only the Helm release namespace, this lookup does not become portable.
 See the [portal Kubernetes client]({{< repo "app/cetirun-portal/internal/kube/client.go" >}}).
 
-For an existing OpenClaw or Hermes Helm release, the operator compares the
+For an OpenClaw or Hermes Helm release that exists, the operator compares the
 Agent's image with the deployed chart's default and resolved image. If both
 match, a chart-version change selects the new chart's default image. The
-operator saves that image before it deploys the new chart. Other built-in image
-choices stay pinned and must satisfy the selected runtime profile's qualification
-rules. Custom images stay pinned under their existing image approval checks.
-Policy and lifecycle authorization still apply.
-An operator upgrade alone does not change an Agent's pinned chart or image.
+operator saves that image before it deploys the new chart.
+
+Other built-in image choices stay pinned and must satisfy the selected runtime
+profile's qualification rules. Custom images stay pinned under their image
+approval checks. Policy and lifecycle authorization still apply. An operator
+upgrade alone does not change an Agent's pinned chart or image.
 
 Treat model, chart, credential, and agent configuration changes as possibly
 disruptive. Before you change users’ instances, review the backups and test

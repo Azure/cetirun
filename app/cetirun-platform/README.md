@@ -41,21 +41,32 @@ subscriptions, or change `current-context`. Every cluster operation uses
 `target.context`. Before a write, the helper examines the cluster name, API
 origin, and cluster UID of that context.
 
+AKS managed Istio adds the revision to the names of the control plane
+Deployment, the ingress gateway Deployment, and the shared mesh ConfigMap. An
+example is `aks-istio-ingressgateway-external-asm-1-30`. The ingress
+ServiceAccount has no revision in its name. Read the names from the cluster.
+Before a write, the helper stops if a configured Deployment does not exist. It
+also stops if `istio.meshConfigMap` does not exist but
+`istio-shared-configmap-<revision>` exists.
+
 Use the available Helm values under the `values` field of each release. The
 helper connects component URLs, namespaces, image coordinates, and identity
 fields from the common inputs. Custom images must have digest-pinned
-`approvedImages`, an explicit model-access mode, and the storage settings whose
-UID/GID behavior you qualified. The publication of an image does not establish
-that qualification.
+`approvedImages` and the storage settings whose UID/GID behavior you qualified.
+Each approved image uses the AI Gateway binding. The publication of an image
+does not establish that qualification.
 
 Configure the logical model `auto` with `auto_router/complexity_router`,
 `classifier_type: jev`, and `jev_classifier_config.deployment_name: decision-1`.
 The separate `decision-1` entry refers to the real `azure_ai/<deployment>` and
-uses `model_info.base_model: Microsoft-Decision-1` or
-`azure_ai/Microsoft-Decision-1` with `mode: evaluation`. Its `api_version` is
-optional. Omission keeps the provider's default, and an explicit value is
-passed through. The endpoint and Secret environment reference are still
-necessary.
+uses `model_info.base_model: azure_ai/Microsoft-Decision-1` with
+`mode: evaluation`. Its `api_version` is optional. Omission keeps the
+provider's default, and an explicit value is passed through. The endpoint and
+Secret environment reference are still necessary.
+
+Do not remove the `azure_ai/` prefix from the base model. LiteLLM has no price
+for the name without the prefix. With the default `blockUnpricedModels: true`,
+the Operator does not offer an unpriced model, and then `auto` does not work.
 
 Put all four tiers and the real provider deployments in the environment file.
 The router's price fields are necessary guard metadata, not an average of route
@@ -268,17 +279,18 @@ For CRDs that were previously unmanaged, and for ownership transfers across
 releases, a separately reviewed handover is still necessary. This chart does
 not forcibly adopt them.
 
-The deployment helper accepts `ISTIO_GATEWAY_NAME` and
-`ISTIO_GATEWAY_NAMESPACE` for the Gateway resource. For the Gateway workload
-identity, it accepts `ISTIO_INGRESS_NAMESPACE` and
-`ISTIO_GATEWAY_SERVICE_ACCOUNT`. By default, the ingress namespace is the
-Gateway namespace.
+For a different Gateway resource, set `cetirun-operator.istioGateway` and
+`cetirun-portal.istio.gateway`. For its workload identity, set
+`cetirun-portal.istio.gatewayNamespace` and `gatewayServiceAccount`, as the
+command above shows. `make deploy` sets these values from its `istio` inputs:
+the Gateway `cetirun-gateway` in `istio.ingressNamespace`, and
+`istio.ingressServiceAccount`.
 
 To install in a namespace other than `cetirun-system`, set both
 `cetirun-operator.namespace` and `cetirun-portal.aiGateway.catalogNamespace` to
 that namespace. The operator publishes the shared models in its own namespace,
-and the Portal reads them from there. The deployment helper sets both values
-from `NAMESPACE`. The chart refuses a Portal that looks for the models in a
+and the Portal reads them from there. `make deploy` sets both values from
+`platform.namespace`. The chart refuses a Portal that looks for the models in a
 different namespace.
 
 When you use the umbrella, configure the separate Istio release to reach the
@@ -371,8 +383,13 @@ name. The operator offers each model through its deployment ID and access
 group. It offers every model to Agents without a policy, and it offers
 policy-bound Agents the models that their AgentPolicy grants. If the Gateway
 blocks models that do not have a price, as it does by default, each model must
-also have a price. In this example, the provider key is in a Secret that you
-create in the release namespace:
+also have a price.
+
+In this example, the provider key is in a Secret that you create in the release
+namespace. With `make deploy`, put the same entries under
+`platform.values.cetirun-ai-gateway` in the environment file. `make deploy`
+also requires the `auto` and `decision-1` entries that
+[Deploy the platform](#deploy-the-platform) describes:
 
 ```yaml
 cetirun-ai-gateway:
@@ -401,9 +418,11 @@ Also, an upgrade of the Gateway does not interrupt the Agents. The Gateway pods
 keep the configuration that they started with until they are replaced. The
 operator applies a changed model list after the rollout ends.
 
-Shared models are optional. Without shared models, OpenClaw Agents use their
-owners' GitHub Copilot. With `cetirun-operator.aiGateway.copilotProxy.enabled`
-disabled, the Portal creates no OpenClaw Agent until a shared model is offered.
+Shared models are optional for a direct install of this chart. `make deploy`
+requires them, because it requires `auto`. Without shared models, OpenClaw
+Agents use their owners' GitHub Copilot. With
+`cetirun-operator.aiGateway.copilotProxy.enabled` disabled, the Portal creates
+no OpenClaw Agent until a shared model is offered.
 The Gateway's health checks do not probe the Agents' GitHub Copilot routes
 because each probe is a real call on the owner's Copilot allowance.
 `cetirun-operator.aiGateway.copilotProxy.healthChecks.enabled` enables their
@@ -421,7 +440,8 @@ kubectl port-forward -n cetirun-system svc/cetirun-ai-gateway 4000:4000
 
 Then open <http://localhost:4000/ui> and sign in as `admin`.
 
-You can use a separately installed Gateway instead. To do this, set
+You can use a separately installed Gateway instead, but not with `make deploy`,
+which installs the bundled one. To do this, set
 `cetirun-ai-gateway.enabled=false`. Install the Gateway in the operator
 namespace under the name `cetirun-ai-gateway`, with
 `operatorIntegration: true`. If you install the Gateway elsewhere, set
@@ -429,8 +449,9 @@ namespace under the name `cetirun-ai-gateway`, with
 copy its master key into the operator namespace as the
 `cetirun-ai-gateway-auth` Secret.
 
-New Agents must have a Team. Before users create Agents, create a Team in the
-Portal's administration pages or with a manifest:
+A Team is optional for a new Agent. Without a Team, the Agent can use every
+shared model. Policy-bound Teams are created in the Portal's administration
+pages. A Team without a policy can also be created with a manifest:
 
 ```bash
 kubectl apply -f - <<'EOF'

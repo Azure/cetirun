@@ -148,6 +148,17 @@ still contain sensitive data. Portal, operator, agent, and tool logs are other
 data sources. `desktop.logging: false` disables x11vnc/websockify output, but
 Chrome stderr still reaches container stderr.
 
+The AI Gateway keeps a record of each model call in its PostgreSQL database
+(`LiteLLM_SpendLogs`). By default (`spendLogs.storePrompts: true`), the record
+also contains the request and the response of the call: conversation text,
+images, tool calls, and tool results. LiteLLM shortens each value that is
+longer than 2,048 characters. The Gateway deletes these records after seven
+days (`spendLogs.retention`). The Gateway console's request log pages show
+them. Restrict who can sign in to the console, use the Gateway's master key,
+and read its database and backups. To keep only the metadata of each call, set
+`spendLogs.storePrompts: false`. Refer to the Gateway chart's
+[spend log section]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#litellms-spend-log).
+
 Restrict access to logs and monitoring workspaces. Document the retention,
 redaction, and deletion procedures. If you disable one logger, you do not
 disable every agent, provider, browser, tool, or infrastructure collection

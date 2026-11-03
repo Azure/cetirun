@@ -28,7 +28,7 @@ istio:
   controlPlaneNamespace: aks-istio-system
   controlPlaneDeployment: istiod-asm-example
   ingressNamespace: aks-istio-ingress
-  ingressDeployment: aks-istio-ingressgateway-external
+  ingressDeployment: aks-istio-ingressgateway-external-asm-example
   ingressServiceAccount: aks-istio-ingressgateway-external
   meshConfigMap: istio-shared-configmap-asm-example
   values:
@@ -75,9 +75,6 @@ platform:
         approvedImages:
           - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           - registry.example.com/cetirun-vscode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-        agentManagedModel: true
-        gatewayImages:
-          - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         storageClass: example-home
         storageSize: 100Gi
         accessMode: ReadWriteOnce
@@ -131,7 +128,7 @@ platform:
             api_key: os.environ/AZURE_DECISION_KEY
             api_version: 2024-05-01-preview
           model_info:
-            base_model: Microsoft-Decision-1
+            base_model: azure_ai/Microsoft-Decision-1
             mode: evaluation
         - model_name: auto
           litellm_params:

@@ -445,7 +445,7 @@ echo "==> a jev router sends a request it could not classify to its default mode
 assert_absent "classifier_fallback" "a heuristic router keeps LiteLLM's fallback" "${routed}"
 jev_router_config="${default_router_config}
         classifier_type: jev
-        jev_classifier_config: {deployment_name: decision-model}"
+        jev_classifier_config: {deployment_name: lint-model}"
 router_values "${router_dir}/jev.yaml" "${jev_router_config}"
 assert_contains "classifier_fallback: default_model" "a jev router falls back to its default model" \
   "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/jev.yaml" --set operatorIntegration=true)"
@@ -463,7 +463,7 @@ assert_absent "classifier_fallback" "an llm router keeps LiteLLM's fallback" \
   "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/llm.yaml")"
 router_values "${router_dir}/jev-tiers.yaml" "tiers: {LIGHT: lint-model, HEAVY: big-model}
         classifier_type: jev
-        jev_classifier_config: {deployment_name: decision-model}
+        jev_classifier_config: {deployment_name: lint-model}
         tier_definitions: [{name: LIGHT, description: short asks}, {name: HEAVY, description: long work}]
         fallback_tier: HEAVY"
 assert_absent "classifier_fallback" "a jev router with its own tiers keeps its fallback_tier" \
@@ -510,6 +510,19 @@ router_values "${router_dir}/unknown.yaml" 'tiers: {SIMPLE: lint-model, COMPLEX:
 router_rejected "a router tier outside models" "${router_dir}/unknown.yaml"
 router_values "${router_dir}/itself.yaml" 'tiers: {SIMPLE: lint-model, COMPLEX: auto}'
 router_rejected "a router tier that is a router" "${router_dir}/itself.yaml"
+# LiteLLM does not refuse a jev classifier whose decision model is not served, and
+# the chart's default_model fallback then sends every request to the default model.
+router_values "${router_dir}/jev-unknown.yaml" "${default_router_config}
+        classifier_type: jev
+        jev_classifier_config: {deployment_name: decision-typo}"
+router_rejected "a jev classifier outside models" "${router_dir}/jev-unknown.yaml"
+router_values "${router_dir}/jev-router.yaml" "${default_router_config}
+        classifier_type: jev
+        jev_classifier_config: {deployment_name: auto}"
+router_rejected "a jev classifier that is a router" "${router_dir}/jev-router.yaml"
+router_values "${router_dir}/jev-unnamed.yaml" "${default_router_config}
+        classifier_type: jev"
+router_rejected "a jev classifier without a decision model" "${router_dir}/jev-unnamed.yaml"
 router_values "${router_dir}/no-tiers.yaml" 'classifier_type: heuristic'
 router_rejected "a router without tiers" "${router_dir}/no-tiers.yaml"
 router_values "${router_dir}/one-prompt.yaml" \

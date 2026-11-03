@@ -48,6 +48,8 @@ it("shows a router's status and saves added routers with the Team", async () => 
   await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
   await user.click(screen.getByRole("button", { name: "Add smart-routing model" }));
   const added = screen.getByRole("group", { name: "Smart-routing model 2" });
+  // The Gateway that make deploy installs already serves the shared router auto.
+  expect(within(added).getByRole("textbox", { name: "Model name" })).toHaveAttribute("placeholder", "auto-team");
   await user.type(within(added).getByRole("textbox", { name: "Model name" }), "auto-copilot");
   await user.selectOptions(within(added).getByRole("combobox", { name: "Classifier" }), "llm");
   await user.selectOptions(within(added).getByRole("combobox", { name: "Classifier model" }), "small-model");

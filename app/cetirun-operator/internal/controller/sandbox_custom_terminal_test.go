@@ -24,20 +24,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+func withCommonTerminalTopology(t *testing.T) func(*AgentReconciler, client.Client) {
+	t.Helper()
+	return func(r *AgentReconciler, kube client.Client) {
+		updateContainerPlatformForTest(t, r, kube, func(document *SandboxPlatformConfiguration) {
+			platform := document.Platforms[api.SandboxKata]
+			platform.Topology.KubernetesAPI = []sandboxpolicy.Destination{{
+				Peer:  sandboxpolicy.Peer{Name: "api", UID: "example-api-uid", IPs: []string{"203.0.113.10"}},
+				Ports: []api.AgentPolicyPort{{Port: 6443, Protocol: corev1.ProtocolTCP}},
+			}}
+			document.Platforms[api.SandboxKata] = platform
+		})
+	}
+}
+
 func customTerminalFixture(t *testing.T, backend string) *nativeSandboxFixture {
 	t.Helper()
 	setup := []func(*AgentReconciler, client.Client){
-		withCommonCustom(t, "chat"), withReconciledCoordination(t),
-		func(r *AgentReconciler, kube client.Client) {
-			updateContainerPlatformForTest(t, r, kube, func(document *SandboxPlatformConfiguration) {
-				platform := document.Platforms[api.SandboxKata]
-				platform.Topology.KubernetesAPI = []sandboxpolicy.Destination{{
-					Peer:  sandboxpolicy.Peer{Name: "api", UID: "example-api-uid", IPs: []string{"203.0.113.10"}},
-					Ports: []api.AgentPolicyPort{{Port: 6443, Protocol: corev1.ProtocolTCP}},
-				}}
-				document.Platforms[api.SandboxKata] = platform
-			})
-		},
+		withCommonCustom(t, "chat"), withReconciledCoordination(t), withCommonTerminalTopology(t),
 	}
 	if backend == "container" {
 		setup = append(setup, withContainerRuntime(t))
