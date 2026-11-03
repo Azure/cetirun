@@ -103,6 +103,13 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	}
 	server.Register(ValidationPath, &admission.Webhook{Handler: instrumentAdmission("validate", handler.Validate)})
 	server.Register(DefaultingPath, &admission.Webhook{Handler: instrumentAdmission("default", handler.DefaultAgent)})
+	if config.CetiAdmin != nil {
+		cetiAdmin, err := NewCetiAdminHandler(manager.GetAPIReader(), config)
+		if err != nil {
+			return err
+		}
+		server.Register(CetiAdminValidationPath, &admission.Webhook{Handler: instrumentAdmission("cetiadmin", cetiAdmin.Validate)})
+	}
 	if options.PodStateNamespace != "" {
 		podHandler, err := NewPodHandler(manager.GetAPIReader(), PodConfig{
 			StateNamespace: options.PodStateNamespace, RequestTimeout: options.PodRequestTimeout,

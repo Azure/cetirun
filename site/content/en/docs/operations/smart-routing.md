@@ -105,8 +105,10 @@ platform:
 `make deploy` needs the entries `decision-1` and `auto` in this form. `auto`
 must be a router with a `jev` classifier, `deployment_name: decision-1`, and
 all four tiers. `decision-1` uses LiteLLM's `azure_ai` provider,
-Microsoft-Decision-1 as its `base_model`, and `mode: evaluation`. `base_model`
-gives each model LiteLLM's price for that model. The
+`azure_ai/Microsoft-Decision-1` as its `base_model`, and `mode: evaluation`.
+`base_model` gives each model LiteLLM's price for that model. Without the
+`azure_ai/` prefix, LiteLLM finds no price for Microsoft-Decision-1, the
+operator does not offer the classifier, and `auto` does not work. The
 [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#pricing-a-deployment)
 shows how to set a price yourself.
 
@@ -228,11 +230,14 @@ models, `auto` included. To examine `auto` without a policy-bound Team, keep
 **(none)** as the Team, and select `auto` as the default model.
 
 The Agent's page lists the routers among its models, or it shows why the Agent
-cannot use a router. For a Team router, OpenClaw shows the router's name, and
-Hermes shows the internal name. For a Team router, each Agent is configured
-with the smallest context window and output limit among the tier models. For a
-Gateway router, the Agent gets the limits in the router's `model_info`, as in
-step 1. With these limits, a request fits every tier.
+cannot use a router. OpenClaw and Hermes show the router's name. Each Agent is
+configured with the smallest context window and output limit among the
+router's tier models. For a Gateway router, this includes its default model,
+unless the router sets its own limits in `model_info`. With these limits, a
+request fits every tier.
+
+The Agent sends images to a router only when every model that the router sends
+requests to accepts images. Refer to [Images](../../guides/models/#images).
 
 ## 5. Check where requests go
 
@@ -253,7 +258,7 @@ kubectl logs -n cetirun-system -c gateway --since=15m --tail=-1 \
 | Field | Meaning |
 | --- | --- |
 | `model` | The name of the router, or `cetirun-router-<hash>` for a Team's router. The Team's `status.modelRouters[].gatewayModel` shows this name |
-| `routing_cause` | What made the decision. `llm_classifier` or `jev_classifier` is for a model classifier. `heuristic_scorer` or `reasoning_override` is for the local scorer. On a router with an `llm` classifier, these two values mean that the classifier failed. `default_model_fallback` means that a `jev` classification failed. The request then went to the router's default model, and the line has no `routing_tier` |
+| `routing_cause` | What made the decision. `llm_classifier` or `jev_classifier` is for a model classifier. `heuristic_scorer` or `reasoning_override` is for the local scorer. On a router with an `llm` classifier, these two values mean that the classifier failed. `default_model_fallback` means that a `jev` classification failed. The request then went to the router's default model, and the line has no `routing_tier`. `health_failover` and `health_default_fallback` mean that the model of the tier had no healthy deployment. The request then went to another model of the router's tiers, or to the router's default model |
 | `routing_tier` | The tier that the router selected |
 | `provider_model` | The deployment that answered, such as `azure/my-gpt-deployment` |
 | `spend` | What the request cost |
@@ -265,6 +270,17 @@ The queries show the share of each tier, its spend, and its latency. A client
 that calls the Gateway with its own key also gets the tier in response headers.
 See
 [Calling the Gateway]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#calling-the-gateway).
+
+### When a tier fails
+
+The model of a tier can fail, for example when the GitHub Copilot proxy of an
+Agent is down. The Gateway then sends the request to the router's other models:
+first the other models of the tier, then the higher tiers, then the router's
+default model, and then the lower tiers. It uses only the models that the
+Agent's key can use. In the log, the tier's line has the status `failure`. The
+line of the model that answered has `fallback_from`, which names the router.
+The error that the Agent gets when every model fails does not contain the
+router's internal name.
 
 ## Choose a classifier
 
@@ -326,6 +342,9 @@ models, as `auto` in step 1. Every Agent Policy that lists the router's name,
 its tier models, and its default model grants the router. An Agent without a
 Team gets the router when all of these models are shared models. A change
 needs a `make deploy` run, and it reaches Agents within about two minutes.
+Each Agent that gets the router is configured with the smallest context window
+and output limit among its tier models and its default model. If the router
+sets its own limits in `model_info`, the Agent gets these limits.
 
 Microsoft-Decision-1 is deployed in an Azure AI Foundry resource, not in an
 Azure OpenAI resource. It is reached with LiteLLM's `azure_ai` provider. Its

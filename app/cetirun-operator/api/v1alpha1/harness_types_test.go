@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -86,8 +85,7 @@ func TestNativeSandboxExampleUsesSupportedContract(t *testing.T) {
 
 func TestCreationExamplesDefaultToHermes(t *testing.T) {
 	for _, path := range []string{
-		"../../../adminclaw/deploy/agent-admin.yaml",
-		"../../../adminclaw/skills/adminclaw/references/crd-reference.md",
+		"../../internal/cetiadmin/assets/skills/cetiadmin/references/crd-reference.md",
 		"../../test/config/sample-alice.yaml",
 		"../../test/config/sample-bob.yaml",
 		"../../test/config/sample-team.yaml",
@@ -136,16 +134,6 @@ func TestCreationExamplesDefaultToHermes(t *testing.T) {
 			}
 		})
 	}
-	t.Run("lifecycle walkthrough", func(t *testing.T) {
-		raw, err := os.ReadFile("../../../adminclaw/skills/adminclaw/references/instance-lifecycle.md")
-		if err != nil {
-			t.Fatal(err)
-		}
-		matches := regexp.MustCompile(`(?m)^\s+type:\s+(\w+)`).FindAllSubmatch(raw, -1)
-		if len(matches) != 1 || string(matches[0][1]) != "hermes" {
-			t.Fatal("lifecycle creation walkthrough must select hermes")
-		}
-	})
 }
 
 func TestAgentSerialization(t *testing.T) {

@@ -5,14 +5,12 @@ package registryauth
 
 import (
 	"context"
-	"reflect"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -50,23 +48,21 @@ func terminalExecBound(ctx context.Context, c client.Client, agent *api.Agent) b
 		c.Get(ctx, client.ObjectKey{Name: policyName}, binding) != nil || !owned(binding) {
 		return false
 	}
-	spec := policy.Spec
-	match := spec.MatchConstraints
-	if spec.FailurePolicy == nil || *spec.FailurePolicy != admissionv1.Fail || spec.ParamKind != nil ||
-		len(spec.Variables) != 0 || match == nil || len(match.ExcludeResourceRules) != 0 ||
-		!reflect.DeepEqual(match.NamespaceSelector, &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": namespace}}) ||
-		match.ObjectSelector != nil && (len(match.ObjectSelector.MatchLabels) != 0 || len(match.ObjectSelector.MatchExpressions) != 0) ||
-		len(match.ResourceRules) != 1 || len(spec.Validations) != 1 ||
-		spec.Validations[0].Expression != terminalpolicy.AdmissionExpression(namespace, workload+"-0", "cetirun", name, string(agent.UID)) ||
-		!reflect.DeepEqual(spec.MatchConditions, []admissionv1.MatchCondition{{Name: "exclude-adminclaw", Expression: `request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"`}}) {
-		return false
+	var admin *ExecAdminBinding
+	if raw, present := agent.Annotations[ExecAdminBindingAnnotation]; present {
+		expected, err := ParseExecAdminBinding(raw, agent.UID, ns.UID)
+		if err != nil || agent.Spec.SandboxRef != "" || agent.Status.Sandbox != nil {
+			return false
+		}
+		if agent.Spec.Team != "" {
+			team := &api.Team{}
+			if c.Get(ctx, client.ObjectKey{Name: agent.Spec.Team}, team) != nil || team.UID == "" ||
+				!team.DeletionTimestamp.IsZero() || team.Spec.PolicyConfigured() {
+				return false
+			}
+		}
+		admin = &expected
 	}
-	rule := match.ResourceRules[0]
-	if len(rule.ResourceNames) != 0 || !reflect.DeepEqual(rule.APIGroups, []string{""}) || !reflect.DeepEqual(rule.APIVersions, []string{"v1"}) ||
-		!reflect.DeepEqual(rule.Resources, []string{"pods/exec"}) || !reflect.DeepEqual(rule.Operations, []admissionv1.OperationType{admissionv1.Connect}) ||
-		rule.Scope != nil && *rule.Scope != admissionv1.AllScopes && *rule.Scope != admissionv1.NamespacedScope {
-		return false
-	}
-	return binding.Spec.PolicyName == policyName && binding.Spec.ParamRef == nil && binding.Spec.MatchResources == nil &&
-		reflect.DeepEqual(binding.Spec.ValidationActions, []admissionv1.ValidationAction{admissionv1.Deny})
+	return ExecPolicyMatches(policy, binding, namespace,
+		terminalpolicy.AdmissionExpression(namespace, workload+"-0", "cetirun", name, string(agent.UID)), admin)
 }

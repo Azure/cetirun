@@ -24,6 +24,7 @@ func runtimeRequest(instance *api.Agent, registry string) map[string]any {
 	request := map[string]any{
 		"type": string(agent.Type), "registry": registry, "uiPrefix": "/ui/" + instance.Name,
 		"tailscaleEnabled": instance.Spec.Tailscale != nil,
+		"releaseName":      helmReleaseName(instance.Name),
 	}
 	if agent.Image != nil {
 		request["image"] = *agent.Image
@@ -67,7 +68,7 @@ func agentConfigMessage(ctx context.Context, err error) string {
 // User and deployment overrides cannot inject a prepared plan or replace its
 // primary image/port. Unrelated deployment settings keep their existing scope.
 func validateRuntimeOverrides(values map[string]any, agentType string) error {
-	for _, key := range []string{"runtime", "agentRequest", "imagePullSecrets", "customBindings", "memoryContext"} {
+	for _, key := range []string{"runtime", "agentRequest", "imagePullSecrets", "customBindings", "memoryContext", "cetiadmin"} {
 		if _, ok := values[key]; ok {
 			return fmt.Errorf("helm.values.%s is reserved for the platform", key)
 		}
@@ -104,7 +105,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 		for _, item := range extraEnv {
 			entry, _ := item.(map[string]any)
 			name, _ := entry["name"].(string)
-			if name == "CETIRUN_AGENT_BROKER_URL" || name == "CETIRUN_CONNECTIONS_MCP_URL" || name == "SSL_CERT_FILE" || name == "NODE_EXTRA_CA_CERTS" || strings.HasPrefix(name, "CETIRUN_MEMORY_") {
+			if name == "CETIRUN_AGENT_BROKER_URL" || name == "CETIRUN_CONNECTIONS_MCP_URL" || name == "SSL_CERT_FILE" || name == "NODE_EXTRA_CA_CERTS" || strings.HasPrefix(name, "CETIRUN_MEMORY_") || strings.HasPrefix(name, "CETIADMIN_") || name == "KUBECONFIG" {
 				return fmt.Errorf("helm.values.extraEnv contains a platform-reserved environment variable")
 			}
 		}
@@ -140,6 +141,25 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 }
 
 func (r *AgentReconciler) prepareAgent(instance *api.Agent, team *api.Team) (*helm.PreparedRelease, error) {
+	values, err := r.agentPreparationValues(instance, team)
+	if err != nil {
+		return nil, err
+	}
+	return r.HelmClient.Prepare(instanceNamespace(instance.Name), values, instance.Spec.Helm.Version)
+}
+
+func (r *AgentReconciler) prepareRuntimeAgent(ctx context.Context, instance *api.Agent, team *api.Team) (*helm.PreparedRelease, error) {
+	values, err := r.agentPreparationValues(instance, team)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.applyCetiAdminValues(ctx, instance, values); err != nil {
+		return nil, err
+	}
+	return r.HelmClient.Prepare(instanceNamespace(instance.Name), values, instance.Spec.Helm.Version)
+}
+
+func (r *AgentReconciler) agentPreparationValues(instance *api.Agent, team *api.Team) (map[string]any, error) {
 	values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
 	if err != nil {
 		return nil, err
@@ -159,7 +179,30 @@ func (r *AgentReconciler) prepareAgent(instance *api.Agent, team *api.Team) (*he
 		}
 	}
 	values["memoryOptions"] = r.memoryOptions()
-	return r.HelmClient.Prepare(instanceNamespace(instance.Name), values, instance.Spec.Helm.Version)
+	return values, nil
+}
+
+func (r *AgentReconciler) applyCetiAdminValues(ctx context.Context, instance *api.Agent, values map[string]any) error {
+	if r.CetiAdmin == nil {
+		return nil
+	}
+	binding, managed, err := r.CetiAdmin.BindingForAgent(ctx, instance)
+	if !managed {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	projection, err := binding.RuntimeProjection(r.CetiAdmin.OperatorImageReference(), r.ConnectionsMCPAudience)
+	if err != nil {
+		return err
+	}
+	request, ok := values["agentRequest"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("CetiAdmin requires a prepared Agent request")
+	}
+	request["cetiadmin"] = projection
+	return applyCetiAdminNetwork(values, projection.Kubernetes)
 }
 
 // pinAgentDefaults changes only omitted fields. The reconciler writes this with

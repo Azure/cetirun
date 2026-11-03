@@ -94,10 +94,11 @@ export function TeamModelRoutersSection({ routers, status, sharedModels, decisio
     <section aria-label="Smart routing" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <Text size={400} weight="semibold">Smart routing</Text>
       <Text size={300}>
-        Each smart-routing model is a model name members can choose, such as auto. The AI Gateway classifies each request and
-        sends it to the model of its tier. Tiers name shared models, or copilot/&lt;model&gt; for a GitHub Copilot model, which
-        an Agent can use once its owner has signed in to GitHub Copilot. An Agent gets a router only when it may use every model
-        the router uses; with an Agent Policy, also list the router's name in the Policy's allowed shared models.
+        Each smart-routing model is a model name members can choose, such as auto-team. It cannot be the name of a shared
+        model, such as the Gateway's own router auto. The AI Gateway classifies each request and sends it to the model of its
+        tier. Tiers name shared models, or copilot/&lt;model&gt; for a GitHub Copilot model, which an Agent can use once its
+        owner has signed in to GitHub Copilot. An Agent gets a router only when it may use every model the router uses; with
+        an Agent Policy, also list the router's name in the Policy's allowed shared models.
       </Text>
       <datalist id={listId}>
         {sharedModels.map((model) => <option key={model} value={model} />)}
@@ -110,8 +111,8 @@ export function TeamModelRoutersSection({ routers, status, sharedModels, decisio
         return (
           <div key={index} role="group" aria-label={`Smart-routing model ${index + 1}`}
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: 12, border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: 4 }}>
-            <Field label="Model name" required hint="The name members choose, e.g. auto.">
-              <Input value={router.name} onChange={(_, data) => update(index, { name: data.value })} placeholder="auto" />
+            <Field label="Model name" required hint="The name members choose, e.g. auto-team. It cannot be the name of a shared model.">
+              <Input value={router.name} onChange={(_, data) => update(index, { name: data.value })} placeholder="auto-team" />
             </Field>
             <Field label="Classifier"
               hint="Heuristic scores requests locally. A shared model or a decision model, such as Microsoft-Decision-1, classifies each request, charged to the Agent.">
