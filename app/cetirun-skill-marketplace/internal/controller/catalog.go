@@ -143,6 +143,19 @@ func (c *Catalog) RemoveTeam(uid string) {
 	}
 }
 
+// RemoveTeamNamed forgets every Team with this name. Callers use it when no
+// Team of the name exists any more, so its UID is no longer known.
+func (c *Catalog) RemoveTeamNamed(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for uid, team := range c.teams {
+		if team.Name == name {
+			delete(c.teams, uid)
+			c.markDirty()
+		}
+	}
+}
+
 // Synced reports whether a repository commit is known.
 func (c *Catalog) Synced() bool {
 	c.mu.Lock()

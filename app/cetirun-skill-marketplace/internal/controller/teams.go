@@ -47,6 +47,9 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, req reconcile.Request) (
 	team := &api.Team{}
 	if err := r.Client.Get(ctx, req.NamespacedName, team); err != nil {
 		if apierrors.IsNotFound(err) {
+			// The Team is deleted. Its releases stay for GCGrace, but the
+			// catalog stops listing it now.
+			r.Catalog.RemoveTeamNamed(req.Name)
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err

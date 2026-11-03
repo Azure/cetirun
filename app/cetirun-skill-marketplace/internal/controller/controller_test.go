@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/publish"
@@ -115,6 +116,44 @@ func TestTeamWaitsForTheFirstSync(t *testing.T) {
 	}
 	if id, _, _ := publisher.ReadCurrent("00000000-0000-4000-8000-000000000001"); id != "" {
 		t.Fatalf("nothing may be published before the first sync")
+	}
+}
+
+func TestADeletedTeamLeavesTheCatalogAtOnce(t *testing.T) {
+	publisher := &publish.Publisher{Root: t.TempDir()}
+	if err := publisher.Init(); err != nil {
+		t.Fatal(err)
+	}
+	team := policyTeam("research", "00000000-0000-4000-8000-000000000001", "pdf-tools")
+	other := policyTeam("support", "00000000-0000-4000-8000-000000000002", "pdf-tools")
+	kube := newClient(t, team, other)
+	store := &Store{}
+	store.set("c1", []skills.Skill{repoSkill("pdf-tools", "0123456789ab", "pdf")})
+	catalog := NewCatalog(kube, kube, "cetirun-system", api.SkillMarketplaceRepository{})
+	r := &TeamReconciler{Client: kube, Publisher: publisher, Store: store, Catalog: catalog, GCGrace: time.Hour}
+	ctx := context.Background()
+	for _, name := range []string{"research", "support"} {
+		if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := kube.Delete(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "research"}}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := catalog.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document api.SkillMarketplaceCatalog
+	if err := json.Unmarshal(raw, &document); err != nil || len(document.Teams) != 1 || document.Teams[0].Name != "support" {
+		t.Fatalf("the deleted Team must leave the catalog: %s %v", raw, err)
+	}
+	// Its releases stay until the grace period ends.
+	if id, _, _ := publisher.ReadCurrent(string(team.UID)); id == "" {
+		t.Fatalf("the deleted Team's releases must stay for the grace period")
 	}
 }
 
