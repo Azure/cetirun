@@ -274,7 +274,7 @@ func (r *AgentReconciler) copilotTierSharedNames() func(id string) string {
 		return func(string) string { return "" }
 	}
 	r.aiGatewayPrices.mu.Lock()
-	priced := r.aiGatewayPrices.priced
+	priced := r.aiGatewayPrices.table.Priced
 	r.aiGatewayPrices.mu.Unlock()
 	byReal := copilotSharedNamesByReal(view, priced)
 	return func(id string) string {

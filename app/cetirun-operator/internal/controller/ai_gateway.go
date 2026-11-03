@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -196,7 +197,7 @@ type aiGatewayKeyClient interface {
 	BlockUnpricedModels(context.Context) (bool, error)
 	AddModel(context.Context, aigateway.ModelRequest) error
 	DeleteModel(context.Context, string) error
-	PricedModels(context.Context) (map[string]bool, error)
+	PriceTable(context.Context) (aigateway.PriceTable, error)
 	UpdateKeyAliases(context.Context, string, map[string]string) error
 }
 
@@ -441,6 +442,9 @@ const (
 	// aiGatewayChartSignInValue identifies the sign-in whose models the Agent
 	// uses on the proxy's Pod template; older charts do not declare it.
 	aiGatewayChartSignInValue = "signInGeneration"
+	// aiGatewayChartVisionValue lists the models the Agent can send images
+	// to; older charts do not declare it, and would reject it.
+	aiGatewayChartVisionValue = "visionModels"
 )
 
 // chartValuePaths is the part of a prepared release that reports the values
@@ -1389,6 +1393,35 @@ func (r *AgentReconciler) applyCopilotChartValues(values map[string]any, instanc
 	}
 }
 
+// applyAIGatewayVisionModels tells a chart that takes it which of the Agent's
+// models accept images, so the harness sends images with a request to them
+// instead of having another model describe them. A model counts only when
+// every model the Agent's requests for it may reach accepts images
+// (aiGatewayModelEntries). The list is empty rather than absent when none
+// does, which keeps the release's values in one form.
+func (r *AgentReconciler) applyAIGatewayVisionModels(values map[string]any, instance *cetirunv1alpha1.Agent, prepared chartValuePaths) {
+	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartVisionValue) {
+		return
+	}
+	gateway, _ := values[aiGatewayChartValue].(map[string]any)
+	if gateway == nil {
+		return
+	}
+	entries, _, _ := r.aiGatewayModelEntries(instance)
+	ids := []string{}
+	for _, entry := range entries {
+		if entry.Vision {
+			ids = append(ids, entry.ID)
+		}
+	}
+	slices.Sort(ids)
+	vision := make([]any, 0, len(ids))
+	for _, id := range slices.Compact(ids) {
+		vision = append(vision, id)
+	}
+	gateway[aiGatewayChartVisionValue] = vision
+}
+
 // applyCopilotResponsesModels tells the proxy which registered models need
 // the Responses API bridge for chat-completion requests.
 func (r *AgentReconciler) applyCopilotResponsesModels(values map[string]any, instance *cetirunv1alpha1.Agent) {
@@ -1502,7 +1535,13 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 		if r.aiGatewayCopilotActive(instance) {
 			var routes []string
 			for _, route := range copilotRoutes(status.Copilot) {
-				routes = append(routes, route.Model+"="+route.Name)
+				part := route.Model + "=" + route.Name
+				// A route that accepts images lets the Agent send them under
+				// its name.
+				if route.Vision {
+					part += ":vision"
+				}
+				routes = append(routes, part)
 			}
 			// copilot-names: Copilot models are named by their Gateway
 			// name, not GitHub's display name; Agents configured with the
@@ -1535,11 +1574,24 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 			models = append(models, fmt.Sprintf("%s:%d:%d", model.Name, model.ContextWindow, model.MaxOutputTokens))
 		}
 		parts = append(parts, "shared", strings.Join(models, ","))
+		// Which models accept images reaches the Agent's configuration too,
+		// with a chart that takes it. A router's value follows from those of
+		// the models it uses (fillRouterVision), so it changes with them.
+		var vision []string
+		for _, model := range shared {
+			if model.Vision {
+				vision = append(vision, model.Name)
+			}
+		}
+		if len(vision) > 0 {
+			parts = append(parts, "vision", strings.Join(vision, ","))
+		}
 		// The limits of each router configured in the Gateway that the Agent
 		// is configured with, lowered by the Agent's Copilot routes under its
 		// models' names, as in its configuration.
 		if entitled, ok := r.aiGatewayEntitledShared(instance); ok {
-			folds := r.aiGatewayRouterLimitFolds(instance, entitled, r.aiGatewayConfiguredCopilotRoutes(instance))
+			routes := r.aiGatewayConfiguredCopilotRoutes(instance)
+			folds := r.aiGatewayRouterLimitFolds(instance, entitled, routes)
 			var limits []string
 			for _, model := range entitled {
 				if _, isRouter := gatewayRouters[model.Name]; !isRouter {
@@ -1553,6 +1605,10 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 			}
 			if len(limits) > 0 {
 				parts = append(parts, "gateway-router-limits", strings.Join(limits, ","))
+			}
+			// The routers that accept images, but not for this Agent.
+			if visionFolds := r.aiGatewayRouterVisionFolds(entitled, routes); len(visionFolds) > 0 {
+				parts = append(parts, "gateway-router-vision", strings.Join(slices.Sorted(maps.Keys(visionFolds)), ","))
 			}
 		}
 	}

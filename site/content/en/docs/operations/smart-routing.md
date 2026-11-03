@@ -230,6 +230,9 @@ router's tier models. For a Gateway router, this includes its default model,
 unless the router sets its own limits in `model_info`. With these limits, a
 request fits every tier.
 
+The Agent sends images to a router only when every model that the router sends
+requests to accepts images. Refer to [Images](../../guides/models/#images).
+
 ## 5. Check where requests go
 
 Send a short question to the Agent. Then send a request for a design or a proof.

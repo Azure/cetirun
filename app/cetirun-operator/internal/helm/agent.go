@@ -318,6 +318,10 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 			ContextWindow: integer(model["contextWindow"]), MaxTokens: integer(model["maxTokens"]),
 		})
 	}
+	var visionModels []string
+	for _, item := range array(gateway["visionModels"]) {
+		visionModels = append(visionModels, text(item))
+	}
 	bindings := agents.Bindings{
 		MemoryEnabled:     (values[sandboxworkload.ValuesKey] == nil || object(values[sandboxworkload.ValuesKey])["reconciled"] == true) && object(values["memoryContext"])["enabled"] == true,
 		DesktopEnabled:    object(values["desktop"])["enabled"] == true,
@@ -329,13 +333,14 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		ReconciledSandbox: object(values[sandboxworkload.ValuesKey])["reconciled"] == true,
 		ConnectionsMCP:    agents.ConnectionsMCPBinding{Enabled: object(values["connectionsMCP"])["enabled"] == true, URL: text(object(values["connectionsMCP"])["url"])},
 		Model: agents.ModelBinding{
-			Provider:      provider,
-			Name:          text(secrets["model"]),
-			BaseURL:       text(secrets["apiBase"]),
-			AuthMode:      text(secrets["authMode"]),
-			Gateway:       gateway["enabled"] == true,
-			GatewayModels: gatewayModels,
-			GatewayKeyEnv: text(object(gateway["hermes"])["keyEnv"]),
+			Provider:            provider,
+			Name:                text(secrets["model"]),
+			BaseURL:             text(secrets["apiBase"]),
+			AuthMode:            text(secrets["authMode"]),
+			Gateway:             gateway["enabled"] == true,
+			GatewayModels:       gatewayModels,
+			GatewayKeyEnv:       text(object(gateway["hermes"])["keyEnv"]),
+			GatewayVisionModels: visionModels,
 		},
 		Skills: agents.SkillsBinding{
 			Shared:    skills["shared"] == true,

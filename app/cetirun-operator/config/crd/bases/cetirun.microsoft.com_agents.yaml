@@ -586,6 +586,13 @@ spec:
                                 the Agent's requests for it from the shared model's deployments and
                                 from this Copilot model.
                               type: boolean
+                            vision:
+                              description: |-
+                                Vision reports that the model accepts images, as the Gateway's price
+                                table says for the entry the route is billed as. The Agent is
+                                configured to send images to Name only when every model behind Name
+                                accepts them.
+                              type: boolean
                           required:
                           - model
                           - name
@@ -685,6 +692,13 @@ spec:
                         reason:
                           description: Reason explains why the router is not granted.
                           type: string
+                        vision:
+                          description: |-
+                            Vision reports that the Agent is configured to send images to the
+                            router: every model that the router sends requests to answer accepts
+                            them. The Agent's own GitHub Copilot routes under the names of these
+                            models count too.
+                          type: boolean
                       required:
                       - granted
                       - name
