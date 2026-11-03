@@ -164,6 +164,34 @@ spec:
               helm:
                 description: Helm chart configuration overrides.
                 properties:
+                  maintenance:
+                    description: |-
+                      Maintenance requests a Helm handoff while the Agent is suspended.
+                      The controller and admission verify the handoff before native writes.
+                    properties:
+                      expectedRevision:
+                        description: ExpectedRevision is the positive Helm revision
+                          observed before the request.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      requestID:
+                        description: RequestID correlates this request with the controller's
+                          handoff status.
+                        maxLength: 128
+                        minLength: 16
+                        pattern: ^[A-Za-z0-9_-]+$
+                        type: string
+                    required:
+                    - expectedRevision
+                    - requestID
+                    type: object
+                    x-kubernetes-validations:
+                    - fieldPath: .expectedRevision
+                      message: a Helm maintenance request ID cannot change its expected
+                        revision
+                      rule: self.requestID != oldSelf.requestID || self.expectedRevision
+                        == oldSelf.expectedRevision
                   values:
                     additionalProperties:
                       type: object
@@ -377,6 +405,15 @@ spec:
               rule: '!has(self.plannedMigration) || !has(oldSelf.plannedMigration)
                 || self.plannedMigration.requestID != oldSelf.plannedMigration.requestID
                 || self.plannedMigration == oldSelf.plannedMigration'
+            - fieldPath: .helm.maintenance
+              message: a Helm maintenance request requires suspension
+              rule: '!has(self.helm) || !has(self.helm.maintenance) || (has(self.suspended)
+                && self.suspended)'
+            - fieldPath: .suspended
+              message: clearing Helm maintenance must retain suspension; resume is
+                a separate update
+              rule: '!has(oldSelf.helm) || !has(oldSelf.helm.maintenance) || (has(self.helm)
+                && has(self.helm.maintenance)) || (has(self.suspended) && self.suspended)'
           status:
             description: AgentStatus defines the observed state of Agent.
             properties:
@@ -538,6 +575,13 @@ spec:
                                 the Agent's requests for it from the shared model's deployments and
                                 from this Copilot model.
                               type: boolean
+                            vision:
+                              description: |-
+                                Vision reports that the model accepts images, as the Gateway's price
+                                table says for the entry the route is billed as. The Agent is
+                                configured to send images to Name only when every model behind Name
+                                accepts them.
+                              type: boolean
                           required:
                           - model
                           - name
@@ -597,12 +641,24 @@ spec:
                         was granted it, and if not why. A router is granted only when the Agent may
                         use every model it sends requests to.
                       properties:
+                        alias:
+                          description: |-
+                            Alias is the router's name when the Agent's key also reaches a Team's
+                            router under it, through a key alias the operator keeps for each
+                            granted Team router. A Hermes Agent is configured with the router under
+                            this name. Empty when another model the key reaches, such as one of the
+                            Agent's GitHub Copilot models or an alias that an administrator set,
+                            has the name; the Agent then uses the internal name.
+                          type: string
                         contextWindow:
                           description: |-
-                            ContextWindow and MaxTokens are, for a Team router, the smallest limits
-                            among its tier models that the Gateway reports, which the Agent is
-                            configured with. A router configured in the Gateway has the limits the
-                            Gateway reports for it.
+                            ContextWindow and MaxTokens are the limits the Agent is configured with
+                            for the router. They are the smallest known limits of the models that
+                            the router sends requests to: its tier models and, for a router
+                            configured in the Gateway, its default model. The Agent's own GitHub
+                            Copilot routes under the names of these models count too. For a router
+                            configured in the Gateway, limits that the router itself sets replace
+                            those of its models.
                           format: int64
                           type: integer
                         granted:
@@ -625,6 +681,13 @@ spec:
                         reason:
                           description: Reason explains why the router is not granted.
                           type: string
+                        vision:
+                          description: |-
+                            Vision reports that the Agent is configured to send images to the
+                            router: every model that the router sends requests to answer accepts
+                            them. The Agent's own GitHub Copilot routes under the names of these
+                            models count too.
+                          type: boolean
                       required:
                       - granted
                       - name
@@ -744,6 +807,55 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              helmMaintenance:
+                description: |-
+                  HelmMaintenance records the controller's observation of a Helm handoff.
+                  A stored phase alone is not proof of current write or resume authority.
+                properties:
+                  message:
+                    description: Message explains the current observation for an operator.
+                    maxLength: 32768
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      ObservedGeneration is the Agent generation observed for this handoff.
+                      Zero means no generation has been observed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  phase:
+                    description: Phase reports the handoff state observed by the controller.
+                    enum:
+                    - Requested
+                    - Held
+                    - Reapplying
+                    - Released
+                    - Blocked
+                    type: string
+                  reason:
+                    description: Reason is a short programmatic explanation of the
+                      current phase.
+                    maxLength: 1024
+                    type: string
+                  requestID:
+                    description: RequestID identifies the request whose progress is
+                      recorded here.
+                    maxLength: 128
+                    minLength: 16
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  revision:
+                    description: Revision is the last observed Helm revision; zero
+                      means not yet observed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                required:
+                - observedGeneration
+                - phase
+                - requestID
+                - revision
+                type: object
               helmReleaseName:
                 description: HelmReleaseName is the Helm release name for this instance.
                 type: string

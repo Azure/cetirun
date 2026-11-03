@@ -94,6 +94,10 @@ type ModelBinding struct {
 	// variable in Hermes' containers, so Hermes' configuration must name the
 	// same one. Empty for charts that do not declare it.
 	GatewayKeyEnv string
+	// GatewayVisionModels are the IDs of the GatewayModels that accept
+	// images (aiGateway.visionModels). Empty for charts that do not declare
+	// the value.
+	GatewayVisionModels []string
 }
 
 type ConnectionsMCPBinding struct {

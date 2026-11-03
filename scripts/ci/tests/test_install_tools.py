@@ -70,13 +70,14 @@ class InstallerTests(unittest.TestCase):
         spec.update(overrides)
         return spec
 
-    def install(self, manifest=None, names=("envtest",), fetch=None):
+    def install(self, manifest=None, names=("envtest",), fetch=None,
+                *, arch=None, machine="x86_64"):
         self.manifest.write_text(json.dumps(manifest or {"envtest": self.spec()}))
         stderr = io.StringIO()
         with (
             patch.object(install_tools, "MANIFEST", self.manifest),
             patch.object(install_tools.platform, "system", return_value="Linux"),
-            patch.object(install_tools.platform, "machine", return_value="x86_64"),
+            patch.object(install_tools.platform, "machine", return_value=machine),
             patch.object(
                 install_tools,
                 "urlopen",
@@ -85,11 +86,84 @@ class InstallerTests(unittest.TestCase):
             redirect_stdout(io.StringIO()),
             redirect_stderr(stderr),
         ):
-            result = install_tools.main(["--bin-dir", str(self.destination), *names])
+            options = [] if arch is None else ["--arch", arch]
+            result = install_tools.main(["--bin-dir", str(self.destination), *options, *names])
         return result, download, stderr.getvalue()
 
     def assert_no_outputs(self):
         self.assertFalse(self.destination.exists())
+
+    def test_explicit_arch_selects_locked_helm_pin_and_member(self):
+        manifest = json.loads(install_tools.MANIFEST.read_text())
+        spec = manifest["helm"]
+        for arch, machine in (("amd64", "aarch64"), ("arm64", "x86_64")):
+            with self.subTest(arch=arch, machine=machine):
+                self.assertEqual(
+                    install_tools.plan(
+                        manifest, ["helm"], self.destination, "Linux", machine,
+                        arch=arch,
+                    ),
+                    [(self.destination / "helm", spec["url"].format(arch=arch),
+                      spec["sha256"][arch], spec["member"].format(arch=arch))],
+                )
+
+    def test_cross_arch_cli_installs_only_target_helm(self):
+        archives = {
+            arch: archive_bytes([(f"linux-{arch}/helm", f"synthetic Helm {arch}".encode())])
+            for arch in ("amd64", "arm64")
+        }
+        manifest = {"helm": {
+            "url": "https://example.com/helm-linux-{arch}.tar.gz",
+            "member": "linux-{arch}/helm",
+            "sha256": {arch: hashlib.sha256(data).hexdigest() for arch, data in archives.items()},
+        }}
+        for arch, machine in (("amd64", "aarch64"), ("arm64", "x86_64")):
+            with self.subTest(arch=arch, machine=machine):
+                self.destination = self.root / arch
+                result, download, error = self.install(
+                    manifest, ("helm",), lambda *a, **kw: Download(archives[arch]),
+                    arch=arch, machine=machine,
+                )
+                self.assertEqual(result, 0, error)
+                download.assert_called_once_with(
+                    f"https://example.com/helm-linux-{arch}.tar.gz", timeout=45
+                )
+                self.assertEqual(list(self.destination.iterdir()), [self.destination / "helm"])
+                self.assertEqual((self.destination / "helm").read_bytes(), f"synthetic Helm {arch}".encode())
+                self.assertEqual(stat.S_IMODE((self.destination / "helm").stat().st_mode), 0o755)
+
+    def test_explicit_arch_rejects_unsupported_values_and_non_linux(self):
+        manifest = {"envtest": self.spec()}
+        for arch, system in (("ppc64le", "Linux"), ("", "Linux"), ("arm64", "Darwin")):
+            with self.subTest(arch=arch, system=system):
+                with self.assertRaisesRegex(ValueError, "Linux amd64/arm64 only"):
+                    install_tools.plan(manifest, ["envtest"], self.destination, system,
+                                       "x86_64", arch=arch)
+        with patch.object(install_tools, "urlopen") as download, redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                install_tools.main(["--bin-dir", str(self.destination), "--arch", "ppc64le", "helm"])
+        self.assertEqual(error.exception.code, 2)
+        download.assert_not_called()
+        self.assert_no_outputs()
+
+    def test_operator_packaging_passes_target_arch_to_existing_installer(self):
+        root = Path(__file__).resolve().parents[3]
+        dockerfile = (root / "app/cetirun-operator/Dockerfile").read_text()
+        self.assertIn("ARG TARGETARCH", dockerfile)
+        self.assertIn("COPY scripts/ci/install_tools.py scripts/ci/tools.json /tools/", dockerfile)
+        self.assertIn('python3 /tools/install_tools.py --arch "${TARGETARCH}" --bin-dir /out/bin helm', dockerfile)
+        self.assertIn(
+            "COPY --from=cetiadmin-tools --chmod=0755 /out/bin/helm /usr/local/share/cetirun/cetiadmin/bin/helm",
+            dockerfile,
+        )
+        self.assertNotIn("BUILDARCH", dockerfile)
+        self.assertNotIn("get.helm.sh", dockerfile)
+        self.assertNotIn("HELM_VERSION", dockerfile)
+        runtime = dockerfile[dockerfile.rfind("\nFROM "):]
+        self.assertIn("azurelinux/distroless/base:", runtime)
+        self.assertIn("USER 65532:65532", runtime)
+        self.assertIn('ENTRYPOINT ["/manager"]', runtime)
+        self.assertNotIn("RUN ", runtime)
 
     def test_envtest_pins_and_archive_members_match_both_releases(self):
         manifest = json.loads(install_tools.MANIFEST.read_text())

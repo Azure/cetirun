@@ -133,28 +133,29 @@ func copilotBaseModel(id string, priced map[string]bool) (string, bool) {
 // the models GitHub Copilot serves, in the order they are tried.
 var copilotModelVendors = []string{"openai", "anthropic", "gemini", "xai", "mistral", "deepseek"}
 
-// aiGatewayPriceCache holds the Gateway's priced model names for an hour.
+// aiGatewayPriceCache holds what the operator reads of the Gateway's price
+// table for an hour.
 type aiGatewayPriceCache struct {
-	mu     sync.Mutex
-	at     time.Time
-	priced map[string]bool
+	mu    sync.Mutex
+	at    time.Time
+	table aigateway.PriceTable
 }
 
-func (r *AgentReconciler) pricedModels(ctx context.Context, client aiGatewayKeyClient) (map[string]bool, error) {
+func (r *AgentReconciler) priceTable(ctx context.Context, client aiGatewayKeyClient) (aigateway.PriceTable, error) {
 	r.aiGatewayPrices.mu.Lock()
 	defer r.aiGatewayPrices.mu.Unlock()
-	if r.aiGatewayPrices.priced != nil && time.Since(r.aiGatewayPrices.at) < aiGatewayPriceCacheTTL {
-		return r.aiGatewayPrices.priced, nil
+	if r.aiGatewayPrices.table.Priced != nil && time.Since(r.aiGatewayPrices.at) < aiGatewayPriceCacheTTL {
+		return r.aiGatewayPrices.table, nil
 	}
-	priced, err := client.PricedModels(ctx)
+	table, err := client.PriceTable(ctx)
 	if err != nil {
-		if r.aiGatewayPrices.priced != nil {
-			return r.aiGatewayPrices.priced, nil
+		if r.aiGatewayPrices.table.Priced != nil {
+			return r.aiGatewayPrices.table, nil
 		}
-		return nil, err
+		return aigateway.PriceTable{}, err
 	}
-	r.aiGatewayPrices.priced, r.aiGatewayPrices.at = priced, time.Now()
-	return priced, nil
+	r.aiGatewayPrices.table, r.aiGatewayPrices.at = table, time.Now()
+	return table, nil
 }
 
 // copilotRegistration is one Copilot model route the Agent should have.
@@ -162,6 +163,9 @@ type copilotRegistration struct {
 	request   aigateway.ModelRequest
 	model     cetirunv1alpha1.CopilotModel
 	placement copilotPlacement
+	// vision reports that the price table entry the route is billed as says
+	// the model accepts images, as the Gateway then reports for the route.
+	vision bool
 }
 
 // copilotRegistrationID names a route by the Agent UID, the model and a
@@ -276,11 +280,12 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	desired := map[string]copilotRegistration{}
 	var unpriced, skipped []string
 	if len(wanted) > 0 {
-		priced, err := r.pricedModels(ctx, client)
+		table, err := r.priceTable(ctx, client)
 		if err != nil {
 			degraded("PriceTableUnavailable", err)
 			return
 		}
+		priced := table.Priced
 		// Where a model goes depends on the shared models, so they must
 		// have been listed; until then the routes stay as they are.
 		if _, known := r.aiGatewayCatalog.copilotMergeSnapshot(); !known {
@@ -305,7 +310,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 				continue
 			}
 			id := copilotRegistrationID(instance, model.ID, copilotRevision(append([]string{format, proxyURL, proxyKey, base}, copilotPlacementRevision(placement)...)...))
-			desired[id] = copilotRegistration{model: model, placement: placement, request: aigateway.ModelRequest{
+			desired[id] = copilotRegistration{model: model, placement: placement, vision: table.Vision[base], request: aigateway.ModelRequest{
 				ID: id, ModelName: placement.name, Model: "litellm_proxy/" + model.ID,
 				APIBase: proxyURL, APIKey: proxyKey, AccessGroups: []string{copilot.AccessGroup}, BaseModel: base,
 				Routing: placement.routing, NoCooldown: !placement.shared, ProbeWithoutRetries: true,
@@ -363,6 +368,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 		names = append(names, registration.request.ModelName)
 		routes = append(routes, cetirunv1alpha1.AIGatewayCopilotRoute{
 			Model: registration.model.ID, Name: registration.request.ModelName, Shared: registration.placement.shared,
+			Vision: registration.vision,
 		})
 	}
 	for _, id := range ids {
@@ -564,6 +570,50 @@ type aiGatewayModelEntry struct {
 	Name          string
 	ContextWindow int64
 	MaxTokens     int64
+	// Vision reports that every model the Agent's requests for the entry
+	// may reach accepts images, so the Agent can send them with a request.
+	Vision bool
+}
+
+// aiGatewayCopilotRouteVision reports, by the Gateway name each of the
+// Agent's registered Copilot routes is registered under, whether every route
+// of that name accepts images.
+func aiGatewayCopilotRouteVision(routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string]bool {
+	vision := map[string]bool{}
+	for _, route := range routes {
+		if accepts, seen := vision[route.Name]; !seen || accepts {
+			vision[route.Name] = route.Vision
+		}
+	}
+	return vision
+}
+
+// aiGatewayRouterVisionFolds are the routers configured in the Gateway, among
+// the given shared models, that accept images (fillRouterVision) but not for
+// this Agent: a request the Agent sends through one may reach its own Copilot
+// route registered under the name of a model the router sends requests to
+// answer, and such a route does not accept them. The configuration hash
+// covers the result (aiGatewayRevision).
+func (r *AgentReconciler) aiGatewayRouterVisionFolds(shared []aiGatewayCatalogModel, routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string]bool {
+	routeVision := aiGatewayCopilotRouteVision(routes)
+	if len(routeVision) == 0 {
+		return nil
+	}
+	gatewayRouters := r.aiGatewayCatalog.sharedRouters().routers
+	folds := map[string]bool{}
+	for _, model := range shared {
+		router, isRouter := gatewayRouters[model.Name]
+		if !isRouter || !model.Vision {
+			continue
+		}
+		for _, used := range router.Models {
+			if accepts, ok := routeVision[used.Name]; ok && !accepts && used.Use != aigateway.RouterClassifier {
+				folds[model.Name] = false
+				break
+			}
+		}
+	}
+	return folds
 }
 
 // aiGatewayCopilotRouteLimits are the limits of the Agent's registered
@@ -600,11 +650,11 @@ func (r *AgentReconciler) aiGatewayConfiguredCopilotRoutes(instance *cetirunv1al
 
 // aiGatewayRouterLimitFolds are the limits of the routers configured in the
 // Gateway, among the given shared models, that the Agent's own Copilot routes
-// lower. Such a router declares the smallest limits of its models' shared
-// deployments, and a request the Agent sends through it may also reach the
-// Agent's Copilot route registered under one of those models' names. Only
-// routers whose limits change are listed: the configuration hash covers them
-// (aiGatewayRevision), and an Agent without such a route keeps its hash.
+// lower. Such a router has the smallest limits of its models' shared
+// deployments (fillRouterLimits) unless it sets its own, and a request the
+// Agent sends through it may also reach the Agent's Copilot route registered
+// under one of those models' names. Only routers whose limits change are
+// listed; the configuration hash covers the result (aiGatewayRevision).
 func (r *AgentReconciler) aiGatewayRouterLimitFolds(instance *cetirunv1alpha1.Agent, shared []aiGatewayCatalogModel, routes []cetirunv1alpha1.AIGatewayCopilotRoute) map[string][2]int64 {
 	routeLimits := aiGatewayCopilotRouteLimits(instance, routes)
 	if len(routeLimits) == 0 {
@@ -667,12 +717,17 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		models, known := r.aiGatewayEntitledShared(instance)
 		if known {
 			folds := r.aiGatewayRouterLimitFolds(instance, models, routes)
+			visionFolds := r.aiGatewayRouterVisionFolds(models, routes)
 			for _, model := range models {
 				entry := aiGatewayModelEntry{
 					ID: model.Name, Name: model.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
+					Vision: model.Vision,
 				}
 				if fold, ok := folds[model.Name]; ok {
 					entry.ContextWindow, entry.MaxTokens = fold[0], fold[1]
+				}
+				if accepts, ok := visionFolds[model.Name]; ok {
+					entry.Vision = accepts
 				}
 				sharedEntries = append(sharedEntries, entry)
 			}
@@ -706,17 +761,23 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 				if entry.MaxTokens > 0 && model.MaxOutputTokens > 0 {
 					entry.MaxTokens = min(entry.MaxTokens, model.MaxOutputTokens)
 				}
+				// The Agent's requests for the name may reach this route too.
+				entry.Vision = entry.Vision && route.Vision
 				merged = append(merged, route.Name)
 				continue
 			}
-			if len(copilotEntries) == aiGatewayMaxCopilotModels ||
-				slices.ContainsFunc(copilotEntries, func(entry aiGatewayModelEntry) bool { return entry.ID == route.Name }) {
+			if i := slices.IndexFunc(copilotEntries, func(entry aiGatewayModelEntry) bool { return entry.ID == route.Name }); i >= 0 {
+				copilotEntries[i].Vision = copilotEntries[i].Vision && route.Vision
+				continue
+			}
+			if len(copilotEntries) == aiGatewayMaxCopilotModels {
 				continue
 			}
 			// Named like every other model the Gateway offers, by its model
 			// name: the Agent cannot tell which backend serves it.
 			copilotEntries = append(copilotEntries, aiGatewayModelEntry{
 				ID: route.Name, Name: route.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
+				Vision: route.Vision,
 			})
 		}
 	}

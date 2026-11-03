@@ -15,7 +15,34 @@ dropped:
   copies into num_retries before this callback sees the request, and
   model_group_retry_policy turn the Gateway's retries back on. The Gateway does
   not retry: agents retry on their own, and the two multiply. Each made one
-  failing request four upstream calls.
+  failing request four upstream calls. The same fields are removed from
+  router_settings_override, a set of router settings LiteLLM adds to the
+  request after this callback runs, and takes from the request body when
+  neither the key nor its team has router settings of its own.
+
+A request for one of LiteLLM's complexity routers (auto routers) that fails at
+the model of the tier the router chose goes on to the router's other models
+rather than failing: a tier whose model is unavailable, such as an Agent's
+GitHub Copilot model while its proxy is down, failed with 503 although the
+router's other tiers could answer. The guard gives such a request fallbacks of
+its own, for this request only: for each model of the router, the other models
+of its tier, the models of the tiers above it in order, then the router's
+default model, then the models of the tiers below it. LiteLLM tries them in
+that order, each only if the calling key may use it and only before a response
+has started. Fallbacks the administrator configured for a model, or for the
+router's name, apply instead; a client that sends fallbacks of its own, or
+none, keeps them. A refusal by the guard or another check, which is not the
+model's failure, goes to no other model.
+
+LiteLLM appends its internal names to an error it returns to a caller: the
+model groups a request went to, their fallbacks, deployments' timeouts. For a
+Team's router, the model group is its internal name. The guard turns that off
+(litellm.expose_router_debug_in_errors) when it is loaded; litellm_settings in
+the Gateway's configuration can turn it on again.
+
+A key the CetiRun operator gives an alias for a Team's router, the router's
+name for its internal name, lists the router under its name only: LiteLLM
+lists a key alias next to its target in GET /v1/models.
 
 A per-Agent GitHub Copilot route, a deployment in an access group named
 cetirun-copilot-<Agent UID>, is offered only to a key that holds that group.
@@ -102,6 +129,7 @@ user chose or to auto; with a reasoning model each failed, out of the user's
 sight. LiteLLM's own rule decides, read from LiteLLM, and each change is logged.
 """
 
+import importlib
 import json
 import re
 import sys
@@ -117,6 +145,23 @@ DEBUG_PARAMETER = "litellm_request_debug"
 # Request fields that change the Gateway's retries for that request.
 RETRY_PARAMETERS = ("num_retries", "model_group_retry_policy")
 REQUEST_PARAMETERS = (DEBUG_PARAMETER, *RETRY_PARAMETERS)
+# Router settings LiteLLM merges into the request after the pre-call hooks:
+# those of the key or its team, or the request body's own when neither has
+# any (route_llm_request.py).
+ROUTER_SETTINGS_OVERRIDE = "router_settings_override"
+# The request fields that set or turn off a request's fallbacks, the key of a
+# fallback list entry that applies to every model, and LiteLLM's model value
+# for its complexity routers, under the prefix of all its auto routers.
+FALLBACKS = "fallbacks"
+DISABLE_FALLBACKS = "disable_fallbacks"
+GENERIC_FALLBACK = "*"
+AUTO_ROUTER_PREFIX = "auto_router/"
+COMPLEXITY_ROUTER = "auto_router/complexity_router"
+# LiteLLM's tiers, lowest first, and the tiers it takes a complexity router's
+# default model from when the router names none (router.py), after the
+# configuration's fallback_tier.
+TIER_ORDER = ("NON_REASONING", "SIMPLE", "MEDIUM", "COMPLEX", "REASONING")
+DEFAULT_MODEL_TIERS = ("MEDIUM", "SIMPLE")
 
 # The access groups the CetiRun operator gives each Agent's GitHub Copilot
 # routes: this prefix and the Agent's UID.
@@ -284,6 +329,51 @@ def install_failover_past_affinity():
 
     async_filter_deployments.cetirun_failover = True
     DeploymentAffinityCheck.async_filter_deployments = async_filter_deployments
+    return True
+
+
+# The internal names the CetiRun operator registers a Team's routers under.
+TEAM_ROUTER_PREFIX = "cetirun-router-"
+LISTING_MODULE = "litellm.proxy.common_utils.model_listing_utils"
+
+
+def without_aliased_routers(entries):
+    """The (listed name, model) rows of a model listing without a Team router's internal name where the
+    caller's alias lists the router."""
+    aliased = {model for listed, model in entries
+               if listed != model and isinstance(model, str) and model.startswith(TEAM_ROUTER_PREFIX)}
+    return tuple(entry for entry in entries if not (entry[0] == entry[1] and entry[0] in aliased))
+
+
+def install_router_alias_listing():
+    """List a Team's router that a key reaches under an alias only under the alias.
+
+    The CetiRun operator gives an Agent's key an alias for each Team router the Agent may use: the router's
+    name for its internal name, cetirun-router-<hash>. LiteLLM 1.105.6 lists a key alias next to its
+    target in GET /v1/models, so the router was listed twice, once under a name that means nothing to the
+    Agent's owner. LiteLLM's alias_listing_entries, which adds the aliases' rows, is replaced by one that
+    then leaves the internal name out. The proxy module imports the function by name, so it is replaced
+    there too when the proxy is already loaded. A lookup of the internal name still answers.
+    """
+    try:
+        listing = importlib.import_module(LISTING_MODULE)
+    except Exception:  # noqa: BLE001
+        return False
+    current = getattr(listing, "alias_listing_entries", None)
+    if current is None:
+        return False
+    if not getattr(current, "cetirun_router_aliases", False):
+        original = current
+
+        def alias_listing_entries(entries, aliases):
+            return without_aliased_routers(original(entries, aliases))
+
+        alias_listing_entries.cetirun_router_aliases = True
+        listing.alias_listing_entries = alias_listing_entries
+        current = alias_listing_entries
+    proxy = sys.modules.get(PROXY_SERVER_MODULE)
+    if proxy is not None and getattr(proxy, "alias_listing_entries", current) is not current:
+        proxy.alias_listing_entries = current
     return True
 
 def marked_content(content):
@@ -586,7 +676,7 @@ def model_groups(model, deployments, team_id):
     router knows the rest. Without it, the deployments given are all there is
     to go on.
     """
-    router = getattr(sys.modules.get(PROXY_SERVER_MODULE), "llm_router", None)
+    router = live_router()
     if router is not None:
         try:
             return set(router.get_model_access_groups(model_name=model, team_id=team_id))
@@ -730,6 +820,150 @@ def bound_classifier_request(request_kwargs, deployments):
     return utf8_size(state), utf8_size(shortened), context, kept
 
 
+def live_router():
+    """The proxy's router, or None before it has one."""
+    return getattr(sys.modules.get(PROXY_SERVER_MODULE), "llm_router", None)
+
+
+def router_params(name, router, prefix=AUTO_ROUTER_PREFIX):
+    """The litellm_params of the auto router the model name stands for, one whose model starts with prefix,
+    or None when the name is not one or the router cannot tell."""
+    if router is None or not isinstance(name, str) or not name:
+        return None
+    try:
+        deployments = router.get_model_list(model_name=name) or []
+    except Exception:  # noqa: BLE001  # a request never fails on this lookup
+        return None
+    for deployment in deployments:
+        params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+        model = params.get("model") if isinstance(params, dict) else None
+        if isinstance(model, str) and model.startswith(prefix):
+            return params
+    return None
+
+
+def tier_models(value):
+    """The model names a tier of a complexity router names: one name, or a list of names or of entries with a
+    model_name."""
+    names = []
+    for entry in value if isinstance(value, list) else [value]:
+        name = entry.get("model_name") if isinstance(entry, dict) else entry
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+    return names
+
+
+def router_tiers(params):
+    """[(tier, its model names)] of a complexity router, LiteLLM's tiers lowest first, then any other tiers in
+    the order the configuration lists them."""
+    config = params.get("complexity_router_config")
+    tiers = config.get("tiers") if isinstance(config, dict) else None
+    if not isinstance(tiers, dict):
+        return []
+    rank = {tier: index for index, tier in enumerate(TIER_ORDER)}
+    ordered = sorted(tiers, key=lambda tier: rank.get(tier, len(TIER_ORDER)))
+    return [(tier, models) for tier in ordered if (models := tier_models(tiers[tier]))]
+
+
+def router_default_model(params, tiers):
+    """The model a complexity router sends a request it cannot classify, as LiteLLM chooses it: the router's
+    complexity_router_default_model, else the first model of its fallback_tier, of MEDIUM, then of SIMPLE."""
+    default = params.get("complexity_router_default_model")
+    if isinstance(default, str) and default:
+        return default
+    config = params.get("complexity_router_config")
+    fallback_tier = config.get("fallback_tier") if isinstance(config, dict) else None
+    by_tier = dict(tiers)
+    for tier in (fallback_tier, *DEFAULT_MODEL_TIERS):
+        if isinstance(tier, str) and by_tier.get(tier):
+            return by_tier[tier][0]
+    return None
+
+
+def tier_fallbacks(params, is_router):
+    """{model: the models to try after it} for each model a complexity router sends requests to answer.
+
+    After a tier's model: the other models of its tier, the models of the tiers above it, lowest first, then
+    the router's default model, then the models of the tiers below it, highest first. A model of several
+    tiers follows its highest. The default model, when it is no tier's model, is placed like the medium
+    tier, or the lowest. A model that is itself a router is left out.
+    """
+    tiers = router_tiers(params)
+    default = router_default_model(params, tiers)
+
+    def chain(model, position, in_tier):
+        peers = tiers[position][1] if in_tier else []
+        above = [name for _, names in tiers[position + 1 if in_tier else position:] for name in names]
+        below = [name for _, names in reversed(tiers[:position]) for name in names]
+        ordered = []
+        for name in (*peers, *above, *([default] if default else []), *below):
+            if name != model and name not in ordered and not is_router(name):
+                ordered.append(name)
+        return ordered
+
+    chains = {}
+    for position, (_, names) in enumerate(tiers):
+        for name in names:
+            chains[name] = chain(name, position, True)
+    if default and default not in chains and not is_router(default):
+        tier_names = [tier for tier, _ in tiers]
+        position = tier_names.index("MEDIUM") if "MEDIUM" in tier_names else 0
+        chains[default] = chain(default, position, False)
+    return {name: ordered for name, ordered in chains.items() if ordered and not is_router(name)}
+
+
+def add_tier_fallbacks(data, router):
+    """Give a request for a complexity router fallbacks to the router's other models, in place; the router's
+    name when it does, else None.
+
+    Left as they are: a request that names its own fallbacks or turns them off, one whose key or team router
+    settings name fallbacks, and the models the router setting fallbacks already names, or the router itself.
+    Fallbacks for every model ("*") follow a model's own.
+    """
+    if not isinstance(data, dict) or FALLBACKS in data or data.get(DISABLE_FALLBACKS):
+        return None
+    override = data.get(ROUTER_SETTINGS_OVERRIDE)
+    if isinstance(override, dict) and override.get(FALLBACKS):
+        return None
+    name = data.get("model")
+    params = router_params(name, router, COMPLEXITY_ROUTER)
+    if params is None:
+        return None
+    configured = [entry for entry in getattr(router, "fallbacks", None) or [] if isinstance(entry, dict) and entry]
+    keys = {next(iter(entry)) for entry in configured}
+    if name in keys:
+        return None
+    generic = next((entry[GENERIC_FALLBACK] for entry in configured
+                    if isinstance(entry.get(GENERIC_FALLBACK), list)), [])
+    added = []
+    for model, ordered in tier_fallbacks(params, lambda other: router_params(other, router) is not None).items():
+        if model in keys:
+            continue
+        ordered = ordered + [target for target in generic
+                             if isinstance(target, str) and target != model and target not in ordered]
+        added.append({model: ordered})
+    if not added:
+        return None
+    data[FALLBACKS] = [*configured, *added]
+    return name
+
+
+def strip_retry_override(data):
+    """Remove the retry settings from the router settings LiteLLM merges into the request, in place; whether
+    there were any."""
+    override = data.get(ROUTER_SETTINGS_OVERRIDE) if isinstance(data, dict) else None
+    if not isinstance(override, dict) or not any(name in override for name in RETRY_PARAMETERS):
+        return False
+    data[ROUTER_SETTINGS_OVERRIDE] = {key: value for key, value in override.items() if key not in RETRY_PARAMETERS}
+    return True
+
+
+def hide_router_details():
+    """Keep LiteLLM from appending its internal model groups, fallbacks and timeouts to the errors it returns."""
+    if hasattr(litellm, "expose_router_debug_in_errors"):
+        litellm.expose_router_debug_in_errors = False
+
+
 def has_deployment(name, router):
     """Whether the name is a model with a deployment of its own. A Team's router is registered under the
     same name as its access group, so being one of the key's groups does not make a name a placeholder.
@@ -808,6 +1042,8 @@ class Guard(CustomLogger):
         if isinstance(data, dict):
             for name in REQUEST_PARAMETERS:
                 data.pop(name, None)
+            strip_retry_override(data)
+            add_tier_fallbacks(data, live_router())
         return None
 
     async def async_filter_deployments(
@@ -913,7 +1149,7 @@ class Guard(CustomLogger):
         held = operator_groups(user_api_key_dict)
         if held is None:
             return model_names
-        router = getattr(sys.modules.get(PROXY_SERVER_MODULE), "llm_router", None)
+        router = live_router()
         return [name for name in model_names
                 if not (isinstance(name, str)
                         and ((name in held and not has_deployment(name, router)) or not conversation_model(name, router)))]
@@ -939,6 +1175,13 @@ class Guard(CustomLogger):
 
 handler = Guard()
 # The entrypoint imports this module before the proxy loads its configuration,
-# so LiteLLM writes the Gateway's form of the mark from the first request.
-install_mark_form()
-install_failover_past_affinity()
+# so LiteLLM writes the Gateway's form of the mark from the first request, the
+# proxy imports the replaced listing function, and litellm_settings in the
+# configuration can still turn the router's details in errors on again. The
+# image build checks that each replacement took.
+PATCHED = {
+    "mark_form": install_mark_form(),
+    "failover_past_affinity": install_failover_past_affinity(),
+    "router_alias_listing": install_router_alias_listing(),
+}
+hide_router_details()

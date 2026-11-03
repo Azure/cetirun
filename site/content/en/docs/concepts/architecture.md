@@ -58,7 +58,7 @@ and [portal handlers]({{< repo "app/cetirun-portal/internal/handler/instance.go"
 | Portal | [app/cetirun-portal]({{< repo "app/cetirun-portal" "tree" >}}) | User and admin UI, ownership enforcement in the backend |
 | Shared Istio chart | [infra/istio]({{< repo "infra/istio" "tree" >}}) | Gateway, OAuth2 Proxy, authorization filters, egress logging/policy |
 | Infrastructure | [infra]({{< repo "infra" "tree" >}}) | AKS and Azure Blob NFS Bicep |
-| AdminClaw | [app/adminclaw]({{< repo "app/adminclaw" "tree" >}}) | Administrative deployment material and operational skills |
+| CetiAdmin | [Operator CetiAdmin module]({{< repo "app/cetirun-operator/internal/cetiadmin" "tree" >}}) | Hermes administration Agent, operations skills, and helpers deployed by the operator |
 
 ## Instance names and routes
 

@@ -106,10 +106,11 @@ fullnameOverride: ""
 # price of the model picked. With operatorIntegration, the CetiRun operator
 # gives an Agent the router only when the Agent may use every model the router
 # sends requests to. Unless it sets reminder_markers, the chart adds the
-# markers around OpenClaw's own context, so the router classifies what was
-# asked; unless it sets them, context_compaction and max_tokens_from_tier_model
-# are off and enable_context_window_escalation is on. See the README's Smart
-# routing section.
+# markers around OpenClaw's own context and the label of OpenClaw's tool-result
+# images, so the router classifies what was asked; unless it sets them,
+# context_compaction and max_tokens_from_tier_model are off and
+# enable_context_window_escalation is on. See the README's Smart routing
+# section.
 #
 # Example:
 #   models:

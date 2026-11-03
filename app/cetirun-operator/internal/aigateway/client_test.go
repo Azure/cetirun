@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -324,6 +325,58 @@ func TestListModelsCountsPricesTheWayTheGatewayBlocksUnpricedModels(t *testing.T
 	}
 	if deployments[1].DatabaseSourceKnown {
 		t.Fatal("an omitted db_model field must not be treated as trusted static provenance")
+	}
+}
+
+// LiteLLM's model info says whether a deployment accepts images; only an
+// explicit true counts.
+func TestListModelsReadsWhetherADeploymentAcceptsImages(t *testing.T) {
+	client, _ := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{"data":[
+			{"model_name":"sees","litellm_params":{"model":"azure/gpt-6-sol"},"model_info":{"id":"a","supports_vision":true}},
+			{"model_name":"blind","litellm_params":{"model":"azure/o1-mini"},"model_info":{"id":"b","supports_vision":false}},
+			{"model_name":"router","litellm_params":{"model":"auto_router/complexity_router"},"model_info":{"id":"c","supports_vision":null}},
+			{"model_name":"odd","litellm_params":{"model":"azure/x"},"model_info":{"id":"d","supports_vision":"true"}},
+			{"model_name":"no-info","litellm_params":{"model":"azure/y"}}
+		]}`
+	})
+	deployments, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"sees": true, "blind": false, "router": false, "odd": false, "no-info": false}
+	if len(deployments) != len(want) {
+		t.Fatalf("got %d deployments", len(deployments))
+	}
+	for _, deployment := range deployments {
+		if deployment.Vision != want[deployment.ModelName] {
+			t.Errorf("%s: Vision = %v, want %v", deployment.ModelName, deployment.Vision, want[deployment.ModelName])
+		}
+	}
+}
+
+// The price table names the models with a price and those that accept images.
+func TestPriceTableReadsPricesAndImageSupport(t *testing.T) {
+	client, requests := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{
+			"sample_spec":{"input_cost_per_token":0,"supports_vision":"true or false"},
+			"gpt-5.5":{"input_cost_per_token":0.000001,"output_cost_per_token":0.00001,"supports_vision":true},
+			"claude-sonnet-4-5":{"input_cost_per_token":0.000003,"supports_vision":false},
+			"free-vision":{"input_cost_per_token":0,"output_cost_per_token":0,"supports_vision":true},
+			"no-vision-field":{"output_cost_per_token":0.00002}
+		}`
+	})
+	table, err := client.PriceTable(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := (*requests)[0]; r.method != http.MethodGet || r.path != "/public/litellm_model_cost_map" {
+		t.Fatalf("unexpected request %+v", r)
+	}
+	wantPriced := map[string]bool{"gpt-5.5": true, "claude-sonnet-4-5": true, "no-vision-field": true}
+	wantVision := map[string]bool{"gpt-5.5": true, "free-vision": true}
+	if !maps.Equal(table.Priced, wantPriced) || !maps.Equal(table.Vision, wantVision) {
+		t.Fatalf("priced %v vision %v", table.Priced, table.Vision)
 	}
 }
 

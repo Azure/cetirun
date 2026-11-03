@@ -173,7 +173,7 @@ func TestCustomServerPreflightAndOperatorRBAC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, err := chartutil.ToRenderValues(operator, operator.Values, chartutil.ReleaseOptions{Name: "operator", Namespace: "cetirun-system", IsInstall: true}, chartutil.DefaultCapabilities)
+	values, err := chartutil.ToRenderValues(operator, map[string]any{"cetiadmin": map[string]any{"enabled": false}}, chartutil.ReleaseOptions{Name: "operator", Namespace: "cetirun-system", IsInstall: true}, chartutil.DefaultCapabilities)
 	if err != nil {
 		t.Fatal(err)
 	}

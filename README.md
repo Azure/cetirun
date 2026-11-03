@@ -46,7 +46,7 @@ documentation gate. This does not deploy a public website.
 | [app/cetirun-chart](app/cetirun-chart/README.md) | Agent StatefulSet, persistent storage, desktop, terminal, and logging |
 | [app/cetirun-operator](app/cetirun-operator/README.md) | Agent and Team custom resources, and lifecycle reconciliation |
 | [app/cetirun-portal](app/cetirun-portal) | Go backend and React self-service frontend |
-| [app/adminclaw](app/adminclaw) | Administrative deployment material and operations skills |
+| [CetiAdmin](app/cetirun-operator/internal/cetiadmin) | Hermes administration Agent, operations skills, and helpers deployed by the operator |
 | [infra](infra/README.md) | AKS, Blob NFS, and shared Istio authentication |
 | [scripts](scripts/README.md) | Local validation, build, and connected helper entrypoints |
 
