@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
@@ -23,6 +24,8 @@ import (
 // (auth.RequireAdmin); this handler does not check the admin flag itself.
 type AdminTeamHandler struct {
 	Kube *kube.Client
+	// Config enables the Skill Marketplace checks of Team skills.
+	Config config.Config
 }
 
 // teamNamePattern enforces a DNS-1123 label for the cluster-scoped team
@@ -244,7 +247,7 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
 	}
-	if !h.validateTeamBindings(w, r, req) {
+	if !h.validateTeamBindings(w, r, req, nil) {
 		return
 	}
 	team := &cetirunv1alpha1.Team{
@@ -285,7 +288,18 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusPreconditionRequired, "version_required", "uid and resourceVersion from the current Team are required")
 		return
 	}
-	if !h.validateTeamBindings(w, r, req) {
+	var previous []string
+	if h.Config.SkillMarketplaceEnabled && len(cetirunv1alpha1.SkillMarketplaceSelection(req.Skills)) > 0 {
+		// Only marketplace skills the Team does not select yet must be in
+		// the catalog.
+		stored, err := h.Kube.GetTeam(r.Context(), name)
+		if err != nil {
+			writeConfigurationError(w, "read", "Team", name, err)
+			return
+		}
+		previous = stored.Spec.Skills
+	}
+	if !h.validateTeamBindings(w, r, req, previous) {
 		return
 	}
 	updated, err := h.Kube.UpdateTeamSpec(r.Context(), name, toTeamSpec(req), version)
@@ -324,7 +338,8 @@ func (h *AdminTeamHandler) DeleteTeam(w http.ResponseWriter, r *http.Request) {
 
 // Validate Portal-managed bindings before asking admission to check runtime
 // prerequisites and current consumers. References are resolved on each request.
-func (h *AdminTeamHandler) validateTeamBindings(w http.ResponseWriter, r *http.Request, req TeamUpsertRequest) bool {
+// previous holds the stored Team's skills on update, nil on creation.
+func (h *AdminTeamHandler) validateTeamBindings(w http.ResponseWriter, r *http.Request, req TeamUpsertRequest, previous []string) bool {
 	invalid := func(message string) bool {
 		writeError(w, http.StatusBadRequest, "invalid_team_binding", message)
 		return false
@@ -356,10 +371,19 @@ func (h *AdminTeamHandler) validateTeamBindings(w http.ResponseWriter, r *http.R
 	if len(req.SandboxRefs) > 1 && !policy.Spec.SandboxSelection.AllowMultiple {
 		return invalid("The selected Agent Policy allows only one Sandbox")
 	}
+	if h.Config.SkillMarketplaceEnabled {
+		if message := invalidMarketplaceSkillName(req.Skills); message != "" {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_team", message)
+			return false
+		}
+	}
 	for _, skill := range req.Skills {
 		if !slices.Contains(policy.Spec.Skills.Allowed, skill) {
 			return invalid("Team Skills must be allowed by the selected Agent Policy")
 		}
+	}
+	if h.Config.SkillMarketplaceEnabled && !h.validateNewMarketplaceSkills(w, r, req.Skills, previous) {
+		return false
 	}
 	if message := validateTeamModelRouters(req.ModelRouters); message != "" {
 		return invalid(message)

@@ -122,6 +122,9 @@ type InstanceResponse struct {
 	UpgradeAvailable            bool                        `json:"upgradeAvailable"`
 	AgentIdentity               *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
 	AIGateway                   *AIGatewayResponse          `json:"aiGateway,omitempty"`
+	// TeamSkills are the Skill Marketplace skills of the Agent's Team, when
+	// the Team has a policy. Only the single-Agent read fills them in.
+	TeamSkills []TeamSkill `json:"teamSkills,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -256,6 +259,7 @@ func (h *InstanceHandler) GetInstanceByName(w http.ResponseWriter, r *http.Reque
 	if resp.AIGateway != nil {
 		resp.AIGateway.RateLimits = h.policyRateLimits(r.Context(), instance)
 	}
+	resp.TeamSkills = h.teamSkills(r.Context(), instance)
 	w.Header().Set("ETag", kube.RegistryETag(instance))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)

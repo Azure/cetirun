@@ -63,7 +63,14 @@ type Config struct {
 	// AIGatewayCatalogNamespace is the operator namespace, where the operator
 	// publishes the shared models.
 	AIGatewayCatalogNamespace string
-	SandboxStateNamespace     string
+	// SkillMarketplaceEnabled makes every Team skill without the "npm:"
+	// prefix a Skill Marketplace skill: Team saves check new names against
+	// the marketplace catalog, and Agent details show the Team's skills.
+	SkillMarketplaceEnabled bool
+	// SkillMarketplaceCatalogNamespace is the operator namespace, where the
+	// Skill Marketplace publishes its catalog.
+	SkillMarketplaceCatalogNamespace string
+	SandboxStateNamespace            string
 	// ConfigurationCoordination pins the authority shared with strict Sandbox
 	// admission for protected Team, Sandbox and AgentPolicy mutations.
 	ConfigurationCoordinationNamespace string
@@ -104,6 +111,8 @@ func Load() Config {
 		RegistryCredentialNamespace:        envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),
 		AIGatewayEnabled:                   os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",
 		AIGatewayCatalogNamespace:          envOrDefault("AI_GATEWAY_CATALOG_NAMESPACE", "cetirun-system"),
+		SkillMarketplaceEnabled:            os.Getenv("SKILL_MARKETPLACE_ENABLED") == "true",
+		SkillMarketplaceCatalogNamespace:   envOrDefault("SKILL_MARKETPLACE_CATALOG_NAMESPACE", "cetirun-system"),
 		SandboxStateNamespace:              envOrDefault("SANDBOX_STATE_NAMESPACE", "cetirun-system"),
 		ConfigurationCoordinationNamespace: envOrDefault("CONFIGURATION_COORDINATION_NAMESPACE", ""),
 		ConfigurationCoordinationName:      envOrDefault("CONFIGURATION_COORDINATION_NAME", ""),

@@ -12,4 +12,6 @@ export interface Features {
   allowedAgentTypes?: AgentType[];
   /** The platform AI Gateway: model sources, GitHub Copilot sign-in, Team required. */
   aiGatewayEnabled?: boolean;
+  /** The Skill Marketplace: Teams choose skills from one synchronized repository. */
+  skillMarketplaceEnabled?: boolean;
 }

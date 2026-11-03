@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
@@ -30,6 +31,8 @@ import (
 // responsible for interpreting and enforcing the policy fields they own.
 type AdminPolicyHandler struct {
 	Kube *kube.Client
+	// Config enables the Skill Marketplace check of removed skills.
+	Config config.Config
 }
 
 var policyNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -716,6 +719,9 @@ func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request
 	applyAgentPolicyRequest(&desired, req)
 	if msg := validatePortalManagedPolicyUpdateFields(req, desired); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_policy", msg)
+		return
+	}
+	if h.Config.SkillMarketplaceEnabled && !h.allowSkillRemoval(w, r, name, current.Spec.Skills.Allowed, desired.Skills.Allowed) {
 		return
 	}
 	updated, err := h.Kube.UpdateAgentPolicySpec(r.Context(), name, desired, version)

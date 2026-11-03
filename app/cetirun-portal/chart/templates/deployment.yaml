@@ -10,6 +10,10 @@
 {{- if and (hasKey .Values "sandboxRuntimeDefaultsFromController") (not (kindIs "bool" .Values.sandboxRuntimeDefaultsFromController)) -}}
 {{- fail "sandboxRuntimeDefaultsFromController must be a boolean" -}}
 {{- end -}}
+{{- $skillMarketplace := .Values.skillMarketplace | default dict -}}
+{{- if and (hasKey $skillMarketplace "enabled") (not (kindIs "bool" $skillMarketplace.enabled)) -}}
+{{- fail "skillMarketplace.enabled must be a boolean" -}}
+{{- end -}}
 {{- if $chatEnabled }}
 {{- $_ := required "chat.identityRealm is required for Custom Chat" $chatRealm -}}
 {{- $_ := required "istio.host is required for Custom Chat" .Values.istio.host -}}
@@ -99,6 +103,12 @@ spec:
             {{- if default false ((.Values.features).aiGatewayEnabled) }}
             - name: AI_GATEWAY_CATALOG_NAMESPACE
               value: {{ default "cetirun-system" ((.Values.aiGateway).catalogNamespace) | quote }}
+            {{- end }}
+            {{- if $skillMarketplace.enabled }}
+            - name: SKILL_MARKETPLACE_ENABLED
+              value: "true"
+            - name: SKILL_MARKETPLACE_CATALOG_NAMESPACE
+              value: {{ default "cetirun-system" $skillMarketplace.catalogNamespace | quote }}
             {{- end }}
             {{- if .Values.configurationCoordination.name }}
             - name: CONFIGURATION_COORDINATION_NAMESPACE

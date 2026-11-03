@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
@@ -16,11 +17,12 @@ import (
 func TestGetFeatures(t *testing.T) {
 	h := &FeaturesHandler{
 		Config: config.Config{
-			TailscaleEnabled:     true,
-			AgentIdentityEnabled: true,
-			AgentToolsEnabled:    true,
-			MaxInstancesPerUser:  2,
-			AllowedAgentTypes:    []string{"hermes"},
+			TailscaleEnabled:        true,
+			AgentIdentityEnabled:    true,
+			AgentToolsEnabled:       true,
+			MaxInstancesPerUser:     2,
+			AllowedAgentTypes:       []string{"hermes"},
+			SkillMarketplaceEnabled: true,
 		},
 	}
 
@@ -31,6 +33,9 @@ func TestGetFeatures(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if !strings.Contains(w.Body.String(), `"skillMarketplaceEnabled":true`) {
+		t.Errorf("response does not report the Skill Marketplace: %s", w.Body.String())
 	}
 	var resp FeaturesResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -50,5 +55,14 @@ func TestGetFeatures(t *testing.T) {
 	}
 	if !reflect.DeepEqual(resp.AllowedAgentTypes, []string{"hermes"}) {
 		t.Errorf("allowedAgentTypes = %#v, want %#v", resp.AllowedAgentTypes, []string{"hermes"})
+	}
+	if !resp.SkillMarketplaceEnabled {
+		t.Errorf("skillMarketplaceEnabled = false, want true")
+	}
+
+	w = httptest.NewRecorder()
+	(&FeaturesHandler{}).GetFeatures(w, req)
+	if !strings.Contains(w.Body.String(), `"skillMarketplaceEnabled":false`) {
+		t.Errorf("a default deployment does not report the Skill Marketplace as disabled: %s", w.Body.String())
 	}
 }

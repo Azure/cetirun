@@ -34,7 +34,10 @@ import {
 import { listPolicies } from "../../api/adminPolicy";
 import { listSandboxes } from "../../api/adminSandbox";
 import { getAIGatewayCatalog } from "../../api/aiGateway";
+import { useFeatures } from "../../hooks/useFeatures";
+import { useSkillMarketplace } from "../../hooks/useSkillMarketplace";
 import { modelRouterProblem, TeamModelRoutersSection, toModelRouterRequests } from "./TeamModelRoutersSection";
+import { mergeSkillSelection, npmSkillsProblem, splitTeamSkills, TeamSkillsSection } from "./TeamSkillsSection";
 
 interface FormState {
   uid: string;
@@ -45,7 +48,9 @@ interface FormState {
   name: string;
   role: string;
   description: string; // newline-separated
-  skills: string; // newline-separated
+  skills: string; // newline-separated; edited without the Skill Marketplace
+  marketplaceSkills: string[]; // Skill Marketplace names; edited with the marketplace
+  npmSkills: string; // newline-separated npm: entries; edited with the marketplace
   storage: TeamSkillStorage;
   storageEnabled: boolean;
   modelRouters: TeamModelRouter[];
@@ -61,6 +66,7 @@ const emptyStorage: TeamSkillStorage = {
 };
 
 function fromDTO(t: TeamDTO): FormState {
+  const { marketplace, npm } = splitTeamSkills(t.skills);
   return {
     name: t.name,
     uid: t.uid, resourceVersion: t.resourceVersion,
@@ -68,26 +74,30 @@ function fromDTO(t: TeamDTO): FormState {
     role: t.role || "",
     description: (t.description || []).join("\n"),
     skills: (t.skills || []).join("\n"),
+    marketplaceSkills: marketplace,
+    npmSkills: npm.join("\n"),
     storage: t.skillStorage || { ...emptyStorage },
     storageEnabled: !!t.skillStorage,
     modelRouters: (t.modelRouters || []).map((router) => ({ ...router })),
   };
 }
 
-function toRequest(s: FormState): TeamUpsertRequest {
-  const splitLines = (text: string) =>
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+function splitLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
 
+/** With the Skill Marketplace, the skills are the chosen marketplace names and the npm entries. */
+function toRequest(s: FormState, marketplace: boolean): TeamUpsertRequest {
   const req: TeamUpsertRequest = {
     name: s.name.trim(),
     uid: s.uid || undefined, resourceVersion: s.resourceVersion || undefined,
     agentPolicyRef: s.agentPolicyRef, sandboxRefs: s.sandboxRefs, defaultSandboxRef: s.defaultSandboxRef,
     role: s.role.trim() || undefined,
     description: splitLines(s.description),
-    skills: splitLines(s.skills),
+    skills: marketplace ? mergeSkillSelection(s.marketplaceSkills, splitLines(s.npmSkills)) : splitLines(s.skills),
   };
   if (s.modelRouters.length > 0) req.modelRouters = toModelRouterRequests(s.modelRouters);
   if (s.storageEnabled) {
@@ -117,6 +127,8 @@ export function TeamEditPage() {
     role: "",
     description: "",
     skills: "",
+    marketplaceSkills: [],
+    npmSkills: "",
     storage: { ...emptyStorage },
     storageEnabled: false,
     modelRouters: [],
@@ -153,11 +165,19 @@ export function TeamEditPage() {
   const validBindings = policies.some(policy => policy.name === form.agentPolicyRef) &&
     form.sandboxRefs.length > 0 && form.sandboxRefs.every(ref => sandboxes.some(box => box.name === ref)) &&
     form.sandboxRefs.includes(form.defaultSandboxRef) && !hasTooManySandboxes;
+  // With the Skill Marketplace, Team skills are chosen from its catalog; npm packages stay a list.
+  // Until the features are known, neither skills editor is shown, so no edit is lost when the editor changes.
+  const { data: features } = useFeatures();
+  const marketplaceEnabled = !!features?.skillMarketplaceEnabled;
+  const marketplaceQuery = useSkillMarketplace(marketplaceEnabled);
+  // A policy without an allowed list allows no skills.
+  const allowedSkills = selectedPolicy ? selectedPolicy.skills?.allowed ?? [] : undefined;
 
   const onSuccess = () => {
     qc.invalidateQueries({ queryKey: ["teams"] });
     qc.invalidateQueries({ queryKey: ["instance-create-options"] });
     qc.invalidateQueries({ queryKey: ["admin", "teams"] });
+    qc.invalidateQueries({ queryKey: ["admin", "skill-marketplace"] });
     if (name) qc.invalidateQueries({ queryKey: ["admin", "team", name] });
     navigate("/admin/teams");
   };
@@ -188,7 +208,12 @@ export function TeamEditPage() {
       setSubmitError(routerProblem);
       return;
     }
-    const req = toRequest(form);
+    const skillsProblem = marketplaceEnabled ? npmSkillsProblem(splitLines(form.npmSkills)) : null;
+    if (skillsProblem) {
+      setSubmitError(skillsProblem);
+      return;
+    }
+    const req = toRequest(form, marketplaceEnabled);
     if (isCreate) {
       if (!/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(req.name || "")) {
         setSubmitError(
@@ -285,14 +310,41 @@ export function TeamEditPage() {
       </Field>
 
       <Divider />
-      <Field label="Skills" hint="One skill identifier per line.">
-        <Textarea
-          rows={4}
-          value={form.skills}
-          onChange={(_, data) => setForm({ ...form, skills: data.value })}
-          placeholder={"@anthropic/skill-foo\n@scope/skill-bar"}
-        />
-      </Field>
+      {marketplaceEnabled ? (
+        <>
+          {marketplaceQuery.error && <MessageBar intent="error">
+            <MessageBarBody>Failed to load the skill catalog: {marketplaceQuery.error.message}</MessageBarBody>
+            <MessageBarActions>
+              <Button type="button" onClick={() => void marketplaceQuery.refetch()}>Retry skill catalog</Button>
+            </MessageBarActions>
+          </MessageBar>}
+          {marketplaceQuery.isLoading ? <Spinner size="tiny" label="Loading the skill catalog..." /> : (
+            <TeamSkillsSection
+              value={form.marketplaceSkills}
+              allowed={allowedSkills}
+              catalog={marketplaceQuery.data?.catalog}
+              onChange={(marketplaceSkills) => setForm({ ...form, marketplaceSkills })}
+            />
+          )}
+          <Field label="npm skill packages, one per line" hint="Each starts with npm:. The Agent Policy must allow each package.">
+            <Textarea
+              rows={2}
+              value={form.npmSkills}
+              onChange={(_, data) => setForm({ ...form, npmSkills: data.value })}
+              placeholder="npm:@scope/skill-a"
+            />
+          </Field>
+        </>
+      ) : features && (
+        <Field label="Skills" hint="One skill identifier per line.">
+          <Textarea
+            rows={4}
+            value={form.skills}
+            onChange={(_, data) => setForm({ ...form, skills: data.value })}
+            placeholder={"@anthropic/skill-foo\n@scope/skill-bar"}
+          />
+        </Field>
+      )}
 
       <Divider />
       <TeamModelRoutersSection

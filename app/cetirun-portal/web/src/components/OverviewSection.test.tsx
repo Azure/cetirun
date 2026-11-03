@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -253,6 +253,33 @@ describe("OverviewSection", () => {
   it("shows Suspended warning when phase is Suspended", () => {
     renderInRouter(<OverviewSection instance={{ ...baseInstance, phase: "Suspended" }} />);
     expect(screen.getByText(/The controller reports Suspended/i)).toBeInTheDocument();
+  });
+
+  it("lists the Team's skills with their publication state", () => {
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, teamSkills: [
+      { name: "pdf-tools", description: "Reads and fills PDF forms.", version: "bbbbbbbbbbbb", state: "published" },
+      { name: "web-search", description: "Searches the web.", version: "cccccccccccc", state: "pending" },
+      { name: "old-skill", description: "", version: "dddddddddddd", state: "retained" },
+      { name: "unknown-skill", description: "", version: "", state: "missing" },
+    ] }} />);
+    const block = within(screen.getByRole("region", { name: "Team skills" }));
+    const items = block.getAllByRole("listitem");
+    expect(items.map((item) => within(item).getByText(/^(Published|Pending|Retained|Missing)$/).textContent))
+      .toEqual(["Published", "Pending", "Retained", "Missing"]);
+    expect(within(items[0]).getByText("pdf-tools")).toBeInTheDocument();
+    expect(within(items[0]).getByText("Reads and fills PDF forms.")).toBeInTheDocument();
+    expect(within(items[0]).getByText("Version bbbbbbb")).toBeInTheDocument();
+    expect(within(items[1]).getByText(/gets it at its next start/)).toBeInTheDocument();
+    expect(within(items[2]).getByText(/keeps the last published version/)).toBeInTheDocument();
+    expect(within(items[3]).getByText(/does not have it/)).toBeInTheDocument();
+    expect(within(items[3]).queryByText(/^Version/)).toBeNull();
+  });
+
+  it("shows no Team skills block without Team skills", () => {
+    const view = renderInRouter(<OverviewSection instance={baseInstance} />);
+    expect(screen.queryByRole("region", { name: "Team skills" })).toBeNull();
+    view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills: [] }} />);
+    expect(screen.queryByRole("region", { name: "Team skills" })).toBeNull();
   });
 
 });

@@ -117,9 +117,9 @@ func main() {
 	featuresHandler := &handler.FeaturesHandler{Config: cfg}
 	configHandler := &handler.ConfigHandler{NoticeBanner: cfg.NoticeBanner}
 	meHandler := &handler.MeHandler{ChatIdentityRealm: cfg.ChatIdentityRealm}
-	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
+	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient, Config: cfg}
 	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient, Config: cfg}
-	adminPolicyHandler := &handler.AdminPolicyHandler{Kube: kubeClient}
+	adminPolicyHandler := &handler.AdminPolicyHandler{Kube: kubeClient, Config: cfg}
 	var toolConnectionsHandler *handler.ToolConnectionsHandler
 	if cfg.AgentToolsEnabled {
 		toolConnectionsHandler = handler.NewToolConnectionsHandler(kubeClient, cfg.AgentToolsBrokerURL, cfg.PortalOrigin)

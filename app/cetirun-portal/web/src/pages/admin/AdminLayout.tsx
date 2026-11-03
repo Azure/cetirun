@@ -3,6 +3,7 @@
 
 import { NavLink, Outlet } from "react-router-dom";
 import { Text, tokens } from "@fluentui/react-components";
+import { useFeatures } from "../../hooks/useFeatures";
 
 const navStyle = ({ isActive }: { isActive: boolean }) => ({
   display: "block",
@@ -16,6 +17,7 @@ const navStyle = ({ isActive }: { isActive: boolean }) => ({
 });
 
 export function AdminLayout() {
+  const { data: features } = useFeatures();
   return (
     <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
       <aside
@@ -40,6 +42,11 @@ export function AdminLayout() {
         <NavLink to="/admin/sandboxes" style={navStyle}>
           Sandboxes
         </NavLink>
+        {features?.skillMarketplaceEnabled && (
+          <NavLink to="/admin/skills" style={navStyle}>
+            Skills
+          </NavLink>
+        )}
         <NavLink to="/admin/instances" style={navStyle}>
           Agents
         </NavLink>

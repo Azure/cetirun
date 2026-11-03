@@ -72,6 +72,24 @@ export interface Instance extends InstanceVersion {
   };
   /** The Agent's models in the platform AI Gateway; absent when it has none. */
   aiGateway?: AIGatewayInfo;
+  /** The Skill Marketplace skills the Agent's Team selects; absent when there are none. */
+  teamSkills?: TeamSkill[];
+}
+
+/**
+ * published: the Team's current release has the skill. pending: the release
+ * for the Team's current selection is not published yet. missing: the skill
+ * was never published. retained: the repository's copy is no longer valid,
+ * and the release keeps the last published version.
+ */
+export type TeamSkillState = "published" | "pending" | "missing" | "retained";
+
+/** One Skill Marketplace skill of the Agent's Team. */
+export interface TeamSkill {
+  name: string;
+  description?: string;
+  version?: string;
+  state: TeamSkillState;
 }
 
 export type CopilotProxyPhase = "SignInRequired" | "Starting" | "Ready" | "Degraded";
