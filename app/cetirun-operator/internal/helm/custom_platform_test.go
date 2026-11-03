@@ -233,7 +233,7 @@ func TestCustomExecPolicyRejectsInjectedExceptions(t *testing.T) {
 		ch := testChart(t)
 		for _, file := range ch.Templates {
 			if file.Name == "templates/deny-exec-policy.yaml" {
-				file.Data = []byte(strings.Replace(string(file.Data), "  failurePolicy: Fail", "  failurePolicy: Fail\n  matchConditions:\n    - name: injected\n      expression: '"+expression+"'", 1))
+				file.Data = []byte(strings.Replace(string(file.Data), "  failurePolicy: Fail", "  failurePolicy: Fail\n  matchConditions:\n    - name: exclude-adminclaw\n      expression: '"+expression+"'", 1))
 			}
 		}
 		if _, err := PrepareChart(ch, terminalInput(nil)); err == nil {

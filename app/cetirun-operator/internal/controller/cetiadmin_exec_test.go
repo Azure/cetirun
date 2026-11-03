@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -313,66 +312,60 @@ func TestCetiAdminExecWithdrawalReportsConflictingReceipt(t *testing.T) {
 
 func TestCetiAdminExecGrantRevokeAndRerun(t *testing.T) {
 	for _, kind := range []api.AgentType{api.AgentTypeHermes, api.AgentTypeOpenClaw, api.AgentTypeCustom} {
-		for _, legacy := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/legacy=%v", kind, legacy), func(t *testing.T) {
-				f := newExecFixture(t, kind)
-				policy, agent := f.policy(), f.agent()
-				if legacy {
-					policy.Spec.MatchConditions = []admissionv1.MatchCondition{{Name: "exclude-adminclaw", Expression: `request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"`}}
-					f.update(policy)
-				}
-				if err := f.grant(); err != nil {
-					t.Fatal(err)
-				}
-				actual := f.policy()
-				if !reflect.DeepEqual(actual.Spec.MatchConditions, []admissionv1.MatchCondition{{Name: "exclude-cetiadmin", Expression: execCondition}}) {
-					t.Fatal("not the exact current username AND UID exception")
-				}
-				actual.Spec.MatchConditions, policy.Spec.MatchConditions = nil, nil
-				if actual.Annotations[cetiAdminExecReceipt] == "" {
-					t.Fatal("exec exception has no independent cleanup receipt")
-				}
-				delete(actual.Annotations, cetiAdminExecReceipt)
-				if !reflect.DeepEqual(actual.Spec, policy.Spec) || !reflect.DeepEqual(actual.Annotations, policy.Annotations) || !reflect.DeepEqual(actual.OwnerReferences, policy.OwnerReferences) {
-					t.Fatal("changed existing validation or ownership")
-				}
-				currentAgent := f.agent()
-				binding, err := registryauth.ParseExecAdminBinding(currentAgent.Annotations[registryauth.ExecAdminBindingAnnotation], agent.UID, f.target.Namespace.UID)
-				if err != nil || binding.Username != execUsername || binding.ServiceAccountUID != "admin-account-uid" || binding.SourceUID != "source-uid" {
-					t.Fatal("wrong annotation binding")
-				}
-				if currentAgent.Annotations["example.com/keep"] != "target-data" || !reflect.DeepEqual(currentAgent.Spec, agent.Spec) {
-					t.Fatal("changed unrelated target data")
-				}
-				writes := len(f.attempts)
-				if err := f.grant(); err != nil || len(f.attempts) != writes {
-					t.Fatal("repeat grant was not read-only", err)
-				}
-				if err := f.revoke(); err != nil {
-					t.Fatal(err)
-				}
-				if len(f.policy().Spec.MatchConditions) != 0 {
-					t.Fatal("exception survived revocation")
-				}
-				if _, exists := f.agent().Annotations[registryauth.ExecAdminBindingAnnotation]; exists {
-					t.Fatal("binding annotation survived revocation")
-				}
-				if got := f.attempts[writes:]; !reflect.DeepEqual(got, []string{"/spec/matchConditions", "/metadata/annotations", "/metadata/annotations"}) {
-					t.Fatalf("wrong withdrawal order: %v", got)
-				}
-				writes = len(f.attempts)
-				if err := f.revoke(); err != nil || len(f.attempts) != writes {
-					t.Fatal("repeat revoke wrote again", err)
-				}
-			})
-		}
+		t.Run(string(kind), func(t *testing.T) {
+			f := newExecFixture(t, kind)
+			policy, agent := f.policy(), f.agent()
+			if err := f.grant(); err != nil {
+				t.Fatal(err)
+			}
+			actual := f.policy()
+			if !reflect.DeepEqual(actual.Spec.MatchConditions, []admissionv1.MatchCondition{{Name: "exclude-cetiadmin", Expression: execCondition}}) {
+				t.Fatal("not the exact current username AND UID exception")
+			}
+			actual.Spec.MatchConditions, policy.Spec.MatchConditions = nil, nil
+			if actual.Annotations[cetiAdminExecReceipt] == "" {
+				t.Fatal("exec exception has no independent cleanup receipt")
+			}
+			delete(actual.Annotations, cetiAdminExecReceipt)
+			if !reflect.DeepEqual(actual.Spec, policy.Spec) || !reflect.DeepEqual(actual.Annotations, policy.Annotations) || !reflect.DeepEqual(actual.OwnerReferences, policy.OwnerReferences) {
+				t.Fatal("changed existing validation or ownership")
+			}
+			currentAgent := f.agent()
+			binding, err := registryauth.ParseExecAdminBinding(currentAgent.Annotations[registryauth.ExecAdminBindingAnnotation], agent.UID, f.target.Namespace.UID)
+			if err != nil || binding.Username != execUsername || binding.ServiceAccountUID != "admin-account-uid" || binding.SourceUID != "source-uid" {
+				t.Fatal("wrong annotation binding")
+			}
+			if currentAgent.Annotations["example.com/keep"] != "target-data" || !reflect.DeepEqual(currentAgent.Spec, agent.Spec) {
+				t.Fatal("changed unrelated target data")
+			}
+			writes := len(f.attempts)
+			if err := f.grant(); err != nil || len(f.attempts) != writes {
+				t.Fatal("repeat grant was not read-only", err)
+			}
+			if err := f.revoke(); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.policy().Spec.MatchConditions) != 0 {
+				t.Fatal("exception survived revocation")
+			}
+			if _, exists := f.agent().Annotations[registryauth.ExecAdminBindingAnnotation]; exists {
+				t.Fatal("binding annotation survived revocation")
+			}
+			if got := f.attempts[writes:]; !reflect.DeepEqual(got, []string{"/spec/matchConditions", "/metadata/annotations", "/metadata/annotations"}) {
+				t.Fatalf("wrong withdrawal order: %v", got)
+			}
+			writes = len(f.attempts)
+			if err := f.revoke(); err != nil || len(f.attempts) != writes {
+				t.Fatal("repeat revoke wrote again", err)
+			}
+		})
 	}
 }
 
 func TestCetiAdminExecRejectsUnboundOrForgedInputs(t *testing.T) {
 	for _, scenario := range []string{"unbound", "source-disabled", "source-replaced", "sa-replaced", "agent-replaced", "namespace-replaced", "namespace-owner",
 		"policy-owner", "release-owner", "binding-warn", "binding-policy", "validation", "resource-rule", "selector", "extra-validation",
-		"extra-condition", "forged-condition", "almost-legacy", "forged-annotation", "stale-annotation", "protected", "sandbox-spec", "sandbox-status", "team-policy", "missing-team",
+		"extra-condition", "forged-condition", "foreign-condition", "forged-annotation", "stale-annotation", "protected", "sandbox-spec", "sandbox-status", "team-policy", "missing-team",
 		"admission-unavailable", "read-error"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newExecFixture(t, api.AgentTypeHermes)
@@ -436,8 +429,8 @@ func TestCetiAdminExecRejectsUnboundOrForgedInputs(t *testing.T) {
 			case "forged-condition":
 				policy.Spec.MatchConditions = []admissionv1.MatchCondition{{Name: "exclude-cetiadmin", Expression: "false"}}
 				f.update(policy)
-			case "almost-legacy":
-				policy.Spec.MatchConditions = []admissionv1.MatchCondition{{Name: "exclude-adminclaw", Expression: `request.userInfo.username != "system:serviceaccount:other:admin"`}}
+			case "foreign-condition":
+				policy.Spec.MatchConditions = []admissionv1.MatchCondition{{Name: "exclude-other-admin", Expression: `request.userInfo.username != "system:serviceaccount:other:admin"`}}
 				f.update(policy)
 			case "forged-annotation":
 				agent.Annotations[registryauth.ExecAdminBindingAnnotation] = `{"username":"system:masters"}`
@@ -480,14 +473,10 @@ func TestCetiAdminExecRejectsUnboundOrForgedInputs(t *testing.T) {
 }
 
 func TestCetiAdminExecRevocationSurvivesDisabledSourceAndSARecreation(t *testing.T) {
-	for _, scenario := range []string{"disabled", "source-gone", "sa-replaced", "protected", "legacy-protected"} {
+	for _, scenario := range []string{"disabled", "source-gone", "sa-replaced", "protected"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newExecFixture(t, api.AgentTypeHermes)
-			if scenario == "legacy-protected" {
-				policy := f.policy()
-				policy.Spec.MatchConditions = []admissionv1.MatchCondition{legacyExecCondition}
-				f.update(policy)
-			} else if err := f.grant(); err != nil {
+			if err := f.grant(); err != nil {
 				t.Fatal(err)
 			}
 			switch scenario {
@@ -503,7 +492,7 @@ func TestCetiAdminExecRevocationSurvivesDisabledSourceAndSARecreation(t *testing
 				f.get(f.binding.Record().ServiceAccount, account)
 				account.UID = "new-account-uid"
 				f.update(account)
-			case "protected", "legacy-protected":
+			case "protected":
 				agent := f.agent()
 				agent.Spec.SandboxRef = "sandbox"
 				f.update(agent)

@@ -86,10 +86,10 @@ func (p *PreparedRelease) ValidateCustom(namespace, release string) error {
 			documents.WriteByte('\n')
 		}
 	}
-	return p.validateCustomRenderedManifest(namespace, release, documents.Bytes())
+	return p.validateCustomManifest(namespace, release, documents.Bytes())
 }
 
-func (p *PreparedRelease) validateCustomManifestMode(namespace, release string, manifest []byte, retireLegacyExec bool) error {
+func (p *PreparedRelease) validateCustomManifest(namespace, release string, manifest []byte) error {
 	if _, err := p.customContribution(); err != nil {
 		return err
 	}
@@ -150,11 +150,6 @@ func (p *PreparedRelease) validateCustomManifestMode(namespace, release string, 
 		}
 		if len(obj) == 0 {
 			continue
-		}
-		if retireLegacyExec {
-			if err := p.retireLegacyExecException(obj, namespace); err != nil {
-				return err
-			}
 		}
 		kind := text(obj["kind"])
 		meta := object(obj["metadata"])

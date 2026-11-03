@@ -342,7 +342,7 @@ func (m *maintenanceMode) prepare(cfg *action.Configuration, p *PreparedRelease)
 		return nil, configurationError(err)
 	}
 	for _, previous := range []*release.Release{m.latest, m.base} {
-		if err := p.maintenanceCompatible(previous, planned, m.objects, m.namespace); err != nil {
+		if err := maintenanceCompatible(previous, planned, m.objects, m.namespace); err != nil {
 			return nil, configurationError(err)
 		}
 	}
@@ -450,19 +450,10 @@ func maintenanceMutable(obj *unstructured.Unstructured) bool {
 	}
 }
 
-func (p *PreparedRelease) maintenanceCompatible(previous, planned *release.Release, target map[string]*unstructured.Unstructured, namespace string) error {
+func maintenanceCompatible(previous, planned *release.Release, target map[string]*unstructured.Unstructured, namespace string) error {
 	original, err := maintenanceObjects(previous.Manifest, namespace)
 	if err != nil {
 		return err
-	}
-	if p.custom {
-		for _, obj := range original {
-			// Normalize the old source contract, never the stored release or live
-			// policy. Policy mutation remains the parent's separate exec sync.
-			if err := p.retireLegacyExecException(obj.Object, namespace); err != nil {
-				return err
-			}
-		}
 	}
 	if len(original) != len(target) {
 		return fmt.Errorf("maintenance cannot add or remove release objects")

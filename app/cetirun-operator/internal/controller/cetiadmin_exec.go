@@ -24,9 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// This exact old condition is recognized only for removal, never as authority.
-var legacyExecCondition = admissionv1.MatchCondition{Name: "exclude-adminclaw", Expression: `request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"`}
-
 func (r *AgentReconciler) reconcileCetiAdminAccess(ctx context.Context, name string) error {
 	provider, ok := r.CetiAdmin.(interface {
 		ReconcileRuntimeAccess(context.Context, string) error
@@ -68,12 +65,6 @@ func (r *CetiAdminReconciler) GrantExecAccess(ctx context.Context, binding cetia
 	if err := objects.checkBinding(want); err != nil {
 		return err
 	}
-	condition := want.MatchCondition()
-	if len(objects.policy.Spec.MatchConditions) != 0 && objects.policy.Spec.MatchConditions[0] != condition {
-		if err := r.patchExecConditions(ctx, objects.policy, nil); err != nil {
-			return err
-		}
-	}
 	raw, err := json.Marshal(want)
 	if err != nil {
 		return err
@@ -101,7 +92,7 @@ func (r *CetiAdminReconciler) GrantExecAccess(ctx context.Context, binding cetia
 	if objects.agent.Annotations[registryauth.ExecAdminBindingAnnotation] != string(raw) {
 		return cetiadmin.ErrConflict
 	}
-	return r.patchExecConditions(ctx, objects.policy, []admissionv1.MatchCondition{condition})
+	return r.patchExecConditions(ctx, objects.policy, []admissionv1.MatchCondition{want.MatchCondition()})
 }
 
 // RevokeExecAccess uses the retained record even when its source or SA has
@@ -279,7 +270,7 @@ func (o *cetiAdminExecObjects) checkBinding(want registryauth.ExecAdminBinding) 
 			return cetiadmin.ErrConflict
 		}
 	}
-	if len(conditions) > 1 || len(conditions) == 1 && conditions[0] != legacyExecCondition && conditions[0] != want.MatchCondition() {
+	if len(conditions) > 1 || len(conditions) == 1 && conditions[0] != want.MatchCondition() {
 		return cetiadmin.ErrConflict
 	}
 	return nil
