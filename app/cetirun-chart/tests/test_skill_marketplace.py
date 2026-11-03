@@ -241,6 +241,42 @@ class SkillMarketplaceChartTests(unittest.TestCase):
                 self.assertNotEqual(rendered.returncode, 0, rendered.stdout)
                 self.assertIn(field, rendered.stderr)
 
+    def test_hermes_lists_the_composed_skills_once(self):
+        # The main container mounts the composed skills at .agents/skills and
+        # at skills.mountPath. Hermes must list only one of the two paths, or
+        # it sees every skill twice and asks which one to use.
+        alias = "/home/vibe/.aks/skills"
+        for name, values, dirs, env in (
+            ("marketplace", marketplace_values("hermes"), ["/home/vibe/.agents/skills"], alias),
+            ("shared skills", reconciled_values("hermes"), ["/home/vibe/.agents/skills"], alias),
+            ("no shared skills", without_shared_skills(), [alias, "/home/vibe/.agents/skills"], None),
+        ):
+            with self.subTest(case=name):
+                rendered = render(values)
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                documents = [document for document in yaml.safe_load_all(rendered.stdout) if document]
+                config = next(document for document in documents if document["kind"] == "ConfigMap"
+                              and "hermes-config.yaml" in (document.get("data") or {}))
+                hermes = yaml.safe_load(config["data"]["hermes-config.yaml"])
+                self.assertEqual(hermes["skills"]["external_dirs"], dirs)
+                pod = pod_spec(rendered.stdout)
+                initializer = next(c for c in pod["initContainers"] if c["name"] == "init-home-data")
+                aliases = [item.get("value") for item in initializer["env"] if item["name"] == "CETIRUN_SKILLS_VIEW_ALIAS"]
+                self.assertEqual(aliases, [env] if env else [])
+                main = pod["containers"][0]
+                mounted = [m["mountPath"] for m in main["volumeMounts"] if m["name"] == "context-view"]
+                self.assertEqual(alias in mounted, env is not None)
+
+
+def without_shared_skills():
+    # A Sandbox needs a skills claim, so this is an Agent without one.
+    values = reconciled_values("hermes")
+    for name in ("sandboxWorkload", "runtimeClassName"):
+        del values[name]
+    values["skills"] = {"shared": False}
+    values["sidecarScope"] = {"enabled": True}
+    return values
+
 
 if __name__ == "__main__":
     unittest.main()

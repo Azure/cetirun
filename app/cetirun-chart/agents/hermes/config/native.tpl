@@ -45,6 +45,12 @@ Licensed under the MIT License.
 {{- $existingDirs := dig "external_dirs" (list) $skills }}
 {{- $skillsPath := "/home/vibe/.agents/skills" }}
 {{- if not $contextSkills }}{{- $skillsPath = .Values.skills.mountPath }}{{- end }}
+{{- /* With shared skills, the composed context also mounts its skills at
+   skills.mountPath (cetirun.context.mount). Hermes sees two different
+   directories with the same skills there, so it lists the view only once. */}}
+{{- if and $contextSkills .Values.skills.shared }}
+{{- $existingDirs = without $existingDirs .Values.skills.mountPath }}
+{{- end }}
 {{- $_ := set $skills "external_dirs" (append $existingDirs $skillsPath | uniq) }}
 {{- $_ := set $config "skills" $skills }}
 {{- end }}

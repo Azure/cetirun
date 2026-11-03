@@ -64,6 +64,11 @@ Licensed under the MIT License.
 {{- if and .Values.skills.shared (include "cetirun.context.enabled" .) }}
 - name: CETIRUN_SHARED_SKILLS_DIR
   value: /etc/cetirun-shared-skills
+{{- if ne .Values.skills.mountPath (printf "%s/.agents/skills" (include "cetirun.context.home" .)) }}
+{{- /* The main container mounts the same skills here too (cetirun.context.mount). */}}
+- name: CETIRUN_SKILLS_VIEW_ALIAS
+  value: {{ .Values.skills.mountPath | quote }}
+{{- end }}
 {{- with (.Values.skills.marketplace | default dict).selectionDigest }}
 - name: CETIRUN_SKILLS_RELEASE_SELECTION
   value: {{ . | quote }}
