@@ -115,7 +115,9 @@ When the [Skill Marketplace](../../operations/skill-marketplace/) is enabled,
 each identifier without the `npm:` prefix is the name of a marketplace skill.
 The operator does not add these names to `skills.clawHub`. An instance cannot
 add or remove them with its override lists. The operator refuses such an
-instance with `AgentConfigInvalid`. The Skill Marketplace publishes the skills
+instance with `AgentConfigInvalid`.
+
+The Skill Marketplace publishes the skills
 that a policy-bound Team selects from one Git repository. When a
 common-executor Sandbox Agent of the Team starts, init copies the Team's
 published skills into the read-only `$HOME/.agents/skills` view. Other Agents

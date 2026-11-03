@@ -19,11 +19,11 @@ The service does these tasks:
    repository content.
 2. It validates each skill of the commit. It lists the valid skills and the
    rejected directories in a catalog.
-3. For each Team with an Agent Policy, it publishes the selected skills as an
-   immutable release in a Blob NFS container.
+3. For each Team with an Agent Policy, it publishes the selected skills. The
+   result is an immutable release in a Blob NFS container.
 4. It gives each Agent of these Teams a read-only claim of the container. When
-   the Agent starts, its HOME initializer copies the current release of the
-   Team into the skills view of the Agent.
+   the Agent starts, its HOME initializer copies the current Team release into
+   the skills view of the Agent.
 
 Approval occurs in the repository. The service publishes the content of the
 configured branch or tag. Review the changes to that branch or tag as you
@@ -63,9 +63,9 @@ reason for each rejected directory.
   directory.
 - The frontmatter has no `description`. Or the description has more than
   1,024 characters, or control characters other than line breaks and tabs.
-- The name is not lowercase letters and digits in words that single hyphens
-  join, or it has more than 64 characters. For example, `pdf-tools` is a valid
-  name, and `PDF_Tools` is not.
+- The name is not words of lowercase letters and digits that single hyphens
+  join. Or the name has more than 64 characters. For example, `pdf-tools` is a
+  valid name, and `PDF_Tools` is not.
 - The name is reserved. By default, `cetirun-memory` and `connected-services`
   are reserved, because CetiRun and its Agent images supply skills with these
   names.
@@ -85,7 +85,7 @@ These rules also apply:
   subdirectory is part of the outer skill, and the catalog lists it as
   rejected.
 - The service ignores a `SKILL.md` in a directory whose name starts with `.`,
-  for example `.github`, and in the directories below it.
+  for example `.github`. The same applies to the directories below it.
 - The service refuses a commit that has more than 256 MiB of files.
 
 The version of a skill is the first 12 hexadecimal characters of the Git tree
@@ -163,10 +163,10 @@ external skill directory. Refer to
 
 ### Storage
 
-The service needs a Blob container of its own, in a storage account with NFS
-3.0, such as the Premium BlockBlobStorage account that the storage helper
-creates. Do not use the container of the shared skills (`sharedSkills`).
-`make deploy` refuses it.
+The service needs a Blob container of its own. The container must be in a
+storage account with NFS 3.0, such as the Premium BlockBlobStorage account
+that the storage helper creates. Do not use the container of the shared skills
+(`sharedSkills`). `make deploy` refuses it.
 
 NFS 3.0 has no client authentication. The storage service authorizes NFS
 requests only by the network that they come from. Use a storage account that
@@ -287,10 +287,11 @@ skillMarketplace:
 - It sets the switches `cetirun-skill-marketplace.enabled`,
   `cetirun-operator.skillMarketplace.enabled`, and
   `cetirun-portal.skillMarketplace.enabled`. It also sets the repository and
-  storage values of the block, the image from the `release` section, the claim
-  name from `sandboxSources.skillsClaimName`, and the catalog namespace from
-  `platform.namespace`. Do not set these values under `platform.values`. A
-  different value stops the run. A switch without the block also stops it.
+  storage values of the block. It takes the image from the `release` section,
+  the claim name from `sandboxSources.skillsClaimName`, and the catalog
+  namespace from `platform.namespace`. Do not set these values under
+  `platform.values`. A different value stops the run. A switch without the
+  block also stops it.
 - It accepts only the fields of the table. Set the other values of the chart
   under `platform.values.cetirun-skill-marketplace`, for example
   `repository.tokenUsername` or `resources`. Refer to the
@@ -468,8 +469,8 @@ release of the Team has. The catalog lists the skill under `retained` for the
 Team, and the Portal shows **Retained**. The skill stays retained until it is
 valid again, or until you remove it from the Team.
 
-A selected skill is missing when the repository does not have it as a valid
-skill and the current release of the Team does not have it. The service
+A selected skill is missing when it is not valid in the repository and not in
+the current release of the Team. The service
 publishes the release without it. The catalog lists the skill under `missing`,
 and the Portal shows **Missing**. The Portal does not add such a skill to a
 Team, but `kubectl` can.
@@ -500,11 +501,10 @@ skill, remove it from the Team. Then you can remove it from the Policy.
   Refer to [Pin and update a chart](../../guides/lifecycle/#pin-and-update-a-chart).
 - **No change for each Agent.** `skillOverrides` cannot add or remove a
   marketplace skill. While the Skill Marketplace is on, the operator refuses
-  such an Agent. The Agent changes to `Failed` with `AgentConfigInvalid` and
-  this message:
+  such an Agent, with or without a policy. The Agent changes to `Failed` with
+  `AgentConfigInvalid` and this message:
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
-  This also applies to Agents without a policy. `npm:` entries in
-  `skillOverrides` stay possible.
+  `npm:` entries in `skillOverrides` stay possible.
 - **Name conflicts with private skills.** CetiRun does not compare marketplace
   names with the skills in the HOME of an Agent. OpenClaw and Hermes give their
   own skill directories precedence over `$HOME/.agents/skills`. A private skill
@@ -527,9 +527,9 @@ skill, remove it from the Team. Then you can remove it from the Policy.
   namespaces of Agents, and volumes only for the configured container. It
   never updates them. In the operator namespace, it can create ConfigMaps, and
   it can update only the ConfigMap `cetirun-skill-marketplace`.
-- When the claim of an Agent is gone, for example after the deletion of the
-  Agent, the service deletes the PersistentVolume of that claim. The data in
-  the container stays.
+- When the claim of an Agent is gone, the service deletes the PersistentVolume
+  of that claim. A claim is gone, for example, after the deletion of its Agent.
+  The data in the container stays.
 - Agents can only read the skills, and only the HOME initializer mounts the
   claim. Skills can contain scripts that the Agents run. Review the repository
   as you review code.
@@ -607,8 +607,8 @@ kubectl get agents.cetirun.microsoft.com alice-example -o jsonpath='{.status.con
 `Waiting for the Skill Marketplace to provide the Team skills claim`. `Ready`
 shows the same reason, unless a running workload already made the Agent ready.
 
-The service creates the claim when the Team of the Agent has an Agent Policy,
-and when the namespace of the Agent is protected and belongs to the Agent. The
+The service creates the claim when the Team of the Agent has an Agent Policy.
+The namespace of the Agent must also be protected and belong to the Agent. The
 bootstrap of the operator creates such namespaces. If the wait does not end,
 examine the service, its log, and the claim:
 

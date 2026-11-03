@@ -589,7 +589,7 @@ them.
 
 The optional `cetirun-skill-marketplace` subchart syncs one Git repository of
 skills. It publishes the skills that each policy-bound Team selects to a Blob
-NFS container, and it creates the read-only skills claim in the namespace of
+NFS container. It also creates the read-only skills claim in the namespace of
 each native Sandbox Agent. It is off by default. To enable it, also enable
 `cetirun-operator.skillMarketplace.enabled` and
 `cetirun-portal.skillMarketplace.enabled`. The Operator chart accepts its
@@ -630,9 +630,9 @@ must not contain credentials. For `auth: token`, the Secret in
 `ssh-privatekey` and `known_hosts`. Before its first write, the command makes
 sure that these keys and the StorageClass exist.
 
-The command refuses the block if the native Sandbox sources are off, if the
-Operator uses a published skills catalog, or if the storage is the
-`sharedSkills` container. It takes the image from `release`, the claim name
+The command refuses the block if the native Sandbox sources are off. It also
+refuses it if the Operator uses a published skills catalog, or if the storage
+is the `sharedSkills` container. It takes the image from `release`, the claim name
 from the Operator's `sandboxSources.skillsClaimName`, and the catalog namespace
 from `platform.namespace`. Set other chart values, for example
 `repository.tokenUsername`, under `platform.values.cetirun-skill-marketplace`.

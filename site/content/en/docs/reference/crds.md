@@ -324,8 +324,8 @@ behaviors. Keep it equal to the operator's `skillMarketplace.enabled`.
 - `GET /api/v1/admin/skill-marketplace` is for administrators only. It returns
   `enabled`, `known`, and `catalog`, with `Cache-Control: no-store`. `enabled`
   is `false` when the Portal setting is off. `known` is `false` until the
-  Skill Marketplace writes its catalog, and `catalog` is then `null`. The
-  catalog is the `catalog.json` document of the ConfigMap
+  Skill Marketplace writes its catalog, and `catalog` is then `null`.
+- The catalog is the `catalog.json` document of the ConfigMap
   `cetirun-skill-marketplace` in the operator namespace. The Portal accepts
   only the document version `v1`, without duplicate fields, and at most 1 MiB.
   If it cannot read or decode the document, the response is
@@ -333,13 +333,13 @@ behaviors. Keep it equal to the operator's `skillMarketplace.enabled`.
 - Team creation and update examine `skills`. Each entry without the `npm:`
   prefix must be a valid marketplace skill name. Otherwise, the response is
   `422` with the code `invalid_team`. Each entry must be in the Policy's
-  `skills.allowed` (`400`, `invalid_team_binding`). Each marketplace skill
-  that the stored Team does not select yet must be in the catalog (`422`,
-  `invalid_team`). When the Skill Marketplace rejected the repository's copy,
-  the message gives the reason. Before the catalog exists, the response is
-  `422` with `invalid_team`. If the Portal cannot read the catalog, the
-  response is `503` with `skill_marketplace_unavailable`. A skill that the
-  Team already selects can stay after it leaves the repository.
+  `skills.allowed` (`400`, `invalid_team_binding`).
+- Each marketplace skill that the stored Team does not select yet must be in
+  the catalog (`422`, `invalid_team`). When the Skill Marketplace rejected the
+  repository's copy, the message gives the reason. Before the catalog exists,
+  the response is `422` with `invalid_team`. If the Portal cannot read the
+  catalog, the response is `503` with `skill_marketplace_unavailable`. A skill
+  that the Team already selects can stay after it leaves the repository.
 - A Policy update cannot remove a marketplace skill from `skills.allowed`
   while a Team of the Policy selects it. The response is `422` with the code
   `invalid_policy`, and the message names the Team.

@@ -10,12 +10,12 @@ to the Agents of policy-bound Teams. It does these things:
    `repository.path` with a `SKILL.md` file. The YAML frontmatter of that file
    must have a `name`, equal to the directory name, and a `description`.
 3. It publishes the skills that each policy-bound Team selects in
-   `Team.spec.skills` as an immutable release in the Team's subtree of a Blob
-   NFS container. Then it makes that release current.
+   `Team.spec.skills`. The result is an immutable release in the Team's
+   subtree of a Blob NFS container. Then it makes that release current.
 4. It creates a read-only claim of the container in each Agent namespace of
-   these Teams. The Agent's initializer mounts only the Team's subtree, waits
-   for the release of the Team's current selection, and copies it into the
-   Agent's read-only `~/.agents/skills` view.
+   these Teams. The Agent's initializer mounts only the Team's subtree. It
+   waits for the release of the Team's current selection, and copies it into
+   the Agent's read-only `~/.agents/skills` view.
 5. It writes the catalog ConfigMap `cetirun-skill-marketplace` in the operator
    namespace. The Portal reads it for the skill pickers and the status page.
 
@@ -25,17 +25,18 @@ does.
 
 ## Validation
 
-The service rejects a skill directory, and lists the reason in the catalog,
-when it:
+The service rejects a skill directory, and lists the reason in the catalog, in
+these cases:
 
-- has no valid frontmatter, or its `name` is not the directory name;
-- has a name that is not lowercase letters and digits joined by single
-  hyphens (at most 64 characters), or a reserved name (`cetirun-memory`,
-  `connected-services`);
-- contains a symbolic link or a submodule;
-- has more than 500 files, more than 5 MiB, a `SKILL.md` larger than 256 KiB,
-  or files nested deeper than 8 levels;
-- has the same name as another skill directory. Both are rejected.
+- The directory has no valid frontmatter, or its `name` is not the directory
+  name.
+- The name is not words of lowercase letters and digits that single hyphens
+  join. Or the name has more than 64 characters.
+- The name is reserved (`cetirun-memory`, `connected-services`).
+- The directory contains a symbolic link or a submodule.
+- The directory has more than 500 files or more than 5 MiB. Or its `SKILL.md`
+  is larger than 256 KiB, or it has files nested deeper than 8 levels.
+- Another skill directory has the same name. Both are rejected.
 
 A `SKILL.md` inside a skill directory does not create another skill.
 
@@ -50,8 +51,8 @@ teams/<team-uid>/releases/<id>/.cetirun-release.json
 
 The release ID depends only on the Team's selection and the skill versions.
 The service keeps the current release and the two newest others, and removes
-older releases after ten minutes. When a selected skill is no longer valid in
-the repository, the next release keeps its last published version and the
+older releases after ten minutes. A selected skill can stop being valid in the
+repository. Then the next release keeps its last published version, and the
 catalog lists it as retained.
 
 ## Configuration

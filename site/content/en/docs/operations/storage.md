@@ -105,12 +105,13 @@ provisioned successfully. A successful call does not prove an NFS mount.
 To reach the account only through a private endpoint, set
 `PRIVATE_ENDPOINT_SUBNET_ID`. The helper then creates a private endpoint for
 the blob service in that subnet. It does not update the service endpoints of a
-subnet or add a subnet rule to the account. `PRIVATE_DNS_ZONE_ID` names an
-existing private DNS zone for blob private links,
-`privatelink.blob.core.windows.net`. The private endpoint registers its address
-in that zone. The zone must be linked to the cluster's virtual network, so that
-nodes resolve the account to the private address. The helper does not create
-the zone or the link.
+subnet or add a subnet rule to the account.
+
+`PRIVATE_DNS_ZONE_ID` names an existing private DNS zone for blob private
+links, `privatelink.blob.core.windows.net`. The private endpoint registers its
+address in that zone. The zone must be linked to the cluster's virtual network,
+so that nodes resolve the account to the private address. The helper does not
+create the zone or the link.
 
 `PUBLIC_NETWORK_ACCESS` is `Enabled` by default. `Disabled` leaves only private
 endpoints, so the helper requires `PRIVATE_ENDPOINT_SUBNET_ID` with it. With

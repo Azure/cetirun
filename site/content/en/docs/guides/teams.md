@@ -107,14 +107,16 @@ initialization. A change to a team does not continuously rewrite the user
 memory of every agent. See [runtime file updates](../../concepts/configuration/#runtime-files-and-updates).
 
 Add `spec.skills` for approved identifiers and `spec.skillStorage` for a
-reviewed shared Blob container. A Team has at most 100 skill entries. See
-[configuration and skills](../../concepts/configuration/)
+reviewed shared Blob container. See [configuration and skills](../../concepts/configuration/)
 for installation limits and [CRD reference](../../reference/crds/) for the field
 names. Install the external dependencies of each skill separately. Also
 validate them separately. The shared storage account/container and the CSI
 prerequisites must already exist. The team resource does not provision cloud
-storage. With the [Skill Marketplace](#skills-from-the-skill-marketplace), the
-entries without the `npm:` prefix are the names of marketplace skills.
+storage.
+
+A Team has at most 100 skill entries. With the
+[Skill Marketplace](#skills-from-the-skill-marketplace), the entries without
+the `npm:` prefix are the names of marketplace skills.
 
 The team supplies context, policy, and skills. It does not select a model
 provider or hold API credentials. Model access is configured through the AI

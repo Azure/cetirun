@@ -114,9 +114,10 @@ The protected inventory includes:
 For a Skill Marketplace Team, the operator sets two values. `skills.subPath`
 is the Team subtree of the skills claim (`teams/<team-uid>`).
 `skills.marketplace.selectionDigest` is the Team selection digest. Only the
-HOME initializer mounts that subtree, read-only. It receives the digest as
-`CETIRUN_SKILLS_RELEASE_SELECTION` and waits for the matching Team release.
-No other container mounts the claim. The render fails unless both values are
+HOME initializer mounts that subtree, read-only.
+
+The initializer receives the digest as `CETIRUN_SKILLS_RELEASE_SELECTION` and
+waits for the matching Team release. No other container mounts the claim. The render fails unless both values are
 set, `skills.shared` is true, and the composed Agent context is enabled. When
 both values are empty, the render does not change.
 
