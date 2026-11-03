@@ -500,6 +500,7 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 func renderedPlacementWebhook(t *testing.T, namespace, registryName string, ca []byte) *admissionregistrationv1.ValidatingWebhookConfiguration {
 	t.Helper()
 	command := exec.Command("helm", "template", "placement-test", "../../chart", "--kube-version=1.37.0",
+		"--set", "cetiadmin.enabled=false",
 		"--set", "namespace="+namespace, "--set", "serviceAccount.name=controller",
 		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
 		"--set", "sandboxAdmission.podsEnabled=true", "--set", "sandboxAdmission.placementConfigMapName="+registryName,

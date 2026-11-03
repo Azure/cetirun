@@ -35,6 +35,8 @@ type SkillOverrideSpec struct {
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.restartRequestID) || has(self.restartRequestID)",message="restartRequestID cannot be removed once set",fieldPath=".restartRequestID"
 // +kubebuilder:validation:XValidation:rule="!(has(self.suspended) && self.suspended) || !has(self.restartRequestID) || (has(oldSelf.restartRequestID) && self.restartRequestID == oldSelf.restartRequestID)",message="a suspended Agent cannot request a new restart",fieldPath=".restartRequestID"
 // +kubebuilder:validation:XValidation:rule="!has(self.plannedMigration) || !has(oldSelf.plannedMigration) || self.plannedMigration.requestID != oldSelf.plannedMigration.requestID || self.plannedMigration == oldSelf.plannedMigration",message="a migration request ID cannot select a different destination",fieldPath=".plannedMigration"
+// +kubebuilder:validation:XValidation:rule="!has(self.helm) || !has(self.helm.maintenance) || (has(self.suspended) && self.suspended)",message="a Helm maintenance request requires suspension",fieldPath=".helm.maintenance"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.helm) || !has(oldSelf.helm.maintenance) || (has(self.helm) && has(self.helm.maintenance)) || (has(self.suspended) && self.suspended)",message="clearing Helm maintenance must retain suspension; resume is a separate update",fieldPath=".suspended"
 type AgentSpec struct {
 	// Agent is the required per-instance Agent configuration.
 	// +required
@@ -220,6 +222,11 @@ type HelmSpec struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Values map[string]runtime.RawExtension `json:"values,omitempty"`
+
+	// Maintenance requests a Helm handoff while the Agent is suspended.
+	// The controller and admission verify the handoff before native writes.
+	// +optional
+	Maintenance *HelmMaintenanceRequest `json:"maintenance,omitempty"`
 }
 
 // AgentStatus defines the observed state of Agent.
@@ -247,6 +254,11 @@ type AgentStatus struct {
 	// HelmReleaseName is the Helm release name for this instance.
 	// +optional
 	HelmReleaseName string `json:"helmReleaseName,omitempty"`
+
+	// HelmMaintenance records the controller's observation of a Helm handoff.
+	// A stored phase alone is not proof of current write or resume authority.
+	// +optional
+	HelmMaintenance *HelmMaintenanceStatus `json:"helmMaintenance,omitempty"`
 
 	// ObservedGeneration is the last CR generation that was fully reconciled.
 	// +optional
@@ -732,6 +744,7 @@ type SandboxStatus struct {
 const (
 	ConditionReady                    = "Ready"
 	ConditionHelmDeployed             = "HelmDeployed"
+	ConditionHelmMaintenanceReady     = "HelmMaintenanceReady"
 	ConditionIngressReady             = "IngressReady"
 	ConditionPodReady                 = "PodReady"
 	ConditionTailscaleReady           = "TailscaleReady"

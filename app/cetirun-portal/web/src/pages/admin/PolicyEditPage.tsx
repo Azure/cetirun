@@ -4,7 +4,7 @@
 import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Switch, Text, Textarea, Title2 } from "@fluentui/react-components";
+import { Button, Combobox, Divider, Field, Input, MessageBar, Option, Select, Spinner, Switch, Text, Textarea, Title2 } from "@fluentui/react-components";
 import {
   createPolicy, getPolicy, updatePolicy, PolicyConflictError, type AgentPolicyDTO,
   type AgentPolicyPort, type AgentPolicyProtocol, type AgentPolicyUpsertRequest, type PolicyHarness,
@@ -19,6 +19,7 @@ import {
   type RateLimitRow,
 } from "../../utils/rateLimits";
 import { InternalNetworkRules, formatInternalNetworkRules, parseInternalNetworkRules, validCIDR, type InternalNetworkRule } from "./InternalNetworkRules";
+import { useAIGatewayCatalog } from "../../hooks/useAIGateway";
 
 export interface PolicyFormState {
   name: string; uid: string; resourceVersion: string; openclaw: boolean; hermes: boolean; custom: boolean; skills: string;
@@ -34,6 +35,43 @@ const emptyForm: PolicyFormState = {
 };
 
 function lines(value: string): string[] { return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); }
+
+function SharedModelPicker({ value, onChange }: { value: string; onChange: (models: string[]) => void }) {
+  const catalog = useAIGatewayCatalog(true);
+  const [search, setSearch] = useState("");
+  const known = catalog.data?.known === true;
+  const models = known ? [...new Set(catalog.data!.sharedModels.map((model) => model.name))].sort((a, b) => a.localeCompare(b)) : [];
+  const selected = lines(value);
+  const filtered = models.filter((model) => model.toLowerCase().includes(search.toLowerCase()));
+
+  return <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <Field label="Allowed shared models" hint="Search and select models from the Gateway catalog. These models also decide the owners' GitHub Copilot models that are the same models: a Copilot model is offered only when this list allows a shared model that is that model.">
+      <Combobox multiselect selectedOptions={selected} value={search} placeholder="Search models"
+        disabled={!known || models.length === 0} style={{ width: "100%" }}
+        onChange={(event) => setSearch(event.target.value)}
+        onOptionSelect={(_, data) => { onChange(data.selectedOptions); setSearch(""); }}>
+        {filtered.map((model) => <Option key={model} value={model}>{model}</Option>)}
+        {filtered.length === 0 && <Option disabled>No models match your search</Option>}
+      </Combobox>
+    </Field>
+    {selected.length > 0 && <ul aria-label="Selected shared models" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+      {selected.map((model) => <li key={model} style={{ display: "flex", alignItems: "center", gap: 8, paddingBlock: 4 }}>
+        <div style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
+          <Text>{model}</Text>
+          {known && !models.includes(model) && <Text block size={200}>Not listed in the current catalog</Text>}
+        </div>
+        <Button type="button" appearance="subtle" aria-label={`Remove ${model}`}
+          onClick={() => onChange(selected.filter((name) => name !== model))}>Remove</Button>
+      </li>)}
+    </ul>}
+    {catalog.isPending && <Spinner size="tiny" label="Loading models..." />}
+    {catalog.isError && <MessageBar intent="warning">Failed to load the model catalog. Your selections have been kept. Try refreshing.</MessageBar>}
+    {!catalog.isPending && !catalog.isError && !known && <Text>The Gateway model catalog is not available yet.</Text>}
+    {known && models.length === 0 && <Text>No shared models are listed in the Gateway catalog.</Text>}
+    <Button type="button" style={{ alignSelf: "flex-start" }} disabled={catalog.isFetching}
+      onClick={() => { void catalog.refetch(); }}>Refresh models</Button>
+  </div>;
+}
 
 export function fromPolicyDTO(policy: AgentPolicyDTO): PolicyFormState {
   return {
@@ -198,10 +236,10 @@ export function PolicyEditPage() {
       const copilot = data.checked;
       setForm({ ...form, copilot, budgetEnabled: copilot || form.sharedModels.trim() !== "" ? form.budgetEnabled : false });
     }} />
-    <Field label="Allowed shared models" hint="Enter one exact Gateway catalog model name per line; commas are not separators. These models also decide the owners' GitHub Copilot models that are the same models: a Copilot model is offered only when this list allows a shared model that is that model."><Textarea rows={4} value={form.sharedModels} onChange={(_, data) => {
-      const sharedModels = data.value;
+    <SharedModelPicker key={`models-${name || "__new__"}`} value={form.sharedModels} onChange={(models) => {
+      const sharedModels = models.join("\n");
       setForm({ ...form, sharedModels, budgetEnabled: form.copilot || sharedModels.trim() !== "" ? form.budgetEnabled : false });
-    }} placeholder={"gpt-4.1\ngpt-4o-mini"} /></Field>
+    }} />
     <Switch checked={form.budgetEnabled} label="Set monthly Gateway budget" onChange={(_, data) => setForm({ ...form, budgetEnabled: data.checked })} />
     {form.budgetEnabled && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Default monthly USD" required><Input value={form.defaultMonthlyUSD} onChange={(_, data) => setForm({ ...form, defaultMonthlyUSD: data.value })} placeholder="e.g. 20" /></Field><Field label="Maximum monthly USD" required><Input value={form.maxMonthlyUSD} onChange={(_, data) => setForm({ ...form, maxMonthlyUSD: data.value })} placeholder="e.g. 50" /></Field></div>}
     <Divider /><Text weight="semibold">AI Gateway limits per Agent</Text>

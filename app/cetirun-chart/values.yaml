@@ -27,6 +27,11 @@ runtimeClassName: "kata-vm-isolation"
 # execution. Legacy runtimes leave this null.
 sandboxWorkload: null
 
+# -- Operator-prepared CetiAdmin binding; never a tenant override or RBAC grant.
+# The Operator supplies the remaining projection fields after verifying ownership.
+cetiadmin:
+  enabled: false
+
 # -- Deprecated OpenClaw image alias. Prefer openclaw.image.
 image:
   # -- Image repository

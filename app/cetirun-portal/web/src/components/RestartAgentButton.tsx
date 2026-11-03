@@ -50,7 +50,7 @@ export function RestartAgentButton({ instance }: { instance: Instance }) {
     <Button onClick={openDialog} disabled={!instance.restartAvailable || pending || restart.isPending}>
       Restart Agent
     </Button>
-    {pending && <Text role="status">
+    {pending && <Text role="status" style={{ flexBasis: "100%", order: 1 }}>
       Restart requested; waiting for the replacement Pod to become ready. Suspension or deletion takes precedence.
     </Text>}
     <Dialog open={open} onOpenChange={(_, data) => {

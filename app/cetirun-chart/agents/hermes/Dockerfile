@@ -134,7 +134,10 @@ COPY --chown=vibe:vibe agents/hermes/plugins/cetirun-memory-context/ /usr/local/
 RUN python3 /usr/local/lib/hermes-agent/cetirun_compat/apply.py --root /usr/local/lib/hermes-agent
 
 USER root
-RUN ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 && \
+RUN tdnf install -y tzdata && tdnf clean all && \
+    /usr/local/lib/hermes-agent/venv/bin/python -c \
+      'from zoneinfo import ZoneInfo; [ZoneInfo(zone) for zone in ("UTC", "Asia/Singapore", "America/New_York")]' && \
+    ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 && \
     ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so && \
     printf '/usr/local/lib\n' > /etc/ld.so.conf.d/000-sqlite-fixed.conf && \
     ldconfig && \
