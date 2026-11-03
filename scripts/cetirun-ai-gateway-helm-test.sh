@@ -476,6 +476,10 @@ assert_absent "classifier_fallback" "a jev router with its own tiers keeps its f
 echo "==> a router skips OpenClaw's context when it classifies"
 assert_contains "open: <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "a router reads past OpenClaw's context" "${routed}"
 assert_contains "open: <system-reminder>" "and keeps LiteLLM's own markers" "${routed}"
+# OpenClaw passes on a tool result's images in a user message of their own,
+# labelled "Image(s) from tool result #1 (computer):". Measured, the label put
+# a request for a design in the simple tier.
+assert_contains "open: 'Image(s) from tool result #'" "and the label of OpenClaw's tool-result images" "${routed}"
 standalone="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set operatorIntegration=false)"
 assert_contains "open: <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "also without the operator integration" "${standalone}"
 router_values "${router_dir}/own-markers.yaml" "${default_router_config}

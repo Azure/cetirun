@@ -53,6 +53,44 @@ while IFS= read -r line || [ -n "$line" ]; do
   fi
 done < "$HERMES_HOME/.env"
 
+if [ "${CETIRUN_CETIADMIN_ENABLED:-}" = "true" ]; then
+  if [ ! -x "${HERMES_PYTHON:-}" ] || [ ! -f "${CETIRUN_CETIADMIN_CONFIG:-}" ]; then
+    echo "ERROR: CetiAdmin requires native Hermes Python and its generated monitor config" >&2
+    exit 1
+  fi
+  if ! "$HERMES_PYTHON" /opt/cetirun/cetiadmin/scripts/check_skill_sources.py >/dev/null 2>&1; then
+    echo "ERROR: CetiAdmin skill source check failed; scheduler not started" >&2
+    exit 1
+  fi
+  if ! cetiadmin_sync_result=$("$HERMES_PYTHON" /opt/cetirun/cetiadmin/scripts/cron_sync.py \
+      --config "$CETIRUN_CETIADMIN_CONFIG" 2>/dev/null); then
+    echo "ERROR: CetiAdmin cron synchronization failed; scheduler not started" >&2
+    exit 1
+  fi
+  # The helper cannot export into this shell; the scheduler must inherit its validated timezone.
+  if ! cetiadmin_timezone=$("$HERMES_PYTHON" -c '
+import json
+import sys
+from zoneinfo import ZoneInfo
+
+result = json.load(sys.stdin)
+with open(sys.argv[1], encoding="utf-8") as source:
+    expected = json.load(source)["monitor"]["timezone"]
+if result.get("status") not in {"disabled", "paused", "created", "updated", "unchanged"}:
+    sys.exit(1)
+timezone = result["timezone"]
+if timezone != expected or ZoneInfo(timezone).key != timezone:
+    sys.exit(1)
+print(timezone)
+' "$CETIRUN_CETIADMIN_CONFIG" <<< "$cetiadmin_sync_result" 2>/dev/null); then
+    echo "ERROR: CetiAdmin cron readback failed; scheduler not started" >&2
+    exit 1
+  fi
+  export HERMES_TIMEZONE="$cetiadmin_timezone"
+  export PATH="/opt/cetirun/cetiadmin/bin:$PATH"
+  unset cetiadmin_sync_result cetiadmin_timezone
+fi
+
 # CETIRUN_AUTH_KEY signs Hermes Dashboard sessions. The
 # chart injects it as a container env var; if it's missing (e.g. an old chart
 # rolling forward to a newer image), fall back to API_SERVER_KEY so the

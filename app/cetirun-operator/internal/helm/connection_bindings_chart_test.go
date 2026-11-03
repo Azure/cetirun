@@ -28,6 +28,7 @@ func TestOperatorBrokerStorageConfiguration(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			rendered, err := renderChartValues(t, chart, map[string]any{
+				"cetiadmin":      map[string]any{"enabled": false},
 				"connectionsMCP": map[string]any{"brokerNamespace": test.namespace, "brokerServiceAccount": test.account},
 				"agentIdentity":  map[string]any{"brokerURL": test.brokerURL},
 			})

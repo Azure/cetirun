@@ -18,7 +18,7 @@ identity:
   blueprintClientId: 33333333-3333-3333-3333-333333333333
   authorizationClientId: 44444444-4444-4444-4444-444444444444
   encryptionClientId: 55555555-5555-5555-5555-555555555555
-  keyVaultKeyUrl: https://example.vault.azure.net/keys/cache/version
+  keyVaultKeyUrl: https://example.vault.azure.net/keys/connection-records
 istio:
   release: cetirun-istio
   namespace: cetirun-istio
@@ -49,29 +49,53 @@ broker:
   namespace: cetirun-credentials
   values:
     tls:
-      secretName: broker-server-tls
-    providers:
-      github:
-        credentialsSecretName: github-oauth
-      google:
-        credentialsSecretName: google-oauth
+      secretName: broker-tls
+    # Name a provider only after you register it. make deploy then requires
+    # its credentials Secret in the Broker namespace.
+    # providers:
+    #   github:
+    #     credentialsSecretName: github-oauth
+    #   google:
+    #     credentialsSecretName: google-oauth
 platform:
   release: cetirun-platform
   namespace: cetirun-system
   values:
     cetirun-operator:
-      # This belongs to the Operator, not the Broker blueprint identity.
+      # Enabled by default. Set enabled: false to opt out before installation.
+      cetiadmin:
+        enabled: true
+        owner:
+          alias: example-owner
+          tenantID: "11111111-1111-1111-1111-111111111111"
+          objectID: "88888888-8888-8888-8888-888888888888"
+        kubernetes:
+          apiServer: https://kubernetes.default.svc
+          apiAudience: https://kubernetes.default.svc.cluster.local
+          caConfigMapName: kube-root-ca.crt
+          # Replace with the target API endpoint addresses after Service DNAT.
+          apiEgressCIDRs: [192.0.2.10/32]
+        model:
+          default: auto
+          initialMonthlyBudgetUSD: "100"
+      # The Workload Identity client ID of the Operator ServiceAccount. Use the
+      # Blueprint client ID unless another Operator integration needs another
+      # identity. make deploy requires a value.
       azure:
-        clientId: 77777777-7777-7777-7777-777777777777
+        clientId: 33333333-3333-3333-3333-333333333333
+      # Set this when the Operator needs registry credentials for the runtime
+      # chart: a kubernetes.io/dockerconfigjson Secret in this namespace.
+      # acrDockerSecret: acr-helm-pull
       sandboxAdmission:
-        tlsSecretName: sandbox-admission-tls
+        tlsSecretName: cetirun-sandbox-admission-tls
         # Render-only PEM framing, not a certificate and not valid for deployment.
         caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClFRPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQ==
         adminUsers: [platform-admin@example.invalid]
       connectionsMCP:
-        caSecretName: connections-ca
+        caSecretName: connections-mcp-ca
       customRuntime:
         # Replace with the digests whose UID, HOME and model access you qualified.
+        # The Operator configures AI Gateway access for these images.
         approvedImages:
           - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           - registry.example.com/cetirun-vscode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -81,9 +105,9 @@ platform:
         fsGroup: 1024
     cetirun-connections-mcp:
       tls:
-        secretName: connections-server-tls
+        secretName: connections-mcp-tls
       broker:
-        clientTLSSecretName: connections-broker-client-tls
+        clientTLSSecretName: broker-client-tls
     cetirun-ai-gateway:
       providerCredentials:
         existingSecret: gateway-provider-keys

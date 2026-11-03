@@ -57,26 +57,32 @@ spec:
         {{- end }}
         {{- include "cetirun.memory.init" . | nindent 8 }}
         {{- include "cetirun.agent.initContainers" . | nindent 8 }}
+        {{- if .Values.cetiadmin.enabled }}
+        {{- include "cetirun.cetiadmin.init" . | nindent 8 }}
+        {{- end }}
       {{- with .Values.initContainers }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
-            {{- if (include "cetirun.tailscaleEnabled" .) }}
             {{- $sc := deepCopy .Values.securityContext }}
+            {{- if .Values.cetiadmin.enabled }}
+            {{- $_ := set $sc "runAsGroup" 1024 }}
+            {{- end }}
+            {{- if (include "cetirun.tailscaleEnabled" .) }}
             {{- $caps := $sc.capabilities | default dict }}
             {{- $add := $caps.add | default list }}
             {{- $_ := set $caps "add" (append $add "NET_ADMIN" | uniq) }}
             {{- $_ := set $sc "capabilities" $caps }}
-            {{- toYaml $sc | nindent 12 }}
-            {{- else }}
-            {{- toYaml .Values.securityContext | nindent 12 }}
             {{- end }}
+            {{- toYaml $sc | nindent 12 }}
           image: "{{ include "cetirun.image" . }}"
           imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
           {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
           command: ["/bin/bash", "/etc/cetirun/ingress-entrypoint.sh"]
+          {{- else if .Values.cetiadmin.enabled }}
+          command: ["/bin/bash", "/etc/cetirun/hermes-entrypoint.sh"]
           {{- end }}
           {{- with (include "cetirun.agent.args" .) }}
           {{- . | nindent 10 }}
@@ -89,6 +95,9 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- if .Values.cetiadmin.enabled }}
+            {{- include "cetirun.cetiadmin.env" . | nindent 12 }}
+            {{- end }}
             {{- if (.Values.sandboxWorkload | default dict).egressSNI }}
             - name: CETIRUN_EGRESS_SNI
               value: "true"
@@ -181,6 +190,9 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.cetiadmin.enabled }}
+            {{- include "cetirun.cetiadmin.mounts" . | nindent 12 }}
+            {{- end }}
             {{- include "cetirun.memory.mounts" . | nindent 12 }}
             {{- if .Values.connectionsMCP.enabled }}
             - name: connections-identity
@@ -260,6 +272,9 @@ spec:
               mountPath: /tmp
         {{- end }}
       volumes:
+        {{- if .Values.cetiadmin.enabled }}
+        {{- include "cetirun.cetiadmin.volumes" . | nindent 8 }}
+        {{- end }}
         {{- include "cetirun.memory.volumes" . | nindent 8 }}
         {{- include "cetirun.context.volume" . | nindent 8 }}
         {{- if .Values.connectionsMCP.enabled }}
@@ -282,6 +297,16 @@ spec:
         - name: config
           configMap:
             name: {{ include "cetirun.configMapName" . }}
+            {{- if .Values.cetiadmin.enabled }}
+            # The kubeconfig is projected only into the main container's API mount.
+            items:
+              {{- range $key := keys (include (print .Template.BasePath "/configmap.yaml") . | fromYaml).data | sortAlpha }}
+              {{- if ne $key "cetiadmin-kubeconfig.json" }}
+              - key: {{ $key }}
+                path: {{ $key }}
+              {{- end }}
+              {{- end }}
+            {{- end }}
         - name: secrets
           secret:
             secretName: {{ include "cetirun.secretName" . }}

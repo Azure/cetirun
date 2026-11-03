@@ -8,12 +8,20 @@ Licensed under the MIT License.
 {{- /* On the platform AI Gateway: one provider holding the models the Gateway
    offers this Agent, with their context windows. Hermes reads the Agent's key
    from the container environment, so the key is in neither this file nor
-   Hermes' .env. Discovery stays off: the list is the operator's. */}}
+   Hermes' .env. Discovery stays off: the list is the operator's. A model the
+   Gateway reports as accepting images gets them with a request; for the
+   others, Hermes has a model describe the image first. The others are left
+   unmarked, not marked false: false would stop Hermes from asking the model
+   itself to describe an image. */}}
 {{- $models := dict }}
+{{- $visionModels := dig "visionModels" (list) $gateway }}
 {{- range (dig "models" (list) $gateway) }}
 {{- $entry := dict }}
 {{- if .contextWindow }}
 {{- $_ := set $entry "context_length" (int .contextWindow) }}
+{{- end }}
+{{- if has .id $visionModels }}
+{{- $_ := set $entry "supports_vision" true }}
 {{- end }}
 {{- $_ := set $models (printf "%v" .id) $entry }}
 {{- end }}

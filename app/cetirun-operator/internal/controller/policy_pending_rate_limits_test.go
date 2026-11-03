@@ -15,6 +15,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -138,17 +139,21 @@ func TestReconciledSandboxPendingRateLimitsPreserveLifetime(t *testing.T) {
 								Client: f.kube, APIReader: f.kube, NativeExecution: true, Source: f.r.SandboxPreparation.Configuration,
 							}
 							policyKey := client.ObjectKey{Name: agent.Status.Policy.EffectivePolicyRef.Name}
-							catchUp := false
+							catchUp, policyRead := false, false
 							writer := interceptor.NewClient(f.kube, interceptor.Funcs{
 								Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
-									if metadata, ok := object.(*metav1.PartialObjectMetadata); catchUp && ok &&
-										metadata.Kind == "Team" && key.Name == agent.Spec.Team {
+									if _, ok := object.(*api.Team); catchUp && policyRead && ok && key.Name == agent.Spec.Team {
 										catchUp = false
 										if _, err := policies.Reconcile(ctx, ctrl.Request{NamespacedName: policyKey}); err != nil {
 											return err
 										}
 									}
-									return c.Get(ctx, key, object, opts...)
+									err := c.Get(ctx, key, object, opts...)
+									if policy, ok := object.(*unstructured.Unstructured); err == nil && ok &&
+										policy.GetKind() == "AgentPolicy" && key == policyKey {
+										policyRead = true
+									}
+									return err
 								},
 								Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
 									checkStop(object)
@@ -186,7 +191,7 @@ func TestReconciledSandboxPendingRateLimitsPreserveLifetime(t *testing.T) {
 										t.Fatal(err)
 									}
 								}
-								catchUp = acceptance == "catch-up"
+								catchUp, policyRead = acceptance == "catch-up", false
 								_, reconcileErr := f.reconcile()
 								after, actual := f.current(t), f.workload(t)
 								ticket, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, agent.UID)
@@ -204,9 +209,9 @@ func TestReconciledSandboxPendingRateLimitsPreserveLifetime(t *testing.T) {
 									!reflect.DeepEqual(ticket.Reservation.Intent.SourceDigests, beforeTicket.Reservation.Intent.SourceDigests) ||
 									key == nil || key.Blocked || !key.Limits.Equal(step.want) || ptr.Deref(key.Spend, 0) != 2.5 ||
 									len(f.gateway.generated) != 1 || len(f.gateway.deletedTokens) != 0 || len(f.gateway.deletedAliases) != 0 {
-									t.Fatalf("%s disturbed initializing lifetime: reconcile=%v reservation=%v phase=%s blocks=%d stops=%d applies=%d/%d reservationPhase=%s",
+									t.Fatalf("%s disturbed initializing lifetime: reconcile=%v reservation=%v phase=%s blocks=%d stops=%d applies=%d/%d reservationPhase=%s catchUpPending=%t",
 										step.name, reconcileErr, err, after.Status.Phase, gateway.blocks, stopWrites,
-										f.installer.stages, stages, ticket.Reservation.Phase)
+										f.installer.stages, stages, ticket.Reservation.Phase, catchUp)
 								}
 							}
 						})

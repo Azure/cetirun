@@ -12,6 +12,7 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
@@ -30,7 +31,7 @@ import (
 
 const (
 	ValidationPath = "/validate-sandbox-configuration"
-	DefaultingPath = "/mutate-sandbox-agent"
+	DefaultingPath = cetiadmin.AgentDefaultingPath
 )
 
 type Handler struct {
@@ -245,7 +246,7 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	controllerDefaults := h.config.NativeExecution && request.UserInfo.Username == h.config.ControllerUsername &&
 		authenticated(request.UserInfo) && controllerRuntimeDefaults(agent, old)
 	if !h.config.administrator(request.UserInfo) && !controllerDefaults {
-		if err := h.memberAuthority(request, agent); err != nil {
+		if err := h.memberAuthority(ctx, request, agent); err != nil {
 			return admission.Denied(err.Error())
 		}
 		if old != nil && !sameAgentSelection(agent, old) {

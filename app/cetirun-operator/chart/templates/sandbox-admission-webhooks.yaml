@@ -89,4 +89,8 @@ webhooks:
         scope: Cluster
     matchConditions:
       {{- include "cetirun-operator.sandboxCleanupMatch" $controllerUsername | nindent 6 }}
+      {{- if include "cetirun-operator.cetiadminAdmission" . }}
+      - name: exclude-cetiadmin-caller
+        expression: {{ printf "request.userInfo.username != %s" (include "cetirun-operator.cetiadminUsername" . | toJson) | quote }}
+      {{- end }}
 {{- end }}

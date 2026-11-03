@@ -118,6 +118,10 @@ class GateTests(unittest.TestCase):
             },
         )
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
+        for command in commands:
+            for value in ("cetiadmin.enabled=false", "cetirun-operator.cetiadmin.enabled=false"):
+                if value in command:
+                    self.assertEqual(command[command.index(value) - 1], "--set")
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)
         self.assertEqual(
@@ -140,6 +144,16 @@ class GateTests(unittest.TestCase):
         self.assertEqual(env["GOTOOLCHAIN"], "local")
         self.assertEqual(env["GOFLAGS"], "-mod=readonly")
         self.assertEqual(env["npm_config_offline"], "true")
+
+    def test_ci_gate_runs_the_operator_native_helpers(self):
+        directories = ("scripts/ci/tests", "scripts/tests", "app/cetirun-operator/internal/cetiadmin/tests")
+        for directory in directories:
+            target = self.root / directory
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "test_fixture.py").write_text("# synthetic gate input\n")
+        with patch.object(validate, "run") as run:
+            validate.ci_tests(self.root)
+        self.assertEqual([call.args[0][-2] for call in run.call_args_list], list(directories))
 
     def test_missing_frontend_dependencies_fail(self):
         web = self.root / "app/cetirun-portal/web"
@@ -341,7 +355,8 @@ class WorkflowContractTests(unittest.TestCase):
     def test_operator_suite_budget_is_bounded_and_shared_by_all_entrypoints(self):
         makefile = (validate.ROOT / "app/cetirun-operator/Makefile").read_text()
         self.assertIn("GO_TEST_TIMEOUT := 30m", makefile)
-        self.assertIn("GO_ENVTEST_TIMEOUT := 40m", makefile)
+        self.assertIn("GO_ENVTEST_TIMEOUT := 50m", makefile)
+        self.assertRegex(makefile, r"(?m)^GO_CONTROLLER_TEST_GROUP := \^Test\([A-Za-z|]+\)$")
         for target, timeout in (
             ("test", "GO_TEST_TIMEOUT"),
             ("test-envtest", "GO_ENVTEST_TIMEOUT"),
@@ -350,15 +365,28 @@ class WorkflowContractTests(unittest.TestCase):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
                 self.assertIn(f"-timeout=$({timeout})", commands)
                 self.assertIn("-count=1", commands)
-                self.assertNotIn("-run", commands)
+                if target == "test-envtest":
+                    self.assertIn("-run='$(GO_ENVTEST_SPLIT)'", commands)
+                    self.assertIn("-skip='$(GO_ENVTEST_SPLIT)'", commands)
                 self.assertNotIn("|| true", commands)
+        unit = makefile.split("\ntest:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn(
+            "go list -f '{{if ne .ImportPath \"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller\"}}{{.ImportPath}}{{end}}' ./...",
+            unit,
+        )
+        self.assertIn('test -n "$$packages"', unit)
+        self.assertIn("go test $$packages -v -count=1 -timeout=$(GO_TEST_TIMEOUT)", unit)
+        controller = "go test ./internal/controller -v -count=1 -timeout=$(GO_TEST_TIMEOUT)"
+        self.assertIn(f"{controller} -run '$(GO_CONTROLLER_TEST_GROUP)'", unit)
+        self.assertIn(f"{controller} -skip '$(GO_CONTROLLER_TEST_GROUP)'", unit)
+        self.assertEqual(unit.count("go test "), 3)
         for target in ("test-envtest", "test-sandbox-lifecycle"):
             with self.subTest(target=target):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
-                self.assertIn("./cmd/sandbox-config-change", commands)
+                if target == "test-sandbox-lifecycle":
+                    self.assertIn("./cmd/sandbox-config-change", commands)
                 self.assertIn('test -x "$(KUBEBUILDER_ASSETS)/kubectl"', commands)
                 self.assertIn("USE_EXISTING_CLUSTER=false go test -tags=envtest", commands)
-        self.assertIn("go test ./... -v", makefile)
         for name in ("operator-ci.yml", "operator-release.yml"):
             with self.subTest(workflow=name):
                 text = (validate.ROOT / ".github/workflows" / name).read_text()
@@ -377,6 +405,63 @@ class WorkflowContractTests(unittest.TestCase):
             "go -C ../internal test ./... -v -count=1",
             steps["Run go test"],
         )
+
+    def test_operator_envtest_partitions_preserve_coverage_and_failures(self):
+        packages = [
+            "./test/integration", "./internal/helm", "./internal/admission",
+            "./internal/controller", "./internal/sandboxwriter",
+            "./internal/sandboxcoordination", "./cmd/sandbox-config-change",
+        ]
+        with tempfile.TemporaryDirectory(prefix="cetirun-envtest-command-") as directory:
+            root = Path(directory)
+            tools = root / "bin"
+            tools.mkdir()
+            for name in ("kube-apiserver", "etcd", "kubectl"):
+                binary = tools / name
+                binary.write_text("#!/bin/sh\nexit 0\n")
+                binary.chmod(0o755)
+            go = tools / "go"
+            go.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, sys
+                args = sys.argv[1:]
+                with open(os.environ["TEST_GO_LOG"], "a") as output:
+                    output.write(json.dumps({
+                        "args": args,
+                        "existing_cluster": os.environ.get("USE_EXISTING_CLUSTER"),
+                    }) + "\\n")
+                failed = os.environ["TEST_GO_FAIL_FILTER"]
+                if failed and any(arg.startswith(failed) for arg in args):
+                    sys.exit(9)
+                """))
+            go.chmod(0o755)
+            log = root / "calls.jsonl"
+            for failure, count in (("", 2), ("-run=", 1), ("-skip=", 2)):
+                with self.subTest(failure=failure):
+                    log.write_text("")
+                    run = subprocess.run(
+                        ["make", "-s", "-C",
+                         str(validate.ROOT / "app/cetirun-operator"),
+                         "test-envtest", f"KUBEBUILDER_ASSETS={tools}"],
+                        env={
+                            **os.environ,
+                            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                            "TEST_GO_LOG": str(log),
+                            "TEST_GO_FAIL_FILTER": failure,
+                        },
+                        text=True, capture_output=True, timeout=10,
+                    )
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(run.returncode == 0, failure == "",
+                                     run.stdout + run.stderr)
+                    self.assertEqual(len(calls), count, calls)
+                    for index, call in enumerate(calls):
+                        selector = "-run=APIServer" if index == 0 else "-skip=APIServer"
+                        self.assertEqual(call["args"], [
+                            "test", "-tags=envtest", *packages, selector,
+                            "-count=1", "-v", "-timeout=50m",
+                        ])
+                        self.assertEqual(call["existing_cluster"], "false")
 
     def test_operator_go_check_requires_both_bounded_workers(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()

@@ -208,7 +208,12 @@ spec:
                             rule: has(self.rpm) || has(self.tpm)
                         description: |-
                           PerModel limits requests for individual models. A key is the exact
-                          Gateway model name the Agent requests, not a display label.
+                          Gateway model name the Agent requests, not a display label. For a
+                          router of the Agent's Team, the router's name is also accepted: the
+                          operator also sets the limit under the router's internal name, which
+                          the Gateway counts for the router. The limit under the router's name
+                          stays. It applies to another model that keeps the name, for example a
+                          GitHub Copilot model of the Agent.
                         maxProperties: 64
                         type: object
                         x-kubernetes-validations:

@@ -207,6 +207,12 @@ The chart cannot connect to Redis with TLS yet. As a result, it cannot use
 Azure Cache for Redis with its default settings, which accept only TLS
 connections. Refer to [Known gaps](#known-gaps).
 
+`make deploy` of the CetiRun platform does not accept this configuration. It
+installs the Gateway with the bundled PostgreSQL and Valkey, and it refuses
+`postgresql.bundled.enabled: false` or `redis.bundled.enabled: false`. To use
+managed services with CetiRun, install the platform chart directly. Refer to
+[Use the component chart directly](../../cetirun-platform/README.md#use-the-component-chart-directly).
+
 The bundled PostgreSQL behaves like an external database across the lifecycle
 of the release. `helm uninstall` keeps its volume and its password Secret. As a
 result, an installation under the same release name finds the data again. In a
@@ -250,6 +256,50 @@ Local connections inside the PostgreSQL container are trusted, as in the
 upstream image. Connections from other pods must supply the password.
 Measurements show that a wrong password from another pod is refused, and that
 Valkey refuses a client without one.
+
+### Resources
+
+The chart sets no resource requests or limits: `resources` for the Gateway,
+`postgresql.bundled.resources`, and `redis.bundled.resources` are empty. As a
+result, Kubernetes reserves no CPU or memory for these containers. When a node
+runs out of memory, the kubelet first evicts the pods that use more memory
+than they request. Set these values before you serve users.
+
+Each Gateway pod runs one LiteLLM worker, and the image refuses more workers.
+To scale, use `replicaCount`. For a pod with one worker, LiteLLM's
+[production guide](https://docs.litellm.ai/docs/proxy/prod#machine-specifications)
+gives 1 CPU and 4Gi of memory, as requests and as limits:
+
+```yaml
+resources:
+  requests:
+    cpu: "1"
+    memory: 4Gi
+  limits:
+    cpu: "1"
+    memory: 4Gi
+```
+
+The guide treats 4Gi as a minimum when the spend log stores prompts and
+responses, as this chart does by default. According to the guide, the memory
+of a pod grows to fit the largest database write that the pod made, and it
+does not decrease. The spend log rows with prompts and responses are the
+largest writes. With the default `replicaCount: 2`, these values reserve 2 CPU
+and 8Gi of memory.
+
+A test installation had four Agents and little traffic. After 15 hours, each
+Gateway container used about 800Mi of memory and less than 0.01 CPU. The
+bundled PostgreSQL used about 200Mi, and Valkey used less than 10Mi. These
+figures show the use at rest. They are not a recommendation.
+
+Measure the use under your own traffic with `kubectl top pods --containers`.
+Set each memory limit above the highest value that you see.
+
+For larger installations, LiteLLM also gives
+[Database Sizing](https://docs.litellm.ai/docs/proxy/db_sizing) and
+[Redis Sizing](https://docs.litellm.ai/docs/proxy/redis_sizing). In the
+database guide, a spend log row with the prompt and the response needs about
+ten times more storage.
 
 ### Response caching is off
 
@@ -348,6 +398,22 @@ model, for example `azure/gpt-5.4-nano` or `openai/gpt-5.4-nano`.
 The chart does not set LiteLLM's `drop_params`. If it is set, each 400 becomes
 a request that is sent without the reasoning effort, and nothing tells the
 client.
+
+### Images
+
+LiteLLM reports for each deployment if its model accepts images, as
+`supports_vision` in `/model/info`. It takes the value from its price table,
+for the deployment's `model_info.base_model` or its `litellm_params.model`. A
+value in the deployment's own `model_info` replaces the value from the table.
+For a model that accepts images under a name that is not in the table, set
+`model_info.supports_vision: true`. An example is a model behind another
+OpenAI-compatible endpoint.
+
+With `operatorIntegration`, the CetiRun operator reads this value. OpenClaw and
+Hermes then send images with a request to the models that accept them. For the
+other models, OpenClaw uses its own model catalog, and Hermes has a model
+describe each image first. Refer to
+[Serving CetiRun Agents](#serving-cetirun-agents).
 
 ## Budgets and unpriced models
 
@@ -577,6 +643,14 @@ A caller cannot enable retries again for its own request. LiteLLM accepts
 request into four upstream calls. The image's guard callback drops those
 fields. The entrypoint always registers this callback, and the cluster test
 examines this behavior. Refer to [The guard callback](#the-guard-callback).
+
+The guard also drops the same fields from `router_settings_override`. LiteLLM
+adds these router settings to the request after the guard runs. They are the
+router settings of the key or of its team. If neither has router settings,
+LiteLLM takes them from the request body. On LiteLLM 1.105.6, a request body
+with `router_settings_override: {"num_retries": 2}` made one failed request
+three upstream calls. With the guard, it made one call. As a result, the
+retry settings of a key or a team also do not apply.
 
 When a failed request goes to another deployment of the same model, this is not
 a retry. Refer to [Routing](#routing).
@@ -919,6 +993,11 @@ examine the key for a fallback target. A key then reaches a fallback target
 that it was not given. Name as fallback targets only models that every key of
 the first model can also use.
 
+A request to a router goes to its other models when the model of its tier
+fails, without this setting. Fallbacks in `router.fallbacks` for a model of
+the router, or for the router's name, apply instead. Refer to
+[Smart routing](#smart-routing).
+
 ### Health checks
 
 `router.healthChecks.enabled` is on by default. It probes every deployment at
@@ -1026,10 +1105,6 @@ models:
           COMPLEX: gpt-4o
           REASONING: o3
       complexity_router_default_model: gpt-4o
-    model_info:
-      # The smallest of its models', for agents that read the limits.
-      max_input_tokens: 128000
-      max_output_tokens: 16384
 ```
 
 The chart supplies the mechanism. The tiers, their models, and the keyword
@@ -1073,6 +1148,15 @@ and the marker of LiteLLM, `<system-reminder>`. The classifier does not read
 the blocks between these markers. With these markers, the request for code
 went to the medium tier. OpenClaw called the router through Chat Completions,
 without reasoning settings.
+
+OpenClaw also sends the images of a tool result, such as a screenshot of its
+`computer` tool, in a user message of their own to a model that accepts
+images. This message starts with a label, for example `Image(s) from tool
+result #1 (computer):`. The classifier read that label as the newest request:
+a request for a design that the router put in the medium tier went to the
+simple tier after one screenshot. The chart also adds a pair for this label
+(`Image(s) from tool result #` to the next `:`). A router with a `jev`
+classifier kept the complex tier with the label as well.
 
 The `reminder_markers` of a router replace the markers of the chart. These
 markers must be a list of `{open, close}` pairs, because LiteLLM 1.105.1
@@ -1145,6 +1229,83 @@ model list of the Gateway. As a result, a changed router gets to the keys at
 the next listing. This occurs in approximately two minutes or less. The
 configuration of a router is not part of the Gateway projection of an
 AgentPolicy.
+
+**An Agent gets the router's limits.** With `operatorIntegration`, the
+operator configures each Agent that gets a router with a context window and
+an output limit for it. These are the smallest `max_input_tokens` and
+`max_output_tokens` among the models of the router's tiers and its default
+model. A model without these values does not count, and neither does a
+classifier model. A request that the Agent sizes for the router then fits
+whichever model the router selects. Without these limits, the Agent used its
+own default, for example 200,000 tokens for OpenClaw, which can be more than
+the model of a tier holds. To use other values, set `max_input_tokens` and
+`max_output_tokens` in the `model_info` of the router. A router that the
+operator cannot read completely gets no limits. When these limits change, for
+example because a tier gets another model, the Agents that use the router are
+configured again, which restarts them.
+
+**A failed tier goes to the router's other models.** The model of the tier
+that the router selects can fail. For example, the GitHub Copilot proxy of an
+Agent can be down. The image's guard callback then lets LiteLLM send the
+request to the other models of the router, in this order:
+
+1. The other models of the same tier.
+2. The models of the higher tiers, from the lowest.
+3. The default model of the router.
+4. The models of the lower tiers, from the highest.
+
+With `operatorIntegration`, LiteLLM uses only the models that the key of the
+caller can use. Without it, as on a standalone Gateway, LiteLLM does not
+examine the key for these fallbacks. They give the key no new model, because
+the router can select each of its models for the key's requests.
+
+LiteLLM sends the request to another model only before a response starts.
+Errors of all kinds count, for example a 503, a timeout, a 429, or a 400 from
+the model. A refusal by the guard does not count, for example the 403 for a
+model that the key cannot use. The guard adds these fallbacks to the request
+only. It does not change a setting of the Gateway.
+
+These fallbacks do not replace other fallbacks:
+
+- The fallbacks in `router.fallbacks` for a model of the router, or for the
+  router's name.
+- The fallbacks that a request names, or `disable_fallbacks` in a request.
+- The fallbacks in the router settings of a key or its team.
+- After an `invalid_encrypted_content` refusal, the request goes to no other
+  model. Refer to
+  [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource).
+
+The response names the model that answered, not the router. It has the
+`x-litellm-attempted-fallbacks` header, but no `x-litellm-complexity-router-*`
+headers. The request log writes a `failure` line for the tier, with the
+router's name as `model` and the tier as `routing_tier`. It then writes a line
+for the model that answered. This line has `fallback_from` (the router's name),
+`fallback_cause` (the error class of the first failure), and
+`attempted_fallbacks`. `attempted_fallbacks` counts each time LiteLLM sent the
+request on, also to another deployment of the same model (`router.failover`).
+
+A measurement on LiteLLM 1.105.6 used mock models. The simple tier of a router
+answered 503. Before the change, the client got the 503 after one upstream
+call. With the change, the medium tier answered the request. This occurred on
+the Chat Completions API, streamed or not, and on the Responses and Anthropic
+Messages APIs, also with a Team router's internal name. With every model of
+the router down, each model got one call, and the client got the 503 of the
+first model.
+
+On the e2e cluster, the GitHub Copilot proxy of an Agent was scaled to zero.
+Its Team's router had `copilot/claude-opus-5.5` as its medium tier. Six coding
+requests went to that tier, and the Azure OpenAI model of the router's other
+tiers answered each of them, after 8 to 12 seconds. A request for the Copilot
+model by its own name got 503, without internal names in the message.
+
+**Errors do not show LiteLLM's internal names.** LiteLLM adds its internal
+names to the errors that it returns: the model groups of a request, their
+fallbacks, and timeouts. For a Team's router, such a model group is the
+router's internal name, for example "model group 'tier-down ->
+cetirun-router-0123456789abcdef'". The guard sets LiteLLM's
+`expose_router_debug_in_errors` to false when it starts. The client then gets
+the error of the model only. The Gateway's own log keeps LiteLLM's message
+about the fallbacks.
 
 **Models that answer no conversation are not offered to Agents.** Some shared
 models have a `model_info.mode` other than `chat`, `completion` or
@@ -1468,7 +1629,7 @@ than one Gateway writes to the workspace, add
 `| where PodNamespace == "<namespace>"` under the line that contains
 `ContainerLogV2`.
 
-The first four queries count only the calls that clients sent. A call that
+The first five queries count only the calls that clients sent. A call that
 LiteLLM makes itself carries a `call_origin`, for example a health check probe
 or a classifier call. A routed call has a `routing_cause`. A routed call
 without a `routing_tier` went to the router's default model, for example
@@ -1499,6 +1660,21 @@ routed
 | project router, tier, model, answered, share_pct = round(100.0 * answered / router_answered, 1),
     failed, escalated
 | order by router asc, answered desc
+```
+
+A request whose tier failed, and that another model then answered, is not in
+`answered`. Its answered line has no routing fields, and its `fallback_from`
+names the router. The next query counts these calls by the model that the
+request was for and by the model that answered:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| where isnotempty(tostring(LogMessage.fallback_from))
+| summarize calls = count() by requested = tostring(LogMessage.fallback_from), model = tostring(LogMessage.model),
+    cause = tostring(LogMessage.fallback_cause), status = tostring(LogMessage.status)
+| order by requested asc, calls desc
 ```
 
 The next query shows what each tier spent, in total and for each answered call.
@@ -1800,6 +1976,18 @@ model list of the key. Other aliases on the key are kept. When the shared
 models change, the operator registers the routes again with the names and
 fields that then apply.
 
+The operator configures an Agent to send images with a request to a model
+only when every model that can answer the request accepts images
+([Images](#images)). For a shared model, every deployment must accept images.
+The Agent's own Copilot route under the model's name must also accept them; a
+Copilot route takes the value of the price table entry that it is billed as.
+For a router, every model of its tiers, its default model, and its context
+compaction model must accept images. By default, a router does not examine
+images when it selects a model (LiteLLM's `modality_routing` is off). As a
+result, a request with images can go to any of these models, and a model that
+does not accept images can refuse the request. Agents do not send images to a
+router whose configuration the operator cannot read completely.
+
 LiteLLM validates a key against the requested model only. A fallback that is
 configured for the Gateway in `router_settings` or in the console is selected
 after that validation. Without the setting, LiteLLM tries the fallback without
@@ -1832,7 +2020,11 @@ these actions:
 - It drops request fields that a caller can use to change the Gateway for its
   own call. These fields are `litellm_request_debug` and the retry fields that
   are described in
-  [Upstream errors are not retried](#upstream-errors-are-not-retried).
+  [Upstream errors are not retried](#upstream-errors-are-not-retried), also in
+  `router_settings_override`.
+- It gives a request to a router fallbacks to the router's other models, and it
+  keeps LiteLLM's internal names out of errors. Refer to
+  [Smart routing](#smart-routing).
 - It excludes the per-Agent GitHub Copilot routes from a request, unless the
   caller's key holds the route's access group, `cetirun-copilot-<Agent UID>`.
   A key granted every model, such as the master key, reaches none of these
@@ -1928,6 +2120,16 @@ these actions:
 
   The operator also omits them from the Agent's configuration. Other callers
   see the list that LiteLLM gives.
+- It lists a Team's router under the router's name only, for a key that has
+  an alias for the router. The CetiRun operator gives an Agent's key such an
+  alias for each Team router that the Agent can use: the router's name for its
+  internal `cetirun-router-` name. LiteLLM lists a key alias next to its
+  target, so the router was listed twice, once under the internal name.
+  `GET /v1/models/<internal name>` still answers. A measurement on LiteLLM
+  1.105.6 with such a key gave these results. `GET /v1/models` listed the
+  router once, by its name. A chat request for the router's name was routed.
+  A per-model limit under the internal name applied to these requests, and a
+  limit under the router's name did not apply.
 - While `router.encryptedContentAffinity` is on, it removes the encrypted
   content of some Responses API reasoning items, but it keeps their summaries.
   It removes this content from items that carry no mark of the deployment that
@@ -2524,7 +2726,11 @@ records this metadata of the call:
 
 A call that LiteLLM makes itself carries its origin in `call_origin`. For
 example, a background health check probe is `"health_check"`. As a result,
-usage figures can omit it. This is a shortened example of a line:
+usage figures can omit it. A call that LiteLLM makes after an attempt of the
+request failed, to another model or to another deployment of the same model,
+carries `fallback_from` (the model that the request was for),
+`attempted_fallbacks`, and `fallback_cause`. This is a shortened example of a
+line:
 
 ```json
 {"log_type":"cetirun.ai_gateway.request","schema_version":1,"time":"2026-10-08T13:13:27.780Z","status":"success","route":"/v1/chat/completions","stream":false,"model":"gpt-4o","provider_model":"azure/prod-gpt-4o","prompt_tokens":1000,"completion_tokens":1000,"cached_tokens":800,"spend":0.014,"key_alias":"cetirun-alice-agent-1234","user_id":"alice","team_alias":"research","key_metadata":{"cetirun_agent":"alice-agent","cetirun_team":"research"},"duration_ms":686}
