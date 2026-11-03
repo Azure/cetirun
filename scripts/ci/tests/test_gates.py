@@ -374,7 +374,9 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn("-count=1", commands)
                 self.assertIn("$(GO_TEST_RUNNER)", commands)
                 if target == "test-envtest":
-                    self.assertNotIn("-run", commands)
+                    self.assertIn("ifeq ($(GO_TEST_SHARD_INDEX)/$(GO_TEST_SHARD_COUNT),1/1)", commands)
+                    self.assertIn("-run='$(GO_ENVTEST_SPLIT)'", commands)
+                    self.assertIn("-skip='$(GO_ENVTEST_SPLIT)'", commands)
                 self.assertNotIn("|| true", commands)
         unit = makefile.split("\ntest:\n", 1)[1].split("\n\n", 1)[0]
         self.assertIn("ifeq ($(GO_TEST_SHARD_INDEX)/$(GO_TEST_SHARD_COUNT),1/1)", unit)
@@ -391,7 +393,8 @@ class WorkflowContractTests(unittest.TestCase):
         for target in ("test-envtest", "test-sandbox-lifecycle"):
             with self.subTest(target=target):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
-                self.assertIn("./cmd/sandbox-config-change", commands)
+                if target == "test-sandbox-lifecycle":
+                    self.assertIn("./cmd/sandbox-config-change", commands)
                 self.assertIn('test -x "$(KUBEBUILDER_ASSETS)/kubectl"', commands)
                 self.assertIn("USE_EXISTING_CLUSTER=false", commands)
                 self.assertIn("-tags=envtest", commands)
@@ -470,6 +473,87 @@ class WorkflowContractTests(unittest.TestCase):
                     elif success:
                         self.assertIn("-list", calls[0])
                         self.assertTrue(calls[1][-1].startswith("-run=^("), calls)
+
+    def test_operator_envtest_partitions_and_shards_preserve_coverage_and_failures(self):
+        packages = [
+            "./test/integration", "./internal/helm", "./internal/admission",
+            "./internal/controller", "./internal/sandboxwriter",
+            "./internal/sandboxcoordination", "./cmd/sandbox-config-change",
+        ]
+        with tempfile.TemporaryDirectory(prefix="cetirun-envtest-command-") as directory:
+            root = Path(directory)
+            tools = root / "bin"
+            tools.mkdir()
+            for name in ("kube-apiserver", "etcd", "kubectl"):
+                binary = tools / name
+                binary.write_text("#!/bin/sh\nexit 0\n")
+                binary.chmod(0o755)
+            go = tools / "go"
+            go.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, sys
+                args = sys.argv[1:]
+                with open(os.environ["TEST_GO_LOG"], "a") as output:
+                    output.write(json.dumps({
+                        "args": args,
+                        "existing_cluster": os.environ.get("USE_EXISTING_CLUSTER"),
+                    }) + "\\n")
+                failed = os.environ["TEST_GO_FAIL_FILTER"]
+                if failed and any(arg.startswith(failed) for arg in args):
+                    sys.exit(9)
+                if "-list" in args:
+                    for index in range(32):
+                        print(json.dumps({
+                            "Action": "output",
+                            "Output": "TestFixture" + str(index) + "\\n",
+                        }))
+                """))
+            go.chmod(0o755)
+            log = root / "calls.jsonl"
+            for index, count, failure, expected_calls, success in (
+                (1, 1, "", 2, True),
+                (1, 1, "-run=", 1, False),
+                (1, 1, "-skip=", 2, False),
+                (2, 4, "", 2, True),
+                (2, 4, "-run=", 2, False),
+                (2, 1, "", 0, False),
+            ):
+                with self.subTest(index=index, count=count, failure=failure):
+                    log.write_text("")
+                    result = subprocess.run(
+                        ["make", "-s", "-C",
+                         str(validate.ROOT / "app/cetirun-operator"),
+                         "test-envtest", f"KUBEBUILDER_ASSETS={tools}",
+                         f"GO_TEST_SHARD_INDEX={index}", f"GO_TEST_SHARD_COUNT={count}"],
+                        env={
+                            **os.environ,
+                            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                            "TEST_GO_LOG": str(log),
+                            "TEST_GO_FAIL_FILTER": failure,
+                        },
+                        text=True, capture_output=True, timeout=10,
+                    )
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                    self.assertEqual(len(calls), expected_calls, calls)
+                    for call in calls:
+                        self.assertEqual(call["existing_cluster"], "false")
+                    if count == 1:
+                        for position, call in enumerate(calls):
+                            selector = "-run=APIServer" if position == 0 else "-skip=APIServer"
+                            self.assertEqual(call["args"], [
+                                "test", "-tags=envtest", *packages, selector,
+                                "-count=1", "-v", "-timeout=50m",
+                            ])
+                    elif calls:
+                        self.assertEqual(calls[0]["args"], [
+                            "test", "-tags=envtest", *packages,
+                            "-count=1", "-v", "-timeout=50m", "-json", "-list", ".",
+                        ])
+                        self.assertEqual(calls[1]["args"][:-1], [
+                            "test", "-tags=envtest", *packages, "-count=1", "-v", "-timeout=50m",
+                        ])
+                        self.assertTrue(calls[1]["args"][-1].startswith("-run=^("), calls)
 
     def test_operator_go_check_requires_all_shards_of_both_bounded_workers(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()

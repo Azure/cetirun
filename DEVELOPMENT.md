@@ -132,15 +132,19 @@ prefixes in `GO_CONTROLLER_TEST_GROUP`; the next skips exactly those prefixes.
 Every controller test runs once, and every other package runs in full. Each
 package or controller group keeps a 30-minute timeout.
 
-The envtest target keeps main's 50-minute timeout for each package. It runs the unit suite
-together with isolated API-server regressions, and the combined controller
-package has exceeded 40 minutes in CI. Operator CI distributes both targets
-across four independent hash shards within these existing budgets.
+The default `make test-envtest` runs the same seven packages in two complementary passes:
+test names that match `APIServer`, then all remaining tests with that pattern
+excluded. Both passes keep the `envtest` build tag, disable cached results, and
+use main's bounded 50-minute timeout per package. This is a timing split, not a
+classification of every API test: API tests with other names run in the second
+pass. A failure in either pass fails the target.
 
-Root Go test gates and CI use the same component targets. By default, local
-`make test` and `make test-envtest` still cover the entire suite. The default
-unit run retains the complementary controller groups described above; CI shards
-use the shared test runner instead.
+Root Go test gates and CI use the same component targets. Default local runs
+retain both complete partitions described above. Operator CI instead distributes
+both targets across four independent hash shards using the shared runner.
+Neither mode omits tests or changes individual test assertions or
+runtime/lifecycle deadlines.
+
 To reproduce one CI shard, set its one-based index and the total shard count:
 
 ```bash

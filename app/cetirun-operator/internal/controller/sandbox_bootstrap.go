@@ -363,6 +363,12 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		} else if err != nil {
 			return err
 		}
+		if role, ok := current.(*rbacv1.Role); ok {
+			current, err = r.upgradeSandboxBootstrapRole(ctx, attempt, receipt, desired, role)
+			if err != nil {
+				return err
+			}
+		}
 		if err := validateSandboxBootstrapObject(current, resource, entry.UID, false); err != nil {
 			return err
 		}
@@ -377,6 +383,82 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		}
 	}
 	return r.sandboxBootstrapGuard(ctx, attempt)
+}
+
+func (r *AgentReconciler) upgradeSandboxBootstrapRole(ctx context.Context, attempt *sandboxPreparationAttempt,
+	receipt *sandboxBootstrapReceipt, desired []client.Object, current *rbacv1.Role,
+) (*rbacv1.Role, error) {
+	if len(receipt.Objects) < 3 || len(desired) < 3 ||
+		receipt.Objects[0].UID == "" || receipt.Objects[1].UID == "" || receipt.Objects[2].UID == "" {
+		return current, nil
+	}
+	target, ok := desired[1].(*rbacv1.Role)
+	if !ok || equality.Semantic.DeepEqual(current.Rules, target.Rules) {
+		return current, nil
+	}
+	legacyRules, upgradedRules := sandboxBootstrapMTLSRoleRules()
+	if !equality.Semantic.DeepEqual(current.Rules, legacyRules) || !equality.Semantic.DeepEqual(target.Rules, upgradedRules) {
+		return current, nil
+	}
+	legacy := target.DeepCopy()
+	legacy.Rules = legacyRules
+	if err := validateSandboxBootstrapObject(current, legacy, receipt.Objects[1].UID, false); err != nil {
+		return nil, err
+	}
+	if err := r.validateBootstrapRoleDependencies(ctx, receipt, desired); err != nil {
+		return nil, err
+	}
+	if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+		return nil, err
+	}
+	before := current.DeepCopy()
+	current.Rules = upgradedRules
+	if err := r.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		return nil, fmt.Errorf("upgrade recorded Sandbox bootstrap Role: %w", err)
+	}
+	observed := &rbacv1.Role{}
+	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(target), observed); err != nil {
+		return nil, err
+	}
+	if err := validateSandboxBootstrapObject(observed, target, receipt.Objects[1].UID, false); err != nil {
+		return nil, err
+	}
+	if err := r.validateBootstrapRoleDependencies(ctx, receipt, desired); err != nil {
+		return nil, err
+	}
+	if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+		return nil, err
+	}
+	return observed, nil
+}
+
+func (r *AgentReconciler) validateBootstrapRoleDependencies(ctx context.Context, receipt *sandboxBootstrapReceipt, desired []client.Object) error {
+	for _, index := range []int{0, 2} {
+		current := desired[index].DeepCopyObject().(client.Object)
+		if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(desired[index]), current); err != nil {
+			return err
+		}
+		if err := validateSandboxBootstrapObject(current, desired[index], receipt.Objects[index].UID, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Pin both sides of the pre-mTLS upgrade; future Role changes need their own migration.
+func sandboxBootstrapMTLSRoleRules() ([]rbacv1.PolicyRule, []rbacv1.PolicyRule) {
+	legacy := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"secrets", "configmaps", "services", "persistentvolumeclaims", "serviceaccounts"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+		{APIGroups: []string{"apps"}, Resources: []string{"statefulsets", "deployments"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+		{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+		{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"roles", "rolebindings"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+		{APIGroups: []string{"batch"}, Resources: []string{"jobs"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+		{APIGroups: []string{"networking.istio.io"}, Resources: []string{"virtualservices", "sidecars"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+		{APIGroups: []string{"security.istio.io"}, Resources: []string{"authorizationpolicies", "peerauthentications"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+	}
+	upgraded := (&rbacv1.Role{Rules: legacy}).DeepCopy().Rules
+	upgraded[5].Resources = append(upgraded[5].Resources, "destinationrules")
+	return legacy, upgraded
 }
 
 func (r *AgentReconciler) sandboxBootstrapGuard(ctx context.Context, attempt *sandboxPreparationAttempt) error {
@@ -431,6 +513,19 @@ func (r *AgentReconciler) sandboxBootstrapGuard(ctx context.Context, attempt *sa
 				}
 				if !sandboxworkload.ValidInputDigest(attempt.policyDigest) || digest != attempt.policyDigest {
 					return fmt.Errorf("%w: Sandbox bootstrap policy inputs changed", errSandboxSourceChanged)
+				}
+			} else if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" &&
+				source.UID == attempt.resolution.Binding.TeamUID {
+				expected, err := sandboxworkload.ExecutionSourceDigest(attempt.team, current.Spec.SandboxRef)
+				if err != nil {
+					return err
+				}
+				digest, err := r.executionSourceDigest(ctx, source, current.Spec.SandboxRef, false)
+				if err != nil {
+					return err
+				}
+				if digest != expected {
+					return fmt.Errorf("%w: Sandbox bootstrap Team inputs changed", errSandboxSourceChanged)
 				}
 			} else if _, err := r.readSandboxSource(ctx, source); err != nil {
 				return err
