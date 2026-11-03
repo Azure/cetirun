@@ -107,12 +107,14 @@ initialization. A change to a team does not continuously rewrite the user
 memory of every agent. See [runtime file updates](../../concepts/configuration/#runtime-files-and-updates).
 
 Add `spec.skills` for approved identifiers and `spec.skillStorage` for a
-reviewed shared Blob container. See [configuration and skills](../../concepts/configuration/)
+reviewed shared Blob container. A Team has at most 100 skill entries. See
+[configuration and skills](../../concepts/configuration/)
 for installation limits and [CRD reference](../../reference/crds/) for the field
 names. Install the external dependencies of each skill separately. Also
 validate them separately. The shared storage account/container and the CSI
 prerequisites must already exist. The team resource does not provision cloud
-storage.
+storage. With the [Skill Marketplace](#skills-from-the-skill-marketplace), the
+entries without the `npm:` prefix are the names of marketplace skills.
 
 The team supplies context, policy, and skills. It does not select a model
 provider or hold API credentials. Model access is configured through the AI
@@ -129,6 +131,34 @@ admission continues to enforce its consumer and cleanup rules.
 The Team controller reports if configuration references are accepted. For
 runtime readiness, examine the conditions and the effective configuration of
 each member instance. Accepted Team configuration is not runtime enforcement.
+
+## Skills from the Skill Marketplace
+
+When the [Skill Marketplace](../../operations/skill-marketplace/) is enabled,
+the Team page in the Portal has a **Skills** section. It lists the skills that
+the Skill Marketplace synchronized from its Git repository. Select the skills
+that the Team's instances get. The Team's Agent Policy must allow each skill.
+A skill that the Policy does not allow shows **Not allowed by the Agent
+Policy**. Enter npm packages separately, in **npm skill packages, one per
+line**, each with the `npm:` prefix.
+
+Saving changes to Team skills restarts the Team's running Sandbox Agents one
+time. Their new Pods copy the Team's published skills into the read-only
+`$HOME/.agents/skills` view. Changes in the skills repository reach an
+instance at its next start.
+
+In `spec.skills`, each entry without the `npm:` prefix is then the name of a
+marketplace skill. These rules apply:
+
+- The Skill Marketplace delivers skills only to the common-executor Sandbox
+  Agents of a Team with an Agent Policy. Custom Agents do not receive them.
+- An instance cannot add or remove a marketplace skill with `skillOverrides`.
+  The operator refuses such an instance with `AgentConfigInvalid`.
+- The Portal adds only skills that the Skill Marketplace catalog has. A Team
+  can keep a selected skill after the skill leaves the repository. In that
+  case, the Team's Agents keep its last published version.
+- The Portal does not let a Policy save remove a marketplace skill that a
+  Team of the Policy still selects.
 
 ## Smart routing
 

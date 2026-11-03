@@ -27,8 +27,9 @@ after the first run:
 7. [Test the setup with a Sandbox, a Policy, and a Team](#check-the-setup).
 
 Then, for a Team whose Agents use a smart-routing model, follow
-[Smart routing](../smart-routing/). For the other Team settings, follow
-[Configure a team](../../guides/teams/).
+[Smart routing](../smart-routing/). To give the Agents of a Team approved
+skills from a Git repository, follow [Skill Marketplace](../skill-marketplace/).
+For the other Team settings, follow [Configure a team](../../guides/teams/).
 
 ## The cluster
 
@@ -350,13 +351,16 @@ change.
   The basic configuration above does not enable them.
 - A change to the model access, budget, network, or security settings of a
   Policy restarts its running Agents one time. A change to only its request
-  limits does not.
+  limits or its allowed skills does not.
 - Concurrent updates to the shared native reservation use bounded retries for
   definite Kubernetes resource-version conflicts. Each retry reads the
   authority again. The retries do not bypass stop or source conflicts, or
   uncertain writes.
 - An Agent moves to another Team only when an administrator reauthorizes it
   with `kubectl`.
+- The Team skills of these Agents can come from one Git repository, through
+  the optional [Skill Marketplace](../skill-marketplace/). A later
+  `make deploy` run enables it.
 
 Sources: [Sandbox capabilities]({{< repo "app/cetirun-operator/internal/sandbox/capabilities.go" >}}),
 [network compiler]({{< repo "app/cetirun-operator/internal/sandboxpolicy/network.go" >}}),

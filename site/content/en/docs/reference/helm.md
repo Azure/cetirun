@@ -1,12 +1,12 @@
 ---
 title: "Helm configuration"
-description: "This page gives the values and defaults for the agent, operator, and portal Helm charts."
+description: "This page gives the values and defaults for the agent, platform, operator, portal, and Skill Marketplace Helm charts."
 weight: 20
 ---
 
-There are separate charts for the agent, operator, portal, and shared Istio
-infrastructure. A chart render does not prove that their images, storage,
-RuntimeClass, or identity integrations are available.
+There are separate charts for the agent, operator, portal, Skill Marketplace,
+and shared Istio infrastructure. A chart render does not prove that their
+images, storage, RuntimeClass, or identity integrations are available.
 
 ## Offline rendering
 
@@ -331,7 +331,8 @@ describe all containers as read-only or privilege-escalation-disabled.
 Source: [platform values]({{< repo "app/cetirun-platform/values.yaml" >}}).
 The umbrella chart packages the operator, the portal, and the AI Gateway. Their
 values are nested under `cetirun-operator`, `cetirun-portal`, and
-`cetirun-ai-gateway`. Runtime agent values are still under
+`cetirun-ai-gateway`. The optional Skill Marketplace is the subchart
+`cetirun-skill-marketplace`. Runtime agent values are still under
 `cetirun-operator.cetirun.helmValues`.
 
 | Value | Purpose / default |
@@ -363,6 +364,7 @@ values are nested under `cetirun-operator`, `cetirun-portal`, and
 | `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` | The namespace that contains the gateway workload that is allowed to reach agents |
 | `cetirun-portal.istio.gatewayNamespace`, `gatewayServiceAccount` | The Gateway workload identity that portal access controls use |
 | `cetirun-operator.sandboxAdmission.portalServiceAccount` | `cetirun-portal` in the platform. The operator chart defaults to empty. When Sandbox admission is enabled, this value adds the Portal's service account in the release namespace to the admission administrators. The Portal must have this access to write to policy-bound Agents. Keep it equal to `cetirun-portal.serviceAccount.name`. If the Portal is disabled, clear it. See the [platform chart README]({{< repo "app/cetirun-platform/README.md" >}}). |
+| `cetirun-skill-marketplace.enabled` | `false`. It installs the optional [Skill Marketplace](#skill-marketplace-chart). Also turn on `cetirun-operator.skillMarketplace.enabled` and `cetirun-portal.skillMarketplace.enabled`. The chart refuses the Skill Marketplace without the bundled Operator, or when either of these values is off while its component is installed. It also refuses a release namespace, a marketplace `catalog.namespace`, or a Portal `skillMarketplace.catalogNamespace` other than `cetirun-operator.namespace`. `agentClaims.claimName` must equal the operator's `sandboxSources.skillsClaimName`. `make deploy` sets these values from the `skillMarketplace` block of its environment file. |
 
 The chart does not own managed Istio, the independent CetiRun Istio release,
 certificates, credentials, agent instances, or agent data that is kept. If you
@@ -408,6 +410,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`. Claims that already exist stay read-only. Bootstrap can create an owned HOME only in new namespaces. Published skills stay external. |
 | `sandboxSources.skillsCatalogConfigMapName` | Empty. It opts in to a separate operator-owned `skills.json` catalog. This catalog binds exact Team identities to Blob NFS content that is already published. Owned bootstrap is necessary. |
 | `sandboxSources.helpers` | `doctor`, `logger`, `desktop` default to `false`. The helper selection for legacy held preparation. It does not enable reconciled (`v2`) helpers. |
+| `skillMarketplace.enabled` | `false`. It uses the [Skill Marketplace](../../operations/skill-marketplace/) for the Team skills of policy-bound Agents, through `CETIRUN_SKILL_MARKETPLACE`. Every skill entry without the `npm:` prefix then names a marketplace skill. The operator does not pass these entries to `skills.clawHub`, and it refuses an Agent whose `skillOverrides` add or remove one. A missing skills claim of a common-executor Agent is a wait (`SkillsMaterializationPending`), not a configuration error. The value needs `sandboxSources.enabled`, `sandboxSources.nativeExecution`, and an empty `sandboxSources.skillsCatalogConfigMapName`. The chart refuses other settings. A release that `--reuse-values` upgrades from a chart without this value keeps it off. |
 
 Reconciled (`v2`) native lifetimes use the helper settings of the runtime
 chart, not `sandboxSources.helpers`. The chart sets both
@@ -688,6 +691,7 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`. It also accepts opt-in `custom`. The form and the backend both examine it. |
 | `sandboxRuntimeProfiles` | Approved chart/image/port pins for built-in Sandbox creation. If a profile is absent, creation is rejected, unless controller defaults are explicitly enabled. |
 | `sandboxRuntimeDefaultsFromController` | `false`. Allow absent profiles only after the Operator's common Sandbox executor is enabled. |
+| `skillMarketplace.enabled`, `skillMarketplace.catalogNamespace` | `false`, `cetirun-system`. When enabled, Team skills come from the Skill Marketplace catalog in the operator namespace. Team saves examine new skills against the catalog, Policy saves keep the skills that a Team still selects, and the Agent page shows the Team's skills. It also adds the **Skills** administration page and `get` access to the `cetirun-skill-marketplace` ConfigMap. Keep it equal to the operator's `skillMarketplace.enabled`. See [Skill Marketplace administration](../crds/#skill-marketplace-administration). |
 | `noticeBanner` | `""` (no banner). Set it to show a deployment notice. |
 | `image`, `imagePullSecrets` | Portal image pin and pull access |
 
@@ -721,3 +725,47 @@ UI. By default, `noticeBanner` is empty. When a notice is necessary, set it to
 deployment text that you reviewed.
 
 For shared authentication settings, use [Istio operations](../../operations/istio/).
+
+## Skill Marketplace chart
+
+Source: [Skill Marketplace values]({{< repo "app/cetirun-skill-marketplace/chart/values.yaml" >}}).
+The platform chart installs this chart as the optional subchart
+`cetirun-skill-marketplace`. `make deploy` sets most of its values from the
+`skillMarketplace` block of the environment file. For the procedure, see
+[Skill Marketplace](../../operations/skill-marketplace/).
+
+| Value | Purpose / default |
+| --- | --- |
+| `enabled` | `false`. The platform chart uses it as the subchart condition. |
+| `image.repository`, `image.tag`, `image.digest`, `image.pullPolicy` | `ghcr.io/azure/cetirun-skill-marketplace`, empty, empty, `IfNotPresent`. With `global.registry`, the repository is `<registry>/cetirun-skill-marketplace`. An empty tag uses `global.version`, and then the chart `appVersion`. |
+| `repository.url` | Necessary. An `https://` URL, or with `auth: ssh` an `ssh://` URL or the `user@host:path` form. The chart refuses an `https://` URL with credentials. It also refuses an `http://` URL, unless `allowInsecureHTTP` is `true`. |
+| `repository.ref` | Empty. A branch, a tag, or a full ref. Empty uses the branch that the remote HEAD names. |
+| `repository.path` | Empty. The directory of the skills, relative to the repository root. Empty is the root. |
+| `repository.syncInterval` | `5m`. How often the service examines the remote. At least `30s`. |
+| `repository.auth` | `none`. Also `token` or `ssh`. |
+| `repository.existingSecret` | Empty. Necessary for `token` and `ssh`. A Secret in the release namespace with the key `token`, or with the keys `ssh-privatekey` and `known_hosts`. |
+| `repository.tokenUsername` | `x-access-token`. The user name that the service sends with the token. |
+| `repository.allowInsecureHTTP` | `false`. `true` allows an `http://` URL. Use it only for tests in a private network. |
+| `storage.resourceGroup`, `storage.storageAccount`, `storage.containerName` | Necessary. The Blob NFS container of the Team releases. The account name has 3 to 24 lowercase letters and digits. |
+| `storage.storageClassName` | `azureblob-nfs-premium`. The StorageClass of the service's volume and of the Agents' volumes. |
+| `storage.size` | `100Gi`. The capacity of the service's own read-write volume and claim. Helm keeps both when you uninstall the chart. |
+| `agentClaims.claimName`, `agentClaims.size` | `skills`, `1Gi`. The read-only claim that the service creates in each policy-bound Agent namespace. The name must equal the operator's `sandboxSources.skillsClaimName`. |
+| `catalog.namespace` | Empty. The namespace of the catalog ConfigMap `cetirun-skill-marketplace`. Empty uses the release namespace, which must be the operator namespace. |
+| `reservedNames` | `cetirun-memory`, `connected-services`. Skill names that CetiRun or its images supply. The service rejects repository skills with these names. |
+| `teamGCGrace` | `1h`. How long the service keeps the releases of a deleted Team after its last publication. |
+| `serviceAccount.create`, `serviceAccount.name`, `serviceAccount.annotations` | `true`, `cetirun-skill-marketplace`, `{}` |
+| `istio.sidecarInjection` | `false`. The service uses only the Kubernetes API, the Git host, and its NFS mount. |
+| `resources` | Requests: CPU `50m`, memory `128Mi`. Limits: CPU `1`, memory `1Gi`. |
+| `podAnnotations`, `nodeSelector`, `tolerations`, `affinity` | Empty |
+
+The chart runs one replica with the `Recreate` strategy, as a non-root user
+and with a read-only root filesystem. Its ClusterRole reads Teams, Agents, and
+namespaces. It creates PersistentVolumeClaims, and it creates and deletes
+PersistentVolumes. In the catalog namespace, a Role lets the service create
+ConfigMaps and update only `cetirun-skill-marketplace`.
+
+To install the chart with Helm directly, also set the operator's and the
+Portal's `skillMarketplace` values. In the platform chart, the checks of the
+[platform values](#platform-chart) apply. The platform chart accepts the
+Skill Marketplace only with its bundled Operator. For an Operator that you
+install separately, install this chart on its own.

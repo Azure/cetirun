@@ -47,7 +47,8 @@ file, but the controller can merge them internally. Refer to the
 An instance refers to a `Team` with `spec.team`. Teams can set these items:
 
 - Role and context rendered for the selected runtime.
-- Up to 20 default skill identifiers.
+- Up to 100 default skill identifiers. With the Skill Marketplace, these are
+  the names of marketplace skills and `npm:` packages.
 - A shared Blob storage location for read-only skills.
 
 A team reference is not a check of organizational membership, and it does not
@@ -104,10 +105,21 @@ discovers and prioritizes these directories. Refer to
 [Memory initialization](../../reference/agent-harness/#common-initialization-and-discovery).
 
 The operator computes `(team skills ∪ add) − remove`, sorts the result, and
-deduplicates it. If an identifier is in both override lists, removal wins. Each
-list is limited to 20 entries. `npm:` identifiers are passed to the chart's npm
-installer without the prefix. Other identifiers populate `skills.clawHub`, but
-these entries are not installed.
+deduplicates it. If an identifier is in both override lists, removal wins. The
+Team list is limited to 100 entries, and each override list to 20 entries.
+`npm:` identifiers are passed to the chart's npm installer without the prefix.
+Other identifiers populate `skills.clawHub`, but these entries are not
+installed.
+
+When the [Skill Marketplace](../../operations/skill-marketplace/) is enabled,
+each identifier without the `npm:` prefix is the name of a marketplace skill.
+The operator does not add these names to `skills.clawHub`. An instance cannot
+add or remove them with its override lists. The operator refuses such an
+instance with `AgentConfigInvalid`. The Skill Marketplace publishes the skills
+that a policy-bound Team selects from one Git repository. When a
+common-executor Sandbox Agent of the Team starts, init copies the Team's
+published skills into the read-only `$HOME/.agents/skills` view. Other Agents
+do not receive marketplace skills.
 
 Npm packages are installed under `/home/vibe/.cetirun/skills/npm/`. The
 templates add those directories to OpenClaw's `skills.load.extraDirs` or
@@ -144,4 +156,5 @@ and [chart values]({{< repo "app/cetirun-chart/values.yaml" >}}).
 Installation details: [npm initializer]({{< repo "app/cetirun-chart/configs/init-skills.sh" >}}),
 [OpenClaw templates]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}}),
 [Hermes templates]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}),
-and [shared PV]({{< repo "app/cetirun-chart/templates/shared-skills-pv.yaml" >}}).
+[shared PV]({{< repo "app/cetirun-chart/templates/shared-skills-pv.yaml" >}}),
+and [Skill Marketplace]({{< repo "app/cetirun-skill-marketplace/README.md" >}}).

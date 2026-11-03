@@ -139,11 +139,12 @@ make publish REGISTRY=registry.example.com VERSION=0.1.1 \
   GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
 ```
 
-The command builds and pushes the 13 images and 8 charts of
+The command builds and pushes the 14 images and 9 charts of
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
-These include the operator, Portal, AI Gateway, Broker, OpenClaw, Hermes, and
-VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)
-charts. Then the command pulls each chart back to examine it. Refer to the
+These include the operator, Portal, AI Gateway, Broker, Skill Marketplace,
+OpenClaw, Hermes, and VS Code Server images, and the platform, Istio, and
+Agent (`helm/cetirun`) charts. Then the command pulls each chart back to
+examine it. Refer to the
 [unified release inventory]({{< repo "DEVELOPMENT.md" >}}#unified-release-inventory).
 
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` records that you accept the VS Code
@@ -431,7 +432,9 @@ Run `make deploy` again after each change to the environment file. A run does
 not change the admission administrators, and it does not remove the Sandbox
 settings that are in effect. If the file tries to do this, the run stops.
 Sandbox execution stays disabled until you enable it, as
-[Policy-bound Teams](../../operations/policy-teams/) shows.
+[Policy-bound Teams](../../operations/policy-teams/) shows. The
+[Skill Marketplace](../../operations/skill-marketplace/) is optional. A later
+`make deploy` run enables it, together with Sandbox execution or after it.
 
 With `istio.mode: external`, `make deploy` does not upgrade the CetiRun Istio
 release. Configure that release to reach the portal: use
