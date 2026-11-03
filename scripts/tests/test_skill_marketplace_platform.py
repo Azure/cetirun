@@ -28,7 +28,7 @@ NAMESPACE = "cetirun-system"
 CA_BUNDLE = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClFRPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQ=="
 MINIMAL = {
     "istio": {"enabled": True},
-    "cetirun-operator": {"namespace": NAMESPACE, "domainSuffix": "agents.example.invalid"},
+    "cetirun-operator": {"namespace": NAMESPACE, "domainSuffix": "agents.example.invalid", "cetiadmin": {"enabled": False}},
     "cetirun-portal": {"istio": {"host": "portal.example.invalid"}, "aiGateway": {"catalogNamespace": NAMESPACE}},
 }
 # Synthetic native Sandbox platform with the marketplace switched on everywhere.
@@ -36,7 +36,7 @@ VALUES = {
     "istio": {"enabled": True},
     "global": {"registry": "registry.example.invalid", "version": "9.8.7"},
     "cetirun-operator": {
-        "namespace": NAMESPACE, "domainSuffix": "agents.example.invalid",
+        "namespace": NAMESPACE, "domainSuffix": "agents.example.invalid", "cetiadmin": {"enabled": False},
         "sandboxAdmission": {
             "enabled": True, "enforce": True, "podsEnabled": True, "tlsSecretName": "sandbox-admission-tls",
             "caBundle": CA_BUNDLE, "adminUsers": ["admin@example.invalid"],
