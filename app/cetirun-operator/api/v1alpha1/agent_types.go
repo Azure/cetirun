@@ -575,6 +575,13 @@ type AIGatewayCopilotRoute struct {
 	// from this Copilot model.
 	// +optional
 	Shared bool `json:"shared,omitempty"`
+
+	// Vision reports that the model accepts images, as the Gateway's price
+	// table says for the entry the route is billed as. The Agent is
+	// configured to send images to Name only when every model behind Name
+	// accepts them.
+	// +optional
+	Vision bool `json:"vision,omitempty"`
 }
 
 // GitHub Copilot proxy phases.
@@ -711,6 +718,10 @@ type AIGatewayCatalogModel struct {
 	// RouterUnverifiable reports a router whose models the operator cannot
 	// read completely; it is refused to Agents with an AgentPolicy.
 	RouterUnverifiable bool `json:"routerUnverifiable,omitempty"`
+	// Vision reports that the model accepts images: every deployment behind
+	// the name has supports_vision in its model info, and for a router, every
+	// model it sends requests to answer does.
+	Vision bool `json:"vision,omitempty"`
 }
 
 // SandboxStatus records the binding and revision last verified for an Agent.

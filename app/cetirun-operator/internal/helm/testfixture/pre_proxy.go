@@ -99,6 +99,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 		if proxy, ok := gateway["copilotProxy"].(map[string]any); ok {
 			delete(proxy, "replicaCount")
 		}
+		delete(gateway, "visionModels")
 	}
 	assets := map[string]*[]byte{"values.schema.json": &chrt.Schema}
 	for _, files := range [][]*chart.File{chrt.Files, chrt.Templates} {
@@ -392,6 +393,14 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			{`{{- $contextSkills := and (or (not .Values.sandboxWorkload) (dig "reconciled" false (.Values.sandboxWorkload | default dict))) (dig "enabled" false (.Values.memoryContext | default dict)) }}`,
 				`{{- $contextSkills := and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict)) }}`},
 			{"{{- if $contextSkills }}\n{{- $plugins :=", "{{- if and (not .Values.sandboxWorkload) (dig \"enabled\" false (.Values.memoryContext | default dict)) }}\n{{- $plugins :="},
+			{`{{- /* A model the Gateway reports as accepting images gets them with a
+   request. Without input, OpenClaw takes the value from its own catalog,
+   which knows only some model names; for the rest, another model describes
+   images. */}}
+{{- if has .id (dig "visionModels" (list) $.Values.aiGateway) }}
+{{- $_ := set $entry "input" (list "text" "image") }}
+{{- end }}
+`, ""},
 		},
 		"values.schema.json": {
 			{`"pattern": "^([0-9./]+|[0-9a-fA-F:]+/[0-9]{1,3})$"`, `"pattern": "^[0-9./]+$"`},
@@ -402,6 +411,14 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 				`"type": "integer",
                     "default": 30`},
 			{"                        \"replicaCount\": {\"type\": [\"integer\", \"null\"], \"minimum\": 0, \"maximum\": 1, \"default\": null},\n", ""},
+			{`                "visionModels": {
+                    "type": "array",
+                    "description": "Ids of the models in models that accept images",
+                    "default": [],
+                    "maxItems": 256,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256}
+                },
+`, ""},
 			{`"executionHeld": {"type": "boolean"},
                 "reconciled": {"const": true}`, `"executionHeld": {"const": true}`},
 			{`"agentType": {"enum": ["openclaw", "hermes", "custom"]}`, `"agentType": {"const": "openclaw"}`},

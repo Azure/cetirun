@@ -385,6 +385,12 @@ type Deployment struct {
 	// is billed as, when set.
 	Model     string
 	BaseModel string
+	// Vision reports that the deployment's model info says it accepts
+	// images: supports_vision is true. LiteLLM takes the value from its price
+	// table entry for the deployment's base model or model, unless the
+	// administrator sets it in model_info. A model the table does not know
+	// has none.
+	Vision bool
 	// Routing is how LiteLLM weighs the deployment against the others of its
 	// model name.
 	Routing Routing
@@ -531,6 +537,7 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 			Mode:   modelMode(fields),
 			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
 			Model:  stringValue(item.LiteLLMParams["model"]), BaseModel: stringValue(info.BaseModel),
+			Vision:  fields["supports_vision"] == true,
 			Routing: routing(item.LiteLLMParams), Router: parseRouter(item.LiteLLMParams),
 		})
 	}
@@ -699,24 +706,38 @@ func (c *Client) DeleteModel(ctx context.Context, id string) error {
 	return err
 }
 
-// PricedModels returns the names in the Gateway's model price table that
-// carry a price. It is how a caller picks a base model for a deployment whose
-// own name the table does not know.
-func (c *Client) PricedModels(ctx context.Context) (map[string]bool, error) {
+// PriceTable is what the operator reads of the Gateway's model price table.
+type PriceTable struct {
+	// Priced are the names that carry a price. They are how a caller picks
+	// a base model for a deployment whose own name the table does not know.
+	Priced map[string]bool
+	// Vision are the names whose entry says the model accepts images
+	// (supports_vision), the value LiteLLM reports in the model info of a
+	// deployment billed as that name.
+	Vision map[string]bool
+}
+
+// PriceTable reads the Gateway's model price table.
+func (c *Client) PriceTable(ctx context.Context) (PriceTable, error) {
 	var table map[string]struct {
 		InputCostPerToken  *float64 `json:"input_cost_per_token"`
 		OutputCostPerToken *float64 `json:"output_cost_per_token"`
+		// Read leniently: one odd entry must not fail the whole table.
+		SupportsVision json.RawMessage `json:"supports_vision"`
 	}
 	if _, err := c.doLimit(ctx, http.MethodGet, "/public/litellm_model_cost_map", nil, &table, listLimit); err != nil {
-		return nil, err
+		return PriceTable{}, err
 	}
-	priced := make(map[string]bool, len(table))
+	out := PriceTable{Priced: make(map[string]bool, len(table)), Vision: map[string]bool{}}
 	for name, entry := range table {
 		if positive(entry.InputCostPerToken) || positive(entry.OutputCostPerToken) {
-			priced[name] = true
+			out.Priced[name] = true
+		}
+		if string(entry.SupportsVision) == "true" {
+			out.Vision[name] = true
 		}
 	}
-	return priced, nil
+	return out, nil
 }
 
 // DeleteKeys deletes the keys identified by tokens. Keys that do not exist

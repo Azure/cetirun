@@ -39,8 +39,11 @@ data:
       leaving out blocks between reminder markers. OpenClaw sends its own
       context as a final user message between the markers below, so without
       them every OpenClaw request was classified by that block and went to the
-      simple tier. LiteLLM's own pair is listed too, since a list replaces its
-      default. A router that sets reminder_markers keeps its own.
+      simple tier. OpenClaw also passes on the images of a tool result, such as
+      a screenshot, in a user message that begins with "Image(s) from tool
+      result #1 (computer):"; the last pair leaves out that label. LiteLLM's
+      own pair is listed too, since a list replaces its default. A router that
+      sets reminder_markers keeps its own.
 
       Three more of LiteLLM 1.105.1's router defaults are changed unless the
       router sets them: no compaction of the conversation history by the
@@ -62,7 +65,7 @@ data:
       {{- if eq (toString (get $params "model")) "auto_router/complexity_router" }}
       {{- $config := deepCopy (get $params "complexity_router_config" | default dict) }}
       {{- if not (hasKey $config "reminder_markers") }}
-      {{- $_ := set $config "reminder_markers" (list (dict "open" "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "close" "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>") (dict "open" "<system-reminder>" "close" "</system-reminder>")) }}
+      {{- $_ := set $config "reminder_markers" (list (dict "open" "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "close" "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>") (dict "open" "<system-reminder>" "close" "</system-reminder>") (dict "open" "Image(s) from tool result #" "close" ":")) }}
       {{- end }}
       {{- if not (hasKey $config "context_compaction") }}
       {{- $_ := set $config "context_compaction" false }}

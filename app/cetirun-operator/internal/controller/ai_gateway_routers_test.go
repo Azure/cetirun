@@ -159,7 +159,8 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 		t.Fatalf("a heuristic router sets no classifier_fallback: %v", config)
 	}
 	markers := config["reminder_markers"].([]map[string]string)
-	if len(markers) != 2 || markers[0]["open"] != "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" || markers[1]["close"] != "</system-reminder>" {
+	if len(markers) != 3 || markers[0]["open"] != "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" || markers[1]["close"] != "</system-reminder>" ||
+		markers[2]["open"] != "Image(s) from tool result #" || markers[2]["close"] != ":" {
 		t.Fatalf("reminder markers = %v", markers)
 	}
 	info := body["model_info"].(map[string]any)
@@ -192,18 +193,22 @@ func TestPlanModelRoutersBuildsTheRegistration(t *testing.T) {
 	}
 }
 
-// The registration IDs of heuristic and llm routers are those the operator
-// computed before the jev classifier, so an upgrade keeps their registrations
-// instead of replacing them. A decision model in the Gateway changes neither.
+// The registration IDs of heuristic and llm routers follow only their
+// configuration, so an upgrade replaces their registrations only when the
+// configuration the operator writes changes. A decision model in the Gateway
+// changes neither.
 func TestPlanModelRoutersKeepsTheRegistrationIDsOfExistingRouters(t *testing.T) {
 	view := withDecisionModel(testRouterView([]string{testSmallModel, testSharedModelOne}), testDecisionModel)
 	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne),
 		api.TeamModelRouter{Name: "auto-llm", Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierLLM, Model: testSmallModel},
 			Tiers: api.TeamModelRouterTiers{Simple: testSmallModel, Medium: testSharedModelOne, Complex: testSharedModelOne, Reasoning: testSharedModelOne}})
-	// Computed by the planner of main 9ce1379a for the same Team and routers.
+	// The IDs since the reminder marker of OpenClaw's tool-result images was
+	// added. main 9ce1379a computed cetirun-router-6b7afde237469b29-f7804b5a
+	// and cetirun-router-696bf59da340065e-b6d8b211, which the upgrade replaces
+	// once.
 	want := map[string]string{
-		testRouterName: "cetirun-router-6b7afde237469b29-f7804b5a",
-		"auto-llm":     "cetirun-router-696bf59da340065e-b6d8b211",
+		testRouterName: "cetirun-router-6b7afde237469b29-3015dc06",
+		"auto-llm":     "cetirun-router-696bf59da340065e-457b9bb8",
 	}
 	plans := planModelRouters(team, view, nil)
 	if len(plans) != len(want) {

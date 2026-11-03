@@ -188,6 +188,7 @@ instance that uses shared models:
 
 - adds or removes a shared model
 - changes the limits of a shared model
+- changes if a shared model accepts images
 - changes if a shared model is offered, through its price or the Gateway's
   setting
 
@@ -281,6 +282,31 @@ Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller
 [Gateway routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_shared_routers.go" >}}),
 [Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),
 and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login.go" >}}).
+
+### Images
+
+OpenClaw and Hermes send images with a request to the models that accept them.
+The operator reads this from the Gateway (`supports_vision`). Refer to the
+Gateway chart's
+[Images]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#images)
+section. A model accepts images only when every deployment of its name accepts
+them. When the instance's own Copilot route has the same name, that route must
+also accept them. A smart-routing model accepts images only when every model
+that it sends requests to accepts them.
+
+For the other models:
+
+- Hermes first sends the image to the model in a separate call, and the model
+  describes it.
+- OpenClaw uses its own model catalog, which knows only the names of some
+  OpenAI models. For a name that it does not know, another model that accepts
+  images describes the image. The `computer` tool is not available with that
+  name.
+
+The instance's configuration lists the models that accept images
+(`aiGateway.visionModels` of the runtime chart). A runtime chart without this
+value sends images as before. The instance takes the value when you upgrade it
+to a chart that has it.
 
 ### When the budget runs out
 
