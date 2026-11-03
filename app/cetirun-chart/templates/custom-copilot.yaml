@@ -2,10 +2,11 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 
-The Operator supplies and independently validates every proxy resource.
+Non-Sandbox Custom uses the Operator's independently validated contributions.
+Common Sandbox lifetimes use the chart-owned proxy in copilot-proxy.yaml.
 The Agent receives its virtual key, never the proxy's credentials.
 */ -}}
-{{- if eq (include "cetirun.agent.type" .) "custom" }}
+{{- if and (eq (include "cetirun.agent.type" .) "custom") (not ((.Values.sandboxWorkload | default dict).reconciled | default false)) }}
 {{- range .Values.runtime.copilotResources }}
 ---
 {{ toYaml . }}

@@ -11,7 +11,8 @@ in the Agent's Pod the proxy would be reachable on localhost, bypassing the
 Gateway. It does not run on the Agent's Kata runtime and is not selected by
 the Agent's Service, NetworkPolicy or Istio Sidecar.
 */}}
-{{- if and (ne (include "cetirun.agent.type" .) "custom") (dig "copilotProxy" "enabled" false (.Values.aiGateway | default dict)) }}
+{{- $reconciled := (.Values.sandboxWorkload | default dict).reconciled | default false }}
+{{- if and (or $reconciled (ne (include "cetirun.agent.type" .) "custom")) (dig "copilotProxy" "enabled" false (.Values.aiGateway | default dict)) }}
 {{- $name := include "cetirun.copilotProxyName" . }}
 {{- $proxy := .Values.aiGateway.copilotProxy }}
 {{- $config := include "cetirun.copilotProxyConfig" . }}

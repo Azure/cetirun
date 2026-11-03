@@ -184,6 +184,12 @@ independently of the Agent replica count. Suspension and policy revocation stop
 both components. Creation before login does not grant Copilot model access, and
 the Portal continues to report sign-in required.
 
+Common-executor Custom Agents use this same chart-owned Copilot proxy.
+Non-Sandbox Custom Agents keep their separately validated proxy contributions.
+After sign-in, the proxy Deployment must exist and become Ready before the
+Gateway registers its model routes. An enabled Helm value alone is not evidence
+that the proxy was deployed.
+
 Suspension does three actions before the chart or bootstrap prerequisites are
 examined. It blocks a Gateway key that already exists, stops the owned main and
 auxiliary workloads, and withdraws their route. If the Gateway, a component

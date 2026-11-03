@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -102,5 +103,103 @@ func TestCommonCustomCopilotProjectionsUseChartCapabilities(t *testing.T) {
 		proxy[aiGatewayChartSignInValue] != "0123abcd" ||
 		!reflect.DeepEqual(proxy["responsesModels"], []any{"gpt-5.5"}) {
 		t.Fatal("Custom omitted the current Copilot key, sign-in or Responses projection:", proxy)
+	}
+	expectation, err := prepared.ReconcileExpectation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(expectation.Workloads, func(workload w.RenderedWorkload) bool {
+		return workload.Kind == "Deployment" && workload.Identity.Name == copilotProxyServiceName(agent) &&
+			workload.Template.Annotations[api.AnnotationCopilotSignInGeneration] == "0123abcd"
+	}) {
+		t.Fatal("Custom omitted the actual Copilot proxy or its current sign-in projection")
+	}
+}
+
+func TestCommonCustomCopilotResourcesAndSuspension(t *testing.T) {
+	for _, mode := range []string{"headless", "chat"} {
+		for label, access := range map[string]struct{ shared, copilot bool }{
+			"mixed":        {true, true},
+			"copilot-only": {false, true},
+			"shared-only":  {true, false},
+		} {
+			t.Run(mode+"/"+label, func(t *testing.T) {
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "custom", access.shared, access.copilot, withCommonCustom(t, mode))
+				for range 2 {
+					f.reconcileOK(t)
+				}
+				agent := f.current(t)
+				prepared, err := f.r.prepareReconciledSandbox(context.Background(), agent, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expectation, err := prepared.ReconcileExpectation()
+				if err != nil {
+					t.Fatal(err)
+				}
+				name := copilotProxyServiceName(agent)
+				counts := map[string]int{}
+				for _, object := range expectation.Controls {
+					if object.GetName() == name {
+						counts[object.GetKind()]++
+					}
+				}
+				for _, workload := range expectation.Workloads {
+					if workload.Kind == "Deployment" && workload.Identity.Name == name {
+						counts["Deployment"]++
+						spec := workload.Template.Spec
+						if workload.Replicas != 1 || spec.ServiceAccountName != name ||
+							spec.RuntimeClassName != nil || spec.AutomountServiceAccountToken == nil ||
+							*spec.AutomountServiceAccountToken {
+							t.Fatal("Copilot proxy lost its independent workload or identity boundary")
+						}
+						for _, volume := range spec.Volumes {
+							if volume.PersistentVolumeClaim != nil {
+								t.Fatal("Copilot proxy received Agent storage")
+							}
+						}
+					}
+					if workload.Kind == "StatefulSet" {
+						for _, source := range w.PodSourceReferences(workload.Template.Spec, expectation.Namespace.Name) {
+							if source.Kind == "Secret" && (source.Name == api.CopilotTokenSecretName || source.Name == aiGatewayProxySecretName) {
+								t.Fatal("Agent received Copilot proxy credentials")
+							}
+						}
+					}
+				}
+				want := 0
+				if access.copilot {
+					want = 1
+				}
+				for _, kind := range []string{"Deployment", "Service", "ServiceAccount", "ConfigMap", "NetworkPolicy"} {
+					if counts[kind] != want {
+						t.Fatalf("expected %d Copilot %s, got %d", want, kind, counts[kind])
+					}
+				}
+				if !access.copilot {
+					return
+				}
+				agent.Spec.Suspended = true
+				if err := f.kube.Update(context.Background(), agent); err != nil {
+					t.Fatal(err)
+				}
+				suspended, err := f.r.prepareReconciledSandbox(context.Background(), f.current(t), nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stopped, err := suspended.ReconcileExpectation()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(stopped.Workloads) != len(expectation.Workloads) {
+					t.Fatal("suspension dropped an owned workload instead of stopping it")
+				}
+				for _, workload := range stopped.Workloads {
+					if workload.Replicas != 0 {
+						t.Fatal("suspended Custom left a workload running")
+					}
+				}
+			})
+		}
 	}
 }
