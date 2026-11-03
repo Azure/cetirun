@@ -75,6 +75,53 @@ cetirun:
   #         storageAccount: "cetirunskills"
   helmValues: {}
 
+# -- One Operator-owned ordinary Hermes installation. The umbrella uses these
+# same values under cetirun-operator.cetiadmin; this chart never renders an Agent.
+cetiadmin:
+  enabled: true
+  # A first upgrade can stop an existing old-format installation while the
+  # admission Deployment changes version. Enable only with enabled: false.
+  legacyDisabledSource: false
+  instanceName: cetiadmin
+  owner:
+    alias: ""
+    tenantID: ""
+    objectID: ""
+  # Extra platform diagnostics only. All ordinary managed Agents are included
+  # automatically, regardless of their Team or namespace.
+  platformReadNamespaces: []
+  kubernetes:
+    apiServer: https://kubernetes.default.svc
+    apiAudience: ""
+    caConfigMapName: kube-root-ca.crt
+    apiEgressCIDRs: []
+  model:
+    default: auto
+    initialMonthlyBudgetUSD: ""
+    githubCopilot: false
+  # Empty coordinates use this release's runtime chart and its Hermes profile.
+  # An explicit version must match the Operator release. The controller checks
+  # the selected chart's capability and image/port profile before granting access.
+  runtime:
+    version: ""
+    image: ""
+    port: null
+  azureWorkloadIdentity:
+    enabled: false
+    clientId: ""
+  sharedSkills:
+    enabled: false
+  monitor:
+    enabled: false
+    schedule: every 30m
+    timezone: UTC
+    deliver: local
+    slackChannel: ""
+    slackSecretName: ""
+  retainedAgentUID: ""
+  # Hook wait budget. Helm's own --timeout must also allow this duration.
+  hookTimeoutSeconds: 600
+
 # -- Enable leader election (recommended for production with replicaCount > 1).
 leaderElection: true
 

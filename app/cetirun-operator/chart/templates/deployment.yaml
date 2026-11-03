@@ -56,6 +56,10 @@ spec:
             - --memory-context-enabled={{ .Values.memoryContext.enabled }}
             - {{ printf "--memory-context-image=%s" (default (dig "memoryContext" "image" "" (.Values.global | default dict)) .Values.memoryContext.image) | quote }}
           env:
+            - name: CETIRUN_CETIADMIN_CONFIG_MAP
+              value: {{ include "cetirun-operator.cetiadminConfigName" . | quote }}
+            - name: CETIRUN_OPERATOR_IMAGE
+              value: {{ include "cetirun-operator.image" . | quote }}
             - name: CETIRUN_CHAT_ACCESS
               value: {{ $chat | toJson | quote }}
             - name: REGISTRY_CREDENTIAL_NAMESPACE

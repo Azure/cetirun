@@ -3,7 +3,17 @@
 
 package controller
 
-import "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+import (
+	"context"
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+)
+
+type CetiAdminBindingProvider interface {
+	BindingForAgent(context.Context, *api.Agent) (cetiadmin.Binding, bool, error)
+	OperatorImageReference() string
+}
 
 // HelmInstaller abstracts Helm install/upgrade/uninstall operations.
 // The concrete helm.Client satisfies this interface.

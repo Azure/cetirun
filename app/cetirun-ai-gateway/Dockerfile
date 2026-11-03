@@ -85,6 +85,7 @@ COPY cetirun_ai_gateway /opt/cetirun-ai-gateway/python/cetirun_ai_gateway
 # check loads both callbacks against the LiteLLM installed here, and the
 # LiteLLM entry points the entrypoint uses to register them, so a LiteLLM
 # upgrade that moves what they build on fails the build, not the proxy's start.
+# It also checks that the guard replaced each LiteLLM function it replaces.
 RUN chmod 0755 /usr/local/bin/cetirun-ai-gateway && \
     test "$(id -un 65532)" = nonroot && \
     cp "$(python -c 'import litellm_proxy_extras, os; print(os.path.dirname(litellm_proxy_extras.__file__))')/schema.prisma" /app/schema.prisma && \
@@ -94,7 +95,7 @@ RUN chmod 0755 /usr/local/bin/cetirun-ai-gateway && \
     test -f /opt/prisma/binaries/node_modules/prisma/build/index.js && \
     python -c "from prisma.client import BINARY_PATHS; paths = list(BINARY_PATHS.query_engine.values()); assert paths and all(p.startswith('/opt/prisma/') for p in paths), paths" && \
     python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('litellm_enterprise') is not None)" && \
-    LITELLM_LOCAL_MODEL_COST_MAP=True python -c "import litellm; from litellm.integrations.custom_logger import CustomLogger; from cetirun_ai_gateway.request_log import handler; from cetirun_ai_gateway.guard import handler as guard; assert isinstance(handler, CustomLogger) and isinstance(guard, CustomLogger); assert callable(litellm.logging_callback_manager.add_litellm_callback); from litellm.proxy.proxy_cli import run_server; assert callable(run_server.main)"
+    LITELLM_LOCAL_MODEL_COST_MAP=True python -c "import litellm; from litellm.integrations.custom_logger import CustomLogger; from cetirun_ai_gateway.request_log import handler; from cetirun_ai_gateway.guard import handler as guard; assert isinstance(handler, CustomLogger) and isinstance(guard, CustomLogger); assert callable(litellm.logging_callback_manager.add_litellm_callback); from litellm.proxy.proxy_cli import run_server; assert callable(run_server.main); import cetirun_ai_gateway.guard as module; assert all(module.PATCHED.values()), module.PATCHED; assert litellm.expose_router_debug_in_errors is False"
 
 USER 65532:65532
 WORKDIR /app

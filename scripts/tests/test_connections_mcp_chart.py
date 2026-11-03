@@ -201,7 +201,7 @@ class ConnectionsMCPChartTests(unittest.TestCase):
                 shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
             subprocess.run(["helm", "dependency", "build", "--skip-refresh", str(base / "cetirun-platform")], env=OFFLINE, check=True, capture_output=True, timeout=30)
             chart = base / "cetirun-platform"
-            result = self.render_stack(chart, chart / "ci/connections-render-values.yaml", "cetirun-system", ("--set", "global.registry=registry.example.invalid"))
+            result = self.render_stack(chart, chart / "ci/connections-render-values.yaml", "cetirun-system", ("--set", "global.registry=registry.example.invalid", "--set", "cetirun-operator.cetiadmin.enabled=false"))
             self.assertEqual(result.returncode, 0, result.stderr)
             objects = [value for value in yaml.safe_load_all(result.stdout) if value]
             deployments = {value["metadata"]["name"]: value for value in objects if value["kind"] == "Deployment"}

@@ -227,21 +227,25 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
       {instance.agent.registrySecretRef && <RegistryAuthBlock key={instance.uid || instance.instanceName} instance={instance} />}
 
-      {instance.phase !== "Deleting" && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-          {instance.upgradeAvailable && (
-            <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate(instance)} disabled={upgradeMutation.isPending}>
-              {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}
-            </Button>
-          )}
-          <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
-          {(instance.restartAvailable || instance.restartRequestId) && <RestartAgentButton key={instance.uid} instance={instance} />}
-          <Button appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
-            {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
-          </Button>
-        </div>
-      )}
+      </>)}
 
+      {/* Keep lifecycle requests mounted while the owner checks the Status tab. */}
+      <div style={{ display: selectedTab === "overview" && instance.phase !== "Deleting" ? "flex" : "none",
+        flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+        {instance.upgradeAvailable && (
+          <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate(instance)} disabled={upgradeMutation.isPending}>
+            {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}
+          </Button>
+        )}
+        <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
+        {(instance.restartAvailable || instance.restartRequestId) && <RestartAgentButton key={instance.uid} instance={instance} />}
+        {instance.suspended !== undefined && <SuspendAgentButton instance={instance} />}
+        <Button appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
+          {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
+        </Button>
+      </div>
+
+      {selectedTab === "overview" && (<>
       {upgradeMutation.isError && (
         <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>
           {upgradeMutation.error?.message || "Failed to upgrade agent"}
@@ -332,10 +336,6 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       </Dialog>
 
       </>)}
-      <div style={{ display: selectedTab === "overview" && instance.phase !== "Deleting" ? "flex" : "none",
-        flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-        {instance.suspended !== undefined && <SuspendAgentButton instance={instance} />}
-      </div>
     </div>
   );
 }

@@ -4,6 +4,13 @@
 ARG VERSION=dev
 ARG GIT_SHA=unknown
 
+# Package the target Helm CLI using the shared tool lock.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/azurelinux/base/core:3.0@sha256:bd88359666e3f20296e7fe639a480dfd3c3c8eba299b21f26e4560353e21a656 AS cetiadmin-tools
+ARG TARGETARCH
+RUN tdnf install -y ca-certificates python3 && tdnf clean all
+COPY scripts/ci/install_tools.py scripts/ci/tools.json /tools/
+RUN python3 /tools/install_tools.py --arch "${TARGETARCH}" --bin-dir /out/bin helm
+
 # Build stage
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:3607c431963c588d69b3be0c31cea63abd197a324bbeede998dda702597d8368 AS builder
 ARG VERSION
@@ -42,6 +49,7 @@ WORKDIR /
 
 # Copy the compiled binary.
 COPY --from=builder /manager /manager
+COPY --from=cetiadmin-tools --chmod=0755 /out/bin/helm /usr/local/share/cetirun/cetiadmin/bin/helm
 
 # Chart is now pulled from OCI registry at runtime.
 # No bundled chart in the image.

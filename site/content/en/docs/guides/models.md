@@ -188,6 +188,7 @@ instance that uses shared models:
 
 - adds or removes a shared model
 - changes the limits of a shared model
+- changes if a shared model accepts images
 - changes if a shared model is offered, through its price or the Gateway's
   setting
 
@@ -282,6 +283,31 @@ Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller
 [Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),
 and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login.go" >}}).
 
+### Images
+
+OpenClaw and Hermes send images with a request to the models that accept them.
+The operator reads this from the Gateway (`supports_vision`). Refer to the
+Gateway chart's
+[Images]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#images)
+section. A model accepts images only when every deployment of its name accepts
+them. When the instance's own Copilot route has the same name, that route must
+also accept them. A smart-routing model accepts images only when every model
+that it sends requests to accepts them.
+
+For the other models:
+
+- Hermes first sends the image to the model in a separate call, and the model
+  describes it.
+- OpenClaw uses its own model catalog, which knows only the names of some
+  OpenAI models. For a name that it does not know, another model that accepts
+  images describes the image. The `computer` tool is not available with that
+  name.
+
+The instance's configuration lists the models that accept images
+(`aiGateway.visionModels` of the runtime chart). A runtime chart without this
+value sends images as before. The instance takes the value when you upgrade it
+to a chart that has it.
+
 ### When the budget runs out
 
 Each instance's key has a monthly budget in US dollars. For an instance of a
@@ -309,9 +335,12 @@ A Team can also define its own smart-routing models in the Portal. See
 [Configure a team](../teams/#smart-routing). An instance that can use one of
 these models lists it under its name, such as `auto-team`. The create form
 offers the names that the Team's Policy allows as the default model, with
-`(smart routing)` after each name. The instance's
-configuration carries the router's internal Gateway name as the model ID.
-OpenClaw shows the router's name, but Hermes lists the internal name.
+`(smart routing)` after each name.
+
+The instance's key reaches the router under its name and under its internal
+Gateway name. Hermes is configured with the router's name. OpenClaw is
+configured with the internal name as the model ID, and it shows the router's
+name.
 
 If you select the router's name as the default model, you select the router.
 The instance is configured with the smallest context window and output limit
@@ -319,16 +348,21 @@ among the router's tier models that the Gateway reports. As a result, a request
 sized for the router fits every tier. When the owner's GitHub Copilot model is
 merged into a tier's shared model, the instance's requests for that tier can
 also reach its Copilot route. As a result, the router's limits include the
-limits of the route, as the instance's entry for that shared model does. The
-same is true for a router configured in the Gateway.
+limits of the route, as the instance's entry for that shared model does. A
+router configured in the Gateway gets its limits in the same way, from the
+models of its tiers and from its default model. If the router sets its own
+`max_input_tokens` and `max_output_tokens` in `model_info`, these values are
+used instead.
 
 Each request is charged to the instance's key at the price of the tier model
 that it is sent to. The calls of an `llm` or `jev` classifier are also charged.
 The router's own price in the Gateway only satisfies the check for unpriced
-models. The key's budget applies as usual. A per-model rate limit is matched
-against the model name that the instance requests, which is the router's
-internal name. As a result, a per-model limit on a tier model does not apply to
-requests that go through a router.
+models. The key's budget applies as usual.
+
+A per-model rate limit is matched against the model name that the Gateway
+counts, which is the router's internal name. A limit that a Policy sets for the
+router's name is also set under that internal name. A per-model limit on a tier
+model does not apply to requests that go through a router.
 
 An instance that cannot use one of its Team's routers shows why on its page.
 For example:

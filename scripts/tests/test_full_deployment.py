@@ -225,6 +225,7 @@ class DeploymentFixture:
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.config = yaml.safe_load(FIXTURE.read_text())
+        self.config["platform"]["values"]["cetirun-operator"]["cetiadmin"] = {"enabled": False}
 
     def deployment(self, config=None, name="charts"):
         path = self.root / ("environment.json" if name == "charts" else f"{name}.json")
@@ -242,6 +243,36 @@ class DeploymentFixture:
 
 
 class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
+    def test_current_custom_config_does_not_require_retired_model_fields(self):
+        config = copy.deepcopy(self.config)
+        custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
+        custom.pop("agentManagedModel", None)
+        custom.pop("gatewayImages", None)
+        before = copy.deepcopy(config)
+        with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("configuration ran a command")):
+            _, values = self.configure(config)
+        emitted = values["platform"]["cetirun-operator"]["customRuntime"]
+        self.assertEqual(set(emitted), {
+            "enabled", "approvedImages", "imageUsers", "storageClass", "storageSize",
+            "accessMode", "fsGroup", "context",
+        })
+        self.assertTrue(emitted["enabled"])
+        self.assertEqual(emitted["approvedImages"], custom["approvedImages"])
+        self.assertEqual(config, before)
+
+    def test_retired_custom_model_fields_fail_before_external_commands(self):
+        for field, value in (("agentManagedModel", False), ("agentManagedModel", True),
+                             ("gatewayImages", ["registry.example.com/approved@sha256:" + "a" * 64])):
+            with self.subTest(field=field, value=value):
+                config = copy.deepcopy(self.config)
+                custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
+                custom.pop("agentManagedModel", None)
+                custom.pop("gatewayImages", None)
+                custom[field] = value
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("configuration ran a command")):
+                    with self.assertRaisesRegex(ValueError, f"Remove customRuntime.{field} from the environment file"):
+                        self.configure(config)
+
     def test_invalid_yaml_does_not_echo_credentials(self):
         marker = "sk-synthetic-marker"
         path = self.root / "malformed.yaml"
@@ -258,10 +289,12 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         marker = "sk-rendered-marker"
         with self.assertRaises(yaml.YAMLError) as failure:
             yaml.safe_load("api_key: '" + marker)
+        fixture = self.root / "explicit-disabled.json"
+        fixture.write_text(json.dumps(self.config))
         with patch.object(DEPLOY.Deployment, "render", side_effect=failure.exception), \
                 patch("sys.stdout", new_callable=io.StringIO) as stdout, \
                 patch("sys.stderr", new_callable=io.StringIO) as stderr:
-            self.assertEqual(DEPLOY.main(["--config", str(FIXTURE), "--plan"]), 1)
+            self.assertEqual(DEPLOY.main(["--config", str(fixture), "--plan"]), 1)
         self.assertNotIn(marker, stdout.getvalue() + stderr.getvalue())
         self.assertIn("YAML", stderr.getvalue())
 
@@ -354,6 +387,22 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
 class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
+
+    def test_rendered_operator_custom_config_matches_current_inputs(self):
+        config = copy.deepcopy(self.config)
+        custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
+        custom.pop("agentManagedModel", None)
+        custom.pop("gatewayImages", None)
+        deployment = self.deployment(config)
+        operator = next(document for document in deployment.documents["platform"]
+                        if document["kind"] == "Deployment" and document["metadata"]["name"] == "cetirun-operator")
+        manager = next(container for container in operator["spec"]["template"]["spec"]["containers"]
+                       if container["name"] == "manager")
+        raw = next(item["value"] for item in manager["env"] if item["name"] == "CETIRUN_CUSTOM_RUNTIME")
+        self.assertEqual(json.loads(raw), deployment.values["platform"]["cetirun-operator"]["customRuntime"])
+        self.assertNotIn("agentManagedModel", json.loads(raw))
+        self.assertNotIn("gatewayImages", json.loads(raw))
+        self.assertFalse(deployment.writes)
 
     def test_plan_omits_credential_references_and_extra_input_fields(self):
         marker = "private-provider-reference"
@@ -1265,7 +1314,11 @@ class PublicTLSPreflightTests(unittest.TestCase):
     def deployment(self, name):
         directory = self.directory / name
         directory.mkdir()
-        config, values = DEPLOY.configuration(FIXTURE)
+        fixture = yaml.safe_load(FIXTURE.read_text())
+        fixture["platform"]["values"]["cetirun-operator"]["cetiadmin"] = {"enabled": False}
+        path = directory / "environment.json"
+        path.write_text(json.dumps(fixture))
+        config, values = DEPLOY.configuration(path)
         deployment = SyntheticCluster(config, values, directory / "charts")
         deployment.render()
         deployment.seed_references()

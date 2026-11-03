@@ -256,6 +256,7 @@ func TestProtectedNamespaceRoutingAPIServer(t *testing.T) {
 func renderedPodAdmission(t *testing.T, ca []byte) (*admissionregistrationv1.ValidatingAdmissionPolicy, *admissionregistrationv1.ValidatingAdmissionPolicyBinding, *admissionregistrationv1.ValidatingWebhookConfiguration) {
 	t.Helper()
 	command := exec.Command("helm", "template", "namespace-guard", "../../chart", "--kube-version", "1.37.0",
+		"--set", "cetiadmin.enabled=false",
 		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
 		"--set", "sandboxAdmission.podsEnabled=true", "--set", "sandboxAdmission.tlsSecretName=example-tls",
 		"--set", "sandboxAdmission.adminUsers[0]=admin@example.com",

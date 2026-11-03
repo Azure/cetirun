@@ -5,6 +5,7 @@ package registryauth
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -24,9 +25,11 @@ import (
 )
 
 func TestIsolationAcceptsOnlyUIDBoundTerminalExec(t *testing.T) {
-	for _, test := range []string{"bound", "namespace-owner", "namespace-marker", "account-owner", "deployment-owner", "policy-owner", "binding-owner",
+	for _, test := range []string{"bound", "bound-protected-spec", "bound-protected-team", "namespace-owner", "namespace-marker", "account-owner", "deployment-owner", "policy-owner", "binding-owner",
 		"fail-open", "different-command", "match-condition", "object-selector", "excluded-rule", "resource-rule", "binding-warn", "binding-selector",
-		"secret-access", "admission-write", "token-mint", "foreign-exec", "runtime-identity"} {
+		"secret-access", "admission-write", "token-mint", "foreign-exec", "runtime-identity", "legacy-condition", "unrecorded-admin",
+		"admin-bound", "admin-missing-condition", "admin-stale-agent", "admin-stale-namespace", "admin-stale-sa", "admin-missing-source",
+		"admin-extra-condition", "admin-protected-spec", "admin-protected-status", "admin-protected-team", "admin-missing-team"} {
 		t.Run(test, func(t *testing.T) {
 			agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "agent-uid"}, Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeCustom}}}
 			namespace, workload := "cetirun-example", "openclaw-example-cetirun"
@@ -43,8 +46,7 @@ func TestIsolationAcceptsOnlyUIDBoundTerminalExec(t *testing.T) {
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name + "-pod", Namespace: namespace}, Spec: corev1.PodSpec{ServiceAccountName: name}}
 			policyName := workload + "-" + namespace + "-deny-exec"
 			policy := &admissionv1.ValidatingAdmissionPolicy{ObjectMeta: metadata(policyName, ""), Spec: admissionv1.ValidatingAdmissionPolicySpec{
-				FailurePolicy:   ptr.To(admissionv1.Fail),
-				MatchConditions: []admissionv1.MatchCondition{{Name: "exclude-adminclaw", Expression: `request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"`}},
+				FailurePolicy: ptr.To(admissionv1.Fail),
 				MatchConstraints: &admissionv1.MatchResources{
 					NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": namespace}},
 					ResourceRules: []admissionv1.NamedRuleWithOperations{{RuleWithOperations: admissionv1.RuleWithOperations{
@@ -54,6 +56,13 @@ func TestIsolationAcceptsOnlyUIDBoundTerminalExec(t *testing.T) {
 				Validations: []admissionv1.Validation{{Expression: terminalpolicy.AdmissionExpression(namespace, workload+"-0", "cetirun", name, string(agent.UID))}},
 			}}
 			binding := &admissionv1.ValidatingAdmissionPolicyBinding{ObjectMeta: metadata(policyName, ""), Spec: admissionv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policyName, ValidationActions: []admissionv1.ValidationAction{admissionv1.Deny}}}
+			team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "protected", UID: "team-uid"}, Spec: api.TeamSpec{AgentPolicyRef: "policy"}}
+			if strings.HasPrefix(test, "admin-") || test == "unrecorded-admin" {
+				policy.Spec.MatchConditions = []admissionv1.MatchCondition{{Name: "exclude-cetiadmin", Expression: `request.userInfo.username != "system:serviceaccount:cetirun-operations:managed-admin" || request.userInfo.uid != "account-uid"`}}
+				if test != "unrecorded-admin" {
+					agent.Annotations = map[string]string{ExecAdminBindingAnnotation: strings.Replace(execBindingJSON, "target-uid", string(agent.UID), 1)}
+				}
+			}
 			desiredSA := workload
 			switch test {
 			case "namespace-owner":
@@ -86,6 +95,28 @@ func TestIsolationAcceptsOnlyUIDBoundTerminalExec(t *testing.T) {
 				binding.Spec.MatchResources = &admissionv1.MatchResources{}
 			case "runtime-identity":
 				desiredSA = name
+			case "legacy-condition":
+				policy.Spec.MatchConditions = []admissionv1.MatchCondition{{Name: "exclude-adminclaw", Expression: `request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"`}}
+			case "admin-missing-condition":
+				policy.Spec.MatchConditions = nil
+			case "admin-stale-agent":
+				agent.Annotations[ExecAdminBindingAnnotation] = execBindingJSON
+			case "admin-stale-namespace":
+				ns.UID = "new-namespace-uid"
+			case "admin-stale-sa":
+				policy.Spec.MatchConditions[0].Expression = strings.ReplaceAll(policy.Spec.MatchConditions[0].Expression, "account-uid", "new-account-uid")
+			case "admin-missing-source":
+				agent.Annotations[ExecAdminBindingAnnotation] = strings.ReplaceAll(agent.Annotations[ExecAdminBindingAnnotation], "source-uid", "")
+			case "admin-extra-condition":
+				policy.Spec.MatchConditions = append(policy.Spec.MatchConditions, admissionv1.MatchCondition{Name: "skip", Expression: "false"})
+			case "admin-protected-spec", "bound-protected-spec":
+				agent.Spec.SandboxRef = "sandbox"
+			case "admin-protected-status":
+				agent.Status.Sandbox = &api.SandboxStatus{}
+			case "admin-protected-team", "bound-protected-team":
+				agent.Spec.Team = team.Name
+			case "admin-missing-team":
+				agent.Spec.Team = "missing-team"
 			}
 			scheme := runtime.NewScheme()
 			_ = clientgoscheme.AddToScheme(scheme)
@@ -96,7 +127,7 @@ func TestIsolationAcceptsOnlyUIDBoundTerminalExec(t *testing.T) {
 			}
 			role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-terminal-exec"}, Rules: []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"get", "create"}}}}
 			execBinding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ruleNamespace}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: namespace, Name: name}}, RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: role.Name}}
-			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, ns, account, deployment, pod, policy, binding, role, execBinding).
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, ns, account, deployment, pod, policy, binding, role, execBinding, team).
 				WithInterceptorFuncs(interceptor.Funcs{Create: func(_ context.Context, _ client.WithWatch, object client.Object, _ ...client.CreateOption) error {
 					review := object.(*authorizationv1.SubjectAccessReview)
 					access := review.Spec.ResourceAttributes
@@ -108,7 +139,7 @@ func TestIsolationAcceptsOnlyUIDBoundTerminalExec(t *testing.T) {
 					return nil
 				}}).Build()
 			err := CheckIsolation(context.Background(), c, DefaultNamespace, namespace, desiredSA)
-			if (err == nil) != (test == "bound") {
+			if (err == nil) != (strings.HasPrefix(test, "bound") || test == "admin-bound") {
 				t.Fatalf("terminal isolation result: %v", err)
 			}
 		})

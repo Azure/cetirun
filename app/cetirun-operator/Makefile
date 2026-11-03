@@ -15,10 +15,11 @@ LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.V
 	-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=$(GIT_SHA)
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
-# The full controller suite exceeds 20m on CI runners.
+# Bound each package or complementary controller test group.
 GO_TEST_TIMEOUT := 30m
-# Envtest also runs the unit suite; the combined regressions exceed 30m in CI.
-GO_ENVTEST_TIMEOUT := 40m
+GO_CONTROLLER_TEST_GROUP := ^Test(Reconciled|Planned|Native|Container|Common)
+# Envtest also runs the unit suite; the combined regressions exceed 40m in CI.
+GO_ENVTEST_TIMEOUT := 50m
 
 .PHONY: all build build-terminal build-node-guard build-sandbox-config-change test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
@@ -50,7 +51,12 @@ build-sandbox-config-change:
 
 ## Run unit tests
 test:
-	go test ./... -v -count=1 -timeout=$(GO_TEST_TIMEOUT)
+	@set -eu; \
+		packages="$$(go list -f '{{if ne .ImportPath "github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"}}{{.ImportPath}}{{end}}' ./...)"; \
+		test -n "$$packages"; \
+		go test $$packages -v -count=1 -timeout=$(GO_TEST_TIMEOUT)
+	go test ./internal/controller -v -count=1 -timeout=$(GO_TEST_TIMEOUT) -run '$(GO_CONTROLLER_TEST_GROUP)'
+	go test ./internal/controller -v -count=1 -timeout=$(GO_TEST_TIMEOUT) -skip '$(GO_CONTROLLER_TEST_GROUP)'
 
 ## Run go vet
 vet:

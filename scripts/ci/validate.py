@@ -29,7 +29,7 @@ WORKFLOWS = (
     "codeql.yml",
     "cetirun-validation.yml",
 )
-# (chart, --set-string values[, synthetic values file]). A chart whose required
+# (chart, values to set[, synthetic values file]). A chart whose required
 # inputs are structured renders with its own CI values file.
 CHARTS = (
     ("app/cetirun-connections-mcp/chart", (
@@ -50,7 +50,7 @@ CHARTS = (
     ),
     ("app/cetirun-chart", ("agentType=hermes", "secrets.model=lint-model",
         "aiGateway.keySecretName=lint-model-key", "secrets.apiBase=http://gateway.example.com/v1")),
-    ("app/cetirun-operator/chart", ()),
+    ("app/cetirun-operator/chart", ("cetiadmin.enabled=false",)),
     ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",)),
     (
         "app/cetirun-agent-broker/chart",
@@ -96,6 +96,7 @@ CHARTS = (
             # share the operator's namespace, and the Portal reads the shared
             # models the operator publishes there.
             "cetirun-operator.namespace=default",
+            "cetirun-operator.cetiadmin.enabled=false",
             "cetirun-portal.aiGateway.catalogNamespace=default",
         ),
     ),
@@ -215,7 +216,9 @@ def chart_gate(root):
     )
     for directory, values, *values_files in CHARTS:
         chart = root / directory
-        options = [arg for value in values for arg in ("--set-string", value)]
+        options = [arg for value in values for arg in (
+            "--set" if value.rsplit("=", 1)[-1] in ("true", "false") else "--set-string", value
+        )]
         options += [arg for values_file in values_files for arg in ("--values", str(root / values_file))]
         run(["helm", "lint", "--strict", str(chart), *options], root, env=offline_env())
         run(
@@ -338,7 +341,7 @@ def python_tests(root):
 
 
 def ci_tests(root):
-    for directory in ("scripts/ci/tests", "scripts/tests"):
+    for directory in ("scripts/ci/tests", "scripts/tests", "app/cetirun-operator/internal/cetiadmin/tests"):
         if not list((root / directory).glob("test_*.py")):
             raise ValueError(f"No tests found in {directory}")
         run(

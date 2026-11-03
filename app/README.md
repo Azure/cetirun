@@ -10,8 +10,7 @@ or [Install CetiRun](../site/content/en/docs/getting-started/platform.md).
 | Directory | Description |
 |-----------|-------------|
 | `cetirun-platform/` | Umbrella chart that installs the operator and portal together. |
-| `cetirun-operator/` | Kubernetes operator that manages Agent and Team CRDs. It contains Go source code and its own Helm chart for operator deployment. |
+| `cetirun-operator/` | Kubernetes operator for Agent and Team CRDs and the Hermes-based [CetiAdmin](cetirun-operator/internal/cetiadmin). Includes the operator Helm chart, operations skills, and helpers. |
 | `cetirun-chart/` | Per-instance agent Helm chart. It contains templates, values, configs, and named Dockerfiles for OpenClaw, Hermes, shared base, and desktop images. |
 | `cetirun-portal/` | Self-service portal to create, manage, and monitor runtime instances. It contains a Go backend and a React frontend. |
 | `cetirun-ai-gateway/` | AI Gateway: the `cetirun-ai-gateway` image, open-source LiteLLM on Azure Linux, and its Helm chart, which installs standalone with bundled PostgreSQL and Valkey. |
-| `adminclaw/` | Administrative deployment tools and platform operations skills. |
