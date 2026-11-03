@@ -29,6 +29,11 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        # Lets the non-root process read the 0440 credentials Secret files. The
+        # Blob CSI driver applies fsGroup only to ReadWriteOnce volumes, so the
+        # shared NFS container keeps its ownership.
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:

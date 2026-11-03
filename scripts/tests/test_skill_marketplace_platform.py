@@ -113,6 +113,9 @@ class SkillMarketplacePlatformTests(unittest.TestCase):
                 self.assertEqual(deployment["metadata"]["namespace"], NAMESPACE)
                 container = deployment["spec"]["template"]["spec"]["containers"][0]
                 self.assertEqual(container["image"], "registry.example.invalid/cetirun-skill-marketplace:9.8.7")
+                # The non-root process must be able to read the 0440 credentials Secret.
+                pod_security = deployment["spec"]["template"]["spec"]["securityContext"]
+                self.assertEqual((pod_security["runAsUser"], pod_security["fsGroup"]), (65532, 65532))
                 self.assertIn(f"--catalog-namespace={NAMESPACE}", container["args"])
                 self.assertIn(f"--claim-name={claim}", container["args"])
                 catalog = next(doc for doc in objects if doc["kind"] == "Role"
