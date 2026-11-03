@@ -21,21 +21,22 @@ configuration path described below.
 
 Prepare an environment file outside the repository. The
 [synthetic example](ci/deployment-example.yaml) shows the platform input shape.
-Add the CetiAdmin configuration below, or explicitly disable CetiAdmin. The
-example alone does not supply its owner and budget. Its certificate framing,
-image digests, identities, prices, and owner are test data, not deployable
+The example enables CetiAdmin with a synthetic owner, budget, and API access.
+Replace them as [Configure CetiAdmin](#configure-cetiadmin) describes, or set
+`cetiadmin.enabled: false`. The certificate framing, image digests,
+identities, prices, and owner of the example are test data, not deployable
 credentials or qualification.
 
 The file contains these inputs:
 
 | Input | Meaning |
 | --- | --- |
-| `target` | Explicit kubeconfig context, cluster name, HTTPS API server, and the `kube-system` namespace UID that you get independently |
+| `target` | Explicit kubeconfig context, the cluster name and HTTPS API server of that context exactly as the kubeconfig names them, and the `kube-system` namespace UID that you get independently |
 | `release` | Registry with any repository prefix, release version, and full source Git SHA |
 | `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
-| `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the versioned Key Vault key URL |
+| `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
-| `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and optional references to provider credential Secrets |
+| `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper requires each provider Secret that the file names. Remove the providers that you do not register |
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
 | `sharedSkills` | The shared Skills storage fields that exist in the runtime chart, for example, storage class, resource group, account, and container |
@@ -47,6 +48,22 @@ approved workflow. The helper does not call `az`, get Key Vault secrets, change
 subscriptions, or change `current-context`. Every cluster operation uses
 `target.context`. Before a write, the helper examines the cluster name, API
 origin, and cluster UID of that context.
+
+The helper uses the kubeconfig of the shell, from `KUBECONFIG` or the default
+file. Read the `target` values from the context after you make sure that it
+selects the intended cluster. The server must be the same string as in the
+kubeconfig, including any port:
+
+```bash
+kubectl config view --minify --context <context> \
+  -o jsonpath='{.contexts[0].context.cluster}{"\n"}{.clusters[0].cluster.server}{"\n"}'
+kubectl get namespace kube-system --context <context> -o jsonpath='{.metadata.uid}{"\n"}'
+```
+
+If the Operator needs registry credentials to pull the runtime chart, set
+`platform.values.cetirun-operator.acrDockerSecret` to a
+`kubernetes.io/dockerconfigjson` Secret in the platform namespace. The helper
+then requires that Secret.
 
 AKS managed Istio adds the revision to the names of the control plane
 Deployment, the ingress gateway Deployment, and the shared mesh ConfigMap. An
@@ -452,7 +469,8 @@ After deployment is authorized, use that file with the existing chart:
 ISTIO_REVISION="$(kubectl get pods -n aks-istio-system -l app=istiod \
   -o jsonpath='{.items[0].metadata.labels.istio\.io/rev}')"
 test -n "${ISTIO_REVISION}"
-kubectl create namespace cetirun-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl get namespace cetirun-system >/dev/null 2>&1 ||
+  kubectl create namespace cetirun-system
 kubectl label namespace cetirun-system "istio.io/rev=${ISTIO_REVISION}" --overwrite
 
 helm dependency build app/cetirun-platform
