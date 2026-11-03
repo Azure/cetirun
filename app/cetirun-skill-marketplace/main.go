@@ -76,7 +76,7 @@ func parse(args []string) (options, error) {
 	fs.StringVar(&o.claimSize, "claim-size", "1Gi", "requested size of each Agent's skills claim")
 	fs.StringVar(&o.catalogNamespace, "catalog-namespace", "", "namespace of the catalog ConfigMap (the operator namespace)")
 	fs.StringVar(&o.reserved, "reserved-names", strings.Join(skills.DefaultReserved, ","), "comma-separated reserved skill names")
-	fs.DurationVar(&o.teamGCGrace, "team-gc-grace", time.Hour, "delay before a deleted Team's releases are removed")
+	fs.DurationVar(&o.teamGCGrace, "team-gc-grace", time.Hour, "how long a deleted Team's releases stay after its last publication")
 	fs.Int64Var(&o.maxRepositoryMiB, "max-repository-mib", 256, "largest repository commit to load, in MiB")
 	fs.StringVar(&o.healthAddress, "health-address", ":8081", "health probe address")
 	fs.StringVar(&o.metricsAddress, "metrics-address", ":8080", "metrics address; 0 disables")

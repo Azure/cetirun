@@ -28,7 +28,8 @@ type TeamReconciler struct {
 	Store     *Store
 	Catalog   *Catalog
 	Now       func() time.Time
-	// GCGrace delays removing the releases of a deleted Team.
+	// GCGrace is how long the releases of a deleted Team stay after the
+	// Team's last publication.
 	GCGrace time.Duration
 }
 
@@ -47,8 +48,8 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, req reconcile.Request) (
 	team := &api.Team{}
 	if err := r.Client.Get(ctx, req.NamespacedName, team); err != nil {
 		if apierrors.IsNotFound(err) {
-			// The Team is deleted. Its releases stay for GCGrace, but the
-			// catalog stops listing it now.
+			// The Team is deleted. The catalog stops listing it now; its
+			// releases stay until GCGrace after its last publication.
 			r.Catalog.RemoveTeamNamed(req.Name)
 			return reconcile.Result{}, nil
 		}

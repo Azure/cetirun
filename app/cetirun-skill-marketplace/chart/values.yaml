@@ -53,7 +53,7 @@ reservedNames:
   - cetirun-memory
   - connected-services
 
-# -- Delay before the releases of a deleted Team are removed.
+# -- How long the releases of a deleted Team stay after the Team's last publication.
 teamGCGrace: 1h
 
 serviceAccount:
