@@ -6,7 +6,8 @@ Auth SDK in a private credential namespace, and the platform release. The
 platform includes the Operator, admission server, Portal, AI Gateway,
 PostgreSQL, Valkey, and Connections MCP. The same configuration enables Portal
 Chat and supplies Custom runtime, terminal, Memory, and shared Skills/HOME
-references.
+references. The optional [Skill Marketplace](#skill-marketplace) is installed
+only when the environment file configures it.
 
 The `cetirun-platform` Helm chart contains the platform components. Its
 switches stay available to chart consumers. The full set is necessary for the
@@ -32,6 +33,7 @@ The file contains these inputs:
 | `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and optional references to provider credential Secrets |
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
 | `sharedSkills` | The shared Skills storage fields that exist in the runtime chart, for example, storage class, resource group, account, and container |
+| `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
 federation/permissions, storage classes, and referenced Secrets are
@@ -77,7 +79,7 @@ make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 ```
 
 The plan validates the inputs and renders local charts in a temporary
-directory. Its JSON lists the target, releases, workloads, all 13 images and 8
+directory. Its JSON lists the target, releases, workloads, all 14 images and 9
 charts, and `referenceCounts` by resource kind. The JSON does not contain
 reference names, Secret keys, or extra input fields. YAML errors report their
 position but do not show the contents. The plan does not connect to a cluster
@@ -123,10 +125,10 @@ patch the mesh.
 
 Next, the Broker and its Auth SDK start in the credential namespace. Then the
 helper installs the platform. It waits for every Deployment and StatefulSet,
-which includes PostgreSQL, Valkey, MCP, and the admission server. On a new
-installation, the admission server starts before the fail-closed webhooks are
-installed. An upgrade never disables the admission enforcement that is already
-in effect.
+which includes PostgreSQL, Valkey, MCP, the admission server, and the
+configured Skill Marketplace. On a new installation, the admission server
+starts before the fail-closed webhooks are installed. An upgrade never disables
+the admission enforcement that is already in effect.
 
 At the end, a server-side dry-run of a Team creation examines the served
 admission path. This dry-run does not store a Team. If a read, render, upgrade,
@@ -357,6 +359,69 @@ Administrator groups cannot be blanket groups, for example
 `system:authenticated` or `system:serviceaccounts:<namespace>`. The admission
 server refuses to start with these groups. As a result, the chart also refuses
 them.
+
+## Skill Marketplace
+
+The optional `cetirun-skill-marketplace` subchart syncs one Git repository of
+skills. It publishes the skills that each policy-bound Team selects to a Blob
+NFS container, and it creates the read-only skills claim in the namespace of
+each native Sandbox Agent. It is off by default. To enable it, also enable
+`cetirun-operator.skillMarketplace.enabled` and
+`cetirun-portal.skillMarketplace.enabled`. The Operator chart accepts its
+setting only with `sandboxSources.enabled` and `nativeExecution`, and without
+`sandboxSources.skillsCatalogConfigMapName`.
+
+The platform chart refuses the marketplace in these cases:
+
+- The bundled Operator is disabled, its setting is off, or the setting of the
+  bundled Portal is off.
+- The release namespace, the marketplace's `catalog.namespace`, or the Portal's
+  `skillMarketplace.catalogNamespace` is not `cetirun-operator.namespace`.
+- `agentClaims.claimName` is not the Operator's
+  `sandboxSources.skillsClaimName`.
+
+`make deploy` sets these values from the optional `skillMarketplace` block of
+the environment file:
+
+```yaml
+skillMarketplace:
+  repository:
+    url: https://git.example.com/example/skills.git
+    ref: main                # Optional. Empty uses the remote HEAD.
+    path: skills             # Optional. Empty is the repository root.
+    auth: token              # none, token, or ssh
+    existingSecret: skills-repository
+    syncInterval: 5m         # Optional. At least 30s.
+  storage:
+    resourceGroup: example-rg
+    storageAccount: examplemarketplace
+    containerName: marketplace
+    storageClassName: azureblob-nfs-premium
+```
+
+With `auth: ssh`, use an `ssh://` URL or the `user@host:path` form. The URL
+must not contain credentials. For `auth: token`, the Secret in
+`platform.namespace` has the key `token`. For `auth: ssh`, it has the keys
+`ssh-privatekey` and `known_hosts`. Before its first write, the command makes
+sure that these keys and the StorageClass exist.
+
+The command refuses the block if the native Sandbox sources are off, if the
+Operator uses a published skills catalog, or if the storage is the
+`sharedSkills` container. It takes the image from `release`, the claim name
+from the Operator's `sandboxSources.skillsClaimName`, and the catalog namespace
+from `platform.namespace`. Set other chart values, for example
+`repository.tokenUsername`, under `platform.values.cetirun-skill-marketplace`.
+
+On a new installation, the bootstrap upgrade does not install the marketplace.
+The command waits for its rollout after the final platform upgrade. A ready
+marketplace has not necessarily synchronized the repository. The catalog
+ConfigMap `cetirun-skill-marketplace` in the operator namespace shows the
+synchronized commit and any sync error.
+
+NFS 3.0 authorizes clients only by network. Use a storage account that only
+private endpoints can reach, and turn off its public network access. Refer to
+[Storage](../../site/content/en/docs/operations/storage.md) and the
+[Skill Marketplace README](../cetirun-skill-marketplace/README.md).
 
 ## AI Gateway
 

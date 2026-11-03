@@ -55,11 +55,13 @@ VERSION_FILES = (
     "app/cetirun-ai-gateway/chart/Chart.yaml",
     "app/cetirun-agent-broker/chart/Chart.yaml",
     "app/cetirun-connections-mcp/chart/Chart.yaml",
+    "app/cetirun-skill-marketplace/chart/Chart.yaml",
     "app/cetirun-operator/chart/values.yaml",
     "app/cetirun-operator/cmd/main.go",
     "app/cetirun-operator/deploy/deploy.sh",
     "app/cetirun-portal/deploy/deploy.sh",
     "app/cetirun-portal/go.mod",
+    "app/cetirun-skill-marketplace/go.mod",
     "app/internal/go.mod",
     "app/cetirun-portal/web/package.json",
     "app/cetirun-portal/web/package-lock.json",
@@ -154,7 +156,7 @@ class CetiRunVersionTests(unittest.TestCase):
         for relative in (
             "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
             "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
-            "cetirun-agent-broker/chart",
+            "cetirun-agent-broker/chart", "cetirun-skill-marketplace/chart",
         ):
             shutil.copytree(
                 ROOT / "app" / relative, self.root / "app" / relative,
@@ -178,7 +180,7 @@ class CetiRunVersionTests(unittest.TestCase):
                     env=env, text=True, capture_output=True, timeout=30
                 )
                 self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
-                for component in ("operator", "portal", "ai-gateway", "connections-mcp"):
+                for component in ("operator", "portal", "ai-gateway", "connections-mcp", "skill-marketplace"):
                     archive = self.root / f"app/cetirun-platform/charts/cetirun-{component}-{version}.tgz"
                     self.assertTrue(archive.is_file(), archive)
                 rendered = subprocess.run(
@@ -206,6 +208,22 @@ class CetiRunVersionTests(unittest.TestCase):
                 ))
                 with self.assertRaisesRegex(ValueError, f"cetirun-agent-broker/chart/Chart.yaml: {field}"):
                     MODULE.check_version(self.version)
+
+    def test_set_synchronizes_the_skill_marketplace_chart_and_module(self):
+        MODULE.set_version("0.1.2")
+        chart = self.root / "app/cetirun-skill-marketplace/chart/Chart.yaml"
+        for field in ("version", "appVersion"):
+            self.assertEqual(MODULE.top_level_yaml(chart, field), "0.1.2")
+        self.assertIn("github.com/Azure/CetiRun/app/cetirun-operator v0.1.2\n",
+                      (self.root / "app/cetirun-skill-marketplace/go.mod").read_text())
+        platform = (self.root / "app/cetirun-platform/Chart.yaml").read_text()
+        self.assertEqual(platform.count("    version: 0.1.2\n"), MODULE.PLATFORM_DEPENDENCIES)
+
+    def test_check_rejects_a_stale_skill_marketplace_operator_requirement(self):
+        module = self.root / "app/cetirun-skill-marketplace/go.mod"
+        module.write_text(module.read_text().replace(f"cetirun-operator v{self.version}", "cetirun-operator v0.0.0"))
+        with self.assertRaisesRegex(ValueError, "app/cetirun-skill-marketplace/go.mod"):
+            MODULE.check_version(self.version)
 
     def test_missing_broker_app_version_does_not_partially_update_files(self):
         broker = self.root / "app/cetirun-agent-broker/chart/Chart.yaml"

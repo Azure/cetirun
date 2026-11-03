@@ -126,3 +126,14 @@ cetirun-ai-gateway:
   # spendLogs.storePrompts is false. The stdout request log never does.
   spendLogs:
     enabled: true
+
+# -- Skill Marketplace: syncs one Git repository of skills and delivers each
+# policy-bound Team's selection read-only to its native Sandbox Agents. Turn on
+# cetirun-operator.skillMarketplace.enabled and
+# cetirun-portal.skillMarketplace.enabled with it. It runs in the operator
+# namespace, and its agentClaims.claimName must equal the operator's
+# sandboxSources.skillsClaimName; the chart refuses other settings. make deploy
+# sets these values from the skillMarketplace block of its environment file.
+# The repository, storage and credential settings are in the marketplace chart.
+cetirun-skill-marketplace:
+  enabled: false

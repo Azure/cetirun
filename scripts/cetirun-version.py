@@ -45,8 +45,9 @@ def top_level_yaml(path, field):
     return match.group(1)
 
 
-# Subcharts of the platform chart: Operator, Portal, AI Gateway and optional MCP.
-PLATFORM_DEPENDENCIES = 4
+# Subcharts of the platform chart: Operator, Portal, AI Gateway, and the
+# optional MCP and Skill Marketplace.
+PLATFORM_DEPENDENCIES = 5
 
 
 def set_version(version):
@@ -60,6 +61,7 @@ def set_version(version):
         ("app/cetirun-ai-gateway/chart/Chart.yaml", True, False),
         ("app/cetirun-agent-broker/chart/Chart.yaml", True, False),
         ("app/cetirun-connections-mcp/chart/Chart.yaml", True, False),
+        ("app/cetirun-skill-marketplace/chart/Chart.yaml", True, False),
     )
     for relative, has_app_version, has_dependencies in charts:
         path = ROOT / relative
@@ -89,7 +91,7 @@ def set_version(version):
             f'CHART_VERSION="${{CHART_VERSION:-{version}}}"',
         )
 
-    for relative in ("app/internal/go.mod", "app/cetirun-portal/go.mod"):
+    for relative in ("app/internal/go.mod", "app/cetirun-portal/go.mod", "app/cetirun-skill-marketplace/go.mod"):
         replace(
             ROOT / relative,
             r"^(\s*github\.com/Azure/CetiRun/app/cetirun-operator )v\S+$",
@@ -130,6 +132,7 @@ def check_version(version):
         ("app/cetirun-ai-gateway/chart/Chart.yaml", True),
         ("app/cetirun-agent-broker/chart/Chart.yaml", True),
         ("app/cetirun-connections-mcp/chart/Chart.yaml", True),
+        ("app/cetirun-skill-marketplace/chart/Chart.yaml", True),
     )
     for relative, has_app_version in charts:
         path = ROOT / relative
@@ -158,6 +161,7 @@ def check_version(version):
         "app/cetirun-operator/deploy/deploy.sh": f"CHART_VERSION:-{version}",
         "app/cetirun-portal/deploy/deploy.sh": f"CHART_VERSION:-{version}",
         "app/cetirun-portal/go.mod": f"cetirun-operator v{version}",
+        "app/cetirun-skill-marketplace/go.mod": f"cetirun-operator v{version}",
         "app/internal/go.mod": f"cetirun-operator v{version}",
     }
     for relative, expected in expected_text.items():

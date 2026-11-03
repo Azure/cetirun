@@ -156,3 +156,21 @@ sharedSkills:
   storageAccount: exampleskills
   containerName: published-skills
   protocol: nfs
+# Optional Skill Marketplace for policy-bound Teams. It needs native Sandbox
+# execution (platform.values.cetirun-operator.sandboxSources.enabled and
+# nativeExecution), which this example does not enable. Its container is not
+# the sharedSkills container.
+# skillMarketplace:
+#   repository:
+#     url: https://git.example.invalid/example/skills.git
+#     ref: main
+#     path: skills
+#     # none, token (Secret key token) or ssh (keys ssh-privatekey and known_hosts)
+#     auth: token
+#     existingSecret: skills-repository
+#     syncInterval: 5m
+#   storage:
+#     resourceGroup: example-marketplace-rg
+#     storageAccount: examplemarketplace
+#     containerName: marketplace
+#     storageClassName: example-skills

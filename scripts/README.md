@@ -66,6 +66,26 @@ make -C app/cetirun-connections-mcp test vet chart-lint
 python3 -B -m unittest scripts.tests.test_connections_mcp_chart -v
 ```
 
+## CetiRun Skill Marketplace artifacts
+
+`cetirun-skill-marketplace-docker-build.sh` builds the Skill Marketplace image
+from the repository root. Set `REGISTRY`. The default value of `VERSION` comes
+from the central release metadata. `PUSH=false` loads a local image, and
+`PUSH=true` publishes the image. The helper does not log in or deploy
+resources.
+
+The root build and publish targets include this image and the chart in
+`app/cetirun-skill-marketplace/chart`. The platform chart installs the chart as
+an optional subchart. `make deploy` enables it from the `skillMarketplace`
+block of the environment file. To validate offline without Docker or registry
+access, use these commands:
+
+```bash
+make -C app/cetirun-skill-marketplace test vet chart-lint
+python3 -B -m unittest scripts.tests.test_skill_marketplace_platform \
+  scripts.tests.test_full_deployment.SkillMarketplaceTests -v
+```
+
 ## Explicit-target application E2E lifecycle
 
 `e2e-test.sh` is a connected application smoke test, not an offline check.

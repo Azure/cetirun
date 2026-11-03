@@ -92,12 +92,15 @@ class GateTests(unittest.TestCase):
                 validate.chart_gate(self.root)
         run.assert_not_called()
 
-    def test_all_eight_charts_and_both_runtime_types_are_checked(self):
-        for directory, _ in validate.CHARTS:
+    def test_all_nine_charts_and_both_runtime_types_are_checked(self):
+        for directory, _, *values_files in validate.CHARTS:
             chart = self.root / directory
             chart.mkdir(parents=True, exist_ok=True)
             for filename in ("Chart.yaml", "values.yaml"):
                 (chart / filename).write_text("fixture")
+            for values_file in values_files:
+                (self.root / values_file).parent.mkdir(parents=True, exist_ok=True)
+                (self.root / values_file).write_text("fixture")
         (self.root / "scripts").mkdir()
         (self.root / "scripts/cetirun-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-platform-helm-test.sh").write_text("# fixture")
@@ -107,16 +110,23 @@ class GateTests(unittest.TestCase):
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 9)
-        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 9)
+        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 10)
+        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 10)
         self.assertEqual(
             {str(Path(c[3]).relative_to(self.root)) for c in commands if c[:2] == ["helm", "lint"]},
             {
                 "app/cetirun-chart", "app/cetirun-operator/chart", "app/cetirun-portal/chart",
                 "app/cetirun-connections-mcp/chart", "app/cetirun-agent-broker/chart", "app/cetirun-ai-gateway/chart",
-                "app/cetirun-platform", "infra/istio",
+                "app/cetirun-platform", "infra/istio", "app/cetirun-skill-marketplace/chart",
             },
         )
+        # The Skill Marketplace chart needs a repository and storage: it renders
+        # with its synthetic CI values file.
+        marketplace = self.root / "app/cetirun-skill-marketplace/chart"
+        values_file = str(marketplace / "ci/render-values.yaml")
+        for verb in ("lint", "template"):
+            command = next(c for c in commands if c[:2] == ["helm", verb] and str(marketplace) in c)
+            self.assertEqual(command[command.index("--values") + 1], values_file)
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)

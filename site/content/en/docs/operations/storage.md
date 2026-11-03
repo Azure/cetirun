@@ -50,8 +50,9 @@ of a claim that already exists.
 
 [infra/storage]({{< repo "infra/storage" "tree" >}}) defines a Premium BlockBlobStorage
 account and a private container (default `aks-skills`). Its top-level Bicep
-accepts `location`, `storageAccountName`, `containerName`, `tags`, and
-`allowedSubnetIds`. This account serves shared artifacts. If you provision it,
+accepts `location`, `storageAccountName`, `containerName`, `tags`,
+`allowedSubnetIds`, `privateEndpointSubnetId`, `privateDnsZoneId`, and
+`publicNetworkAccess`. This account serves shared artifacts. If you provision it,
 this does not create the instance-home StorageClass or mount a volume.
 
 Prerequisites:
@@ -74,7 +75,8 @@ This command does not examine Azure access or if nodes can mount NFS.
 **Connected, mutating:** unless `AKS_SUBNET_ID` is set, the helper finds the
 subnet from the node pool or the node resource group. It then updates the
 subnet’s service endpoints, validates and creates the deployment, and queries
-the outputs.
+the outputs. With a [private endpoint](#private-endpoint), the helper skips the
+subnet steps.
 
 ```bash
 RESOURCE_GROUP=example-rg AKS_CLUSTER_NAME=example-cluster \
@@ -98,6 +100,32 @@ the end. This command must have Blob data-plane authorization and network
 access from the workstation. This call can fail after the resources were
 provisioned successfully. A successful call does not prove an NFS mount.
 
+### Private endpoint
+
+To reach the account only through a private endpoint, set
+`PRIVATE_ENDPOINT_SUBNET_ID`. The helper then creates a private endpoint for
+the blob service in that subnet. It does not update the service endpoints of a
+subnet or add a subnet rule to the account. `PRIVATE_DNS_ZONE_ID` names an
+existing private DNS zone for blob private links,
+`privatelink.blob.core.windows.net`. The private endpoint registers its address
+in that zone. The zone must be linked to the cluster's virtual network, so that
+nodes resolve the account to the private address. The helper does not create
+the zone or the link.
+
+`PUBLIC_NETWORK_ACCESS` is `Enabled` by default. `Disabled` leaves only private
+endpoints, so the helper requires `PRIVATE_ENDPOINT_SUBNET_ID` with it. With
+`Disabled`, the helper reads the container through Azure Resource Manager
+instead of the Blob data plane.
+
+```bash
+RESOURCE_GROUP=example-rg AKS_CLUSTER_NAME=example-cluster \
+PARAM_FILE=/absolute/path/storage.bicepparam \
+PRIVATE_ENDPOINT_SUBNET_ID="/subscriptions/<subscription-id>/resourceGroups/example-network-rg/providers/Microsoft.Network/virtualNetworks/example-vnet/subnets/example-nodes" \
+PRIVATE_DNS_ZONE_ID="/subscriptions/<subscription-id>/resourceGroups/example-network-rg/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net" \
+PUBLIC_NETWORK_ACCESS=Disabled \
+  bash infra/storage/deploy.sh
+```
+
 ## NFS security properties
 
 The [storage module]({{< repo "infra/storage/modules/storage-account.bicep" >}})
@@ -105,13 +133,20 @@ sets hierarchical namespace and NFS v3 when it creates the account. It disables
 HTTPS-only enforcement for NFS traffic and does not allow anonymous blob access.
 It uses `networkAcls.defaultAction: Deny` with explicitly allowed subnets.
 The SKU is `Premium_LRS`, and `networkAcls.bypass` is `AzureServices`.
-The module does not create a private endpoint. A container with
-`publicAccess: None` is not the same as private-endpoint-only networking.
+The module creates a private endpoint only when `privateEndpointSubnetId` is
+set. A container with `publicAccess: None` is not the same as
+private-endpoint-only networking.
 
 HTTPS does not protect NFS traffic. Network access is central to this mount
 path. Do not describe Azure AD/RBAC or account-key authentication as the NFS
 data-plane authentication mechanism. Data ownership, mount permissions, network
 isolation, and backups must get a separate review.
+
+NFS 3.0 authorizes clients only by network. The Skill Marketplace writes the
+Team releases into its own container. For that container, use a storage account
+that only private endpoints reach, and turn off its public network access:
+set `PRIVATE_ENDPOINT_SUBNET_ID`, `PRIVATE_DNS_ZONE_ID`, and
+`PUBLIC_NETWORK_ACCESS=Disabled`.
 
 ## Shared skills mounts
 

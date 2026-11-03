@@ -284,7 +284,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             base = Path(directory)
             for relative in (
                 "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
-                "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
+                "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart", "cetirun-skill-marketplace/chart",
             ):
                 shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
             for relative, keys in (
