@@ -209,7 +209,10 @@ def validate_cetiadmin(config, operator):
     owner = admin["owner"]
     if (not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", str(owner.get("alias", "")))
             or owner["alias"] != config["ownerAlias"]):
-        raise ValueError("cetiadmin.owner.alias must match the explicit platform ownerAlias")
+        raise ValueError(
+            "CetiAdmin is enabled by default: cetiadmin.owner.alias must match the explicit platform ownerAlias; "
+            "configure its owner, budget and API access, or set cetiadmin.enabled=false"
+        )
     if not nonzero_uuid(owner.get("tenantID")) or owner["tenantID"].lower() != config["identity"]["tenantId"].lower():
         raise ValueError("cetiadmin.owner.tenantID must match the explicit platform identity.tenantId")
     if not nonzero_uuid(owner.get("objectID")):

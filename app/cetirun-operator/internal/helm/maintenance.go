@@ -42,6 +42,8 @@ const (
 
 var ErrMaintenanceConflict = errors.New("Helm maintenance release precondition changed")
 
+var ErrMaintenanceNotSubmitted = errors.New("Helm maintenance failed before submitting any write")
+
 // CurrentRelease returns the latest stored revision, including its manifest and
 // hooks. Its contents are internal recovery input, not log or Event payloads.
 func (c *Client) CurrentRelease(ctx context.Context, namespace, name string) (*release.Release, error) {
@@ -226,12 +228,12 @@ func (c *Client) installOrUpgradeMaintenance(ctx context.Context, namespace, nam
 	guard func(context.Context) error, configure func(context.Context, string, func(context.Context) error) (*action.Configuration, error),
 ) error {
 	if err := maintenanceReadArguments(ctx, namespace, name, 1); err != nil {
-		return err
+		return errors.Join(ErrMaintenanceNotSubmitted, err)
 	}
 	if guard == nil || expectedRevision < 1 || prepared == nil || prepared.chart == nil || prepared.namespace != namespace ||
 		prepared.releaseName != name || !sameJSON(prepared.Values["replicaCount"], 0) ||
 		prepared.sandboxBundle != nil || prepared.sandboxReconcile != nil || prepared.Values["sandboxWorkload"] != nil {
-		return configurationError(fmt.Errorf("maintenance requires a bound ordinary zero-replica preparation, a positive revision and a guard"))
+		return errors.Join(ErrMaintenanceNotSubmitted, configurationError(fmt.Errorf("maintenance requires a bound ordinary zero-replica preparation, a positive revision and a guard")))
 	}
 	ctx, cancel := context.WithTimeout(ctx, maintenanceTimeout)
 	defer cancel()
@@ -241,7 +243,7 @@ func (c *Client) installOrUpgradeMaintenance(ctx context.Context, namespace, nam
 	err := c.installOrUpgrade(namespace, name, &copy, func(namespace string) (*action.Configuration, error) {
 		return configure(ctx, namespace, func(context.Context) error { return mode.check() })
 	})
-	return errors.Join(err, mode.failure())
+	return mode.result(err)
 }
 
 type maintenanceMode struct {
@@ -256,6 +258,30 @@ type maintenanceMode struct {
 	hooks                  []*release.Hook
 	mu                     sync.Mutex
 	err                    error
+	writeAttempted         bool
+}
+
+func (m *maintenanceMode) result(err error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	err = errors.Join(err, m.err)
+	if err != nil {
+		m.err = err
+		if !m.writeAttempted {
+			return errors.Join(ErrMaintenanceNotSubmitted, err)
+		}
+	}
+	return err
+}
+
+func (m *maintenanceMode) startWrite() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	m.writeAttempted = true
+	return nil
 }
 
 func (m *maintenanceMode) failure() error {
@@ -629,6 +655,9 @@ func (d *maintenanceDriver) Create(key string, rel *release.Release) error {
 	if len(history) == 0 || !sameJSON(history[0], d.mode.latest) || rel.Name != d.mode.name || rel.Namespace != d.mode.namespace || rel.Version != d.mode.revision+1 {
 		return d.mode.stop(ErrMaintenanceConflict)
 	}
+	if err := d.mode.startWrite(); err != nil {
+		return err
+	}
 	return d.mode.stop(d.Driver.Create(key, rel))
 }
 
@@ -638,6 +667,9 @@ func (d *maintenanceDriver) Update(key string, rel *release.Release) error {
 	}
 	if rel.Name != d.mode.name || rel.Namespace != d.mode.namespace || (rel.Version != d.mode.base.Version && rel.Version != d.mode.revision+1) {
 		return d.mode.stop(ErrMaintenanceConflict)
+	}
+	if err := d.mode.startWrite(); err != nil {
+		return err
 	}
 	return d.mode.stop(d.Driver.Update(key, rel))
 }
@@ -670,6 +702,9 @@ func (k *maintenanceKube) Update(original, target kube.ResourceList, force bool)
 	}
 	// Unchanged RBAC, identities, policies, Secrets and storage remain in Helm's
 	// inventory but are never sent through its three-way update/recreation path.
+	if err := k.mode.startWrite(); err != nil {
+		return &kube.Result{}, err
+	}
 	return k.Interface.Update(filter(original), filter(target), false)
 }
 

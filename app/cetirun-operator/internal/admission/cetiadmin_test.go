@@ -86,7 +86,7 @@ func newCetiAdminFixture(t *testing.T) cetiAdminFixture {
 	mark := map[string]string{cetiadmin.AnnotationSourceUID: string(source.UID)}
 	admin := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "cetiadmin", UID: "admin-uid", ResourceVersion: "1", Generation: 1,
 		Annotations: map[string]string{cetiadmin.AnnotationSourceUID: string(source.UID), api.AnnotationOwnerTenantID: config.Owner.TenantID, api.AnnotationOwnerObjectID: config.Owner.ObjectID}},
-		Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "owner"}, Team: "cetiadmin", GatewayTokenSecretRef: "admin-auth"}}
+		Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "owner", Email: "owner@example.com"}, Team: "cetiadmin", GatewayTokenSecretRef: "admin-auth"}}
 	owner := metav1.OwnerReference{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: admin.Name, UID: admin.UID, Controller: ptr.To(true)}
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "cetiadmin", UID: "admin-team-uid", Annotations: mark}}
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-cetiadmin", UID: "admin-ns-uid", OwnerReferences: []metav1.OwnerReference{owner}}}
@@ -99,14 +99,14 @@ func newCetiAdminFixture(t *testing.T) cetiAdminFixture {
 		Agent: identity(admin), Team: identity(team), Namespace: identity(namespace), ServiceAccount: identity(account)},
 		Configuration: config, Phase: cetiadmin.PhaseReady, RecordUID: "binding-uid", Bootstrapped: true}
 	target := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "target-uid", ResourceVersion: "1", Generation: 4},
-		Spec:   api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/hermes:old"), Username: ptr.To("vibe")}, User: api.UserSpec{Alias: "owner"}, Team: "engineering", GatewayTokenSecretRef: "native-auth"},
+		Spec:   api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/hermes:old"), Username: ptr.To("vibe")}, User: api.UserSpec{Alias: "owner", Email: "owner@example.com"}, Team: "engineering", GatewayTokenSecretRef: "native-auth"},
 		Status: api.AgentStatus{Namespace: "cetirun-example", HelmReleaseName: "openclaw-example", Phase: api.PhaseReady, ObservedGeneration: 4}}
 	targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: target.Status.Namespace, UID: "target-ns-uid", OwnerReferences: []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: target.Name, UID: target.UID}}}}
 	targetIdentity := cetiadmin.TargetIdentity{Agent: identity(target), Namespace: identity(targetNS), Runtime: "hermes", Release: target.Status.HelmReleaseName, Team: "engineering", AuthSecret: target.Spec.GatewayTokenSecretRef}
 	checkpoint := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cetiadmin.InstallationName(source.Namespace, source.Name), Namespace: source.Namespace, UID: state.RecordUID, Annotations: mark}, Data: map[string]string{cetiadmin.BindingKey: string(adminJSON(t, state))}}
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(source, checkpoint, admin, team, namespace, account, target, targetNS, &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "target-team-uid"}}).Build()
 	admissionConfig := testConfig()
-	admissionConfig.CetiAdmin = &CetiAdminConfig{Namespace: source.Namespace, ConfigMapName: source.Name, StopUsername: "system:serviceaccount:operator-test:cetiadmin-stop", AdminUsers: []string{"administrator"}}
+	admissionConfig.CetiAdmin = &CetiAdminConfig{Namespace: source.Namespace, ConfigMapName: source.Name, RuntimeUsername: serviceAccountUsername(state.ServiceAccount), StopUsername: "system:serviceaccount:operator-test:cetiadmin-stop", AdminUsers: []string{"administrator"}}
 	guard, err := NewCetiAdminHandler(kube, admissionConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -534,6 +534,17 @@ func TestCetiAdminMaintenanceTransitions(t *testing.T) {
 	if !cetiAdminMaintenanceIntent(request).Allowed {
 		t.Fatal("current Released cannot resume")
 	}
+	for _, freshRequest := range []bool{false, true} {
+		edited := old.DeepCopy()
+		edited.Spec.Model = "another-model"
+		if freshRequest {
+			edited.Spec.Helm.Maintenance = &api.HelmMaintenanceRequest{RequestID: "maintenance-next-request", ExpectedRevision: old.Status.HelmMaintenance.Revision}
+		}
+		request := adminRequest(t, admissionv1.Update, api.GroupVersion.Group, "Agent", "agents", edited, old, f.actor)
+		if response := cetiAdminMaintenanceIntent(request); response.Allowed != freshRequest {
+			t.Fatalf("configuration edit without a fresh handoff=%t: %v", !freshRequest, response.Result)
+		}
+	}
 	old.Status.HelmMaintenance.ObservedGeneration--
 	request.OldObject.Raw = adminJSON(t, old)
 	next.Status = old.Status
@@ -556,10 +567,13 @@ func TestCetiAdminPVCOnlyGrows(t *testing.T) {
 	}
 }
 
-func maintenanceSecret(t *testing.T, agent *api.Agent, revision int64, status string) *corev1.Secret {
+func maintenanceSecret(t *testing.T, agent *api.Agent, revision int64, status string, changes ...func(map[string]any)) *corev1.Secret {
 	t.Helper()
 	payload := map[string]any{"name": agent.Status.HelmReleaseName, "namespace": agent.Status.Namespace, "version": revision,
 		"info": map[string]any{"status": status, "description": "synthetic"}, "manifest": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: runtime-config\n", "config": map[string]any{"retained": "synthetic-value"}}
+	for _, change := range changes {
+		change(payload)
+	}
 	var buf bytes.Buffer
 	writer := gzip.NewWriter(&buf)
 	if _, err := writer.Write(adminJSON(t, payload)); err != nil {
@@ -569,6 +583,79 @@ func maintenanceSecret(t *testing.T, agent *api.Agent, revision int64, status st
 		t.Fatal(err)
 	}
 	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("sh.helm.release.v1.%s.v%d", agent.Status.HelmReleaseName, revision), Namespace: agent.Status.Namespace, UID: types.UID(fmt.Sprintf("revision-%d", revision)), ResourceVersion: "1", Labels: map[string]string{"name": agent.Status.HelmReleaseName, "owner": "helm", "version": fmt.Sprint(revision), "status": status}}, Type: "helm.sh/release.v1", Data: map[string][]byte{"release": []byte(base64.StdEncoding.EncodeToString(buf.Bytes()))}}
+}
+
+func TestCetiAdminHelmRevisionPreservesTrustedHistory(t *testing.T) {
+	f := newCetiAdminFixture(t)
+	ctx := context.Background()
+	f.updateTarget(t, func(agent *api.Agent) {
+		agent.Spec.Suspended = true
+		agent.Spec.Helm.Maintenance = &api.HelmMaintenanceRequest{RequestID: "maintenance-history-one", ExpectedRevision: 2}
+		agent.Status.HelmMaintenance = &api.HelmMaintenanceStatus{RequestID: agent.Spec.Helm.Maintenance.RequestID, Revision: 2, ObservedGeneration: agent.Generation, Phase: api.HelmMaintenancePhaseHeld}
+	})
+	config := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "runtime-config", Namespace: f.target.Status.Namespace, UID: "runtime-config-uid"}}
+	if err := f.kube.Create(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	f.heldMaintenance(t, []cetiadmin.ManagedResource{{APIVersion: "v1", Kind: "ConfigMap", ObjectIdentity: cetiadmin.ObjectIdentity{Name: config.Name, Namespace: config.Namespace, UID: config.UID}}})
+	historical := func(payload map[string]any) {
+		payload["chart"] = map[string]any{"metadata": map[string]any{"name": "runtime", "version": "1.0.0"}}
+		payload["hooks"] = []any{map[string]any{"name": "retained-hook", "manifest": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: retained-hook\n", "events": []any{"post-install"}}}
+	}
+	previous := maintenanceSecret(t, f.target, 1, "deployed", historical)
+	newer := func(payload map[string]any) {
+		historical(payload)
+		payload["chart"].(map[string]any)["metadata"].(map[string]any)["version"] = "2.0.0"
+	}
+	latest := maintenanceSecret(t, f.target, 2, "failed", newer, func(payload map[string]any) {
+		payload["hooks"].([]any)[0].(map[string]any)["last_run"] = map[string]any{"phase": "Succeeded", "started_at": "2026-01-01T00:00:00Z"}
+	})
+	for _, object := range []client.Object{previous, latest} {
+		object.SetResourceVersion("")
+		if err := f.kube.Create(ctx, object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, change := range []string{"rollback", "new-hooks", "case-alias", "duplicate-fields", "new-chart", "new-config", "new-manifest", "future-source"} {
+		t.Run(change, func(t *testing.T) {
+			next := maintenanceSecret(t, f.target, 3, "pending-rollback", historical, func(payload map[string]any) {
+				payload["info"].(map[string]any)["description"] = "Rollback to 1"
+				switch change {
+				case "new-hooks":
+					payload["hooks"].([]any)[0].(map[string]any)["events"] = []any{"pre-delete"}
+				case "case-alias":
+					payload["Hooks"] = []any{}
+				case "duplicate-fields":
+					payload["chart"] = json.RawMessage(`{"metadata":{"annotations":{"extra":"different"}},"metadata":{"name":"runtime","version":"1.0.0"}}`)
+				case "new-chart":
+					payload["chart"] = map[string]any{"metadata": map[string]any{"name": "other", "version": "1.0.0"}}
+				case "new-config":
+					payload["config"] = map[string]any{"retained": "different"}
+				case "new-manifest":
+					payload["manifest"] = payload["manifest"].(string) + "data:\n  extra: changed\n"
+				case "future-source":
+					payload["info"].(map[string]any)["description"] = "Rollback to 3"
+				}
+			})
+			next.UID, next.ResourceVersion = "", ""
+			request := adminRequest(t, admissionv1.Create, "", "Secret", "secrets", next, nil, f.actor)
+			if result := f.guard.Validate(ctx, request); result.Allowed != (change == "rollback") {
+				t.Fatalf("history %s: %v", change, result.Result)
+			}
+		})
+	}
+	next := maintenanceSecret(t, f.target, 1, "superseded", historical)
+	next.ResourceVersion = previous.ResourceVersion
+	request := adminRequest(t, admissionv1.Update, "", "Secret", "secrets", next, previous, f.actor)
+	if result := f.guard.Validate(ctx, request); !result.Allowed {
+		t.Fatalf("native rollback could not supersede its older deployed revision: %v", result.Result)
+	}
+	next = maintenanceSecret(t, f.target, 3, "pending-upgrade", newer)
+	next.UID, next.ResourceVersion = "", ""
+	request = adminRequest(t, admissionv1.Create, "", "Secret", "secrets", next, nil, f.actor)
+	if result := f.guard.Validate(ctx, request); !result.Allowed {
+		t.Fatalf("unchanged no-hooks reapplication was rejected after a previous hook run: %v", result.Result)
+	}
 }
 
 func TestCetiAdminHelmRevisionRepair(t *testing.T) {

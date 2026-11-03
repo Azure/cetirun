@@ -28,6 +28,9 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/engine"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -39,6 +42,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/dynamic"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +53,70 @@ import (
 const hookTestNamespace = "test-platform"
 const hookTestSource = "cetirun-cetiadmin-config"
 const hookTestImage = "registry.example.com/cetirun-operator:1.2.3"
+
+type hookChartLookup struct{ dynamic.Interface }
+
+func (c hookChartLookup) GetClientFor(version, kind string) (dynamic.NamespaceableResourceInterface, bool, error) {
+	if version != "v1" || (kind != "ConfigMap" && kind != "Namespace") {
+		return nil, false, fmt.Errorf("unexpected chart lookup: %s %s", version, kind)
+	}
+	resource := strings.ToLower(kind) + "s"
+	return c.Resource(schema.GroupVersionResource{Version: version, Resource: resource}), kind == "ConfigMap", nil
+}
+
+func TestHookChartDisabledUpgradeUsesBoundInstallation(t *testing.T) {
+	for _, scenario := range []string{"source-only", "never-bound", "retained-agent", "invalid-record", "empty-record", "renamed-instance"} {
+		t.Run(scenario, func(t *testing.T) {
+			chart, err := loader.Load("../../chart")
+			if err != nil {
+				t.Fatal(err)
+			}
+			overrides := map[string]any{
+				"namespace": hookTestNamespace, "cetiadmin": map[string]any{"enabled": false},
+			}
+			capabilities := chartutil.DefaultCapabilities.Copy()
+			if scenario == "renamed-instance" {
+				overrides["cetiadmin"].(map[string]any)["instanceName"] = "replacement-admin"
+				overrides["sandboxAdmission"] = map[string]any{"tlsSecretName": "test-tls", "caBundle": base64.StdEncoding.EncodeToString(hookTestCA(t)), "adminUsers": []any{"administrator"}}
+				capabilities.KubeVersion.Version = "v1.37.0"
+			}
+			values, err := chartutil.ToRenderValues(chart, overrides, chartutil.ReleaseOptions{Name: "test-platform", Namespace: hookTestNamespace, IsUpgrade: true}, capabilities)
+			if err != nil {
+				t.Fatal(err)
+			}
+			objects := []runtime.Object{&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: hookTestSource, Namespace: hookTestNamespace}}}
+			if scenario != "source-only" {
+				state := &Installation{Record: Record{SchemaVersion: 1}}
+				if scenario == "retained-agent" || scenario == "renamed-instance" {
+					state.Agent = ObjectIdentity{Name: "cetiadmin", UID: "retained-agent-uid"}
+				}
+				state.Source = ObjectIdentity{Name: hookTestSource, Namespace: hookTestNamespace}
+				object := hookTestStateObject(t, state)
+				if scenario == "invalid-record" {
+					object.Data[BindingKey] = "invalid"
+				} else if scenario == "empty-record" {
+					object.Data[BindingKey] = "{}"
+				}
+				objects = append(objects, object)
+			}
+			scheme := runtime.NewScheme()
+			if err := corev1.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			_, err = engine.RenderWithClientProvider(chart, values, hookChartLookup{dynamicfake.NewSimpleDynamicClient(scheme, objects...)})
+			wantSuccess := scenario == "source-only" || scenario == "never-bound"
+			if (err == nil) != wantSuccess {
+				t.Fatalf("disabled upgrade %s: %v", scenario, err)
+			}
+			if scenario == "retained-agent" && !strings.Contains(err.Error(), "Kubernetes >= 1.37") {
+				t.Fatalf("retained installation lost its admission requirement: %v", err)
+			}
+			if scenario == "renamed-instance" && !strings.Contains(err.Error(), "instanceName") {
+				t.Fatalf("retained identity changed before admission could revoke it: %v", err)
+			}
+		})
+	}
+}
 
 type hookTestClient struct {
 	client.Client
@@ -208,6 +277,37 @@ func TestHookCurrentReadyAndDisabled(t *testing.T) {
 		if kube.patches != 0 {
 			t.Fatal("check hook wrote configuration")
 		}
+	}
+}
+
+func TestHookOwnerSuspendedInstallation(t *testing.T) {
+	for _, scenario := range []string{"suspended", "not-suspended", "running-writer", "other-disabled-reason"} {
+		t.Run(scenario, func(t *testing.T) {
+			kube, options, _, state := hookTestFixture(t, true)
+			state.Phase, state.Reason, state.Hold = PhaseDisabled, "UserSuspended", true
+			if scenario == "other-disabled-reason" {
+				state.Reason = "ReconcileFailed"
+			}
+			object := hookTestStateObject(t, state)
+			hookTestUpdate(t, kube, object, func() { object.Data = hookTestStateObject(t, state).Data })
+			agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: state.Agent.Name}}
+			hookTestUpdate(t, kube, agent, func() {
+				agent.Spec.Suspended = scenario != "not-suspended"
+				agent.Status.Phase = api.PhaseSuspended
+				agent.Status.ObservedGeneration = 0
+			})
+			if scenario == "running-writer" {
+				pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "writer", Namespace: state.Namespace.Name},
+					Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+				if err := kube.Create(context.Background(), pod); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := RunHook(context.Background(), kube, options)
+			if (err == nil) != (scenario == "suspended") || kube.patches != 0 {
+				t.Fatalf("owner suspension check: error=%v writes=%d", err, kube.patches)
+			}
+		})
 	}
 }
 

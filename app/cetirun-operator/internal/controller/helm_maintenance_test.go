@@ -771,14 +771,29 @@ func TestHelmMaintenanceNativeLifecycle(t *testing.T) {
 				t.Fatal("Released loop resubmitted Helm")
 			}
 			f.updateAgent(func(a *api.Agent) { a.Spec.Suspended = false })
-			if handled, err := f.runMaintenance(); err != nil || handled || f.marked() {
+			resumed := f.agentCurrent()
+			if _, handled, err := f.r.Runtime.reconcileHelmMaintenance(f.ctx, resumed); err != nil || handled || f.marked() {
 				t.Fatalf("separate resume failed: handled=%v error=%v status=%+v", handled, err, f.agentCurrent().Status.HelmMaintenance)
+			}
+			if !reflect.DeepEqual(resumed, f.agentCurrent()) {
+				t.Fatal("ordinary reconciliation retained the pre-completion Agent snapshot")
+			}
+			if resumed.Status.HelmMaintenance != nil || slices.ContainsFunc(resumed.Status.Conditions, func(c metav1.Condition) bool {
+				return c.Type == api.ConditionHelmMaintenanceReady
+			}) {
+				t.Fatal("completed maintenance left a stale resume gate")
 			}
 			if f.h.applies != 1 || !f.gateway.keys[f.token].Blocked {
 				t.Fatal("maintenance took over runtime start or unblocked a key")
 			}
 			if handled, err := f.runMaintenance(); err != nil || handled {
 				t.Fatal("resumed handoff continued to own lifecycle", handled, err)
+			}
+			for _, suspended := range []bool{true, false} {
+				f.updateAgent(func(a *api.Agent) { a.Spec.Suspended = suspended })
+				if handled, err := f.runMaintenance(); err != nil || handled || f.marked() {
+					t.Fatal("completed handoff blocked a later ordinary suspend/resume", handled, err)
+				}
 			}
 		})
 	}
@@ -1063,6 +1078,22 @@ func TestHelmMaintenanceUnknownApplyDoesNotRetry(t *testing.T) {
 	}
 	if f.h.applies != 1 || f.agentCurrent().Status.HelmMaintenance.Phase != api.HelmMaintenancePhaseBlocked || !f.marked() {
 		t.Fatal("unknown apply was resubmitted or released")
+	}
+}
+
+func TestHelmMaintenanceUnsubmittedApplyCanRetry(t *testing.T) {
+	f := newMaintenanceFixture(t, api.AgentTypeHermes)
+	f.reach(api.HelmMaintenancePhaseHeld)
+	f.updateAgent(func(a *api.Agent) { a.Spec.Helm.Maintenance = nil })
+	f.reach(api.HelmMaintenancePhaseReapplying)
+	f.h.applyErr = errors.Join(helm.ErrMaintenanceNotSubmitted, errors.New("synthetic preflight read failure"))
+	if handled, err := f.runMaintenance(); !handled || err == nil || f.h.applies != 1 || f.h.current.Version != 1 || !f.marked() {
+		t.Fatal("preflight failure did not retain the stopped target", handled, err)
+	}
+	f.h.applyErr = nil
+	f.reach(api.HelmMaintenancePhaseReleased)
+	if f.h.applies != 2 || f.h.current.Version != 2 || !f.agentCurrent().Spec.Suspended || !f.marked() {
+		t.Fatal("known unsubmitted failure did not retry exactly one stopped revision")
 	}
 }
 

@@ -123,8 +123,9 @@ func (r *CetiAdminReconciler) CheckAdmissionReady(ctx context.Context) error {
 	var admissionConfig struct {
 		ControllerUsername string `json:"controllerUsername"`
 		CetiAdmin          *struct {
-			Namespace     string `json:"namespace"`
-			ConfigMapName string `json:"configMapName"`
+			Namespace       string `json:"namespace"`
+			ConfigMapName   string `json:"configMapName"`
+			RuntimeUsername string `json:"runtimeUsername"`
 		} `json:"cetiadmin"`
 	}
 	configured := false
@@ -135,6 +136,7 @@ func (r *CetiAdminReconciler) CheckAdmissionReady(ctx context.Context) error {
 		}
 	}
 	if !configured || admissionConfig.CetiAdmin == nil || admissionConfig.CetiAdmin.Namespace != r.Source.Namespace ||
+		admissionConfig.CetiAdmin.RuntimeUsername != "system:serviceaccount:"+instanceNamespace(config.InstanceName)+":"+instanceServiceName(config.InstanceName) ||
 		admissionConfig.CetiAdmin.ConfigMapName != r.Source.Name || admissionConfig.ControllerUsername != "system:serviceaccount:"+r.Runtime.OperatorNamespace+":"+r.Runtime.OperatorSAName {
 		return fmt.Errorf("admission does not serve this CetiAdmin source and controller")
 	}

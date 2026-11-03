@@ -259,6 +259,7 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
         config = json.loads(self.env(objects, ADMISSION)["CETIRUN_SANDBOX_ADMISSION"])
         self.assertEqual(config["cetiadmin"], {
             "namespace": NAMESPACE, "configMapName": SOURCE,
+            "runtimeUsername": "system:serviceaccount:cetirun-cetiadmin:openclaw-cetiadmin-cetirun",
             "stopUsername": f"system:serviceaccount:{NAMESPACE}:cetirun-cetiadmin-stop",
             "adminUsers": ["admin@example.com"], "adminGroups": ["platform-admins"],
         })

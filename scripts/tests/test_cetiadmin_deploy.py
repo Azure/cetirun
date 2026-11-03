@@ -44,6 +44,12 @@ class CetiAdminInputTests(full.DeploymentFixture, unittest.TestCase):
         self.admin = admin_values(self.config)
         self.config["platform"]["values"]["cetirun-operator"]["cetiadmin"] = self.admin
 
+    def test_published_environment_example_enables_cetiadmin(self):
+        config = full.yaml.safe_load(full.FIXTURE.read_text())
+        with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("configuration ran a command")):
+            _, values = self.configure(config)
+        self.assertIs(values["platform"]["cetirun-operator"]["cetiadmin"]["enabled"], True)
+
     def test_legacy_scope_is_rejected_before_tools_even_when_disabled(self):
         for enabled in (True, False):
             for scope in (None, {}, {"mode": "all-managed-agents"}, {"mode": "teams", "teamNames": ["platform-ops"]}):

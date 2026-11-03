@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
@@ -168,6 +169,15 @@ func (h *CetiAdminHandler) validateCetiAdminAgent(ctx context.Context, request a
 }
 
 func (h *CetiAdminHandler) cetiAdminCreate(ctx context.Context, request admission.Request, agent *api.Agent, config cetiadmin.Config) admission.Response {
+	// The StatefulSet revision label limits instance names to 35 characters.
+	if len(agent.Name) > 35 || len(validation.IsDNS1123Label(agent.Name)) != 0 {
+		return admission.Denied("instance name must be a DNS label of at most 35 characters")
+	}
+	// Match Portal route reservations, not its owner-alias naming convention.
+	switch agent.Name {
+	case "oauth2", "api", "internal", "healthz", "readyz", "assets", "portal", "instances", "connections", "admin", "ui":
+		return admission.Denied("instance name is reserved for a platform route")
+	}
 	if agent.Name == config.InstanceName || agent.Namespace != "" || agent.Spec.Team == config.InstanceName || agent.Spec.Team == "" ||
 		(config.MigrationSource != nil && agent.Name == config.MigrationSource.Agent.Name) ||
 		(agent.Spec.Agent.Type != api.AgentTypeHermes && agent.Spec.Agent.Type != api.AgentTypeOpenClaw && agent.Spec.Agent.Type != api.AgentTypeCustom) ||
@@ -194,6 +204,7 @@ func (h *CetiAdminHandler) cetiAdminCreate(ctx context.Context, request admissio
 	knownOwner := false
 	for _, existing := range owners.Items {
 		knownOwner = knownOwner || (existing.DeletionTimestamp == nil && existing.Spec.User.Alias == agent.Spec.User.Alias &&
+			strings.EqualFold(existing.Spec.User.Email, agent.Spec.User.Email) &&
 			existing.Annotations[api.AnnotationOwnerTenantID] != "" && existing.Annotations[api.AnnotationOwnerObjectID] != "" &&
 			strings.EqualFold(existing.Annotations[api.AnnotationOwnerTenantID], agent.Annotations[api.AnnotationOwnerTenantID]) &&
 			strings.EqualFold(existing.Annotations[api.AnnotationOwnerObjectID], agent.Annotations[api.AnnotationOwnerObjectID]))

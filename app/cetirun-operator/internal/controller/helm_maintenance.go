@@ -33,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -510,7 +511,7 @@ func (r *AgentReconciler) reconcileHelmMaintenance(ctx context.Context, agent *a
 		}
 		if identityMatches(record.Target.Namespace, namespace) && namespace.Annotations[cetiadmin.MaintenanceAgentName] == "" &&
 			namespace.Annotations[cetiadmin.MaintenanceAgentUID] == "" && namespace.Annotations[cetiadmin.MaintenanceRequestID] == "" {
-			return ctrl.Result{}, false, nil
+			return r.completeHelmMaintenance(ctx, agent, current)
 		}
 	}
 	provider, ok := r.CetiAdmin.(helmMaintenanceTargets)
@@ -646,7 +647,11 @@ func (r *AgentReconciler) reconcileHelmMaintenance(ctx context.Context, agent *a
 		return r.maintenanceStatus(ctx, current, request, api.HelmMaintenancePhaseHeld, request.ExpectedRevision, "MaintenanceHeld")
 	}
 	if !current.Spec.Suspended {
-		return r.resumeHelmMaintenance(ctx, current, object, record, backend)
+		result, handled, err := r.resumeHelmMaintenance(ctx, current, object, record, backend)
+		if handled || err != nil {
+			return result, handled, err
+		}
+		return r.completeHelmMaintenance(ctx, agent, current)
 	}
 	if record.Phase == api.HelmMaintenancePhaseHeld {
 		if current.Generation != record.RequestGeneration+1 || current.Status.HelmMaintenance == nil ||
@@ -667,6 +672,18 @@ func (r *AgentReconciler) reconcileHelmMaintenance(ctx context.Context, agent *a
 		return r.maintenanceBlocked(ctx, current, request, "MaintenanceReleaseIntentInvalid", nil)
 	}
 	return r.reapplyHelmMaintenance(ctx, current, object, record, backend)
+}
+
+func (r *AgentReconciler) completeHelmMaintenance(ctx context.Context, agent, current *api.Agent) (ctrl.Result, bool, error) {
+	current.Status.HelmMaintenance = nil
+	meta.RemoveStatusCondition(&current.Status.Conditions, api.ConditionHelmMaintenanceReady)
+	if err := r.updateStatus(ctx, current); err != nil {
+		return ctrl.Result{}, true, err
+	}
+	// Ordinary reconciliation continues with the status and resource version
+	// just persisted, not the Released checkpoint it originally read.
+	*agent = *current
+	return ctrl.Result{}, false, nil
 }
 
 func maintenanceReleaseSettled(rel *release.Release, target cetiadmin.TargetIdentity) bool {
@@ -1118,6 +1135,10 @@ func (r *AgentReconciler) reapplyHelmMaintenance(ctx context.Context, agent *api
 			return nil
 		}
 		if err := backend.InstallOrUpgradeMaintenance(ctx, record.Target.Namespace.Name, record.Target.Release, prepared, record.ApplyRevision, guard); err != nil {
+			if errors.Is(err, helm.ErrMaintenanceNotSubmitted) {
+				record.ApplyRevision, record.PreparedHash, record.ValuesHash = 0, "", ""
+				err = errors.Join(err, r.saveMaintenance(ctx, agent, object, record))
+			}
 			// The durable attempt prevents an uncertain SDK result from submitting
 			// a second revision. A later pass can only recognize its actual result.
 			return r.maintenanceBlocked(ctx, agent, request, "MaintenanceApplyUnconfirmed", err)

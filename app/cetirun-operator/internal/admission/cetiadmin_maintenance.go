@@ -272,6 +272,9 @@ func cetiAdminMaintenanceIntent(request admission.Request) admission.Response {
 			return admission.Denied("resume requires current Released evidence and a separate suspension-only update")
 		}
 	}
+	if previous == nil && intent == nil && status != nil && old.Spec.Suspended && next.Spec.Suspended && !reflect.DeepEqual(next.Spec, old.Spec) {
+		return admission.Denied("configuration changes require resume or a new maintenance handoff")
+	}
 	return admission.Allowed("Helm maintenance transition preserves stop and handoff semantics")
 }
 

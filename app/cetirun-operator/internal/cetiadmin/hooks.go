@@ -150,14 +150,26 @@ func RunHook(ctx context.Context, kube client.Client, options HookOptions) error
 			return false, err
 		}
 		if config.Enabled {
-			if state.Phase != PhaseReady || !state.Bootstrapped || state.RuntimeVersion == "" {
+			ownerSuspended := state.Phase == PhaseDisabled && state.Reason == "UserSuspended"
+			if (!ownerSuspended && state.Phase != PhaseReady) || !state.Bootstrapped || state.RuntimeVersion == "" {
 				return false, nil
 			}
 			ready, err = hookAdmissionReady(ctx, kube, key.Namespace, state.OperatorImage, state.ServiceAccount)
 			if err != nil || !ready {
 				return false, err
 			}
-			ready, err = hookAgentReady(ctx, kube, source, config, state.Record)
+			if ownerSuspended {
+				agent := &api.Agent{}
+				if err := kube.Get(ctx, client.ObjectKey{Name: state.Agent.Name}, agent); err != nil {
+					return false, err
+				}
+				if !agent.Spec.Suspended {
+					return false, nil
+				}
+				ready, err = hookInstallationStopped(ctx, kube, state)
+			} else {
+				ready, err = hookAgentReady(ctx, kube, source, config, state.Record)
+			}
 		} else {
 			last = "waiting for revoked access, stopped writers and resolved maintenance"
 			if state.Phase != PhaseDisabled {

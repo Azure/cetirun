@@ -106,7 +106,18 @@ Licensed under the MIT License.
 {{/* Keep shared admission during disable of an existing retained installation. */}}
 {{- define "cetirun-operator.cetiadminAdmission" -}}
 {{- $config := include "cetirun-operator.cetiadminConfig" . | fromJson -}}
-{{- if or $config.enabled (not (empty $config.owner.alias)) (not (empty $config.retainedAgentUID)) (not (empty (lookup "v1" "ConfigMap" .Values.namespace (include "cetirun-operator.cetiadminConfigName" .)))) -}}true{{- end -}}
+{{- $record := lookup "v1" "ConfigMap" .Values.namespace (include "cetirun-operator.cetiadminBindingName" .) -}}
+{{- $bound := false -}}
+{{- if $record -}}
+{{- $state := dig "data" "binding.json" "" $record | mustFromJson -}}
+{{- if not (kindIs "map" $state) -}}{{- fail "CetiAdmin installation record is invalid; its admission protection cannot be removed" -}}{{- end -}}
+{{- $agent := get $state "agent" -}}
+{{- if or (ne (toString (get $state "schemaVersion")) "1") (not (kindIs "map" $agent)) -}}{{- fail "CetiAdmin installation record lacks its schema or Agent identity" -}}{{- end -}}
+{{- if or (not (hasKey $agent "uid")) (not (kindIs "string" (get $agent "uid"))) -}}{{- fail "CetiAdmin installation record has an invalid Agent UID" -}}{{- end -}}
+{{- $bound = not (empty (get $agent "uid")) -}}
+{{- if and $bound (ne (get $agent "name") $config.instanceName) -}}{{- fail "cetiadmin.instanceName cannot change while the installation retains an Agent" -}}{{- end -}}
+{{- end -}}
+{{- if or $config.enabled (not (empty $config.owner.alias)) (not (empty $config.retainedAgentUID)) $bound -}}true{{- end -}}
 {{- end -}}
 
 {{- define "cetirun-operator.cetiadminMarked" -}}

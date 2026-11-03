@@ -8,9 +8,9 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	strictjson "sigs.k8s.io/json"
 )
 
 func (h *CetiAdminHandler) cetiAdminHelmWrite(ctx context.Context, request admission.Request, agent *api.Agent, target cetiadmin.TargetIdentity) admission.Response {
@@ -138,13 +139,17 @@ func (h *CetiAdminHandler) cetiAdminRevision(ctx context.Context, request admiss
 		return admission.Denied(err.Error())
 	}
 	if request.Operation == admissionv1.Update {
-		if (revision != agent.Status.HelmMaintenance.Revision && revision != agent.Status.HelmMaintenance.Revision+1) ||
-			decodeJSON(request.OldObject.Raw, &old, false) != nil || !matchingObjectIdentity(&next, &old) {
+		if decodeJSON(request.OldObject.Raw, &old, false) != nil || !matchingObjectIdentity(&next, &old) {
 			return admission.Denied("Helm revision updates require the current Secret UID and version")
 		}
 		previous, _, err := decodeMaintenanceRelease(&old, agent)
 		if err != nil {
 			return admission.Denied("existing Helm revision is not recognized")
+		}
+		anchor := agent.Status.HelmMaintenance.Revision
+		superseded := revision < anchor && old.Labels["status"] == "deployed" && next.Labels["status"] == "superseded"
+		if revision != anchor && revision != anchor+1 && !superseded {
+			return admission.Denied("maintenance may only supersede an older deployed revision or update the current handoff")
 		}
 		for _, object := range []map[string]any{payload, previous} {
 			info, _ := object["info"].(map[string]any)
@@ -178,7 +183,50 @@ func (h *CetiAdminHandler) cetiAdminRevision(ctx context.Context, request admiss
 	if !ok || h.validateMaintenanceManifest(ctx, manifest, agent, target) != nil {
 		return admission.Denied("new Helm history must retain the bound manifest identities and permissions")
 	}
+	sourceRevision := agent.Status.HelmMaintenance.Revision
+	if next.Labels["status"] == "pending-rollback" {
+		info := payload["info"].(map[string]any)
+		description, _ := info["description"].(string)
+		sourceRevision, err = strconv.ParseInt(strings.TrimPrefix(description, "Rollback to "), 10, 64)
+		if err != nil || description != "Rollback to "+strconv.FormatInt(sourceRevision, 10) ||
+			sourceRevision < 1 || sourceRevision > agent.Status.HelmMaintenance.Revision {
+			return admission.Denied("rollback must identify an existing revision from before the handoff")
+		}
+	}
+	source := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: next.Namespace, Name: fmt.Sprintf("sh.helm.release.v1.%s.v%d", agent.Status.HelmReleaseName, sourceRevision)}
+	if err := h.reader.Get(ctx, key, source); err != nil || source.UID == "" || source.DeletionTimestamp != nil {
+		return admission.Denied("maintenance source revision is unavailable")
+	}
+	previous, storedRevision, err := decodeMaintenanceRelease(source, agent)
+	if err != nil || storedRevision != sourceRevision || !reflect.DeepEqual(maintenanceRevisionContent(previous), maintenanceRevisionContent(payload)) {
+		return admission.Denied("maintenance must retain one stored revision's chart, values, manifest and hooks; use Agent intent for configuration changes")
+	}
 	return admission.Allowed("next revision for the current held release without deleting history")
+}
+
+func maintenanceRevisionContent(payload map[string]any) map[string]any {
+	content := maps.Clone(payload)
+	delete(content, "version")
+	info, _ := content["info"].(map[string]any)
+	info = maps.Clone(info)
+	for _, key := range []string{"status", "description", "first_deployed", "last_deployed"} {
+		delete(info, key)
+	}
+	content["info"] = info
+	if hooks, ok := content["hooks"].([]any); ok {
+		definitions := make([]any, len(hooks))
+		for i, raw := range hooks {
+			definitions[i] = raw
+			if hook, ok := raw.(map[string]any); ok {
+				hook = maps.Clone(hook)
+				delete(hook, "last_run")
+				definitions[i] = hook
+			}
+		}
+		content["hooks"] = definitions
+	}
+	return content
 }
 
 func decodeMaintenanceRelease(secret *corev1.Secret, agent *api.Agent) (map[string]any, int64, error) {
@@ -202,12 +250,16 @@ func decodeMaintenanceRelease(secret *corev1.Secret, agent *api.Agent) (map[stri
 	data, readErr := io.ReadAll(io.LimitReader(reader, (8<<20)+1))
 	closeErr := reader.Close()
 	var payload map[string]any
-	if readErr != nil || closeErr != nil || len(data) > 8<<20 || decodeJSON(data, &payload, false) != nil {
+	if readErr != nil || closeErr != nil || len(data) > 8<<20 {
+		return nil, 0, failure
+	}
+	problems, err := strictjson.UnmarshalStrict(data, &payload, strictjson.DisallowDuplicateFields)
+	if err != nil || len(problems) != 0 {
 		return nil, 0, failure
 	}
 	info, _ := payload["info"].(map[string]any)
-	version, _ := payload["version"].(json.Number)
-	if string(version) != strconv.FormatInt(revision, 10) || payload["name"] != agent.Status.HelmReleaseName ||
+	version, _ := payload["version"].(int64)
+	if version != revision || payload["name"] != agent.Status.HelmReleaseName ||
 		payload["namespace"] != secret.Namespace || info["status"] != secret.Labels["status"] {
 		return nil, 0, failure
 	}

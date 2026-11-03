@@ -311,6 +311,9 @@ func TestMaintenanceGuardFailureAtPreflightAndWriteBoundaries(t *testing.T) {
 			if !errors.Is(err, failure) {
 				t.Fatalf("guard failure was lost: %v", err)
 			}
+			if errors.Is(err, ErrMaintenanceNotSubmitted) != (failAt <= 3) {
+				t.Fatalf("write submission outcome was not preserved: %v", err)
+			}
 			if failAt <= 3 && (store.writes != 0 || len(kube.writes) != 0) {
 				t.Fatal("pre-submission rejection wrote resources")
 			}

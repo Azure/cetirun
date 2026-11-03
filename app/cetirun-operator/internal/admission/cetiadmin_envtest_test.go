@@ -151,7 +151,7 @@ func TestCetiAdminServedAPI(t *testing.T) {
 	machine := machineClient("cetiadmin-test-api")
 	settings := testConfig()
 	settings.AdminGroups = []string{"system:masters"}
-	settings.CetiAdmin = &CetiAdminConfig{Namespace: source.Namespace, ConfigMapName: source.Name, StopUsername: "system:serviceaccount:operator-test:cetirun-cetiadmin-stop", AdminGroups: []string{"system:masters"}}
+	settings.CetiAdmin = &CetiAdminConfig{Namespace: source.Namespace, ConfigMapName: source.Name, RuntimeUsername: serviceAccountUsername(state.ServiceAccount), StopUsername: "system:serviceaccount:operator-test:cetirun-cetiadmin-stop", AdminGroups: []string{"system:masters"}}
 	guard, err := NewCetiAdminHandler(admin, settings)
 	if err != nil {
 		t.Fatal(err)

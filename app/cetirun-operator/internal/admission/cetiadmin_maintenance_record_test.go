@@ -139,6 +139,11 @@ func TestCetiAdminHelmManifestDoesNotRefreshOperationSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.heldMaintenance(t, []cetiadmin.ManagedResource{{APIVersion: "v1", Kind: "ConfigMap", ObjectIdentity: cetiadmin.ObjectIdentity{Name: config.Name, Namespace: config.Namespace, UID: config.UID}}})
+			previous := maintenanceSecret(t, f.target, 1, "deployed")
+			previous.ResourceVersion = ""
+			if err := f.kube.Create(ctx, previous); err != nil {
+				t.Fatal(err)
+			}
 			if replaced {
 				config.UID = "replacement-config-uid"
 				if err := f.kube.Update(ctx, config); err != nil {

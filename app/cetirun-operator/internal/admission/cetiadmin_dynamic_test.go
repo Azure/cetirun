@@ -5,6 +5,7 @@ package sandboxadmission
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -76,10 +77,67 @@ func TestCetiAdminCreatesAgentInNewTeam(t *testing.T) {
 		api.AnnotationOwnerObjectID: f.state.Configuration.Owner.ObjectID,
 	}}
 	agent.Spec.Team = team.Name
+	agent.Spec.User.DisplayName = "Runbook Assistant"
 	agent.Status = api.AgentStatus{}
 	request := adminRequest(t, admissionv1.Create, api.GroupVersion.Group, "Agent", "agents", agent, nil, f.actor)
 	if response := f.guard.Validate(ctx, request); !response.Allowed {
 		t.Fatalf("new Team with confirmed owner denied: %v", response.Result)
+	}
+	for _, name := range []string{"oauth2", "api", "internal", "healthz", "readyz", "assets", "portal", "instances", "connections", "admin", "ui", strings.Repeat("a", 36), "admin-tools"} {
+		t.Run(name, func(t *testing.T) {
+			next := agent.DeepCopy()
+			next.Name = name
+			request := adminRequest(t, admissionv1.Create, api.GroupVersion.Group, "Agent", "agents", next, nil, f.actor)
+			if result := f.guard.Validate(ctx, request); result.Allowed != (name == "admin-tools") {
+				t.Fatalf("instance route name %q: %v", name, result.Result)
+			}
+		})
+	}
+	for _, email := range []string{"other@example.com", "", "OWNER@example.com"} {
+		t.Run("email="+email, func(t *testing.T) {
+			next := agent.DeepCopy()
+			next.Spec.User.Email = email
+			request := adminRequest(t, admissionv1.Create, api.GroupVersion.Group, "Agent", "agents", next, nil, f.actor)
+			if result := f.guard.Validate(ctx, request); result.Allowed != strings.EqualFold(email, agent.Spec.User.Email) {
+				t.Fatalf("owner email %q: %v", email, result.Result)
+			}
+		})
+	}
+}
+
+func TestCetiAdminMissingAuthorityDoesNotBypassOperations(t *testing.T) {
+	for _, missing := range []string{"record", "recorded-account", "source"} {
+		t.Run(missing, func(t *testing.T) {
+			f := newCetiAdminFixture(t)
+			ctx := context.Background()
+			checkpoint := &corev1.ConfigMap{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: f.source.Namespace, Name: cetiadmin.InstallationName(f.source.Namespace, f.source.Name)}, checkpoint); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			switch missing {
+			case "record":
+				err = f.kube.Delete(ctx, checkpoint)
+			case "source":
+				err = f.kube.Delete(ctx, f.source)
+			case "recorded-account":
+				f.state.ServiceAccount = cetiadmin.ObjectIdentity{}
+				checkpoint.Data[cetiadmin.BindingKey] = string(adminJSON(t, f.state))
+				err = f.kube.Update(ctx, checkpoint)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated-secret", Namespace: f.target.Status.Namespace}}
+			request := adminRequest(t, admissionv1.Create, "", "Secret", "secrets", secret, nil, f.actor)
+			if f.guard.Validate(ctx, request).Allowed {
+				t.Fatal("CetiAdmin bypassed operations without its current authority")
+			}
+			request.UserInfo = authenticationv1.UserInfo{Username: "unrelated-user", Groups: []string{"system:authenticated"}}
+			if result := f.guard.Validate(ctx, request); !result.Allowed {
+				t.Fatalf("unrelated caller was classified as CetiAdmin: %v", result.Result)
+			}
+		})
 	}
 }
 

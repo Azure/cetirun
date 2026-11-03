@@ -374,6 +374,13 @@ func TestCetiAdminInstallationBootstrapAndIdempotence(t *testing.T) {
 	if f.r.OperatorImageReference() != f.r.OperatorImage {
 		t.Fatal("runtime provider lost the resolved Operator image")
 	}
+	agent.Status.Phase, agent.Status.ObservedGeneration = api.PhaseReady, agent.Generation
+	if err := f.kube.Status().Update(f.ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run(); err != nil || f.state().Phase != cetiadmin.PhaseReady {
+		t.Fatal("installation did not observe Ready", err)
+	}
 	writes := len(f.writes)
 	for range 4 {
 		if err := f.run(); err != nil {

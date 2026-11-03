@@ -327,11 +327,9 @@ func (r *CetiAdminReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (re
 	state.Phase, state.Hold, state.Reason, state.PreviousSource = cetiadmin.PhaseActive, false, "", nil
 	if !state.Bootstrapped {
 		state.BootstrapReleasePending = true
-	}
-	if err := r.saveState(ctx, object, state); err != nil {
-		return result, err
-	}
-	if !state.Bootstrapped {
+		if err := r.saveState(ctx, object, state); err != nil {
+			return result, err
+		}
 		if observed.Agent.Spec.Suspended {
 			before := observed.Agent.DeepCopy()
 			observed.Agent.Spec.Suspended = false

@@ -30,11 +30,12 @@ const CetiAdminValidationPath = cetiadmin.AdmissionValidationPath
 // CetiAdminConfig comes from the Operator Chart, not an Agent. The deployment
 // allowlist excludes identities added only for Portal Agent authoring.
 type CetiAdminConfig struct {
-	Namespace     string   `json:"namespace"`
-	ConfigMapName string   `json:"configMapName"`
-	StopUsername  string   `json:"stopUsername"`
-	AdminUsers    []string `json:"adminUsers"`
-	AdminGroups   []string `json:"adminGroups"`
+	Namespace       string   `json:"namespace"`
+	ConfigMapName   string   `json:"configMapName"`
+	RuntimeUsername string   `json:"runtimeUsername"`
+	StopUsername    string   `json:"stopUsername"`
+	AdminUsers      []string `json:"adminUsers"`
+	AdminGroups     []string `json:"adminGroups"`
 }
 
 func (c CetiAdminConfig) validate(controllerNamespace string) error {
@@ -44,6 +45,11 @@ func (c CetiAdminConfig) validate(controllerNamespace string) error {
 	parts := strings.Split(c.StopUsername, ":")
 	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" || parts[2] != c.Namespace || len(validation.IsDNS1123Subdomain(parts[3])) != 0 {
 		return fmt.Errorf("CetiAdmin stop identity must name a dedicated ServiceAccount in the controller namespace")
+	}
+	parts = strings.Split(c.RuntimeUsername, ":")
+	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" ||
+		len(validation.IsDNS1123Label(parts[2])) != 0 || len(validation.IsDNS1123Subdomain(parts[3])) != 0 || c.RuntimeUsername == c.StopUsername {
+		return fmt.Errorf("CetiAdmin runtime identity must name its dedicated namespaced ServiceAccount")
 	}
 	if len(c.AdminUsers)+len(c.AdminGroups) == 0 {
 		return fmt.Errorf("CetiAdmin source protection requires the deployment administrator allowlist")
@@ -163,6 +169,15 @@ func (h *CetiAdminHandler) Validate(ctx context.Context, request admission.Reque
 	if err != nil {
 		return admission.Errored(http.StatusServiceUnavailable, fmt.Errorf("CetiAdmin authority cannot be read"))
 	}
+	isCetiAdmin := request.UserInfo.Username == h.config.CetiAdmin.RuntimeUsername ||
+		(snapshot.state != nil && request.UserInfo.Username == serviceAccountUsername(snapshot.state.ServiceAccount))
+	var binding cetiadmin.Binding
+	if isCetiAdmin {
+		binding, err = h.currentBinding(ctx, snapshot, request.UserInfo)
+		if err != nil {
+			return admission.Denied("CetiAdmin requires its current enabled installation and ServiceAccount UID")
+		}
+	}
 	if response, handled := h.maintenanceGuard(ctx, request, snapshot); handled && !response.Allowed {
 		return response
 	}
@@ -181,12 +196,8 @@ func (h *CetiAdminHandler) Validate(ctx context.Context, request admission.Reque
 			return admission.Denied("only the Operator may change a target's exec admin binding")
 		}
 	}
-	if snapshot.state == nil || request.UserInfo.Username != serviceAccountUsername(snapshot.state.ServiceAccount) {
+	if !isCetiAdmin {
 		return admission.Allowed("request is not from the bound CetiAdmin")
-	}
-	binding, err := h.currentBinding(ctx, snapshot, request.UserInfo)
-	if err != nil {
-		return admission.Denied("CetiAdmin requires its current enabled installation and ServiceAccount UID")
 	}
 	response := h.validateCetiAdminOperation(ctx, request, binding, snapshot.state)
 	if response.Allowed && request.Resource.Group == api.GroupVersion.Group && request.Resource.Resource == "agents" {

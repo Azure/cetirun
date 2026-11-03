@@ -455,6 +455,7 @@ kubectl label namespace cetirun-system "istio.io/rev=${ISTIO_REVISION}" --overwr
 helm dependency build app/cetirun-platform
 helm upgrade --install cetirun-platform app/cetirun-platform \
   --namespace cetirun-system \
+  --timeout 15m \
   --values /path/to/platform-values.yaml \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=cetirun.example.com \

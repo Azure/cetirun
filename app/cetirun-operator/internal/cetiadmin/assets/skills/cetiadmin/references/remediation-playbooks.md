@@ -108,10 +108,13 @@ For direct Helm writes, complete this sequence for one ordinary target:
 
 If the handoff is absent or fails, do not issue native writes. A timeout,
 disconnect, unknown command result, incomplete old writer, revision conflict,
-or incompatible immutable field leaves the target stopped for inspection or
-`Blocked` recovery. Do not clear the request or resume merely because a timeout
-elapsed. Another administrator can continue the same known request through
-the native APIs; no running model is required.
+or incompatible immutable field leaves the target stopped for inspection.
+`Blocked` records missing or conflicting completion evidence. It does not permit
+aborting the handoff. The Operator retries a failed preflight only when no write
+was submitted. Do not clear the request or resume merely because a timeout
+elapsed. Another administrator can continue the same request after it reaches
+`Held`. No running model is required. While a released target stays suspended,
+submit configuration changes with a fresh maintenance request, or resume first.
 
 The handoff does not add a human approval to an already-authorized autonomous
 fault rollback. Planned upgrades, proactive rollback, and new choices still
@@ -133,9 +136,13 @@ helm rollback "$CETIADMIN_TARGET_RELEASE" "$CETIADMIN_TARGET_REVISION" \
 
 Helm 3.22 rollback otherwise prunes history at the default limit. The explicit
 `--history-max=0` preserves revision Secrets and does not require Secret delete
-permission. Any native maintenance `helm upgrade` uses the same no-hook,
-no-Ready-wait, and no-pruning rules. Normal Operator history retention remains
-separate from maintenance and prior recovery archival.
+permission. A native maintenance `helm upgrade` may reapply only the held
+revision's stored chart, values, manifest, and hooks, with the same no-hook,
+no-Ready-wait, and no-pruning rules. A rollback must retain those fields from
+one existing historical revision. Make configuration or version changes through
+the Agent fields after maintenance. The Operator remains the chart writer.
+Normal Operator history retention remains separate from maintenance and prior
+recovery archival.
 
 For `pending-install` with no successful history, use the shipped
 `/opt/cetirun/cetiadmin/scripts/repair_helm_release.py` integration after the same
