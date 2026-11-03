@@ -105,16 +105,20 @@ func TestAgentPolicyExecutionDigestMatchesAPIDefaults(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if variant == "optional grant lists" {
-					if err := unstructured.SetNestedField(raw.Object, map[string]any{
-						"serviceAccountName": "synthetic-tools", "roleBindings": []any{},
-						"clusterRoleBindings": []any{map[string]any{"clusterRoleName": "view"}},
-					}, "spec", "kubernetesAccess"); err != nil {
-						t.Fatal(err)
-					}
-				}
 				if err := unstructured.SetNestedSlice(raw.Object, []any{"203.0.113.0/24"}, "spec", "network", "blockedCIDRs"); err != nil {
 					t.Fatal(err)
+				}
+			}
+			if variant == "optional grant lists" {
+				if err := unstructured.SetNestedField(raw.Object, map[string]any{
+					"serviceAccountName": "synthetic-tools", "roleBindings": []any{},
+					"clusterRoleBindings": []any{map[string]any{"clusterRoleName": "view"}},
+				}, "spec", "kubernetesAccess"); err != nil {
+					t.Fatal(err)
+				}
+				access, found, err := unstructured.NestedMap(raw.Object, "spec", "kubernetesAccess")
+				if err != nil || !found || access["serviceAccountName"] != "synthetic-tools" {
+					t.Fatal("optional grant-list case did not populate its intended input:", err)
 				}
 			}
 			policy := &api.AgentPolicy{}
