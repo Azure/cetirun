@@ -97,6 +97,7 @@ type AgentReconciler struct {
 	SandboxPreparation          *SandboxPreparation
 	SandboxNativeCoordination   *sandboxcoordination.Store
 	RegistryCredentialNamespace string
+	CetiAdmin                   CetiAdminBindingProvider
 
 	// Microsoft Entra Agent Identity deployment configuration.
 	AgentIdentityEnabled               bool
@@ -205,6 +206,11 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return fmt.Errorf("add AI Gateway catalog publisher: %w", err)
 		}
 	}
+	if access, ok := r.CetiAdmin.(interface {
+		EnqueueRuntimeAccess(context.Context, client.Object) []reconcile.Request
+	}); ok {
+		builder = builder.Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(access.EnqueueRuntimeAccess))
+	}
 	return builder.
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: 4}).
 		Complete(r)
@@ -220,7 +226,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if errors.IsNotFound(err) {
 			r.customPlans.Delete(req.Name)
 			logger.V(1).Info("Agent not found, skipping")
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, r.reconcileCetiAdminAccess(ctx, req.Name)
 		}
 		return ctrl.Result{}, fmt.Errorf("get Agent: %w", err)
 	}
@@ -228,6 +234,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// transitions from it, so that the periodic full reconcile of an Agent
 	// at steady state records no events.
 	startPhase := instance.Status.Phase
+	// Management access must not prevent this Agent's stop, cleanup or repair.
+	defer func() {
+		if err := r.reconcileCetiAdminAccess(ctx, instance.Name); err != nil {
+			logger.Error(err, "CetiAdmin namespace access needs reconciliation")
+			reconcileErr = stderrors.Join(reconcileErr, err)
+		}
+	}()
 
 	if ns := instanceNamespace(instance.Name); ns == r.registryNamespace() || ns == registryauth.DefaultNamespace {
 		return r.rejectReservedRegistryInstance(ctx, instance)
@@ -266,6 +279,22 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// breaking change; no migration path exists for the reserved legacy name.
 	if instance.Name == "ui" {
 		return r.rejectReservedUIInstance(ctx, instance)
+	}
+	if r.CetiAdmin != nil || instance.Spec.Helm.Maintenance != nil || instance.Status.HelmMaintenance != nil {
+		result, handled, err := r.reconcileHelmMaintenance(ctx, instance)
+		if handled {
+			return result, err
+		}
+	}
+	if r.CetiAdmin != nil {
+		_, managed, bindingErr := r.CetiAdmin.BindingForAgent(ctx, instance)
+		if managed && (bindingErr != nil || instance.Spec.Suspended) {
+			result, stopErr := r.suspendRegistryBuiltin(ctx, instance)
+			if bindingErr != nil {
+				return result, stderrors.Join(bindingErr, stopErr)
+			}
+			return result, stopErr
+		}
 	}
 
 	// A recorded source must be protected before a lifetime-mode lookup can
@@ -499,7 +528,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	var prepared *helm.PreparedRelease
 	if !commonCustom && (instance.Spec.Agent.Image == nil || instance.Spec.Agent.Port == nil) {
 		var err error
-		prepared, err = r.prepareAgent(instance, team)
+		prepared, err = r.prepareRuntimeAgent(ctx, instance, team)
 		if err != nil {
 			return r.preparationFailed(ctx, instance, err)
 		}
@@ -633,7 +662,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 
 	if prepared == nil && !commonCustom {
 		var err error
-		prepared, err = r.prepareAgent(instance, team)
+		prepared, err = r.prepareRuntimeAgent(ctx, instance, team)
 		if err != nil {
 			return r.preparationFailed(ctx, instance, err)
 		}
@@ -896,6 +925,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			return r.rejectAgentConfig(ctx, instance, err)
 		}
 		helmValues["memoryOptions"] = r.memoryOptions()
+		if err := r.applyCetiAdminValues(ctx, instance, helmValues); err != nil {
+			return r.rejectAgentConfig(ctx, instance, err)
+		}
 		r.applyCopilotChartValues(helmValues, instance, prepared)
 		{
 			secret := &corev1.Secret{}

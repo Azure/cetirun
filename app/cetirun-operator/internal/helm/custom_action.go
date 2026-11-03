@@ -51,7 +51,7 @@ func (p *PreparedRelease) prepareCustomAction(cfg *action.Configuration, namespa
 		return fmt.Errorf("Custom charts cannot contain hooks")
 	}
 	p.setCustomCapabilities(cfg.Capabilities)
-	if err := p.validateCustomManifest(namespace, name, []byte(planned.Manifest)); err != nil {
+	if err := p.validateCustomRenderedManifest(namespace, name, []byte(planned.Manifest)); err != nil {
 		return err
 	}
 	p.actionRevision = planned.Version

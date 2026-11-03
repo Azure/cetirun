@@ -80,6 +80,14 @@ class SandboxAdmissionChartTests(unittest.TestCase):
 
     def helm(self, admission=None, *, values=None, kube_version="1.37.0", lint=False, chart=CHART):
         inputs = dict(values or {})
+        # These cases isolate the existing Sandbox contract. CetiAdmin's default
+        # enabled path and the shared server are exercised in its own suite.
+        if chart.name == "cetirun-platform":
+            operator = dict(inputs.get("cetirun-operator", {}))
+            operator.setdefault("cetiadmin", {"enabled": False})
+            inputs["cetirun-operator"] = operator
+        else:
+            inputs.setdefault("cetiadmin", {"enabled": False})
         if admission is not None:
             inputs["sandboxAdmission"] = admission
         command = (
@@ -130,6 +138,9 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             ("ClusterRole", "cetirun-operator-manager-role"),
             ("ClusterRole", "cetirun-terminal-exec"),
             ("ClusterRoleBinding", "cetirun-operator-manager-rolebinding"),
+            ("ConfigMap", "cetirun-cetiadmin-config"),
+            *((kind, "cetirun-cetiadmin-" + mode) for mode in ("check", "stop")
+              for kind in ("Job", "ServiceAccount", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding")),
             *(("CustomResourceDefinition", f"{resource}.{API_GROUP}") for resource in RESOURCES),
         })
         credentials = default[("Namespace", "cetirun-registry-credentials")]
@@ -616,7 +627,15 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     )
 
     def test_portal_controller_defaults_require_the_common_executor(self):
-        chart = ROOT / "app/cetirun-platform"
+        temporary = tempfile.TemporaryDirectory(prefix="sandbox-platform-chart-")
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        for relative in (
+            "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
+            "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
+        ):
+            shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
+        chart = base / "cetirun-platform"
         subprocess.run(
             ["helm", "dependency", "build", "--skip-refresh", str(chart)],
             cwd=ROOT, env=OFFLINE_ENV, text=True, capture_output=True, check=True, timeout=30,
@@ -765,7 +784,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             with self.subTest(template=template), tempfile.TemporaryDirectory() as directory:
                 chart = Path(directory)
                 (chart / "templates").mkdir()
-                for relative in ("Chart.yaml", "values.yaml", "templates/_helpers.tpl", f"templates/{template}"):
+                for relative in ("Chart.yaml", "values.yaml", "templates/_helpers.tpl", "templates/_cetiadmin.tpl", f"templates/{template}"):
                     shutil.copyfile(CHART / relative, chart / relative)
                 values = {"sandboxSources": {
                     "enabled": True, "platformConfigMapName": "sandbox-platform",

@@ -263,6 +263,9 @@ type aiGatewayGrant struct {
 	copilot     bool
 	active      bool
 	policyBound bool
+	// An installed CetiAdmin initializes its own budget once and requires its
+	// configured model; ordinary legacy Agents keep the existing fallback.
+	cetiAdminModel string
 	// Team model routers (ai_gateway_routers.go): the inputs of the router
 	// grant, the router groups in groups and each router's status.
 	team             *cetirunv1alpha1.Team
@@ -375,8 +378,23 @@ func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, clien
 	routerGroups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, team, nil, copilot)
 	groups = append(groups, routerGroups...)
 	slices.Sort(groups)
+	budget, cetiAdminModel := r.AIGateway.DefaultBudget, ""
+	if r.CetiAdmin != nil {
+		binding, managed, err := r.CetiAdmin.BindingForAgent(ctx, instance)
+		if managed {
+			if err != nil {
+				return aiGatewayGrant{}, err
+			}
+			model := binding.Config().Model
+			budget, err = strconv.ParseFloat(model.InitialMonthlyBudgetUSD, 64)
+			if err != nil || math.IsInf(budget, 0) || math.IsNaN(budget) || budget < 0 || instance.Spec.Model != model.Default {
+				return aiGatewayGrant{}, fmt.Errorf("CetiAdmin model and initial budget must match the current installation")
+			}
+			cetiAdminModel = model.Default
+		}
+	}
 	return aiGatewayGrant{
-		groups: slices.Compact(groups), budget: r.AIGateway.DefaultBudget, copilot: copilot, active: true,
+		groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, cetiAdminModel: cetiAdminModel,
 		team: team, routerGroups: routerGroups, routers: routers, routersEvaluated: true,
 	}, nil
 }
@@ -683,6 +701,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	if err != nil {
 		return aiGatewayDegraded(instance, "GatewayUnavailable", err)
 	}
+	createdCetiAdminKey := key == nil && status.KeyID == "" && grant.cetiAdminModel != ""
 	switch {
 	case key == nil && status.KeyID != "":
 		return aiGatewayDegraded(instance, aiGatewayReasonKeyRecordLost,
@@ -801,6 +820,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		(grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration)) {
 		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the AI Gateway key does not match its resolved grant"))
 	}
+	if createdCetiAdminKey && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration) {
+		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the CetiAdmin key's initial budget was not applied"))
+	}
 	if instance.Spec.Suspended {
 		if !key.Blocked {
 			return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the suspended Agent key is not blocked"))
@@ -893,6 +915,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		}
 	} else {
 		status.Models, status.DefaultModel = nil, ""
+	}
+	if grant.cetiAdminModel != "" && (!routed || !slices.Contains(status.Models, grant.cetiAdminModel) || status.DefaultModel != grant.cetiAdminModel) {
+		return aiGatewayDegraded(instance, "ModelUnavailable", fmt.Errorf("the configured CetiAdmin model is not available to its virtual key"))
 	}
 
 	message := "AI Gateway virtual key is ready"
@@ -1034,6 +1059,11 @@ func (r *AgentReconciler) blockAIGatewayKeyIfPresent(ctx context.Context, client
 	}
 	status := ensureAIGatewayStatus(instance)
 	if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
+		if reason == aiGatewayReasonSuspended {
+			// Suspension is already enforced. Do not take ownership of an
+			// administrator's block or make it eligible for automatic resume.
+			return true, nil
+		}
 		return false, fmt.Errorf("the AI Gateway key is already blocked outside a CetiRun policy transition")
 	}
 	if status.Reason != reason {

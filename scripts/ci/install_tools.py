@@ -131,10 +131,11 @@ def check_output(output):
         raise ValueError(f"Refusing to overwrite existing tool: {output}")
 
 
-def plan(manifest, names, destination, system, machine):
-    if system != "Linux" or machine not in ("x86_64", "aarch64", "arm64"):
+def plan(manifest, names, destination, system, machine, *, arch=None):
+    if arch is None:
+        arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
+    if system != "Linux" or arch not in ("amd64", "arm64"):
         raise ValueError("Tool provisioning supports Linux amd64/arm64 only")
-    arch = "amd64" if machine == "x86_64" else "arm64"
     check_destination(destination)
     if len(names) != len(set(names)):
         raise ValueError("Request each tool only once")
@@ -216,12 +217,18 @@ def main(argv=None):
         type=Path,
         help="new/empty task-local binary directory (never a global bin directory)",
     )
+    parser.add_argument(
+        "--arch",
+        choices=("amd64", "arm64"),
+        help="target Linux architecture (defaults to the host architecture)",
+    )
     parser.add_argument("tools", nargs="+", choices=manifest)
     args = parser.parse_args(argv)
     try:
         destination = args.bin_dir.absolute()
         entries = plan(
-            manifest, args.tools, destination, platform.system(), platform.machine()
+            manifest, args.tools, destination, platform.system(), platform.machine(),
+            arch=args.arch,
         )
         downloads = {}
         for output, url, checksum, member in entries:

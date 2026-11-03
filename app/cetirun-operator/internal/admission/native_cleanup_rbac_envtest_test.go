@@ -27,6 +27,7 @@ func nativeDisabledCleanupClient(t *testing.T, ctx context.Context, admin client
 		t.Fatal(err)
 	}
 	values, err := chartutil.ToRenderValues(chrt, map[string]any{
+		"cetiadmin":      map[string]any{"enabled": false},
 		"sandboxSources": map[string]any{"enabled": false, "nativeExecution": false},
 	}, chartutil.ReleaseOptions{Name: "cleanup", Namespace: "operator-state"}, chartutil.DefaultCapabilities)
 	if err != nil {

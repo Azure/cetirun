@@ -72,6 +72,7 @@ platform:
         caSecretName: connections-ca
       customRuntime:
         # Replace with the digests whose UID, HOME and model access you qualified.
+        # The Operator configures AI Gateway access for these images.
         approvedImages:
           - registry.example.com/cetirun-pi-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           - registry.example.com/cetirun-vscode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

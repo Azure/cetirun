@@ -118,6 +118,10 @@ class GateTests(unittest.TestCase):
             },
         )
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
+        for command in commands:
+            for value in ("cetiadmin.enabled=false", "cetirun-operator.cetiadmin.enabled=false"):
+                if value in command:
+                    self.assertEqual(command[command.index(value) - 1], "--set")
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)
         self.assertEqual(
@@ -140,6 +144,16 @@ class GateTests(unittest.TestCase):
         self.assertEqual(env["GOTOOLCHAIN"], "local")
         self.assertEqual(env["GOFLAGS"], "-mod=readonly")
         self.assertEqual(env["npm_config_offline"], "true")
+
+    def test_ci_gate_runs_the_operator_native_helpers(self):
+        directories = ("scripts/ci/tests", "scripts/tests", "app/cetirun-operator/internal/cetiadmin/tests")
+        for directory in directories:
+            target = self.root / directory
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "test_fixture.py").write_text("# synthetic gate input\n")
+        with patch.object(validate, "run") as run:
+            validate.ci_tests(self.root)
+        self.assertEqual([call.args[0][-2] for call in run.call_args_list], list(directories))
 
     def test_missing_frontend_dependencies_fail(self):
         web = self.root / "app/cetirun-portal/web"

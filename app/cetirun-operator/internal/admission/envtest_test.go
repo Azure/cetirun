@@ -598,6 +598,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 func renderedWebhooks(t *testing.T, ca []byte) (*admissionregistrationv1.ValidatingWebhookConfiguration, *admissionregistrationv1.MutatingWebhookConfiguration) {
 	t.Helper()
 	command := exec.Command("helm", "template", "admission-test", "../../chart", "--kube-version=1.37.0",
+		"--set", "cetiadmin.enabled=false",
 		"--set", "namespace=operator-test", "--set", "serviceAccount.name=controller",
 		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
 		"--set", "sandboxAdmission.tlsSecretName=admission-test-tls", "--set", "sandboxAdmission.adminUsers[0]=administrator",

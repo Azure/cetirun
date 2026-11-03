@@ -21,6 +21,7 @@ import (
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,6 +34,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	sandboxadmission "github.com/Azure/CetiRun/app/cetirun-operator/internal/admission"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	helmclient "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
@@ -64,12 +66,19 @@ func main() {
 	var memoryEnabled bool
 	var showVersion bool
 	var mode string
+	var cetiAdminOutputDir string
+	var cetiAdminHook cetiadmin.HookOptions
 	var admissionCertDir string
 	var admissionPort int
 	var admissionPodStateNamespace string
 	var admissionPodTimeout time.Duration
 
-	flag.StringVar(&mode, "mode", "operator", "Process mode: operator or sandbox-admission.")
+	flag.StringVar(&mode, "mode", "operator", "Process mode: operator, sandbox-admission, cetiadmin-export, cetiadmin-check or cetiadmin-stop.")
+	flag.StringVar(&cetiAdminOutputDir, "cetiadmin-output-dir", "", "Output directory for the CetiAdmin asset export mode.")
+	flag.StringVar(&cetiAdminHook.Namespace, "cetiadmin-namespace", "", "Operator namespace containing the CetiAdmin installation source.")
+	flag.StringVar(&cetiAdminHook.ConfigMapName, "cetiadmin-config-map", "", "Exact CetiAdmin source ConfigMap for a lifecycle hook.")
+	flag.StringVar(&cetiAdminHook.ExpectedConfigHash, "cetiadmin-config-hash", "", "SHA256 of the hook's rendered config.json.")
+	flag.DurationVar(&cetiAdminHook.Timeout, "cetiadmin-timeout", 10*time.Minute, "CetiAdmin lifecycle hook deadline.")
 	flag.StringVar(&admissionCertDir, "admission-cert-dir", "", "Directory containing platform-issued tls.crt and tls.key for Sandbox admission.")
 	flag.IntVar(&admissionPort, "admission-port", 9443, "Sandbox admission HTTPS port.")
 	flag.StringVar(&admissionPodStateNamespace, "admission-pod-state-namespace", "", "Protected controller state namespace for optional Sandbox Pod admission.")
@@ -100,8 +109,31 @@ func main() {
 		fmt.Printf("cetirun-operator %s (%s)\n", buildinfo.Version, buildinfo.Commit)
 		return
 	}
+	if mode == "cetiadmin-export" {
+		assets, err := cetiadmin.BundledAssets()
+		if err == nil {
+			err = cetiadmin.ExportAssets(cetiAdminOutputDir, assets, cetiadmin.PackagedHelmPath)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "CetiAdmin asset export failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	if mode == "cetiadmin-check" || mode == "cetiadmin-stop" {
+		cetiAdminHook.Mode = strings.TrimPrefix(mode, "cetiadmin-")
+		kube, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+		if err == nil {
+			err = cetiadmin.RunHook(ctrl.SetupSignalHandler(), kube, cetiAdminHook)
+		}
+		if err != nil {
+			setupLog.Error(err, "CetiAdmin lifecycle hook failed", "mode", mode)
+			os.Exit(1)
+		}
+		return
+	}
 	if mode == "sandbox-admission" {
 		config, err := sandboxadmission.ParseConfig(os.Getenv("CETIRUN_SANDBOX_ADMISSION"))
 		if err != nil {
@@ -120,7 +152,7 @@ func main() {
 		return
 	}
 	if mode != "operator" {
-		setupLog.Error(fmt.Errorf("unsupported process mode"), "mode must be operator or sandbox-admission")
+		setupLog.Error(fmt.Errorf("unsupported process mode"), "unknown process mode", "mode", mode)
 		os.Exit(1)
 	}
 	setupLog.Info("Starting CetiRun Operator", "version", buildinfo.Version, "commit", buildinfo.Commit)
@@ -328,6 +360,24 @@ func main() {
 			setupLog.Info("Native Sandbox execution enabled for the bounded OpenClaw profile; physical failover fencing is not provided")
 		} else {
 			setupLog.Info("Kubernetes Sandbox sources enabled; qualified writer exclusion is unavailable and execution remains held")
+		}
+	}
+	if sourceName := os.Getenv("CETIRUN_CETIADMIN_CONFIG_MAP"); sourceName != "" {
+		installer := &controller.CetiAdminReconciler{
+			Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Runtime: agentReconciler,
+			Source:        types.NamespacedName{Namespace: agentReconciler.OperatorNamespace, Name: sourceName},
+			OperatorImage: os.Getenv("CETIRUN_OPERATOR_IMAGE"), ChartVersion: chartVersion,
+		}
+		installer.AdmissionReady, err = installer.NewAdmissionProbe(mgr.GetConfig())
+		if err != nil {
+			setupLog.Error(err, "unable to configure CetiAdmin admission prerequisite")
+			os.Exit(1)
+		}
+		installer.GrantAccess, installer.RevokeAccess = installer.GrantInstallationAccess, installer.RevokeInstallationAccess
+		agentReconciler.CetiAdmin = installer
+		if err = installer.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create CetiAdmin installation controller")
+			os.Exit(1)
 		}
 	}
 	if err = agentReconciler.SetupWithManager(mgr); err != nil {

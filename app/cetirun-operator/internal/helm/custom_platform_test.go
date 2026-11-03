@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
 	corev1 "k8s.io/api/core/v1"
@@ -196,5 +197,47 @@ func TestCustomSharedControlTamperingIsRejected(t *testing.T) {
 				t.Fatal("modified platform control was accepted")
 			}
 		})
+	}
+}
+
+func TestCustomExecPolicyHasNoAdminException(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			input := terminalInput(nil)
+			input["ttyd"] = map[string]any{"enabled": enabled}
+			p, err := PrepareChart(testChart(t), input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := object(platformRender(t, p, chartutil.DefaultCapabilities)["ValidatingAdmissionPolicy"]["spec"])
+			if _, found := spec["matchConditions"]; found {
+				t.Fatal("Chart granted an exec exception")
+			}
+			want := "false"
+			if enabled {
+				want = terminalpolicy.AdmissionExpression("cetirun-example", "openclaw-example-cetirun-0", "cetirun", "openclaw-example-cetirun-terminal", "example-uid")
+			}
+			if object(array(spec["validations"])[0])["expression"] != want {
+				t.Fatal("Custom terminal command/container restriction changed")
+			}
+		})
+	}
+}
+
+func TestCustomExecPolicyRejectsInjectedExceptions(t *testing.T) {
+	for _, expression := range []string{
+		`request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"`,
+		`request.userInfo.username != "system:serviceaccount:cetirun-operations:managed-admin" || request.userInfo.uid != "account-uid"`,
+		`false`,
+	} {
+		ch := testChart(t)
+		for _, file := range ch.Templates {
+			if file.Name == "templates/deny-exec-policy.yaml" {
+				file.Data = []byte(strings.Replace(string(file.Data), "  failurePolicy: Fail", "  failurePolicy: Fail\n  matchConditions:\n    - name: injected\n      expression: '"+expression+"'", 1))
+			}
+		}
+		if _, err := PrepareChart(ch, terminalInput(nil)); err == nil {
+			t.Fatal("unprepared exec exception accepted in a Custom manifest")
+		}
 	}
 }

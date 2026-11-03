@@ -2,6 +2,21 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 */}}
+{{- define "cetirun-operator.admissionCA" -}}
+{{- $encodedCA := required "sandboxAdmission.caBundle is required for fail-closed admission" .Values.sandboxAdmission.caBundle -}}
+{{- $encodedCA = regexReplaceAll "[\\r\\n]" $encodedCA "" -}}
+{{- $decodedCA := b64dec $encodedCA -}}
+{{- if ne (b64enc $decodedCA) $encodedCA -}}{{- fail "sandboxAdmission.caBundle must be a base64-encoded PEM certificate bundle" -}}{{- end -}}
+{{- $pattern := "-----BEGIN CERTIFICATE-----\\r?\\n(?:[A-Za-z0-9+/=]+\\r?\\n)+-----END CERTIFICATE-----" -}}
+{{- $certificates := regexFindAll $pattern $decodedCA -1 -}}
+{{- if or (empty $certificates) (ne (trim (regexReplaceAll $pattern $decodedCA "")) "") -}}{{- fail "sandboxAdmission.caBundle must be a base64-encoded PEM certificate bundle" -}}{{- end -}}
+{{- range $certificate := $certificates -}}
+{{- $body := regexReplaceAll "-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|[[:space:]]" $certificate "" -}}
+{{- if or (empty $body) (ne (b64enc (b64dec $body)) $body) -}}{{- fail "sandboxAdmission.caBundle contains invalid PEM certificate encoding" -}}{{- end -}}
+{{- end -}}
+{{- $encodedCA -}}
+{{- end -}}
+
 {{- define "cetirun-operator.sandboxCleanupMatch" -}}
 - name: controller-cleanup-only
   expression: >-
