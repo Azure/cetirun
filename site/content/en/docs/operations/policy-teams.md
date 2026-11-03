@@ -314,7 +314,8 @@ In the Portal, under **Admin**:
    This limit leaves room for OpenClaw's initialization.
 2. **Agent policies → New policy**: select the harnesses that Agents can run and
    the shared models that they can use. Also set their monthly Gateway budget.
-   This budget is necessary if they can use a model.
+   This budget is necessary if they can use a model. To let Agents use their
+   owners' GitHub Copilot, also turn on **Allow GitHub Copilot**.
 3. **Teams → New Team**: select the Policy. Select the Sandbox as the allowed
    and default Sandbox.
 

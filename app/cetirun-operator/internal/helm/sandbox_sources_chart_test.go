@@ -40,6 +40,7 @@ func sandboxSourcesChartValues(t *testing.T) map[string]any {
 		t.Fatal(err)
 	}
 	return map[string]any{
+		"cetiadmin": map[string]any{"enabled": false},
 		"namespace": "operator-example",
 		"sandboxAdmission": map[string]any{
 			"enabled": true, "enforce": true, "podsEnabled": true,
@@ -160,6 +161,9 @@ func TestSandboxSkillsCatalogChartWiring(t *testing.T) {
 		t.Fatal("catalog changed other admission source privileges")
 	}
 	for _, object := range configured {
+		if object.GetKind() == "ConfigMap" && object.GetName() == "cetirun-cetiadmin-config" && reflect.DeepEqual(baseline["ConfigMap/cetirun-cetiadmin-config"], object) {
+			continue // The disabled CetiAdmin source is unrelated to published skill content.
+		}
 		if object.GetKind() == "PersistentVolume" || object.GetKind() == "PersistentVolumeClaim" || object.GetKind() == "ConfigMap" {
 			t.Fatal("operator chart provisioned publication content or catalog/bindings itself")
 		}

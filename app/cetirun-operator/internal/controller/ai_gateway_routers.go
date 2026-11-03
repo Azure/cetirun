@@ -65,12 +65,16 @@ func routerTierGatewayName(model string, mergedName func(string) string) string 
 }
 
 // aiGatewayRouterReminderMarkers are the blocks a router leaves out when it
-// classifies a request: OpenClaw's own context, and the system reminders
-// LiteLLM recognizes by default. The Gateway chart gives its own routers the
-// same pairs.
+// classifies a request: OpenClaw's own context, the system reminders LiteLLM
+// recognizes by default, and the label of the user message in which OpenClaw
+// passes on the images of a tool result, such as a screenshot of the computer
+// tool, to a model that accepts images: "Image(s) from tool result #1
+// (computer):". Read as the newest ask, that label put a request for a design
+// in the simple tier. The Gateway chart gives its own routers the same pairs.
 var aiGatewayRouterReminderMarkers = []map[string]string{
 	{"open": "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>", "close": "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"},
 	{"open": "<system-reminder>", "close": "</system-reminder>"},
+	{"open": "Image(s) from tool result #", "close": ":"},
 }
 
 // modelRouterGatewayName is the internal model name of a Team's router. It
@@ -614,6 +618,7 @@ func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client 
 		if status.Reason == "" {
 			status.Granted, status.Model = true, plan.gatewayName
 			status.ContextWindow, status.MaxTokens = modelRouterLimits(instance, plan, shared, routes)
+			status.Vision = modelRouterVision(plan, shared, routes)
 			groups = append(groups, plan.gatewayName)
 		}
 		statuses = append(statuses, status)
@@ -692,6 +697,32 @@ func modelRouterLimits(instance *api.Agent, plan modelRouterPlan, shared []aiGat
 	return contextWindow, maxTokens
 }
 
+// modelRouterVision reports whether the Agent can send images to the router:
+// whether every tier accepts them. A tier counts as the Gateway name it is
+// registered as, as for the limits: the shared model of that name, when it is
+// one, and the Agent's own Copilot routes registered under it, when it has
+// any, must all accept images. A tier that is neither does not. The router
+// does not look at images when it picks a tier, and a model that refuses
+// them fails the request.
+func modelRouterVision(plan modelRouterPlan, shared []aiGatewayCatalogModel, routes []api.AIGatewayCopilotRoute) bool {
+	sharedVision := map[string]bool{}
+	for _, model := range shared {
+		sharedVision[model.Name] = model.Vision
+	}
+	routeVision := aiGatewayCopilotRouteVision(routes)
+	for _, model := range plan.router.Tiers.Models() {
+		if name, ok := plan.tierNames[model]; ok {
+			model = name
+		}
+		fromShared, isShared := sharedVision[model]
+		fromRoutes, isRoute := routeVision[model]
+		if !isShared && !isRoute || isShared && !fromShared || isRoute && !fromRoutes {
+			return false
+		}
+	}
+	return true
+}
+
 // aiGatewayAgentTeam reads the Agent's Team for its routers; nil without one.
 func (r *AgentReconciler) aiGatewayAgentTeam(ctx context.Context, instance *api.Agent) (*api.Team, error) {
 	if instance.Spec.Team == "" {
@@ -737,47 +768,76 @@ func (r *AgentReconciler) aiGatewayPolicySharedModels(ctx context.Context, model
 }
 
 // aiGatewayRouterEntries are the Agent's granted Team routers as configured
-// models: the internal name the Agent sends and the router's own name to
-// show. A granted router configured in the Gateway is a shared model, which
-// the Agent is configured with as such.
+// models: the name the Agent sends and the router's own name to show. A
+// granted router configured in the Gateway is a shared model, which the Agent
+// is configured with as such.
+//
+// The Agent sends the router's internal name, or, for a Hermes Agent whose
+// key has the router's alias, the router's name. Hermes shows a model by the
+// name it sends. OpenClaw shows the router's name in any case, and keeps the
+// internal name, which its sessions hold.
 func aiGatewayRouterEntries(instance *api.Agent) []aiGatewayModelEntry {
 	status := instance.Status.AIGateway
 	if status == nil {
 		return nil
 	}
+	hermes := instance.Spec.Agent.Type == api.AgentTypeHermes
 	var entries []aiGatewayModelEntry
 	for _, router := range status.ModelRouters {
 		if router.Granted && strings.HasPrefix(router.Model, aiGatewayRouterPrefix) {
+			id := router.Model
+			if hermes && router.Alias != "" {
+				id = router.Alias
+			}
 			entries = append(entries, aiGatewayModelEntry{
-				ID: router.Model, Name: router.Name, ContextWindow: router.ContextWindow, MaxTokens: router.MaxTokens,
+				ID: id, Name: router.Name, ContextWindow: router.ContextWindow, MaxTokens: router.MaxTokens, Vision: router.Vision,
 			})
 		}
 	}
 	return entries
 }
 
-// aiGatewayRouterDefault is the internal name of the granted router the
-// Agent names as its model, by the router's name or its internal name.
+// aiGatewayRouterDefault is the name the Agent sends for the granted router
+// it names as its model, by the router's name or its internal name.
 func aiGatewayRouterDefault(instance *api.Agent) string {
 	model := strings.TrimSpace(instance.Spec.Model)
 	if model == "" {
 		return ""
 	}
-	for _, entry := range aiGatewayRouterEntries(instance) {
+	entries := aiGatewayRouterEntries(instance)
+	if len(entries) == 0 {
+		return ""
+	}
+	for _, entry := range entries {
 		if entry.Name == model || entry.ID == model {
 			return entry.ID
+		}
+	}
+	// The internal name of a router the Agent is configured with under its
+	// alias.
+	for _, router := range instance.Status.AIGateway.ModelRouters {
+		if router.Granted && router.Model == model {
+			for _, entry := range entries {
+				if entry.Name == router.Name {
+					return entry.ID
+				}
+			}
 		}
 	}
 	return ""
 }
 
 // aiGatewayRouterRevision is the part of the Agent's model configuration the
-// routers contribute beyond their names in status.models: their names and
-// limits, so a change to either rolls the configuration.
+// routers contribute beyond their names in status.models: their names, limits
+// and whether they accept images, so a change to any rolls the configuration.
 func aiGatewayRouterRevision(instance *api.Agent) string {
 	var parts []string
 	for _, entry := range aiGatewayRouterEntries(instance) {
-		parts = append(parts, fmt.Sprintf("%s=%s:%d:%d", entry.ID, entry.Name, entry.ContextWindow, entry.MaxTokens))
+		part := fmt.Sprintf("%s=%s:%d:%d", entry.ID, entry.Name, entry.ContextWindow, entry.MaxTokens)
+		if entry.Vision {
+			part += ":vision"
+		}
+		parts = append(parts, part)
 	}
 	if len(parts) == 0 {
 		return ""
@@ -797,7 +857,7 @@ func (r *AgentReconciler) refreshAIGatewayRouterGrant(ctx context.Context, clien
 		return nil
 	}
 	groups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, grant.team, grant.policy, grant.copilot)
-	routers = withSharedRouterStatuses(routers, grant.sharedRouters)
+	routers = withSharedRouterStatuses(routers, r.currentSharedRouterStatuses(instance, grant.sharedRouters))
 	if slices.Equal(groups, grant.routerGroups) {
 		status.ModelRouters = routers
 		return nil

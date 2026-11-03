@@ -71,8 +71,8 @@ def set_version(version):
 
     replace(
         ROOT / "app/cetirun-operator/chart/values.yaml",
-        r'^    version:\s*".*"$',
-        f'    version: "{version}"',
+        r'(^  chart:\n(?:    [^\n]*\n)*?    version:\s*")[^"]*(")',
+        rf'\g<1>{version}\g<2>',
     )
     replace(
         ROOT / "app/cetirun-operator/cmd/main.go",

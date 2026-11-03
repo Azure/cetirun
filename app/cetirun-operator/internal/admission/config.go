@@ -36,6 +36,7 @@ type Config struct {
 	PlacementConfigMapName    string           `json:"placementConfigMapName,omitempty"`
 	CoordinationConfigMapName string           `json:"coordinationConfigMapName,omitempty"`
 	CoordinationConfigMapUID  string           `json:"coordinationConfigMapUID,omitempty"`
+	CetiAdmin                 *CetiAdminConfig `json:"cetiadmin,omitempty"`
 }
 
 // TeamAssignment is administrative creation context, not Agent/Portal input.
@@ -82,6 +83,11 @@ func (c Config) Validate() error {
 	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" ||
 		len(validation.IsDNS1123Label(parts[2])) != 0 || len(validation.IsDNS1123Subdomain(parts[3])) != 0 {
 		return fmt.Errorf("Sandbox admission controllerUsername must identify one namespaced service account")
+	}
+	if c.CetiAdmin != nil {
+		if err := c.CetiAdmin.validate(parts[2]); err != nil {
+			return err
+		}
 	}
 	if c.PlatformNamespace != "" || c.PlatformConfigMapName != "" {
 		if len(validation.IsDNS1123Label(c.PlatformNamespace)) != 0 ||

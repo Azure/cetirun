@@ -67,7 +67,7 @@ def merge(base: Any, override: Any) -> Any:
     return result
 
 
-def reconcile_memory_lists(existing: dict[str, Any], generated: dict[str, Any], merged: dict[str, Any]) -> None:
+def reconcile_memory_lists(existing: dict[str, Any], generated: dict[str, Any], merged: dict[str, Any], home: Path) -> None:
     for section, key, owned in (
         ("plugins", "enabled", "cetirun-memory-context"),
         ("skills", "external_dirs", "/home/vibe/.agents/skills"),
@@ -80,7 +80,12 @@ def reconcile_memory_lists(existing: dict[str, Any], generated: dict[str, Any], 
         before, after = saved.get(key) or [], desired.get(key) or []
         if not isinstance(before, list) or not isinstance(after, list) or not all(isinstance(item, str) for item in before + after):
             raise ValueError("plugin and skills paths must be lists of strings")
-        values = [item for item in before if item != owned or item in after]
+        managed = {owned}
+        legacy = home / ".aks/skills"
+        if (section == "skills" and "/opt/cetirun/cetiadmin/skills" in after
+                and not legacy.exists() and not legacy.is_symlink() and not legacy.parent.is_symlink()):
+            managed.add("/home/vibe/.aks/skills")
+        values = [item for item in before if item not in managed or item in after]
         if not isinstance(merged.get(section), dict):
             merged[section] = {}
         merged[section][key] = list(dict.fromkeys(values + after))
@@ -237,7 +242,7 @@ def main() -> int:
         if isinstance(platforms, dict) and "cetirun_teams" in platforms:
             # Detach YAML aliases before retiring the removed adapter reference.
             desired_config["platforms"] = {key: value for key, value in platforms.items() if key != "cetirun_teams"}
-        reconcile_memory_lists(existing_config, generated, desired_config)
+        reconcile_memory_lists(existing_config, generated, desired_config, root)
         desired_config = apply_gateway(desired_config, generated)
         for key, value in generated_env.items():
             if value or key not in existing_env:

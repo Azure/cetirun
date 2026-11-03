@@ -34,9 +34,6 @@ func (r *AgentReconciler) ensureCommonTerminalExecPolicy(ctx context.Context, ag
 		ObjectMeta: metadata,
 		Spec: admissionv1.ValidatingAdmissionPolicySpec{
 			FailurePolicy: ptr.To(admissionv1.Fail),
-			MatchConditions: []admissionv1.MatchCondition{{
-				Name: "exclude-adminclaw", Expression: `request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"`,
-			}},
 			MatchConstraints: &admissionv1.MatchResources{
 				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": namespace}},
 				ObjectSelector:    &metav1.LabelSelector{},

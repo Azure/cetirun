@@ -27,6 +27,11 @@ runtimeClassName: "kata-vm-isolation"
 # execution. Legacy runtimes leave this null.
 sandboxWorkload: null
 
+# -- Operator-prepared CetiAdmin binding; never a tenant override or RBAC grant.
+# The Operator supplies the remaining projection fields after verifying ownership.
+cetiadmin:
+  enabled: false
+
 # -- Deprecated OpenClaw image alias. Prefer openclaw.image.
 image:
   # -- Image repository
@@ -104,6 +109,11 @@ aiGateway:
   # name, and optionally contextWindow and maxTokens. The Agent is configured
   # with all of them; secrets.model names the default.
   models: []
+  # -- Ids of the models in models that accept images, supplied by the
+  # Operator. OpenClaw and Hermes send images with a request to these models.
+  # For other models, Hermes has the image described first, and OpenClaw uses
+  # its own model catalog, which marks only the models it knows.
+  visionModels: []
   # -- Hermes on the Gateway: the environment variable that carries the
   # Agent's key to Hermes' Gateway provider. The chart sets it from the key
   # Secret, so the key is in neither Hermes' configuration nor its .env file;

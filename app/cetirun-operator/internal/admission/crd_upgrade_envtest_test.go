@@ -402,8 +402,9 @@ func TestCoordinationChartReuseValuesUpgrade(t *testing.T) {
 		}
 		return output
 	}
-	helm("install", "reuse-values-test", beforeChart, "--create-namespace")
-	helm("upgrade", "reuse-values-test", "../../chart", "--reuse-values")
+	// This test has no kubelet and tests Helm value reuse, not lifecycle Jobs.
+	helm("install", "reuse-values-test", beforeChart, "--create-namespace", "--set", "cetiadmin.enabled=false", "--no-hooks")
+	helm("upgrade", "reuse-values-test", "../../chart", "--reuse-values", "--set", "cetiadmin.enabled=false", "--no-hooks")
 	var reused map[string]any
 	if err := json.Unmarshal(helm("get", "values", "reuse-values-test", "--all", "--output=json"), &reused); err != nil {
 		t.Fatal(err)
@@ -417,12 +418,12 @@ func TestCoordinationChartReuseValuesUpgrade(t *testing.T) {
 	if admissionValues["enabled"] != false {
 		t.Fatal("upgrade enabled admission")
 	}
-	helm("uninstall", "reuse-values-test")
+	helm("uninstall", "reuse-values-test", "--no-hooks")
 }
 
 func renderedManagedCRDs(t *testing.T) []*apiextensionsv1.CustomResourceDefinition {
 	t.Helper()
-	command := exec.Command("helm", "template", "crd-test", "../../chart")
+	command := exec.Command("helm", "template", "crd-test", "../../chart", "--set", "cetiadmin.enabled=false")
 	command.Env = append(os.Environ(), "KUBECONFIG="+os.DevNull, "HELM_REGISTRY_CONFIG="+os.DevNull, "HELM_REPOSITORY_CONFIG="+os.DevNull)
 	output, err := command.CombinedOutput()
 	if err != nil {
