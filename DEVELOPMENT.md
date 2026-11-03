@@ -132,13 +132,16 @@ prefixes in `GO_CONTROLLER_TEST_GROUP`; the next skips exactly those prefixes.
 Every controller test runs once, and every other package runs in full. Each
 package or controller group keeps a 30-minute timeout.
 
-The full envtest target uses 50 minutes for each package. It runs the unit suite
-together with isolated API-server regressions, and the combined controller
-package has exceeded 40 minutes in CI.
+`make test-envtest` runs the same seven packages in two complementary passes:
+test names that match `APIServer`, then all remaining tests with that pattern
+excluded. Both passes keep the `envtest` build tag, disable cached results, and
+use main's bounded 50-minute timeout per package. This is a timing split, not a
+classification of every API test: API tests with other names run in the second
+pass. A failure in either pass fails the target.
 
 Root Go test gates and CI use the same component targets. Neither target
-excludes tests. These budgets do not change individual test assertions or
-runtime/lifecycle deadlines.
+omits tests from its complete run. These budgets do not change individual test
+assertions or runtime/lifecycle deadlines.
 
 Operator CI runs unit/build checks and API admission checks in separate,
 independent jobs. Each job keeps a 60-minute limit. The `Operator Go checks`

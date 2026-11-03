@@ -66,6 +66,8 @@ func ExecutionTeamInputs(team *api.Team) (TeamInputs, error) {
 	spec := team.Spec.DeepCopy()
 	spec.AgentPolicyRef, spec.DefaultSandboxRef = "", ""
 	spec.SandboxRefs = nil
+	// Gateway reconciliation owns router grants and Agent model configuration.
+	spec.ModelRouters = nil
 	spec.Skills = slices.Clone(spec.Skills)
 	slices.Sort(spec.Skills)
 	shared, err := inputDigest(struct {

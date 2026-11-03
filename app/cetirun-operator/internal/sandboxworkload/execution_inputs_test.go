@@ -362,3 +362,36 @@ func TestTeamEffectiveSelectionExcludesUnrelatedSlots(t *testing.T) {
 		t.Fatal("selected policy rebind did not invalidate execution:", err)
 	}
 }
+
+func TestExecutionTeamInputsIgnoreModelRouters(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "team-uid", ResourceVersion: "1"},
+		Spec: api.TeamSpec{AgentPolicyRef: "policy", SandboxRefs: []string{"selected"}, DefaultSandboxRef: "selected"}}
+	baseline, err := ExecutionSourceDigest(team, "selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := api.TeamModelRouter{Name: "auto-team", Classifier: api.TeamModelRouterClassifier{Type: api.ModelRouterClassifierHeuristic},
+		Tiers: api.TeamModelRouterTiers{Simple: "small", Medium: "large", Complex: "large"}}
+	for _, routers := range [][]api.TeamModelRouter{{router}, {router, router}, nil} {
+		current := team.DeepCopy()
+		current.Spec.ModelRouters = routers
+		current.ResourceVersion, current.Generation = "2", 2
+		if len(current.Spec.ModelRouters) == 2 {
+			current.Spec.ModelRouters[0].Tiers.Simple = "large"
+			current.Spec.ModelRouters[1].Name = "another-router"
+		}
+		before := current.DeepCopy()
+		digest, err := ExecutionSourceDigest(current, "selected")
+		if err != nil || digest != baseline {
+			t.Fatalf("Gateway-only routers changed Team execution inputs: %v", err)
+		}
+		if !reflect.DeepEqual(before, current) {
+			t.Fatal("execution digest mutated the Team's router configuration")
+		}
+		current.Spec.MemberContext.Role = "changed-runtime-context"
+		digest, err = ExecutionSourceDigest(current, "selected")
+		if err != nil || digest == baseline {
+			t.Fatal("shared runtime context stopped invalidating execution:", err)
+		}
+	}
+}

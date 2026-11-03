@@ -72,21 +72,35 @@ A Sandbox names this class. The platform registration below pins it.
 The admission server serves TLS under its Service name,
 `cetirun-sandbox-admission.cetirun-system.svc`. The chart does not issue a
 certificate. Create a CA, a server certificate for that name, and a TLS Secret.
-For example, use OpenSSL:
+For example, use OpenSSL. The commands write the private keys to a new private
+directory outside the repository. They refuse a directory that exists:
 
 ```bash
-kubectl create namespace cetirun-system --dry-run=client -o yaml | kubectl apply -f -
+umask 077
+ADMISSION_TLS_DIR=/absolute/private/admission-tls
+mkdir -m 700 "$ADMISSION_TLS_DIR" || exit 1
 SERVICE=cetirun-sandbox-admission.cetirun-system.svc
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-  -subj "/CN=cetirun-sandbox-admission-ca" -keyout ca.key -out ca.crt
+  -subj "/CN=cetirun-sandbox-admission-ca" \
+  -keyout "$ADMISSION_TLS_DIR/ca.key" -out "$ADMISSION_TLS_DIR/ca.crt"
 openssl req -newkey rsa:2048 -nodes -subj "/CN=${SERVICE}" \
-  -keyout tls.key -out tls.csr
-printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "${SERVICE}" > tls.ext
-openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
-  -days 365 -extfile tls.ext -out tls.crt
+  -keyout "$ADMISSION_TLS_DIR/tls.key" -out "$ADMISSION_TLS_DIR/tls.csr"
+printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "${SERVICE}" \
+  > "$ADMISSION_TLS_DIR/tls.ext"
+openssl x509 -req -in "$ADMISSION_TLS_DIR/tls.csr" \
+  -CA "$ADMISSION_TLS_DIR/ca.crt" -CAkey "$ADMISSION_TLS_DIR/ca.key" \
+  -CAcreateserial -days 365 -extfile "$ADMISSION_TLS_DIR/tls.ext" \
+  -out "$ADMISSION_TLS_DIR/tls.crt"
+base64 < "$ADMISSION_TLS_DIR/ca.crt" | tr -d '\n' > "$ADMISSION_TLS_DIR/ca-bundle.txt"
+```
+
+Then create the namespace if it does not exist, and the TLS Secret:
+
+```bash
+kubectl get namespace cetirun-system >/dev/null 2>&1 ||
+  kubectl create namespace cetirun-system
 kubectl create secret tls cetirun-sandbox-admission-tls -n cetirun-system \
-  --cert=tls.crt --key=tls.key
-base64 -w0 ca.crt > ca-bundle.txt
+  --cert="$ADMISSION_TLS_DIR/tls.crt" --key="$ADMISSION_TLS_DIR/tls.key"
 ```
 
 `ca-bundle.txt` holds the CA bundle on one line. Keep `ca.key` outside the
@@ -117,6 +131,11 @@ List at least one administrator in `adminUsers` or `adminGroups`. These
 administrators can write policy-bound configuration with `kubectl`. They can
 also reauthorize an Agent. The Portal has no page for this. Select them before
 the first run, because a later `make deploy` stops if they change.
+
+To see the user name and the groups that the cluster receives for you, run
+`kubectl auth whoami` with the credentials of an administrator. With the local
+admin credentials of AKS, the group is `system:masters`. Refer to
+[Infrastructure](../infrastructure/).
 
 On a new installation, `make deploy` starts the admission server without
 enforcement. After the server is ready, it enforces admission. After the run,

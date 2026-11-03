@@ -1,12 +1,14 @@
 ---
 title: "Helm configuration"
-description: "This page gives the values and defaults for the agent, platform, operator, portal, and Skill Marketplace Helm charts."
+description: "This page gives the values and defaults for the agent, platform, AI Gateway, operator, portal, and Skill Marketplace Helm charts."
 weight: 20
 ---
 
-There are separate charts for the agent, operator, portal, Skill Marketplace,
-and shared Istio infrastructure. A chart render does not prove that their
-images, storage, RuntimeClass, or identity integrations are available.
+There are separate charts for the agent, the AI Gateway, the operator, the
+portal, the Skill Marketplace, and shared Istio infrastructure. The platform
+chart packages the operator, the portal, the AI Gateway, and the Skill
+Marketplace. A chart render does not prove that their images, storage,
+RuntimeClass, or identity integrations are available.
 
 ## Offline rendering
 
@@ -380,6 +382,37 @@ Do not install the umbrella chart over resources that standalone releases own.
 See the platform chart README's
 [Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).
 
+## AI Gateway chart
+
+Source: [Gateway values]({{< repo "app/cetirun-ai-gateway/chart/values.yaml" >}}).
+You can install the AI Gateway chart without the rest of CetiRun. The platform
+chart installs it with the `cetirun-ai-gateway` values of
+[Platform chart](#platform-chart). The
+[Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}})
+describes each value and the measurements behind its default. These values
+are important when you install the chart alone:
+
+| Value | Source default |
+| --- | --- |
+| `global.registry`, `global.version` | Empty. With a registry, the image is `<registry>/cetirun-ai-gateway`. Without one, it is `image.repository`, `cetirun.azurecr.io/cetirun-ai-gateway`. The tag is `global.version`, then `image.tag`, then the `appVersion` of the chart. |
+| `imagePullSecrets` | `[]`. Set it when the cluster cannot pull from the registry without credentials. |
+| `replicaCount` | `2`. More than one replica needs Redis or Valkey. The bundled Valkey supplies it. |
+| `operatorIntegration` | `false`. The platform chart sets `true`. Keep `false` for a Gateway that does not serve CetiRun Agents. |
+| `models` | `[]`. LiteLLM model entries. An empty list is valid, and models can also be added in the console. |
+| `blockUnpricedModels` | `true`. The Gateway refuses a model that has no price. |
+| `providerCredentials.existingSecret` | Empty. A Secret whose keys become environment variables of the Gateway, for `api_key: os.environ/<key>`. |
+| `auth.masterKey`, `auth.saltKey`, `auth.adminUI.passwordSecret` | Each has `existingSecret`, empty, and `key`. Without a Secret, the chart generates the value and keeps it in its `-auth` Secret. Do not change the salt key after the installation. |
+| `postgresql.bundled.enabled`, `postgresql.urlSecret.existingSecret` | `true`, empty. To use your own PostgreSQL, set `false` and a Secret with the `database-url` key. `make deploy` refuses `false`. |
+| `postgresql.bundled.persistence.size`, `storageClass` | `100Gi`, empty for the default class of the cluster. Both are fixed at the installation. |
+| `redis.bundled.enabled`, `redis.host`, `redis.passwordSecret.existingSecret` | `true`, empty, empty. To use your own Redis or Valkey, set `false` and a host. The connection does not use TLS. `make deploy` refuses `false`. |
+| `service.type`, `service.port` | `ClusterIP`, `4000`. The chart creates no Ingress. |
+| `resources`, `postgresql.bundled.resources`, `redis.bundled.resources` | `{}`. Nothing is reserved. See [Resources]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#resources). |
+| `metrics.enabled`, `metrics.podMonitor.enabled` | `false`, `false`. The platform chart sets both to `true`. |
+
+The other values, for example `priceTable`, `spendLogs`, `router`, and
+`budgetExceededStatusCode`, have the defaults that the `cetirun-ai-gateway`
+rows of [Platform chart](#platform-chart) give.
+
 ## Operator chart
 
 Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}}).
@@ -397,7 +430,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `acrDockerSecret` | The registry Secret in the operator namespace, for the Helm client of the operator |
 | `image` | The operator image pin. The pull policy is `IfNotPresent`. An empty tag uses `appVersion`. |
 | `imagePullSecrets` | The values declare it, but the chart does not render it into the operator Deployment. |
-| `azure.clientId` | Optional. It overrides the client ID of the operator workload identity. |
+| `azure.clientId` | Empty. The Workload Identity client ID in the annotation of the operator ServiceAccount. If it is empty and Agent Identity is enabled, the annotation uses `agentIdentity.blueprintClientId`. The Agent Identity lifecycle authenticates as the Blueprint in both cases. `make deploy` stops if it is empty. With `make deploy`, use the Blueprint client ID, unless another operator integration needs a different identity. |
 | `sandboxAdmission.enabled`, `sandboxAdmission.podsEnabled` | `false`. They run the Sandbox admission webhook for configuration and Agent writes, and for Sandbox Pods. Kubernetes 1.37 or later, `tlsSecretName`, and an administrator are necessary. `make deploy` sets `enabled`. See [Policy-bound Teams](../../operations/policy-teams/) |
 | `sandboxAdmission.tlsSecretName` | Empty. A `kubernetes.io/tls` Secret that already exists, for `cetirun-sandbox-admission.<namespace>.svc`. The chart issues no certificate. |
 | `sandboxAdmission.enforce`, `sandboxAdmission.caBundle` | `false` and empty. They make the refusals of the webhook binding, with the base64 PEM bundle of the CA that issued its certificate. `make deploy` sets `enforce` and needs `caBundle` on the first run. On a new installation, it starts the admission server without enforcement first. For a direct Helm install, do not enable enforcement on the first install. Enable it after the webhook answers. |
