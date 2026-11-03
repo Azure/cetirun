@@ -47,9 +47,16 @@ Licensed under the MIT License.
 {{- if not $contextSkills }}{{- $skillsPath = .Values.skills.mountPath }}{{- end }}
 {{- /* With shared skills, the composed context also mounts its skills at
    skills.mountPath (cetirun.context.mount). Hermes sees two different
-   directories with the same skills there, so it lists the view only once. */}}
+   directories with the same skills there, so it lists the view only once.
+   The operator renders this file with a small function set, so no without. */}}
 {{- if and $contextSkills .Values.skills.shared }}
-{{- $existingDirs = without $existingDirs .Values.skills.mountPath }}
+{{- $kept := list }}
+{{- range $existingDirs }}
+{{- if ne . $.Values.skills.mountPath }}
+{{- $kept = append $kept . }}
+{{- end }}
+{{- end }}
+{{- $existingDirs = $kept }}
 {{- end }}
 {{- $_ := set $skills "external_dirs" (append $existingDirs $skillsPath | uniq) }}
 {{- $_ := set $config "skills" $skills }}
