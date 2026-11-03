@@ -126,12 +126,39 @@ tailnet reachability. See the
 and [Hermes]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
 probe templates.
 
+### Separate provisioning from model readiness
+
+Creating the platform is not the same operation as creating one Agent. For a
+slow Agent, inspect the current Conditions before extending a wait or changing
+timeouts. `PolicyDenied` is a validation failure, not a workload that is still
+starting. For `DependencyUnavailable`, determine whether the reported
+dependency is still provisioning, temporarily unreachable, or misconfigured.
+A longer Agent startup-probe window does not repair policy validation or
+missing configuration. Check scheduling, image pulls, init containers, and
+HOME binding separately from application probes.
+
+For GitHub Copilot, also inspect `status.aiGateway.copilot.phase` and `reason`.
+Successful owner authorization, a Ready Copilot proxy, registered model routes,
+and successful inference are distinct stages. `ProxyStarting` means that route
+registration is waiting for the proxy; check that its Deployment exists before
+assuming that a container is still starting. Do not repeat owner authorization
+to repair a missing workload. Overall Agent `Ready` does not prove that these
+model-provider stages completed.
+
 ## Suspend and resume
 
 In Portal, owners can select **Suspend Agent** or **Resume Agent**. These
 controls change only the `spec.suspended` intent. They do not delete the
 Agent, HOME, or Gateway key. They do not reset the spend history or create
 another lifecycle operation.
+
+Retained HOME and Gateway spend do **not** mean retained Copilot sign-in.
+The current Operator removes the per-Agent Copilot token and proxy-key Secrets
+during explicit suspension. After resume, the owner must sign in to GitHub
+again. Do not use Suspend/Resume as a credential-preserving substitute for an
+ordinary image or chart update; use the supported update and reconciliation
+path. For a coordinated configuration change that requires suspension, include
+owner reauthorization in the maintenance plan.
 
 | Current Agent | Suspend | Resume |
 | --- | --- | --- |

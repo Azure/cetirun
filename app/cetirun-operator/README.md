@@ -191,6 +191,14 @@ stop, or a status write fails, suspension still tries the other shutdown
 operations. A shutdown that is not acknowledged still keeps its source
 reservation. Normal Kubernetes stop requests are not physical fencing.
 
+The current Gateway reconciliation also removes the per-Agent Copilot token
+and proxy-key Secrets during explicit suspension. Retained HOME and Gateway
+spend do not imply a retained Copilot sign-in: the owner must sign in again
+after resume. For an ordinary chart or image upgrade, use the normal Agent
+update and reconciliation path rather than explicit suspension if the Copilot
+sign-in must remain available. When a coordinated configuration change requires
+suspension, plan for owner reauthorization.
+
 If policy denial has already requested deletion of the Gateway key, suspension
 retries that revocation instead of trying to block the deleted key. It reports
 `Suspended` only after revocation and shutdown succeed, while retaining the

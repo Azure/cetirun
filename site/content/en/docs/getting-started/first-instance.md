@@ -47,8 +47,12 @@ sign-out clears the session. For the necessary routing, refer to
    readiness conditions.
 7. If you use GitHub Copilot, sign in to it. To sign in, open the instance.
    Then select **Sign in with GitHub** in the **Models** section of its
-   overview. The Copilot models appear within a few minutes, after the
-   instance restarts to get them.
+   overview. Authorization alone does not make the models ready: the Operator
+   must prepare a Ready Copilot proxy and register its routes in the Gateway.
+   Wait for the Copilot status, not only the overall Agent `Ready` condition.
+   If it remains `ProxyStarting`, follow the
+   [model-readiness checks](../../guides/lifecycle/#separate-provisioning-from-model-readiness)
+   rather than repeating authorization or relying on a fixed wait time.
 8. [Choose a model](../../guides/models/). Set the default model in the
    **Models** section. When you save it, the instance restarts.
 9. To open the console of an OpenClaw instance, use the portal's access
