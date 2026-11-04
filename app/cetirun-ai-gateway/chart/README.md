@@ -848,16 +848,22 @@ the failed call and its fallback.
 
 A GitHub Copilot model returns its reasoning items with a `status`. Azure
 OpenAI refuses this field on a reasoning item that a request sends back, with
-a 400: `Unknown parameter: 'input[n].status'`. On the e2e cluster, a stateless
-Responses API conversation moved from a Copilot model to the Azure tier of a
-router. The check removed the encrypted content of the Copilot item, but the
-item kept its status. Azure OpenAI refused the request, and the router's
-fallback answered it.
+a 400: `Unknown parameter: 'input[n].status'`. Azure OpenAI also refuses an
+item ID longer than 64 characters. Copilot's IDs for the messages of a Grok
+model had 396 characters.
 
-The guard callback now removes the `status` of each reasoning item in a
-request to an Azure OpenAI deployment. Azure OpenAI accepts the `status` of a
-message, so messages do not change. The Gateway logs a warning for each
-request that the guard changes.
+On the e2e cluster, a stateless Responses API conversation moved from a
+Copilot model to the Azure tier of a router. The check removed the encrypted
+content of the Copilot item, but Azure OpenAI refused the request because of
+these fields. The router's fallback answered it.
+
+For a request to an Azure OpenAI deployment, the guard callback now removes the
+`status` of each reasoning item. It also removes the ID of any other item that
+is longer than 64 characters. Azure OpenAI accepts the `status` of a message,
+so it does not change. An ID that LiteLLM marked (`encitem_`) also does not
+change, because LiteLLM restores it before it sends the request. The Gateway
+logs a warning for each request that the guard changes. On the e2e cluster,
+Azure OpenAI answered the same conversation after these changes.
 
 These results were measured with mock resources. With the guard, every such
 replay got an answer, streamed or not streamed. An item with the mark was
@@ -2190,10 +2196,10 @@ these actions:
   [Prices are not pinned to the image by default](#known-gaps).
 - It lets a request fail over from the deployment that its key is kept on.
   Refer to [A key stays on its deployment](#a-key-stays-on-its-deployment).
-- It removes `status` from the reasoning items of a Responses API request to
-  an Azure OpenAI deployment. Azure OpenAI refuses this field on a reasoning
-  item, and GitHub Copilot models return their reasoning items with it. Refer
-  to
+- It removes fields that Azure OpenAI refuses from the items of a Responses
+  API request to an Azure OpenAI deployment. These fields are the `status` of
+  a reasoning item, and an item ID that is longer than 64 characters. GitHub
+  Copilot models return items with them. Refer to
   [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource).
 - It prevents a GitHub sign-in when LiteLLM prices a request that an auto
   router answered. LiteLLM 1.105.6 compares the cost of such a request with

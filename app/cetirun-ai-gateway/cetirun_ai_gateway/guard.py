@@ -122,11 +122,12 @@ reasoning, gets the first error instead of the last.
 A GitHub Copilot model returns its reasoning items with a status, and a client
 that keeps no state on the provider sends them back as they are. Azure OpenAI
 refuses that field on a reasoning item (400 unknown_parameter
-"input[n].status"). A conversation that moved from a Copilot model to an Azure
-deployment, by an auto router's tier or a failover, failed there, although
-encrypted content affinity removed the item's encrypted content: the item kept
-its status. The guard removes the status of each reasoning item in a request
-to an Azure OpenAI deployment, and logs each change.
+"input[n].status"), and an item ID longer than 64 characters, such as
+Copilot's IDs for a Grok model's messages. A conversation that moved from a
+Copilot model to an Azure deployment, by an auto router's tier or a failover,
+failed there, although encrypted content affinity removed the reasoning's
+encrypted content. The guard removes both from a request to an Azure OpenAI
+deployment, and logs each change.
 
 LiteLLM prices each request that an auto router answers against the most
 expensive model of the router's hardest tier (proxy/spend_tracking/savings.py),
@@ -233,8 +234,11 @@ AFFINITY_CHECK = "EncryptedContentAffinityCheck"
 UNREADABLE_REASONING = ("invalid_encrypted_content", "could not be verified", "could not be decrypted")
 # A field GitHub Copilot puts on the reasoning items it returns, which Azure
 # OpenAI refuses on a reasoning item a request sends back (400,
-# unknown_parameter "input[n].status").
+# unknown_parameter "input[n].status"), and the longest item ID Azure OpenAI
+# takes: Copilot's IDs for a Grok model's messages had 396 characters (400,
+# "Invalid 'input[n].id': string too long").
 REASONING_STATUS = "status"
+AZURE_MAX_ITEM_ID = 64
 
 # LiteLLM's module that prices an auto router's request against its savings
 # baseline, and the module of its helper that names a provider that signs in
@@ -452,21 +456,37 @@ def azure_openai(deployment):
     return isinstance(model, str) and model.startswith("azure/")
 
 
-def strip_reasoning_status(request_input):
-    """Remove the status of each reasoning item in a Responses API request's input, in place; the number removed.
+def strip_azure_refused_fields(request_input):
+    """Remove from a Responses API request's input, in place, what Azure OpenAI refuses in items that another
+    provider returned; (reasoning statuses removed, item IDs removed).
 
-    Only reasoning items change: Azure OpenAI takes the status of an output
-    message that a request sends back. The list is changed in place, as
-    LiteLLM forwards it and its fallback hops share it.
+    The status of a reasoning item goes: Azure OpenAI takes the status of a
+    message. The ID of any other item goes when it is longer than Azure OpenAI
+    takes; an ID LiteLLM marked (encitem_) stays, as LiteLLM reads and restores
+    it itself. A reasoning item's ID is left to encrypted content affinity,
+    which removes it with the encrypted content that another deployment
+    produced. The list is changed in place, as LiteLLM forwards it and its
+    fallback hops share it.
     """
     if not isinstance(request_input, list):
-        return 0
-    changed = 0
+        return 0, 0
+    statuses = ids = 0
     for index, item in enumerate(request_input):
-        if isinstance(item, dict) and item.get("type") == "reasoning" and REASONING_STATUS in item:
-            request_input[index] = {key: value for key, value in item.items() if key != REASONING_STATUS}
-            changed += 1
-    return changed
+        if not isinstance(item, dict):
+            continue
+        drop = set()
+        if item.get("type") == "reasoning":
+            if REASONING_STATUS in item:
+                drop.add(REASONING_STATUS)
+                statuses += 1
+        else:
+            item_id = item.get("id")
+            if isinstance(item_id, str) and len(item_id) > AZURE_MAX_ITEM_ID and not item_id.startswith(MARKED_ITEM_ID):
+                drop.add("id")
+                ids += 1
+        if drop:
+            request_input[index] = {key: value for key, value in item.items() if key not in drop}
+    return statuses, ids
 
 def marked_content(content):
     """Whether encrypted_content carries the producing deployment in either form of the mark."""
@@ -1161,7 +1181,7 @@ class Guard(CustomLogger):
         deployment refused the request's encrypted reasoning is ended here, so
         the client gets that first error. A request to a model that reasons loses
         the sampling parameters the model refuses, and a request to Azure OpenAI
-        the status of its reasoning items.
+        the fields it refuses in items that another provider returned.
         """
         refusal = unreadable_reasoning_refusal(request_kwargs)
         if refusal is not None:
@@ -1216,11 +1236,13 @@ class Guard(CustomLogger):
             router = routing_router(model, request_kwargs)
             target = f"the router {router} sent to" if router else "for"
             if any(map(azure_openai, kept)):
-                fixed = strip_reasoning_status(request_kwargs.get("input"))
-                if fixed:
+                statuses, ids = strip_azure_refused_fields(request_kwargs.get("input"))
+                if statuses or ids:
                     verbose_proxy_logger.warning(
-                        "CetiRun guard: removed the status of %d reasoning item%s from a request %s %s, which Azure "
-                        "OpenAI refuses on a reasoning item.", fixed, "" if fixed == 1 else "s", target, model)
+                        "CetiRun guard: removed the status of %d reasoning item%s and the ID of %d item%s longer than "
+                        "%d characters from a request %s %s; Azure OpenAI refuses both.",
+                        statuses, "" if statuses == 1 else "s", ids, "" if ids == 1 else "s", AZURE_MAX_ITEM_ID,
+                        target, model)
             # First: without the effort of none, the model reasons, and the sampling
             # parameters it then refuses go too.
             if strip_refused_no_reasoning(request_kwargs, kept):

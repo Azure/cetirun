@@ -1308,49 +1308,67 @@ class GuardTest(unittest.TestCase):
                 self.filtered(request, [SHARED])
                 self.assertEqual(request, before)
 
-    # ----- the status of a reasoning item sent to Azure OpenAI -----
+    # ----- what Azure OpenAI refuses in items that GitHub Copilot returned -----
 
-    # A reasoning item and a message as a GitHub Copilot model returns them, both with a status.
+    # A reasoning item and a message as a GitHub Copilot model returns them, both with a status; the message ID of a
+    # Grok model has 396 characters.
     COPILOT_REASONING = {"type": "reasoning", "id": "rs_copilot", "status": "completed",
                          "encrypted_content": "ctrnenc6162xgAAAAcopilot",
                          "summary": [{"type": "summary_text", "text": "Thought it through."}]}
-    ASSISTANT_MESSAGE = {"type": "message", "role": "assistant", "status": "completed",
-                         "content": [{"type": "output_text", "text": "Done."}]}
+    ASSISTANT_MESSAGE = {"type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
+                         "content": [{"type": "output_text", "text": "Done.", "annotations": [], "logprobs": []}]}
+    LONG_ID_MESSAGE = {**ASSISTANT_MESSAGE, "id": "msg_" + "x" * 392}
 
-    def test_reasoning_items_sent_to_azure_openai_lose_their_status(self):
+    def test_items_sent_to_azure_openai_lose_what_it_refuses(self):
         # Measured on the e2e cluster: Azure OpenAI refused a reasoning item with a status (400 "Unknown
-        # parameter: 'input[1].status'.") and answered the same item without it. A conversation that moved from
-        # a GitHub Copilot model to an Azure tier of a router failed there. The status of a message stays: Azure
-        # OpenAI took it in the same request.
+        # parameter: 'input[1].status'.") and a message ID of 396 characters (400 "Invalid 'input[2].id': string too
+        # long."), and answered the same items without them. A conversation that moved from a GitHub Copilot model
+        # to an Azure tier of a router failed there. Azure OpenAI took the status and the phase of a message.
         azure = self.model_deployment("gpt-6-sol", "azure/gpt-6-sol")
         copilot = self.model_deployment("gpt-6-sol", "litellm_proxy/gpt-6-sol")
-        without_status = {key: value for key, value in self.COPILOT_REASONING.items() if key != "status"}
-        for deployments, request in (([azure], self.responses_request(self.COPILOT_REASONING, self.ASSISTANT_MESSAGE)),
+        reasoning = {key: value for key, value in self.COPILOT_REASONING.items() if key != "status"}
+        message = {key: value for key, value in self.LONG_ID_MESSAGE.items() if key != "id"}
+        for deployments, request in (([azure], self.responses_request(self.COPILOT_REASONING, self.LONG_ID_MESSAGE)),
                                      # A merged name: whichever deployment serves the request.
-                                     ([copilot, azure], self.responses_request(self.COPILOT_REASONING, self.ASSISTANT_MESSAGE)),
+                                     ([copilot, azure], self.responses_request(self.COPILOT_REASONING, self.LONG_ID_MESSAGE)),
                                      # A router's Azure tier.
-                                     ([azure], {**self.routed(), "input": [dict(self.COPILOT_REASONING)]})):
-            with self.subTest(deployments=[d["litellm_params"]["model"] for d in deployments], request=request):
+                                     ([azure], {**self.routed(), "input": [dict(self.COPILOT_REASONING),
+                                                                           dict(self.LONG_ID_MESSAGE)]})):
+            with self.subTest(deployments=[d["litellm_params"]["model"] for d in deployments],
+                              routed="metadata" in request):
                 items = request["input"]
                 with self.assertLogs(LOGGER, "WARNING") as logs:
                     kept = self.filtered(request, deployments, "gpt-6-sol")
                 self.assertEqual(kept, deployments)
                 # The same list: LiteLLM forwards it, and its fallback hops share it.
                 self.assertIs(request["input"], items)
-                reasoning = [item for item in items if item.get("type") == "reasoning"]
-                self.assertEqual(reasoning, [without_status])
-                self.assertEqual([item for item in items if item.get("type") == "message"],
-                                 [self.ASSISTANT_MESSAGE] if len(items) > 2 else [])
-                self.assertIn("status of 1 reasoning item from", logs.output[0])
+                self.assertEqual([item for item in items if item.get("type") in ("reasoning", "message")],
+                                 [reasoning, message])
+                self.assertIn("the status of 1 reasoning item and the ID of 1 item longer than 64", logs.output[0])
                 with self.assertNoLogs(LOGGER, "WARNING"):
                     self.filtered(request, deployments, "gpt-6-sol")
 
-    def test_reasoning_items_keep_their_status_for_other_providers(self):
+    def test_ids_that_azure_openai_takes_stay(self):
+        azure = self.model_deployment("gpt-6-sol", "azure/gpt-6-sol")
+        short = {**self.ASSISTANT_MESSAGE, "id": "msg_" + "a" * 60}
+        # LiteLLM reads and restores the IDs it marked itself.
+        marked = {**self.ASSISTANT_MESSAGE, "id": "encitem_" + "b" * 200}
+        # A reasoning item's ID is left to encrypted content affinity.
+        long_reasoning = {key: value for key, value in self.COPILOT_REASONING.items() if key != "status"}
+        long_reasoning["id"] = "rs_" + "c" * 600
+        call = {"type": "function_call", "id": "fc_" + "d" * 30, "call_id": "call_1", "name": "read", "arguments": "{}"}
+        request = self.responses_request(short, marked, long_reasoning, call)
+        before = [dict(item) for item in request["input"]]
+        with self.assertNoLogs(LOGGER, "WARNING"):
+            self.filtered(request, [azure], "gpt-6-sol")
+        self.assertEqual(request["input"], before)
+
+    def test_items_keep_their_fields_for_other_providers(self):
         for deployment in (self.model_deployment("gpt-6-sol", "litellm_proxy/gpt-6-sol"),
                            self.model_deployment("gpt-6-sol", "openai/gpt-6-sol"),
                            self.model_deployment("claude", "azure_ai/claude")):
             with self.subTest(deployment=deployment["litellm_params"]["model"]):
-                request = self.responses_request(self.COPILOT_REASONING, self.ASSISTANT_MESSAGE)
+                request = self.responses_request(self.COPILOT_REASONING, self.LONG_ID_MESSAGE)
                 before = [dict(item) for item in request["input"]]
                 with self.assertNoLogs(LOGGER, "WARNING"):
                     self.filtered(request, [deployment], deployment["model_name"])
