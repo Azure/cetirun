@@ -656,8 +656,13 @@ func syntheticEgressAllowed(spec CiliumPolicySpec, rawIP string, peer *Peer, por
 		}
 		set := map[string]string{}
 		if peer != nil {
-			set["k8s:"+PeerUIDLabel] = string(peer.UID)
 			set["k8s:io.kubernetes.pod.namespace"] = peer.Namespace
+			if peer.UID != "" {
+				set["k8s:"+PeerUIDLabel] = string(peer.UID)
+			}
+			for key, value := range peer.PodSelector {
+				set["k8s:"+key] = value
+			}
 		}
 		for _, selected := range rule.ToEndpoints {
 			l3 = l3 || syntheticSelectorMatches(selected, set)

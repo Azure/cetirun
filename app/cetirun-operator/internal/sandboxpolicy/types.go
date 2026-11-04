@@ -55,8 +55,9 @@ type AdapterRegistration struct {
 
 // Peer is a trusted, resolved destination, including Service and backend IPs.
 // A namespaced peer normally selects Pods bearing the protected PeerUIDLabel.
-// Native ingress may instead select platform-owned Pod labels without pinning
-// Pod IPs. An empty namespace denotes a guest-external IP destination.
+// Native DNS and Gateway peers may select platform-owned Pod labels and pin
+// only Service IPs. Native ingress selectors do not pin any IPs.
+// An empty namespace denotes a guest-external IP destination.
 // The platform owns selector protection and endpoint realization.
 type Peer struct {
 	Name        string            `json:"name"`
@@ -79,7 +80,8 @@ type Topology struct {
 	Revision             string `json:"revision"`
 	ManagedPeersComplete bool   `json:"managedPeersComplete"`
 	// DNSResolverIPs selects one to three Pod nameservers from the approved DNS
-	// peers. DNS retains all Service/backend IPs needed for network enforcement.
+	// peers. DNS retains Service/backend IPs for legacy peers, or only Service
+	// IPs when protected selectors follow replacement backend Pods.
 	DNSResolverIPs  []string      `json:"dnsResolverIPs"`
 	DNS             []Peer        `json:"dns"`
 	Gateway         []Destination `json:"gateway"`

@@ -581,6 +581,80 @@ SCTP registration does not enable it. Ingress mTLS has a separate opt-in
 [managed endpoint contract](../../site/content/en/docs/guides/agent-ingress-mtls.md).
 SCTP registration does not enable it.
 
+## Rollout-stable DNS and AI Gateway
+
+The native Cilium profile supports namespace-scoped Pod selectors for DNS and
+AI Gateway peers on both Kata and ordinary-container backends. Register the
+stable Service IPs and the labels already supplied by their workload
+controllers. This **topology fragment** illustrates the fields; it is not a
+complete platform registration:
+
+```json
+{
+  "dnsResolverIPs": ["10.96.0.10"],
+  "dns": [
+    {
+      "name": "coredns",
+      "namespace": "kube-system",
+      "uid": "example-dns-uid",
+      "ips": ["10.96.0.10"],
+      "podSelector": {"k8s-app": "kube-dns"}
+    }
+  ],
+  "gateway": [
+    {
+      "peer": {
+        "name": "cetirun-ai-gateway",
+        "namespace": "cetirun-system",
+        "uid": "example-gateway-uid",
+        "ips": ["10.96.1.50"],
+        "podSelector": {
+          "app.kubernetes.io/name": "cetirun-ai-gateway",
+          "app.kubernetes.io/instance": "example",
+          "app.kubernetes.io/component": "gateway"
+        }
+      },
+      "ports": [{"port": 4000, "protocol": "TCP"}]
+    }
+  ]
+}
+```
+
+Replace these synthetic values with the approved Service addresses and exact
+selectors for the target installation. Keep the peer UID stable; do not use a
+Pod UID. A selector must contain valid Pod labels and an exact namespace.
+Tenants must not be able to create or relabel matching Pods in that namespace.
+The platform owns that protection and the Service-to-Pod association.
+
+Selector-bound DNS/Gateway entries must contain only Service IPs within the
+registered `serviceCIDRs`, outside `podCIDRs`. Do not pin backend Pod IPs.
+`dnsResolverIPs` still selects at most three approved DNS Service addresses.
+The generated endpoint rules follow replacement Pods and keep the exact DNS
+TCP/UDP and Gateway port restrictions. Complementary denies still exclude
+unselected Pods, wrong namespaces and ports, including when another policy
+adds an allow. Kubernetes API and arbitrary inventory peers retain their
+existing registration contract.
+
+Explicit Service IP and port denies still reject conflicting required access.
+Blocked CIDRs that overlap registered Pod networks are rejected with this mode:
+changing backend IPs cannot be mapped to stable endpoint denies. It does not
+claim support for node-local DNS or host-networked backends.
+
+Upgrade all Operator/admission readers before adopting these selectors. Change
+the protected platform registration through the normal configuration-change
+and lifecycle workflow; do not rewrite active expectations or reservations.
+After that transition, a Pod rollout or scale-out does not change the
+registration or the Agent's network-policy revision. Changing Service IPs,
+selectors, namespaces, or peer UIDs still requires a coordinated update.
+Existing IP/peer-UID registrations remain supported and still need current
+backend IPs and protected peer labels.
+
+Offline compiler tests cover replacement addresses, namespace/label and port
+denies, mixed legacy peers, resolver stability, terminal isolation and bounded
+selector expansion. Controller tests cover repeated DNS/Gateway Pod replacement
+without changing Agent workloads on both backends. These tests do not replace
+separately authorized AKS/Cilium rollout, scaling and dataplane acceptance.
+
 ## Rollout-stable managed ingress
 
 For an AKS-managed Istio gateway, register the stable labels that the gateway
@@ -620,8 +694,9 @@ items:
 - At least one valid Pod label. All labels are matched within the exact
   registered namespace. Do not include `peer.ips`. Selection and proxy trust
   must not depend on the current Pods. The `peer-uid` Pod label is not
-  necessary for this ingress entry. DNS, AI Gateway, and other peers keep their
-  current IP/peer-UID contract.
+  necessary for this ingress entry. DNS and AI Gateway peers can separately
+  opt in to [stable service selectors](#rollout-stable-dns-and-ai-gateway);
+  other peers keep their current IP/peer-UID contract.
 - Explicit `trustedProxyCIDRs` that are in the registered `topology.podCIDRs`.
   The compiler rejects wildcard ranges. It also rejects ranges that overlap
   Service, Node, management, metadata, loopback, or link-local networks.
