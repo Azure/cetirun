@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/skills"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/skills"
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"

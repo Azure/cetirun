@@ -39,9 +39,10 @@ CRD_FILES := cetirun.microsoft.com_agents.yaml cetirun.microsoft.com_teams.yaml 
 
 all: build
 
-## Build the operator binary
+## Build the operator binary and its Skill Marketplace worker
 build:
 	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/manager ./cmd/main.go
+	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/skill-marketplace ./cmd/skill-marketplace
 
 ## Build the independent Custom terminal and static HTTP probe
 build-terminal:

@@ -1,10 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// Command cetirun-skill-marketplace synchronizes one Git repository of skills,
-// publishes each policy-bound Team's selection as an immutable release on
-// shared Blob NFS storage, gives each Agent namespace a read-only claim of that
-// storage, and writes the Skill Marketplace catalog.
+// Command skill-marketplace is the Skill Marketplace worker of the operator
+// image. It synchronizes one Git repository of skills, publishes the selection
+// of each Team of the operator's Teams document as an immutable release on
+// shared Blob NFS storage, and writes the Skill Marketplace catalog.
+//
+// The worker runs in its own Pod, apart from the operator, because it parses
+// repository content, holds the repository credentials and mounts the storage
+// read-write. Its Kubernetes access is two ConfigMaps of the operator
+// namespace: it reads the Teams document and updates the catalog. The
+// operator reconciles Teams and Agents, and creates the Agents' claims.
 package main
 
 import (
@@ -18,25 +24,19 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/controller"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/gitsync"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/publish"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/skills"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/gitsync"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/publish"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/skills"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/worker"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-)
-
-// Version and Commit are set at build time.
-var (
-	Version = "dev"
-	Commit  = "unknown"
 )
 
 type options struct {
@@ -44,10 +44,7 @@ type options struct {
 	path              string
 	syncInterval      time.Duration
 	storageRoot       string
-	storage           controller.StorageSource
-	claimName         string
-	claimSize         string
-	catalogNamespace  string
+	namespace         string
 	reserved          string
 	teamGCGrace       time.Duration
 	maxRepositorySize string
@@ -70,7 +67,7 @@ func size(bytes int64) string {
 
 func parse(args []string) (options, error) {
 	var o options
-	fs := flag.NewFlagSet("cetirun-skill-marketplace", flag.ContinueOnError)
+	fs := flag.NewFlagSet("skill-marketplace", flag.ContinueOnError)
 	fs.StringVar(&o.source.URL, "repository-url", "", "Git repository URL (https://, or ssh with --auth=ssh)")
 	fs.StringVar(&o.source.Ref, "repository-ref", "", "branch, tag or full ref; empty uses the remote HEAD")
 	fs.StringVar(&o.path, "repository-path", "", "directory of the repository that holds the skills")
@@ -80,15 +77,9 @@ func parse(args []string) (options, error) {
 	fs.BoolVar(&o.allowInsecureHTTP, "allow-insecure-http", false, "allow an http:// repository URL (tests only)")
 	fs.DurationVar(&o.syncInterval, "sync-interval", 5*time.Minute, "how often the repository is checked")
 	fs.StringVar(&o.storageRoot, "storage-root", "/var/lib/cetirun-skills", "read-write mount of the marketplace container")
-	fs.StringVar(&o.storage.ResourceGroup, "storage-resource-group", "", "resource group of the storage account")
-	fs.StringVar(&o.storage.StorageAccount, "storage-account", "", "storage account of the marketplace container")
-	fs.StringVar(&o.storage.ContainerName, "storage-container", "", "Blob NFS container of the marketplace")
-	fs.StringVar(&o.storage.StorageClassName, "storage-class", "azureblob-nfs-premium", "StorageClass name of the Agent volumes")
-	fs.StringVar(&o.claimName, "claim-name", "skills", "name of the skills claim in each Agent namespace")
-	fs.StringVar(&o.claimSize, "claim-size", "1Gi", "requested size of each Agent's skills claim")
-	fs.StringVar(&o.catalogNamespace, "catalog-namespace", "", "namespace of the catalog ConfigMap (the operator namespace)")
+	fs.StringVar(&o.namespace, "namespace", "", "the operator namespace, which holds the Teams document and the catalog")
 	fs.StringVar(&o.reserved, "reserved-names", strings.Join(skills.DefaultReserved, ","), "comma-separated reserved skill names")
-	fs.DurationVar(&o.teamGCGrace, "team-gc-grace", time.Hour, "how long a deleted Team's releases stay after its last publication")
+	fs.DurationVar(&o.teamGCGrace, "team-gc-grace", time.Hour, "how long the releases of a Team that left the Teams document stay after its last publication")
 	defaults := skills.DefaultLimits
 	fs.StringVar(&o.maxRepositorySize, "max-repository-size", "256Mi", "largest repository commit to load: the pack that the Git server sends, and its objects together")
 	fs.Int64Var(&o.maxObjects, "max-repository-objects", 100000, "most objects (files, directories and the commit) in the repository commit")
@@ -114,20 +105,8 @@ func parse(args []string) (options, error) {
 	if o.syncInterval < 30*time.Second {
 		return o, fmt.Errorf("--sync-interval must be at least 30s")
 	}
-	for name, value := range map[string]string{
-		"--storage-resource-group": o.storage.ResourceGroup, "--storage-account": o.storage.StorageAccount,
-		"--storage-container": o.storage.ContainerName, "--catalog-namespace": o.catalogNamespace,
-	} {
-		if value == "" {
-			return o, fmt.Errorf("%s is required", name)
-		}
-	}
-	if len(validation.IsDNS1123Label(o.claimName)) != 0 || len(validation.IsDNS1123Label(o.catalogNamespace)) != 0 ||
-		len(validation.IsDNS1123Subdomain(o.storage.StorageClassName)) != 0 {
-		return o, fmt.Errorf("invalid claim name, catalog namespace or StorageClass name")
-	}
-	if _, err := resource.ParseQuantity(o.claimSize); err != nil {
-		return o, fmt.Errorf("invalid --claim-size: %w", err)
+	if len(validation.IsDNS1123Label(o.namespace)) != 0 {
+		return o, fmt.Errorf("--namespace must name the operator namespace")
 	}
 	for _, limit := range []struct {
 		flag, value string
@@ -175,7 +154,7 @@ func main() {
 		logger.Info("set the Go memory limit from the container's memory limit", "bytes", limit)
 	}
 	if err := run(ctrl.SetupSignalHandler(), o); err != nil {
-		logger.Error(err, "the Skill Marketplace stopped")
+		logger.Error(err, "the Skill Marketplace worker stopped")
 		os.Exit(1)
 	}
 }
@@ -203,7 +182,7 @@ func setMemoryLimit(cgroupFile string) int64 {
 
 func run(ctx context.Context, o options) error {
 	logger := ctrl.Log.WithName("skill-marketplace")
-	logger.Info("starting", "version", Version, "commit", Commit, "repository", gitsync.Redacted(o.source.URL),
+	logger.Info("starting", "version", buildinfo.Version, "commit", buildinfo.Commit, "repository", gitsync.Redacted(o.source.URL),
 		"ref", o.source.Ref, "path", o.path, "maxRepositoryBytes", o.maxRepository, "maxRepositoryObjects", o.maxObjects,
 		"maxSkillFiles", o.limits.MaxFiles, "maxSkillBytes", o.limits.MaxBytes, "maxSkillMDBytes", o.limits.MaxSkillMD,
 		"maxSkillDepth", o.limits.MaxDepth, "maxDescriptionLength", o.limits.MaxDescription)
@@ -211,12 +190,12 @@ func run(ctx context.Context, o options) error {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return err
 	}
-	if err := api.AddToScheme(scheme); err != nil {
-		return err
-	}
 	publisher := &publish.Publisher{Root: o.storageRoot}
 	if err := publisher.Init(); err != nil {
 		return err
+	}
+	if err := gitsync.RemoveStalePacks(""); err != nil {
+		logger.Error(err, "remove the pack files of earlier fetches")
 	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -226,8 +205,10 @@ func run(ctx context.Context, o options) error {
 	if err != nil {
 		return err
 	}
+	// The worker reads only the two named ConfigMaps, directly, and never
+	// starts an informer: its permissions do not allow listing.
 	reader := mgr.GetAPIReader()
-	catalog := controller.NewCatalog(mgr.GetClient(), reader, o.catalogNamespace, api.SkillMarketplaceRepository{
+	catalog := worker.NewCatalog(mgr.GetClient(), reader, o.namespace, api.SkillMarketplaceRepository{
 		URL: gitsync.Redacted(o.source.URL), Ref: o.source.Ref, Path: o.path,
 	})
 	if err := catalog.Seed(ctx); err != nil {
@@ -239,27 +220,18 @@ func run(ctx context.Context, o options) error {
 			reserved = append(reserved, name)
 		}
 	}
-	store := &controller.Store{}
-	changed := make(chan event.GenericEvent, 1)
+	changed := make(chan struct{}, 1)
+	store := &worker.Store{}
+	teams := &worker.TeamsSource{Reader: reader, Namespace: o.namespace, Changed: changed}
 	syncer := newSyncer(o, reserved, store, catalog, changed)
-	teams := &controller.TeamReconciler{Client: mgr.GetClient(), Publisher: publisher, Store: store, Catalog: catalog, GCGrace: o.teamGCGrace}
-	claims := &controller.ClaimReconciler{
-		Client: mgr.GetClient(), Reader: reader, Storage: o.storage, ClaimName: o.claimName,
-		ClaimSize: resource.MustParse(o.claimSize), Publisher: publisher,
-	}
-	collector := &controller.VolumeCollector{Client: mgr.GetClient(), Reader: reader, Interval: 5 * time.Minute}
+	teamPublisher := &worker.TeamPublisher{Publisher: publisher, Store: store, Catalog: catalog, Teams: teams,
+		GCGrace: o.teamGCGrace, Changed: changed}
 	for _, runnable := range []interface {
 		Start(context.Context) error
-	}{syncer, catalog, collector} {
+	}{syncer, teams, teamPublisher, catalog} {
 		if err := mgr.Add(runnableFunc(runnable.Start)); err != nil {
 			return err
 		}
-	}
-	if err := teams.SetupWithManager(mgr, changed); err != nil {
-		return err
-	}
-	if err := claims.SetupWithManager(mgr); err != nil {
-		return err
 	}
 	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
 		return err
@@ -275,9 +247,8 @@ type runnableFunc func(context.Context) error
 func (f runnableFunc) Start(ctx context.Context) error { return f(ctx) }
 
 // newSyncer returns the repository synchronizer with the configured limits.
-func newSyncer(o options, reserved []string, store *controller.Store, catalog *controller.Catalog,
-	changed chan event.GenericEvent) *controller.Syncer {
-	return &controller.Syncer{
+func newSyncer(o options, reserved []string, store *worker.Store, catalog *worker.Catalog, changed chan<- struct{}) *worker.Syncer {
+	return &worker.Syncer{
 		Source: o.source, Path: o.path, Interval: o.syncInterval, Limits: o.limits, Reserved: reserved,
 		Fetch: gitsync.Limits{MaxBytes: o.maxRepository, MaxObjects: o.maxObjects},
 		Store: store, Catalog: catalog, Changed: changed,

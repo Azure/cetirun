@@ -31,45 +31,23 @@
 {{- fail "cetirun-portal.sandboxRuntimeDefaultsFromController requires an enabled Operator with sandboxSources.enabled and nativeExecution" }}
 {{- end }}
 {{- end }}
-{{- /* The Skill Marketplace publishes Team skills for the bundled Operator's
-       Agents. It renders into the release namespace, writes its catalog where
-       the Operator and Portal read it, and creates the skills claim that the
-       Operator mounts in each Agent namespace. The Operator chart refuses its
-       own skillMarketplace setting without native Sandbox execution. */}}
-{{- $marketplace := index .Values "cetirun-skill-marketplace" | default dict }}
-{{- if $marketplace.enabled }}
-{{- if not $operator.enabled }}
-{{- fail "cetirun-skill-marketplace requires the bundled Operator: it publishes the Team skills of the Operator's Agents; install the marketplace chart on its own for a separately installed Operator" }}
-{{- end }}
-{{- if not (($operator.skillMarketplace | default dict).enabled) }}
-{{- fail "cetirun-operator.skillMarketplace.enabled must be true when cetirun-skill-marketplace is enabled: the Operator mounts the Team releases that the marketplace publishes" }}
-{{- end }}
-{{- if ne .Release.Namespace $operator.namespace }}
-{{- fail (printf "the Skill Marketplace is installed in the release namespace %s, but cetirun-operator.namespace is %s: the marketplace runs in the operator namespace, so install the platform there" .Release.Namespace $operator.namespace) }}
-{{- end }}
-{{- $marketplaceCatalog := ($marketplace.catalog | default dict).namespace | default "" }}
-{{- if and $marketplaceCatalog (ne $marketplaceCatalog $operator.namespace) }}
-{{- fail (printf "cetirun-skill-marketplace.catalog.namespace is %s, but cetirun-operator.namespace is %s: the Operator and the Portal read the marketplace catalog in the operator namespace, so leave it empty or set it to that namespace" $marketplaceCatalog $operator.namespace) }}
-{{- end }}
-{{- if $portal.enabled }}
+{{- /* The Operator runs the Skill Marketplace: it lists the policy-bound Teams
+       for its worker, creates the Agents' skills claims, and its worker writes
+       the catalog in the operator namespace, where the Portal reads it. The
+       Operator chart checks the marketplace's own values. */}}
+{{- $operatorMarketplace := ($operator.skillMarketplace | default dict).enabled | default false }}
 {{- $portalMarketplace := $portal.skillMarketplace | default dict }}
+{{- if and $operator.enabled $operatorMarketplace $portal.enabled }}
 {{- if not $portalMarketplace.enabled }}
-{{- fail "cetirun-portal.skillMarketplace.enabled must be true when cetirun-skill-marketplace is enabled: the Portal offers and checks Team skills from the marketplace catalog" }}
+{{- fail "cetirun-portal.skillMarketplace.enabled must be true when cetirun-operator.skillMarketplace.enabled is: the Portal offers and checks Team skills from the marketplace catalog" }}
 {{- end }}
 {{- $portalCatalog := $portalMarketplace.catalogNamespace | default "cetirun-system" }}
 {{- if ne $portalCatalog $operator.namespace }}
 {{- fail (printf "cetirun-portal.skillMarketplace.catalogNamespace is %s, but cetirun-operator.namespace is %s: the marketplace writes its catalog in the operator namespace, where the Portal reads it, so set both to the same namespace" $portalCatalog $operator.namespace) }}
 {{- end }}
 {{- end }}
-{{- $sources := $operator.sandboxSources | default dict }}
-{{- $skillsClaim := "skills" }}
-{{- if hasKey $sources "skillsClaimName" }}
-{{- $skillsClaim = $sources.skillsClaimName | default "" }}
-{{- end }}
-{{- $agentClaim := ($marketplace.agentClaims | default dict).claimName | default "" }}
-{{- if ne $agentClaim $skillsClaim }}
-{{- fail (printf "cetirun-skill-marketplace.agentClaims.claimName is %q, but cetirun-operator.sandboxSources.skillsClaimName is %q: the marketplace creates the skills claim that the Operator mounts in each Agent namespace, so set both to the same name" $agentClaim $skillsClaim) }}
-{{- end }}
+{{- if and $portal.enabled $portalMarketplace.enabled (not (and $operator.enabled $operatorMarketplace)) }}
+{{- fail "cetirun-portal.skillMarketplace.enabled requires the bundled Operator with skillMarketplace.enabled: the Operator runs the Skill Marketplace that writes the catalog" }}
 {{- end }}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) }}
 {{- if or (not $portal.enabled) (not $operator.enabled) }}

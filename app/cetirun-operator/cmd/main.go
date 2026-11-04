@@ -37,6 +37,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	helmclient "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
@@ -235,8 +236,12 @@ func main() {
 	}
 	if skillMarketplaceConfig.Enabled {
 		setupLog.Info("Skill Marketplace enabled: skill entries without the npm: prefix name Skill Marketplace skills")
+		if sandboxSourcesConfig.SkillsClaimName == "" {
+			setupLog.Error(fmt.Errorf("empty sandboxSources.skillsClaimName"), "the Skill Marketplace needs the name of the skills claim")
+			os.Exit(1)
+		}
 	}
-	// The marketplace creates the skills claims of native Agents; prerequisites
+	// The operator creates the skills claims of native Agents; prerequisites
 	// wait for a missing claim instead of refusing the Agent.
 	sandboxSourcesConfig.SkillMarketplace = skillMarketplaceConfig.Enabled
 
@@ -412,6 +417,12 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamModelRouter")
 		os.Exit(1)
 	}
+	if skillMarketplaceConfig.Enabled {
+		if err := setupSkillMarketplace(mgr, skillMarketplaceConfig, sandboxSourcesConfig.SkillsClaimName, agentReconciler.OperatorNamespace); err != nil {
+			setupLog.Error(err, "unable to set up the Skill Marketplace")
+			os.Exit(1)
+		}
+	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -433,6 +444,23 @@ func getEnvOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// setupSkillMarketplace adds the operator's part of the Skill Marketplace: the
+// Teams document for the worker, the Agents' skills claims, and the removal of
+// the volumes whose claim is gone.
+func setupSkillMarketplace(mgr ctrl.Manager, config controller.SkillMarketplaceConfig, claimName, namespace string) error {
+	storage := skillmarketplace.StorageSource{
+		ResourceGroup: config.Storage.ResourceGroup, StorageAccount: config.Storage.StorageAccount,
+		ContainerName: config.Storage.ContainerName, StorageClassName: config.Storage.StorageClassName,
+	}
+	if err := (&skillmarketplace.TeamsReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Namespace: namespace}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+	if err := (&skillmarketplace.ClaimReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Storage: storage, ClaimName: claimName}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+	return mgr.Add(&skillmarketplace.VolumeCollector{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: 5 * time.Minute})
 }
 
 func memoryRegistry(repoURL string) string {

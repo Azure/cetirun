@@ -539,8 +539,8 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
     def test_default_plan_covers_all_releases_and_supported_components(self):
         deployment = self.deployment()
         plan = deployment.plan()
-        self.assertEqual(len(plan["artifacts"]["images"]), 14)
-        self.assertEqual(len(plan["artifacts"]["charts"]), 9)
+        self.assertEqual(len(plan["artifacts"]["images"]), 13)
+        self.assertEqual(len(plan["artifacts"]["charts"]), 8)
         self.assertEqual(set(plan["releases"]["istio"]["workloads"]), {"oauth2-proxy", "oauth2-proxy-sessions"})
         self.assertEqual(plan["releases"]["broker"]["namespace"], "cetirun-credentials")
         self.assertEqual(set(plan["releases"]["platform"]["workloads"]), {
@@ -1082,28 +1082,26 @@ class SkillMarketplaceTests(DeploymentFixture, unittest.TestCase):
     def test_block_sets_the_marketplace_operator_and_portal_values(self):
         _, values = self.configure(self.marketplace_config())
         platform = values["platform"]
-        marketplace = platform["cetirun-skill-marketplace"]
+        marketplace = platform["cetirun-operator"]["skillMarketplace"]
         self.assertIs(marketplace["enabled"], True)
-        self.assertEqual(marketplace["image"]["repository"], "registry.example.com/cetirun-skill-marketplace")
-        self.assertEqual(marketplace["image"]["tag"], "0.1.1")
         for section in ("repository", "storage"):
             self.assertEqual({key: marketplace[section][key] for key in MARKETPLACE[section]}, MARKETPLACE[section])
-        # The claim the marketplace creates is the one the Operator mounts.
-        self.assertEqual(marketplace["agentClaims"]["claimName"], "skills")
-        self.assertEqual(marketplace["catalog"]["namespace"], "cetirun-system")
-        self.assertIs(platform["cetirun-operator"]["skillMarketplace"]["enabled"], True)
+        # The worker runs the operator image; there is no other image or chart.
+        self.assertNotIn("image", marketplace)
+        self.assertNotIn("cetirun-skill-marketplace", platform)
         self.assertEqual(platform["cetirun-portal"]["skillMarketplace"], {"enabled": True, "catalogNamespace": "cetirun-system"})
 
-    def test_optional_fields_take_the_chart_defaults_and_the_claim_follows_the_operator(self):
+    def test_optional_fields_take_the_chart_defaults(self):
         config = self.marketplace_config(auth="none")
         for field in ("ref", "path", "syncInterval", "existingSecret"):
             config["skillMarketplace"]["repository"].pop(field)
         config["platform"]["values"]["cetirun-operator"]["sandboxSources"]["skillsClaimName"] = "team-skills"
         _, values = self.configure(config)
-        marketplace = values["platform"]["cetirun-skill-marketplace"]
+        marketplace = values["platform"]["cetirun-operator"]["skillMarketplace"]
         self.assertEqual({key: marketplace["repository"][key] for key in ("ref", "path", "syncInterval", "auth", "existingSecret")},
                          {"ref": "", "path": "", "syncInterval": "5m", "auth": "none", "existingSecret": ""})
-        self.assertEqual(marketplace["agentClaims"]["claimName"], "team-skills")
+        # The Operator names the Agents' claims after its own setting.
+        self.assertEqual(values["platform"]["cetirun-operator"]["sandboxSources"]["skillsClaimName"], "team-skills")
 
     def test_invalid_inputs_are_refused_before_tools(self):
         marker = "synthetic-credential-marker"
@@ -1140,8 +1138,8 @@ class SkillMarketplaceTests(DeploymentFixture, unittest.TestCase):
             ({f"{sources}.nativeExecution": False}, "needs native Sandbox execution"),
             ({f"{sources}.skillsCatalogConfigMapName": "published-skills-catalog"}, "replaces the published skills catalog"),
             ({f"{sources}.skillsClaimName": ""}, "skillsClaimName, a DNS label"),
-            ({"platform.values.cetirun-skill-marketplace.agentClaims.claimName": "other-skills"},
-             r"cetirun-skill-marketplace\.agentClaims\.claimName conflicts with the complete deployment inputs"),
+            ({"platform.values.cetirun-operator.skillMarketplace.storage.containerName": "other-container"},
+             r"cetirun-operator\.skillMarketplace\.storage\.containerName conflicts with the complete deployment inputs"),
             ({"platform.values.cetirun-portal.skillMarketplace.catalogNamespace": "other-namespace"},
              r"cetirun-portal\.skillMarketplace\.catalogNamespace conflicts with the complete deployment inputs"),
         ]
@@ -1173,7 +1171,7 @@ class SkillMarketplaceTests(DeploymentFixture, unittest.TestCase):
         config = self.marketplace_config()
         config["skillMarketplace"] = yaml.safe_load("\n".join(block))["skillMarketplace"]
         _, values = self.configure(config)
-        marketplace = values["platform"]["cetirun-skill-marketplace"]
+        marketplace = values["platform"]["cetirun-operator"]["skillMarketplace"]
         self.assertEqual(marketplace["repository"]["existingSecret"], "skills-repository")
         self.assertNotEqual(marketplace["storage"]["containerName"], config["sharedSkills"]["containerName"])
 
@@ -1191,17 +1189,24 @@ class SkillMarketplaceTests(DeploymentFixture, unittest.TestCase):
                         if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "cetirun-skill-marketplace")
         self.assertEqual(workload["metadata"]["namespace"], "cetirun-system")
         container = workload["spec"]["template"]["spec"]["containers"][0]
-        self.assertEqual(container["image"], "registry.example.com/cetirun-skill-marketplace:0.1.1")
+        # The worker is the second binary of the operator image.
+        self.assertEqual(container["image"], "registry.example.com/cetirun-operator:0.1.1")
+        self.assertEqual(container["command"], ["/skill-marketplace"])
         for argument in ("--repository-url=https://git.example.invalid/example/skills.git", "--repository-ref=main",
-                         "--repository-path=skills", "--auth=token", "--sync-interval=10m",
-                         "--storage-resource-group=example-marketplace-rg", "--storage-account=examplemarketplace",
-                         "--storage-container=marketplace", "--storage-class=example-marketplace",
-                         "--claim-name=skills", "--catalog-namespace=cetirun-system"):
+                         "--repository-path=skills", "--auth=token", "--sync-interval=10m", "--namespace=cetirun-system"):
             self.assertIn(argument, container["args"])
+        volume = next(doc for doc in deployment.documents["platform"] if doc["kind"] == "PersistentVolume")
+        self.assertEqual(volume["spec"]["csi"]["volumeAttributes"],
+                         {"resourceGroup": "example-marketplace-rg", "storageAccount": "examplemarketplace",
+                          "containerName": "marketplace", "protocol": "nfs"})
+        self.assertEqual(volume["spec"]["storageClassName"], "example-marketplace")
+        storage = {"resourceGroup": "example-marketplace-rg", "storageAccount": "examplemarketplace",
+                   "containerName": "marketplace", "storageClassName": "example-marketplace"}
         for documents, enabled in ((deployment.bootstrap_documents, False), (deployment.documents["platform"], True)):
             operator = self.environment(documents, "cetirun-operator")
             portal = self.environment(documents, "cetirun-portal")
-            self.assertEqual(operator.get("CETIRUN_SKILL_MARKETPLACE"), '{"enabled":true}' if enabled else None)
+            self.assertEqual(json.loads(operator["CETIRUN_SKILL_MARKETPLACE"]) if enabled else operator.get("CETIRUN_SKILL_MARKETPLACE"),
+                             {"enabled": True, "storage": storage} if enabled else None)
             self.assertEqual(portal.get("SKILL_MARKETPLACE_ENABLED"), "true" if enabled else None)
             self.assertEqual(portal.get("SKILL_MARKETPLACE_CATALOG_NAMESPACE"), "cetirun-system" if enabled else None)
         plan = deployment.plan()

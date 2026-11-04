@@ -19,9 +19,9 @@ import (
 
 // errSkillsClaimPending reports that the skills claim of a common-executor
 // built-in Agent does not exist yet while the Skill Marketplace is enabled.
-// The marketplace creates that claim shortly after the operator bootstraps
-// the Agent's protected namespace, so this is a short wait, not a
-// configuration error or an unavailable dependency.
+// The operator's Skill Marketplace claim controller creates that claim shortly
+// after the operator bootstraps the Agent's protected namespace, so this is a
+// short wait, not a configuration error or an unavailable dependency.
 var errSkillsClaimPending = errors.New("the Skill Marketplace has not provided the Team skills claim yet")
 
 const (

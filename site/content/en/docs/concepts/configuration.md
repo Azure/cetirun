@@ -159,4 +159,4 @@ Installation details: [npm initializer]({{< repo "app/cetirun-chart/configs/init
 [OpenClaw templates]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}}),
 [Hermes templates]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}),
 [shared PV]({{< repo "app/cetirun-chart/templates/shared-skills-pv.yaml" >}}),
-and [Skill Marketplace]({{< repo "app/cetirun-skill-marketplace/README.md" >}}).
+and [Skill Marketplace claims]({{< repo "app/cetirun-operator/internal/skillmarketplace/claims.go" >}}).

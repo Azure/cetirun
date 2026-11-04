@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package controller
+package worker
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -155,13 +154,13 @@ func (c *Catalog) RemoveTeam(uid string) {
 	}
 }
 
-// RemoveTeamNamed forgets every Team with this name. Callers use it when no
-// Team of the name exists any more, so its UID is no longer known.
-func (c *Catalog) RemoveTeamNamed(name string) {
+// RetainTeams forgets every Team whose UID is not in live: the Teams that
+// left the Teams document.
+func (c *Catalog) RetainTeams(live map[string]bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for uid, team := range c.teams {
-		if team.Name == name {
+	for uid := range c.teams {
+		if !live[uid] {
 			delete(c.teams, uid)
 			c.markDirty()
 		}
@@ -225,7 +224,8 @@ func fitDocument(document api.SkillMarketplaceCatalog) ([]byte, error) {
 	return raw, nil
 }
 
-// Write stores the catalog when it changed.
+// Write stores the catalog when it changed. The operator creates the catalog
+// ConfigMap; the worker can only update it.
 func (c *Catalog) Write(ctx context.Context) error {
 	raw, err := c.Document()
 	if err != nil {
@@ -237,27 +237,20 @@ func (c *Catalog) Write(ctx context.Context) error {
 	if unchanged {
 		return nil
 	}
-	desired := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: api.SkillMarketplaceCatalogConfigMap, Namespace: c.Namespace,
-			Labels: map[string]string{"app.kubernetes.io/managed-by": "cetirun-skill-marketplace"},
-		},
-		Data: map[string]string{api.SkillMarketplaceCatalogKey: string(raw)},
-	}
 	existing := &corev1.ConfigMap{}
-	err = c.Reader.Get(ctx, client.ObjectKeyFromObject(desired), existing)
-	switch {
-	case apierrors.IsNotFound(err):
-		err = c.Client.Create(ctx, desired)
-	case err == nil:
-		existing.Data, existing.BinaryData = desired.Data, nil
-		if existing.Labels == nil {
-			existing.Labels = map[string]string{}
-		}
-		existing.Labels["app.kubernetes.io/managed-by"] = "cetirun-skill-marketplace"
-		err = c.Client.Update(ctx, existing)
+	err = c.Reader.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: api.SkillMarketplaceCatalogConfigMap}, existing)
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("the operator has not created the catalog ConfigMap %s yet", api.SkillMarketplaceCatalogConfigMap)
 	}
 	if err != nil {
+		return err
+	}
+	existing.Data, existing.BinaryData = map[string]string{api.SkillMarketplaceCatalogKey: string(raw)}, nil
+	if existing.Labels == nil {
+		existing.Labels = map[string]string{}
+	}
+	existing.Labels["app.kubernetes.io/managed-by"] = "cetirun-skill-marketplace"
+	if err := c.Client.Update(ctx, existing); err != nil {
 		return err
 	}
 	c.mu.Lock()

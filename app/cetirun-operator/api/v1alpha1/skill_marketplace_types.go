@@ -11,8 +11,8 @@ import (
 	"strings"
 )
 
-// The Skill Marketplace contract shared by cetirun-skill-marketplace, the
-// operator, the Agent chart and the Portal.
+// The Skill Marketplace contract shared by the operator, its Skill Marketplace
+// worker (cmd/skill-marketplace), the Agent chart and the Portal.
 //
 // One Git repository of skills is synchronized per installation. Each
 // policy-bound Team selects skills by name in spec.skills: every entry
@@ -29,7 +29,8 @@ import (
 // .cetirun-selection equals the selection digest the operator rendered.
 const (
 	// SkillMarketplaceCatalogConfigMap is the marketplace's published state,
-	// in the operator namespace.
+	// in the operator namespace. The operator creates it; the worker writes
+	// its content.
 	SkillMarketplaceCatalogConfigMap = "cetirun-skill-marketplace"
 	// SkillMarketplaceCatalogKey holds a JSON SkillMarketplaceCatalog.
 	SkillMarketplaceCatalogKey = "catalog.json"
@@ -48,7 +49,8 @@ const (
 	SkillMarketplaceReleaseManifest = ".cetirun-release.json"
 
 	// SkillMarketplaceManagedLabel marks the PersistentVolumes and claims that
-	// the marketplace creates for Agents. Its value is "true".
+	// the operator creates for the marketplace skills of Agents. Its value is
+	// "true".
 	SkillMarketplaceManagedLabel = "skills.cetirun.microsoft.com/marketplace"
 	// SkillMarketplaceTeamUIDAnnotation records the Team whose subtree an
 	// Agent's skills claim serves.

@@ -18,10 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/cetirun-release.py"
 IMAGES = {"cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop", "cetirun-operator",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-terminal",
-          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context",
-          "cetirun-skill-marketplace"}
+          "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context"}
 CHARTS = {"cetirun", "cetirun-istio", "cetirun-operator", "cetirun-portal", "cetirun-platform",
-          "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-skill-marketplace"}
+          "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp"}
 DOCKER = r'''
 import json, os, pathlib, sys
 args = sys.argv[1:]
@@ -91,7 +90,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         result = subprocess.run(["make", "build-images"], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 14)
+        self.assertEqual(len(builds), 13)
         tags = {command[command.index("-t") + 1] if "-t" in command else command[command.index("--tag") + 1] for command in builds}
         self.assertEqual(tags, {self.image(name) for name in IMAGES})
         for command in builds:
@@ -138,11 +137,11 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertIn("--push", command)
             self.assertNotIn("--load", command)
 
-    def test_successful_publish_verifies_all_fourteen_images(self):
+    def test_successful_publish_verifies_all_thirteen_images(self):
         self.run_release("publish-images")
         commands = self.commands()
         builds = [command for command in commands if command[:2] == ["buildx", "build"]]
-        self.assertEqual(len(builds), 14)
+        self.assertEqual(len(builds), 13)
         last_build = max(index for index, command in enumerate(commands) if command[:2] == ["buildx", "build"])
         self.assertEqual(commands[last_build + 1], ["buildx", "imagetools", "inspect", self.image("cetirun-pi-agent")])
         for name in IMAGES:
@@ -150,7 +149,7 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertEqual(commands.count(inspect), 2, "expected one absence check and one post-push inspection")
 
     @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
-    def test_all_nine_charts_package_with_real_local_helm(self):
+    def test_all_eight_charts_package_with_real_local_helm(self):
         output = self.root / "packages"
         self.run_release("package-charts", "--package-dir", str(output))
         self.assertEqual({path.name for path in output.glob("*.tgz")}, {f"{name}-{self.env['VERSION']}.tgz" for name in CHARTS})

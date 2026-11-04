@@ -20,23 +20,38 @@ import (
 
 const skillMarketplaceOverrideMessage = "skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team"
 
+// skillMarketplaceStorage is a synthetic storage block of an enabled marketplace.
+const skillMarketplaceStorage = `"storage":{"resourceGroup":"example-rg","storageAccount":"exampleskills",` +
+	`"containerName":"marketplace","storageClassName":"azureblob-nfs-premium"}`
+
 func TestParseSkillMarketplaceConfig(t *testing.T) {
 	for _, test := range []struct {
 		name, raw string
 		enabled   bool
 	}{
 		{"empty", "", false},
-		{"enabled", `{"enabled":true}`, true},
+		{"enabled", `{"enabled":true,` + skillMarketplaceStorage + `}`, true},
 		{"disabled", `{"enabled": false}`, false},
+		{"disabled with storage", `{"enabled": false,` + skillMarketplaceStorage + `}`, false},
 		{"field omitted", `{}`, false},
-		{"surrounding whitespace", "\n {\"enabled\": true} \n", true},
+		{"surrounding whitespace", "\n {\"enabled\": true, " + skillMarketplaceStorage + "} \n", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			config, err := ParseSkillMarketplaceConfig(test.raw)
 			if err != nil || config.Enabled != test.enabled {
 				t.Fatalf("ParseSkillMarketplaceConfig(%q) = %+v, %v; want enabled=%t", test.raw, config, err, test.enabled)
 			}
+			if test.enabled && (config.Storage == nil || config.Storage.ContainerName != "marketplace") {
+				t.Fatalf("storage %+v", config.Storage)
+			}
 		})
+	}
+	storage := func(field, value string) string {
+		values := map[string]string{"resourceGroup": "example-rg", "storageAccount": "exampleskills",
+			"containerName": "marketplace", "storageClassName": "azureblob-nfs-premium"}
+		values[field] = value
+		return fmt.Sprintf(`{"enabled":true,"storage":{"resourceGroup":%q,"storageAccount":%q,"containerName":%q,"storageClassName":%q}}`,
+			values["resourceGroup"], values["storageAccount"], values["containerName"], values["storageClassName"])
 	}
 	for _, test := range []struct{ name, raw, problem string }{
 		{"unknown field", `{"enabled":true,"catalog":"other"}`, `unknown field "catalog"`},
@@ -51,6 +66,13 @@ func TestParseSkillMarketplaceConfig(t *testing.T) {
 		{"trailing data", `{"enabled":true}{}`, "invalid character"},
 		{"blank", " ", "unexpected end of JSON input"},
 		{"oversized", `{"enabled":true}` + strings.Repeat(" ", maxSkillMarketplaceConfigBytes), "longer than 1024 bytes"},
+		{"no storage", `{"enabled":true}`, "storage is required"},
+		{"unknown storage field", `{"enabled":true,"storage":{"path":"x"}}`, `unknown field "storage.path"`},
+		{"resource group", storage("resourceGroup", "rg."), "storage.resourceGroup"},
+		{"storage account", storage("storageAccount", "Example"), "storage.storageAccount"},
+		{"container", storage("containerName", "a--b"), "storage.containerName"},
+		{"short container", storage("containerName", "ab"), "storage.containerName"},
+		{"storage class", storage("storageClassName", "Not_A_Class"), "storage.storageClassName"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// A refused value never enables the marketplace, even when part of

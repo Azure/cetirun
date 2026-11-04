@@ -10,15 +10,27 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/gitsync"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/skills"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/gitsync"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/skills"
 )
 
 // required are the flags without a default, with synthetic values.
 var required = []string{
-	"--repository-url=https://git.example.invalid/example/skills.git",
-	"--storage-resource-group=example-rg", "--storage-account=exampleskills",
-	"--storage-container=marketplace", "--catalog-namespace=example-system",
+	"--repository-url=https://git.example.invalid/example/skills.git", "--namespace=example-system",
+}
+
+func TestParseNeedsTheOperatorNamespace(t *testing.T) {
+	for _, args := range [][]string{
+		{"--repository-url=https://git.example.invalid/example/skills.git"},
+		{"--repository-url=https://git.example.invalid/example/skills.git", "--namespace=Example_System"},
+	} {
+		if _, err := parse(args); err == nil || !strings.Contains(err.Error(), "--namespace must name the operator namespace") {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	if o, err := parse(required); err != nil || o.namespace != "example-system" {
+		t.Fatalf("namespace %q, %v", o.namespace, err)
+	}
 }
 
 func TestParseLimitsDefaultToTheBuiltInOnes(t *testing.T) {

@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPONENTS = ("operator", "portal", "agent-broker", "memory-context")
 MODULES = {"internal": "app/internal", **{name: f"app/cetirun-{name}" for name in COMPONENTS}}
 MODULES["cetirun-connections-mcp"] = "app/cetirun-connections-mcp"
-MODULES["cetirun-skill-marketplace"] = "app/cetirun-skill-marketplace"
 WORKFLOWS = (
     "memory-context-ci.yml",
     "operator-ci.yml",
@@ -29,15 +28,12 @@ WORKFLOWS = (
     "codeql.yml",
     "cetirun-validation.yml",
 )
-# (chart, values to set[, synthetic values file]). A chart whose required
-# inputs are structured renders with its own CI values file.
 CHARTS = (
     ("app/cetirun-connections-mcp/chart", (
         "tls.secretName=tools-tls", "broker.clientTLSSecretName=broker-client-tls",
         "broker.baseURL=https://broker.example.com",
         "istio.sidecarInjection=true", "istio.revision=asm-example",
     )),
-    ("app/cetirun-skill-marketplace/chart", (), "app/cetirun-skill-marketplace/chart/ci/render-values.yaml"),
     (
         "app/cetirun-chart",
         (
@@ -203,23 +199,20 @@ def portal_gate(root, mode):
 
 def chart_gate(root):
     # Validate the entire inventory before executing any tool.
-    for directory, _, *values_files in CHARTS:
+    for directory, _ in CHARTS:
         for filename in ("Chart.yaml", "values.yaml"):
             require_file(root / directory / filename)
-        for values_file in values_files:
-            require_file(root / values_file)
     platform_chart = root / "app/cetirun-platform"
     run(
         ["helm", "dependency", "build", "--skip-refresh", str(platform_chart)],
         root,
         env=offline_env(),
     )
-    for directory, values, *values_files in CHARTS:
+    for directory, values in CHARTS:
         chart = root / directory
         options = [arg for value in values for arg in (
             "--set" if value.rsplit("=", 1)[-1] in ("true", "false") else "--set-string", value
         )]
-        options += [arg for values_file in values_files for arg in ("--values", str(root / values_file))]
         run(["helm", "lint", "--strict", str(chart), *options], root, env=offline_env())
         run(
             ["helm", "template", "validation", str(chart), *options],

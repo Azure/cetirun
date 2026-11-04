@@ -20,7 +20,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/skills"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/skills"
 	"github.com/go-git/go-billy/v5/osfs"
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -288,9 +288,34 @@ type boundedStorage struct {
 	limits Limits
 }
 
+// packPrefix names the temporary pack files of fetches.
+const packPrefix = "cetirun-skills-pack-"
+
+// RemoveStalePacks removes the pack files that fetches of an earlier process
+// left in dir, for example after the container ran out of memory. Call it
+// before the first fetch.
+func RemoveStalePacks(dir string) error {
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), packPrefix) {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // PackfileWriter implements storer.PackfileWriter.
 func (s *boundedStorage) PackfileWriter() (io.WriteCloser, error) {
-	file, err := os.CreateTemp(s.limits.TempDir, "cetirun-skills-pack-")
+	file, err := os.CreateTemp(s.limits.TempDir, packPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create a temporary file for the pack: %w", err)
 	}

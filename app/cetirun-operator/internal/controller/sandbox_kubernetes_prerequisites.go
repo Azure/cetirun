@@ -49,8 +49,8 @@ type KubernetesSandboxPrerequisites struct {
 	WriterExclusion            SandboxWriterExclusionSource
 	NativeQuiescence           *KubernetesNativeQuiescence
 	// SkillMarketplace reports a missing skills claim of a common-executor
-	// built-in Agent as errSkillsClaimPending: the Skill Marketplace creates
-	// that claim after the operator bootstraps the Agent's namespace.
+	// built-in Agent as errSkillsClaimPending: the operator's Skill Marketplace
+	// claim controller creates that claim after the Agent's namespace exists.
 	SkillMarketplace bool
 }
 

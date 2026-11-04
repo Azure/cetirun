@@ -9,23 +9,31 @@ Agents of policy-bound Teams. An administrator selects the skills of each
 Team. The Agents of the Team receive these skills read-only in
 `$HOME/.aks/skills`.
 
-The Skill Marketplace is optional, and it is off by default. When you enable
-it, the `cetirun-skill-marketplace` service runs in the platform namespace.
-The service does these tasks:
+The Skill Marketplace is optional, and it is off by default. The operator runs
+it in two parts:
 
-1. At a fixed interval, it examines the configured branch or tag of the
-   repository. When it finds a new commit, it reads that commit into memory.
-   It does not check out files, run hooks, or follow submodules. It never runs
-   repository content.
-2. It validates each skill of the commit. It lists the valid skills and the
-   rejected directories in a catalog.
-3. For each Team with an Agent Policy, it publishes the selected skills. The
-   result is an immutable release in a Blob NFS container.
-4. It gives each Agent of these Teams a read-only claim of the container. When
-   the Agent starts, its HOME initializer copies the current Team release into
-   the skills view of the Agent.
+- The operator lists the Teams with an Agent Policy and their selected skills
+  for the worker. It also gives each Agent of these Teams a read-only claim of
+  a Blob NFS container. When the Agent starts, its HOME initializer copies the
+  current release of its Team. The copy is the skills view of the Agent.
+- The worker is the Deployment `cetirun-skill-marketplace` in the operator
+  namespace. It runs the operator image in a Pod of its own. It does these
+  tasks:
 
-Approval occurs in the repository. The service publishes the content of the
+  1. At a fixed interval, it examines the configured branch or tag of the
+     repository. When it finds a new commit, it reads that commit into memory.
+     It does not check out files, run hooks, or follow submodules. It never
+     runs repository content.
+  2. It validates each skill of the commit. It lists the valid skills and the
+     rejected directories in a catalog.
+  3. For each Team that the operator lists, it publishes the selected skills.
+     The result is an immutable release in the Blob NFS container.
+
+The worker runs apart from the operator because it reads repository content,
+holds the repository credentials, and writes to the container. Refer to
+[Security](#security).
+
+Approval occurs in the repository. The worker publishes the content of the
 configured branch or tag. Review the changes to that branch or tag as you
 review code that your Agents run.
 
@@ -54,7 +62,7 @@ description: Extract text and tables from PDF files.
 Read the PDF with the scripts in this directory.
 ```
 
-The service rejects a skill directory in these cases. The catalog gives the
+The worker rejects a skill directory in these cases. The catalog gives the
 reason for each rejected directory.
 
 - `SKILL.md` does not start with frontmatter between `---` lines, or the
@@ -79,21 +87,21 @@ reason for each rejected directory.
   [skill limits](#skill-limits) allow. By default, a skill can have at most
   500 files and 5 MiB in total. Its `SKILL.md` can have at most 256 KiB. No
   file can be more than 8 levels below the skill directory.
-- Another skill directory has the same name. In this case, the service rejects
+- Another skill directory has the same name. In this case, the worker rejects
   all the directories with that name.
 
 These rules also apply:
 
-- Put each skill in its own directory. The service rejects a `SKILL.md`
+- Put each skill in its own directory. The worker rejects a `SKILL.md`
   directly in `repository.path`.
 - A `SKILL.md` in a subdirectory of a skill does not make a second skill. The
   subdirectory is part of the outer skill, and the catalog lists it as
   rejected.
-- The service ignores a `SKILL.md` in a directory whose name starts with `.`,
+- The worker ignores a `SKILL.md` in a directory whose name starts with `.`,
   for example `.github`. The same applies to the directories below it.
-- The service refuses a commit that exceeds the repository limits: by default,
+- The worker refuses a commit that exceeds the repository limits: by default,
   256 MiB and 100,000 objects. Files outside `repository.path` count too,
-  because the service reads the whole commit.
+  because the worker reads the whole commit.
 
 The version of a skill is the first 12 hexadecimal characters of the Git tree
 hash of its directory. When a file of the skill changes, its version changes.
@@ -101,7 +109,7 @@ Some pages of the Portal show only the first seven characters.
 
 ### Skill limits
 
-The limits are values of the `cetirun-skill-marketplace` chart. The name rule,
+The limits are values of the operator chart, below `skillMarketplace.limits`. The name rule,
 at most 64 characters, and the default description limit, 1,024 characters,
 come from the [Agent Skills specification](https://agentskills.io/specification).
 The other limits are defaults that CetiRun chose to keep each skill small.
@@ -116,12 +124,12 @@ The other limits are defaults that CetiRun chose to keep each skill small.
 | `limits.maxSkillDepth` | `8` | Directory levels of a file below the skill directory |
 | `limits.maxDescriptionLength` | `1024` | Characters of the `description` |
 
-The service holds the commit in memory. It checks the repository limits before
+The worker holds the commit in memory. It checks the repository limits before
 it decodes a commit. It stops the transfer when the pack from the Git server
 exceeds `maxRepositorySize`. Then it reads the object headers of the pack
 before it decodes any object. A commit that exceeds a limit does not reach
 memory. Until the repository has a commit within the limits, the catalog keeps
-the last commit that the service read.
+the last commit that the worker read.
 
 You cannot change the 64-character name limit, because Team and Policy
 validation also use it. Before you increase a size limit, do these checks:
@@ -129,22 +137,22 @@ validation also use it. Before you increase a size limit, do these checks:
 - When an Agent starts, it copies all the skills of its Team into the scratch
   space of its Sandbox. Make sure that the copy fits in the scratch size of
   the Sandboxes of the Team.
-- Keep the memory limit of the service, `resources.limits.memory`, at least
+- Keep the memory limit of the worker, `skillMarketplace.worker.resources.limits.memory`, at least
   twice `maxRepositorySize` plus 256 MiB. A commit needs memory for its
   objects and once more for its largest object. The default memory limit,
-  `1Gi`, fits the default repository limits. The service sets the soft memory
+  `1Gi`, fits the default repository limits. The worker sets the soft memory
   limit of its Go runtime to 90% of the memory limit of its container.
-- The service writes the pack of a check to an `emptyDir` volume of its Pod.
+- The worker writes the pack of a check to an `emptyDir` volume of its Pod.
   It removes the pack after the check. The pack is at most
   `maxRepositorySize`.
 
 With `make deploy`, set the values in the environment file below
-`platform.values.cetirun-skill-marketplace.limits`. The service uses changed
-limits when it starts again, and the Helm upgrade starts it again.
+`platform.values.cetirun-operator.skillMarketplace.limits`. The worker uses
+changed limits when it starts again, and the Helm upgrade starts it again.
 
 ## Team releases
 
-For each Team with an Agent Policy, the service writes the selected skills to
+For each Team with an Agent Policy, the worker writes the selected skills to
 the subtree of the Team in the container:
 
 ```text
@@ -157,20 +165,20 @@ teams/<team-uid>/releases/<id>/.cetirun-release.json
 - A release contains only the skills of the selection of the Team. Entries
   with the `npm:` prefix are not part of it.
 - The release ID depends only on the selection and on the versions of its
-  skills. When neither changes, the service does not publish a new release.
-- The service writes a complete release before it replaces `CURRENT`. After
+  skills. When neither changes, the worker does not publish a new release.
+- The worker writes a complete release before it replaces `CURRENT`. After
   that, it does not change the release.
-- The service keeps the current release and the two newest other releases. It
+- The worker keeps the current release and the two newest other releases. It
   removes older releases after ten minutes.
-- When you delete a Team, the service removes its releases. It waits until
+- When you delete a Team, the worker removes its releases. It waits until
   the last publication of the Team is older than one hour (`teamGCGrace`).
 
-The service publishes again when the selection of a Team changes, and when it
+The worker publishes again when the selection of a Team changes, and when it
 reads a new commit.
 
 ## How Agents receive the skills
 
-The service gives each Agent of a policy-bound Team a claim in the namespace
+The operator gives each Agent of a policy-bound Team a claim in the namespace
 of the Agent. The claim has the name of the operator's
 `sandboxSources.skillsClaimName`, which is `skills` by default. Its
 PersistentVolume refers to the container read-only.
@@ -185,7 +193,7 @@ or that mounts more than the subtree of the Team.
 
 The view is an `emptyDir` volume of the Pod. The scratch size of the Sandbox
 of the Agent limits its size. After the start, the Agent reads only its copy.
-A release that the service publishes later reaches the Agent at its next
+A release that the worker publishes later reaches the Agent at its next
 start.
 
 OpenClaw loads `$HOME/.aks/skills` as an extra skill directory, and Hermes
@@ -242,7 +250,7 @@ If two skills have the same name, the runtime selects one of them. Refer to
 
 ### Storage
 
-The service needs a Blob container of its own. The container must be in a
+The worker needs a Blob container of its own. The container must be in a
 storage account with NFS 3.0, such as the Premium BlockBlobStorage account
 that the storage helper creates. Do not use the container of the shared skills
 (`sharedSkills`). `make deploy` refuses it. The two containers serve different
@@ -270,13 +278,13 @@ be linked to the virtual network of the cluster. The nodes then resolve the
 account to its private address. The helper does not create the zone or the
 link. Refer to [NFS security properties](../storage/#nfs-security-properties).
 
-Use an empty container. At each start, the service refuses a container that
-has entries that it did not write. Only the service writes to the container.
+Use an empty container. At each start, the worker refuses a container that
+has entries that it did not write. Only the worker writes to the container.
 Do not copy files into it.
 
 ### The repository and its credentials
 
-`repository.auth` selects how the service reads the repository:
+`repository.auth` selects how the worker reads the repository:
 
 | `auth` | URL | Keys of the Secret |
 | --- | --- | --- |
@@ -285,13 +293,13 @@ Do not copy files into it.
 | `ssh` | `ssh://` or `user@host:path` | `ssh-privatekey`: a key without a passphrase. `known_hosts`: the host keys of the Git host |
 
 Never put credentials in the URL. `make deploy` and the chart refuse a URL
-with credentials. The log of the service and the catalog show the URL without
+with credentials. The log of the worker and the catalog show the URL without
 user information.
 
-With `token`, the service sends the token as the password of HTTP basic
+With `token`, the worker sends the token as the password of HTTP basic
 authentication, with the user name `x-access-token`. For a Git host that
 needs another user name, set `repository.tokenUsername` under
-`platform.values.cetirun-skill-marketplace`. With `ssh`, the service refuses a
+`platform.values.cetirun-operator.skillMarketplace`. With `ssh`, the worker refuses a
 host whose key is not in `known_hosts`. For an `ssh://` URL without a user, the
 user is `git`.
 
@@ -303,7 +311,7 @@ Use a token that can read only the skills repository:
   token can read every repository of the organization that its owner can read.
   Use an account that can read only the skills repository.
 
-The service does not get Microsoft Entra tokens for itself. An organization
+The worker does not get Microsoft Entra tokens for itself. An organization
 that does not allow personal access tokens cannot use `token`.
 
 When the token expires or is revoked, each check fails with
@@ -333,8 +341,8 @@ Compare the fingerprints that `ssh-keygen -lf` shows with the fingerprints
 that your Git host publishes. Then delete the local copy of the token or the
 key.
 
-The service reads the credentials at each check of the repository. When you
-replace the Secret, the service uses the new credentials after the kubelet
+The worker reads the credentials at each check of the repository. When you
+replace the Secret, the worker uses the new credentials after the kubelet
 updates the mounted files. A restart is not necessary.
 
 ## Enable the Skill Marketplace
@@ -363,11 +371,11 @@ skillMarketplace:
 | Field | Necessary | Meaning |
 | --- | --- | --- |
 | `repository.url` | Yes | The repository, in the form that `auth` needs. It cannot contain whitespace, credentials, a query, or a fragment |
-| `repository.ref` | No | A branch, a tag, or a full ref such as `refs/heads/main`. For a name without `refs/`, the service uses the branch with that name, or else the tag. Empty uses the branch that the remote HEAD names |
+| `repository.ref` | No | A branch, a tag, or a full ref such as `refs/heads/main`. For a name without `refs/`, the worker uses the branch with that name, or else the tag. Empty uses the branch that the remote HEAD names |
 | `repository.path` | No | The directory of the skills, relative to the repository root, without `..`. Empty is the root |
 | `repository.auth` | Yes | `none`, `token`, or `ssh` |
 | `repository.existingSecret` | With `token` or `ssh` | The Secret in `platform.namespace`. Not allowed with `none` |
-| `repository.syncInterval` | No | How often the service examines the remote, as a duration such as `5m` (the default) or `1h`. At least `30s` |
+| `repository.syncInterval` | No | How often the worker examines the remote, as a duration such as `5m` (the default) or `1h`. At least `30s` |
 | `storage.resourceGroup` | Yes | The resource group of the storage account |
 | `storage.storageAccount` | Yes | The storage account: 3 to 24 lowercase letters and digits |
 | `storage.containerName` | Yes | The container of the releases. It cannot be the `sharedSkills` container |
@@ -379,18 +387,18 @@ skillMarketplace:
   `sandboxSources.skillsCatalogConfigMapName` is set.
 - Before it writes, it makes sure that the Secret has the keys that `auth`
   needs, and that the StorageClass exists.
-- It sets the switches `cetirun-skill-marketplace.enabled`,
-  `cetirun-operator.skillMarketplace.enabled`, and
-  `cetirun-portal.skillMarketplace.enabled`. It also sets the repository and
-  storage values of the block. It takes the image from the `release` section,
-  the claim name from `sandboxSources.skillsClaimName`, and the catalog
-  namespace from `platform.namespace`. Do not set these values under
-  `platform.values`. A different value stops the run. A switch without the
-  block also stops it.
-- It accepts only the fields of the table. Set the other values of the chart
-  under `platform.values.cetirun-skill-marketplace`, for example
-  `repository.tokenUsername` or `resources`. Refer to the
-  [Skill Marketplace chart](../../reference/helm/#skill-marketplace-chart).
+- It sets the switches `cetirun-operator.skillMarketplace.enabled` and
+  `cetirun-portal.skillMarketplace.enabled`, and the repository and storage
+  values of the block below `cetirun-operator.skillMarketplace`. It sets the
+  catalog namespace of the Portal to `platform.namespace`. Do not set these
+  values under `platform.values`. A different value stops the run. A switch
+  without the block also stops it.
+- The worker runs the operator image of the `release` section. The claims of
+  the Agents have the name of the operator's `sandboxSources.skillsClaimName`.
+- It accepts only the fields of the table. Set the other values of the
+  marketplace under `platform.values.cetirun-operator.skillMarketplace`, for
+  example `repository.tokenUsername` or `worker.resources`. Refer to
+  [Skill Marketplace values](../../reference/helm/#skill-marketplace-values).
 
 Run the offline plan first. Then run the deployment:
 
@@ -399,7 +407,7 @@ make deploy-plan DEPLOY_CONFIG=/absolute/path/environment.yaml
 make deploy DEPLOY_CONFIG=/absolute/path/environment.yaml
 ```
 
-The run waits until the service is ready. A ready service has not necessarily
+The run waits until the worker is ready. A ready worker has not necessarily
 read the repository. Make sure that the catalog shows a commit and no error:
 
 ```bash
@@ -433,7 +441,7 @@ the skills in the Policy first. Then select them on the Team.
 The Portal refuses these changes:
 
 - A Team skill that the Policy does not allow.
-- A new Team skill that is not in the catalog. If the service rejected the
+- A new Team skill that is not in the catalog. If the worker rejected the
   copy in the repository, the message gives the reason.
 - A Team entry without the `npm:` prefix that is not a skill name.
 - A Policy save that removes a marketplace skill that a Team of this Policy
@@ -449,18 +457,18 @@ this entry only when the Skill Marketplace is enabled. The page has these
 sections:
 
 - **Repository**: the URL, the ref, the path, and the synchronized commit. It
-  also shows when the service last synchronized and examined the repository.
+  also shows when the worker last synchronized and examined the repository.
 - **Skills**: each valid skill, with its directory, description, and version.
-  It also shows the time when the service first saw that version, the number
+  It also shows the time when the worker first saw that version, the number
   of files, and the size.
 - **Invalid skills**: each rejected directory, with the reason.
 - **Team publications**: each policy-bound Team, with its release, the time of
   publication, and the number of skills. **Up to date** means that the release
-  serves the current selection of the Team. **Pending** means that the service
+  serves the current selection of the Team. **Pending** means that the worker
   has not published it yet. **Details** lists retained and missing skills and
   a publication error.
 
-**Refresh** reads the catalog again. It does not make the service read the
+**Refresh** reads the catalog again. It does not make the worker read the
 repository.
 
 On the page of an Agent, its owner sees the marketplace skills of the Team
@@ -518,7 +526,7 @@ spec:
 - Each entry without the `npm:` prefix names a marketplace skill. The order of
   the entries does not matter. A Team has at most 100 entries, npm packages
   included.
-- The checks of the Portal do not apply to `kubectl`. The service lists a
+- The checks of the Portal do not apply to `kubectl`. The worker lists a
   selected name that the catalog does not have as
   [missing](#retained-and-missing-skills).
 - Keep each Team skill in the allowed skills of the Policy. If a Team selects
@@ -532,8 +540,8 @@ spec:
 
 | Change | Effect |
 | --- | --- |
-| The skills of a Team, in the Portal or with `kubectl` | The service publishes a release for the new selection when it sees the change. The change restarts the running Sandbox Agents of the Team one time, as each Team change does. Each new Pod waits for the release of the new selection, and then copies it |
-| A new commit on the configured branch or tag | At its next check, the service publishes a new release for each Team whose selected skills changed. Running Agents keep their copy. Each Agent receives the new versions at its next start |
+| The skills of a Team, in the Portal or with `kubectl` | The worker publishes a release for the new selection when it sees the change. The change restarts the running Sandbox Agents of the Team one time, as each Team change does. Each new Pod waits for the release of the new selection, and then copies it |
+| A new commit on the configured branch or tag | At its next check, the worker publishes a new release for each Team whose selected skills changed. Running Agents keep their copy. Each Agent receives the new versions at its next start |
 | The allowed skills of a Policy | No restart. The allowed skills only limit what Teams and Agents can select |
 
 To give a running Agent the newest versions now, restart it. On the page of
@@ -554,9 +562,9 @@ ID, so the Portal shows no warning for it. To read the ID with `kubectl`:
 kubectl get pods -n cetirun-<agent> -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.initContainerStatuses[?(@.name=="init-home-data")].state.terminated.message}{end}'
 ```
 
-The service examines the repository when it starts, and then at each
+The worker examines the repository when it starts, and then at each
 `syncInterval`. After a failed check, it tries again after one minute, or
-after `syncInterval` when that is shorter. To make the service examine the
+after `syncInterval` when that is shorter. To make the worker examine the
 repository before the next interval, restart it:
 
 ```bash
@@ -566,7 +574,7 @@ kubectl rollout restart deployment/cetirun-skill-marketplace -n cetirun-system
 Until its first successful check after a start, the catalog can show no
 skills. During that time, the Portal cannot add skills to Teams.
 
-If the service cannot publish the release of a new selection, the restarted
+If the worker cannot publish the release of a new selection, the restarted
 Agents do not complete their start. Refer to
 [A Team release is pending](#a-team-release-is-pending).
 
@@ -579,14 +587,14 @@ release of the Team has. The catalog lists the skill under `retained` for the
 Team, and the Portal shows **Retained**. The skill stays retained until it is
 valid again, or until you remove it from the Team.
 
-The service copies a retained skill from the current release of the Team. If
+The worker copies a retained skill from the current release of the Team. If
 it cannot read that release or the skill in it, it does not publish a release
 without the skill. It keeps the current release, it reports the error for the
 Team, and it tries again. Refer to
 [A Team release is pending](#a-team-release-is-pending).
 
 A selected skill is missing when it is not valid in the repository and not in
-the current release of the Team. The service
+the current release of the Team. The worker
 publishes the release without it. The catalog lists the skill under `missing`,
 and the Portal shows **Missing**. The Portal does not add such a skill to a
 Team, but `kubectl` can.
@@ -634,18 +642,20 @@ skill, remove it from the Team. Then you can remove it from the Policy.
 
 ## Security
 
-- The service runs one replica as a non-root user, with a read-only root
+- The worker runs one replica as a non-root user, with a read-only root
   filesystem and without an Istio sidecar. It uses only the Kubernetes API,
   the Git host, and its NFS mount.
-- Its ClusterRole can read Teams, Agents, and namespaces. It can create
-  PersistentVolumeClaims in all namespaces, and it can create and delete
-  PersistentVolumes. The service creates claims only in the protected
-  namespaces of Agents, and volumes only for the configured container. It
-  never updates them. In the operator namespace, it can create ConfigMaps, and
-  it can update only the ConfigMap `cetirun-skill-marketplace`.
-- When the claim of an Agent is gone, the service deletes the PersistentVolume
-  of that claim. A claim is gone, for example, after the deletion of its Agent.
-  The data in the container stays.
+- The worker has no cluster-wide permissions. In the operator namespace, its
+  Role can read the ConfigMap `cetirun-skill-marketplace-teams`, which the
+  operator writes. It can also read and update the catalog ConfigMap
+  `cetirun-skill-marketplace`, which the operator creates. It cannot read
+  Teams, Agents, Secrets, claims, or volumes.
+- The operator creates the claims and their PersistentVolumes, with its own
+  permissions. It creates claims only in the protected namespaces of Agents,
+  and volumes only for the configured container. It never updates them.
+- When the claim of an Agent is gone, the operator deletes the
+  PersistentVolume of that claim. A claim is gone, for example, after the
+  deletion of its Agent. The data in the container stays.
 - Agents can only read the skills, and only the HOME initializer mounts the
   claim. Skills can contain scripts that the Agents run. Review the repository
   as you review code.
@@ -669,18 +679,18 @@ jq '.teams[] | {name, release, selectionDigest, releaseSelectionDigest, retained
 | Field | Meaning |
 | --- | --- |
 | `repository` | The URL without user information, the ref, and the path |
-| `commit`, `syncedAt` | The last commit that the service read, and when |
-| `checkedAt` | When the service last examined the remote |
-| `error` | The error of the last check. The catalog keeps the skills of the last commit that the service read |
-| `skills` | The valid skills, with `name`, `description`, `version`, `path`, `updatedAt` (when the service first saw this version), `files`, and `bytes` |
+| `commit`, `syncedAt` | The last commit that the worker read, and when |
+| `checkedAt` | When the worker last examined the remote |
+| `error` | The error of the last check. The catalog keeps the skills of the last commit that the worker read |
+| `skills` | The valid skills, with `name`, `description`, `version`, `path`, `updatedAt` (when the worker first saw this version), `files`, and `bytes` |
 | `invalid` | The rejected directories, with `path`, `name`, and `reason` |
 | `teams` | Each policy-bound Team, with `release`, `skills`, `retained`, `missing`, `error`, and two selection digests. The release serves the current selection of the Team when `releaseSelectionDigest` equals `selectionDigest` |
-| `truncated` | `true` when the service shortened the document to fit the ConfigMap. It shortens long descriptions to 160 characters, and then the list of rejected directories |
+| `truncated` | `true` when the worker shortened the document to fit the ConfigMap. It shortens long descriptions to 160 characters, and then the list of rejected directories |
 
 ### The repository is not synchronized
 
 When a check fails, `error` in the catalog gives the reason. The log of the
-service has the same message:
+worker has the same message:
 
 ```bash
 kubectl logs -n cetirun-system deployment/cetirun-skill-marketplace --tail=50
@@ -701,17 +711,17 @@ kubectl logs -n cetirun-system deployment/cetirun-skill-marketplace --tail=50
 The Portal shows **Pending** for the Team, or `releaseSelectionDigest` is not
 equal to `selectionDigest`. Examine the `error` of the Team in the catalog:
 
-- `the skills repository has not been synchronized yet`: the service has not
+- `the skills repository has not been synchronized yet`: the worker has not
   read the repository since it started. It keeps the current release of the
   Team, and it tries again every ten seconds. Correct the error of the check.
 - `publication waits for the current release, which could not be read`: the
-  Team selects a [retained skill](#retained-and-missing-skills). The service
+  Team selects a [retained skill](#retained-and-missing-skills). The worker
   cannot read the current release of the Team or the skill in it. It keeps the
-  current release, and it tries again. Examine the mount of the service and
+  current release, and it tries again. Examine the mount of the worker and
   the container.
-- `publication failed`: the service cannot write to the container. Examine the
+- `publication failed`: the worker cannot write to the container. Examine the
   private endpoint, the DNS zone, and the mount events of the Pod of the
-  service.
+  worker.
 
 ### An Agent waits for its skills claim
 
@@ -728,19 +738,20 @@ kubectl get agents.cetirun.microsoft.com alice-example -o jsonpath='{.status.con
 `Waiting for the Skill Marketplace to provide the Team skills claim`. `Ready`
 shows the same reason, unless a running workload already made the Agent ready.
 
-The service creates the claim when the Team of the Agent has an Agent Policy.
-The namespace of the Agent must also be protected and belong to the Agent. The
-bootstrap of the operator creates such namespaces. If the wait does not end,
-examine the service, its log, and the claim:
+The operator creates the claim when the Team of the Agent has an Agent
+Policy. The namespace of the Agent must also be protected and belong to the
+Agent. The bootstrap of the operator creates such namespaces. If the wait does
+not end, examine the operator log and the claim:
 
 ```bash
-kubectl rollout status deployment/cetirun-skill-marketplace -n cetirun-system
+kubectl logs -n cetirun-system deployment/cetirun-operator --tail=200 | grep -i "skills claim"
 kubectl get pvc skills -n cetirun-alice-example
 kubectl get pv -l skills.cetirun.microsoft.com/marketplace=true
 ```
 
-If the namespace already has a claim with this name that the service did not
-create, the service does not change that claim. Its log says so.
+The namespace can already have a claim with this name that the operator did
+not create for the Skill Marketplace. The operator does not change that claim,
+and its log says so.
 
 ### The initializer of an Agent fails
 
@@ -759,19 +770,19 @@ Add `--previous` to read the attempt before the current one.
 | --- | --- |
 | `SkillsReleasePending` | For three minutes, `CURRENT` did not name a release of the current selection of the Team. Refer to [A Team release is pending](#a-team-release-is-pending) |
 | `SkillsReleaseUnstable` | The current release of the Team changed five times while the initializer copied it. This can occur when the repository and the Team change often. The Pod runs the initializer again |
-| `UnsupportedSkillFile` | The release contains a symbolic link or a special file. The service writes only directories and regular files, so another writer changed the container. Remove the write access of that writer |
+| `UnsupportedSkillFile` | The release contains a symbolic link or a special file. The worker writes only directories and regular files, so another writer changed the container. Remove the write access of that writer |
 | `SharedSkillConflictsWithCanonicalContext` | A skill of the release has the name `cetirun-memory`. Keep this name in `reservedNames` |
 | `SharedSkillsUnavailable` | The initializer cannot read the subtree of the Team. Examine the claim, its PersistentVolume, and the mount events of the Pod |
 
-### The service does not start
+### The worker does not start
 
-Read the log of the service. These are frequent causes:
+Read the log of the worker. These are frequent causes:
 
 - `which the marketplace did not write; use an empty container`: the
-  container has an entry that the service did not write. Use an empty
-  container. The service writes the marker file `.cetirun-marketplace` at the
+  container has an entry that the worker did not write. Use an empty
+  container. The worker writes the marker file `.cetirun-marketplace` at the
   root of the container. A write of the marker can stop before it completes.
-  The service then removes the temporary file of that write at its next start.
+  The worker then removes the temporary file of that write at its next start.
 - `invalid configuration`: a value is not valid, for example a `syncInterval`
   shorter than `30s`. Correct the value.
 - The Pod stays in `ContainerCreating`: the node cannot mount the container.
@@ -782,9 +793,11 @@ Read the log of the service. These are frequent causes:
 kubectl describe pods -n cetirun-system -l app.kubernetes.io/name=cetirun-skill-marketplace
 ```
 
-Sources: [Skill Marketplace README]({{< repo "app/cetirun-skill-marketplace/README.md" >}}),
-[skill validation]({{< repo "app/cetirun-skill-marketplace/internal/skills/skills.go" >}}),
-[Team releases]({{< repo "app/cetirun-skill-marketplace/internal/publish/publish.go" >}}),
+Sources: [worker]({{< repo "app/cetirun-operator/cmd/skill-marketplace/main.go" >}}),
+[skill validation]({{< repo "app/cetirun-operator/internal/skillmarketplace/skills/skills.go" >}}),
+[Team releases]({{< repo "app/cetirun-operator/internal/skillmarketplace/publish/publish.go" >}}),
+[Teams document]({{< repo "app/cetirun-operator/internal/skillmarketplace/teams.go" >}}),
+[Agent claims]({{< repo "app/cetirun-operator/internal/skillmarketplace/claims.go" >}}),
 [HOME initializer]({{< repo "app/cetirun-chart/configs/init-home-common.sh" >}}),
 [claim wait]({{< repo "app/cetirun-operator/internal/controller/skill_marketplace_claim.go" >}}),
 [deployment helper]({{< repo "scripts/cetirun_platform_deploy.py" >}}),

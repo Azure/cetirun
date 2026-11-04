@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package controller
+package skillmarketplace
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/publish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -21,7 +20,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -33,6 +31,10 @@ const (
 	namespacePrefix     = "cetirun-"
 )
 
+// claimSize is the nominal size of each Agent's claim and volume. Blob NFS
+// does not enforce it.
+var claimSize = resource.MustParse("1Gi")
+
 // StorageSource is the Blob NFS container that holds the Team releases.
 type StorageSource struct {
 	ResourceGroup    string
@@ -41,25 +43,24 @@ type StorageSource struct {
 	StorageClassName string
 }
 
-// ClaimReconciler gives each policy-bound Agent namespace a read-only claim
-// of the marketplace container. The Agent mounts only its Team's subtree.
+// ClaimReconciler gives each Agent of a policy-bound Team a read-only claim of
+// the release storage, in the Agent's protected namespace. The Agent mounts
+// only its Team's subtree. The prerequisites of the Agent wait for the claim.
 type ClaimReconciler struct {
-	Client    client.Client
-	Reader    client.Reader
-	Storage   StorageSource
+	// Client reads Agents and Teams from the cache and creates the objects.
+	Client client.Client
+	// Reader reads namespaces, claims and volumes, which the operator does
+	// not cache.
+	Reader  client.Reader
+	Storage StorageSource
+	// ClaimName is the operator's sandboxSources.skillsClaimName.
 	ClaimName string
-	ClaimSize resource.Quantity
-	Publisher *publish.Publisher
 }
 
 // VolumeName is the cluster-scoped PersistentVolume of one Agent.
 func VolumeName(agentUID types.UID) string {
 	sum := sha256.Sum256([]byte(agentUID))
 	return "skills-mp-" + hex.EncodeToString(sum[:])[:20]
-}
-
-func controllerOptions() controller.Options {
-	return controller.Options{MaxConcurrentReconciles: 1}
 }
 
 // Reconcile ensures the claim of one Agent.
@@ -80,8 +81,10 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 		return reconcile.Result{}, nil
 	}
 	namespace := &corev1.Namespace{}
-	if err := r.Client.Get(ctx, client.ObjectKey{Name: namespacePrefix + agent.Name}, namespace); err != nil {
+	if err := r.Reader.Get(ctx, client.ObjectKey{Name: namespacePrefix + agent.Name}, namespace); err != nil {
 		if apierrors.IsNotFound(err) {
+			// The operator bootstraps the namespace; its next Agent update or
+			// this retry creates the claim.
 			return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return reconcile.Result{}, err
@@ -89,9 +92,6 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	if !namespace.DeletionTimestamp.IsZero() || namespace.Labels[protectedLabel] != "true" ||
 		namespace.Annotations[agentUIDAnnotation] != string(agent.UID) {
 		return reconcile.Result{}, nil
-	}
-	if err := r.Publisher.EnsureTeam(string(team.UID)); err != nil {
-		return reconcile.Result{}, fmt.Errorf("prepare the Team directory: %w", err)
 	}
 	claim := &corev1.PersistentVolumeClaim{}
 	err := r.Reader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: r.ClaimName}, claim)
@@ -105,7 +105,7 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	case err != nil:
 		return reconcile.Result{}, err
 	case claim.Labels[api.SkillMarketplaceManagedLabel] != "true":
-		logger.Info("the namespace already has a skills claim that the marketplace did not create; leaving it", "namespace", namespace.Name)
+		logger.Info("the namespace already has a skills claim that the Skill Marketplace did not create; leaving it", "namespace", namespace.Name)
 		return reconcile.Result{}, nil
 	}
 	if claim.Annotations[api.SkillMarketplaceTeamUIDAnnotation] != string(team.UID) {
@@ -124,8 +124,8 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	return reconcile.Result{}, err
 }
 
-func (r *ClaimReconciler) labels() map[string]string {
-	return map[string]string{api.SkillMarketplaceManagedLabel: "true", "app.kubernetes.io/managed-by": "cetirun-skill-marketplace"}
+func labels() map[string]string {
+	return map[string]string{api.SkillMarketplaceManagedLabel: "true", "app.kubernetes.io/managed-by": managedBy}
 }
 
 func (r *ClaimReconciler) annotations(agent *api.Agent, team *api.Team) map[string]string {
@@ -138,14 +138,14 @@ func (r *ClaimReconciler) annotations(agent *api.Agent, team *api.Team) map[stri
 func (r *ClaimReconciler) desiredClaim(agent *api.Agent, team *api.Team, namespace string) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: r.ClaimName, Namespace: namespace, Labels: r.labels(), Annotations: r.annotations(agent, team),
+			Name: r.ClaimName, Namespace: namespace, Labels: labels(), Annotations: r.annotations(agent, team),
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID,
 			}},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
-			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: r.ClaimSize}},
+			Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: claimSize}},
 			StorageClassName: ptr.To(r.Storage.StorageClassName),
 			VolumeMode:       ptr.To(corev1.PersistentVolumeFilesystem),
 			VolumeName:       VolumeName(agent.UID),
@@ -159,9 +159,9 @@ func (r *ClaimReconciler) desiredVolume(agent *api.Agent, claim *corev1.Persiste
 		annotations[key] = value
 	}
 	return &corev1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: VolumeName(agent.UID), Labels: r.labels(), Annotations: annotations},
+		ObjectMeta: metav1.ObjectMeta{Name: VolumeName(agent.UID), Labels: labels(), Annotations: annotations},
 		Spec: corev1.PersistentVolumeSpec{
-			Capacity:                      corev1.ResourceList{corev1.ResourceStorage: r.ClaimSize},
+			Capacity:                      corev1.ResourceList{corev1.ResourceStorage: claimSize},
 			AccessModes:                   []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimRetain,
 			StorageClassName:              r.Storage.StorageClassName,
@@ -181,23 +181,17 @@ func (r *ClaimReconciler) desiredVolume(agent *api.Agent, claim *corev1.Persiste
 	}
 }
 
-// SetupWithManager watches Agents and their namespaces.
+// SetupWithManager reconciles each Agent. A new Agent's namespace appears
+// while the operator prepares the Agent, which updates the Agent's status.
 func (r *ClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	byAnnotation := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, object client.Object) []reconcile.Request {
-		if name := object.GetAnnotations()[agentNameAnnotation]; name != "" {
-			return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: name}}}
-		}
-		return nil
-	})
 	return ctrl.NewControllerManagedBy(mgr).
-		Named("agent-skills-claims").
+		Named("skill-marketplace-claims").
 		For(&api.Agent{}).
-		Watches(&corev1.Namespace{}, byAnnotation).
-		WithOptions(controllerOptions()).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Complete(r)
 }
 
-// VolumeCollector deletes marketplace volumes whose claim is gone.
+// VolumeCollector deletes the marketplace volumes whose claim is gone.
 type VolumeCollector struct {
 	Client   client.Client
 	Reader   client.Reader

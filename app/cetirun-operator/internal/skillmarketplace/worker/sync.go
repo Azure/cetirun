@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package controller
+package worker
 
 import (
 	"context"
@@ -10,10 +10,9 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/gitsync"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/publish"
-	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/skills"
-	"sigs.k8s.io/controller-runtime/pkg/event"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/gitsync"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/publish"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/skills"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -52,11 +51,11 @@ type Syncer struct {
 	Fetch   gitsync.Limits
 	Store   *Store
 	Catalog *Catalog
-	// Changed receives one event after each new commit, to republish Teams.
-	Changed chan event.GenericEvent
+	// Changed receives one signal after each new commit, to publish again.
+	Changed chan<- struct{}
 }
 
-// NeedLeaderElection keeps one synchronizer.
+// NeedLeaderElection reports that the synchronizer runs once per worker.
 func (s *Syncer) NeedLeaderElection() bool { return true }
 
 // Start runs the synchronization loop.
@@ -118,12 +117,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	s.Store.set(snapshot.Commit, valid)
 	s.Catalog.SetSync(snapshot.Commit, entries, problems)
 	log.FromContext(ctx).Info("synchronized the skills repository", "commit", snapshot.Commit, "skills", len(valid), "rejected", len(problems))
-	if s.Changed != nil {
-		select {
-		case s.Changed <- event.GenericEvent{}:
-		default:
-		}
-	}
+	signal(s.Changed)
 	return nil
 }
 

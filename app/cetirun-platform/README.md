@@ -662,23 +662,26 @@ them.
 
 ## Skill Marketplace
 
-The optional `cetirun-skill-marketplace` subchart syncs one Git repository of
-skills. It publishes the skills that each policy-bound Team selects to a Blob
-NFS container. It also creates the read-only skills claim in the namespace of
-each native Sandbox Agent. It is off by default. To enable it, also enable
-`cetirun-operator.skillMarketplace.enabled` and
-`cetirun-portal.skillMarketplace.enabled`. The Operator chart accepts its
-setting only with `sandboxSources.enabled` and `nativeExecution`, and without
+The Operator runs the optional Skill Marketplace. A worker syncs one Git
+repository of skills, and publishes the skills that each policy-bound Team
+selects to a Blob NFS container. The Operator gives each native Sandbox Agent
+of these Teams a read-only claim of the container. The marketplace is off by
+default. To enable it, set `cetirun-operator.skillMarketplace` and enable
+`cetirun-portal.skillMarketplace.enabled`. The Operator chart accepts the
+marketplace only with `sandboxSources.enabled` and `nativeExecution`, with a
+`sandboxSources.skillsClaimName`, and without
 `sandboxSources.skillsCatalogConfigMapName`.
 
-The platform chart refuses the marketplace in these cases:
+The worker is the Deployment `cetirun-skill-marketplace` in the operator
+namespace. It runs the operator image, and it can only read the Teams document
+of the Operator and update the catalog. The platform chart refuses these
+settings:
 
-- The bundled Operator is disabled, its setting is off, or the setting of the
-  bundled Portal is off.
-- The release namespace, the marketplace's `catalog.namespace`, or the Portal's
-  `skillMarketplace.catalogNamespace` is not `cetirun-operator.namespace`.
-- `agentClaims.claimName` is not the Operator's
-  `sandboxSources.skillsClaimName`.
+- The marketplace of the bundled Operator is on, and the setting of the bundled
+  Portal is off.
+- The Portal setting is on, and the bundled Operator or its marketplace is off.
+- The Portal's `skillMarketplace.catalogNamespace` is not
+  `cetirun-operator.namespace`.
 
 `make deploy` sets these values from the optional `skillMarketplace` block of
 the environment file:
@@ -707,21 +710,20 @@ sure that these keys and the StorageClass exist.
 
 The command refuses the block if the native Sandbox sources are off. It also
 refuses it if the Operator uses a published skills catalog, or if the storage
-is the `sharedSkills` container. It takes the image from `release`, the claim name
-from the Operator's `sandboxSources.skillsClaimName`, and the catalog namespace
-from `platform.namespace`. Set other chart values, for example
-`repository.tokenUsername`, under `platform.values.cetirun-skill-marketplace`.
+is the `sharedSkills` container. Set other values of the marketplace, for
+example `repository.tokenUsername` or `limits`, under
+`platform.values.cetirun-operator.skillMarketplace`.
 
 On a new installation, the bootstrap upgrade does not install the marketplace.
-The command waits for its rollout after the final platform upgrade. A ready
-marketplace has not necessarily synchronized the repository. The catalog
-ConfigMap `cetirun-skill-marketplace` in the operator namespace shows the
-synchronized commit and any sync error.
+The command waits for the rollout of the worker after the final platform
+upgrade. A ready worker has not necessarily synchronized the repository. The
+catalog ConfigMap `cetirun-skill-marketplace` in the operator namespace shows
+the synchronized commit and any sync error.
 
 NFS 3.0 authorizes clients only by network. Use a storage account that only
 private endpoints can reach, and turn off its public network access. Refer to
-[Storage](../../site/content/en/docs/operations/storage.md) and the
-[Skill Marketplace README](../cetirun-skill-marketplace/README.md).
+[Storage](../../site/content/en/docs/operations/storage.md) and
+[Skill Marketplace](../../site/content/en/docs/operations/skill-marketplace.md).
 
 ## AI Gateway
 

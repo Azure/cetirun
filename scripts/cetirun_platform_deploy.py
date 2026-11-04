@@ -99,11 +99,11 @@ def step(command):
         elif not Path(word).is_absolute():
             shown.append(word)
     return " ".join(shown)
-# The optional Skill Marketplace. Only the top-level skillMarketplace block of
-# the environment file turns its switches on, and it turns on all three.
-SKILL_MARKETPLACE = "cetirun-skill-marketplace"
-SKILL_MARKETPLACE_SWITCHES = (f"{SKILL_MARKETPLACE}.enabled", "cetirun-operator.skillMarketplace.enabled",
-                              "cetirun-portal.skillMarketplace.enabled")
+# The optional Skill Marketplace, which the Operator runs. Only the top-level
+# skillMarketplace block of the environment file turns its switches on, and it
+# turns on both.
+SKILL_MARKETPLACE = "cetirun-operator.skillMarketplace"
+SKILL_MARKETPLACE_SWITCHES = (f"{SKILL_MARKETPLACE}.enabled", "cetirun-portal.skillMarketplace.enabled")
 SKILL_MARKETPLACE_FIELDS = {
     "skillMarketplace": ("repository", "storage"),
     "skillMarketplace.repository": ("url", "ref", "path", "auth", "existingSecret", "syncInterval"),
@@ -236,7 +236,7 @@ def skill_marketplace(config, platform):
     if keys and not (isinstance(secret, str) and re.fullmatch(DNS_SUBDOMAIN, secret)):
         raise ValueError(f"skillMarketplace.repository.auth {auth} needs existingSecret: the name of a Secret in platform.namespace "
                          f"with the {'key' if len(keys) == 1 else 'keys'} {' and '.join(keys)}")
-    defaults = yaml_file(ROOT / f"app/{SKILL_MARKETPLACE}/chart/values.yaml")["repository"]
+    defaults = yaml_file(OPERATOR_VALUES)["skillMarketplace"]["repository"]
     optional = {}
     for field, default in (("ref", ""), ("path", ""), ("syncInterval", defaults["syncInterval"])):
         optional[field] = default if repository.get(field) is None else repository[field]
@@ -263,7 +263,7 @@ def skill_marketplace(config, platform):
         raise ValueError("skillMarketplace.storage must name a container other than the sharedSkills container: "
                          "the marketplace writes Team releases into its container")
 
-    # The Operator mounts the marketplace's claims only in native Sandbox execution,
+    # The Operator creates the skills claims only in native Sandbox execution,
     # and its chart refuses the marketplace next to a published skills catalog.
     sources = mapping(platform["cetirun-operator"].get("sandboxSources"), "cetirun-operator.sandboxSources")
     if sources.get("enabled") is not True or sources.get("nativeExecution") is not True:
@@ -275,17 +275,14 @@ def skill_marketplace(config, platform):
     claim = sources.get("skillsClaimName")
     if not isinstance(claim, str) or not re.fullmatch(DNS_LABEL, claim):
         raise ValueError("skillMarketplace needs cetirun-operator.sandboxSources.skillsClaimName, a DNS label: "
-                         "the marketplace creates that claim in each Agent namespace")
+                         "the Operator creates that claim in each Agent namespace")
 
-    namespace, registry = config["platform"]["namespace"], config["release"]["registry"]
-    values = {"enabled": True, "image.repository": f"{registry}/{SKILL_MARKETPLACE}", "image.tag": config["release"]["version"],
-              "repository.url": url, "repository.auth": auth, "repository.existingSecret": secret if keys else "",
+    namespace = config["platform"]["namespace"]
+    values = {"enabled": True, "repository.url": url, "repository.auth": auth, "repository.existingSecret": secret if keys else "",
               **{f"repository.{field}": value for field, value in optional.items()},
-              **{f"storage.{field}": storage[field] for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]},
-              "agentClaims.claimName": claim, "catalog.namespace": namespace}
+              **{f"storage.{field}": storage[field] for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]}}
     return {**{f"{SKILL_MARKETPLACE}.{field}": value for field, value in values.items()},
-            "cetirun-operator.skillMarketplace.enabled": True, "cetirun-portal.skillMarketplace.enabled": True,
-            "cetirun-portal.skillMarketplace.catalogNamespace": namespace}
+            "cetirun-portal.skillMarketplace.enabled": True, "cetirun-portal.skillMarketplace.catalogNamespace": namespace}
 
 
 def resource_name(value, *, label=False, limit=253):
@@ -559,7 +556,7 @@ def configuration(path):
     values = {name: merge(yaml_file(ROOT / chart / "values.yaml"), config[name].get("values", {}))
               for name, chart in CHARTS.items()}
     platform = values["platform"]
-    for component in ("operator", "portal", "ai-gateway", "connections-mcp", "skill-marketplace"):
+    for component in ("operator", "portal", "ai-gateway", "connections-mcp"):
         key = f"cetirun-{component}"
         platform[key] = merge(yaml_file(ROOT / f"app/{key}/chart/values.yaml"), platform.get(key, {}))
     pns, bns, ins = (config[name]["namespace"] for name in ("platform", "broker", "istio"))
@@ -967,7 +964,6 @@ class Deployment:
         # off; the Operator chart refuses its setting without them.
         bootstrap["cetirun-operator"]["skillMarketplace"]["enabled"] = False
         bootstrap["cetirun-portal"]["skillMarketplace"]["enabled"] = False
-        bootstrap[SKILL_MARKETPLACE]["enabled"] = False
         self.files["bootstrap"] = self.scratch / "bootstrap-values.json"
         self.files["bootstrap"].write_text(json.dumps(bootstrap))
         raw = self.run(["helm", "template", self.config["platform"]["release"], str(self.charts["platform"]),
@@ -1022,7 +1018,7 @@ class Deployment:
                     refs.add(("Secret", c["platform"]["namespace"], ai["providerCredentials"]["existingSecret"], value.removeprefix("os.environ/")))
         storage_classes = [operator["customRuntime"]["storageClass"], c["sharedSkills"]["storageClassName"],
                            ai["postgresql"]["bundled"]["persistence"]["storageClass"]]
-        marketplace = p.get(SKILL_MARKETPLACE, {})
+        marketplace = operator["skillMarketplace"]
         if marketplace.get("enabled"):
             # The repository credentials stay in an existing Secret of the platform namespace.
             repository = marketplace["repository"]
@@ -1507,7 +1503,7 @@ class Deployment:
     def plan(self):
         references = {(kind, namespace, name) for kind, namespace, name, _ in self.references()}
         not_qualified = ["native Sandbox execution and physical fencing", "end-to-end CetiAdmin operations", "live model/OAuth calls"]
-        if self.values["platform"].get(SKILL_MARKETPLACE, {}).get("enabled"):
+        if self.values["platform"]["cetirun-operator"]["skillMarketplace"].get("enabled"):
             # Its readiness does not wait for a repository sync.
             not_qualified.append("Skill Marketplace repository access and Team publication")
         return {"target": {key: self.config["target"][key] for key in ("context", "cluster", "server", "clusterUID")},

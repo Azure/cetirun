@@ -14,7 +14,6 @@ necessary for this step.
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
 | `app/cetirun-agent-broker/` | Owner Connections, Agent bindings, encrypted OAuth state, and internal credential issuance |
 | `app/cetirun-connections-mcp/` | Workload-authenticated MCP service that runs JSON REST requests to fixed services |
-| `app/cetirun-skill-marketplace/` | Go service and chart that sync one Git repository of skills and publish each policy-bound Team's selection |
 | `app/internal/` | Shared Go implementation packages for Registry credentials and terminal policy |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
@@ -634,24 +633,33 @@ configuration. This step is outside the offline validation loop.
 
 ### Skill Marketplace
 
-`app/cetirun-skill-marketplace/` syncs one Git repository of skills and
-publishes the selection of each policy-bound Team for its native Sandbox
-Agents. The platform chart installs it as an optional subchart, and
-`make deploy` enables it from the `skillMarketplace` block of the environment
-file. Run its offline checks with these commands:
+The operator runs the Skill Marketplace, which publishes approved skills from
+one Git repository to the native Sandbox Agents of policy-bound Teams. The
+code has two parts:
+
+- `app/cetirun-operator/internal/skillmarketplace/` runs in the operator. It
+  lists the policy-bound Teams for the worker, and it creates the read-only
+  skills claim of each of their Agents.
+- `app/cetirun-operator/cmd/skill-marketplace/` is the worker. It syncs the
+  repository, publishes the selection of each Team to Blob NFS storage, and
+  writes the catalog. It is a second binary of the operator image. The
+  operator chart runs it in a separate Deployment. The worker reads
+  repository content, holds the repository credentials, and writes to the
+  storage.
+
+`make deploy` enables the Skill Marketplace from the `skillMarketplace` block
+of the environment file. Run its offline checks with these commands:
 
 ```bash
-go -C app/cetirun-skill-marketplace test ./... -count=1
-go -C app/cetirun-skill-marketplace vet ./...
-make -C app/cetirun-skill-marketplace build chart-lint
+go -C app/cetirun-operator test ./internal/skillmarketplace/... ./cmd/skill-marketplace/ -count=1
 python3 -B -m unittest scripts.tests.test_skill_marketplace_platform \
   scripts.tests.test_full_deployment.SkillMarketplaceTests -v
 ```
 
 These checks do not contact a Git remote, mount Blob NFS storage, or call a
-cluster. Refer to the
-[Skill Marketplace README](app/cetirun-skill-marketplace/README.md) for the
-repository, storage, and security requirements.
+cluster. Refer to
+[Skill Marketplace](site/content/en/docs/operations/skill-marketplace.md) for
+the repository, storage, and security requirements.
 
 ### Sandbox Entra projection core
 
@@ -783,11 +791,11 @@ set must have an explicit `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true`.
 
 [`scripts/release-artifacts.json`](scripts/release-artifacts.json) is the
 common inventory for root Make targets and the MCR release pipeline. It
-contains 14 images and 9 charts. These include the Broker, VS Code, Memory, and
-Skill Marketplace assets. `make artifact-check` examines source paths and chart
-coverage. The driver calls the image builders that already exist, stamps the
-explicit version/source SHA, and builds the base image before its consumers. It
-never logs in or installs tools.
+contains 13 images and 8 charts. These include the Broker, VS Code, and Memory
+assets. `make artifact-check` examines source paths and chart coverage. The
+driver calls the image builders that already exist, stamps the explicit
+version/source SHA, and builds the base image before its consumers. It never
+logs in or installs tools.
 
 After registry authentication and publication authorization:
 

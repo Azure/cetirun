@@ -79,7 +79,6 @@ class GoToolchainTests(unittest.TestCase):
                 "app/cetirun-agent-broker/Dockerfile",
                 "app/cetirun-operator/Dockerfile",
                 "app/cetirun-portal/Dockerfile",
-                "app/cetirun-skill-marketplace/Dockerfile",
             }.issubset(builders)
         )
         self.assertEqual(len(digests), 1)

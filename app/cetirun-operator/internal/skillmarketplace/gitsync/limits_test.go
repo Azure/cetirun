@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -133,6 +134,32 @@ func TestCheckPackRefusesAnObjectLargerThanItsHeader(t *testing.T) {
 	pack := craftPack(t, packObject{kind: plumbing.BlobObject, declared: 4, data: []byte("more than four bytes")})
 	if err := checkPack(bytes.NewReader(pack), testLimits); err == nil {
 		t.Fatal("an object that inflates past its declared size must be refused")
+	}
+}
+
+func TestRemoveStalePacks(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{packPrefix + "123", packPrefix + "456", "other-file"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, packPrefix+"dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveStalePacks(dir); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, entry := range entries {
+		left = append(left, entry.Name())
+	}
+	if strings.Join(left, ",") != packPrefix+"dir,other-file" {
+		t.Fatalf("left %v", left)
 	}
 }
 

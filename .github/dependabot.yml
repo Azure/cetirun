@@ -20,7 +20,6 @@ updates:
       - "/app/cetirun-chart"
       - "/app/cetirun-operator"
       - "/app/cetirun-portal"
-      - "/app/cetirun-skill-marketplace"
     schedule:
       interval: "weekly"
     groups:
@@ -37,7 +36,6 @@ updates:
       - "/app/cetirun-agent-broker"
       - "/app/cetirun-operator"
       - "/app/cetirun-portal"
-      - "/app/cetirun-skill-marketplace"
     schedule:
       interval: "weekly"
     allow:

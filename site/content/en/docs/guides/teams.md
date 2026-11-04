@@ -145,9 +145,9 @@ Policy**. Enter npm packages separately, in **npm skill packages, one per
 line**, each with the `npm:` prefix.
 
 Saving changes to Team skills restarts the Team's running Sandbox Agents one
-time. Their new Pods copy the Team's published skills into the read-only
-`$HOME/.agents/skills` view. Changes in the skills repository reach an
-instance at its next start.
+time. Their new Pods copy the Team's published skills. The Agents read this
+copy read-only at `$HOME/.aks/skills`. Changes in the skills repository reach
+an instance at its next start.
 
 In `spec.skills`, each entry without the `npm:` prefix is then the name of a
 marketplace skill. These rules apply:
