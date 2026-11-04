@@ -150,6 +150,27 @@ def gateway_general_settings(values):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class NativeGatewayChartTests(unittest.TestCase):
+    def test_only_shared_openclaw_skills_enable_native_polling(self):
+        for agent_type in ("openclaw", "hermes"):
+            for shared in (False, True):
+                for memory in (False, True):
+                    with self.subTest(agent_type=agent_type, shared=shared, memory=memory):
+                        values = native_values()
+                        values.pop("sandboxWorkload")
+                        values["sidecarScope"]["enabled"] = True
+                        values["podAnnotations"]["sidecar.istio.io/inject"] = "true"
+                        values["agentType"] = agent_type
+                        values["skills"]["shared"] = shared
+                        values["memoryContext"] = {"enabled": memory}
+                        pod = object_of_kind(render(RUNTIME_CHART, values), "StatefulSet")["spec"]["template"]["spec"]
+                        env = {item["name"]: item.get("value") for item in pod["containers"][0]["env"]}
+                        if agent_type == "openclaw" and shared:
+                            self.assertEqual(env.get("CHOKIDAR_USEPOLLING"), "true")
+                            self.assertEqual(env.get("CHOKIDAR_INTERVAL"), "5000")
+                        else:
+                            self.assertNotIn("CHOKIDAR_USEPOLLING", env)
+                            self.assertNotIn("CHOKIDAR_INTERVAL", env)
+
     def test_native_openclaw_avoids_ephemeral_node_compile_cache(self):
         for native in (True, False):
             with self.subTest(native=native):

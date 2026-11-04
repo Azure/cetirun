@@ -53,6 +53,9 @@ The name `cetirun-memory` is reserved for the installed platform skill. Native
 loaders ignore other skills with that name, including conflicts introduced by
 live shared updates. Other skills keep their native discovery rules. The
 compatibility patch checks the pinned native source hashes during image builds.
+With shared Skills enabled, OpenClaw polls its watched files every five seconds.
+This adds file metadata reads so remote storage updates reach native discovery
+even when the filesystem does not deliver change events.
 
 Memory no longer mounts a read-only directory over the whole `$HOME/.agents`.
 Personal files and Skills there remain visible and writable. The platform still
