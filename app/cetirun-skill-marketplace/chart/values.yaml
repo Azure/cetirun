@@ -56,6 +56,26 @@ reservedNames:
 # -- How long the releases of a deleted Team stay after the Team's last publication.
 teamGCGrace: 1h
 
+# -- Limits of the repository and of each skill. The service does not publish a
+# skill that exceeds a limit, and the Skills page shows the reason. Agents copy
+# their Team's skills into the scratch space of their Sandbox when they start,
+# so raise the size limits only together with that space.
+limits:
+  # -- Largest repository commit that the service reads into memory. Keep it
+  # well below resources.limits.memory.
+  maxRepositorySize: 256Mi
+  # -- Most files in one skill.
+  maxSkillFiles: 500
+  # -- Largest total size of the files of one skill.
+  maxSkillSize: 5Mi
+  # -- Largest SKILL.md file. At most maxSkillSize.
+  maxSkillMDSize: 256Ki
+  # -- Deepest directory level of a file in a skill.
+  maxSkillDepth: 8
+  # -- Longest description in the SKILL.md frontmatter, in characters. The
+  # Agent Skills specification allows 1024.
+  maxDescriptionLength: 1024
+
 serviceAccount:
   create: true
   name: cetirun-skill-marketplace

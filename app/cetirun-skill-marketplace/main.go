@@ -48,12 +48,21 @@ type options struct {
 	catalogNamespace  string
 	reserved          string
 	teamGCGrace       time.Duration
-	maxRepositoryMiB  int64
+	maxRepositorySize string
+	maxRepository     int64
+	maxSkillSize      string
+	maxSkillMDSize    string
+	limits            skills.Limits
 	healthAddress     string
 	metricsAddress    string
 	authMode          string
 	credentialsDir    string
 	allowInsecureHTTP bool
+}
+
+// size is the default flag text of a size limit, such as 5Mi.
+func size(bytes int64) string {
+	return resource.NewQuantity(bytes, resource.BinarySI).String()
 }
 
 func parse(args []string) (options, error) {
@@ -77,7 +86,13 @@ func parse(args []string) (options, error) {
 	fs.StringVar(&o.catalogNamespace, "catalog-namespace", "", "namespace of the catalog ConfigMap (the operator namespace)")
 	fs.StringVar(&o.reserved, "reserved-names", strings.Join(skills.DefaultReserved, ","), "comma-separated reserved skill names")
 	fs.DurationVar(&o.teamGCGrace, "team-gc-grace", time.Hour, "how long a deleted Team's releases stay after its last publication")
-	fs.Int64Var(&o.maxRepositoryMiB, "max-repository-mib", 256, "largest repository commit to load, in MiB")
+	defaults := skills.DefaultLimits
+	fs.StringVar(&o.maxRepositorySize, "max-repository-size", "256Mi", "largest repository commit to load")
+	fs.IntVar(&o.limits.MaxFiles, "max-skill-files", defaults.MaxFiles, "most files in one skill")
+	fs.StringVar(&o.maxSkillSize, "max-skill-size", size(defaults.MaxBytes), "largest total size of the files of one skill")
+	fs.StringVar(&o.maxSkillMDSize, "max-skill-md-size", size(defaults.MaxSkillMD), "largest SKILL.md")
+	fs.IntVar(&o.limits.MaxDepth, "max-skill-depth", defaults.MaxDepth, "deepest directory level of a file in a skill")
+	fs.IntVar(&o.limits.MaxDescription, "max-description-length", defaults.MaxDescription, "longest SKILL.md description, in characters")
 	fs.StringVar(&o.healthAddress, "health-address", ":8081", "health probe address")
 	fs.StringVar(&o.metricsAddress, "metrics-address", ":8080", "metrics address; 0 disables")
 	if err := fs.Parse(args); err != nil {
@@ -110,6 +125,34 @@ func parse(args []string) (options, error) {
 	if _, err := resource.ParseQuantity(o.claimSize); err != nil {
 		return o, fmt.Errorf("invalid --claim-size: %w", err)
 	}
+	for _, limit := range []struct {
+		flag, value string
+		bytes       *int64
+	}{
+		{"--max-repository-size", o.maxRepositorySize, &o.maxRepository},
+		{"--max-skill-size", o.maxSkillSize, &o.limits.MaxBytes},
+		{"--max-skill-md-size", o.maxSkillMDSize, &o.limits.MaxSkillMD},
+	} {
+		quantity, err := resource.ParseQuantity(limit.value)
+		if err != nil || quantity.Sign() <= 0 {
+			return o, fmt.Errorf("%s must be a positive size, such as 5Mi", limit.flag)
+		}
+		*limit.bytes = quantity.Value()
+	}
+	for _, limit := range []struct {
+		flag  string
+		value int
+	}{
+		{"--max-skill-files", o.limits.MaxFiles}, {"--max-skill-depth", o.limits.MaxDepth},
+		{"--max-description-length", o.limits.MaxDescription},
+	} {
+		if limit.value < 1 {
+			return o, fmt.Errorf("%s must be at least 1", limit.flag)
+		}
+	}
+	if o.limits.MaxSkillMD > o.limits.MaxBytes {
+		return o, fmt.Errorf("--max-skill-md-size cannot be larger than --max-skill-size")
+	}
 	return o, nil
 }
 
@@ -130,7 +173,9 @@ func main() {
 func run(ctx context.Context, o options) error {
 	logger := ctrl.Log.WithName("skill-marketplace")
 	logger.Info("starting", "version", Version, "commit", Commit, "repository", gitsync.Redacted(o.source.URL),
-		"ref", o.source.Ref, "path", o.path)
+		"ref", o.source.Ref, "path", o.path, "maxRepositoryBytes", o.maxRepository, "maxSkillFiles", o.limits.MaxFiles,
+		"maxSkillBytes", o.limits.MaxBytes, "maxSkillMDBytes", o.limits.MaxSkillMD, "maxSkillDepth", o.limits.MaxDepth,
+		"maxDescriptionLength", o.limits.MaxDescription)
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return err
@@ -165,10 +210,7 @@ func run(ctx context.Context, o options) error {
 	}
 	store := &controller.Store{}
 	changed := make(chan event.GenericEvent, 1)
-	syncer := &controller.Syncer{
-		Source: o.source, Path: o.path, Interval: o.syncInterval, Limits: skills.DefaultLimits, Reserved: reserved,
-		MaxBytes: o.maxRepositoryMiB << 20, Store: store, Catalog: catalog, Changed: changed,
-	}
+	syncer := newSyncer(o, reserved, store, catalog, changed)
 	teams := &controller.TeamReconciler{Client: mgr.GetClient(), Publisher: publisher, Store: store, Catalog: catalog, GCGrace: o.teamGCGrace}
 	claims := &controller.ClaimReconciler{
 		Client: mgr.GetClient(), Reader: reader, Storage: o.storage, ClaimName: o.claimName,
@@ -200,3 +242,12 @@ func run(ctx context.Context, o options) error {
 type runnableFunc func(context.Context) error
 
 func (f runnableFunc) Start(ctx context.Context) error { return f(ctx) }
+
+// newSyncer returns the repository synchronizer with the configured limits.
+func newSyncer(o options, reserved []string, store *controller.Store, catalog *controller.Catalog,
+	changed chan event.GenericEvent) *controller.Syncer {
+	return &controller.Syncer{
+		Source: o.source, Path: o.path, Interval: o.syncInterval, Limits: o.limits, Reserved: reserved,
+		MaxBytes: o.maxRepository, Store: store, Catalog: catalog, Changed: changed,
+	}
+}

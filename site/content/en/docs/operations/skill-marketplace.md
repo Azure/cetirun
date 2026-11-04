@@ -61,8 +61,9 @@ reason for each rejected directory.
   frontmatter is not valid YAML.
 - The frontmatter has no `name`, or the `name` is not the name of the
   directory.
-- The frontmatter has no `description`. Or the description has more than
-  1,024 characters, or control characters other than line breaks and tabs.
+- The frontmatter has no `description`. Or the description is longer than the
+  description limit, or it has control characters other than line breaks and
+  tabs.
 - The name is not words of lowercase letters and digits that single hyphens
   join. Or the name has more than 64 characters. For example, `pdf-tools` is a
   valid name, and `PDF_Tools` is not.
@@ -74,9 +75,10 @@ reason for each rejected directory.
   backslash. A name that Git uses for its own directory, such as `.git`, is
   also not allowed. Such names in other parts of the repository do not stop
   the synchronization.
-- The skill has more than 500 files or more than 5 MiB in total. Or its
-  `SKILL.md` is larger than 256 KiB, or a file is more than 8 levels below the
-  skill directory.
+- The skill has more files, bytes, or directory levels than the
+  [skill limits](#skill-limits) allow. By default, a skill can have at most
+  500 files and 5 MiB in total. Its `SKILL.md` can have at most 256 KiB. No
+  file can be more than 8 levels below the skill directory.
 - Another skill directory has the same name. In this case, the service rejects
   all the directories with that name.
 
@@ -89,11 +91,41 @@ These rules also apply:
   rejected.
 - The service ignores a `SKILL.md` in a directory whose name starts with `.`,
   for example `.github`. The same applies to the directories below it.
-- The service refuses a commit that has more than 256 MiB of files.
+- The service refuses a commit that has more files than the repository limit,
+  256 MiB by default.
 
 The version of a skill is the first 12 hexadecimal characters of the Git tree
 hash of its directory. When a file of the skill changes, its version changes.
 Some pages of the Portal show only the first seven characters.
+
+### Skill limits
+
+The limits are values of the `cetirun-skill-marketplace` chart. The name rule,
+at most 64 characters, and the default description limit, 1,024 characters,
+come from the [Agent Skills specification](https://agentskills.io/specification).
+The other limits are defaults that CetiRun chose to keep each skill small.
+
+| Value | Default | Limit |
+| --- | --- | --- |
+| `limits.maxRepositorySize` | `256Mi` | Total size of the files of the repository commit, which the service reads into memory |
+| `limits.maxSkillFiles` | `500` | Number of files in one skill |
+| `limits.maxSkillSize` | `5Mi` | Total size of the files of one skill |
+| `limits.maxSkillMDSize` | `256Ki` | Size of `SKILL.md`. It cannot be larger than `maxSkillSize`. |
+| `limits.maxSkillDepth` | `8` | Directory levels of a file below the skill directory |
+| `limits.maxDescriptionLength` | `1024` | Characters of the `description` |
+
+You cannot change the 64-character name limit, because Team and Policy
+validation also use it. Before you increase a size limit, do these checks:
+
+- When an Agent starts, it copies all the skills of its Team into the scratch
+  space of its Sandbox. Make sure that the copy fits in the scratch size of
+  the Sandboxes of the Team.
+- Keep `maxRepositorySize` well below the memory limit of the service,
+  `resources.limits.memory`. The default memory limit is `1Gi`.
+
+With `make deploy`, set the values in the environment file below
+`platform.values.cetirun-skill-marketplace.limits`. The service uses changed
+limits when it starts again, and the Helm upgrade starts it again.
 
 ## Team releases
 
@@ -584,7 +616,7 @@ kubectl logs -n cetirun-system deployment/cetirun-skill-marketplace --tail=50
 | `the repository path "<path>" does not exist in the commit` | Correct `repository.path` |
 | `read known_hosts (required for SSH)`, or a host key error | Add the host keys of the Git host to `known_hosts` |
 | `parse the SSH private key` | Use a private key without a passphrase |
-| `the repository commit holds more than 268435456 bytes of files` | Make the files of the commit smaller than 256 MiB |
+| `the repository commit holds more than <bytes> bytes of files` | Make the files of the commit smaller, or increase `limits.maxRepositorySize` (256 MiB by default). Refer to [Skill limits](#skill-limits). |
 
 ### A Team release is pending
 

@@ -29,3 +29,14 @@
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Values.agentClaims.claimName) -}}
 {{- fail "agentClaims.claimName must be a valid resource name" -}}
 {{- end -}}
+{{- $limits := .Values.limits | default dict -}}
+{{- range $field := list "maxSkillFiles" "maxSkillDepth" "maxDescriptionLength" -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,8}$" (toString (get $limits $field))) -}}
+{{- fail (printf "limits.%s must be a positive whole number" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- range $field := list "maxRepositorySize" "maxSkillSize" "maxSkillMDSize" -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,11}(Ki|Mi|Gi)?$" (toString (get $limits $field))) -}}
+{{- fail (printf "limits.%s must be a size such as 5Mi: a positive whole number, optionally with Ki, Mi or Gi" $field) -}}
+{{- end -}}
+{{- end -}}

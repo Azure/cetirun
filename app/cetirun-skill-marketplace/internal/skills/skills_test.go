@@ -155,6 +155,33 @@ func TestDiscoverLimits(t *testing.T) {
 	if len(problems) != 1 || !strings.Contains(problems[0].Reason, "deeper") {
 		t.Fatalf("depth limit: %+v", problems)
 	}
+	// Each configured limit decides; one byte or character over is refused.
+	sized := map[string]string{"sized/SKILL.md": skillMD("sized", "Ten chars."), "sized/data": strings.Repeat("x", 100)}
+	total := int64(len(sized["sized/SKILL.md"]) + 100)
+	for name, tc := range map[string]struct {
+		change func(*Limits)
+		reason string
+	}{
+		"size":             {func(l *Limits) { l.MaxBytes = total - 1 }, "bytes; at most"},
+		"size fits":        {func(l *Limits) { l.MaxBytes = total }, ""},
+		"SKILL.md":         {func(l *Limits) { l.MaxSkillMD = int64(len(sized["sized/SKILL.md"])) - 1 }, "SKILL.md has"},
+		"description":      {func(l *Limits) { l.MaxDescription = 9 }, "longer than 9 characters"},
+		"description fits": {func(l *Limits) { l.MaxDescription = 10 }, ""},
+	} {
+		limits := DefaultLimits
+		tc.change(&limits)
+		found, problems, err := Discover(newTree(sized), "", limits, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.reason == "" {
+			if len(found) != 1 || len(problems) != 0 {
+				t.Errorf("%s: %+v %+v", name, found, problems)
+			}
+		} else if len(found) != 0 || len(problems) != 1 || !strings.Contains(problems[0].Reason, tc.reason) {
+			t.Errorf("%s: %+v %+v", name, found, problems)
+		}
+	}
 }
 
 func TestDiscoverRootSkillIsRejected(t *testing.T) {
@@ -213,10 +240,13 @@ func TestFrontmatter(t *testing.T) {
 		{"\ufeff---\nname: a\ndescription: b\n---\n", ""},
 		{"---\nname: a\ndescription: b\n", "not closed"},
 		{"---\nname: [a\n---\n", "not valid YAML"},
-		{"---\nname: a\ndescription: " + strings.Repeat("x", 1025) + "\n---\n", "longer"},
+		{"---\nname: a\ndescription: " + strings.Repeat("x", 1024) + "\n---\n", ""},
+		{"---\nname: a\ndescription: " + strings.Repeat("x", 1025) + "\n---\n", "longer than 1024 characters"},
+		// Characters, not bytes, count.
+		{"---\nname: a\ndescription: " + strings.Repeat("\u6587", 1024) + "\n---\n", ""},
 		{"---\nname: a\ndescription: \"bad\\u0007\"\n---\n", "control"},
 	} {
-		_, _, reason := frontmatter([]byte(tc.content))
+		_, _, reason := frontmatter([]byte(tc.content), DefaultLimits.MaxDescription)
 		if (tc.reason == "") != (reason == "") || !strings.Contains(reason, tc.reason) {
 			t.Errorf("%q: reason %q, want %q", tc.content, reason, tc.reason)
 		}

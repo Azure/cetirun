@@ -58,6 +58,12 @@ spec:
             - --catalog-namespace={{ include "cetirun-skill-marketplace.catalogNamespace" . }}
             - --reserved-names={{ join "," .Values.reservedNames }}
             - --team-gc-grace={{ .Values.teamGCGrace }}
+            - --max-repository-size={{ .Values.limits.maxRepositorySize }}
+            - --max-skill-files={{ .Values.limits.maxSkillFiles }}
+            - --max-skill-size={{ .Values.limits.maxSkillSize }}
+            - --max-skill-md-size={{ .Values.limits.maxSkillMDSize }}
+            - --max-skill-depth={{ .Values.limits.maxSkillDepth }}
+            - --max-description-length={{ .Values.limits.maxDescriptionLength }}
           ports:
             - name: metrics
               containerPort: 8080

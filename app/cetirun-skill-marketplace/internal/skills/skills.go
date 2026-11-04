@@ -53,10 +53,14 @@ type Limits struct {
 	MaxBytes   int64
 	MaxSkillMD int64
 	MaxDepth   int
+	// MaxDescription is the longest SKILL.md description, in characters.
+	MaxDescription int
 }
 
-// DefaultLimits are the limits used unless configured otherwise.
-var DefaultLimits = Limits{MaxFiles: 500, MaxBytes: 5 << 20, MaxSkillMD: 256 << 10, MaxDepth: 8}
+// DefaultLimits are the limits used unless configured otherwise. The
+// description limit is the one of the Agent Skills specification; the others
+// keep a skill small enough to copy into the Pod of each Agent.
+var DefaultLimits = Limits{MaxFiles: 500, MaxBytes: 5 << 20, MaxSkillMD: 256 << 10, MaxDepth: 8, MaxDescription: 1024}
 
 // DefaultReserved are the names of skills that CetiRun or its images supply.
 var DefaultReserved = []string{"cetirun-memory", "connected-services"}
@@ -239,7 +243,7 @@ func validate(tree Tree, all []Entry, dir string, limits Limits, reserved []stri
 	if err != nil {
 		return Skill{}, "SKILL.md cannot be read"
 	}
-	frontName, description, reason := frontmatter(content)
+	frontName, description, reason := frontmatter(content, limits.MaxDescription)
 	if reason != "" {
 		return Skill{}, reason
 	}
@@ -278,8 +282,9 @@ func readAll(open func() (io.ReadCloser, error), limit int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(reader, limit+1))
 }
 
-// frontmatter returns the name and description of a SKILL.md, or a reason.
-func frontmatter(content []byte) (string, string, string) {
+// frontmatter returns the name and description of a SKILL.md, or a reason. A
+// description may have at most maxDescription characters.
+func frontmatter(content []byte, maxDescription int) (string, string, string) {
 	content = bytes.TrimPrefix(content, []byte("\ufeff"))
 	text := strings.ReplaceAll(string(content), "\r\n", "\n")
 	if !strings.HasPrefix(text, "---\n") {
@@ -302,8 +307,8 @@ func frontmatter(content []byte) (string, string, string) {
 	if !ok || description == "" {
 		return "", "", "SKILL.md frontmatter needs a description"
 	}
-	if utf8.RuneCountInString(description) > 1024 {
-		return "", "", "the description is longer than 1024 characters"
+	if utf8.RuneCountInString(description) > maxDescription {
+		return "", "", fmt.Sprintf("the description is longer than %d characters", maxDescription)
 	}
 	if strings.IndexFunc(description, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) >= 0 {
 		return "", "", "the description contains control characters"

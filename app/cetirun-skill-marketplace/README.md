@@ -36,8 +36,11 @@ these cases:
 - The directory contains a symbolic link or a submodule.
 - A file or directory name has a control character or a backslash. Or it is
   a name that Git uses for its own directory, such as `.git`.
-- The directory has more than 500 files or more than 5 MiB. Or its `SKILL.md`
-  is larger than 256 KiB, or it has files nested deeper than 8 levels.
+- The directory has more files, bytes, or directory levels than the `limits.*`
+  values allow. By default, a skill can have 500 files and 5 MiB. Its
+  `SKILL.md` can have 256 KiB, and files can be 8 levels deep.
+- The description is longer than `limits.maxDescriptionLength`, 1,024
+  characters by default, as in the Agent Skills specification.
 - Another skill directory has the same name. Both are rejected.
 
 A `SKILL.md` inside a skill directory does not create another skill.
@@ -67,6 +70,7 @@ catalog lists it as retained.
 | `storage.*` | The Blob NFS container of the releases |
 | `agentClaims.claimName` | Must equal the operator's `sandboxSources.skillsClaimName` |
 | `catalog.namespace` | The operator namespace; empty uses the release namespace |
+| `limits.*` | The largest repository commit, and the limits of each skill. Agents copy their Team's skills into their Sandbox, so raise size limits only with that space |
 
 Never put credentials in the URL. The chart refuses an `https://` URL with
 user information.

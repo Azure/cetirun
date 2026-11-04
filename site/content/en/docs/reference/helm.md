@@ -786,6 +786,7 @@ The platform chart installs this chart as the optional subchart
 | `catalog.namespace` | Empty. The namespace of the catalog ConfigMap `cetirun-skill-marketplace`. Empty uses the release namespace, which must be the operator namespace. |
 | `reservedNames` | `cetirun-memory`, `connected-services`. Skill names that CetiRun or its images supply. The service rejects repository skills with these names. |
 | `teamGCGrace` | `1h`. How long the service keeps the releases of a deleted Team after its last publication. |
+| `limits.maxRepositorySize`, `limits.maxSkillFiles`, `limits.maxSkillSize`, `limits.maxSkillMDSize`, `limits.maxSkillDepth`, `limits.maxDescriptionLength` | `256Mi`, `500`, `5Mi`, `256Ki`, `8`, `1024`. The largest repository commit that the service reads, and the limits of each skill. The service does not publish a skill that exceeds a limit. Sizes take a whole number of bytes, optionally with `Ki`, `Mi` or `Gi`; the chart refuses other forms. `maxSkillMDSize` cannot be larger than `maxSkillSize`, or the service does not start. See [Skill limits](../../operations/skill-marketplace/#skill-limits). |
 | `serviceAccount.create`, `serviceAccount.name`, `serviceAccount.annotations` | `true`, `cetirun-skill-marketplace`, `{}` |
 | `istio.sidecarInjection` | `false`. The service uses only the Kubernetes API, the Git host, and its NFS mount. |
 | `resources` | Requests: CPU `50m`, memory `128Mi`. Limits: CPU `1`, memory `1Gi`. |
