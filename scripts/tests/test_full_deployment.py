@@ -159,7 +159,8 @@ class SyntheticCluster(DEPLOY.Deployment):
                     return json.dumps([entry] if entry else [])
                 return json.dumps(entry) if entry else ""
             document = self.live.get((kind, namespace, name), {})
-            for field in ("spec", "spec.selector", "spec.template.spec.serviceAccountName", "spec.template.metadata.labels"):
+            for field in ("spec", "spec.selector", "spec.template.spec.serviceAccountName", "spec.template.metadata.labels",
+                          "spec.template.spec.volumes", "spec.accessModes", "spec.storageClassName"):
                 if output == "jsonpath={." + field + "}":
                     value = DEPLOY.get_value(document, field)
                     return value if isinstance(value, str) else json.dumps(value)
@@ -531,7 +532,7 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         plan = deployment.plan()
         self.assertEqual(len(plan["artifacts"]["images"]), 13)
         self.assertEqual(len(plan["artifacts"]["charts"]), 8)
-        self.assertEqual(plan["releases"]["istio"]["workloads"], ["oauth2-proxy"])
+        self.assertEqual(set(plan["releases"]["istio"]["workloads"]), {"oauth2-proxy", "oauth2-proxy-sessions"})
         self.assertEqual(plan["releases"]["broker"]["namespace"], "cetirun-credentials")
         self.assertEqual(set(plan["releases"]["platform"]["workloads"]), {
             "cetirun-operator", "cetirun-portal", "cetirun-ai-gateway", "cetirun-ai-gateway-postgresql",
@@ -609,6 +610,26 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         deployment.execute()
         deployment.writes.clear()
         deployment.objects.pop(("secret", "cetirun-istio", "oauth2-proxy-credentials"))
+        with self.assertRaisesRegex(ValueError, "refusing regeneration"):
+            deployment.execute()
+        self.assertEqual(deployment.writes, [])
+
+    def test_cookie_upgrade_can_add_sessions_without_regenerating_existing_secrets(self):
+        config = copy.deepcopy(self.config)
+        config["istio"].setdefault("values", {})["oauth2Proxy"] = {"sessionStore": {"type": "cookie"}}
+        deployment = self.deployment(config, "cookie-upgrade")
+        deployment.execute()
+        before = copy.deepcopy(deployment.keys)
+        updated = self.deployment(name="redis-upgrade")
+        for field in ("objects", "keys", "installed", "live", "mesh"):
+            setattr(updated, field, copy.deepcopy(getattr(deployment, field)))
+        deployment = updated
+        deployment.execute()
+        for key, value in before.items():
+            self.assertEqual(deployment.keys[key], value)
+        self.assertIn(("secret", "cetirun-istio", "oauth2-proxy-sessions"), deployment.objects)
+        deployment.objects.pop(("secret", "cetirun-istio", "oauth2-proxy-sessions"))
+        deployment.writes.clear()
         with self.assertRaisesRegex(ValueError, "refusing regeneration"):
             deployment.execute()
         self.assertEqual(deployment.writes, [])

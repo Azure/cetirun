@@ -332,15 +332,36 @@ offline rendered Secret to update a live release.
 
 ### OAuth session storage
 
-The default `oauth2Proxy.sessionStore.type: cookie` mode does not request
-`offline_access`. Its 45-minute cookie lifetime ends before the Entra ID token
-expires. As a result, users must sign in again. This mode does not keep a
-refresh token in an encrypted browser cookie. Refresh-token cookies can exceed
-the common 8 KiB request header limits. This can break Portal actions that are
-otherwise unrelated.
+The default `oauth2Proxy.sessionStore.type: redis` mode stores encrypted login
+sessions in a dedicated Valkey. The browser keeps a short session ticket.
+OAuth2 Proxy requests `offline_access` and tries to refresh tokens on the first
+HTTP request after the 30-minute refresh interval. The cookie lifetime is eight
+hours and successful refreshes renew it. These settings are not an absolute
+eight-hour login limit and do not override the identity provider's sign-in or
+revocation policies. Entra must permit refresh tokens for the application.
 
-For refreshable sessions, provision Redis separately. Configure the chart to
-refer to it:
+The bundled `oauth2-proxy-sessions` Deployment has one replica, password
+authentication, and a NetworkPolicy that accepts connections only from
+OAuth2 Proxy Pods in the same namespace. It does not share the AI Gateway's
+cache. Use the namespace's Istio injection and mesh encryption for transport
+protection. The chart does not create a public Redis endpoint.
+
+By default, `oauth2Proxy.sessionStore.redis.bundled.persistence.enabled` is
+`true`. Valkey writes an append-only file to a 1 GiB PVC with the cluster's
+default StorageClass. Configure `persistence.storageClass` and
+`persistence.size` for the environment. The Deployment uses `Recreate` so that
+two Pods do not write the same volume. The chart retains the PVC and generated
+password Secret on uninstall. Remove retained objects only when their sessions
+are no longer needed. Persistence reduces session loss after a restart. A single
+replica is not highly available, and AOF flushes once per second.
+
+Set `persistence.enabled: false` to use temporary storage. A Valkey restart then
+requires users to sign in again. A storage outage prevents session lookup and
+can also require a new sign-in after recovery. Keep backups and storage access
+under the same controls as other credential-bearing data.
+
+An explicit external `connectionURL` takes precedence over the bundled server.
+The chart then creates no session Valkey, PVC, or password Secret:
 
 ```yaml
 oauth2Proxy:
@@ -352,18 +373,32 @@ oauth2Proxy:
       passwordKey: redis-password
 ```
 
-Redis mode requests `offline_access`, stores the session server-side, refreshes
-it every 30 minutes, and keeps only a short session key in the browser. The
-chart does not deploy, persist, back up, or secure Redis. Use a highly
-available service that is correct for the environment. Also use NetworkPolicy,
-encryption in transit, and a pre-created Secret. Keep credentials out of
-`connectionURL` and Helm values. OAuth2 Proxy reads the password from the
-referenced Secret.
+For an external service, configure availability, persistence, network access,
+and encryption separately. Use `rediss://` for a TLS Redis endpoint. Keep
+credentials out of `connectionURL` and Helm values. OAuth2 Proxy reads the
+password from the referenced Secret. To use a pre-created password with the
+bundled server, set `existingSecret` without setting `connectionURL`. This also
+keeps offline GitOps renders from generating a different password each time.
 
 After you rotate the referenced Secret for the Redis password, reconcile the
-Istio Helm release. The chart hashes the live Secret data into the OAuth2 Proxy
-Pod template. As a result, Helm reconciliation rolls the Pods and loads the new
-password. A Secret update alone does not restart the Pods that already exist.
+Istio Helm release. The chart hashes the live Secret data into both Pod
+templates. Helm reconciliation restarts OAuth2 Proxy and the bundled Valkey
+with the new password. Plan for sign-in interruption during this rotation.
+A Secret update alone does not restart existing Pods.
+
+When upgrading a cookie-mode installation, explicitly set
+`oauth2Proxy.sessionStore.type: redis`. An existing values file can retain
+`type: cookie` despite the new default. Keep the existing cookie Secret and
+Entra configuration. Users must sign in again after the storage change.
+Reconcile the mesh with `scripts/ensure-oauth2-proxy-id-token-header.py` through
+the deployment entry point. The external authorization provider must include
+`headersToDownstreamOnAllow: [set-cookie]` so that refreshed cookies reach the
+browser. A Helm upgrade alone does not change that mesh setting.
+
+Explicit `type: cookie` remains available. It does not request `offline_access`
+and expires after 45 minutes without refresh. This avoids large refresh-token
+cookies that can exceed common 8 KiB request header limits. Increasing that
+cookie lifetime alone does not refresh the ID token sent to the Portal.
 
 ### Expired sessions
 
@@ -374,7 +409,8 @@ These sign-ins can come from a page reload and background requests, or from
 several tabs. When a sign-in starts, OAuth2 Proxy deletes the oldest of these
 cookies beyond `oauth2Proxy.cookie.csrfPerRequestLimit` (default 20).
 
-Requests below `/api/`, `/ui/<instance>/api/` and `/ui/<instance>/assets/`
+Requests below `/api/`, `/ui/<instance>/api/`, `/ui/<instance>/assets/`, and
+`/<instance>/cetirun-auth/`
 answer `401` instead of a redirect to Entra. This is because a browser cannot
 follow that redirect from a script. Also, an Agent UI can request dozens of
 assets at one time. Otherwise, each of these asset requests starts a sign-in.

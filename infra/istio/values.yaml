@@ -112,15 +112,35 @@ oauth2Proxy:
   # only when the tenant is known to emit that claim for every allowed user.
   # For local OIDC providers such as Dex, set email and emit a verified email claim.
   emailClaim: preferred_username
-  # Cookie-only sessions cannot safely carry an Entra refresh token because
-  # the resulting request header can exceed common 8 KiB limits. They expire
-  # before the ID token instead. Configure Redis for refreshable sessions.
+  # Keep refresh tokens server-side and a short session ticket in the browser.
+  # Explicit cookie mode retains the non-refreshing 45-minute behavior.
   sessionStore:
-    type: cookie
+    type: redis
     redis:
+      # An external URL takes precedence over the bundled server.
       connectionURL: ""
+      # Used by both clients and the bundled server. Empty generates a password
+      # for the bundled server only; upgrades reuse the existing Secret.
       existingSecret: ""
       passwordKey: redis-password
+      bundled:
+        enabled: true
+        image:
+          repository: mcr.microsoft.com/azurelinux/base/valkey
+          tag: "8"
+          digest: sha256:1f9457e9e325de0301c85d0c18765777820e06290c03849545868b4d22781496
+        persistence:
+          enabled: true
+          size: 1Gi
+          # Empty uses the cluster's default StorageClass.
+          storageClass: ""
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
   cookie:
     expire: "45m"
     # Each sign-in keeps its own CSRF cookie for up to 15 minutes. Starting a
