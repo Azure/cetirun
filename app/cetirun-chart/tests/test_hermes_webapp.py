@@ -235,8 +235,10 @@ class WebappChartTests(unittest.TestCase):
         pod = next(d for d in docs if d and d["kind"] == "StatefulSet")["spec"]["template"]["spec"]
         main = pod["containers"][0]
         self.assertIn({"name": "hermes-managed", "mountPath": "/etc/cetirun/hermes-managed", "readOnly": True}, main["volumeMounts"])
-        self.assertEqual(main["readinessProbe"]["exec"]["command"][0:3],
-                         ["/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", "readiness"])
+        for probe, mode in (("startupProbe", "liveness"), ("livenessProbe", "liveness"),
+                            ("readinessProbe", "readiness")):
+            self.assertEqual(main[probe]["exec"]["command"][0:3],
+                             ["/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode])
         self.assertIn({"name": "webapp", "containerPort": 9120, "protocol": "TCP"}, main["ports"])
         self.assertNotIn(9119, [port["containerPort"] for port in main["ports"]])
 

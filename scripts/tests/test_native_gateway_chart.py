@@ -403,14 +403,14 @@ class NativeGatewayChartTests(unittest.TestCase):
         main = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
         self.assertFalse(any(kind in main for kind in ("livenessProbe", "readinessProbe", "startupProbe")))
 
-    def test_held_hermes_keeps_api_liveness_separate_from_webapp_readiness(self):
+    def test_held_hermes_keeps_api_startup_and_liveness_separate_from_webapp_readiness(self):
         values = native_values()
         values["agentType"] = "hermes"
         objects = render(RUNTIME_CHART, values)
         main = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
         for kind in ("livenessProbe", "readinessProbe", "startupProbe"):
             with self.subTest(probe=kind):
-                mode = "liveness" if kind == "livenessProbe" else "readiness"
+                mode = "readiness" if kind == "readinessProbe" else "liveness"
                 self.assertEqual(main[kind]["exec"]["command"], [
                     "/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode,
                     "--timeout", str(main[kind]["timeoutSeconds"]),

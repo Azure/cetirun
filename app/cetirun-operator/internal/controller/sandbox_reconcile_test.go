@@ -1852,9 +1852,9 @@ func TestReconciledSandboxCommonModelCombinations(t *testing.T) {
 								t.Fatal("protected readiness must not require forbidden host-to-Pod ingress")
 							}
 							if kind == "hermes" {
-								mode := "readiness"
-								if probe == container.LivenessProbe {
-									mode = "liveness"
+								mode := "liveness"
+								if probe == container.ReadinessProbe {
+									mode = "readiness"
 								}
 								if len(probe.Exec.Command) != 5 || !slices.Equal(probe.Exec.Command[:4], []string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode, "--timeout"}) {
 									t.Fatal("protected Hermes probe did not use the managed API/Webapp health check")

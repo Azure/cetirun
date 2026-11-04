@@ -16,6 +16,7 @@ if [ "${CETIRUN_AI_GATEWAY:-}" != true ]; then
   echo "AI Gateway is required" >&2
   exit 1
 fi
+/usr/local/bin/hermes-prepare-dependencies
 "$HERMES_PYTHON" /etc/cetirun/hermes-runtime.py check
 
 if [ "${CETIRUN_CETIADMIN_ENABLED:-}" = "true" ]; then

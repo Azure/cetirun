@@ -89,9 +89,13 @@ func (b *Bundle) validateHermesTemplate(spec corev1.PodSpec, apiPort *int32) err
 			return fmt.Errorf("Hermes API port conflicts with another container listener")
 		}
 	}
-	for _, probe := range []*corev1.Probe{main.ReadinessProbe, main.StartupProbe} {
-		if probe == nil || probe.Exec == nil || len(probe.Exec.Command) != 5 || !slices.Equal(probe.Exec.Command[:4], []string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", "readiness", "--timeout"}) {
-			return fmt.Errorf("Hermes readiness must check the native Webapp and API")
+	for name, probe := range map[string]*corev1.Probe{"readiness": main.ReadinessProbe, "startup": main.StartupProbe} {
+		mode := "readiness"
+		if name == "startup" {
+			mode = "liveness"
+		}
+		if probe == nil || probe.Exec == nil || len(probe.Exec.Command) != 5 || !slices.Equal(probe.Exec.Command[:4], []string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode, "--timeout"}) {
+			return fmt.Errorf("Hermes %s probe must use the managed %s check", name, mode)
 		}
 	}
 	return nil

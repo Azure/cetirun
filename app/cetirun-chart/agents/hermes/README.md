@@ -25,8 +25,10 @@ hash. [PM build helper](pm/build.py) consumes that source's `pm/lock.json` and
 uses upstream PM to verify tool downloads, build the application `.venv`, record
 the `all`, `messaging`, `anthropic`, and `azure-identity` selections, and package
 an independent manager runtime. The tools live in the Hermes image directory.
-The image's PATH selects PM's `python3`, `node` and `npm` before the base tools;
-`hermes-python` additionally activates Hermes' selected Python dependencies.
+Ordinary shells use the image's Hermes `.venv` for `python` and `python3`, and
+the base image's Node and npm. PM's private tool directory is not on their PATH.
+Hermes entry points still activate the selected dependencies and PM tools for
+the gateway and its child processes, including Hermes' own terminal tool.
 
 `NPM_REGISTRY` applies to the npm tool download and JavaScript dependencies.
 `PYPI_INDEX_URL` selects the Python package index. Python, uv and Node binary
@@ -68,21 +70,21 @@ Browser-compatible Desktop plugins can run without Electron; native windows,
 global shortcuts, updater actions and unsupported file APIs retain upstream's
 unavailable behavior.
 
-Normal startup, gateway restart, Pod recreation and suspend/resume only validate
-and activate prepared dependencies. They never call `refresh_dependencies()`
-or rebuild a missing environment. A stale, incomplete or missing generation
-stops startup without changing the selection or falling back to the base.
+Container startup runs `hermes-prepare-dependencies` before the runtime check.
+Upstream PM reuses a matching environment without downloading or rebuilding it.
+When an image upgrade changes dependency inputs, it prepares a new generation
+for the retained plugin and extra selection, including the required platform
+extras, and validates startup imports. Downloads use the instance's existing
+network policy; preparation fails if required packages are unavailable or
+incompatible. A failed PM build leaves the previous selection available for
+diagnosis and stops startup without falling back to the base or disabling plugins.
+Supervised gateway restarts and health probes only validate the prepared selection.
 
-An image upgrade with extra plugin dependencies requires a separate preparation
-step against the candidate image and the instance's retained HOME. With that
-target and any downloads explicitly authorized, run
-`hermes-prepare-dependencies` in the candidate environment before starting the
-new gateway. The command asks upstream PM to preserve the recorded plugin and
-extra selection while adding the required platform extras, publishes a verified
-generation, and validates startup imports. A failed PM build leaves the previous
-selection available for diagnosis. Startup after successful preparation must
-also pass with external network access disabled. Back up the instance before
-upgrading its runtime or database; do not run an old image on a migrated database.
+The same command remains available for preparing dependencies explicitly before
+an upgrade. `hermes doctor --fix` does not replace this dependency sync and is not
+run automatically. Startup after successful preparation must also pass with
+external network access disabled. Back up the instance before upgrading its
+runtime or database; do not run an old image on a migrated database.
 
 The image applies a source-hash guarded change to the pinned PM candidate builder:
 its existing startup import check runs before every generation publication, not
@@ -137,13 +139,13 @@ requests to `9120`. The target registration must explicitly approve the new
 Webapp port. An old approval for `9119` does not authorize `9120`.
 
 Readiness includes API health, gateway control-socket Webapp state, the password
-auth provider and prebuilt products. Both readiness and liveness also verify
-managed ingress certificates against Envoy's active certificate and check the
-managed egress proxy when those helpers are enabled. Liveness otherwise uses
-API `/health`, so a browser-side failure does not restart a gateway executing
-other work.
-Missing bundles, port conflicts, missing signing keys and invalid overlays must
-never report Webapp Ready or select another listener or authentication mode.
+auth provider and prebuilt products. Startup and liveness use API `/health`.
+All three probes also verify managed ingress certificates against Envoy's active
+certificate and check the managed egress proxy when those helpers are enabled.
+If the Webapp listener fails after startup validation, upstream keeps a private
+loopback listener so message channels and scheduled tasks can continue. The
+Webapp remains unready; its failure alone does not restart the container.
+Platform configuration and dependency failures still stop startup at validation.
 
 ## Bounded long-running tools
 

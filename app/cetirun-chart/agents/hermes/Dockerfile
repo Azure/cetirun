@@ -115,12 +115,10 @@ COPY --from=hermes-ui-build /tmp/hermes-tui-product/ /usr/local/lib/hermes-agent
 COPY agents/hermes/pm/ /usr/local/lib/hermes-agent/cetirun_pm/
 COPY agents/hermes/compat/workload_mcp.py /usr/local/lib/hermes-agent/cetirun_compat/workload_mcp.py
 COPY agents/hermes/compat/apply_workload_mcp.py /tmp/apply-workload-mcp.py
-COPY agents/hermes/compat/apply_webapp_startup.py /tmp/apply-webapp-startup.py
 COPY configs/apply-memory-skills.py /tmp/apply-memory-skills.py
 RUN .venv/bin/python /tmp/apply-workload-mcp.py --root /usr/local/lib/hermes-agent && \
-    .venv/bin/python /tmp/apply-webapp-startup.py --root /usr/local/lib/hermes-agent && \
     .venv/bin/python /tmp/apply-memory-skills.py --runtime hermes --root /usr/local/lib/hermes-agent && \
-    rm /tmp/apply-workload-mcp.py /tmp/apply-webapp-startup.py /tmp/apply-memory-skills.py && \
+    rm /tmp/apply-workload-mcp.py /tmp/apply-memory-skills.py && \
     .venv/bin/python cetirun_pm/apply_generation.py --root /usr/local/lib/hermes-agent && \
     .venv/bin/python cetirun_pm/build.py --source . --phase assemble
 
@@ -156,7 +154,7 @@ ENV HERMES_WEBAPP_DIST=/usr/local/lib/hermes-agent/apps/desktop/dist-webapp
 ENV HERMES_TUI_DIR=/usr/local/lib/hermes-agent/tui-product
 ENV HERMES_DISABLE_LAZY_INSTALLS=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV PATH=/usr/local/lib/hermes-agent/libexec:/usr/local/lib/hermes-agent/bin:$PATH
+ENV PATH=/usr/local/lib/hermes-agent/libexec:/usr/local/lib/hermes-agent/.venv/bin:$PATH
 
 USER vibe
 WORKDIR /home/vibe

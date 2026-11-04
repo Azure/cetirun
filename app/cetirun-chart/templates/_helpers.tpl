@@ -572,10 +572,10 @@ exec:
   command:
     - /usr/local/bin/hermes-python
     - /etc/cetirun/hermes-runtime.py
-    {{- if eq .pathPort "cetirun.agent.probePathPort" }}
-    - liveness
-    {{- else }}
+    {{- if eq .pathPort "cetirun.agent.readinessProbePathPort" }}
     - readiness
+    {{- else }}
+    - liveness
     {{- end }}
     - --timeout
     - {{ .timeoutSeconds | quote }}

@@ -44,6 +44,8 @@ class CetiAdminStartupTests(unittest.TestCase):
         # Relocate scratch and the binary fixture; run the whole shipped startup script.
         self.startup.write_text(ENTRYPOINT.read_text().replace("/tmp/", str(self.scratch) + "/")
                                 .replace("/opt/cetirun/cetiadmin/bin", str(self.assets_bin))
+                                .replace("/usr/local/bin/hermes-prepare-dependencies",
+                                         str(self.root / "bin/hermes-python") + " --prepare")
                                 .replace("/usr/local/bin/hermes-python", str(self.root / "bin/hermes-python")))
         self.bin = self.root / "bin"
         self.bin.mkdir()
@@ -59,7 +61,12 @@ class CetiAdminStartupTests(unittest.TestCase):
             import sys
 
             args = sys.argv[1:]
-            if args == ["/etc/cetirun/hermes-runtime.py", "check"]:
+            if args == ["--prepare"]:
+                if os.environ.get("FIXTURE_PREPARE_FAIL"):
+                    sys.exit(8)
+                Path(os.environ["HERMES_HOME"], "dependencies-ready").touch()
+            elif args == ["/etc/cetirun/hermes-runtime.py", "check"]:
+                assert Path(os.environ["HERMES_HOME"], "dependencies-ready").is_file()
                 with open(os.environ["FIXTURE_EVENTS"], "a") as out:
                     out.write(json.dumps({{"event": "runtime", "host": os.environ.get("API_SERVER_HOST"),
                         "port": os.environ.get("API_SERVER_PORT")}}) + "\\n")
@@ -187,6 +194,14 @@ class CetiAdminStartupTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([item["event"] for item in self.recorded()], ["runtime"])
         self.assertFalse((self.scratch / "supervisord.conf").exists())
+
+    def test_dependency_preparation_failure_stops_before_runtime_check(self):
+        for enabled in ("true", "false"):
+            with self.subTest(cetiadmin=enabled):
+                result = self.run_startup(FIXTURE_PREPARE_FAIL="true", CETIRUN_CETIADMIN_ENABLED=enabled)
+                self.assertEqual(result.returncode, 8, result.stderr)
+                self.assertEqual(self.recorded(), [])
+                self.assertFalse((self.scratch / "supervisord.conf").exists())
 
     def test_disabled_monitor_still_propagates_validated_timezone(self):
         config = json.loads(self.config.read_text())
