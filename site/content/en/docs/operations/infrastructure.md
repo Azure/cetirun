@@ -53,7 +53,7 @@ region, run
 `az aks get-versions --location your-approved-region --output table`.
 
 The template does not select a managed Istio revision, so AKS installs its
-default revision. Kubernetes 1.37 needs a revision that AKS lists as
+default revision. Kubernetes 1.37 must have a revision that AKS lists as
 compatible with 1.37: `asm-1-30` or later. Before you deploy, list the
 revisions of the region and their compatible Kubernetes versions:
 
@@ -83,8 +83,8 @@ values in `main.bicep`.
 By default, the platform workloads other than OAuth2 Proxy do not tolerate the
 taint of the system pool. They run on the `agent` and `agent2` pools, so keep
 at least one node in the `agent` pool. A pool with a minimum of 0 gets a node
-only when a Pod needs one. That Pod then waits some minutes for the node. For
-example:
+only when a Pod must have one. That Pod then waits some minutes for the node.
+For example:
 
 ```bicep
 using '<path-to-your-clone>/infra/cluster/main.bicep'

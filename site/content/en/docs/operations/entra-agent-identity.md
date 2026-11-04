@@ -244,12 +244,12 @@ cannot keep the lifecycle disabled until the preflight passes. Before the first
 run, decide on one of these approaches:
 
 - Complete the preflight and the approval first. Then run `make deploy`.
-- Run `make deploy` before the approval, and keep Agents from requesting an
-  identity until the preflight passes. The Operator creates an identity only
-  for an Agent whose `spec.agentIdentity.enabled` is true. The Portal sets this
-  field when the owner selects Agent Identity. It also sets the field when the
-  Agent Policy of the Team requires an identity. Tell owners not to select it,
-  and do not require it in an Agent Policy.
+- Run `make deploy` before the approval. Until the preflight passes, do not let
+  Agents request an identity. The Operator creates an identity only for an Agent
+  whose `spec.agentIdentity.enabled` is true. The Portal sets this field when
+  the owner selects Agent Identity. It also sets the field when the Agent Policy
+  of the Team makes an identity necessary. Tell owners not to select it, and do
+  not make it necessary in an Agent Policy.
 - Install with the component charts instead of `make deploy`, and keep
   `agentIdentity.enabled` and `cleanupEnabled` false. Refer to
   [Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).
@@ -351,7 +351,7 @@ unrelated identity only to enable Agent Identity.
 empty. The chart puts this value only in the Workload Identity annotation of
 the Operator ServiceAccount. The Operator authenticates only as the Blueprint.
 Set the value to the Blueprint client ID, unless another Operator integration
-needs a different identity. Then the annotation is the same as without the
+must use a different identity. Then the annotation is the same as without the
 value, and no other identity or FIC is necessary.
 
 Do not replace these ServiceAccounts, namespaces, or names unless you change

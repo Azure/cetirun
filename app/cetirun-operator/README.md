@@ -192,18 +192,18 @@ operations. A shutdown that is not acknowledged still keeps its source
 reservation. Normal Kubernetes stop requests are not physical fencing.
 
 The current Gateway reconciliation also removes the per-Agent Copilot token
-and proxy-key Secrets during explicit suspension. Retained HOME and Gateway
-spend do not imply a retained Copilot sign-in: the owner must sign in again
-after resume. For an ordinary chart or image upgrade, use the normal Agent
-update and reconciliation path rather than explicit suspension if the Copilot
-sign-in must remain available. When a coordinated configuration change requires
-suspension, plan for owner reauthorization.
+and proxy-key Secrets during explicit suspension. Suspension keeps HOME and the
+Gateway spend, but it does not keep the Copilot sign-in. The owner must sign in
+again after resume. If the Copilot sign-in must stay available, do not use
+explicit suspension for an ordinary chart or image upgrade. Use the normal Agent
+update and reconciliation path. If a coordinated configuration change makes a
+suspension necessary, plan for owner reauthorization.
 
-If policy denial has already requested deletion of the Gateway key, suspension
-retries that revocation instead of trying to block the deleted key. It reports
-`Suspended` only after revocation and shutdown succeed, while retaining the
-denied policy and the recorded key identity. Resuming does not recreate a
-missing key or restore access under a denied policy.
+If policy denial already requested the deletion of the Gateway key, suspension
+retries that revocation. It does not try to block the deleted key. It reports
+`Suspended` only after revocation and shutdown succeed. The policy stays denied,
+and the recorded key identity stays. A resume does not recreate a missing key or
+restore access under a denied policy.
 
 Loss of bootstrap or runtime prerequisites also holds a reconciled Agent that
 already runs and is not suspended. The hold blocks its key, stops the owned
@@ -1085,36 +1085,38 @@ executions. Spec, ownership, finalizer and control-metadata changes still
 exclude affected executions. The complete mutation digest still authorizes every
 field. Updates of the same source that compete still serialize.
 
-Recovery uses the complete writable-content digests, including labels,
-annotations, owner references and finalizers. Status is excluded from those
-digests. The effective execution digest cannot substitute for them because it
-deliberately ignores fields that still belong to the configuration update.
+Recovery uses the complete writable-content digests. These digests contain
+labels, annotations, owner references and finalizers. Status is excluded from
+those digests. The effective execution digest cannot substitute for them because
+it deliberately ignores fields that still belong to the configuration update.
 
 After a conditional Update fails or its reply is lost, use the same input files
 to observe the original operation. An authoritative read of the same live UID
 at a different resourceVersion proves that the old conditional request cannot
-commit. Recovery then checks the writable content:
+commit. Recovery then examines the writable content:
 
-- Content matching the proposed write confirms that it applied.
-- Content matching the original configuration establishes a superseded update.
-  For example, a status refresh can invalidate the original resourceVersion
-  before the configuration write. The desired configuration is not applied.
+- Content that matches the proposed write confirms that it applied.
+- Content that matches the original configuration establishes a superseded
+  update. For example, a status refresh can invalidate the original
+  resourceVersion before the configuration write. The desired configuration is
+  not applied.
 - Other content changes, an unchanged resourceVersion, a missing or replaced
-  object, termination, or a failed read keep the outcome uncertain and retain
-  the reservation.
+  object, termination, or a failed read keep the outcome uncertain. In these
+  cases, the reservation stays.
 
-Observation never releases a reservation. `--action observe` reports either
-`applied-reservation-retained` or `update-superseded-reservation-retained` for
-the two verified outcomes. An explicit `--action update` with the same files
-then releases that operation without resubmitting it. The CLI reports
-`completed` for applied content or `update-superseded` for the original content.
-Read the current configuration before preparing a new update. Do not edit the
-journal, refresh the original files, or replay the old request.
+Observation never releases a reservation. For the two confirmed outcomes,
+`--action observe` reports `applied-reservation-retained` or
+`update-superseded-reservation-retained`. An explicit `--action update` with the
+same files then releases that operation and does not submit it again. The
+CLI reports `completed` for applied content or `update-superseded` for the
+original content. Read the current configuration before you prepare a new
+update. Do not edit the journal, refresh the original files, or replay the old
+request.
 
-The Portal uses the same recovery rules before saving. It can recover a
-superseded update after a restart without retaining the original request body.
-Its normal UID/resourceVersion checks still reject a stale edit. A save using
-the freshly read version can proceed after the old reservation is released.
+The Portal uses the same recovery rules before a save. After a restart, it can
+recover a superseded update without the original request body. Its normal
+UID/resourceVersion checks still reject a stale edit. After the old reservation
+is released, a save with the freshly read version can continue.
 
 For deletion, use `--action delete --before FILE` without `--after`.
 Before one background Delete with exact UID and resourceVersion preconditions,
@@ -2090,17 +2092,18 @@ approved chart, an explicit handoff is necessary.
 
 The operator can migrate one known older bootstrap Role in place: the complete
 rule set from before mTLS support, whose Istio rule lacks `destinationrules`.
-It checks the recorded Namespace, Role, and RoleBinding identities, ownership,
-protection, and current bootstrap inputs before and after an optimistic patch.
-Other rule differences remain errors; this is not a general RBAC repair.
+Before and after an optimistic patch, it examines the recorded Namespace, Role,
+and RoleBinding identities, ownership, protection, and current bootstrap inputs.
+Other rule differences are still errors. This is not a general RBAC repair.
 
 If an upgrade left an Agent held with `Sandbox bootstrap operator Role changed`,
-install an operator that includes this migration and let normal reconciliation
-retry. A matching recorded Role is updated without deleting the Agent,
-namespace, HOME, or Gateway key. Agents already held can recover with the same
-budget and spend identity. Do not delete and recreate the Agent, clear
-finalizers, or replace its storage to work around this error. Unrecognized
-rules, missing objects, or changed identities still require reviewed recovery.
+install an operator that includes this migration. Then let normal reconciliation
+retry. When the recorded Role matches, the operator updates it and does not
+delete the Agent, namespace, HOME, or Gateway key. Agents already held can
+recover with the same budget and spend identity. Do not delete and recreate the
+Agent, clear finalizers, or replace its storage to work around this error. For
+unrecognized rules, missing objects, or changed identities, a reviewed recovery
+is still necessary.
 
 Every bootstrap-owned resource has its own finalizer. The reason is that Agent
 finalizers and `blockOwnerDeletion` do not stop the deletion of dependents by
