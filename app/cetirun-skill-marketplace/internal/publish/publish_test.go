@@ -112,6 +112,17 @@ func TestGC(t *testing.T) {
 	}
 	old := now.Add(-2 * time.Hour)
 	_ = os.Chtimes(tmp, old, old)
+	// Interrupted writes of CURRENT: an old one is abandoned, a new one may
+	// still be in progress.
+	abandoned := filepath.Join(root, "teams", uid, "CURRENT.tmp-0123456789ab")
+	recent := filepath.Join(root, "teams", uid, "CURRENT.tmp-ba9876543210")
+	for _, name := range []string{abandoned, recent} {
+		if err := os.WriteFile(name, []byte(ids[0]+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = os.Chtimes(abandoned, old, old)
+	_ = os.Chtimes(recent, now, now)
 	if err := p.GC(uid, 2, 10*time.Minute); err != nil {
 		t.Fatal(err)
 	}
@@ -124,15 +135,129 @@ func TestGC(t *testing.T) {
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
 		t.Fatalf("abandoned temporary release must be removed")
 	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Fatalf("an abandoned write of CURRENT must be removed")
+	}
+	if _, err := os.Stat(recent); err != nil {
+		t.Fatalf("a recent write of CURRENT must stay: %v", err)
+	}
+}
+
+// GC removes nothing while it cannot tell which release is current: CURRENT
+// may name an older release than the newest ones.
+func TestGCKeepsEveryReleaseWhileCURRENTCannotBeRead(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	p := &Publisher{Root: root, Now: func() time.Time { return now }}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for i, name := range []string{"a", "b", "c", "d"} {
+		release, _, err := p.Publish(TeamRef{Name: "t", UID: uid}, "sha256:"+name, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, release.ID)
+		old := now.Add(-time.Duration(4-i) * time.Hour)
+		_ = os.Chtimes(filepath.Join(root, "teams", uid, "releases", release.ID), old, old)
+	}
+	current := filepath.Join(root, "teams", uid, "CURRENT")
+	for name, damage := range map[string]func() error{
+		"invalid":   func() error { return os.WriteFile(current, []byte("not a release\n"), 0o644) },
+		"directory": func() error { _ = os.Remove(current); return os.Mkdir(current, 0o755) },
+	} {
+		if err := damage(); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.GC(uid, 2, 10*time.Minute); err == nil {
+			t.Fatalf("%s: GC must fail while CURRENT cannot be read", name)
+		}
+		for i, id := range ids {
+			if _, err := os.Stat(filepath.Join(root, "teams", uid, "releases", id)); err != nil {
+				t.Fatalf("%s: release %d must stay: %v", name, i, err)
+			}
+		}
+	}
 }
 
 func TestInitRefusesForeignRoot(t *testing.T) {
+	for _, foreign := range []string{"other", ".cetirun-marketplace.tmp-xyz", "other.tmp-0123456789ab", ".cetirun-marketplace.tmp-0123456789abc"} {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, foreign), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := (&Publisher{Root: root}).Init(); err == nil {
+			t.Fatalf("a root with %q must be refused", foreign)
+		}
+	}
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "other"), []byte("x"), 0o644); err != nil {
+	if err := os.Mkdir(filepath.Join(root, ".cetirun-marketplace.tmp-0123456789ab"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := (&Publisher{Root: root}).Init(); err == nil {
-		t.Fatal("a root with foreign data must be refused")
+		t.Fatal("a directory with the name of a temporary marker file must be refused")
+	}
+}
+
+// A process that stops while it writes the root marker leaves the marker's
+// temporary file: the next start removes it, and keeps an unchanged marker.
+func TestInitRecoversAnInterruptedMarkerWrite(t *testing.T) {
+	root := t.TempDir()
+	p := &Publisher{Root: root}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, ".cetirun-marketplace")
+	old := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(marker, old, old); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := filepath.Join(root, ".cetirun-marketplace.tmp-0123456789ab")
+	if err := os.WriteFile(interrupted, []byte("cetirun-skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("the marker's own temporary file must not stop the start: %v", err)
+	}
+	if _, err := os.Stat(interrupted); !os.IsNotExist(err) {
+		t.Fatalf("the interrupted write must be removed: %v", err)
+	}
+	info, err := os.Stat(marker)
+	if err != nil || !info.ModTime().Equal(old) {
+		t.Fatalf("an unchanged marker must not be written again: %v %v", info.ModTime(), err)
+	}
+	// A damaged marker is written again.
+	if err := os.WriteFile(marker, []byte("cetirun"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "cetirun-skill-marketplace v1\n" {
+		t.Fatalf("marker %q %v", data, err)
+	}
+}
+
+func TestReleaseSkillFilesNeedsTheWholeSkill(t *testing.T) {
+	root := t.TempDir()
+	p := &Publisher{Root: root}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	release, _, err := p.Publish(TeamRef{Name: "research", UID: uid}, "sha256:x",
+		[]SkillContent{content("pdf-tools", "0123456789ab", map[string]string{"SKILL.md": "x", "notes.md": "n"})}, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ReleaseSkillFiles(uid, release.ID, "web"); err == nil {
+		t.Fatal("a skill that the release does not hold must be an error")
+	}
+	if err := os.Remove(filepath.Join(root, "teams", uid, "releases", release.ID, "pdf-tools", "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ReleaseSkillFiles(uid, release.ID, "pdf-tools"); err == nil {
+		t.Fatal("a skill without SKILL.md must be an error")
 	}
 }
 

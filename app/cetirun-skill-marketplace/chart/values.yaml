@@ -61,9 +61,14 @@ teamGCGrace: 1h
 # their Team's skills into the scratch space of their Sandbox when they start,
 # so raise the size limits only together with that space.
 limits:
-  # -- Largest repository commit that the service reads into memory. Keep it
-  # well below resources.limits.memory.
+  # -- Largest repository commit that the service loads: the pack that the Git
+  # server sends for the commit, and the commit's objects together. The service
+  # checks both before it decodes the commit into memory. Keep
+  # resources.limits.memory at least twice this size plus 256Mi.
   maxRepositorySize: 256Mi
+  # -- Most objects in the repository commit: its files, its directories and
+  # the commit itself.
+  maxRepositoryObjects: 100000
   # -- Most files in one skill.
   maxSkillFiles: 500
   # -- Largest total size of the files of one skill.

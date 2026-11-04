@@ -15,6 +15,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -23,9 +25,16 @@ import (
 )
 
 const (
-	markerFile = ".cetirun-marketplace"
-	tmpPrefix  = ".tmp-"
+	markerFile    = ".cetirun-marketplace"
+	markerContent = "cetirun-skill-marketplace v1\n"
+	tmpPrefix     = ".tmp-"
+	// tmpMaxAge is when an abandoned temporary entry may be removed.
+	tmpMaxAge = time.Hour
 )
+
+// atomicTemp matches the temporary file of an interrupted writeFileAtomic of
+// the file named in its first group.
+var atomicTemp = regexp.MustCompile(`^(.+)\.tmp-[0-9a-f]{12}$`)
 
 // File is one file of a published skill, relative to the skill directory.
 type File struct {
@@ -71,23 +80,41 @@ func ReleaseID(selectionDigest string, skills []api.SkillMarketplaceReleaseSkill
 	return hex.EncodeToString(sum[:])[:20]
 }
 
-// Init prepares the storage root, and refuses one that holds other data.
+// Init prepares the storage root, and refuses one that holds other data. The
+// temporary file of an interrupted write of the root marker is the
+// marketplace's own: Init removes it.
 func (p *Publisher) Init() error {
 	entries, err := os.ReadDir(p.Root)
 	if err != nil {
 		return fmt.Errorf("read the storage root: %w", err)
 	}
 	for _, entry := range entries {
-		switch entry.Name() {
-		case api.SkillMarketplaceTeamsDir, markerFile, "lost+found":
+		name := entry.Name()
+		switch {
+		case name == api.SkillMarketplaceTeamsDir || name == markerFile || name == "lost+found":
+		case entry.Type().IsRegular() && isAtomicTemp(name, markerFile):
+			if err := os.Remove(filepath.Join(p.Root, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove an interrupted write of the storage marker: %w", err)
+			}
 		default:
-			return fmt.Errorf("the storage root %s holds %q, which the marketplace did not write; use an empty container", p.Root, entry.Name())
+			return fmt.Errorf("the storage root %s holds %q, which the marketplace did not write; use an empty container", p.Root, name)
 		}
 	}
 	if err := os.MkdirAll(filepath.Join(p.Root, api.SkillMarketplaceTeamsDir), 0o755); err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(p.Root, markerFile), []byte("cetirun-skill-marketplace v1\n"))
+	marker := filepath.Join(p.Root, markerFile)
+	if existing, err := readRegular(marker, int64(len(markerContent))+1); err == nil && string(existing) == markerContent {
+		return nil
+	}
+	return writeFileAtomic(marker, []byte(markerContent))
+}
+
+// isAtomicTemp reports whether name is the temporary file of a writeFileAtomic
+// of the file target.
+func isAtomicTemp(name, target string) bool {
+	match := atomicTemp.FindStringSubmatch(name)
+	return match != nil && match[1] == target
 }
 
 func (p *Publisher) teamDir(uid string) (string, error) {
@@ -119,26 +146,38 @@ func (p *Publisher) EnsureTeam(uid string) error {
 	return os.MkdirAll(filepath.Join(dir, api.SkillMarketplaceReleasesDir), 0o755)
 }
 
-// ReadCurrent returns a Team's current release, or an empty ID.
+// readCurrentID returns the release that a Team's CURRENT names, or an empty
+// ID when the Team has no CURRENT yet.
+func readCurrentID(dir, uid string) (string, error) {
+	raw, err := readRegular(filepath.Join(dir, api.SkillMarketplaceCurrentFile), 64)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the CURRENT release of Team %s: %w", uid, err)
+	}
+	id := strings.TrimSpace(string(raw))
+	if !api.ValidSkillMarketplaceReleaseID(id) {
+		return "", fmt.Errorf("Team %s has an invalid CURRENT release", uid)
+	}
+	return id, nil
+}
+
+// ReadCurrent returns a Team's current release, or an empty ID when the Team
+// has no CURRENT yet. Any other failure is an error, also when CURRENT names a
+// release whose manifest cannot be read.
 func (p *Publisher) ReadCurrent(uid string) (string, *api.SkillMarketplaceRelease, error) {
 	dir, err := p.teamDir(uid)
 	if err != nil {
 		return "", nil, err
 	}
-	raw, err := readRegular(filepath.Join(dir, api.SkillMarketplaceCurrentFile), 64)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil, nil
-	}
-	if err != nil {
+	id, err := readCurrentID(dir, uid)
+	if err != nil || id == "" {
 		return "", nil, err
-	}
-	id := strings.TrimSpace(string(raw))
-	if !api.ValidSkillMarketplaceReleaseID(id) {
-		return "", nil, fmt.Errorf("Team %s has an invalid CURRENT release", uid)
 	}
 	manifest, err := readRegular(filepath.Join(dir, api.SkillMarketplaceReleasesDir, id, api.SkillMarketplaceReleaseManifest), 1<<20)
 	if err != nil {
-		return id, nil, err
+		return id, nil, fmt.Errorf("read the manifest of Team %s release %s: %w", uid, id, err)
 	}
 	var release api.SkillMarketplaceRelease
 	if err := json.Unmarshal(manifest, &release); err != nil || release.ID != id {
@@ -148,7 +187,8 @@ func (p *Publisher) ReadCurrent(uid string) (string, *api.SkillMarketplaceReleas
 }
 
 // ReleaseSkillFiles lists the files of one skill of an existing release, so
-// a retained skill can be copied into the next release.
+// a retained skill can be copied into the next release. A skill directory
+// that cannot be read completely, or that has no SKILL.md, is an error.
 func (p *Publisher) ReleaseSkillFiles(uid, id, skill string) ([]File, error) {
 	dir, err := p.teamDir(uid)
 	if err != nil {
@@ -182,7 +222,13 @@ func (p *Publisher) ReleaseSkillFiles(uid, id, skill string) ([]File, error) {
 			Open: func() (io.ReadCloser, error) { return os.Open(name) }})
 		return nil
 	})
-	return files, err
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(files, func(file File) bool { return file.RelPath == "SKILL.md" }) {
+		return nil, fmt.Errorf("release %s skill %s has no SKILL.md", id, skill)
+	}
+	return files, nil
 }
 
 // Publish writes a release for the selection and makes it CURRENT. It does
@@ -332,12 +378,27 @@ func selectionMatches(release, digest string) bool {
 
 // GC keeps the CURRENT release and the keep most recent others, and removes
 // older releases after minAge and abandoned temporary entries after an hour.
+// It removes nothing while CURRENT cannot be read.
 func (p *Publisher) GC(uid string, keep int, minAge time.Duration) error {
 	dir, err := p.teamDir(uid)
 	if err != nil {
 		return err
 	}
-	current, _, _ := p.ReadCurrent(uid)
+	current, err := readCurrentID(dir, uid)
+	if err != nil {
+		return fmt.Errorf("keep every release: %w", err)
+	}
+	now := p.now()
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() || !isAtomicTemp(entry.Name(), api.SkillMarketplaceCurrentFile) {
+				continue
+			}
+			if info, err := entry.Info(); err == nil && now.Sub(info.ModTime()) > tmpMaxAge {
+				_ = os.Remove(filepath.Join(dir, entry.Name()))
+			}
+		}
+	}
 	releases := filepath.Join(dir, api.SkillMarketplaceReleasesDir)
 	entries, err := os.ReadDir(releases)
 	if errors.Is(err, os.ErrNotExist) {
@@ -351,7 +412,6 @@ func (p *Publisher) GC(uid string, keep int, minAge time.Duration) error {
 		mod  time.Time
 	}
 	var others []candidate
-	now := p.now()
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
@@ -359,7 +419,7 @@ func (p *Publisher) GC(uid string, keep int, minAge time.Duration) error {
 		}
 		name := entry.Name()
 		if strings.HasPrefix(name, tmpPrefix) {
-			if now.Sub(info.ModTime()) > time.Hour {
+			if now.Sub(info.ModTime()) > tmpMaxAge {
 				_ = os.RemoveAll(filepath.Join(releases, name))
 			}
 			continue

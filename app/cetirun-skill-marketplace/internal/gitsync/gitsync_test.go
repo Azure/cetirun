@@ -73,7 +73,7 @@ func TestResolveAndFetchLocalRepository(t *testing.T) {
 	if err != nil || hash.String() != first {
 		t.Fatalf("resolve: %v %v %v", ref, hash, err)
 	}
-	snapshot, err := source.Fetch(ctx, ref, 1<<20)
+	snapshot, err := source.Fetch(ctx, ref, testLimits)
 	if err != nil || snapshot.Commit != first {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestResolveAndFetchLocalRepository(t *testing.T) {
 	if err != nil || hash.String() != second {
 		t.Fatalf("a new commit must resolve: %v %v", hash, err)
 	}
-	if _, err := source.Fetch(ctx, ref, 4); err == nil {
+	if _, err := source.Fetch(ctx, ref, Limits{MaxBytes: 4, MaxObjects: 100}); err == nil {
 		t.Fatalf("a commit larger than the limit must be refused")
 	}
 	if _, _, err := (Source{URL: dir, Ref: "no-such-branch", Auth: AuthNone}).Resolve(ctx); err == nil {
@@ -125,6 +125,14 @@ func TestValidateAndRedact(t *testing.T) {
 // whose first want line does not ask for multi_ack (HTTP 400). It counts the
 // upload-pack requests that it passes on.
 func azureDevOpsLikeServer(t *testing.T, root string) (*httptest.Server, *atomic.Int32) {
+	return gitHTTPServer(t, root, true)
+}
+
+// gitHTTPServer serves the repositories below root over smart HTTP with git
+// http-backend, and counts the upload-pack requests that it passes on.
+// Unlike a local path, which go-git serves with a git-upload-pack child
+// process, a server connection can be closed while the server still sends.
+func gitHTTPServer(t *testing.T, root string, requireMultiACK bool) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	out, err := exec.Command("git", "--exec-path").Output()
 	if err != nil {
@@ -149,7 +157,7 @@ func azureDevOpsLikeServer(t *testing.T, root string) (*httptest.Server, *atomic
 			if size, err := strconv.ParseUint(string(body[:min(4, len(body))]), 16, 16); err == nil && int(size) <= len(body) && size >= 4 {
 				first = string(body[4:size])
 			}
-			if !strings.Contains(first, " multi_ack") {
+			if requireMultiACK && !strings.Contains(first, " multi_ack") {
 				http.Error(w, "multi_ack or multi_ack_detailed is required", http.StatusBadRequest)
 				return
 			}
@@ -174,7 +182,7 @@ func TestFetchWorksWithAServerThatRequiresMultiACK(t *testing.T) {
 	if err != nil || hash.String() == first {
 		t.Fatalf("resolve: %v %v %v", ref, hash, err)
 	}
-	snapshot, err := source.Fetch(ctx, ref, 1<<20)
+	snapshot, err := source.Fetch(ctx, ref, testLimits)
 	if err != nil || snapshot.Commit != hash.String() || served.Load() != 1 {
 		t.Fatalf("fetch through a server that requires multi_ack: %v (upload-pack requests: %d)", err, served.Load())
 	}
@@ -186,7 +194,7 @@ func TestFetchWorksWithAServerThatRequiresMultiACK(t *testing.T) {
 	saved := transport.UnsupportedCapabilities
 	transport.UnsupportedCapabilities = []capability.Capability{capability.MultiACK, capability.MultiACKDetailed, capability.ThinPack}
 	defer func() { transport.UnsupportedCapabilities = saved }()
-	if _, err := source.Fetch(ctx, ref, 1<<20); err == nil || !strings.Contains(err.Error(), "400") {
+	if _, err := source.Fetch(ctx, ref, testLimits); err == nil || !strings.Contains(err.Error(), "400") {
 		t.Fatalf("the test server must refuse a request without multi_ack: %v", err)
 	}
 }
@@ -295,7 +303,7 @@ func TestAnUnsafeNameRejectsOnlyItsSkill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := source.Fetch(ctx, ref, 1<<20)
+	snapshot, err := source.Fetch(ctx, ref, testLimits)
 	if err != nil || snapshot.Commit != commit {
 		t.Fatalf("an unsafe name must not stop the sync: %v", err)
 	}

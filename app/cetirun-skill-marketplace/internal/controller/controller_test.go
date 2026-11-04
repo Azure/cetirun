@@ -105,6 +105,115 @@ func TestTeamPublicationRetainsAndReportsMissing(t *testing.T) {
 	}
 }
 
+// A selected skill that the repository dropped keeps its last published
+// version. While that version or the current release cannot be read, the Team
+// keeps its current release: a new release would silently leave the skill out.
+func TestARetainedSkillWaitsForItsRelease(t *testing.T) {
+	const uid = "00000000-0000-4000-8000-000000000001"
+	root := t.TempDir()
+	publisher := &publish.Publisher{Root: root}
+	if err := publisher.Init(); err != nil {
+		t.Fatal(err)
+	}
+	kube := newClient(t, policyTeam("research", uid, "pdf-tools", "web"))
+	store := &Store{}
+	store.set("c1", []skills.Skill{repoSkill("pdf-tools", "0123456789ab", "pdf"), repoSkill("web", "ba9876543210", "web")})
+	catalog := NewCatalog(kube, kube, "cetirun-system", api.SkillMarketplaceRepository{})
+	r := &TeamReconciler{Client: kube, Publisher: publisher, Store: store, Catalog: catalog}
+	ctx := context.Background()
+	request := reconcile.Request{NamespacedName: types.NamespacedName{Name: "research"}}
+	if _, err := r.Reconcile(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := publisher.ReadCurrent(uid)
+	if err != nil || first == "" {
+		t.Fatalf("first release %q %v", first, err)
+	}
+	// The repository drops web, whose published files cannot be read.
+	store.set("c2", []skills.Skill{repoSkill("pdf-tools", "0123456789ac", "pdf2")})
+	skillMD := filepath.Join(root, "teams", uid, "releases", first, "web", "SKILL.md")
+	if err := os.Rename(skillMD, skillMD+".away"); err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(root, "teams", uid, "CURRENT")
+	blocked := func(step string) {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, request); err == nil {
+			t.Fatalf("%s: the publication must fail and be retried", step)
+		}
+		if data, err := os.ReadFile(current); err != nil || !strings.HasPrefix(string(data), first) && step != "CURRENT" {
+			t.Fatalf("%s: CURRENT must stay: %q %v", step, data, err)
+		}
+		if state := catalogTeams(t, catalog)[0]; !strings.Contains(state.Error, "could not be read") || len(state.Retained) != 0 {
+			t.Fatalf("%s: Team state %+v", step, state)
+		}
+	}
+	blocked("retained files")
+	// The current release itself cannot be read.
+	if err := os.WriteFile(current, []byte("damaged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocked("CURRENT")
+	if data, _ := os.ReadFile(current); string(data) != "damaged\n" {
+		t.Fatalf("a damaged CURRENT must stay until a release can replace it: %q", data)
+	}
+	// Once storage is readable again, the next release keeps web.
+	if err := os.WriteFile(current, []byte(first+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(skillMD+".away", skillMD); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := publisher.ReadCurrent(uid)
+	if err != nil || release == nil || release.ID == first {
+		t.Fatalf("a new release must follow: %+v %v", release, err)
+	}
+	versions := map[string]string{}
+	for _, skill := range release.Skills {
+		versions[skill.Name] = skill.Version
+	}
+	if versions["web"] != "ba9876543210" || versions["pdf-tools"] != "0123456789ac" {
+		t.Fatalf("release %+v", release.Skills)
+	}
+	if state := catalogTeams(t, catalog)[0]; state.Error != "" || len(state.Retained) != 1 {
+		t.Fatalf("Team state %+v", state)
+	}
+}
+
+// A Team whose selected skills are all in the repository needs nothing from
+// its current release: a damaged CURRENT does not stop its next release.
+func TestACompleteSelectionReplacesADamagedCURRENT(t *testing.T) {
+	const uid = "00000000-0000-4000-8000-000000000001"
+	root := t.TempDir()
+	publisher := &publish.Publisher{Root: root}
+	if err := publisher.Init(); err != nil {
+		t.Fatal(err)
+	}
+	kube := newClient(t, policyTeam("research", uid, "pdf-tools"))
+	store := &Store{}
+	store.set("c1", []skills.Skill{repoSkill("pdf-tools", "0123456789ab", "pdf")})
+	catalog := NewCatalog(kube, kube, "cetirun-system", api.SkillMarketplaceRepository{})
+	r := &TeamReconciler{Client: kube, Publisher: publisher, Store: store, Catalog: catalog}
+	ctx := context.Background()
+	request := reconcile.Request{NamespacedName: types.NamespacedName{Name: "research"}}
+	if _, err := r.Reconcile(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "teams", uid, "CURRENT"), []byte("damaged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.set("c2", []skills.Skill{repoSkill("pdf-tools", "0123456789ac", "pdf2")})
+	if _, err := r.Reconcile(ctx, request); err != nil {
+		t.Fatalf("a complete selection must publish: %v", err)
+	}
+	if _, release, err := publisher.ReadCurrent(uid); err != nil || release == nil || release.Skills[0].Version != "0123456789ac" {
+		t.Fatalf("release %+v %v", release, err)
+	}
+}
+
 func TestTeamWaitsForTheFirstSync(t *testing.T) {
 	publisher := &publish.Publisher{Root: t.TempDir()}
 	_ = publisher.Init()

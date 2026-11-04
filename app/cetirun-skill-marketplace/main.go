@@ -12,6 +12,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +52,7 @@ type options struct {
 	teamGCGrace       time.Duration
 	maxRepositorySize string
 	maxRepository     int64
+	maxObjects        int64
 	maxSkillSize      string
 	maxSkillMDSize    string
 	limits            skills.Limits
@@ -87,7 +90,8 @@ func parse(args []string) (options, error) {
 	fs.StringVar(&o.reserved, "reserved-names", strings.Join(skills.DefaultReserved, ","), "comma-separated reserved skill names")
 	fs.DurationVar(&o.teamGCGrace, "team-gc-grace", time.Hour, "how long a deleted Team's releases stay after its last publication")
 	defaults := skills.DefaultLimits
-	fs.StringVar(&o.maxRepositorySize, "max-repository-size", "256Mi", "largest repository commit to load")
+	fs.StringVar(&o.maxRepositorySize, "max-repository-size", "256Mi", "largest repository commit to load: the pack that the Git server sends, and its objects together")
+	fs.Int64Var(&o.maxObjects, "max-repository-objects", 100000, "most objects (files, directories and the commit) in the repository commit")
 	fs.IntVar(&o.limits.MaxFiles, "max-skill-files", defaults.MaxFiles, "most files in one skill")
 	fs.StringVar(&o.maxSkillSize, "max-skill-size", size(defaults.MaxBytes), "largest total size of the files of one skill")
 	fs.StringVar(&o.maxSkillMDSize, "max-skill-md-size", size(defaults.MaxSkillMD), "largest SKILL.md")
@@ -150,6 +154,9 @@ func parse(args []string) (options, error) {
 			return o, fmt.Errorf("%s must be at least 1", limit.flag)
 		}
 	}
+	if o.maxObjects < 1 {
+		return o, fmt.Errorf("--max-repository-objects must be at least 1")
+	}
 	if o.limits.MaxSkillMD > o.limits.MaxBytes {
 		return o, fmt.Errorf("--max-skill-md-size cannot be larger than --max-skill-size")
 	}
@@ -164,18 +171,42 @@ func main() {
 		logger.Error(err, "invalid configuration")
 		os.Exit(2)
 	}
+	if limit := setMemoryLimit("/sys/fs/cgroup/memory.max"); limit > 0 {
+		logger.Info("set the Go memory limit from the container's memory limit", "bytes", limit)
+	}
 	if err := run(ctrl.SetupSignalHandler(), o); err != nil {
 		logger.Error(err, "the Skill Marketplace stopped")
 		os.Exit(1)
 	}
 }
 
+// setMemoryLimit gives the Go runtime a soft memory limit of 90% of the
+// container's memory limit, unless GOMEMLIMIT sets one: the garbage collector
+// then runs before a fetch near the repository limit reaches the container
+// limit. It returns the limit that it set, or 0.
+func setMemoryLimit(cgroupFile string) int64 {
+	if os.Getenv("GOMEMLIMIT") != "" {
+		return 0
+	}
+	raw, err := os.ReadFile(cgroupFile)
+	if err != nil {
+		return 0
+	}
+	limit, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	if err != nil || limit <= 0 {
+		return 0
+	}
+	limit = limit / 10 * 9
+	debug.SetMemoryLimit(limit)
+	return limit
+}
+
 func run(ctx context.Context, o options) error {
 	logger := ctrl.Log.WithName("skill-marketplace")
 	logger.Info("starting", "version", Version, "commit", Commit, "repository", gitsync.Redacted(o.source.URL),
-		"ref", o.source.Ref, "path", o.path, "maxRepositoryBytes", o.maxRepository, "maxSkillFiles", o.limits.MaxFiles,
-		"maxSkillBytes", o.limits.MaxBytes, "maxSkillMDBytes", o.limits.MaxSkillMD, "maxSkillDepth", o.limits.MaxDepth,
-		"maxDescriptionLength", o.limits.MaxDescription)
+		"ref", o.source.Ref, "path", o.path, "maxRepositoryBytes", o.maxRepository, "maxRepositoryObjects", o.maxObjects,
+		"maxSkillFiles", o.limits.MaxFiles, "maxSkillBytes", o.limits.MaxBytes, "maxSkillMDBytes", o.limits.MaxSkillMD,
+		"maxSkillDepth", o.limits.MaxDepth, "maxDescriptionLength", o.limits.MaxDescription)
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return err
@@ -248,6 +279,7 @@ func newSyncer(o options, reserved []string, store *controller.Store, catalog *c
 	changed chan event.GenericEvent) *controller.Syncer {
 	return &controller.Syncer{
 		Source: o.source, Path: o.path, Interval: o.syncInterval, Limits: o.limits, Reserved: reserved,
-		MaxBytes: o.maxRepository, Store: store, Catalog: catalog, Changed: changed,
+		Fetch: gitsync.Limits{MaxBytes: o.maxRepository, MaxObjects: o.maxObjects},
+		Store: store, Catalog: catalog, Changed: changed,
 	}
 }

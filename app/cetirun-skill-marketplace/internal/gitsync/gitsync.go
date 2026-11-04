@@ -6,10 +6,13 @@
 package gitsync
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path"
@@ -18,10 +21,14 @@ import (
 	"strings"
 
 	"github.com/Azure/CetiRun/app/cetirun-skill-marketplace/internal/skills"
+	"github.com/go-git/go-billy/v5/osfs"
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/idxfile"
+	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -212,13 +219,33 @@ type Snapshot struct {
 	store  *memory.Storage
 }
 
+// Limits bound the memory that one fetch may use. The service checks them
+// while the pack arrives and before it decodes any object, so a commit that
+// is too large never reaches memory.
+type Limits struct {
+	// MaxBytes bounds the pack that the Git server sends, and the decoded
+	// objects of the commit together.
+	MaxBytes int64
+	// MaxObjects bounds the number of objects in the pack.
+	MaxObjects int64
+	// TempDir holds the pack until it is checked and decoded. Empty uses the
+	// default directory for temporary files.
+	TempDir string
+}
+
+// ErrLimit reports a commit that exceeds the fetch limits.
+var ErrLimit = errors.New("the repository commit exceeds the limits of the Skill Marketplace")
+
 // Fetch reads the commit that ref names into memory (depth 1).
-func (s Source) Fetch(ctx context.Context, ref plumbing.ReferenceName, maxBytes int64) (*Snapshot, error) {
+func (s Source) Fetch(ctx context.Context, ref plumbing.ReferenceName, limits Limits) (*Snapshot, error) {
+	if limits.MaxBytes <= 0 || limits.MaxObjects <= 0 {
+		return nil, fmt.Errorf("the fetch limits must be positive")
+	}
 	auth, err := s.auth()
 	if err != nil {
 		return nil, err
 	}
-	storage := memory.NewStorage()
+	storage := &boundedStorage{Storage: memory.NewStorage(), limits: limits}
 	repo, err := git.CloneContext(ctx, storage, nil, &git.CloneOptions{
 		URL: s.URL, Auth: auth, ReferenceName: ref, SingleBranch: true, Depth: 1,
 		Tags: git.NoTags, NoCheckout: true, RecurseSubmodules: git.NoRecurseSubmodules,
@@ -248,24 +275,220 @@ func (s Source) Fetch(ctx context.Context, ref plumbing.ReferenceName, maxBytes 
 	if err != nil {
 		return nil, err
 	}
-	var total int64
-	if err := walkTree(tree, func(_ string, entry object.TreeEntry) error {
-		if !entry.Mode.IsFile() {
-			return nil
-		}
-		size, err := storage.EncodedObjectSize(entry.Hash)
+	return &Snapshot{Commit: commit.Hash.String(), tree: tree, store: storage.Storage}, nil
+}
+
+// boundedStorage keeps the objects of one fetch in memory. go-git hands the
+// pack of a fetch to a storage that implements storer.PackfileWriter as a
+// stream, before it decodes anything: the stream goes to a temporary file,
+// which stops growing at the size limit, and the object headers of the
+// complete pack are checked before the pack is decoded into memory.
+type boundedStorage struct {
+	*memory.Storage
+	limits Limits
+}
+
+// PackfileWriter implements storer.PackfileWriter.
+func (s *boundedStorage) PackfileWriter() (io.WriteCloser, error) {
+	file, err := os.CreateTemp(s.limits.TempDir, "cetirun-skills-pack-")
+	if err != nil {
+		return nil, fmt.Errorf("create a temporary file for the pack: %w", err)
+	}
+	return &packWriter{file: file, storage: s}, nil
+}
+
+type packWriter struct {
+	file    *os.File
+	storage *boundedStorage
+	written int64
+	failed  error
+}
+
+func (w *packWriter) Write(data []byte) (int, error) {
+	if w.failed != nil {
+		return 0, w.failed
+	}
+	if int64(len(data)) > w.storage.limits.MaxBytes-w.written {
+		w.failed = fmt.Errorf("%w: the Git server sent more than %d bytes for the commit", ErrLimit, w.storage.limits.MaxBytes)
+		return 0, w.failed
+	}
+	n, err := w.file.Write(data)
+	w.written += int64(n)
+	if err != nil {
+		w.failed = err
+	}
+	return n, err
+}
+
+// Close checks the complete pack and decodes it into the storage. go-git
+// also calls Close after a failed transfer; then nothing is decoded.
+func (w *packWriter) Close() error {
+	defer func() {
+		_ = w.file.Close()
+		_ = os.Remove(w.file.Name())
+	}()
+	if w.failed != nil {
+		return w.failed
+	}
+	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if err := checkPack(w.file, w.storage.limits); err != nil {
+		return err
+	}
+	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	decodeHook()
+	return loadPack(w.file, w.storage.Storage)
+}
+
+// decodeHook runs before a checked pack is decoded (tests replace it).
+var decodeHook = func() {}
+
+// streamedObjectSize is the size from which an object is read from the pack
+// file as a stream when it is copied into memory.
+const streamedObjectSize = 1 << 20
+
+// deltaBaseCache bounds the objects that the copy keeps to resolve deltas,
+// instead of go-git's default of 96 MiB.
+const deltaBaseCache = 16 * cache.MiByte
+
+// loadPack copies the objects of a checked pack into the storage. go-git's
+// parser holds every object in memory, and grows its buffer of the largest
+// object to twice its size: decoding into a storage needs about four times
+// the largest object. Here the parser only indexes the pack, which needs the
+// largest object once, and each object is then copied into a buffer of its
+// exact size.
+func loadPack(file *os.File, storage *memory.Storage) error {
+	index := new(idxfile.Writer)
+	// A seekable source: the parser reads deltas from the file, not memory.
+	parser, err := packfile.NewParser(packfile.NewScanner(file), index)
+	if err != nil {
+		return err
+	}
+	if _, err := parser.Parse(); err != nil {
+		return err
+	}
+	entries, err := index.Index()
+	if err != nil {
+		return err
+	}
+	fs := osfs.New(filepath.Dir(file.Name()))
+	packFile, err := fs.Open(filepath.Base(file.Name()))
+	if err != nil {
+		return err
+	}
+	pack := packfile.NewPackfileWithCache(entries, fs, packFile, cache.NewObjectLRU(deltaBaseCache), streamedObjectSize)
+	defer func() { _ = pack.Close() }()
+	objects, err := pack.GetAll()
+	if err != nil {
+		return err
+	}
+	defer objects.Close()
+	return objects.ForEach(func(object plumbing.EncodedObject) error {
+		content := make([]byte, object.Size())
+		reader, err := object.Reader()
 		if err != nil {
 			return err
 		}
-		total += size
-		if total > maxBytes {
-			return fmt.Errorf("the repository commit holds more than %d bytes of files", maxBytes)
+		_, err = io.ReadFull(reader, content)
+		if closeErr := reader.Close(); err == nil {
+			err = closeErr
 		}
-		return nil
-	}); err != nil {
-		return nil, err
+		if err != nil {
+			return fmt.Errorf("read object %s of the pack: %w", object.Hash(), err)
+		}
+		_, err = storage.SetEncodedObject(&exactObject{hash: object.Hash(), kind: object.Type(), content: content})
+		return err
+	})
+}
+
+// exactObject holds the content of an object in a slice of its exact size.
+type exactObject struct {
+	hash    plumbing.Hash
+	kind    plumbing.ObjectType
+	content []byte
+}
+
+func (o *exactObject) Hash() plumbing.Hash           { return o.hash }
+func (o *exactObject) Type() plumbing.ObjectType     { return o.kind }
+func (o *exactObject) SetType(t plumbing.ObjectType) { o.kind = t }
+func (o *exactObject) Size() int64                   { return int64(len(o.content)) }
+func (o *exactObject) SetSize(int64)                 {}
+func (o *exactObject) Reader() (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(o.content)), nil
+}
+func (o *exactObject) Writer() (io.WriteCloser, error) {
+	return nil, errors.New("a fetched object cannot be changed")
+}
+
+// checkPack reads the object headers of a pack without keeping any object,
+// and refuses a pack whose objects together are larger than the limits. The
+// size of a delta object is the size of the object that it produces, which
+// the start of the delta records.
+func checkPack(pack io.Reader, limits Limits) error {
+	scanner := packfile.NewScanner(pack)
+	_, count, err := scanner.Header()
+	if err != nil {
+		return err
 	}
-	return &Snapshot{Commit: commit.Hash.String(), tree: tree, store: storage}, nil
+	if int64(count) > limits.MaxObjects {
+		return fmt.Errorf("%w: the commit has %d objects, more than %d", ErrLimit, count, limits.MaxObjects)
+	}
+	tooLarge := fmt.Errorf("%w: the objects of the commit hold more than %d bytes", ErrLimit, limits.MaxBytes)
+	var total int64
+	for i := uint32(0); i < count; i++ {
+		header, err := scanner.NextObjectHeader()
+		if err != nil {
+			return err
+		}
+		size := header.Length
+		if header.Type == plumbing.OFSDeltaObject || header.Type == plumbing.REFDeltaObject {
+			// Decoding holds the delta itself too.
+			if size < 0 || size > limits.MaxBytes {
+				return tooLarge
+			}
+			prefix := &deltaPrefix{}
+			if _, _, err := scanner.NextObject(prefix); err != nil {
+				return err
+			}
+			if size, err = prefix.targetSize(); err != nil {
+				return err
+			}
+		}
+		if size < 0 || size > limits.MaxBytes-total {
+			return tooLarge
+		}
+		total += size
+	}
+	_, err = scanner.Checksum()
+	return err
+}
+
+// deltaPrefix keeps the start of a delta: the sizes of its base and of the
+// object that it produces, each a little-endian base-128 number.
+type deltaPrefix struct {
+	data []byte
+}
+
+func (d *deltaPrefix) Write(p []byte) (int, error) {
+	if room := 2*binary.MaxVarintLen64 - len(d.data); room > 0 {
+		d.data = append(d.data, p[:min(room, len(p))]...)
+	}
+	return len(p), nil
+}
+
+func (d *deltaPrefix) targetSize() (int64, error) {
+	_, n := binary.Uvarint(d.data)
+	if n <= 0 {
+		return 0, fmt.Errorf("%w: a delta has an invalid base size", packfile.ErrMalformedPackFile)
+	}
+	target, m := binary.Uvarint(d.data[n:])
+	if m <= 0 || target > math.MaxInt64 {
+		return 0, fmt.Errorf("%w: a delta has an invalid target size", packfile.ErrMalformedPackFile)
+	}
+	return int64(target), nil
 }
 
 // walkTree visits every entry of tree, parents first. Unlike go-git's
@@ -298,8 +521,18 @@ func (s Source) sanitize(err error) error {
 	if errors.Is(err, transport.ErrAuthenticationRequired) || errors.Is(err, transport.ErrAuthorizationFailed) {
 		return fmt.Errorf("repository access was refused: check the credentials Secret (%s)", message)
 	}
-	return errors.New(message)
+	return &sanitizedError{message: message, err: err}
 }
+
+// sanitizedError replaces the message of an error, and keeps the error for
+// errors.Is.
+type sanitizedError struct {
+	message string
+	err     error
+}
+
+func (e *sanitizedError) Error() string { return e.message }
+func (e *sanitizedError) Unwrap() error { return e.err }
 
 // Walk implements skills.Tree.
 func (s *Snapshot) Walk(root string, fn func(skills.Entry) error) error {

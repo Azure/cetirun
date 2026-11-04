@@ -91,8 +91,9 @@ These rules also apply:
   rejected.
 - The service ignores a `SKILL.md` in a directory whose name starts with `.`,
   for example `.github`. The same applies to the directories below it.
-- The service refuses a commit that has more files than the repository limit,
-  256 MiB by default.
+- The service refuses a commit that exceeds the repository limits: by default,
+  256 MiB and 100,000 objects. Files outside `repository.path` count too,
+  because the service reads the whole commit.
 
 The version of a skill is the first 12 hexadecimal characters of the Git tree
 hash of its directory. When a file of the skill changes, its version changes.
@@ -107,12 +108,20 @@ The other limits are defaults that CetiRun chose to keep each skill small.
 
 | Value | Default | Limit |
 | --- | --- | --- |
-| `limits.maxRepositorySize` | `256Mi` | Total size of the files of the repository commit, which the service reads into memory |
+| `limits.maxRepositorySize` | `256Mi` | Size of the repository commit: the pack that the Git server sends for it, and its objects together |
+| `limits.maxRepositoryObjects` | `100000` | Objects of the repository commit: its files, its directories, and the commit |
 | `limits.maxSkillFiles` | `500` | Number of files in one skill |
 | `limits.maxSkillSize` | `5Mi` | Total size of the files of one skill |
 | `limits.maxSkillMDSize` | `256Ki` | Size of `SKILL.md`. It cannot be larger than `maxSkillSize`. |
 | `limits.maxSkillDepth` | `8` | Directory levels of a file below the skill directory |
 | `limits.maxDescriptionLength` | `1024` | Characters of the `description` |
+
+The service holds the commit in memory. It checks the repository limits before
+it decodes a commit. It stops the transfer when the pack from the Git server
+exceeds `maxRepositorySize`. Then it reads the object headers of the pack
+before it decodes any object. A commit that exceeds a limit does not reach
+memory. Until the repository has a commit within the limits, the catalog keeps
+the last commit that the service read.
 
 You cannot change the 64-character name limit, because Team and Policy
 validation also use it. Before you increase a size limit, do these checks:
@@ -120,8 +129,14 @@ validation also use it. Before you increase a size limit, do these checks:
 - When an Agent starts, it copies all the skills of its Team into the scratch
   space of its Sandbox. Make sure that the copy fits in the scratch size of
   the Sandboxes of the Team.
-- Keep `maxRepositorySize` well below the memory limit of the service,
-  `resources.limits.memory`. The default memory limit is `1Gi`.
+- Keep the memory limit of the service, `resources.limits.memory`, at least
+  twice `maxRepositorySize` plus 256 MiB. A commit needs memory for its
+  objects and once more for its largest object. The default memory limit,
+  `1Gi`, fits the default repository limits. The service sets the soft memory
+  limit of its Go runtime to 90% of the memory limit of its container.
+- The service writes the pack of a check to an `emptyDir` volume of its Pod.
+  It removes the pack after the check. The pack is at most
+  `maxRepositorySize`.
 
 With `make deploy`, set the values in the environment file below
 `platform.values.cetirun-skill-marketplace.limits`. The service uses changed
@@ -564,6 +579,12 @@ release of the Team has. The catalog lists the skill under `retained` for the
 Team, and the Portal shows **Retained**. The skill stays retained until it is
 valid again, or until you remove it from the Team.
 
+The service copies a retained skill from the current release of the Team. If
+it cannot read that release or the skill in it, it does not publish a release
+without the skill. It keeps the current release, it reports the error for the
+Team, and it tries again. Refer to
+[A Team release is pending](#a-team-release-is-pending).
+
 A selected skill is missing when it is not valid in the repository and not in
 the current release of the Team. The service
 publishes the release without it. The catalog lists the skill under `missing`,
@@ -673,7 +694,7 @@ kubectl logs -n cetirun-system deployment/cetirun-skill-marketplace --tail=50
 | `the repository path "<path>" does not exist in the commit` | Correct `repository.path` |
 | `read known_hosts (required for SSH)`, or a host key error | Add the host keys of the Git host to `known_hosts` |
 | `parse the SSH private key` | Use a private key without a passphrase |
-| `the repository commit holds more than <bytes> bytes of files` | Make the files of the commit smaller, or increase `limits.maxRepositorySize` (256 MiB by default). Refer to [Skill limits](#skill-limits). |
+| `the repository commit exceeds the limits of the Skill Marketplace` | The message names the limit. Make the commit smaller, or increase `limits.maxRepositorySize` (256 MiB by default) or `limits.maxRepositoryObjects` (100,000 by default). Files outside `repository.path` count too. Refer to [Skill limits](#skill-limits). |
 
 ### A Team release is pending
 
@@ -683,6 +704,11 @@ equal to `selectionDigest`. Examine the `error` of the Team in the catalog:
 - `the skills repository has not been synchronized yet`: the service has not
   read the repository since it started. It keeps the current release of the
   Team, and it tries again every ten seconds. Correct the error of the check.
+- `publication waits for the current release, which could not be read`: the
+  Team selects a [retained skill](#retained-and-missing-skills). The service
+  cannot read the current release of the Team or the skill in it. It keeps the
+  current release, and it tries again. Examine the mount of the service and
+  the container.
 - `publication failed`: the service cannot write to the container. Examine the
   private endpoint, the DNS zone, and the mount events of the Pod of the
   service.
@@ -743,7 +769,9 @@ Read the log of the service. These are frequent causes:
 
 - `which the marketplace did not write; use an empty container`: the
   container has an entry that the service did not write. Use an empty
-  container.
+  container. The service writes the marker file `.cetirun-marketplace` at the
+  root of the container. A write of the marker can stop before it completes.
+  The service then removes the temporary file of that write at its next start.
 - `invalid configuration`: a value is not valid, for example a `syncInterval`
   shorter than `30s`. Correct the value.
 - The Pod stays in `ContainerCreating`: the node cannot mount the container.

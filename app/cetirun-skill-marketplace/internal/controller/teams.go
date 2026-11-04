@@ -5,6 +5,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -72,7 +74,17 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, req reconcile.Request) (
 		r.Catalog.SetTeam(r.withCurrent(state))
 		return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
 	}
-	currentID, current, _ := r.Publisher.ReadCurrent(uid)
+	// A selected skill that the repository no longer offers keeps the version
+	// of the current release. The next release must not leave it out because
+	// that release could not be read: retry instead, and keep CURRENT.
+	var currentID string
+	var current *api.SkillMarketplaceRelease
+	if slices.ContainsFunc(selection, func(name string) bool { _, ok := available[name]; return !ok }) {
+		var err error
+		if currentID, current, err = r.Publisher.ReadCurrent(uid); err != nil {
+			return r.publicationBlocked(state, err)
+		}
+	}
 	var content []publish.SkillContent
 	for _, name := range selection {
 		if skill, ok := available[name]; ok {
@@ -81,11 +93,12 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, req reconcile.Request) (
 		}
 		if version := releaseVersion(current, name); version != "" {
 			files, err := r.Publisher.ReleaseSkillFiles(uid, currentID, name)
-			if err == nil {
-				content = append(content, publish.SkillContent{Name: name, Version: version, Files: files})
-				state.Retained = append(state.Retained, name)
-				continue
+			if err != nil {
+				return r.publicationBlocked(state, fmt.Errorf("read the retained skill %s: %w", name, err))
 			}
+			content = append(content, publish.SkillContent{Name: name, Version: version, Files: files})
+			state.Retained = append(state.Retained, name)
+			continue
 		}
 		state.Missing = append(state.Missing, name)
 	}
@@ -115,6 +128,16 @@ func (r *TeamReconciler) withCurrent(state api.SkillMarketplaceTeam) api.SkillMa
 		state.Skills = release.Skills
 	}
 	return state
+}
+
+// publicationBlocked records why a Team's publication waits, and returns the
+// error so that the Team is reconciled again with backoff. CURRENT and the
+// Team's releases stay as they are.
+func (r *TeamReconciler) publicationBlocked(state api.SkillMarketplaceTeam, err error) (reconcile.Result, error) {
+	state.Retained, state.Missing = nil, nil
+	state.Error = "publication waits for the current release, which could not be read: " + err.Error()
+	r.Catalog.SetTeam(r.withCurrent(state))
+	return reconcile.Result{}, fmt.Errorf("Team %s: %w", state.Name, err)
 }
 
 func releaseVersion(release *api.SkillMarketplaceRelease, name string) string {

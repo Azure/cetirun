@@ -144,17 +144,18 @@ class SkillMarketplacePlatformTests(unittest.TestCase):
 
         # The defaults are the service's own.
         self.assertEqual(args(VALUES), [
-            "--max-repository-size=256Mi", "--max-skill-files=500", "--max-skill-size=5Mi",
-            "--max-skill-md-size=256Ki", "--max-skill-depth=8", "--max-description-length=1024",
+            "--max-repository-size=256Mi", "--max-repository-objects=100000", "--max-skill-files=500",
+            "--max-skill-size=5Mi", "--max-skill-md-size=256Ki", "--max-skill-depth=8", "--max-description-length=1024",
         ])
-        limits = {"maxRepositorySize": "1Gi", "maxSkillFiles": 1000, "maxSkillSize": "20Mi",
+        limits = {"maxRepositorySize": "1Gi", "maxRepositoryObjects": 5000, "maxSkillFiles": 1000, "maxSkillSize": "20Mi",
                   "maxSkillMDSize": "524288", "maxSkillDepth": 12, "maxDescriptionLength": 2048}
         self.assertEqual(args(changed((("cetirun-skill-marketplace", "limits"), limits))), [
-            "--max-repository-size=1Gi", "--max-skill-files=1000", "--max-skill-size=20Mi",
-            "--max-skill-md-size=524288", "--max-skill-depth=12", "--max-description-length=2048",
+            "--max-repository-size=1Gi", "--max-repository-objects=5000", "--max-skill-files=1000",
+            "--max-skill-size=20Mi", "--max-skill-md-size=524288", "--max-skill-depth=12", "--max-description-length=2048",
         ])
         for field, value in (("maxSkillFiles", 0), ("maxSkillDepth", 1.5), ("maxDescriptionLength", "many"),
-                             ("maxSkillSize", "5MB"), ("maxRepositorySize", "0Mi"), ("maxSkillMDSize", "-1Ki")):
+                             ("maxRepositoryObjects", -1), ("maxSkillSize", "5MB"), ("maxRepositorySize", "0Mi"),
+                             ("maxSkillMDSize", "-1Ki")):
             with self.subTest(field=field, value=value):
                 result = self.helm(changed((("cetirun-skill-marketplace", "limits", field), value)))
                 self.assertNotEqual(result.returncode, 0, result.stdout)

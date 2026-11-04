@@ -48,9 +48,10 @@ type Syncer struct {
 	Interval time.Duration
 	Limits   skills.Limits
 	Reserved []string
-	MaxBytes int64
-	Store    *Store
-	Catalog  *Catalog
+	// Fetch bounds the memory of one fetch.
+	Fetch   gitsync.Limits
+	Store   *Store
+	Catalog *Catalog
 	// Changed receives one event after each new commit, to republish Teams.
 	Changed chan event.GenericEvent
 }
@@ -99,7 +100,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		s.Catalog.SetChecked()
 		return nil
 	}
-	snapshot, err := s.Source.Fetch(ctx, ref, s.MaxBytes)
+	snapshot, err := s.Source.Fetch(ctx, ref, s.Fetch)
 	if err != nil {
 		return err
 	}

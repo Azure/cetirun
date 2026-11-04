@@ -59,6 +59,7 @@ spec:
             - --reserved-names={{ join "," .Values.reservedNames }}
             - --team-gc-grace={{ .Values.teamGCGrace }}
             - --max-repository-size={{ .Values.limits.maxRepositorySize }}
+            - --max-repository-objects={{ .Values.limits.maxRepositoryObjects }}
             - --max-skill-files={{ .Values.limits.maxSkillFiles }}
             - --max-skill-size={{ .Values.limits.maxSkillSize }}
             - --max-skill-md-size={{ .Values.limits.maxSkillMDSize }}
@@ -100,9 +101,10 @@ spec:
         - name: storage
           persistentVolumeClaim:
             claimName: {{ include "cetirun-skill-marketplace.fullname" . }}-storage
+        # Holds the pack of one fetch while the service checks it: at most
+        # limits.maxRepositorySize, removed after the fetch.
         - name: tmp
-          emptyDir:
-            sizeLimit: 64Mi
+          emptyDir: {}
         {{- if ne $repository.auth "none" }}
         - name: credentials
           secret:
