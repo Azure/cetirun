@@ -72,6 +72,11 @@ func TestSandboxOpenClawPortalSignIn(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			bundle, values := openClawPortalSignInInputs(t, test.reconciled, test.mtls, test.on)
+			gateway := object(object(object(values["openclaw"])["config"])["gateway"])
+			gateway["mode"] = "local"
+			object(gateway["auth"])["token"] = "sk-dummy-local"
+			remote := map[string]any{"url": "wss://gateway.example.com", "token": "sk-dummy-remote"}
+			gateway["remote"] = remote
 			chrt := testChart(t)
 			prepared, err := PrepareSandboxChart(chrt, values, nil, bundle)
 			if err != nil {
@@ -100,6 +105,16 @@ func TestSandboxOpenClawPortalSignIn(t *testing.T) {
 			}
 			if object(object(config["gateway"])["auth"])["mode"] != mode {
 				t.Fatal("Sandbox sign-in did not follow the mTLS opt-in")
+			}
+			if test.mtls && test.on {
+				remote = map[string]any{"url": "wss://gateway.example.com"}
+				if _, present := object(object(config["gateway"])["auth"])["token"]; present {
+					t.Fatal("Portal sign-in retained the local gateway token")
+				}
+			}
+			if object(config["gateway"])["mode"] != "local" ||
+				!reflect.DeepEqual(object(config["gateway"])["remote"], remote) {
+				t.Fatal("remote gateway credentials did not follow the selected authentication mode")
 			}
 			template, err := prepared.SandboxTemplate()
 			if err != nil {
@@ -141,6 +156,10 @@ func TestSandboxOpenClawPortalSignInRejectsChangedChart(t *testing.T) {
 		{"loopback auth", "agents/openclaw/config/native.tpl", `"allowLoopback" true`, `"allowLoopback" false`, "authentication contract"},
 		{"device approval", "agents/openclaw/config/native.tpl", `"deviceAutoApprove" (dict "enabled" true)`, `"deviceAutoApprove" (dict "enabled" false)`, "authentication contract"},
 		{"retained token", "agents/openclaw/config/native.tpl", `"mode" "trusted-proxy"`, `"mode" "trusted-proxy" "token" "sk-dummy"`, "authentication contract"},
+		{"remote token", "agents/openclaw/config/native.tpl", `{{- $_ := set $gateway "auth" (dict`,
+			`{{- $_ := set $gateway "remote" (dict "token" "sk-dummy") }}{{- $_ := set $gateway "auth" (dict`, "authentication contract"},
+		{"remote token reference", "agents/openclaw/config/native.tpl", `{{- $_ := set $gateway "auth" (dict`,
+			`{{- $_ := set $gateway "remote" (dict "token" (dict "source" "env" "provider" "default" "id" "EXAMPLE_REMOTE_TOKEN")) }}{{- $_ := set $gateway "auth" (dict`, "authentication contract"},
 		{"proxy trust", "agents/openclaw/config/native.tpl", `{{- $_ := set $gateway "auth" (dict`,
 			`{{- $_ := set $gateway "trustedProxies" (list "127.0.0.1" "192.0.2.10") }}{{- $_ := set $gateway "auth" (dict`, "proxy trust differs"},
 		{"older native asset", "agents/openclaw/config/native.tpl",

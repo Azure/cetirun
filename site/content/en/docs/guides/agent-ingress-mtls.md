@@ -99,7 +99,10 @@ gateway credential environment. The doctor initializer still receives no
 gateway credentials. The existing gateway Secret key is unchanged. The Terminal CLI
 receives it as `OPENCLAW_GATEWAY_PASSWORD` instead of `OPENCLAW_GATEWAY_TOKEN`;
 OpenClaw does not accept a token in trusted-proxy mode. HOME initialization
-replaces saved gateway authentication, including an old token, on every start.
+replaces saved gateway authentication on every start. With Portal sign-in,
+rendering and HOME initialization remove both `gateway.auth.token` and
+`gateway.remote.token`. OpenClaw can use the remote token even when
+`gateway.mode` is `local`. Other remote settings are kept.
 Turning the opt-in off restores the token environment and removes the managed
 trusted-proxy configuration on the next start.
 

@@ -117,6 +117,41 @@ class OpenClawPortalSignInTests(unittest.TestCase):
         self.assertIn("OPENCLAW_GATEWAY_TOKEN", env)
         self.assertNotIn("OPENCLAW_GATEWAY_PASSWORD", env)
 
+    def test_portal_sign_in_removes_local_and_remote_tokens(self):
+        for native in (False, True):
+            for token in ("sk-dummy-remote", {"source": "env", "provider": "default", "id": "EXAMPLE_REMOTE_TOKEN"}):
+                with self.subTest(native=native, token_type=type(token).__name__):
+                    values = mtls_values() if native else legacy_values(openclaw={"portalSignIn": {"enabled": True}})
+                    gateway = values["openclaw"].setdefault("config", {}).setdefault("gateway", {})
+                    remote = {"url": "wss://gateway.example.com", "password": "sk-dummy-password"}
+                    gateway.update({
+                        "mode": "local", "auth": {"mode": "token", "token": "sk-dummy-local"},
+                        "remote": {**remote, "token": token},
+                    })
+                    config, env = rendered(values)
+                    self.assertEqual(config["gateway"]["mode"], "local")
+                    self.assertEqual(config["gateway"]["auth"]["mode"], "trusted-proxy")
+                    self.assertNotIn("token", config["gateway"]["auth"])
+                    self.assertEqual(config["gateway"]["remote"], remote)
+                    self.assertIn("OPENCLAW_GATEWAY_PASSWORD", env)
+                    self.assertNotIn("OPENCLAW_GATEWAY_TOKEN", env)
+
+    def test_non_proxy_modes_preserve_remote_tokens(self):
+        tailscale = legacy_values(openclaw={"portalSignIn": {"enabled": True}})
+        tailscale["secrets"]["tailscaleAuthKey"] = "tskey-example"
+        plain = native_values()
+        plain["openclaw"]["portalSignIn"] = {"enabled": True}
+        for name, values in (("legacy off", legacy_values()), ("mTLS off", mtls_values(enabled=False)),
+                             ("Tailscale", tailscale), ("plain Sandbox", plain)):
+            with self.subTest(name=name):
+                gateway = values.setdefault("openclaw", {}).setdefault("config", {}).setdefault("gateway", {})
+                remote = {"url": "wss://gateway.example.com", "token": "sk-dummy-remote"}
+                gateway["remote"] = remote
+                config, env = rendered(values)
+                self.assertEqual(config["gateway"]["remote"], remote)
+                self.assertNotEqual(config["gateway"].get("auth", {}).get("mode"), "trusted-proxy")
+                self.assertIn("OPENCLAW_GATEWAY_TOKEN", env)
+
     def test_mtls_sign_in_rejects_missing_or_broadened_proxy_trust(self):
         for proxies in (None, [], ["127.0.0.6"], ["192.0.2.10"], ["127.0.0.0/8"],
                         ["10.244.0.0/16"], ["127.0.0.1", "192.0.2.10"]):

@@ -37,6 +37,8 @@ Licensed under the MIT License.
    in the Terminal, as OpenClaw refuses a token in this mode. */}}
 {{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (or (not .Values.sandboxWorkload) (dig "ingressMTLS" false (.Values.sandboxWorkload | default dict))) (not .TailscaleEnabled) }}
 {{- $gateway := dig "gateway" (dict) $config }}
+{{- /* OpenClaw falls back to the remote token even when gateway.mode is local. */}}
+{{- $_ := unset (dig "remote" (dict) $gateway | default dict) "token" }}
 {{- $trustedProxies := dig "trustedProxies" (list) $gateway }}
 {{- if .Values.sandboxWorkload }}
 {{- if not (and (eq (len $trustedProxies) 1) (has "127.0.0.1" $trustedProxies)) }}

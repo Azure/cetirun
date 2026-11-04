@@ -28,6 +28,7 @@ func (p *PreparedRelease) validateSandboxOpenClawConfig(config corev1.ConfigMap)
 			Bind           string         `json:"bind"`
 			TrustedProxies []string       `json:"trustedProxies"`
 			Auth           map[string]any `json:"auth"`
+			Remote         map[string]any `json:"remote"`
 		} `json:"gateway"`
 	}
 	if err := json.Unmarshal([]byte(config.Data["openclaw.json"]), &native); err != nil || len(config.BinaryData) != 0 {
@@ -48,7 +49,8 @@ func (p *PreparedRelease) validateSandboxOpenClawConfig(config corev1.ConfigMap)
 				"deviceAutoApprove": map[string]any{"enabled": true},
 			},
 		}
-		if native.Gateway.Bind != "loopback" || !equality.Semantic.DeepEqual(native.Gateway.Auth, auth) {
+		_, hasRemoteToken := native.Gateway.Remote["token"]
+		if native.Gateway.Bind != "loopback" || !equality.Semantic.DeepEqual(native.Gateway.Auth, auth) || hasRemoteToken {
 			return fmt.Errorf("rendered OpenClaw Portal sign-in differs from the managed mTLS authentication contract")
 		}
 	} else if native.Gateway.Auth["mode"] == "trusted-proxy" {

@@ -742,25 +742,31 @@ PORTAL_SIGN_IN = {
 
 
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
-def test_native_openclaw_portal_sign_in_replaces_retained_auth_and_can_be_disabled(agent):
+@pytest.mark.parametrize("remote_token_source", ["source", "home"])
+def test_native_openclaw_portal_sign_in_replaces_retained_auth_and_can_be_disabled(agent, remote_token_source):
     source = native_openclaw_source(agent)
     saved = read_config(agent)
     saved["gateway"] = {
         "auth": {"mode": "token", "token": "saved-test-token"},
         "trustedProxies": ["10.244.0.0/16"], "bind": "lan",
+        "remote": {"token": "sk-dummy-saved-remote"},
     }
     saved["user_preference"] = "preserved"
     agent["config_file"].write_text(json.dumps(saved))
     source["gateway"].update({
         "bind": "loopback", "trustedProxies": ["127.0.0.1"], "auth": PORTAL_SIGN_IN,
+        "mode": "local", "remote": {"url": "wss://gateway.example.com"},
     })
+    if remote_token_source == "source":
+        source["gateway"]["remote"]["token"] = "sk-dummy-source-remote"
+    expected_gateway = {**source["gateway"], "remote": {"url": "wss://gateway.example.com"}}
     source_file = agent["config"] / "openclaw.json"
     source_file.write_text(json.dumps(source))
     for _ in range(2):
         result = run(agent)
         assert result.returncode == 0, result.stderr
         current = read_config(agent)
-        assert current["gateway"] == source["gateway"]
+        assert current["gateway"] == expected_gateway
         assert current["user_preference"] == "preserved"
     del source["gateway"]["auth"]
     source_file.write_text(json.dumps(source))
@@ -771,21 +777,32 @@ def test_native_openclaw_portal_sign_in_replaces_retained_auth_and_can_be_disabl
 
 
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
-def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth(agent):
+@pytest.mark.parametrize("remote_token_source", ["source", "home"])
+def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth(agent, remote_token_source):
     # A HOME that saved a token: OpenClaw refuses a token in trusted-proxy mode.
     assert run(agent).returncode == 0
     saved = read_config(agent)
-    saved["gateway"] = {"port": 18789, "auth": {"mode": "token", "token": "saved-test-token"}}
+    saved["gateway"] = {
+        "port": 18789, "auth": {"mode": "token", "token": "saved-test-token"},
+        "remote": {"token": "sk-dummy-saved-remote"},
+    }
     agent["config_file"].write_text(json.dumps(saved))
     source_file = agent["config"] / "openclaw.json"
     source = json.loads(source_file.read_text())
-    source["gateway"] = {"trustedProxies": ["127.0.0.6"], "auth": PORTAL_SIGN_IN}
+    remote = {"url": "wss://gateway.example.com", "password": "sk-dummy-password"}
+    source["gateway"] = {
+        "trustedProxies": ["127.0.0.6"], "auth": PORTAL_SIGN_IN, "mode": "local", "remote": dict(remote),
+    }
+    if remote_token_source == "source":
+        source["gateway"]["remote"]["token"] = "sk-dummy-source-remote"
     source_file.write_text(json.dumps(source))
-    result = run(agent)
-    assert result.returncode == 0, result.stderr
-    config = read_config(agent)
-    assert config["gateway"]["auth"] == PORTAL_SIGN_IN
-    assert config["gateway"]["port"] == 18789
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        config = read_config(agent)
+        assert config["gateway"]["auth"] == PORTAL_SIGN_IN
+        assert config["gateway"]["port"] == 18789
+        assert config["gateway"]["remote"] == remote
     # Turned off again: the chart's mode goes, and OpenClaw falls back to the
     # token from its environment.
     del source["gateway"]["auth"]
@@ -795,6 +812,7 @@ def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth
     config = read_config(agent)
     assert "auth" not in config["gateway"]
     assert config["gateway"]["trustedProxies"] == ["127.0.0.6"]
+    assert config["gateway"]["remote"] == source["gateway"]["remote"]
     # An owner's own non-proxy auth settings are not the chart's to remove.
     config["gateway"]["auth"] = {"mode": "password"}
     agent["config_file"].write_text(json.dumps(config))

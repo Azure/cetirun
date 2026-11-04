@@ -88,9 +88,6 @@ agent_apply_config() (
             elif all($lists[]; type == "array" and all(.[]; type == "string")) then
               setpath($path; reduce ($lists | add)[] as $entry ([]; if index($entry) == null then . + [$entry] else . end))
             else error("invalid plugin or skills list") end)
-    | if ($source.gateway.auth.mode // "") == "trusted-proxy" then .gateway.auth = $source.gateway.auth
-      elif (.gateway.auth.mode // "") == "trusted-proxy" then .gateway |= del(.auth)
-      else . end
     | if $source.plugins.entries["cetirun-memory-context"].enabled != true then
         if (.plugins.entries | type) == "object" then .plugins.entries |= del(.["cetirun-memory-context"]) else . end
         | if (.plugins.allow | type) == "array" then .plugins.allow |= map(select(. != "cetirun-memory-context")) else . end
@@ -109,6 +106,11 @@ agent_apply_config() (
         | .gateway = ($source.gateway // {})
       elif (.agents.list | type) == "array" then
         .agents.list |= map(del(.model))
+      else . end
+    | if ($source.gateway.auth.mode // "") == "trusted-proxy" then
+        .gateway.auth = $source.gateway.auth
+        | del(.gateway.remote.token)
+      elif (.gateway.auth.mode // "") == "trusted-proxy" then .gateway |= del(.auth)
       else . end
     '
   if [ -f "$dest" ]; then
