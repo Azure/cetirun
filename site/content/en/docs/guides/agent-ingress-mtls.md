@@ -73,6 +73,46 @@ Its resources are counted with the other resources of the Pod. It receives
 neither HOME nor application/model credentials. Istio injection stays
 disabled.
 
+## OpenClaw Control UI Portal sign-in
+
+With the registered mTLS endpoint above, a common-executor OpenClaw Sandbox
+can opt in to Portal sign-in:
+
+```yaml
+spec:
+  helm:
+    values:
+      openclaw:
+        portalSignIn:
+          enabled: true
+```
+
+The owner opens the Control UI from the Portal without pasting the gateway
+token or running `openclaw devices approve`. The shared ingress still strips
+client-supplied identity headers before sign-in and checks ownership before
+forwarding `x-auth-request-email`. The in-Pod Envoy verifies the approved
+per-Agent Gateway client certificate. OpenClaw listens on loopback and trusts
+exactly `127.0.0.1`, not the registered Pod network.
+
+The Operator validates the rendered proxy list, authentication settings, and
+gateway credential environment. The doctor initializer still receives no
+gateway credentials. The existing gateway Secret key is unchanged. The Terminal CLI
+receives it as `OPENCLAW_GATEWAY_PASSWORD` instead of `OPENCLAW_GATEWAY_TOKEN`;
+OpenClaw does not accept a token in trusted-proxy mode. HOME initialization
+replaces saved gateway authentication, including an old token, on every start.
+Turning the opt-in off restores the token environment and removes the managed
+trusted-proxy configuration on the next start.
+
+This setting defaults to false. Upgrade the Operator and runtime chart
+together before enabling it. An older chart that cannot render the requested
+mTLS sign-in contract is rejected rather than silently leaving token mode.
+Ordinary Sandbox ingress, whether registered by exact Pod IPs or by a Pod
+selector and trusted CIDRs, does not enable Portal sign-in. Retained
+single-start Sandbox lifetimes also keep token authentication and device
+approval. Native `gateway.auth` preferences cannot bypass this mTLS gate.
+Tailscale remains unsupported for the mTLS Sandbox. Legacy Agents retain
+their existing Istio-sidecar opt-in and token behavior with Tailscale.
+
 ## Custom HTTP and terminal
 
 A Custom registration uses `"harness": "custom"`, the exact declared

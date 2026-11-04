@@ -742,6 +742,35 @@ PORTAL_SIGN_IN = {
 
 
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_native_openclaw_portal_sign_in_replaces_retained_auth_and_can_be_disabled(agent):
+    source = native_openclaw_source(agent)
+    saved = read_config(agent)
+    saved["gateway"] = {
+        "auth": {"mode": "token", "token": "saved-test-token"},
+        "trustedProxies": ["10.244.0.0/16"], "bind": "lan",
+    }
+    saved["user_preference"] = "preserved"
+    agent["config_file"].write_text(json.dumps(saved))
+    source["gateway"].update({
+        "bind": "loopback", "trustedProxies": ["127.0.0.1"], "auth": PORTAL_SIGN_IN,
+    })
+    source_file = agent["config"] / "openclaw.json"
+    source_file.write_text(json.dumps(source))
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        current = read_config(agent)
+        assert current["gateway"] == source["gateway"]
+        assert current["user_preference"] == "preserved"
+    del source["gateway"]["auth"]
+    source_file.write_text(json.dumps(source))
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert read_config(agent)["gateway"] == source["gateway"]
+    assert "auth" not in read_config(agent)["gateway"]
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
 def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth(agent):
     # A HOME that saved a token: OpenClaw refuses a token in trusted-proxy mode.
     assert run(agent).returncode == 0

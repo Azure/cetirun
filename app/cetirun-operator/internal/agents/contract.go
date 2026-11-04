@@ -59,6 +59,7 @@ type Bindings struct {
 	NativeOptions     map[string]any
 	NativeSandbox     bool
 	ReconciledSandbox bool
+	IngressMTLS       bool     `json:",omitempty"`
 	TrustedProxyIPs   []string `json:",omitempty"`
 	Model             ModelBinding
 	Skills            SkillsBinding

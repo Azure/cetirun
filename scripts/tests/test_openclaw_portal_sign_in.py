@@ -39,6 +39,18 @@ def rendered(values):
     return config, names
 
 
+def mtls_values(enabled=True):
+    values = native_values()
+    values["sandboxWorkload"].update({
+        "reconciled": True, "executionHeld": False,
+        "ingressMTLS": True, "trustedProxyIPs": ["127.0.0.1"],
+    })
+    values["podAnnotations"]["cetirun.microsoft.com/agent-uid"] = "example-agent-uid"
+    values["openclaw"]["portalSignIn"] = {"enabled": enabled}
+    values["openclaw"]["config"]["gateway"] = {"bind": "loopback"}
+    return values
+
+
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class OpenClawPortalSignInTests(unittest.TestCase):
     def test_off_by_default_keeps_the_gateway_token(self):
@@ -67,11 +79,59 @@ class OpenClawPortalSignInTests(unittest.TestCase):
         self.assertIn("OPENCLAW_GATEWAY_TOKEN", env)
 
     def test_a_native_sandbox_workload_keeps_the_token(self):
-        values = native_values()
-        values["openclaw"]["portalSignIn"] = {"enabled": True}
-        config, env = rendered(values)
+        for reconciled in (False, True):
+            for proxies in (["192.0.2.10"], ["10.244.0.0/16"], ["127.0.0.1"]):
+                with self.subTest(reconciled=reconciled, proxies=proxies):
+                    values = native_values()
+                    values["sandboxWorkload"]["trustedProxyIPs"] = proxies
+                    if reconciled:
+                        values["sandboxWorkload"].update({"reconciled": True, "executionHeld": False})
+                    values["openclaw"]["portalSignIn"] = {"enabled": True}
+                    config, env = rendered(values)
+                    self.assertNotEqual(config["gateway"].get("auth", {}).get("mode"), "trusted-proxy")
+                    self.assertIn("OPENCLAW_GATEWAY_TOKEN", env)
+                    self.assertNotIn("OPENCLAW_GATEWAY_PASSWORD", env)
+
+    def test_mtls_sign_in_trusts_only_the_managed_loopback_proxy(self):
+        config, env = rendered(mtls_values())
+        self.assertEqual(config["gateway"]["bind"], "loopback")
+        self.assertEqual(config["gateway"]["trustedProxies"], ["127.0.0.1"])
+        self.assertEqual(config["gateway"]["auth"], {
+            "mode": "trusted-proxy",
+            "trustedProxy": {"userHeader": "x-auth-request-email", "allowLoopback": True,
+                             "deviceAutoApprove": {"enabled": True}},
+        })
+        self.assertNotIn("OPENCLAW_GATEWAY_TOKEN", env)
+        self.assertEqual(env["OPENCLAW_GATEWAY_PASSWORD"]["valueFrom"]["secretKeyRef"], {
+            "name": "example-gateway-token", "key": "OPENCLAW_GATEWAY_TOKEN",
+        })
+        pod = object_of_kind(render(RUNTIME_CHART, mtls_values()), "StatefulSet")["spec"]["template"]["spec"]
+        doctor = next(container for container in pod["initContainers"] if container["name"] == "doctor")
+        doctor_env = {item["name"]: item for item in doctor["env"]}
+        self.assertNotIn("OPENCLAW_GATEWAY_TOKEN", doctor_env)
+        self.assertNotIn("OPENCLAW_GATEWAY_PASSWORD", doctor_env)
+
+    def test_mtls_without_sign_in_keeps_the_token(self):
+        config, env = rendered(mtls_values(enabled=False))
         self.assertNotEqual(config["gateway"].get("auth", {}).get("mode"), "trusted-proxy")
         self.assertIn("OPENCLAW_GATEWAY_TOKEN", env)
+        self.assertNotIn("OPENCLAW_GATEWAY_PASSWORD", env)
+
+    def test_mtls_sign_in_rejects_missing_or_broadened_proxy_trust(self):
+        for proxies in (None, [], ["127.0.0.6"], ["192.0.2.10"], ["127.0.0.0/8"],
+                        ["10.244.0.0/16"], ["127.0.0.1", "192.0.2.10"]):
+            with self.subTest(proxies=proxies):
+                values = mtls_values()
+                if proxies is None:
+                    del values["sandboxWorkload"]["trustedProxyIPs"]
+                else:
+                    values["sandboxWorkload"]["trustedProxyIPs"] = proxies
+                render(RUNTIME_CHART, values, error="127.0.0.1")
+
+    def test_mtls_sign_in_requires_a_loopback_listener(self):
+        values = mtls_values()
+        values["openclaw"]["config"]["gateway"]["bind"] = "lan"
+        render(RUNTIME_CHART, values, error="gateway.bind=loopback")
 
     def test_without_the_sidecar_address_the_chart_refuses(self):
         values = legacy_values(openclaw={"portalSignIn": {"enabled": True},

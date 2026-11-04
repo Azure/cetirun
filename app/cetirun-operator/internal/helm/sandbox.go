@@ -312,6 +312,9 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 	if len(compiled) != 0 || !native["StatefulSet"] || !native["ConfigMap"] || !native["Service"] {
 		return fmt.Errorf("Sandbox render omitted a required workload or compiler resource")
 	}
+	if p.sandboxOpenClawPortalSignIn() && !seen["v1/ConfigMap/"+input.Namespace.Name+"/"+input.WorkloadName+"-config"] {
+		return fmt.Errorf("Sandbox Portal sign-in requires the validated OpenClaw configuration")
+	}
 	p.manifest = slices.Clone(manifest.Bytes())
 	sum := sha256.Sum256(p.manifest)
 	p.manifestHash, p.PlanHash = hex.EncodeToString(sum[:]), input.Controls.Revision
@@ -353,22 +356,17 @@ func (p *PreparedRelease) validateSandboxNative(object unstructured.Unstructured
 		if err := p.sandboxBundle.ValidateTemplate(&stateful.Spec.Template, p.Agent.Image); err != nil {
 			return err
 		}
+		if err := p.validateSandboxOpenClawEnvironment(stateful.Spec.Template.Spec); err != nil {
+			return err
+		}
 		p.sandboxTemplate = stateful.Spec.Template.DeepCopy()
 	case "v1/ConfigMap":
 		var config corev1.ConfigMap
 		if err := decodeObject(object.Object, &config); err != nil || config.Name != name+"-config" || len(config.BinaryData) != 0 {
 			return fmt.Errorf("unexpected native Sandbox configuration")
 		}
-		if len(input.Controls.TrustedProxyIPs) != 0 {
-			var native struct {
-				Gateway struct {
-					TrustedProxies []string `json:"trustedProxies"`
-				} `json:"gateway"`
-			}
-			if err := json.Unmarshal([]byte(config.Data["openclaw.json"]), &native); err != nil ||
-				!slices.Equal(native.Gateway.TrustedProxies, input.Controls.TrustedProxyIPs) {
-				return fmt.Errorf("rendered OpenClaw proxy trust differs from the approved native ingress IPs")
-			}
+		if err := p.validateSandboxOpenClawConfig(config); err != nil {
+			return err
 		}
 	case "v1/Service":
 		var service corev1.Service

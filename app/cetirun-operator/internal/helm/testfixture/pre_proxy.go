@@ -28,14 +28,22 @@ var laterAdditions = map[string][]string{
 {{- end -}}
 `},
 	"agents/openclaw/config/native.tpl": {`{{- /* Portal sign-in: the ingress lets only the Agent's owner through, after
-   their Portal sign-in, and passes their email from that sign-in; the Istio
-   sidecar is the Agent's only proxy. OpenClaw then takes the owner from that
-   header and approves their browsers without "openclaw devices approve". The
+   their Portal sign-in, and passes their email from that sign-in. The only
+   trusted proxy is the Istio sidecar or the managed in-Pod mTLS endpoint.
+   OpenClaw takes the owner from that header and approves their browsers. The
    gateway token becomes a password for clients on loopback, such as the CLI
    in the Terminal, as OpenClaw refuses a token in this mode. */}}
-{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (not .Values.sandboxWorkload) (not .TailscaleEnabled) }}
+{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (or (not .Values.sandboxWorkload) (dig "ingressMTLS" false (.Values.sandboxWorkload | default dict))) (not .TailscaleEnabled) }}
 {{- $gateway := dig "gateway" (dict) $config }}
-{{- if not (has "127.0.0.6" (dig "trustedProxies" (list) $gateway)) }}
+{{- $trustedProxies := dig "trustedProxies" (list) $gateway }}
+{{- if .Values.sandboxWorkload }}
+{{- if not (and (eq (len $trustedProxies) 1) (has "127.0.0.1" $trustedProxies)) }}
+{{- $_ := required "Sandbox openclaw.portalSignIn needs exactly 127.0.0.1, the managed ingress mTLS proxy, in sandboxWorkload.trustedProxyIPs" "" }}
+{{- end }}
+{{- if ne (dig "bind" "" $gateway) "loopback" }}
+{{- $_ := required "Sandbox openclaw.portalSignIn needs gateway.bind=loopback behind managed ingress mTLS" "" }}
+{{- end }}
+{{- else if not (has "127.0.0.6" $trustedProxies) }}
 {{- $_ := required "openclaw.portalSignIn needs 127.0.0.6, the Istio sidecar, in openclaw.config.gateway.trustedProxies" "" }}
 {{- end }}
 {{- $_ := set $gateway "auth" (dict
