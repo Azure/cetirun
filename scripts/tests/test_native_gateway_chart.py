@@ -289,6 +289,10 @@ class NativeGatewayChartTests(unittest.TestCase):
         mounts = pod["containers"][0]["volumeMounts"]
         index = next(i for i, mount in enumerate(mounts) if mount["name"] == "shared-skills")
         mounts[index] = {"name": "empty-skills", "mountPath": "/home/vibe/.aks/skills", "readOnly": True}
+        pod["containers"][0]["env"] = [
+            item for item in pod["containers"][0]["env"]
+            if item["name"] not in {"CHOKIDAR_USEPOLLING", "CHOKIDAR_INTERVAL"}
+        ]
         self.assertEqual(object_of_kind(documents, "StatefulSet"), expected)
         for kind in ("Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "ServiceAccount", "CiliumNetworkPolicy"):
             self.assertEqual(
