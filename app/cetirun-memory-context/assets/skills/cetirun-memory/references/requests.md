@@ -134,6 +134,9 @@ If a write returns `DataModifiedOutsideHelper`, an owner has edited a generated 
 or `knowledge/<note-id>.md`. With owner approval, run `repair-index` through the explicit CLI envelope
 above, with an empty payload and the current `expectedGeneration`. Repair first saves each edited view
 beside the original as `<filename>.conflict-<sha256>`, then renders the view again from committed objects.
+Repair reports success only after installing the committed views. If installation fails after the
+commit, the command returns an error. Retry the same request envelope after resolving the I/O failure;
+the helper finishes that generation without committing another one.
 It does not import the edit into a note or overwrite the note object. Normal writes still refuse to
 overwrite edited views. Forget plans include conflict copies associated with their selected notes.
 Repair commits the regenerated view hashes in a new generation, so the next write recognizes them

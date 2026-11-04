@@ -4,6 +4,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -104,6 +105,81 @@ func TestRepairEditedIndex(t *testing.T) {
 	query := f.call(t, "query", Query{QueryTerms: []string{"repair index"}}).Data.(QueryResult)
 	if len(query.Hits) != 1 || query.Hits[0].Ref != ref {
 		t.Fatal("repair changed the authoritative note")
+	}
+}
+
+func TestRepairReportsViewInstallationFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("filesystem permission check requires a non-root process")
+	}
+	f := newFixture(t)
+	f.note(t, testNote("retained synthetic note"))
+	request := f.request(t, struct{}{})
+	if err := os.Chmod(f.store.Config.Root, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(f.store.Config.Root, 0700) })
+	response, code := f.store.Execute(context.Background(), "repair-index", request)
+	if code == 0 || response.OK {
+		t.Fatalf("repair reported success without installing its view: %+v", response)
+	}
+	if err := os.Chmod(f.store.Config.Root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	replayed, code := f.store.Execute(context.Background(), "repair-index", request)
+	if code != 0 || !replayed.OK || replayed.Generation != response.Generation {
+		t.Fatalf("repair replay did not finish the committed generation: %+v", replayed)
+	}
+	assertInstalledViews(t, f)
+}
+
+func TestRepairReplayInstallsCommittedView(t *testing.T) {
+	f := newFixture(t)
+	f.note(t, testNote("retained synthetic note"))
+	index := filepath.Join(f.store.Config.Root, "index.md")
+	edit := []byte("synthetic owner edit\n")
+	if err := os.WriteFile(index, edit, 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := f.request(t, struct{}{})
+	f.store.fault = func(point string) error {
+		if point == "head" {
+			return context.Canceled
+		}
+		return nil
+	}
+	first, code := f.store.Execute(context.Background(), "repair-index", request)
+	if code != 8 || first.Reason != "CommitOutcomeUnknown" {
+		t.Fatalf("fixture did not stop after committed HEAD: %+v", first)
+	}
+	f.store = New(f.store.Config)
+	response, code := f.store.Execute(context.Background(), "repair-index", request)
+	if code != 0 || !response.OK || response.Generation != first.Generation {
+		t.Fatalf("repair replay did not finish the committed generation: %+v", response)
+	}
+	assertInstalledViews(t, f)
+	backups, err := filepath.Glob(index + ".conflict-*")
+	if err != nil || len(backups) != 1 {
+		t.Fatal("replay did not preserve exactly one conflicting view", backups, err)
+	}
+	if data, err := os.ReadFile(backups[0]); err != nil || !bytes.Equal(data, edit) {
+		t.Fatal("replay lost the owner's edit", err)
+	}
+	f.note(t, testNote("capture after repair replay"))
+}
+
+func assertInstalledViews(t *testing.T, f fixture) {
+	t.Helper()
+	v, err := f.store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.fs.close()
+	for name, expected := range v.m.Views {
+		data, err := os.ReadFile(filepath.Join(f.store.Config.Root, name))
+		if err != nil || digest(data) != expected.Current {
+			t.Fatalf("%s does not match the committed view: %v", name, err)
+		}
 	}
 }
 

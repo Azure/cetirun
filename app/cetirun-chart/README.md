@@ -49,6 +49,10 @@ With Memory enabled, OpenClaw and Hermes Agents keep the shared Skills
 PVC mounted read-only at `skills.mountPath`. Publishing or editing a shared
 skill updates that mount without a Pod restart. Native discovery loads the
 shared path, personal Skills, and `/opt/cetirun-memory/skills` separately.
+The name `cetirun-memory` is reserved for the installed platform skill. Native
+loaders ignore other skills with that name, including conflicts introduced by
+live shared updates. Other skills keep their native discovery rules. The
+compatibility patch checks the pinned native source hashes during image builds.
 
 Memory no longer mounts a read-only directory over the whole `$HOME/.agents`.
 Personal files and Skills there remain visible and writable. The platform still
@@ -61,7 +65,8 @@ directory or nested mount inside the shared source.
 The native `context-view` contains only platform material. Ordinary instances
 use a `40Mi` emptyDir limit; reconciled Sandboxes keep their configured scratch
 limit. Custom context composition and held Sandbox preparation keep their
-existing contracts. Upgrade existing native instances through
+existing contracts. Use native images that include the reserved-skill patch.
+Upgrade existing native instances through
 the supported retained restart procedure to install the changed mounts. The
 upgrade does not move or delete HOME files or change shared Skills content.
 For damaged Memory files or interrupted deletion, use the

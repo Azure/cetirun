@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmod, cp, mkdtemp, mkdir, readFile, writeFile, rm, lstat } from "node:fs/promises";
+import { chmod, cp, mkdtemp, mkdir, readFile, writeFile, rm, lstat, readdir, symlink, copyFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -275,6 +275,43 @@ test("pinned Hermes host APIs load the adapter and execute bounded native calls"
       HERMES_HOME: path.join(f.home, ".hermes"), HERMES_SKIP_AUTO_UPDATE: "1", PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
   });
   assert.match(output, /Pinned Hermes host checks passed/);
+});
+
+async function skillHost(source, runtime, changed) {
+  const target = await mkdtemp(path.join(stage, `${runtime}-skills-`));
+  async function populate(relative = "") {
+    const directory = path.join(target, relative);
+    await mkdir(directory, { recursive: true });
+    for (const name of await readdir(path.join(source, relative))) {
+      const file = path.join(relative, name), original = path.join(source, file), destination = path.join(target, file);
+      if (changed.includes(file)) await copyFile(original, destination);
+      else if (changed.some(entry => entry.startsWith(`${file}/`))) await populate(file);
+      else await symlink(original, destination);
+    }
+  }
+  await populate();
+  const installer = path.resolve(moduleDir, "../cetirun-chart/configs/apply-memory-skills.py");
+  const args = [installer, "--runtime", runtime, "--root", target];
+  execFileSync("python3", [...args, "--check"]);
+  execFileSync("python3", args);
+  assert.match(execFileSync("python3", args, { encoding: "utf8" }), /0 file\(s\) updated/);
+  return target;
+}
+
+test("pinned Hermes protects Memory discovery through live shared-skill changes", { skip: !process.env.MEMORY_HERMES_SOURCE }, async () => {
+  const host = await skillHost(process.env.MEMORY_HERMES_SOURCE, "hermes", ["agent/skill_utils.py", "tools/skills_tool.py"]);
+  const output = execFileSync(process.env.MEMORY_HERMES_PYTHON ?? "python3", ["-B", path.join(moduleDir, "tests/hermes_skills.py")], {
+    env: { ...process.env, MEMORY_HERMES_SOURCE: host, PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
+  });
+  assert.match(output, /Pinned Hermes live skill-source checks passed/);
+});
+
+test("pinned OpenClaw protects Memory discovery through live shared-skill changes", { skip: !process.env.MEMORY_OPENCLAW_SOURCE }, async () => {
+  const host = await skillHost(process.env.MEMORY_OPENCLAW_SOURCE, "openclaw", ["dist/workspace-skill-loader-CoQ1pd8t.mjs"]);
+  const output = execFileSync(process.execPath, [path.join(moduleDir, "tests/openclaw_skills.mjs")], {
+    env: { ...process.env, MEMORY_OPENCLAW_SOURCE: host }, encoding: "utf8", timeout: 30000,
+  });
+  assert.match(output, /Pinned OpenClaw live skill-source checks passed/);
 });
 
 test("pinned OpenClaw loads the packaged plugin and bounds direct native requests", { skip: !process.env.MEMORY_OPENCLAW_SOURCE }, async t => {

@@ -836,11 +836,16 @@ func (s *Store) repair(ctx context.Context, r Request) (int64, *Partial, error) 
 	if err != nil {
 		return generation, nil, err
 	}
-	v, err := s.openRead(ctx)
+	// A committed receipt can precede view installation. Finish that work on
+	// replay too, and report I/O failures instead of claiming the repair worked.
+	v, err := s.openSnapshot(ctx, syscall.LOCK_EX)
 	if err != nil {
 		return generation, nil, err
 	}
 	defer v.fs.close()
-	_, err = v.renderViews()
+	if err := v.preserveEditedViews(); err != nil {
+		return generation, nil, err
+	}
+	err = v.installViews()
 	return generation, v.damageReport(), err
 }
