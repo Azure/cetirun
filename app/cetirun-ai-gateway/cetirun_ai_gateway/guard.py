@@ -119,6 +119,27 @@ deployments cannot read it either, so each fallback fails the same way, and
 the client, which handles this error by sending the request again without the
 reasoning, gets the first error instead of the last.
 
+A GitHub Copilot model returns its reasoning items with a status, and a client
+that keeps no state on the provider sends them back as they are. Azure OpenAI
+refuses that field on a reasoning item (400 unknown_parameter
+"input[n].status"). A conversation that moved from a Copilot model to an Azure
+deployment, by an auto router's tier or a failover, failed there, although
+encrypted content affinity removed the item's encrypted content: the item kept
+its status. The guard removes the status of each reasoning item in a request
+to an Azure OpenAI deployment, and logs each change.
+
+LiteLLM prices each request that an auto router answers against the most
+expensive model of the router's hardest tier (proxy/spend_tracking/savings.py),
+after the response. It names that model's provider with get_llm_provider. For
+the github_copilot provider, the provider of a GitHub Copilot model whose
+base_model is github_copilot/<id>, get_llm_provider asks GitHub for a token: in
+the Gateway, which has none, it started GitHub's interactive device sign-in and
+blocked the worker for about three minutes, until the liveness probe restarted
+the container. LiteLLM's other callers take such a provider from the name
+(declared_authenticating_provider). The guard replaces the savings module's
+lookup with one that does the same, and asks get_llm_provider for every other
+name.
+
 A request to a model of the GPT-5 or GPT-6 series that reasons, asked for by
 name or chosen by an auto router, loses its sampling parameters: temperature
 other than 1, top_p, logprobs and top_logprobs. LiteLLM, the Gateway's for an
@@ -210,6 +231,16 @@ SHORTENED = "\u2026"
 AFFINITY_CHECK = "EncryptedContentAffinityCheck"
 # How a provider refuses encrypted reasoning it cannot read.
 UNREADABLE_REASONING = ("invalid_encrypted_content", "could not be verified", "could not be decrypted")
+# A field GitHub Copilot puts on the reasoning items it returns, which Azure
+# OpenAI refuses on a reasoning item a request sends back (400,
+# unknown_parameter "input[n].status").
+REASONING_STATUS = "status"
+
+# LiteLLM's module that prices an auto router's request against its savings
+# baseline, and the module of its helper that names a provider that signs in
+# to answer get_llm_provider (github_copilot, chatgpt) from the model name.
+SAVINGS_MODULE = "litellm.proxy.spend_tracking.savings"
+PROVIDER_LOGIC_MODULE = "litellm.litellm_core_utils.get_llm_provider_logic"
 
 # Sampling parameters a model of the GPT-5 and GPT-6 series accepts only while
 # its reasoning effort is none; LiteLLM refuses the request (400) otherwise,
@@ -375,6 +406,67 @@ def install_router_alias_listing():
     if proxy is not None and getattr(proxy, "alias_listing_entries", current) is not current:
         proxy.alias_listing_entries = current
     return True
+
+
+def install_savings_provider_lookup():
+    """Name the provider of an auto router's savings baseline without signing in to it.
+
+    After each request an auto router answers, LiteLLM 1.105.6 prices the request
+    against the most expensive model of the router's hardest tier. Its
+    _resolve_model names that model's provider with get_llm_provider, which, for
+    github_copilot, asks GitHub for a token: in the Gateway, which has none, that
+    started the interactive device sign-in and blocked the worker for minutes.
+    The replacement answers a provider that signs in from the model name, as
+    LiteLLM's other callers do (declared_authenticating_provider); every other
+    name still goes to LiteLLM's own lookup. The savings module calls the
+    function through its module global, so replacing that global is enough.
+    """
+    try:
+        savings = importlib.import_module(SAVINGS_MODULE)
+        declared_provider = importlib.import_module(PROVIDER_LOGIC_MODULE).declared_authenticating_provider
+    except Exception:  # noqa: BLE001
+        return False
+    current = getattr(savings, "_resolve_model", None)
+    identity = getattr(savings, "_ModelIdentity", None)
+    if current is None or identity is None:
+        return False
+    if getattr(current, "cetirun_declared_provider", False):
+        return True
+    original = current
+
+    def _resolve_model(model, custom_llm_provider):
+        provider = declared_provider(model, custom_llm_provider) if isinstance(model, str) and model else None
+        if provider is None:
+            return original(model, custom_llm_provider)
+        return identity(model=model.removeprefix(f"{provider}/"), provider=provider)
+
+    _resolve_model.cetirun_declared_provider = True
+    savings._resolve_model = _resolve_model
+    return True
+
+
+def azure_openai(deployment):
+    """Whether a deployment is on Azure OpenAI, by LiteLLM's provider prefix of its model."""
+    params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+    model = params.get("model") if isinstance(params, dict) else None
+    return isinstance(model, str) and model.startswith("azure/")
+
+
+def strip_reasoning_status(request_input):
+    """Remove the status of each reasoning item in a Responses API request's input, in place; the number removed.
+
+    Only reasoning items change: Azure OpenAI takes the status of an output
+    message that a request sends back. The list is changed in place, as
+    LiteLLM forwards it and its fallback hops share it.
+    """
+    if not isinstance(request_input, list):
+        return 0
+    changed = 0
+    for index, item in enumerate(request_input):
+        if isinstance(item, dict) and item.get("type") == "reasoning" and REASONING_STATUS in item:
+            request_input[index] = {key: value for key, value in item.items() if key != REASONING_STATUS}
+            changed += 1
+    return changed
 
 def marked_content(content):
     """Whether encrypted_content carries the producing deployment in either form of the mark."""
@@ -1068,7 +1160,8 @@ class Guard(CustomLogger):
         is removed from a Responses API request first. A fallback after a
         deployment refused the request's encrypted reasoning is ended here, so
         the client gets that first error. A request to a model that reasons loses
-        the sampling parameters the model refuses.
+        the sampling parameters the model refuses, and a request to Azure OpenAI
+        the status of its reasoning items.
         """
         refusal = unreadable_reasoning_refusal(request_kwargs)
         if refusal is not None:
@@ -1122,6 +1215,12 @@ class Guard(CustomLogger):
         if isinstance(request_kwargs, dict) and kept:
             router = routing_router(model, request_kwargs)
             target = f"the router {router} sent to" if router else "for"
+            if any(map(azure_openai, kept)):
+                fixed = strip_reasoning_status(request_kwargs.get("input"))
+                if fixed:
+                    verbose_proxy_logger.warning(
+                        "CetiRun guard: removed the status of %d reasoning item%s from a request %s %s, which Azure "
+                        "OpenAI refuses on a reasoning item.", fixed, "" if fixed == 1 else "s", target, model)
             # First: without the effort of none, the model reasons, and the sampling
             # parameters it then refuses go too.
             if strip_refused_no_reasoning(request_kwargs, kept):
@@ -1183,5 +1282,6 @@ PATCHED = {
     "mark_form": install_mark_form(),
     "failover_past_affinity": install_failover_past_affinity(),
     "router_alias_listing": install_router_alias_listing(),
+    "savings_provider_lookup": install_savings_provider_lookup(),
 }
 hide_router_details()

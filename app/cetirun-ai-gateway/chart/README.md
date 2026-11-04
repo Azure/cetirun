@@ -846,6 +846,19 @@ its ID. With their marks, both items got an answer. In that test, OpenClaw
 retried such turns without the encrypted reasoning. The cost of each retry was
 the failed call and its fallback.
 
+A GitHub Copilot model returns its reasoning items with a `status`. Azure
+OpenAI refuses this field on a reasoning item that a request sends back, with
+a 400: `Unknown parameter: 'input[n].status'`. On the e2e cluster, a stateless
+Responses API conversation moved from a Copilot model to the Azure tier of a
+router. The check removed the encrypted content of the Copilot item, but the
+item kept its status. Azure OpenAI refused the request, and the router's
+fallback answered it.
+
+The guard callback now removes the `status` of each reasoning item in a
+request to an Azure OpenAI deployment. Azure OpenAI accepts the `status` of a
+message, so messages do not change. The Gateway logs a warning for each
+request that the guard changes.
+
 These results were measured with mock resources. With the guard, every such
 replay got an answer, streamed or not streamed. An item with the mark was
 routed as before. With the check off, nothing is removed.
@@ -1619,6 +1632,18 @@ provider are dropped, or the request can be refused. On each provider's model,
 the first turn costs the full input price for the conversation. Refer to
 "The tiers decide what a router saves" above.
 
+A Team's router can also use an Agent's GitHub Copilot models as tiers. On the
+e2e cluster, a router classified with Microsoft-Decision-1. Its tiers were the
+Gemini, Claude, and Grok models of an Agent's Copilot, and a GPT model on
+Azure OpenAI. Each of 27 requests was classified, and each tier answered. One
+conversation went through all four models, and its last turn still had the
+result of a tool call from an earlier turn. Streamed requests, `/v1/messages`,
+and images also worked on each tier.
+
+On the same cluster, the Copilot route of the Gemini model refused every
+`reasoning_effort` value. The Copilot route of the Grok model refused `none`.
+A router sends such a request to its next tier, after the failed call.
+
 #### Measuring the routers
 
 With the request log that Container Insights collects, the queries that follow
@@ -2165,6 +2190,24 @@ these actions:
   [Prices are not pinned to the image by default](#known-gaps).
 - It lets a request fail over from the deployment that its key is kept on.
   Refer to [A key stays on its deployment](#a-key-stays-on-its-deployment).
+- It removes `status` from the reasoning items of a Responses API request to
+  an Azure OpenAI deployment. Azure OpenAI refuses this field on a reasoning
+  item, and GitHub Copilot models return their reasoning items with it. Refer
+  to
+  [Encrypted reasoning stays with its resource](#encrypted-reasoning-stays-with-its-resource).
+- It prevents a GitHub sign-in when LiteLLM prices a request that an auto
+  router answered. LiteLLM 1.105.6 compares the cost of such a request with
+  the most expensive model of the router's hardest tier. LiteLLM gets the
+  provider of that model from `get_llm_provider`. For a model whose
+  `base_model` starts with `github_copilot/`, this function asks GitHub for a
+  token. The operator registers some GitHub Copilot models in this form.
+
+  The Gateway has no GitHub token, so LiteLLM started GitHub's interactive
+  device sign-in and waited for a user. On the e2e cluster, the hardest tier
+  of a router was such a Copilot model. After the router answered one request,
+  a Gateway replica stopped serving for about three minutes. Then its liveness
+  probe restarted the container. The guard makes LiteLLM take such a provider
+  from the model name, as LiteLLM does in its other lookups.
 - It removes LiteLLM's internal deployment list from error messages. Error
   messages that are returned to callers no longer include LiteLLM's internal
   list of deployments in cooldown. The response keeps its status, 429, and the
@@ -2618,6 +2661,11 @@ On a single-node test cluster, one of two replicas was deleted while requests
 flowed through the Service. This was done both normally and by force. None of
 100 requests failed.
 
+On the e2e cluster, a node with one of two replicas was drained while one
+request per second went through the Service. One of 183 requests failed with a
+503, `upstream connect error`. This request got to the evicted replica as it
+stopped. The new replica was ready 56 seconds later.
+
 For more than one replica, the chart creates a PodDisruptionBudget for the
 Gateway pods with `maxUnavailable: 1` (`podDisruptionBudget.enabled`, on by
 default). As a result, a node drain evicts one replica at a time, and it waits
@@ -2675,8 +2723,13 @@ to three and a half minutes, with these results:
 - No spend was lost. The recorded spend of every key matched the requests that
   it was allowed.
 
-Redis restarts empty. For the same reason, this causes no problem. Rate limits
-were not tested during an outage.
+Redis restarts empty. For the same reason, this causes no problem.
+
+Rate limits stop for about a minute. On the e2e cluster, the bundled Valkey Pod
+was deleted, and its new Pod was ready within a second. A key with a limit of
+3 requests a minute then got 6 of 8 requests through in one minute. After that
+minute, the limit applied again: 3 requests, then 429. A key over its budget
+got 402 the whole time, because budgets use the spend in PostgreSQL.
 
 ### When PostgreSQL is unavailable
 
@@ -2699,6 +2752,13 @@ for about three minutes, with these results:
 With a highly available PostgreSQL, this problem lasts only for the length of
 a failover. The spend that is lost is limited to what the Gateway serves during
 that time. The 503s keep this amount small.
+
+The bundled PostgreSQL is one replica on a `ReadWriteOnce` disk. On the e2e
+cluster, its Pod was deleted, and the new Pod started on another node. It was
+ready after 51 seconds, because the disk first had to detach from the old node.
+In that time, 11 of 13 requests with a virtual key failed with 503,
+`no_db_connection`. Each request with the master key got an answer. The
+Service kept its endpoints, and the Agents stayed `Ready`.
 
 ## Request log and metrics
 
