@@ -341,7 +341,7 @@ describe("PolicyEditPage", () => {
     const firstPort = screen.getByRole("spinbutton", { name: "Blocked port 1" });
     fireEvent.change(firstPort, { target: { value: "0" } });
     fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
-    expect(await screen.findByText("Ports must be 1ΓÇô65535 and use TCP, UDP, or SCTP.")).toBeInTheDocument();
+    expect(await screen.findByText("Ports must be 1–65535 and use TCP, UDP, or SCTP.")).toBeInTheDocument();
     expect(policyAPI.updatePolicy).not.toHaveBeenCalled();
     fireEvent.change(firstPort, { target: { value: "8443" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
