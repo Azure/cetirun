@@ -267,24 +267,17 @@ fi
 
 for agent_type in openclaw hermes; do
   echo "==> ${agent_type}: desktop VNC port collision and disabled-desktop control"
+  port_args=(--set hermes.env.API_SERVER_PORT=5900)
   if [ "$agent_type" = openclaw ]; then
     port_args=(--set service.port=5900 --set service.targetPort=5900 --set openclaw.config.gateway.port=5900)
-    if helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
-      --set secrets.existingSecret=lint-secret "${port_args[@]}" >/dev/null 2>&1; then
-      echo "FAIL: Agent port 5900 should conflict with desktop VNC" >&2; exit 1
-    fi
-    helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
-      --set secrets.existingSecret=lint-secret "${port_args[@]}" \
-      --set desktop.enabled=false >/dev/null
-  else
-    for desktop_enabled in true false; do
-      if helm_template "$release_name" "$chart_dir" --set agentType=hermes \
-        --set secrets.existingSecret=lint-secret --set-string hermes.env.API_SERVER_PORT=5900 \
-        --set "desktop.enabled=$desktop_enabled" >/dev/null 2>&1; then
-        echo "FAIL: Hermes API port must remain 8642 with desktop=$desktop_enabled" >&2; exit 1
-      fi
-    done
   fi
+  if helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
+    --set secrets.existingSecret=lint-secret "${port_args[@]}" >/dev/null 2>&1; then
+    echo "FAIL: Agent port 5900 should conflict with desktop VNC" >&2; exit 1
+  fi
+  helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
+    --set secrets.existingSecret=lint-secret "${port_args[@]}" \
+    --set desktop.enabled=false >/dev/null
   if helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
     --set secrets.existingSecret=lint-secret --set ttyd.enabled=true --set ttyd.port=5900 >/dev/null 2>&1; then
     echo "FAIL: ttyd port 5900 should conflict with desktop VNC" >&2; exit 1

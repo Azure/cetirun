@@ -29,8 +29,8 @@ func TestSandboxSourcesHeldControllerWiring(t *testing.T) {
 		agentType      string
 		advancingClock bool
 	}{
-		{"openclaw", false},
-		{"openclaw", true},
+		{"openclaw", false}, {"hermes", false},
+		{"openclaw", true}, {"hermes", true},
 	} {
 		name := test.agentType + "/system-clock"
 		if test.advancingClock {

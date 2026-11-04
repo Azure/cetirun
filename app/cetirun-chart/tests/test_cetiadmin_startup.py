@@ -115,7 +115,7 @@ class CetiAdminStartupTests(unittest.TestCase):
             "HERMES_PYTHON": str(self.python), "CETIRUN_AI_GATEWAY": "true",
             "TTYD_ENABLED": "false", "TAILSCALE_ENABLED": "false",
             "CETIRUN_CETIADMIN_ENABLED": "true", "CETIRUN_CETIADMIN_CONFIG": str(self.config),
-            "HERMES_TIMEZONE": "Etc/GMT+7", "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": "8642",
+            "HERMES_TIMEZONE": "Etc/GMT+7", "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": "19000",
             "FIXTURE_EVENTS": str(self.events), "FIXTURE_SCRATCH": str(self.scratch),
             "FIXTURE_SYNC_RESPONSE": json.dumps({"status": "created", "timezone": "Asia/Singapore"}),
         }
@@ -138,7 +138,7 @@ class CetiAdminStartupTests(unittest.TestCase):
         self.assertEqual(events[2]["args"], [SYNC, "--config", str(self.config)])
         for event in events:
             self.assertEqual(event["host"], "127.0.0.1")
-            self.assertEqual(event["port"], "8642")
+            self.assertEqual(event["port"], "19000")
         self.assertEqual(events[3]["timezone"], "Asia/Singapore")
         self.assertEqual(events[3]["helm"], "exported-helm")
         self.assertIn("HERMES_TIMEZONE=invalid-retained-timezone", (self.home / ".env").read_text())

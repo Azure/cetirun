@@ -67,6 +67,7 @@ func TestBindingPreservesHarnessPrimaryPorts(t *testing.T) {
 		{"openclaw", 9119, false},
 		{"custom", 9119, false},
 		{"hermes", 8642, true},
+		{"hermes", 8080, true},
 		{"hermes", 9119, false},
 		{"hermes", 9120, false},
 	} {
@@ -101,7 +102,6 @@ func TestDesktopRegistrationPreservesDesktopDisabledApprovals(t *testing.T) {
 	if len((Plan{Binding: binding}).Ports()) != 3 {
 		t.Fatal("an older approval implicitly enabled desktop")
 	}
-	binding.Harness = "openclaw"
 	for _, port := range []int32{DesktopPort, 5900, 6080, 18800} {
 		binding.Port = port
 		if err := binding.Validate(); err != nil {
@@ -113,7 +113,7 @@ func TestDesktopRegistrationPreservesDesktopDisabledApprovals(t *testing.T) {
 		}
 		binding.Desktop = false
 	}
-	binding.Harness, binding.Port, binding.Desktop = "hermes", 8642, true
+	binding.Port, binding.Desktop = 8642, true
 	if err := binding.Validate(); err != nil {
 		t.Fatal(err)
 	}

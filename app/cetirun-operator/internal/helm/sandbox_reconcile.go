@@ -47,7 +47,7 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			return fmt.Errorf("reconciled Sandbox must use the owned Agent workload and existing HOME")
 		}
 		memory, _ := p.Values["memoryContext"].(map[string]any)
-		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image, memory["enabled"] == true); err != nil {
+		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image, memory["enabled"] == true, p.Agent.Port); err != nil {
 			return err
 		}
 		if request := input.PlannedMigration; request != nil {

@@ -117,25 +117,31 @@ class WebappRuntimeTests(unittest.TestCase):
                 "enabled": True, "service_account_token_env": "API_SERVER_KEY", "env": {},
             }}})
 
-    def test_restart_removes_reserved_multiline_env_and_all_api_aliases(self):
+    def test_process_binding_wins_over_retained_home(self):
         api = {"enabled": False, "host": "::", "port": 18000, "key": "synthetic-override",
                "extra": {"host": "::", "port": 18001, "key": "synthetic-override", "model_name": "retained"}}
         source = {"api_server": api, "platforms": {"api_server": api},
                   "gateway": {"api_server": api, "platforms": {"api_server": api}}, "preferences": {"theme": "dark"}}
-        (self.home / "config.yaml").write_text(yaml.safe_dump(source))
-        (self.home / "gateway.json").write_text(json.dumps(source))
-        env = '# retained comment\nexport HERMES_MANAGED_DIR="/tmp/bypass"\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD="line1\nline2"\nAPI_SERVER_PORT=18001\nCETIRUN_GATEWAY_API_KEY=sk-override\nUSER_SETTING="keep me"\n'
-        (self.home / ".env").write_text(env)
-        runtime.remove_home_overrides()
-        self.assertEqual((self.home / ".env").read_text(), '# retained comment\nUSER_SETTING="keep me"\n')
-        for relative in ("config.yaml", "gateway.json"):
-            actual = yaml.safe_load((self.home / relative).read_text())
-            self.assertEqual(actual["preferences"], {"theme": "dark"})
-            for row in (actual["api_server"], actual["platforms"]["api_server"], actual["gateway"]["api_server"],
-                        actual["gateway"]["platforms"]["api_server"]):
-                self.assertEqual(row, {"extra": {"model_name": "retained"}})
+        env = '# retained comment\nexport HERMES_MANAGED_DIR="/tmp/bypass"\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD="line1\nline2"\nAPI_SERVER_PORT=8642\nCETIRUN_GATEWAY_API_KEY=sk-override\nUSER_SETTING="keep me"\n'
+        for port in ("8080", "8642"):
+            with self.subTest(port=port), patch.dict(os.environ, {"API_SERVER_PORT": port}):
+                (self.home / "config.yaml").write_text(yaml.safe_dump(source))
+                (self.home / "gateway.json").write_text(json.dumps(source))
+                (self.home / ".env").write_text(env)
+                runtime.remove_home_overrides()
+                self.assertEqual(runtime.contract(), self.expected)
+                self.assertEqual(runtime.api_port(), int(port))
+                self.assertEqual(os.environ["API_SERVER_PORT"], port)
+                self.assertEqual((self.home / ".env").read_text(), '# retained comment\nUSER_SETTING="keep me"\n')
+                for relative in ("config.yaml", "gateway.json"):
+                    actual = yaml.safe_load((self.home / relative).read_text())
+                    self.assertEqual(actual["preferences"], {"theme": "dark"})
+                    for row in (actual["api_server"], actual["platforms"]["api_server"], actual["gateway"]["api_server"],
+                                actual["gateway"]["platforms"]["api_server"]):
+                        self.assertEqual(row, {"extra": {"model_name": "retained"}})
 
     def test_readiness_requires_live_socket_provider_and_private_persistent_token(self):
+        os.environ["API_SERVER_PORT"] = "8080"
         dist = self.image / "apps/desktop/dist-webapp"
         dist.mkdir(parents=True)
         for name in ("index.html", "hermes-build.json", "renderer-manifest.json"):
@@ -151,6 +157,7 @@ class WebappRuntimeTests(unittest.TestCase):
         with patch.dict("sys.modules", {"hermes_cli.gateway_client": fake}), patch.object(runtime, "get_json") as get:
             get.side_effect = [{"status": "ok"}, {"providers": [{"name": "basic", "supports_password": True}]}]
             runtime.readiness(1)
+            self.assertEqual(get.call_args_list[0].args[0:2], (8080, "/health"))
             self.assertEqual(token.read_bytes(), original)
             status["result"]["state"] = "unavailable"
             with self.assertRaisesRegex(ValueError, "WebappNotServing"):
@@ -162,6 +169,11 @@ class WebappRuntimeTests(unittest.TestCase):
             token.chmod(0o644)
             with self.assertRaisesRegex(ValueError, "BrowserCredentialPermissionsInvalid"):
                 runtime.readiness(1)
+
+        with patch.dict(os.environ, {"API_SERVER_PORT": "8080"}, clear=True), \
+                patch.object(runtime.sys, "argv", ["hermes-runtime.py", "liveness"]), patch.object(runtime, "get_json") as get:
+            self.assertEqual(runtime.main(), 0)
+            self.assertEqual(get.call_args.args[0:2], (8080, "/health"))
 
     def test_mtls_and_egress_helpers_gate_health_with_bounded_checks(self):
         runtime.helper_health(1)
@@ -204,7 +216,7 @@ class WebappChartTests(unittest.TestCase):
         self.assertNotIn(9119, [port["containerPort"] for port in main["ports"]])
 
     def test_old_and_unmanaged_binding_inputs_are_rejected(self):
-        for override in ("hermes.env.HERMES_DASHBOARD_PUBLIC_URL=https://example.com", "hermes.env.API_SERVER_PORT=9119",
+        for override in ("hermes.env.HERMES_DASHBOARD_PUBLIC_URL=https://example.com", "hermes.env.API_SERVER_PORT=9120",
                          "extraEnv[0].name=HERMES_MANAGED_DIR,extraEnv[0].value=/tmp/bypass", "hermes.config.webapp.port=9121"):
             with self.subTest(override=override):
                 self.assertNotEqual(self.render("--set", override).returncode, 0)

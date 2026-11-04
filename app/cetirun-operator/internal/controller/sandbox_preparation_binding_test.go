@@ -22,7 +22,7 @@ import (
 )
 
 func TestSandboxPreparationRecreatesAbsentSourceBinding(t *testing.T) {
-	for _, typ := range []string{"openclaw"} {
+	for _, typ := range []string{"openclaw", "hermes"} {
 		for _, late := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/late=%v", typ, late), func(t *testing.T) {
 				ctx := context.Background()

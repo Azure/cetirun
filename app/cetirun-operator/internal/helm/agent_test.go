@@ -380,13 +380,9 @@ func TestRuntimeProfileValidation(t *testing.T) {
 			}
 			request := input["agentRequest"].(map[string]any)
 			request["image"] = prepared.Agent.Image
-			port := int32(8080)
-			if typ == "hermes" {
-				port = 8642
-			}
-			request["port"] = port
+			request["port"] = 8080
 			prepared, err = PrepareChart(chrt, input)
-			if err != nil || prepared.Agent.Port == nil || *prepared.Agent.Port != port {
+			if err != nil || prepared.Agent.Port == nil || *prepared.Agent.Port != 8080 {
 				t.Fatalf("qualified image and non-conflicting port: %v", err)
 			}
 			renderSnapshot(t, chrt, prepared.Values)
@@ -399,16 +395,10 @@ func TestRuntimeProfileValidation(t *testing.T) {
 			request["port"] = 5900
 			input["desktop"] = map[string]any{"enabled": false}
 			prepared, err = PrepareChart(chrt, input)
-			if typ == "hermes" {
-				if err == nil {
-					t.Fatal("Hermes API accepted a non-profile port")
-				}
-			} else {
-				if err != nil || prepared.Agent.Port == nil || *prepared.Agent.Port != 5900 {
-					t.Fatalf("disabled desktop should release port 5900: %v", err)
-				}
-				renderSnapshot(t, chrt, prepared.Values)
+			if err != nil || prepared.Agent.Port == nil || *prepared.Agent.Port != 5900 {
+				t.Fatalf("disabled desktop should release port 5900: %v", err)
 			}
+			renderSnapshot(t, chrt, prepared.Values)
 			request["port"] = 8080
 			request["image"] = "registry.example.com/unqualified:1"
 			if _, err := PrepareChart(chrt, input); err == nil {

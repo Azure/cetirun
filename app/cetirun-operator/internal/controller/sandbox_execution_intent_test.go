@@ -65,7 +65,7 @@ func executionIntentFixture(t *testing.T, typ string, configure ...func(*prepara
 }
 
 func TestSandboxExecutionIntentPinsHeldNativePreparation(t *testing.T) {
-	for _, typ := range []string{"openclaw"} {
+	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {
 			f, target := executionIntentFixture(t, typ)
 			before, stages := f.current(t), f.installer.stages
@@ -108,7 +108,7 @@ func TestSandboxExecutionIntentPinsHeldNativePreparation(t *testing.T) {
 
 func TestSandboxExecutionAcceptsMaximumPreparedSources(t *testing.T) {
 	ctx := context.Background()
-	f, target := executionIntentFixture(t, "openclaw")
+	f, target := executionIntentFixture(t, "hermes")
 	expected := fillPreparedSourceInventory(t, f)
 	target.Binding, target.Revision = expected.Binding, expected.Revision
 	intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
@@ -166,7 +166,7 @@ func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {
 			ctx := context.Background()
 			var unselectedPolicy *api.AgentPolicy
 			var unusedSandbox *api.Sandbox
-			f, target := executionIntentFixture(t, "openclaw", func(f *preparationFixture) {
+			f, target := executionIntentFixture(t, "hermes", func(f *preparationFixture) {
 				normal := &api.AgentPolicy{}
 				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Policy), normal); err != nil {
 					t.Fatal(err)
@@ -288,7 +288,7 @@ func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {
 func TestSandboxExecutionIntentRejectsUnpreparedOrMismatchedTarget(t *testing.T) {
 	for _, scenario := range []string{"missing ControllerRevision", "wrong Pod", "wrong Node", "wrong epoch", "wrong policy", "wrong revision", "missing placement"} {
 		t.Run(scenario, func(t *testing.T) {
-			f, target := executionIntentFixture(t, "openclaw")
+			f, target := executionIntentFixture(t, "hermes")
 			switch scenario {
 			case "missing ControllerRevision":
 				expected := f.expectation(t)
@@ -394,7 +394,7 @@ func TestSandboxExecutionEffectiveInputsIgnoreObservationMetadata(t *testing.T) 
 	for _, kubernetesSource := range []bool{false, true} {
 		t.Run(fmt.Sprintf("kubernetes-prerequisites=%t", kubernetesSource), func(t *testing.T) {
 			ctx := context.Background()
-			f, target := executionIntentFixture(t, "openclaw", func(f *preparationFixture) {
+			f, target := executionIntentFixture(t, "hermes", func(f *preparationFixture) {
 				if !kubernetesSource {
 					return
 				}
@@ -477,7 +477,7 @@ func TestSandboxExecutionTeamMutationPreservesUnaffectedSelection(t *testing.T) 
 	ctx := context.Background()
 	var spare *api.Sandbox
 	var otherPolicy *api.AgentPolicy
-	f, target := executionIntentFixture(t, "openclaw", func(f *preparationFixture) {
+	f, target := executionIntentFixture(t, "hermes", func(f *preparationFixture) {
 		policy := &api.AgentPolicy{}
 		if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Policy), policy); err != nil {
 			t.Fatal(err)
@@ -561,7 +561,7 @@ func TestSandboxExecutionTeamMutationPreservesUnaffectedSelection(t *testing.T) 
 }
 
 func TestSandboxExecutionSourcesPermitWorkloadStatusAndControlledScale(t *testing.T) {
-	for _, typ := range []string{"openclaw"} {
+	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {
 			ctx := context.Background()
 			f, target := executionIntentFixture(t, typ)
@@ -626,7 +626,7 @@ func TestSandboxExecutionSourcesRejectWorkloadInputOrIdentityDrift(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			f, target := executionIntentFixture(t, "openclaw")
+			f, target := executionIntentFixture(t, "hermes")
 			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
 			if err != nil {
 				t.Fatal(err)
@@ -646,7 +646,7 @@ func TestSandboxExecutionSourcesRejectWorkloadInputOrIdentityDrift(t *testing.T)
 	}
 	t.Run("same-name replacement", func(t *testing.T) {
 		ctx := context.Background()
-		f, target := executionIntentFixture(t, "openclaw")
+		f, target := executionIntentFixture(t, "hermes")
 		intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
 		if err != nil {
 			t.Fatal(err)
@@ -700,7 +700,7 @@ func TestSandboxExecutionSourcesRecheckPrerequisiteApproval(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			f, target := executionIntentFixture(t, "openclaw")
+			f, target := executionIntentFixture(t, "hermes")
 			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
 			if err != nil {
 				t.Fatal(err)
@@ -745,7 +745,7 @@ func TestSandboxExecutionPrerequisiteRefreshDoesNotRewriteOrQuiesce(t *testing.T
 }
 
 func TestSandboxExecutionSourcesRequirePinnedPrerequisiteReceipt(t *testing.T) {
-	f, target := executionIntentFixture(t, "openclaw")
+	f, target := executionIntentFixture(t, "hermes")
 	intent, err := f.reconciler.SandboxExecutionIntent(context.Background(), f.current(t), target)
 	if err != nil {
 		t.Fatal(err)
@@ -762,7 +762,7 @@ func TestSandboxExecutionSourcesRequirePinnedPrerequisiteReceipt(t *testing.T) {
 
 func TestSandboxExecutionSourcesPermitStatusOnlyAgentUpdates(t *testing.T) {
 	ctx := context.Background()
-	f, target := executionIntentFixture(t, "openclaw")
+	f, target := executionIntentFixture(t, "hermes")
 	intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
 	if err != nil {
 		t.Fatal(err)

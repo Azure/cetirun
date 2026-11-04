@@ -107,7 +107,7 @@ func (f *executionStatusFixture) historicalStatus(t *testing.T, ready bool) *api
 }
 
 func TestSandboxExecutionStatusWriterAppliesOnlyVerifiedSandboxStatus(t *testing.T) {
-	for _, typ := range []string{"openclaw"} {
+	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {
 			f := newExecutionStatusFixture(t, typ)
 			before := f.historicalStatus(t, false)
@@ -213,7 +213,7 @@ func TestSandboxExecutionStatusWriterRejectsUnverifiedObservations(t *testing.T)
 		{"controls incomplete", func(o *sandbox.Observation, _ time.Time) { o.ControlsVerified = false }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw")
+			f := newExecutionStatusFixture(t, "hermes")
 			before := f.historicalStatus(t, false)
 			ctx, capture := capturePolicyEvents(t)
 			tc.mutate(&f.observation, f.now)
@@ -226,7 +226,7 @@ func TestSandboxExecutionStatusWriterRejectsUnverifiedObservations(t *testing.T)
 		})
 	}
 	t.Run("inclusive freshness bound", func(t *testing.T) {
-		f := newExecutionStatusFixture(t, "openclaw")
+		f := newExecutionStatusFixture(t, "hermes")
 		f.observation.ObservedAt = f.now.Add(-f.writer.MaxAge)
 		if err := f.writer.CommitReadiness(context.Background(), f.ticket, f.observation, statusTestGuard); err != nil {
 			t.Fatal("observation at the configured freshness bound was rejected:", err)
@@ -234,7 +234,7 @@ func TestSandboxExecutionStatusWriterRejectsUnverifiedObservations(t *testing.T)
 	})
 	for _, during := range []string{"source reads", "final guard"} {
 		t.Run("expires during "+during, func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw")
+			f := newExecutionStatusFixture(t, "hermes")
 			before := f.current(t)
 			calls := 0
 			guard := func(ctx context.Context) error {
@@ -312,7 +312,7 @@ func TestSandboxExecutionStatusWriterRequiresDependenciesAndActualTicket(t *test
 			}},
 		} {
 			t.Run(method+"/"+tc.name, func(t *testing.T) {
-				f := newExecutionStatusFixture(t, "openclaw")
+				f := newExecutionStatusFixture(t, "hermes")
 				ticket := f.ticket.DeepCopy()
 				if clear {
 					ticket = f.stopping(t)
@@ -334,7 +334,7 @@ func TestSandboxExecutionStatusWriterRequiresDependenciesAndActualTicket(t *test
 	}
 	for _, maxAge := range []time.Duration{0, -time.Second, time.Minute + time.Nanosecond} {
 		t.Run("freshness/"+maxAge.String(), func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw")
+			f := newExecutionStatusFixture(t, "hermes")
 			before := f.current(t)
 			f.writer.MaxAge = maxAge
 			if err := f.writer.CommitReadiness(context.Background(), f.ticket, f.observation, statusTestGuard); err == nil ||
@@ -346,7 +346,7 @@ func TestSandboxExecutionStatusWriterRequiresDependenciesAndActualTicket(t *test
 }
 
 func TestSandboxExecutionStatusWriterCopiesCallerEvidence(t *testing.T) {
-	f := newExecutionStatusFixture(t, "openclaw")
+	f := newExecutionStatusFixture(t, "hermes")
 	ticket, observation := f.ticket.DeepCopy(), f.observation
 	calls := 0
 	guard := func(ctx context.Context) error {
@@ -375,7 +375,7 @@ func TestSandboxExecutionStatusWriterPropagatesSourceAndAgentDrift(t *testing.T)
 		"Agent generation", "Agent UID", "Agent spec during reads", "Agent RV during reads",
 	} {
 		t.Run(drift, func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw")
+			f := newExecutionStatusFixture(t, "hermes")
 			before := f.historicalStatus(t, false)
 			injected := errors.New("sk-dummy synthetic provider failure at https://provider.example.com/")
 			switch drift {
@@ -508,7 +508,7 @@ func replaceStatusAgent(t *testing.T, f *preparationFixture) {
 }
 
 func TestSandboxExecutionStatusWriterAllowsPriorMetadataChurn(t *testing.T) {
-	f := newExecutionStatusFixture(t, "openclaw")
+	f := newExecutionStatusFixture(t, "hermes")
 	ctx := context.Background()
 	if err := f.writer.CommitReadiness(ctx, f.ticket, f.observation, statusTestGuard); err != nil {
 		t.Fatal(err)
@@ -539,7 +539,7 @@ func TestSandboxExecutionStatusWriterAllowsPriorMetadataChurn(t *testing.T) {
 func TestSandboxExecutionStatusWriterClearUsesOnlyStoppingAuthorityAndCurrentAgent(t *testing.T) {
 	for _, state := range []string{"stopping", "suspended", "deleting", "suspended and deleting", "rebound"} {
 		t.Run(state, func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw")
+			f := newExecutionStatusFixture(t, "hermes")
 			f.historicalStatus(t, true)
 			ticket := f.stopping(t)
 			ctx := context.Background()
@@ -621,7 +621,7 @@ func TestSandboxExecutionStatusWriterClearUsesOnlyStoppingAuthorityAndCurrentAge
 func TestSandboxExecutionStatusWriterRejectsReplacementAndLaterExecution(t *testing.T) {
 	for _, when := range []string{"replacement before read", "later execution before read", "later execution at guard"} {
 		t.Run(when, func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw")
+			f := newExecutionStatusFixture(t, "hermes")
 			ticket := f.stopping(t)
 			ctx := context.Background()
 			later := func() {
@@ -668,7 +668,7 @@ func TestSandboxExecutionStatusWriterGuardsAfterReadsAndAcknowledgement(t *testi
 				name = "clear"
 			}
 			t.Run(fmt.Sprintf("%s/%d", name, failAt), func(t *testing.T) {
-				f := newExecutionStatusFixture(t, "openclaw")
+				f := newExecutionStatusFixture(t, "hermes")
 				ticket := f.ticket
 				if clear {
 					ticket = f.stopping(t)
@@ -713,7 +713,7 @@ func TestSandboxExecutionStatusWriterDoesNotClaimUnacknowledgedWrites(t *testing
 			name = "write acknowledged only by server"
 		}
 		t.Run(name, func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw")
+			f := newExecutionStatusFixture(t, "hermes")
 			before := f.current(t)
 			failure := errors.New("synthetic unavailable status acknowledgement")
 			ctx, capture := capturePolicyEvents(t)
@@ -766,7 +766,7 @@ func TestSandboxExecutionStatusWriterRejectsEvidenceExpiredDuringPatch(t *testin
 }
 
 func TestSandboxExecutionStatusWriterClearConflictsWithDelayedPositiveWrite(t *testing.T) {
-	f := newExecutionStatusFixture(t, "openclaw")
+	f := newExecutionStatusFixture(t, "hermes")
 	before := f.historicalStatus(t, false)
 	ctx, capture := capturePolicyEvents(t)
 	calls := 0
@@ -802,7 +802,7 @@ func TestSandboxExecutionStatusWriterClearConflictsWithDelayedPositiveWrite(t *t
 }
 
 func TestSandboxExecutionStatusWriterDisabledIngressClearsAnExistingURL(t *testing.T) {
-	f := newExecutionStatusFixture(t, "openclaw")
+	f := newExecutionStatusFixture(t, "hermes")
 	before := f.historicalStatus(t, true)
 	if f.ticket.Execution.Intent.IngressMode != api.AgentPolicyIngressDisabled {
 		t.Fatal("fixture must describe disabled ingress")
@@ -821,7 +821,7 @@ func TestSandboxExecutionStatusWriterDisabledIngressClearsAnExistingURL(t *testi
 func TestSandboxExecutionStatusWriterRechecksNoOpAndContext(t *testing.T) {
 	for _, scenario := range []string{"cancelled", "expired no-op", "guard rejects no-op", "authority changes before patch"} {
 		t.Run(scenario, func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw")
+			f := newExecutionStatusFixture(t, "hermes")
 			ctx := context.Background()
 			if scenario == "expired no-op" || scenario == "guard rejects no-op" {
 				if err := f.writer.CommitReadiness(ctx, f.ticket, f.observation, statusTestGuard); err != nil {
@@ -865,7 +865,7 @@ func TestSandboxExecutionStatusWriterRechecksNoOpAndContext(t *testing.T) {
 func TestSandboxExecutionStatusWriterAuthenticatedIngressDoesNotPublishAccess(t *testing.T) {
 	for _, priorURL := range []string{"", "https://existing.example.com/"} {
 		t.Run("priorURL="+priorURL, func(t *testing.T) {
-			f := newExecutionStatusFixture(t, "openclaw", func(f *preparationFixture) {
+			f := newExecutionStatusFixture(t, "hermes", func(f *preparationFixture) {
 				registration := f.config.Registrations[api.SandboxKata]
 				registration.Capabilities.AuthenticatedIngress = true
 				f.config.Registrations[api.SandboxKata] = registration
@@ -903,7 +903,7 @@ func TestSandboxExecutionStatusWriterAuthenticatedIngressDoesNotPublishAccess(t 
 }
 
 func TestSandboxExecutionStatusWriterEveryNewStopInvalidatesPendingWrites(t *testing.T) {
-	f := newExecutionStatusFixture(t, "openclaw")
+	f := newExecutionStatusFixture(t, "hermes")
 	ctx := context.Background()
 	ticket := f.stopping(t)
 	if err := f.writer.ClearReadiness(ctx, ticket, statusTestGuard); err != nil {
@@ -934,7 +934,7 @@ func TestSandboxExecutionStatusWriterEveryNewStopInvalidatesPendingWrites(t *tes
 }
 
 func TestSandboxExecutionStatusWriterLegacyTicketCanClearButNotApply(t *testing.T) {
-	f := newExecutionStatusFixture(t, "openclaw")
+	f := newExecutionStatusFixture(t, "hermes")
 	ctx, capture := capturePolicyEvents(t)
 	if err := f.writer.Coordination.ReleaseExecution(ctx, f.stopping(t)); err != nil {
 		t.Fatal(err)

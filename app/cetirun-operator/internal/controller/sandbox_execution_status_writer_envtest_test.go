@@ -215,7 +215,7 @@ func executionStatusAPIFixture(t *testing.T, ctx context.Context, storage client
 	name string,
 ) (controller.SandboxExecutionStatusWriter, sandboxcoordination.Ticket, *api.Agent) {
 	t.Helper()
-	f, _, intent := runningExecutionFixture(t, "openclaw")
+	f, _, intent := runningExecutionFixture(t, "hermes")
 	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: name, Finalizers: []string{"example.com/retain-status-test"}},
 		Spec: *f.current(t).Spec.DeepCopy()}
 	if err := storage.Create(ctx, agent); err != nil {

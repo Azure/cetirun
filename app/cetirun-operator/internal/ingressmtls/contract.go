@@ -131,8 +131,8 @@ func (b Binding) Validate() error {
 		(b.Desktop && slices.Contains([]int32{DesktopPort, 5900, 6080, 18800}, b.Port)) {
 		return fmt.Errorf("mTLS requires a per-Agent supported harness and nonconflicting primary port")
 	}
-	if b.Harness == "hermes" && b.Port != 8642 {
-		return fmt.Errorf("Hermes mTLS requires the fixed API port 8642")
+	if b.Harness == "hermes" && b.Port == 9120 {
+		return fmt.Errorf("Hermes API port conflicts with its Webapp port")
 	}
 	if b.Harness == "custom" && b.Desktop || b.Harness != "custom" && len(b.ChatClients) != 0 || len(b.ChatClients) > 8 {
 		return fmt.Errorf("mTLS Custom supports declared HTTP and terminal endpoints, not desktop or unrelated Chat clients")

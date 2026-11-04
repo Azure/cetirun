@@ -7,18 +7,22 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 
 	corev1 "k8s.io/api/core/v1"
 )
 
-func (b *Bundle) validateHermesTemplate(spec corev1.PodSpec) error {
+func (b *Bundle) validateHermesTemplate(spec corev1.PodSpec, apiPort *int32) error {
 	if b.input.AgentType != "hermes" {
 		return nil
 	}
 	if len(spec.Containers) == 0 {
 		return fmt.Errorf("Hermes requires its gateway container")
+	}
+	if apiPort == nil || *apiPort < 1 || *apiPort > 65535 || *apiPort == 9120 || *apiPort == 18790 {
+		return fmt.Errorf("Hermes requires a nonconflicting resolved API port")
 	}
 	main := spec.Containers[0]
 	env := map[string]corev1.EnvVar{}
@@ -30,13 +34,16 @@ func (b *Bundle) validateHermesTemplate(spec corev1.PodSpec) error {
 	}
 	host := "0.0.0.0"
 	if b.input.Controls.IngressMTLS != nil {
+		if b.input.Controls.IngressMTLS.Port != *apiPort {
+			return fmt.Errorf("Hermes API port differs from the approved mTLS binding")
+		}
 		host = "127.0.0.1"
 	}
 	for name, value := range map[string]string{
 		"HERMES_HOME": "/home/vibe/.hermes", "HERMES_MANAGED_DIR": "/etc/cetirun/hermes-managed",
 		"HERMES_PYTHON": "/usr/local/bin/hermes-python", "HERMES_WEBAPP_ENABLED": "true",
 		"HERMES_WEBAPP_HOST": host, "HERMES_WEBAPP_PORT": "9120",
-		"API_SERVER_ENABLED": "true", "API_SERVER_HOST": host, "API_SERVER_PORT": "8642",
+		"API_SERVER_ENABLED": "true", "API_SERVER_HOST": host, "API_SERVER_PORT": strconv.Itoa(int(*apiPort)),
 		"HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "cetirun",
 	} {
 		if env[name].Value != value || env[name].ValueFrom != nil {
@@ -72,9 +79,14 @@ func (b *Bundle) validateHermesTemplate(spec corev1.PodSpec) error {
 	}) {
 		return fmt.Errorf("Hermes requires its managed ConfigMap projection")
 	}
-	for _, port := range []corev1.ContainerPort{{Name: "api", ContainerPort: 8642, Protocol: corev1.ProtocolTCP}, {Name: "webapp", ContainerPort: 9120, Protocol: corev1.ProtocolTCP}} {
+	for _, port := range []corev1.ContainerPort{{Name: "api", ContainerPort: *apiPort, Protocol: corev1.ProtocolTCP}, {Name: "webapp", ContainerPort: 9120, Protocol: corev1.ProtocolTCP}} {
 		if !slices.Contains(main.Ports, port) {
 			return fmt.Errorf("Hermes API and Webapp ports differ from the supported profile")
+		}
+	}
+	for _, port := range main.Ports {
+		if port.Name != "api" && port.ContainerPort == *apiPort {
+			return fmt.Errorf("Hermes API port conflicts with another container listener")
 		}
 	}
 	for _, probe := range []*corev1.Probe{main.ReadinessProbe, main.StartupProbe} {

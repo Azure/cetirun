@@ -21,7 +21,7 @@ import (
 )
 
 func TestSandboxEventsPreparationRoleFailures(t *testing.T) {
-	for _, runtime := range []string{"openclaw"} {
+	for _, runtime := range []string{"openclaw", "hermes"} {
 		for _, failure := range []string{"deleted", "UID changed", "version changed", "read failed"} {
 			t.Run(runtime+"/"+failure, func(t *testing.T) {
 				f := newPreparationFixture(t, runtime)

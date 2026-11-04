@@ -260,8 +260,12 @@ extra:
         self.assert_yaml_alias_preserved("parent")
 
     def test_supervisor_checks_each_gateway_start(self):
+        initializer = (CHART / "agents/hermes/bootstrap/hermes-init-home.sh").read_text()
         entrypoint = (CHART / "agents/hermes/bootstrap/hermes-entrypoint.sh").read_text()
         wrapper = (CHART / "agents/hermes/bootstrap/hermes-gateway.sh").read_text()
+        template = (CHART / "templates/agents/hermes/_runtime.tpl").read_text()
+        self.assertIn('set -- "$@" --ingress-mtls', initializer)
+        self.assertIn("CETIRUN_INGRESS_MTLS", template)
         self.assertIn("command=/bin/sh /etc/cetirun/hermes-gateway.sh", entrypoint)
         self.assertIn("hermes-runtime.py check", wrapper)
         self.assertIn("exec hermes gateway run --replace --accept-hooks --external-supervisor", wrapper)

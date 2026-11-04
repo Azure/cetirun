@@ -121,12 +121,13 @@ notes do not print port-forward commands for that runtime class.
 
 Agents sign in to model sources through the Portal and the AI Gateway. Hermes
 exposes its native Webapp on `9120`. The operator routes native UI requests
-to the Webapp; native API paths continue to reach port 8642. These ports are defined in
+to the Webapp; native API paths use the configured API port, which defaults to
+8642. These ports are defined in
 [agent helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
 and [controller routing]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}).
 
-For operator-managed Agents, use `spec.agent.port`. Hermes keeps its API fixed
-at 8642 and Webapp at 9120. OpenClaw applies the resolved primary port to the runtime and to its primary Istio routes.
+For operator-managed Agents, use `spec.agent.port`. The operator applies the
+resolved primary port to the runtime and to its primary Istio routes.
 Primary-port overrides through `service.port`, `service.targetPort`, or native
 Helm settings are rejected. Standalone Helm still uses the settings in this
 table. Native helper and Webapp ports are still part of the qualified

@@ -141,7 +141,7 @@ func assertPublicationHeld(t *testing.T, f *preparationFixture) {
 }
 
 func TestSandboxSkillsPublicationColdCreateAndHeldHandoff(t *testing.T) {
-	for _, typ := range []string{"openclaw"} {
+	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {
 			ctx := context.Background()
 			f, catalog := newSkillsPublicationFixture(t, typ)

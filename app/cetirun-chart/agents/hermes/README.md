@@ -86,7 +86,7 @@ a working selection. PM still owns building, validation and atomic publication.
 
 ## Platform-owned settings and access
 
-The platform manages API port `8642`, Webapp port `9120`, the public URL,
+The platform manages the API port (default `8642`), Webapp port `9120`, the public URL,
 listener addresses and browser authentication on every supervised gateway start.
 The managed overlay does not replace the owner's models, message channels,
 plugins, sessions or other retained configuration. Invalid managed input causes
@@ -124,7 +124,7 @@ existing storage behavior. The patch changes source modules, without rewriting
 served HTML or JavaScript.
 
 In managed ingress mTLS mode, both application listeners bind to loopback.
-External TLS `15443` forwards API requests to `8642`; TLS `15444` forwards Webapp
+External TLS `15443` forwards API requests to the configured API port; TLS `15444` forwards Webapp
 requests to `9120`. The target registration must explicitly approve the new
 Webapp port. An old approval for `9119` does not authorize `9120`.
 

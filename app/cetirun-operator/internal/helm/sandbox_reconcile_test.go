@@ -223,7 +223,7 @@ func TestReconciledSandboxPullSecretIsKubeletOnly(t *testing.T) {
 					changed := template.DeepCopy()
 					mutate(changed)
 					before := changed.DeepCopy()
-					if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false); err == nil {
+					if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false, prepared.Agent.Port); err == nil {
 						t.Fatal("pull credential escaped its approved kubelet-only use")
 					}
 					if !equality.Semantic.DeepEqual(changed, before) {

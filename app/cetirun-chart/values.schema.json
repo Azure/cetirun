@@ -939,8 +939,11 @@
                             "default": "0.0.0.0"
                         },
                         "API_SERVER_PORT": {
-                            "type": "string",
-                            "const": "8642",
+                            "type": [
+                                "string",
+                                "integer"
+                            ],
+                            "pattern": "^[0-9]+$",
                             "default": "8642"
                         },
                         "API_SERVER_KEY": {

@@ -150,11 +150,7 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 	} {
 		for _, previouslyPrepared := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/prepared=%v", tc.name, previouslyPrepared), func(t *testing.T) {
-				typ := "hermes"
-				if previouslyPrepared {
-					typ = "openclaw"
-				}
-				f := newPreparationFixture(t, typ)
+				f := newPreparationFixture(t, "hermes")
 				if previouslyPrepared {
 					if err := f.reconcile(); err != nil {
 						t.Fatal(err)
@@ -165,9 +161,6 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 				result, err := f.reconciler.Reconcile(context.Background(), ctrl.Request{
 					NamespacedName: client.ObjectKey{Name: f.fixture.Agent.Name},
 				})
-				if !previouslyPrepared && f.installer.renders != 0 {
-					t.Fatal("failed prerequisites reached the held renderer")
-				}
 				agent := f.current(t)
 				condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionAgentConfigReady)
 				sandboxCondition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
@@ -384,7 +377,7 @@ func TestSandboxPreparationDeletionResumesReleasedEmptyJournal(t *testing.T) {
 }
 
 func TestSandboxBuiltinDeletionAttemptsShutdownWhenRevocationFails(t *testing.T) {
-	for _, typ := range []string{"openclaw"} {
+	for _, typ := range []string{"openclaw", "hermes"} {
 		for _, revocation := range []string{"journal read", "binding deletion"} {
 			for _, failure := range []string{"none", "workload", "route", "status", "all"} {
 				t.Run(typ+"/"+revocation+"/"+failure, func(t *testing.T) {
@@ -577,7 +570,7 @@ func TestSandboxBuiltinDeletionAttemptsShutdownWhenRevocationFails(t *testing.T)
 
 func TestSandboxPreparationDeletionKeepsRegistryCleanupBehindShutdown(t *testing.T) {
 	ctx := context.Background()
-	f := newHeldOpenClawFixture(t)
+	f := newPreparationFixture(t, "hermes")
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -711,7 +704,7 @@ func (s *preparationStatusCounts) Update(ctx context.Context, object client.Obje
 func TestSandboxPreparationUnchangedRequestBudget(t *testing.T) {
 	for _, admin := range []bool{false, true} {
 		t.Run(fmt.Sprintf("admin=%v", admin), func(t *testing.T) {
-			f := newHeldOpenClawFixture(t)
+			f := newPreparationFixture(t, "hermes")
 			if admin {
 				f.makeAdmin(t)
 			}
@@ -822,7 +815,7 @@ func TestSandboxPreparationReuseKeepsFreshFailureChecks(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newHeldOpenClawFixture(t)
+			f := newPreparationFixture(t, "hermes")
 			if err := f.reconcile(); err != nil {
 				t.Fatal(err)
 			}

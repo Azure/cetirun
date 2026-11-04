@@ -367,6 +367,13 @@ func TestBuildHelmValues_HermesWebappPublicURL(t *testing.T) {
 	instance.Name = "alice-work"
 	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 	instance.Spec.Model = "synthetic-model"
+	instance.Spec.Helm.Values["hermes"] = runtime.RawExtension{
+		Raw: []byte(`{"env":{"HERMES_WEBAPP_PUBLIC_URL":"https://other.example.com/wrong"}}`),
+	}
+	if _, err := buildHelmValues(instance, nil, "example.com", "", nil, ""); err == nil || !strings.Contains(err.Error(), "platform-owned") {
+		t.Fatalf("conflicting Webapp public URL should be rejected as platform-owned: %v", err)
+	}
+	delete(instance.Spec.Helm.Values, "hermes")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatal(err)

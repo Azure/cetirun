@@ -119,7 +119,7 @@ func TestEntraRuntimeProjectionContainerScope(t *testing.T) {
 			input := bundle.Identity()
 			var expected *w.Expectation
 			if input.Reconciled {
-				if err := bundle.ValidateReconciledTemplate(template, prepared.Agent.Image, false); err != nil {
+				if err := bundle.ValidateReconciledTemplate(template, prepared.Agent.Image, false, prepared.Agent.Port); err != nil {
 					t.Fatal("common renderer lost the Entra projection:", err)
 				}
 			} else {
@@ -179,7 +179,7 @@ func TestEntraRuntimeProjectionContainerScope(t *testing.T) {
 						t.Fatal("runtime identity drift passed the shared validation core")
 					}
 					if input.Reconciled {
-						if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false); err == nil {
+						if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false, prepared.Agent.Port); err == nil {
 							t.Fatal("common rendering accepted identity drift")
 						}
 					} else if err := bundle.ValidateTemplate(changed, prepared.Agent.Image); err == nil {
@@ -191,7 +191,7 @@ func TestEntraRuntimeProjectionContainerScope(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := commonBundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false); err == nil {
+					if err := commonBundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, false, prepared.Agent.Port); err == nil {
 						t.Fatal("common rendering accepted identity drift")
 					}
 					if expected != nil {
@@ -233,7 +233,7 @@ func TestEntraCommonRenderingIsNotExecutionAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := bundle.ValidateReconciledTemplate(template, prepared.Agent.Image, false); err != nil {
+			if err := bundle.ValidateReconciledTemplate(template, prepared.Agent.Image, false, prepared.Agent.Port); err != nil {
 				t.Fatal("common renderer lost the compiler's Entra projection:", err)
 			}
 			manifest, err := prepared.SandboxManifest()

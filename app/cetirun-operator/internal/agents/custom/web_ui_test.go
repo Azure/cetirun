@@ -54,8 +54,8 @@ func TestWebUIFlagSelectsHTTPContract(t *testing.T) {
 		if err != nil || c.Agent.WebUI != enabled || (c.HTTP.ChatPath == "") != enabled || (c.HTTP.ModelsPath == "") != enabled {
 			t.Fatalf("webUI=%v selected the wrong protocol: %#v, %v", enabled, c, err)
 		}
-		request.Type, request.Port = "hermes", ptr.To[int32](8642)
-		_, err = agents.Resolve(request, agents.Profile{ID: "test", Image: request.Image, Port: 8642})
+		request.Type = "hermes"
+		_, err = agents.Resolve(request, agents.Profile{ID: "test", Image: request.Image, Port: 8080})
 		if (err != nil) != enabled {
 			t.Fatalf("built-in webUI=%v, error=%v", enabled, err)
 		}

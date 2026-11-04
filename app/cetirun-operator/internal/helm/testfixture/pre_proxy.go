@@ -727,20 +727,7 @@ func restoreHermesWebappSchema(schema []byte) ([]byte, error) {
                             "default": "0.0.0.0"
                         },
 `},
-		{`                        "API_SERVER_PORT": {
-                            "type": "string",
-                            "const": "8642",
-                            "default": "8642"
-                        },
-`, `                        "API_SERVER_PORT": {
-                            "type": [
-                                "string",
-                                "integer"
-                            ],
-                            "pattern": "^[0-9]+$",
-                            "default": "8642"
-                        },
-`},
+
 		{`                        "HERMES_WEBAPP_PUBLIC_URL": {
                             "type": "string",
                             "description": "Operator-owned external Webapp URL including its instance prefix",

@@ -73,6 +73,14 @@ def document(path: Path) -> dict:
     return value
 
 
+def api_port() -> int:
+    value = os.environ.get("API_SERVER_PORT", "")
+    require(bool(re.fullmatch(r"[0-9]+", value)), "APIListenerPortInvalid")
+    port = int(value)
+    require(1 <= port <= 65535 and port != 9120, "APIListenerPortInvalid")
+    return port
+
+
 def contract() -> dict:
     require(os.environ.get("HERMES_HOME") == str(HOME), "HomeBindingInvalid")
     require(HOME.is_dir() and not HOME.is_symlink(), "HomeBindingInvalid")
@@ -94,8 +102,9 @@ def contract() -> dict:
     require(all(type(managed["webapp"][name]) is type(value) for name, value in expected.items()),
             "ManagedWebappTypeInvalid")
     require(not ((MANAGED / "config.yaml").stat().st_mode & 0o222), "ManagedConfigWritable")
+    api_port()
     for name, value in {
-        "API_SERVER_ENABLED": "true", "API_SERVER_HOST": host, "API_SERVER_PORT": "8642",
+        "API_SERVER_ENABLED": "true", "API_SERVER_HOST": host,
         "HERMES_WEBAPP_ENABLED": "true", "HERMES_WEBAPP_HOST": host, "HERMES_WEBAPP_PORT": "9120",
         "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "cetirun", "CETIRUN_AI_GATEWAY": "true",
     }.items():
@@ -233,7 +242,7 @@ def effective(expected: dict) -> None:
     # This raises instead of accepting load_gateway_config's fallback on a bad YAML layer.
     config_loader.load_yaml_layer(HOME, config_loader.load_legacy_gateway_json(HOME))
     api = load_gateway_config().platforms.get(Platform.API_SERVER)
-    require(api is not None and api.enabled and listen_address(api.extra) == (expected["host"], 8642)
+    require(api is not None and api.enabled and listen_address(api.extra) == (expected["host"], api_port())
             and api.extra.get("key") == os.environ["API_SERVER_KEY"], "EffectiveAPIInvalid")
     web = webapp_settings(HOME)
     require(web.enabled is True and web.reason is None and web.host == expected["host"]
@@ -315,7 +324,7 @@ def readiness(timeout: float) -> None:
     status = response.get("result", {})
     require(response.get("ok") is True and status.get("state") == "serving"
             and status.get("url") == "http://127.0.0.1:9120", "WebappNotServing")
-    get_json(8642, "/health", budget)
+    get_json(api_port(), "/health", budget)
     auth = get_json(9120, "/api/auth/providers", budget, expected["public_url"])
     require(any(p.get("name") == "basic" and p.get("supports_password") is True
                 for p in auth.get("providers", [])), "LivePasswordProviderMissing")
@@ -337,7 +346,7 @@ def main() -> int:
             elif args.mode == "readiness":
                 readiness(args.timeout)
             else:
-                get_json(8642, "/health", max(0.1, args.timeout / 3))
+                get_json(api_port(), "/health", max(0.1, args.timeout / 3))
                 helper_health(max(0.1, args.timeout / 3))
         return 0
     except Exception as exc:
