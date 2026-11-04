@@ -31,16 +31,17 @@ type AdminAgentConfig struct {
 
 // AdminInstanceSummary is the row shape for the admin instances list.
 type AdminInstanceSummary struct {
-	Name        string           `json:"name"`
-	Alias       string           `json:"alias"`
-	DisplayName string           `json:"displayName,omitempty"`
-	Email       string           `json:"email,omitempty"`
-	Team        string           `json:"team,omitempty"`
-	Agent       AdminAgentConfig `json:"agent"`
-	UID         string           `json:"uid"`
-	Phase       string           `json:"phase,omitempty"`
-	Ready       bool             `json:"ready"`
-	CreatedAt   string           `json:"createdAt"`
+	Name        string            `json:"name"`
+	Alias       string            `json:"alias"`
+	DisplayName string            `json:"displayName,omitempty"`
+	Email       string            `json:"email,omitempty"`
+	Team        string            `json:"team,omitempty"`
+	Agent       AdminAgentConfig  `json:"agent"`
+	UID         string            `json:"uid"`
+	Phase       string            `json:"phase,omitempty"`
+	Ready       bool              `json:"ready"`
+	Governance  *GovernanceStatus `json:"governance,omitempty"`
+	CreatedAt   string            `json:"createdAt"`
 }
 
 // ListAllInstances handles GET /api/v1/admin/instances.
@@ -78,6 +79,7 @@ func adminInstanceSummary(ins *cetirunv1alpha1.Agent) AdminInstanceSummary {
 		UID:         string(ins.UID),
 		Phase:       phase,
 		Ready:       ready,
+		Governance:  governanceStatus(ins),
 		CreatedAt:   ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 }

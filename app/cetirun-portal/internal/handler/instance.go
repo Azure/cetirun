@@ -117,6 +117,7 @@ type InstanceResponse struct {
 	APIServerKey                string                      `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
 	TailscaleAuthKey            string                      `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
 	Conditions                  []ConditionStatus           `json:"conditions,omitempty"`
+	Governance                  *GovernanceStatus           `json:"governance,omitempty"`
 	CreatedAt                   string                      `json:"createdAt"`
 	LastReconciled              string                      `json:"lastReconciled,omitempty"`
 	UpgradeAvailable            bool                        `json:"upgradeAvailable"`
@@ -143,10 +144,11 @@ type AgentIdentityResponse struct {
 
 // ConditionStatus is a simplified view of a Kubernetes condition.
 type ConditionStatus struct {
-	Type    string `json:"type"`
-	Status  string `json:"status"`
-	Reason  string `json:"reason"`
-	Message string `json:"message"`
+	Type               string `json:"type"`
+	Status             string `json:"status"`
+	Reason             string `json:"reason"`
+	Message            string `json:"message"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
 }
 
 // TeamSummary is the JSON response element for GET /api/v1/teams.
@@ -402,10 +404,11 @@ func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http
 	_, synchronized := h.Kube.RegistryAuthState(r.Context(), instance)
 	for _, c := range registryResponseConditions(instance, synchronized) {
 		resp.Conditions = append(resp.Conditions, ConditionStatus{
-			Type:    c.Type,
-			Status:  string(c.Status),
-			Reason:  c.Reason,
-			Message: c.Message,
+			Type:               c.Type,
+			Status:             string(c.Status),
+			Reason:             c.Reason,
+			Message:            c.Message,
+			ObservedGeneration: c.ObservedGeneration,
 		})
 	}
 
@@ -738,6 +741,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		RegistryAuthConfigured:   configured,
 		Generation:               instance.Generation,
 		ObservedGeneration:       instance.Status.ObservedGeneration,
+		Governance:               governanceStatus(instance),
 		Suspended:                instance.Spec.Suspended,
 		SuspendAvailable:         kube.CanSuspendInstance(instance),
 		ResumeAvailable:          kube.CanResumeInstance(instance),
@@ -769,10 +773,11 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 
 	for _, c := range registryResponseConditions(instance, synchronized) {
 		resp.Conditions = append(resp.Conditions, ConditionStatus{
-			Type:    c.Type,
-			Status:  string(c.Status),
-			Reason:  c.Reason,
-			Message: c.Message,
+			Type:               c.Type,
+			Status:             string(c.Status),
+			Reason:             c.Reason,
+			Message:            c.Message,
+			ObservedGeneration: c.ObservedGeneration,
 		})
 	}
 

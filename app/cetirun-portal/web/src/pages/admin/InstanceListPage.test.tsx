@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,19 @@ vi.mock("../../api/adminInstance");
 
 describe("admin InstanceListPage", () => {
   beforeEach(() => vi.resetAllMocks());
+
+  it("shows platform support as the cause in the status cell", async () => {
+    vi.mocked(adminInstances.listAllInstances).mockResolvedValue([
+      { name: "research", alias: "alice", uid: "1", agent: { type: "openclaw" }, ready: false, phase: "Pending", createdAt: "2026-01-01T00:00:00Z",
+        governance: { category: "platform", reason: "UnsupportedControl", message: "A requested Sandbox control is not qualified.", condition: "SandboxReady", observedGeneration: 2 } },
+    ]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter><InstanceListPage /></MemoryRouter></QueryClientProvider>);
+    const cell = (await screen.findByText("Platform support required")).closest("td")!;
+    expect(within(cell).getByText("Pending")).toBeInTheDocument();
+    expect(within(cell).getByText("Platform support required")).toBeInTheDocument();
+    expect(within(cell).getByText(/UnsupportedControl:/)).toBeInTheDocument();
+  });
 
   it("filters locally and links the Agent name to its detail page", async () => {
     vi.mocked(adminInstances.listAllInstances).mockResolvedValue([

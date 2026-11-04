@@ -22,6 +22,7 @@ import {
 } from "@fluentui/react-components";
 import { listAllInstances, type AdminInstanceSummary } from "../../api/adminInstance";
 import { agentTypeLabel } from "../../utils/instance";
+import { GovernanceNotice } from "../../components/GovernanceNotice";
 
 function formatAge(createdAt?: string): string {
   if (!createdAt) return "—";
@@ -86,7 +87,7 @@ export function InstanceListPage() {
               <TableHeaderCell>Display name</TableHeaderCell>
               <TableHeaderCell>Team</TableHeaderCell>
               <TableHeaderCell>Agent</TableHeaderCell>
-              <TableHeaderCell>Phase</TableHeaderCell>
+              <TableHeaderCell>Status</TableHeaderCell>
               <TableHeaderCell>Age</TableHeaderCell>
               <TableHeaderCell>Actions</TableHeaderCell>
             </TableRow>
@@ -114,6 +115,7 @@ export function InstanceListPage() {
                   <Badge appearance="filled" color={ins.ready ? "success" : "warning"}>
                     {ins.phase || "Unknown"}
                   </Badge>
+                  <GovernanceNotice instance={ins} compact />
                 </TableCell>
                 <TableCell>{formatAge(ins.createdAt)}</TableCell>
                 <TableCell><Link to={`/admin/instances/${encodeURIComponent(ins.name)}`}>View details</Link></TableCell>

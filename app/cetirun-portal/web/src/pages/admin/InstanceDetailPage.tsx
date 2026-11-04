@@ -36,6 +36,7 @@ import {
 import { PortalError } from "../../api/fetch";
 import { EventsTab } from "../../components/EventsTab";
 import { StatusTab } from "../../components/StatusTab";
+import { GovernanceNotice } from "../../components/GovernanceNotice";
 import { useFeatures } from "../../hooks/useFeatures";
 import { agentTypeLabel } from "../../utils/instance";
 
@@ -321,6 +322,7 @@ export function InstanceDetailPage() {
     {deletionInProgress && <MessageBar intent="warning">Deletion has been requested. This page will close once the Agent is removed.</MessageBar>}
     {pendingReconcile && !deleting && <MessageBar intent="info">Configuration saved; waiting for the Operator to apply generation {detail.generation}.</MessageBar>}
     {reviewNotice && !editing && <MessageBar intent="info">{reviewNotice}</MessageBar>}
+    {!deletionInProgress && <GovernanceNotice instance={detail} />}
 
     <TabList selectedValue={selectedTab} onTabSelect={(_, data: SelectTabData) => setSelectedTab(data.value as string)} style={{ marginTop: 16, marginBottom: 16 }}>
       <Tab value="overview">Overview</Tab><Tab value="status">Status</Tab><Tab value="events">Events</Tab>

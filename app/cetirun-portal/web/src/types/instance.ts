@@ -62,6 +62,7 @@ export interface Instance extends InstanceVersion {
   apiServerKey?: string;           // Hermes API server key, returned separately when available
   tailscaleAuthKey?: string;       // Tailscale auth key, returned when Tailscale is enabled
   conditions?: ConditionStatus[];
+  governance?: GovernanceStatus;
   createdAt: string;
   lastReconciled?: string;
   upgradeAvailable: boolean;
@@ -142,6 +143,16 @@ export interface ConditionStatus {
   status: "True" | "False" | "Unknown";
   reason: string;
   message: string;
+  observedGeneration?: number;
+}
+
+/** A current governance observation selected by the Portal API. */
+export interface GovernanceStatus {
+  category: "policy" | "identity" | "platform" | "dependency" | "pending";
+  reason: string;
+  message: string;
+  condition: string;
+  observedGeneration: number;
 }
 
 export interface CreateInstanceRequest {

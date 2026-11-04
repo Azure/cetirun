@@ -38,6 +38,7 @@ import { useFeatures } from "../hooks/useFeatures";
 import type { Instance, InstanceVersion, UpdateInstanceRequest } from "../types/instance";
 import { agentTypeLabel, phaseBadgeColor } from "../utils/instance";
 import { StatusTab } from "./StatusTab";
+import { currentGovernance, GovernanceNotice } from "./GovernanceNotice";
 import { ToolAuthorizationBlock } from "./ToolAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
 import { AIGatewayBlock } from "./AIGatewayBlock";
@@ -159,6 +160,11 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
   return (
     <div style={{ padding: 24, overflowY: "auto", flex: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <Text as="h1" size={600} weight="semibold" style={{ minWidth: 0, margin: 0, overflowWrap: "anywhere" }}>{instance.displayName.trim() || instance.instanceName}</Text>
+        <Badge appearance="filled" color={phaseBadgeColor[instance.phase] ?? "informative"}>{instance.phase}</Badge>
+      </div>
+      <GovernanceNotice instance={instance} />
       <TabList
         size="medium"
         selectedValue={selectedTab}
@@ -174,11 +180,6 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       )}
 
       {selectedTab === "overview" && (<>
-      {/* Header */}
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <Text as="h1" size={600} weight="semibold" style={{ minWidth: 0, margin: 0, overflowWrap: "anywhere" }}>{instance.displayName.trim() || instance.instanceName}</Text>
-        <Badge appearance="filled" color={phaseBadgeColor[instance.phase] ?? "informative"}>{instance.phase}</Badge>
-      </div>
       <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: 16, display: "block" }}>
         Agent: {instance.instanceName} | Owner: {instance.alias}{instance.team ? ` | Team: ${instance.team}` : ""}
       </Text>
@@ -195,7 +196,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         </div>
       )}
 
-      {instance.phase === "Provisioning" && <Spinner size="small" label="Provisioning your agent..." />}
+      {instance.phase === "Provisioning" && !currentGovernance(instance) && <Spinner size="small" label="Provisioning your agent..." />}
 
       {agentCredential && (
         <div style={{ marginTop: 8, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
