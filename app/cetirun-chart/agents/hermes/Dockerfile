@@ -132,6 +132,8 @@ COPY --from=hermes-sqlite-build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/
 COPY --chown=vibe:vibe agents/hermes/compat/ /usr/local/lib/hermes-agent/cetirun_compat/
 COPY --chown=vibe:vibe agents/hermes/plugins/cetirun-memory-context/ /usr/local/lib/hermes-agent/plugins/cetirun-memory-context/
 RUN python3 /usr/local/lib/hermes-agent/cetirun_compat/apply.py --root /usr/local/lib/hermes-agent
+COPY --chown=vibe:vibe configs/apply-memory-skills.py /tmp/apply-memory-skills.py
+RUN python3 /tmp/apply-memory-skills.py --runtime hermes --root /usr/local/lib/hermes-agent && rm /tmp/apply-memory-skills.py
 
 USER root
 RUN tdnf install -y tzdata && tdnf clean all && \

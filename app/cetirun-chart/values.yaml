@@ -673,7 +673,9 @@ skills:
   # existingClaim: ""
   # -- Team subtree of the shared skills claim, set by the operator for a
   # Skill Marketplace Team: "teams/<team-uid>". Only the HOME initializer
-  # mounts it, read-only. Requires skills.shared and the composed Agent context.
+  # mounts it, read-only, and copies the Team's release, which the Agent then
+  # reads at skills.mountPath. Requires skills.shared, the composed Agent
+  # context, and a reconciled Sandbox workload.
   # subPath: ""
   # -- Skill Marketplace selection, set by the operator together with subPath.
   # selectionDigest is the Team selection digest "sha256:<64 hex>" that the

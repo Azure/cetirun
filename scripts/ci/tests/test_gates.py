@@ -367,6 +367,13 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("GO_TEST_TIMEOUT := 30m", makefile)
         self.assertIn("GO_ENVTEST_TIMEOUT := 50m", makefile)
         self.assertRegex(makefile, r"(?m)^GO_CONTROLLER_TEST_GROUP := \^Test\([A-Za-z|]+\)$")
+        self.assertIn("GO_TEST_SHARD_INDEX ?= 1", makefile)
+        self.assertIn("GO_TEST_SHARD_COUNT ?= 1", makefile)
+        self.assertIn("$(PYTHON) -B ../../scripts/ci/go_test.py", makefile)
+        self.assertIn(
+            "--shard-index $(GO_TEST_SHARD_INDEX) --shard-count $(GO_TEST_SHARD_COUNT) --",
+            makefile,
+        )
         for target, timeout in (
             ("test", "GO_TEST_TIMEOUT"),
             ("test-envtest", "GO_ENVTEST_TIMEOUT"),
@@ -375,11 +382,14 @@ class WorkflowContractTests(unittest.TestCase):
                 commands = makefile.split(f"\n{target}:\n", 1)[1].split("\n\n", 1)[0]
                 self.assertIn(f"-timeout=$({timeout})", commands)
                 self.assertIn("-count=1", commands)
+                self.assertIn("$(GO_TEST_RUNNER)", commands)
                 if target == "test-envtest":
+                    self.assertIn("ifeq ($(GO_TEST_SHARD_INDEX)/$(GO_TEST_SHARD_COUNT),1/1)", commands)
                     self.assertIn("-run='$(GO_ENVTEST_SPLIT)'", commands)
                     self.assertIn("-skip='$(GO_ENVTEST_SPLIT)'", commands)
                 self.assertNotIn("|| true", commands)
         unit = makefile.split("\ntest:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("ifeq ($(GO_TEST_SHARD_INDEX)/$(GO_TEST_SHARD_COUNT),1/1)", unit)
         self.assertIn(
             "go list -f '{{if ne .ImportPath \"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller\"}}{{.ImportPath}}{{end}}' ./...",
             unit,
@@ -396,7 +406,9 @@ class WorkflowContractTests(unittest.TestCase):
                 if target == "test-sandbox-lifecycle":
                     self.assertIn("./cmd/sandbox-config-change", commands)
                 self.assertIn('test -x "$(KUBEBUILDER_ASSETS)/kubectl"', commands)
-                self.assertIn("USE_EXISTING_CLUSTER=false go test -tags=envtest", commands)
+                self.assertIn("USE_EXISTING_CLUSTER=false", commands)
+                self.assertIn("-tags=envtest", commands)
+        self.assertIn("$(GO_TEST_RUNNER) ./... -v", makefile)
         for name in ("operator-ci.yml", "operator-release.yml"):
             with self.subTest(workflow=name):
                 text = (validate.ROOT / ".github/workflows" / name).read_text()
@@ -416,7 +428,63 @@ class WorkflowContractTests(unittest.TestCase):
             steps["Run go test"],
         )
 
-    def test_operator_envtest_partitions_preserve_coverage_and_failures(self):
+    def test_operator_default_unit_groups_and_shards_use_distinct_paths(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-unit-command-") as directory:
+            root = Path(directory)
+            go = root / "go"
+            go.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, sys
+                args = sys.argv[1:]
+                with open(os.environ["TEST_GO_LOG"], "a") as output:
+                    output.write(json.dumps(args) + "\\n")
+                failure = os.environ["TEST_GO_FAIL"]
+                if failure and any(arg.startswith(failure) for arg in args):
+                    sys.exit(9)
+                if args[0] == "list":
+                    print("example.invalid/unit")
+                elif "-list" in args:
+                    for index in range(32):
+                        print(json.dumps({
+                            "Action": "output",
+                            "Output": "TestFixture" + str(index) + "\\n",
+                        }))
+                """))
+            go.chmod(0o755)
+            log = root / "calls.jsonl"
+            for index, count, failure, expected_calls, success in (
+                (1, 1, "", 4, True),
+                (1, 1, "list", 1, False),
+                (1, 1, "-run", 3, False),
+                (1, 1, "-skip", 4, False),
+                (2, 4, "", 2, True),
+                (2, 1, "", 0, False),
+            ):
+                with self.subTest(index=index, count=count, failure=failure):
+                    log.write_text("")
+                    result = subprocess.run(
+                        ["make", "-s", "-C", str(validate.ROOT / "app/cetirun-operator"),
+                         "test", f"GO_TEST_SHARD_INDEX={index}", f"GO_TEST_SHARD_COUNT={count}"],
+                        env={
+                            **os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                            "TEST_GO_LOG": str(log), "TEST_GO_FAIL": failure,
+                        },
+                        text=True, capture_output=True, timeout=10,
+                    )
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                    self.assertEqual(len(calls), expected_calls, calls)
+                    if success and count == 1:
+                        self.assertEqual(calls[0][0], "list")
+                        self.assertIn("example.invalid/unit", calls[1])
+                        self.assertEqual(calls[2][-2], "-run")
+                        self.assertEqual(calls[3][-2], "-skip")
+                        self.assertEqual(calls[2][-1], calls[3][-1])
+                    elif success:
+                        self.assertIn("-list", calls[0])
+                        self.assertTrue(calls[1][-1].startswith("-run=^("), calls)
+
+    def test_operator_envtest_partitions_and_shards_preserve_coverage_and_failures(self):
         packages = [
             "./test/integration", "./internal/helm", "./internal/admission",
             "./internal/controller", "./internal/sandboxwriter",
@@ -443,16 +511,30 @@ class WorkflowContractTests(unittest.TestCase):
                 failed = os.environ["TEST_GO_FAIL_FILTER"]
                 if failed and any(arg.startswith(failed) for arg in args):
                     sys.exit(9)
+                if "-list" in args:
+                    for index in range(32):
+                        print(json.dumps({
+                            "Action": "output",
+                            "Output": "TestFixture" + str(index) + "\\n",
+                        }))
                 """))
             go.chmod(0o755)
             log = root / "calls.jsonl"
-            for failure, count in (("", 2), ("-run=", 1), ("-skip=", 2)):
-                with self.subTest(failure=failure):
+            for index, count, failure, expected_calls, success in (
+                (1, 1, "", 2, True),
+                (1, 1, "-run=", 1, False),
+                (1, 1, "-skip=", 2, False),
+                (2, 4, "", 2, True),
+                (2, 4, "-run=", 2, False),
+                (2, 1, "", 0, False),
+            ):
+                with self.subTest(index=index, count=count, failure=failure):
                     log.write_text("")
-                    run = subprocess.run(
+                    result = subprocess.run(
                         ["make", "-s", "-C",
                          str(validate.ROOT / "app/cetirun-operator"),
-                         "test-envtest", f"KUBEBUILDER_ASSETS={tools}"],
+                         "test-envtest", f"KUBEBUILDER_ASSETS={tools}",
+                         f"GO_TEST_SHARD_INDEX={index}", f"GO_TEST_SHARD_COUNT={count}"],
                         env={
                             **os.environ,
                             "PATH": str(tools) + os.pathsep + os.environ["PATH"],
@@ -462,18 +544,28 @@ class WorkflowContractTests(unittest.TestCase):
                         text=True, capture_output=True, timeout=10,
                     )
                     calls = [json.loads(line) for line in log.read_text().splitlines()]
-                    self.assertEqual(run.returncode == 0, failure == "",
-                                     run.stdout + run.stderr)
-                    self.assertEqual(len(calls), count, calls)
-                    for index, call in enumerate(calls):
-                        selector = "-run=APIServer" if index == 0 else "-skip=APIServer"
-                        self.assertEqual(call["args"], [
-                            "test", "-tags=envtest", *packages, selector,
-                            "-count=1", "-v", "-timeout=50m",
-                        ])
+                    self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                    self.assertEqual(len(calls), expected_calls, calls)
+                    for call in calls:
                         self.assertEqual(call["existing_cluster"], "false")
+                    if count == 1:
+                        for position, call in enumerate(calls):
+                            selector = "-run=APIServer" if position == 0 else "-skip=APIServer"
+                            self.assertEqual(call["args"], [
+                                "test", "-tags=envtest", *packages, selector,
+                                "-count=1", "-v", "-timeout=50m",
+                            ])
+                    elif calls:
+                        self.assertEqual(calls[0]["args"], [
+                            "test", "-tags=envtest", *packages,
+                            "-count=1", "-v", "-timeout=50m", "-json", "-list", ".",
+                        ])
+                        self.assertEqual(calls[1]["args"][:-1], [
+                            "test", "-tags=envtest", *packages, "-count=1", "-v", "-timeout=50m",
+                        ])
+                        self.assertTrue(calls[1]["args"][-1].startswith("-run=^("), calls)
 
-    def test_operator_go_check_requires_both_bounded_workers(self):
+    def test_operator_go_check_requires_all_shards_of_both_bounded_workers(self):
         text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
         jobs = dict(re.findall(
             r"(?ms)^  ([a-z][\w-]*):\n(.*?)(?=^  [a-z][\w-]*:|\Z)", text
@@ -492,6 +584,11 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn("working-directory: app/cetirun-operator", jobs[job])
                 self.assertIn("go-version-file: .go-version", jobs[job])
                 self.assertIn("persist-credentials: false", jobs[job])
+                self.assertIn("fail-fast: false", jobs[job])
+                self.assertIn("shard: [1, 2, 3, 4]", jobs[job])
+                self.assertIn("GO_TEST_SHARD_INDEX: ${{ matrix.shard }}", jobs[job])
+                self.assertIn("GO_TEST_SHARD_COUNT: ${{ strategy.job-total }}", jobs[job])
+                self.assertNotIn("exclude:", jobs[job])
                 self.assertNotIn("needs:", jobs[job])
                 self.assertNotIn("if:", jobs[job])
                 self.assertNotIn("continue-on-error", jobs[job])

@@ -22,6 +22,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -69,7 +70,7 @@ func cliFixture(t *testing.T) ([]string, sandboxcoordination.Store, client.WithW
 			DefaultSandboxRef: "sandbox", MemberContext: api.TeamContextSpec{Role: syntheticBody}}}
 	after := before.DeepCopy()
 	after.Spec.DefaultSandboxRef = "spare"
-	storage := fake.NewClientBuilder().WithScheme(scheme).WithObjects(authority, before).Build()
+	storage := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Team{}).WithObjects(authority, before).Build()
 	store := sandboxcoordination.Store{Client: storage, APIReader: storage, Namespace: authority.Namespace,
 		Identity: w.ObjectIdentity{Name: authority.Name, UID: authority.UID}}
 	directory := t.TempDir()
@@ -223,6 +224,93 @@ func TestCLIExplicitUpdateAndUncertainRecovery(t *testing.T) {
 				if _, err := store.ReadConfigurationChange(context.Background(), before, after); err != nil {
 					t.Fatal("uncertain request stopped holding the reservation:", err)
 				}
+			}
+		})
+	}
+}
+
+func TestCLIUpdateRecoveryAfterStatusRefresh(t *testing.T) {
+	for _, change := range []string{"status", "spec", "metadata"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			args, store, storage, before, after := cliFixture(t)
+			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket, err = store.BeginChange(ctx, ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := before.DeepCopy()
+			current.Status.Compatibility = &api.TeamCompatibilityStatus{State: api.CompatibilityCompatible}
+			if err := storage.Status().Update(ctx, current); err != nil {
+				t.Fatal(err)
+			}
+			if change != "status" {
+				if change == "spec" {
+					current.Spec.MemberContext.Role = "Reviewer"
+				} else {
+					current.Labels = map[string]string{"example.com/changed": "true"}
+				}
+				if err := storage.Update(ctx, current); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if current.ResourceVersion == before.ResourceVersion {
+				t.Fatal("fixture did not supersede the original resourceVersion")
+			}
+			sourceWrites, journalWrites := 0, 0
+			writer := interceptor.NewClient(storage, interceptor.Funcs{
+				Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+					if _, ok := object.(*corev1.ConfigMap); ok {
+						journalWrites++
+					} else {
+						sourceWrites++
+						return errors.New("recovery must not resubmit a source update")
+					}
+					return c.Update(ctx, object, opts...)
+				},
+			})
+			code, observed, _ := invoke(t, args, injectedClients(writer))
+			wantCode, wantStatus := 0, "update-superseded-reservation-retained"
+			if change != "status" {
+				wantCode, wantStatus = 1, "uncertain"
+			}
+			if code != wantCode || observed.Status != wantStatus || observed.Operation != ticket.Change.ID ||
+				sourceWrites != 0 || journalWrites != 0 {
+				t.Fatalf("read-only update recovery: code=%d status=%+v sourceWrites=%d journalWrites=%d", code, observed, sourceWrites, journalWrites)
+			}
+			if err := store.CheckChange(ctx, ticket); err != nil {
+				t.Fatal("observation released the reservation:", err)
+			}
+			code, recovered, _ := invoke(t, append(args, "--action", "update"), injectedClients(writer))
+			if change != "status" {
+				if code != 1 || recovered.Status != "uncertain" || sourceWrites != 0 || journalWrites != 0 {
+					t.Fatal("configuration drift was treated as a superseded update")
+				}
+				if err := store.CheckChange(ctx, ticket); err != nil {
+					t.Fatal("configuration drift released the reservation:", err)
+				}
+				return
+			}
+			if code != 0 || recovered.Status != "update-superseded" || recovered.Operation != ticket.Change.ID ||
+				sourceWrites != 0 || journalWrites != 1 {
+				t.Fatalf("explicit update recovery: code=%d status=%+v sourceWrites=%d journalWrites=%d", code, recovered, sourceWrites, journalWrites)
+			}
+			if _, found, err := store.ReadConfigurationUpdate(ctx, current); err != nil || found {
+				t.Fatal("superseded update retained its reservation:", err)
+			}
+			if err := storage.Update(ctx, after.DeepCopy()); !apierrors.IsConflict(err) {
+				t.Fatalf("delayed original Update was not fenced by its old resourceVersion: %v", err)
+			}
+			actual := &api.Team{}
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(before), actual); err != nil {
+				t.Fatal(err)
+			}
+			if actual.ResourceVersion != current.ResourceVersion || actual.Spec.DefaultSandboxRef != before.Spec.DefaultSandboxRef ||
+				actual.Status.Compatibility == nil {
+				t.Fatal("recovery changed the configuration or discarded its status")
 			}
 		})
 	}

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { apiFetch } from "./fetch";
+import { adminResponseError } from "./adminError";
 import type { AgentPolicyRateLimits } from "../types/rateLimits";
 
 export type PolicyHarness = "openclaw" | "hermes" | "custom";
@@ -97,25 +98,16 @@ export interface AgentPolicyUpsertRequest {
   };
 }
 
-async function parseError(response: Response, fallback: string): Promise<string> {
-  try {
-    const err = await response.json();
-    return err?.error?.message || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 export async function listPolicies(): Promise<AgentPolicyDTO[]> {
   const response = await apiFetch("/api/v1/admin/policies");
-  if (!response.ok) throw new Error(await parseError(response, "Failed to list policies"));
+  if (!response.ok) throw await adminResponseError(response, "Failed to list policies");
   const data = await response.json();
   return data.policies || [];
 }
 
 export async function getPolicy(name: string): Promise<AgentPolicyDTO> {
   const response = await apiFetch(`/api/v1/admin/policies/${encodeURIComponent(name)}`);
-  if (!response.ok) throw new Error(await parseError(response, "Failed to get policy"));
+  if (!response.ok) throw await adminResponseError(response, "Failed to get policy");
   return response.json();
 }
 
@@ -124,7 +116,7 @@ export async function createPolicy(req: AgentPolicyUpsertRequest): Promise<Agent
     method: "POST",
     body: JSON.stringify(req),
   });
-  if (!response.ok) throw new Error(await parseError(response, "Failed to create policy"));
+  if (!response.ok) throw await adminResponseError(response, "Failed to create policy");
   return response.json();
 }
 
@@ -136,8 +128,8 @@ export async function updatePolicy(name: string, req: AgentPolicyUpsertRequest):
     body: JSON.stringify(req),
   });
   if (!response.ok) {
-    const message = await parseError(response, "Failed to update policy");
-    throw response.status === 409 ? new PolicyConflictError(message) : new Error(message);
+    const error = await adminResponseError(response, "Failed to update policy");
+    throw response.status === 409 && error.code === "policy_changed" ? new PolicyConflictError(error.message) : error;
   }
   return response.json();
 }
@@ -148,6 +140,6 @@ export async function deletePolicy(policy: Pick<AgentPolicyDTO, "name" | "uid" |
     body: JSON.stringify({ uid: policy.uid, resourceVersion: policy.resourceVersion }),
   });
   if (!response.ok && response.status !== 404) {
-    throw new Error(await parseError(response, "Failed to delete policy"));
+    throw await adminResponseError(response, "Failed to delete policy");
   }
 }

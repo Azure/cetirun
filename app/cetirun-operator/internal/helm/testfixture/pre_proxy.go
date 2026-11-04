@@ -134,6 +134,9 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 	// historical assets. These bytes are test inputs, never release defaults.
 	for name, replacements := range map[string][][2]string{
 		"agents/openclaw/config/native.tpl": {
+			{`{{- $directSkills := or .Values.skills.shared $emptySkills }}`, `{{- $directSkills := and (not $contextSkills) (or .Values.skills.shared $emptySkills) }}`},
+			{"{{- $_ := set $load \"extraDirs\" (append (dig \"extraDirs\" (list) $load) \"/opt/cetirun-memory/skills\" | uniq) }}\n", ""},
+			{`{{- $_ := set $load "extraDirs" (append (dig "extraDirs" (list) $load) .Values.skills.mountPath | uniq) }}`, `{{- $_ := set $load "extraDirs" (list .Values.skills.mountPath) }}`},
 			{`    "trustedProxy" (dict
       "userHeader" "x-auth-request-email"
       "allowLoopback" true

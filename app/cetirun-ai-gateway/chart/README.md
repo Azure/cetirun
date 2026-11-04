@@ -1970,6 +1970,22 @@ model, for example a shared model that the Agent is not granted. In this case,
 the route takes that name in the Agent's own access group. There, the Agent's
 key reaches only its own Copilot route, and never the shared deployments.
 
+For an Agent with an AgentPolicy, the policy's `sharedModels.allowed` also
+applies to Copilot models. It applies to each Copilot model that is the same
+real model as a shared model, by the comparison above. Such a Copilot model is
+registered only when the policy allows one of the shared models that are that
+model. Otherwise it is omitted and reported on the Agent
+(`status.aiGateway.copilot.notAllowed`). A Copilot model that is no shared
+model's real model needs only `modelAccess.copilot.allowed`.
+
+When the policy stops allowing such a model, the operator removes the model's
+route before it updates the Agent's key. All of the Agent's Copilot routes are
+in the Agent's one access group. While a route cannot be removed, the key does
+not hold that group, and `status.aiGateway.copilot.reason` is
+`NotAllowedRouteRemovalFailed`. The key also does not hold it while the
+operator cannot read the Gateway's models or prices (`PolicyCheckUnavailable`).
+The group comes back when the route is removed.
+
 The operator removes the `copilot/<model>` aliases that earlier versions put on
 the Agent's key. These aliases listed each Copilot model a second time in the
 model list of the key. Other aliases on the key are kept. When the shared

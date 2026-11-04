@@ -43,6 +43,40 @@ does not change them.
 This does not enable runtime package installation for protected or Custom
 workloads. Those workloads must use approved, published skill material.
 
+## Memory and shared Skills on native Agents
+
+With Memory enabled, OpenClaw and Hermes Agents keep the shared Skills
+PVC mounted read-only at `skills.mountPath`. Publishing or editing a shared
+skill updates that mount without a Pod restart. Native discovery loads the
+shared path, personal Skills, and `/opt/cetirun-memory/skills` separately.
+The name `cetirun-memory` is reserved for the installed platform skill. Native
+loaders ignore other skills with that name, including conflicts introduced by
+live shared updates. Other skills keep their native discovery rules. The
+compatibility patch checks the pinned native source hashes during image builds.
+With shared Skills enabled, OpenClaw polls its watched files every five seconds.
+This adds file metadata reads so remote storage updates reach native discovery
+even when the filesystem does not deliver change events. The Agents of a Skill
+Marketplace Team read a copy of the Team's release at `skills.mountPath`
+instead. Refer to [Protected Sandbox rendering](#protected-sandbox-rendering).
+
+Memory no longer mounts a read-only directory over the whole `$HOME/.agents`.
+Personal files and Skills there remain visible and writable. The platform still
+mounts its instructions over `$HOME/.agents/AGENTS.md`; any underlying HOME copy
+stays on disk. A Team that explicitly sets `skills.mountPath` to
+`$HOME/.agents/skills` still uses that directory for its read-only shared mount.
+The platform Memory skill comes from `/opt/cetirun-memory`, so it needs no
+directory or nested mount inside the shared source.
+
+The native `context-view` contains only platform material. Ordinary instances
+use a `40Mi` emptyDir limit; reconciled Sandboxes keep their configured scratch
+limit. Custom context composition and held Sandbox preparation keep their
+existing contracts. Use native images that include the reserved-skill patch.
+Upgrade existing native instances through
+the supported retained restart procedure to install the changed mounts. The
+upgrade does not move or delete HOME files or change shared Skills content.
+For damaged Memory files or interrupted deletion, use the
+[Memory recovery procedure](../cetirun-memory-context/assets/skills/cetirun-memory/references/requests.md#recover-a-store-after-an-interruption-or-file-edit).
+
 ## Protected Sandbox rendering
 
 The Operator's `sandboxworkload` adapter uses the shared Sandbox resolution and
@@ -116,10 +150,14 @@ is the Team subtree of the skills claim (`teams/<team-uid>`).
 `skills.marketplace.selectionDigest` is the Team selection digest. Only the
 HOME initializer mounts that subtree, read-only.
 
-The initializer receives the digest as `CETIRUN_SKILLS_RELEASE_SELECTION` and
-waits for the matching Team release. No other container mounts the claim. The render fails unless both values are
-set, `skills.shared` is true, and the composed Agent context is enabled. When
-both values are empty, the render does not change.
+The initializer receives the digest as `CETIRUN_SKILLS_RELEASE_SELECTION`,
+waits for the matching Team release, and copies it into the context view. The
+Agent container mounts this copy read-only at `skills.mountPath` instead of
+the claim, so a repository change reaches the Agent at its next start. No
+other container mounts the claim. The render fails unless both values are
+set, `skills.shared` is true, the composed Agent context is enabled, and the
+workload is a reconciled Sandbox. When both values are empty, the render does
+not change.
 
 The legacy pre-upgrade orphan/re-adoption hook is absent from protected
 renders. If a StatefulSet that already exists uses `volumeClaimTemplates`, a

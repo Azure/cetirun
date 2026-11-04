@@ -76,7 +76,8 @@ actual target. These examples do not provision a cluster or grant credentials.
 Use matching CRDs, Operator/admission binaries, runtime chart, and Gateway chart
 from the same integration build. The platform must already have:
 
-- The selected Kata runtime, compatible CSI/RWOP storage, and baseline Cilium
+- The selected Kata runtime, compatible CSI storage for the explicitly
+  registered HOME access mode, and baseline Cilium
   networking. A RuntimeClass object alone is not runtime qualification.
 - A Sandbox platform configuration that an administrator keeps accurate.
   Do not invent qualification flags, object UIDs, or topology to pass
@@ -95,6 +96,25 @@ enforcement observer or physical failover fencing. The runtime, host resource
 limits, baseline network controls, storage, and selected ingress mode must
 still have their actual deployment checks. Do not enable this profile to bypass
 these checks.
+
+For this profile, `platforms.kata.adapter.name` is `cilium`, with an explicit
+revision and `qualified: false`. `azure-cni-overlay-cilium` is the different
+adapter name used by the fully qualified profile; it is not interchangeable
+with the native profile. These fields describe an observed deployment, not
+proof that its controls work.
+
+For a Custom terminal, also register the actual Kubernetes API Service and
+backend IP destinations and ports in `platforms.kata.topology.kubernetesAPI`.
+This is required even when the Agent has no `kubernetesAccess` grant: the
+separate terminal helper needs its restricted API connection. Do not enable
+Agent Kubernetes access or allow a broad internal CIDR to satisfy this helper
+dependency.
+
+For common-executor Custom, configure HOME through
+`Sandbox.spec.storage.home`. Do not copy the ordinary runtime chart's
+`persistence` values into the Operator's shared `cetirun.helmValues`;
+Custom rejects that override surface. The non-Sandbox Custom storage settings
+do not replace the selected Sandbox storage contract.
 
 Native OpenClaw runs without an Istio proxy in the same Pod. As a result, its
 proxy trust comes from the registered ingress peers, not from the legacy

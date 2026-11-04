@@ -23,6 +23,7 @@ import { useFeatures } from "../../hooks/useFeatures";
 import { useSkillMarketplace } from "../../hooks/useSkillMarketplace";
 import { SkillChecklist } from "./SkillChecklist";
 import { useAIGatewayCatalog } from "../../hooks/useAIGateway";
+import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurationErrorMessage";
 
 export interface PolicyFormState {
   name: string; uid: string; resourceVersion: string; openclaw: boolean; hermes: boolean; custom: boolean; skills: string;
@@ -56,7 +57,7 @@ function SharedModelPicker({ value, onChange }: { value: string; onChange: (mode
   const filtered = models.filter((model) => model.toLowerCase().includes(search.toLowerCase()));
 
   return <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-    <Field label="Allowed shared models" hint="Search and select models from the Gateway catalog.">
+    <Field label="Allowed shared models" hint="Search and select models from the Gateway catalog. These models also decide the owners' GitHub Copilot models that are the same models: a Copilot model is offered only when this list allows a shared model that is that model.">
       <Combobox multiselect selectedOptions={selected} value={search} placeholder="Search models"
         disabled={!known || models.length === 0} style={{ width: "100%" }}
         onChange={(event) => setSearch(event.target.value)}
@@ -137,7 +138,7 @@ function validateRequest(request: AgentPolicyUpsertRequest, isCreate: boolean): 
   const network = request.network;
   if (network?.blockedCIDRs?.some((cidr) => !validCIDR(cidr))) return "Blocked CIDRs must be valid IPv4 or IPv6 CIDR values.";
   const allPorts = [...(network?.blockedPorts || []), ...(network?.allowedInternalCIDRs || []).flatMap((rule) => rule.ports)];
-  if (allPorts.some((port) => !validPort(port))) return "Ports must be 1ΓÇô65535 and use TCP, UDP, or SCTP.";
+  if (allPorts.some((port) => !validPort(port))) return "Ports must be 1–65535 and use TCP, UDP, or SCTP.";
   if (new Set((network?.blockedPorts || []).map((port) => `${port.port}/${port.protocol}`)).size !== (network?.blockedPorts || []).length) return "Blocked ports must be unique.";
   if (network?.allowedInternalCIDRs?.some((rule) => !validCIDR(rule.cidr) || rule.ports.length === 0)) return "Each internal CIDR rule needs a valid CIDR and at least one port.";
   return null;
@@ -149,7 +150,7 @@ export function PolicyEditPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<PolicyFormState>(emptyForm);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<Error | null>(null);
   const baseline = useRef<PolicyFormState | null>(null);
   const activePolicyName = useRef(name);
   const [networkEditing, setNetworkEditing] = useState(false);
@@ -198,15 +199,15 @@ export function PolicyEditPage() {
       setConflict(false);
       setSubmitError(null);
     } else {
-      setSubmitError(`Failed to reload policy: ${result.error?.message || "Try again."}`);
+      setSubmitError(new Error(`Failed to reload policy: ${result.error?.message || "Try again."}`));
     }
   };
   const success = () => { queryClient.invalidateQueries({ queryKey: ["admin", "policies"] }); if (name) queryClient.invalidateQueries({ queryKey: ["admin", "policy", name] }); navigate("/admin/policies"); };
-  const createMutation = useMutation({ mutationFn: createPolicy, onSuccess: success, onError: (mutationError: Error) => setSubmitError(mutationError.message) });
+  const createMutation = useMutation({ mutationFn: createPolicy, onSuccess: success, onError: (mutationError: Error) => setSubmitError(mutationError) });
   const updateMutation = useMutation({
     mutationFn: (request: AgentPolicyUpsertRequest) => updatePolicy(name!, request), onSuccess: success,
     onError: (mutationError: Error) => {
-      setSubmitError(mutationError.message);
+      setSubmitError(mutationError);
       if (mutationError instanceof PolicyConflictError) setConflict(true);
     },
   });
@@ -218,13 +219,13 @@ export function PolicyEditPage() {
     try {
       request = toPolicyRequest(form, isCreate ? undefined : baseline.current ?? undefined);
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Check the internal network rules.");
+      setSubmitError(error instanceof Error ? error : new Error("Check the internal network rules."));
       return;
     }
     const validationError = validateRequest(request, isCreate);
-    if (validationError) { setSubmitError(validationError); return; }
+    if (validationError) { setSubmitError(new Error(validationError)); return; }
     const limits = rateLimitsFromForm(form.limits);
-    if (limits.error) { setSubmitError(limits.error); return; }
+    if (limits.error) { setSubmitError(new Error(limits.error)); return; }
     if (limits.limits) request.modelAccess!.rateLimits = limits.limits;
     if (isCreate) createMutation.mutate(request); else updateMutation.mutate(request);
   };
@@ -325,7 +326,7 @@ export function PolicyEditPage() {
       </section>
       <Text>Agent identity: allowed {String(!!existing?.agentIdentity?.allowed)}, required {String(!!existing?.agentIdentity?.required)}, credential services {(existing?.agentIdentity?.credentialServices || []).join(", ") || "none"}.</Text><Text>Entra ID enabled: {String(!!existing?.entraID?.enabled)}.</Text><Text>Blocked FQDNs: {(readonlyNetwork?.blockedFQDNs || []).join(", ") || "none"}.</Text><Text>Ingress mTLS required: {String(!!readonlyNetwork?.ingress?.requireMTLS)}.</Text>
     </section>
-    {submitError && <MessageBar intent="error">{submitError}</MessageBar>}
+    {submitError && <AdminConfigurationErrorMessage error={submitError} />}
     {needsReload && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <MessageBar intent="warning">
         This policy changed since you opened it. Your unsaved edits have been kept. Reloading will discard them and load the latest policy.

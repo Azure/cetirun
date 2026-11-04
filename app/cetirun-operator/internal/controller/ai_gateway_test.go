@@ -91,6 +91,9 @@ type fakeAIGateway struct {
 	// vision are the price table's names whose models accept images.
 	vision    map[string]bool
 	listCalls int
+	// listErr fails ListModels, and priceErr fails PriceTable.
+	listErr  error
+	priceErr error
 	// blockUnpriced is off so that tests about other behaviour need no
 	// prices; the tests about prices turn it on.
 	blockUnpriced bool
@@ -265,6 +268,9 @@ func (f *fakeAIGateway) EnsureTeamMember(_ context.Context, teamID, userID strin
 
 func (f *fakeAIGateway) ListModels(context.Context) ([]aigateway.Deployment, error) {
 	f.listCalls++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	deployments := slices.Clone(f.shared)
 	for id, model := range f.models {
 		deployments = append(deployments, aigateway.Deployment{
@@ -300,6 +306,9 @@ func (f *fakeAIGateway) DeleteModel(_ context.Context, id string) error {
 }
 
 func (f *fakeAIGateway) PriceTable(context.Context) (aigateway.PriceTable, error) {
+	if f.priceErr != nil {
+		return aigateway.PriceTable{}, f.priceErr
+	}
 	return aigateway.PriceTable{Priced: f.priced, Vision: f.vision}, nil
 }
 
@@ -374,6 +383,25 @@ func allowTestPolicyModels(t *testing.T, kube client.Client, models ...string) {
 		t.Fatal(err)
 	}
 	policy.Spec.ModelAccess.SharedModels.Allowed = append(policy.Spec.ModelAccess.SharedModels.Allowed, models...)
+	if err := kube.Update(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// disallowTestPolicyModels removes shared models from the test policy's
+// allowed list, as allowTestPolicyModels adds them.
+func disallowTestPolicyModels(t *testing.T, kube client.Client, models ...string) {
+	t.Helper()
+	policy := &cetirunv1alpha1.AgentPolicy{}
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.ModelAccess.SharedModels.Allowed = slices.DeleteFunc(policy.Spec.ModelAccess.SharedModels.Allowed,
+		func(name string) bool { return slices.Contains(models, name) })
 	if err := kube.Update(context.Background(), policy); err != nil {
 		t.Fatal(err)
 	}

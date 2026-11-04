@@ -23,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
@@ -97,6 +98,37 @@ func sandboxConfigurationFixture() (*api.Sandbox, controller.SandboxConfiguratio
 		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "example-home", UID: "example-storage-uid"}, Provisioner: "csi.example.com"},
 	}
 	return object, snapshot, objects
+}
+
+func TestConfigurationChangePredicateIgnoresStatusOnlyUpdates(t *testing.T) {
+	filter := controller.ConfigurationChangePredicate()
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 3}}
+	statusOnly := team.DeepCopy()
+	statusOnly.Status.Compatibility = &api.TeamCompatibilityStatus{State: api.CompatibilityCompatible}
+	if filter.Update(event.UpdateEvent{ObjectOld: team, ObjectNew: statusOnly}) {
+		t.Fatal("status-only update requeued Team compatibility reconciliation")
+	}
+	for name, changed := range map[string]*api.Team{
+		"generation": func() *api.Team { object := team.DeepCopy(); object.Generation++; return object }(),
+		"uid":        func() *api.Team { object := team.DeepCopy(); object.UID = "replacement-uid"; return object }(),
+		"deletion": func() *api.Team {
+			object := team.DeepCopy()
+			object.DeletionTimestamp = &metav1.Time{Time: time.Now().UTC()}
+			return object
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !filter.Update(event.UpdateEvent{ObjectOld: team, ObjectNew: changed}) {
+				t.Fatal("meaningful configuration update was filtered")
+			}
+		})
+	}
+	if !filter.Create(event.CreateEvent{Object: team}) || !filter.Delete(event.DeleteEvent{Object: team}) {
+		t.Fatal("create or delete event was filtered")
+	}
+	if filter.Generic(event.GenericEvent{Object: team}) {
+		t.Fatal("generic event must not bypass configuration refresh cadence")
+	}
 }
 
 func nativePolicyHarnesses() api.AgentPolicyHarnesses {
@@ -384,6 +416,124 @@ func TestTeamDependencyReadFailureIsUnknownAndRetryable(t *testing.T) {
 	condition = apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamAccepted)
 	if condition == nil || condition.Status != metav1.ConditionTrue {
 		t.Fatalf("Team did not recover when its dependencies became readable: %+v", current.Status)
+	}
+}
+
+func TestTeamCompatibilityStatusPinsSavedInputsAndBecomesUnknownWhenPlatformIsUnavailable(t *testing.T) {
+	box, snapshot, prerequisites := sandboxConfigurationFixture()
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid", Generation: 4}, Spec: api.AgentPolicySpec{
+		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
+	}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 6}, Spec: api.TeamSpec{
+		AgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+	}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
+		WithObjects(append(prerequisites, box, policy, team)...).Build()
+	source := controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil })
+	r := &controller.TeamReconciler{Client: base, APIReader: base, Source: source, Now: func() time.Time { return snapshot.ObservedAt }}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result.RequeueAfter != 15*time.Second {
+		t.Fatalf("compatibility reconcile = %+v, %v", result, err)
+	}
+	current := &api.Team{}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	report := current.Status.Compatibility
+	if report == nil || report.State != api.CompatibilityCompatible || report.Team.Generation != team.Generation ||
+		report.Policy.Generation != policy.Generation || len(report.Sandboxes) != 1 || report.Sandboxes[0].Sandbox.Generation != box.Generation ||
+		!report.ValidUntil.Time.After(report.CheckedAt.Time) {
+		t.Fatalf("compatibility report = %+v", report)
+	}
+	r.Source = controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+		return controller.SandboxConfigurationSnapshot{}, errors.New("inventory unavailable")
+	})
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("unavailable compatibility inventory must not change Team acceptance: %v", err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if report = current.Status.Compatibility; report == nil || report.State != api.CompatibilityUnknown || !report.ValidUntil.Time.After(report.CheckedAt.Time) {
+		t.Fatalf("unavailable compatibility report = %+v", report)
+	}
+	condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamAccepted)
+	if condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("compatibility observation changed Team acceptance: %+v", current.Status)
+	}
+}
+
+func TestTeamCompatibilityUsesClockAfterPlatformSnapshot(t *testing.T) {
+	box, snapshot, prerequisites := sandboxConfigurationFixture()
+	before := snapshot.ObservedAt.Add(-time.Second)
+	after := snapshot.ObservedAt.Add(time.Second)
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid", Generation: 4}, Spec: api.AgentPolicySpec{
+		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
+	}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 6}, Spec: api.TeamSpec{
+		AgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+	}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
+		WithObjects(append(prerequisites, box, policy, team)...).Build()
+	clockCalls := 0
+	r := &controller.TeamReconciler{
+		Client: base, APIReader: base,
+		Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
+		Now: func() time.Time {
+			clockCalls++
+			if clockCalls == 1 {
+				return before
+			}
+			return after
+		},
+	}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	current := &api.Team{}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.Compatibility == nil || current.Status.Compatibility.State != api.CompatibilityCompatible {
+		t.Fatalf("snapshot observed after the initial clock read became unavailable: %+v", current.Status.Compatibility)
+	}
+}
+
+func TestUnconfiguredAndTerminatingTeamsDoNotRetainOrRefreshCompatibility(t *testing.T) {
+	now := time.Now().UTC()
+	for name, team := range map[string]*api.Team{
+		"unconfigured": {ObjectMeta: metav1.ObjectMeta{Name: "legacy"}},
+		"terminating": {
+			ObjectMeta: metav1.ObjectMeta{Name: "terminating", Finalizers: []string{"test.example/finalizer"}, DeletionTimestamp: &metav1.Time{Time: now}},
+			Spec:       api.TeamSpec{AgentPolicyRef: "policy", DefaultSandboxRef: "sandbox", SandboxRefs: []string{"sandbox"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			team.Status.Compatibility = &api.TeamCompatibilityStatus{State: api.CompatibilityCompatible}
+			base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).WithObjects(team).Build()
+			sourceCalls := 0
+			r := &controller.TeamReconciler{Client: base, APIReader: base, Now: func() time.Time { return now },
+				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+					sourceCalls++
+					return controller.SandboxConfigurationSnapshot{}, nil
+				}),
+			}
+			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.RequeueAfter != 0 || sourceCalls != 0 {
+				t.Fatalf("non-active Team compatibility was refreshed: result=%+v sourceCalls=%d", result, sourceCalls)
+			}
+			current := &api.Team{}
+			if err := base.Get(context.Background(), client.ObjectKeyFromObject(team), current); err != nil {
+				t.Fatal(err)
+			}
+			if current.Status.Compatibility != nil {
+				t.Fatalf("non-active Team retained compatibility: %+v", current.Status.Compatibility)
+			}
+		})
 	}
 }
 

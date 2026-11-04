@@ -34,7 +34,7 @@ BASE_VALUES = {
 
 
 @contextmanager
-def lookup_api(secrets):
+def lookup_api(secrets, session_secrets=None):
     """Serve only API discovery and synthetic Secret GETs on loopback."""
     requests = []
     discovery = {
@@ -44,8 +44,9 @@ def lookup_api(secrets):
     }
     groups = {}
     for version, kinds in {
-        "v1": {"secrets": "Secret", "services": "Service", "serviceaccounts": "ServiceAccount"},
+        "v1": {"secrets": "Secret", "services": "Service", "serviceaccounts": "ServiceAccount", "persistentvolumeclaims": "PersistentVolumeClaim"},
         "apps/v1": {"deployments": "Deployment"},
+        "networking.k8s.io/v1": {"networkpolicies": "NetworkPolicy"},
         "networking.istio.io/v1alpha3": {"envoyfilters": "EnvoyFilter"},
         "networking.istio.io/v1beta1": {
             "gateways": "Gateway", "virtualservices": "VirtualService", "serviceentries": "ServiceEntry",
@@ -81,6 +82,13 @@ def lookup_api(secrets):
                     payload = {
                         "kind": "Secret", "apiVersion": "v1",
                         "metadata": {"namespace": namespace, "name": "oauth2-proxy-credentials"},
+                        "data": data,
+                    }
+            for namespace, data in (session_secrets or {}).items():
+                if path == f"/api/v1/namespaces/{namespace}/secrets/oauth2-proxy-sessions":
+                    payload = {
+                        "kind": "Secret", "apiVersion": "v1",
+                        "metadata": {"namespace": namespace, "name": "oauth2-proxy-sessions"},
                         "data": data,
                     }
             self.send_response(200 if payload is not None else 404)
@@ -123,6 +131,11 @@ class IstioChartConfigTests(unittest.TestCase):
         if kubeconfig:
             # The fixture exercises lookup, not Kubernetes schema validation.
             command.extend(["--dry-run=server", "--kubeconfig", str(kubeconfig), "--disable-openapi-validation"])
+            # These cases exercise cookie-key migration without a session server.
+            command.extend(["--set-string", "oauth2Proxy.sessionStore.type=cookie"])
+        else:
+            # Keep renders deterministic without generating a session password.
+            command.extend(["--set-string", "oauth2Proxy.sessionStore.redis.existingSecret=synthetic-sessions"])
         result = subprocess.run(
             command, input=json.dumps({**BASE_VALUES, **(values or {})}),
             text=True, capture_output=True, env=OFFLINE, timeout=30, check=False,

@@ -38,6 +38,7 @@ import { useFeatures } from "../../hooks/useFeatures";
 import { useSkillMarketplace } from "../../hooks/useSkillMarketplace";
 import { modelRouterProblem, TeamModelRoutersSection, toModelRouterRequests } from "./TeamModelRoutersSection";
 import { mergeSkillSelection, npmSkillsProblem, splitTeamSkills, TeamSkillsSection } from "./TeamSkillsSection";
+import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurationErrorMessage";
 
 interface FormState {
   uid: string;
@@ -133,7 +134,7 @@ export function TeamEditPage() {
     storageEnabled: false,
     modelRouters: [],
   });
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<Error | null>(null);
 
   const { data: existing, isLoading, error } = useQuery<TeamDTO, Error>({
     queryKey: ["admin", "team", name],
@@ -185,12 +186,12 @@ export function TeamEditPage() {
   const createMut = useMutation({
     mutationFn: (req: TeamUpsertRequest) => createTeam(req),
     onSuccess,
-    onError: (e: Error) => setSubmitError(e.message),
+    onError: (e: Error) => setSubmitError(e),
   });
   const updateMut = useMutation({
     mutationFn: (req: TeamUpsertRequest) => updateTeam(name!, req),
     onSuccess,
-    onError: (e: Error) => setSubmitError(e.message),
+    onError: (e: Error) => setSubmitError(e),
   });
 
   const onSubmit = (e: FormEvent) => {
@@ -198,27 +199,27 @@ export function TeamEditPage() {
     if (createMut.isPending || updateMut.isPending) return;
     setSubmitError(null);
     if (loadingConfiguration || configurationError || !validBindings) {
-      setSubmitError(hasTooManySandboxes
+      setSubmitError(new Error(hasTooManySandboxes
         ? "The selected Agent Policy allows one Sandbox per Team. Remove extra Sandboxes before saving."
-        : "Choose an available Agent Policy, allowed Sandboxes, and a default Sandbox.");
+        : "Choose an available Agent Policy, allowed Sandboxes, and a default Sandbox."));
       return;
     }
     const routerProblem = modelRouterProblem(form.modelRouters);
     if (routerProblem) {
-      setSubmitError(routerProblem);
+      setSubmitError(new Error(routerProblem));
       return;
     }
     const skillsProblem = marketplaceEnabled ? npmSkillsProblem(splitLines(form.npmSkills)) : null;
     if (skillsProblem) {
-      setSubmitError(skillsProblem);
+      setSubmitError(new Error(skillsProblem));
       return;
     }
     const req = toRequest(form, marketplaceEnabled);
     if (isCreate) {
       if (!/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(req.name || "")) {
-        setSubmitError(
+        setSubmitError(new Error(
           "Name must be a DNS-1123 label: lowercase, start with a letter, max 63 chars."
-        );
+        ));
         return;
       }
       createMut.mutate(req);
@@ -433,7 +434,7 @@ export function TeamEditPage() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
-        {submitError && <MessageBar intent="error">{submitError}</MessageBar>}
+        {submitError && <AdminConfigurationErrorMessage error={submitError} />}
         <div style={{ display: "flex", gap: 8 }}>
           <Button appearance="primary" type="submit" disabled={pending || loadingConfiguration || !!configurationError || !validBindings}>
             {pending ? "Saving..." : isCreate ? "Create" : "Save"}

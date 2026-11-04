@@ -104,7 +104,8 @@ enables the Agent Identity lifecycle of the operator. If the environment file
 turns off one of these features, the run stops. As a result, the Entra parts of
 that setup are not optional with `make deploy`. These parts are the Agent
 Identity Blueprint, the Authorization application, the encryption identity, and
-the Key Vault key. GitHub and Google connections stay optional.
+the Key Vault key. GitHub and Google connections stay optional. Refer to
+[What `make deploy` requires](../../operations/agent-identity/#what-make-deploy-requires).
 
 For a new installation, `make deploy` installs three Helm releases: the
 CetiRun Istio release, the Agent Broker, and the platform release. The platform
@@ -392,8 +393,8 @@ namespace, `cetirun-system`.
 
 The commands use the current context of your kubeconfig. First make sure that
 `kubectl config current-context` shows the value of `target.context`. Refer to
-[Infrastructure](../../operations/infrastructure/). Give the master key the
-`sk-` prefix, as the chart does when it generates one:
+[Connect to the cluster](../../operations/infrastructure/#connect-to-the-cluster).
+Give the master key the `sk-` prefix, as the chart does when it generates one:
 
 ```bash
 kubectl get namespace cetirun-system >/dev/null 2>&1 ||

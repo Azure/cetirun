@@ -1272,23 +1272,27 @@ class Deployment:
             if actual != expected:
                 raise ValueError(f"External Istio {kind} {namespace}/{name} {field} differs from the configured wiring")
 
-        if kind in ("Gateway", "AuthorizationPolicy", "EnvoyFilter", "VirtualService", "ServiceEntry"):
+        if kind in ("Gateway", "AuthorizationPolicy", "EnvoyFilter", "VirtualService", "ServiceEntry", "NetworkPolicy"):
             match("spec", json.loads(read(".spec") or "null"), document["spec"])
-        elif kind == "Service" and name == "oauth2-proxy":
+        elif kind == "Service" and name in ("oauth2-proxy", "oauth2-proxy-sessions"):
             current = json.loads(read(".spec") or "{}")
             match("selector", current.get("selector"), document["spec"]["selector"])
             match("type", current.get("type", "ClusterIP"), "ClusterIP")
             ports = [{**port, "protocol": port.get("protocol", "TCP")} for port in document["spec"]["ports"]]
             current_ports = [{**port, "protocol": port.get("protocol", "TCP")} for port in current.get("ports", [])]
             match("ports", current_ports, ports)
-        elif kind == "Deployment" and name == "oauth2-proxy":
+        elif kind == "Deployment" and name in ("oauth2-proxy", "oauth2-proxy-sessions"):
             template = document["spec"]["template"]
             match("selector", json.loads(read(".spec.selector") or "{}"), document["spec"]["selector"])
-            match("serviceAccountName", read(".spec.template.spec.serviceAccountName"), template["spec"]["serviceAccountName"])
+            if name == "oauth2-proxy":
+                match("serviceAccountName", read(".spec.template.spec.serviceAccountName"), template["spec"]["serviceAccountName"])
+            else:
+                match("volumes", json.loads(read(".spec.template.spec.volumes") or "[]"), template["spec"]["volumes"])
             labels = json.loads(read(".spec.template.metadata.labels") or "{}")
             match("workload labels", {key: labels.get(key) for key in template["metadata"]["labels"]}, template["metadata"]["labels"])
-            container = next(item for item in template["spec"]["containers"] if item["name"] == "oauth2-proxy")
-            prefix = '.spec.template.spec.containers[?(@.name=="oauth2-proxy")]'
+            container_name = "oauth2-proxy" if name == "oauth2-proxy" else "valkey"
+            container = next(item for item in template["spec"]["containers"] if item["name"] == container_name)
+            prefix = f'.spec.template.spec.containers[?(@.name=="{container_name}")]'
             match("image", read(prefix + ".image"), container["image"])
             for field in ("command", "args", "ports", "envFrom"):
                 match(field, json.loads(read(prefix + "." + field) or "[]"), container.get(field, []))
@@ -1302,6 +1306,10 @@ class Deployment:
         elif kind == "ServiceAccount" and name == "oauth2-proxy":
             match("Workload Identity client", read(r".metadata.annotations.azure\.workload\.identity/client-id"),
                   metadata.get("annotations", {}).get("azure.workload.identity/client-id", ""))
+        elif kind == "PersistentVolumeClaim" and name == "oauth2-proxy-sessions":
+            match("accessModes", json.loads(read(".spec.accessModes") or "[]"), document["spec"]["accessModes"])
+            if document["spec"].get("storageClassName"):
+                match("storageClassName", read(".spec.storageClassName"), document["spec"]["storageClassName"])
 
     def preflight(self):
         c = self.config
@@ -1356,7 +1364,12 @@ class Deployment:
                 elif name == "istio" and c["istio"].get("mode", "manage") == "external" and kind != "Secret":
                     raise ValueError(f"External Istio is missing required {kind} {namespace}/{metadata['name']}")
                 elif name in self.existing_releases and kind == "Secret":
-                    raise ValueError(f"Retained Secret {namespace}/{metadata['name']} is missing; refusing regeneration")
+                    adding_sessions = (name == "istio" and c["istio"].get("mode", "manage") == "manage"
+                        and metadata["name"] == "oauth2-proxy-sessions"
+                        and not self.resource("Deployment", "oauth2-proxy-sessions", namespace)
+                        and not self.resource("PersistentVolumeClaim", "oauth2-proxy-sessions", namespace))
+                    if not adding_sessions:
+                        raise ValueError(f"Retained Secret {namespace}/{metadata['name']} is missing; refusing regeneration")
         if not self.values["platform"]["cetirun-operator"]["enabled"]:
             if "platform" not in self.existing_releases:
                 raise ValueError("Operator removal requires the existing platform release")

@@ -747,6 +747,74 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 	}
 }
 
+func TestReconcile_TeamCompatibilityRefreshDoesNotUpgradeRuntime(t *testing.T) {
+	requireLegacyDirectRuntime(t)
+	alias := "team-cache"
+	team := &cetirunv1alpha1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", Generation: 1},
+		Spec:       cetirunv1alpha1.TeamSpec{MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "Engineer"}},
+	}
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 1, "")
+	cr.Spec.Team = team.Name
+	scheme := testScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(cr, team, instanceNamespace(alias), gatewayTokenSecret(alias), statefulSet(alias, 0)).
+		WithStatusSubresource(&cetirunv1alpha1.Agent{}, &cetirunv1alpha1.Team{}).
+		Build()
+	helmFake := &fakeHelmClient{useHarness: true}
+	r := &controller.AgentReconciler{
+		Client: fakeClient, Scheme: scheme, EventRecorder: record.NewFakeRecorder(10), HelmClient: helmFake,
+		OperatorNamespace: "cetirun-system", OperatorSAName: "cetirun-operator-controller-manager",
+		ChartVersion: "0.1.28", DomainSuffix: "example.com",
+	}
+	controller.ConfigureTestGateway(t, r)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: alias}}
+	for range 2 {
+		if _, err := r.Reconcile(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if helmFake.installCalls == 0 {
+		t.Fatal("fixture did not install its initial runtime")
+	}
+	initialCalls := helmFake.installCalls
+
+	currentTeam := &cetirunv1alpha1.Team{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(team), currentTeam); err != nil {
+		t.Fatal(err)
+	}
+	currentTeam.Status.Compatibility = &cetirunv1alpha1.TeamCompatibilityStatus{
+		State:     cetirunv1alpha1.CompatibilityCompatible,
+		Team:      cetirunv1alpha1.CompatibilityReference{Name: currentTeam.Name, UID: string(currentTeam.UID), Generation: currentTeam.Generation},
+		CheckedAt: metav1.Now(), ValidUntil: metav1.NewTime(time.Now().Add(30 * time.Second)),
+	}
+	if err := fakeClient.Status().Update(context.Background(), currentTeam); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if _, err := r.Reconcile(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if helmFake.installCalls != initialCalls {
+		t.Fatalf("compatibility refresh installed the runtime %d additional times", helmFake.installCalls-initialCalls)
+	}
+
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(team), currentTeam); err != nil {
+		t.Fatal(err)
+	}
+	currentTeam.Spec.MemberContext.Role = "Reviewer"
+	if err := fakeClient.Update(context.Background(), currentTeam); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if helmFake.installCalls != initialCalls+1 {
+		t.Fatalf("Team context update installed %d times, want exactly once", helmFake.installCalls-initialCalls)
+	}
+}
+
 // TestReconcile_SecretChanged_TriggersHelm verifies that when the gateway Secret
 // content changes (e.g. token rotation), a Ready instance triggers a full reconcile
 // with Helm upgrade instead of being skipped.

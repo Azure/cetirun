@@ -137,10 +137,10 @@ func (h *Handler) validate(ctx context.Context, request admission.Request) admis
 			return dependencyError(ctx, err)
 		}
 		if errs := sandbox.ValidateTeamConfiguration(candidate.Spec, resources, registrations); len(errs) != 0 {
-			return admission.Denied(errs.ToAggregate().Error())
+			return compatibilityDenied(errs.ToAggregate().Error(), sandbox.TeamCompatibilityReport(candidate, resources, registrations, h.config.NativeExecution))
 		}
 		if err := h.checkTeamExecutionProfiles(ctx, candidate.Spec, resources, registrations); err != nil {
-			return admission.Denied(err.Error())
+			return compatibilityDenied(err.Error(), h.executionCompatibilityReport(ctx, candidate, resources, registrations))
 		}
 		return h.checkTeamConsumers(ctx, candidate, false)
 	case *api.Sandbox:
@@ -407,10 +407,10 @@ func (h *Handler) checkReferencingTeams(ctx context.Context, candidate client.Ob
 				return dependencyError(ctx, err)
 			}
 			if errs := sandbox.ValidateTeam(team, resources, registrations); len(errs) != 0 {
-				return admission.Denied(fmt.Sprintf("configuration %q would invalidate referencing Team %q: %v", candidate.GetName(), team.Name, errs.ToAggregate()))
+				return compatibilityDenied(fmt.Sprintf("configuration %q would invalidate referencing Team %q: %v", candidate.GetName(), team.Name, errs.ToAggregate()), sandbox.TeamCompatibilityReport(team, resources, registrations, h.config.NativeExecution))
 			}
 			if err := h.checkTeamExecutionProfiles(ctx, team.Spec, resources, registrations); err != nil {
-				return admission.Denied(err.Error())
+				return compatibilityDenied(err.Error(), h.executionCompatibilityReport(ctx, team, resources, registrations))
 			}
 		}
 		return admission.Allowed("configuration is valid for its referencing Teams")

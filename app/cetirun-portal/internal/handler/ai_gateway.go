@@ -63,6 +63,9 @@ type AIGatewayCopilotResponse struct {
 	// Skipped are the account's models left out because a shared model
 	// already has their name.
 	Skipped []string `json:"skipped,omitempty"`
+	// NotAllowed are the account's models left out because the Agent's
+	// policy does not allow the shared models that are the same models.
+	NotAllowed []string `json:"notAllowed,omitempty"`
 }
 
 // AIGatewayCatalogResponse is the JSON response for GET /api/v1/ai-gateway/catalog.
@@ -119,11 +122,12 @@ func aiGatewayResponse(instance *cetirunv1alpha1.Agent) *AIGatewayResponse {
 	}
 	if copilot := status.Copilot; copilot != nil {
 		resp.Copilot = &AIGatewayCopilotResponse{
-			Phase:    copilot.Phase,
-			Reason:   copilot.Reason,
-			Models:   append([]string{}, copilot.Models...),
-			Unpriced: append([]string(nil), copilot.Unpriced...),
-			Skipped:  append([]string(nil), copilot.Skipped...),
+			Phase:      copilot.Phase,
+			Reason:     copilot.Reason,
+			Models:     append([]string{}, copilot.Models...),
+			Unpriced:   append([]string(nil), copilot.Unpriced...),
+			Skipped:    append([]string(nil), copilot.Skipped...),
+			NotAllowed: append([]string(nil), copilot.NotAllowed...),
 		}
 		for _, route := range copilot.Routes {
 			if route.Shared && !slices.Contains(resp.Copilot.Shared, route.Name) {

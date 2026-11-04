@@ -6,6 +6,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"slices"
 	"syscall"
 )
 
@@ -33,9 +34,24 @@ func (s *Store) Execute(ctx context.Context, command string, r Request) (Respons
 		defer v.fs.close()
 		response.Generation = v.m.Generation
 		data := map[string]any{"initialized": true, "mode": "enabled", "learning": defaultLearning(), "contractVersion": ContractVersion, "helperABI": HelperABI, "runtimeAssurance": "cooperative-files", "modelEvaluation": "native-adapter-required", "adapterVersion": AdapterVersion}
+		pending, err := v.pendingPurges()
+		if err != nil {
+			return failed(response, err)
+		}
+		data["pendingPurges"] = pending
+		data["purgePending"] = len(pending) > 0
 		if input.LookupRequestID != "" {
 			receipt, ok := v.m.Requests[requestKey(input.LookupRequestID)]
 			if ok {
+				if receipt.Result.PurgePending {
+					receipt.Result.PurgePending = false
+					for key, plan := range v.m.Purges {
+						if plan.Generation == receipt.Generation-1 && slices.Contains(pending, key) {
+							receipt.Result.PurgePending = true
+							break
+						}
+					}
+				}
 				data["requestState"] = "committed"
 				data["result"] = receipt.Result
 				for _, ref := range receipt.Result.Refs {
@@ -73,8 +89,9 @@ func (s *Store) Execute(ctx context.Context, command string, r Request) (Respons
 		return failed(response, err)
 	}
 	if command == "repair-index" {
-		generation, err := s.repair(ctx, r)
+		generation, partial, err := s.repair(ctx, r)
 		response.Generation = generation
+		response.Partial = partial
 		if err != nil {
 			return failed(response, err)
 		}
@@ -116,12 +133,19 @@ func (s *Store) Execute(ctx context.Context, command string, r Request) (Respons
 			err = v.checkViews()
 			if err == nil {
 				for _, ref := range v.m.Objects {
+					if !v.allowed(ref, r) {
+						continue
+					}
 					if _, readErr := dependencies(v, ref); readErr != nil {
+						if v.damagedObject(ref, readErr) {
+							continue
+						}
 						err = readErr
 						break
 					}
 				}
 			}
+			response.Partial = v.damageReport()
 		case "prepare":
 			var input struct{}
 			if err = Decode(r.Payload, &input); err != nil {

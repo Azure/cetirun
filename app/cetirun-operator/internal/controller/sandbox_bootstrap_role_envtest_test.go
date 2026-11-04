@@ -31,7 +31,7 @@ func TestSandboxBootstrapRoleUpgradeAPIServer(t *testing.T) {
 				if err := h.admin.Get(h.ctx, key, role); err != nil {
 					t.Fatal(err)
 				}
-				role.Rules, _ = sandboxBootstrapMTLSRoleRules()
+				role.Rules = readHistoricalBootstrapRBAC(t).Role.Rules
 				if err := h.admin.Update(h.ctx, role); err != nil {
 					t.Fatal("seed the recorded pre-mTLS Role:", err)
 				}

@@ -28,12 +28,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	crbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -189,6 +191,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&cetirunv1alpha1.Team{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForTeam),
+			crbuilder.WithPredicates(AgentTeamRuntimeInputPredicate()),
 		).
 		Watches(
 			&cetirunv1alpha1.Sandbox{},
@@ -218,6 +221,26 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return builder.
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: 4}).
 		Complete(r)
+}
+
+// AgentTeamRuntimeInputPredicate suppresses diagnostic-only Team status
+// refreshes. It deliberately retains every other status and metadata field:
+// those can affect runtime policy or lifecycle behavior even when Team spec
+// generation is unchanged.
+func AgentTeamRuntimeInputPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return true },
+		UpdateFunc: func(update event.UpdateEvent) bool {
+			oldTeam, oldOK := update.ObjectOld.(*cetirunv1alpha1.Team)
+			newTeam, newOK := update.ObjectNew.(*cetirunv1alpha1.Team)
+			if !oldOK || !newOK {
+				return true
+			}
+			return !equality.Semantic.DeepEqual(normalizedTeamRuntimeInputs(oldTeam), normalizedTeamRuntimeInputs(newTeam))
+		},
+	}
 }
 
 // Reconcile implements the reconciliation loop.
@@ -614,7 +637,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// hash matches. Establish Broker RBAC after ensureNamespace recreates it.
 		if !namespaceMissing && instance.Status.ObservedGeneration == instance.Generation &&
 			!identityVerificationDue && !aiGatewayDue && !chartUnavailable(instance) &&
-			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team)) {
+			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamRuntimeInputFingerprint(team)) {
 			// Lightweight: ensure VirtualService is up to date (may change after operator upgrade).
 			// Update ConditionIngressReady so CR status reflects the actual VS state.
 			// When suspended, ensure VirtualService is absent (retries deletion if
@@ -901,7 +924,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	alreadyDeployed := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
 		instance.Status.ObservedGeneration == instance.Generation &&
-		instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
+		instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamRuntimeInputFingerprint(team))
 	var helmValues map[string]any
 	if commonCustom {
 		if !sandboxGatewayProjectionReadyForLifecycle(instance) {
@@ -997,7 +1020,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if reconciledSandbox {
 		alreadyDeployed = isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
 			instance.Status.ObservedGeneration == instance.Generation &&
-			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))+":"+prepared.WorkloadHash
+			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamRuntimeInputFingerprint(team))+":"+prepared.WorkloadHash
 		if alreadyDeployed {
 			alreadyDeployed, err = r.reconciledSandboxApplied(ctx, instance, prepared)
 			if err != nil {
@@ -1063,7 +1086,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// Record generation and operator hash immediately so that subsequent reconciles
 		// (e.g. while polling for pod readiness) can skip the Helm install.
 		instance.Status.ObservedGeneration = instance.Generation
-		instance.Status.ObservedOperatorHash = r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
+		instance.Status.ObservedOperatorHash = r.configHash(instance, team, gwSecretHash, teamRuntimeInputFingerprint(team))
 		if reconciledSandbox {
 			instance.Status.ObservedOperatorHash += ":" + prepared.WorkloadHash
 		}

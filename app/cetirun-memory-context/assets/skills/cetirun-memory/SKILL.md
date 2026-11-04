@@ -25,7 +25,9 @@ or preference, or a recommendation you gave.
    true. Respect the current request's `noCapture` and `noMemory` restrictions. When the audience is
    shared or unknown, the adapter injects no notes and the tool refuses requests; do not read or save
    private memory there by other means.
-2. Query with the distinctive words of the question: names, places, products, titles, numbers, activities.
+2. Call `query` to read stored note bodies. Use a known note's exact title as one `queryTerms` entry,
+   or the distinctive words of the question: names, places, products, titles, numbers, activities.
+   `source` checks a recorded workspace file; it does not retrieve the note's content.
    The helper first returns notes whose title, alias or keyword equals a query term (stages `exact-title`,
    `alias`, `keywords`). If none does, it ranks notes by the words they share with the query across title,
    aliases, keywords and body, with word endings folded (`bike` matches `bikes`). That stage is `text`, and

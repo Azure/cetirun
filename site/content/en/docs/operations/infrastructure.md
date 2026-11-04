@@ -48,11 +48,57 @@ value.
 because Sandbox admission must have this version. In your parameter file, set
 `kubernetesVersion` to 1.37 or later. See
 [Install CetiRun](../../getting-started/platform/#platform-chart) and
-[Policy-bound Teams](../policy-teams/).
+[Policy-bound Teams](../policy-teams/). To see the Kubernetes versions of a
+region, run
+`az aks get-versions --location your-approved-region --output table`.
 
-The initial pool counts total **20 nodes**. This is not a small demonstration
-cluster. The system pool has `CriticalAddonsOnly=true:NoSchedule`. Both agent
-pools request `workloadRuntime: KataVmIsolation`.
+The template does not select a managed Istio revision, so AKS installs its
+default revision. Kubernetes 1.37 needs a revision that AKS lists as
+compatible with 1.37: `asm-1-30` or later. Before you deploy, list the
+revisions of the region and their compatible Kubernetes versions:
+
+```bash
+az aks mesh get-revisions --location your-approved-region --output table
+```
+
+After the deployment, read the installed revision. The names of the managed
+Istio resources contain it, and it is the `istio.revision` input of
+`make deploy`:
+
+```bash
+az aks show --resource-group example-rg --name example-cluster \
+  --query serviceMeshProfile.istio.revisions --output tsv
+```
+
+The initial pool counts total **20 nodes**, with 352 vCPUs at the default VM
+sizes. This is not a small demonstration cluster. The system pool has
+`CriticalAddonsOnly=true:NoSchedule`. Both agent pools request
+`workloadRuntime: KataVmIsolation`.
+
+Each pool starts with its minimum count, and the autoscaler keeps it between
+its minimum and maximum. For a small test cluster, set lower minimum counts in
+the parameter file. You can also select smaller VM sizes from the allowed
+values in `main.bicep`.
+
+By default, the platform workloads other than OAuth2 Proxy do not tolerate the
+taint of the system pool. They run on the `agent` and `agent2` pools, so keep
+at least one node in the `agent` pool. A pool with a minimum of 0 gets a node
+only when a Pod needs one. That Pod then waits some minutes for the node. For
+example:
+
+```bicep
+using '<path-to-your-clone>/infra/cluster/main.bicep'
+
+param resourceGroupName = 'example-rg'
+param location = 'your-approved-region'
+param clusterName = 'example-cluster'
+param dnsPrefix = 'example-cluster'
+param nodeResourceGroup = 'example-rg-nodes'
+param kubernetesVersion = '1.37'
+param systemNodePoolMinCount = 2
+param agentNodePoolMinCount = 1
+param agent2NodePoolMinCount = 0
+```
 
 Before you create instances, examine the installed `kata-vm-isolation`
 RuntimeClass and its scheduling rules. The runtime chart does not create that
@@ -123,6 +169,61 @@ result, if the parameter file is not valid or does not exist, this does not
 mean that nothing changed. Gateway API enablement is a side effect of the
 helper. CetiRun's routing templates use Istio `Gateway` and `VirtualService`
 resources.
+
+## Connect to the cluster
+
+The template enables Microsoft Entra authentication with Azure RBAC for
+Kubernetes authorization. As a result, each person who runs kubectl, Helm, or
+`make deploy` must have an Azure role for the Kubernetes API of the cluster.
+An example is **Azure Kubernetes Service RBAC Cluster Admin**. A new role
+assignment can take some minutes to apply. **Connected, mutating:**
+
+```bash
+CLUSTER_ID=$(az aks show --resource-group example-rg --name example-cluster \
+  --query id --output tsv)
+az role assignment create --role 'Azure Kubernetes Service RBAC Cluster Admin' \
+  --assignee-object-id "<administrator-object-id>" \
+  --assignee-principal-type User --scope "$CLUSTER_ID" --output none
+```
+
+To read your own object ID, run
+`az ad signed-in-user show --query id --output tsv`.
+
+Get the user credentials into a separate file. Then convert them, so that
+kubectl gets its tokens through kubelogin from the Azure CLI sign-in.
+`az aks install-cli` installs kubectl and kubelogin:
+
+```bash
+az aks get-credentials --resource-group example-rg --name example-cluster \
+  --file /absolute/private/kubeconfig
+export KUBECONFIG=/absolute/private/kubeconfig
+kubelogin convert-kubeconfig -l azurecli
+kubectl auth whoami
+```
+
+`kubectl auth whoami` shows the user name and the groups that Kubernetes
+receives. Use these values for the admission administrators of `make deploy`.
+`AKS_ADMIN_CREDENTIALS=true`, or `az aks get-credentials --admin`, gives local
+admin credentials instead. Use them only in an explicitly authorized bootstrap
+environment, not as a fallback for an Azure RBAC failure.
+
+`make deploy` uses the kubeconfig of the shell, so export `KUBECONFIG` before
+you run it. It selects `target.context` and stops if that context leads to
+another cluster. Read the `target` values of the environment file from the
+current context:
+
+```bash
+kubectl config view --minify \
+  -o jsonpath='{.contexts[0].name}{"\n"}{.contexts[0].context.cluster}{"\n"}{.clusters[0].cluster.server}{"\n"}'
+kubectl get namespace kube-system -o jsonpath='{.metadata.uid}{"\n"}'
+```
+
+| Output | Environment file field |
+| --- | --- |
+| First line of the first command | `target.context` |
+| Second line | `target.cluster`, the cluster entry of the kubeconfig. It is not always the AKS cluster name |
+| Third line | `target.server`, exactly as printed |
+| Second command | `target.clusterUID` |
 
 ## Identity, images, and collection
 

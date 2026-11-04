@@ -143,6 +143,8 @@ RUN --mount=from=openclaw-source,source=/home/vibe/openclaw-pack/openclaw.tgz,ta
 
 COPY --chown=vibe:vibe agents/openclaw/compat/ /tmp/cetirun-mcp-compat/
 RUN node /tmp/cetirun-mcp-compat/apply-workload-mcp.mjs /usr/local/share/npm-global/lib/node_modules/openclaw && rm -r /tmp/cetirun-mcp-compat
+COPY --chown=vibe:vibe configs/apply-memory-skills.py /tmp/apply-memory-skills.py
+RUN python3 /tmp/apply-memory-skills.py --runtime openclaw --root /usr/local/share/npm-global/lib/node_modules/openclaw && rm /tmp/apply-memory-skills.py
 
 EXPOSE 18789 7681
 

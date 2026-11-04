@@ -51,7 +51,10 @@ It never acquires, submits, or releases a reservation.
 
 update is explicit opt-in. It reserves and submits one conditional Update, or
 observes an already-changing operation without resubmitting it. Only a verified
-matching committed version permits update to release the reservation.
+matching committed version, or unchanged writable content at a superseding
+version of the same UID, permits update to release the reservation. The latter
+is reported as update-superseded: the old conditional Update cannot commit,
+and the desired configuration has not been applied.
 delete is a separate explicit opt-in and forbids --after. It reserves the whole
 original source and submits one UID/resourceVersion-conditional background Delete.
 observe-delete only observes that exact recorded deletion; it never writes.
@@ -81,6 +84,8 @@ may instead use its --operation-id. Do not refresh their UID/resourceVersion,
 replay a write, or edit the journal.
 An applied-reservation-retained observation is read-only; explicit update can
 then reconcile that same changing operation to release it, without submission.
+The same applies to update-superseded-reservation-retained. After explicit
+release, read the current configuration before preparing a new update.
 
 Only the named kubeconfig/context is used. HTTPS with certificate validation is
 required; exec/auth-provider login plugins and redirects are refused. There is
@@ -258,8 +263,11 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 			result.Status = "deletion-accepted"
 		}
 	}
-	if deleting && observed.outcome != nil && observed.outcome.Superseded {
-		result.Status = "deletion-superseded"
+	if observed.outcome != nil && observed.outcome.Superseded {
+		result.Status = "update-superseded"
+		if deleting {
+			result.Status = "deletion-superseded"
+		}
 		if observing {
 			result.Status += "-reservation-retained"
 		}

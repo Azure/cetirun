@@ -11,17 +11,25 @@ headers, and mesh-wide egress resources.
 
 ## Prepare identity, DNS, and TLS
 
-1. Enable AKS managed Istio and its external ingress gateway.
-2. Configure an Entra app for the OAuth2 callback
-   `https://<domain>/oauth2/callback` (for example,
-   `https://example.com/oauth2/callback`). If Agent Identity is enabled, add
-   the `login_hint` optional claim to the ID tokens of this app. Entra defines
-   this opaque claim as the reliable value to carry SSO into another app. This
-   includes B2B guest and cross-tenant scenarios.
-3. Configure application-assigned group claims and the allowed group IDs.
-4. Configure federated trust for
-   `system:serviceaccount:cetirun-istio:oauth2-proxy` and the cluster’s OIDC
-   issuer.
+1. Enable AKS managed Istio and its external ingress gateway. The
+   [cluster template](../infrastructure/) enables both.
+2. Register a single-tenant Entra **Web** application for Portal sign-in, with
+   the OAuth2 callback `https://<domain>/oauth2/callback` (for example,
+   `https://example.com/oauth2/callback`). OAuth2 Proxy authenticates as this
+   application through Workload Identity, so the application has no client
+   secret. If Agent Identity is enabled, add the `login_hint` optional claim to
+   the ID tokens of this app. `make deploy` always enables Agent Identity.
+   Entra defines this opaque claim as the reliable value to carry SSO into
+   another app. This includes B2B guest and cross-tenant scenarios.
+3. Configure application-assigned group claims (`ApplicationGroup`). Create the
+   service principal of the application, and assign each allowed group to it.
+   With `ApplicationGroup`, the ID token contains only the groups that are
+   assigned to the application. Without an assignment, OAuth2 Proxy refuses
+   every sign-in. Use the object IDs of these groups as the allowed group IDs.
+4. Add a federated credential to the Portal login application. Its issuer is
+   the cluster’s OIDC issuer URL, with the slash at the end. Its subject is
+   `system:serviceaccount:cetirun-istio:oauth2-proxy`, and its audience is
+   `api://AzureADTokenExchange`.
 5. Configure the apex to refer to the ingress address. Add wildcard DNS only
    for subdomain services that you configure. The portal, instance UI, and
    OAuth routes use the apex.
@@ -50,6 +58,185 @@ default, `tls.enabled` is false. This value prevents the creation of the TLS
 Secret. It does **not** prevent HTTPS. Supply `cetirun-tls` in the gateway
 namespace out of band, or set `tls.enabled: true` with the certificate and key.
 A render without that Secret is not a usable TLS deployment.
+
+`make deploy` refuses the certificate and key in values. With `make deploy`,
+supply the Secret out of band.
+
+### Set the example inputs
+
+The examples below do steps 2 to 6 with the Azure CLI, Microsoft Graph,
+kubectl, and OpenSSL. They also use jq and Python 3. These **connected,
+mutating** commands change Entra, Azure, and the cluster. Replace the example
+values first. Run the examples in one Bash session, because later commands use
+the variables of earlier ones.
+
+The `az ad` commands and the `az rest` requests to Microsoft Graph use the
+tenant of the active subscription of the Azure CLI. Before you run them, make
+sure that this tenant is the deployment tenant. Refer to
+[Agent Identity setup](../agent-identity/#1-prepare-access-and-record-the-coordinates).
+
+```bash
+SUBSCRIPTION_ID=your-subscription-id
+AKS_RESOURCE_GROUP=example-cluster-rg
+AKS_CLUSTER_NAME=example-cluster
+ALLOWED_GROUP_ID="<allowed-group-object-id>"
+AKS_OIDC_ISSUER=$(az aks show --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$AKS_RESOURCE_GROUP" --name "$AKS_CLUSTER_NAME" \
+  --query oidcIssuerProfile.issuerUrl --output tsv)
+```
+
+### Name the ingress address
+
+AKS creates a public IP address for the external ingress gateway, in the node
+resource group of the cluster. Do this step first, because the application and
+the certificate use the domain. Read the address:
+
+```bash
+INGRESS_IP=$(kubectl get service aks-istio-ingressgateway-external \
+  --namespace aks-istio-ingress \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+```
+
+For your own domain, create a DNS `A` record for the apex that points to this
+address. Then set the domain:
+
+```bash
+DOMAIN=example.com
+```
+
+For a test environment without a domain, give the public IP address a DNS
+label instead. The label must be unique in the region. The domain is then
+`<label>.<region>.cloudapp.azure.com`:
+
+```bash
+NODE_RESOURCE_GROUP=$(az aks show --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$AKS_RESOURCE_GROUP" --name "$AKS_CLUSTER_NAME" \
+  --query nodeResourceGroup --output tsv)
+INGRESS_IP_NAME=$(az network public-ip list --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$NODE_RESOURCE_GROUP" \
+  --query "[?ipAddress=='$INGRESS_IP'].name | [0]" --output tsv)
+DOMAIN=$(az network public-ip update --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$NODE_RESOURCE_GROUP" --name "$INGRESS_IP_NAME" \
+  --dns-name example-cetirun --query dnsSettings.fqdn --output tsv)
+```
+
+There are no DNS names below a `cloudapp.azure.com` label. Use only the apex
+routes with it. If AKS replaces the public IP address, set the label again.
+
+### Register the Portal login application
+
+Create the application of steps 2 and 3, with the `login_hint` claim:
+
+```bash
+cat > portal-login-app.json <<EOF
+{
+  "displayName": "cetirun-portal-login",
+  "signInAudience": "AzureADMyOrg",
+  "web": {"redirectUris": ["https://$DOMAIN/oauth2/callback"]},
+  "groupMembershipClaims": "ApplicationGroup",
+  "optionalClaims": {"idToken": [{"name": "login_hint", "essential": false}]}
+}
+EOF
+PORTAL_APP=$(az rest --method post \
+  --url https://graph.microsoft.com/v1.0/applications \
+  --body @portal-login-app.json)
+PORTAL_APP_OBJECT_ID=$(jq -r .id <<< "$PORTAL_APP")
+PORTAL_CLIENT_ID=$(jq -r .appId <<< "$PORTAL_APP")
+```
+
+`PORTAL_CLIENT_ID` is the client ID of the application. It is the `clientId`
+of the Istio release, and `identity.portalClientId` of `make deploy`. Create
+the service principal of the application. Then assign the allowed group with
+the default access role. The ID of this role contains only zeros:
+
+```bash
+PORTAL_SP_ID=$(az ad sp create --id "$PORTAL_CLIENT_ID" --query id --output tsv)
+DEFAULT_ACCESS_ROLE_ID=$(python3 -c 'import uuid; print(uuid.UUID(int=0))')
+az rest --method post \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/$PORTAL_SP_ID/appRoleAssignedTo" \
+  --body "$(jq -n --arg group "$ALLOWED_GROUP_ID" --arg sp "$PORTAL_SP_ID" \
+    --arg role "$DEFAULT_ACCESS_ROLE_ID" \
+    '{principalId: $group, resourceId: $sp, appRoleId: $role}')" --output none
+```
+
+Do the assignment for each allowed group.
+
+OAuth2 Proxy requests the OIDC scopes `openid`, `email`, and `profile`. In the
+Redis session mode, it also requests `offline_access`. Add the Microsoft Graph
+delegated permissions `openid`, `profile`, `email`, and `User.Read` to the
+application. OAuth2 Proxy uses `User.Read` to read the groups of a user from
+Microsoft Graph when the ID token cannot contain all of them:
+
+```bash
+GRAPH_APP_ID=$(az ad sp list --filter "displayName eq 'Microsoft Graph'" \
+  --query '[0].appId' --output tsv)
+for scope in openid profile email User.Read; do
+  scope_id=$(az ad sp show --id "$GRAPH_APP_ID" \
+    --query "oauth2PermissionScopes[?value=='$scope'].id | [0]" --output tsv)
+  az ad app permission add --id "$PORTAL_CLIENT_ID" --api "$GRAPH_APP_ID" \
+    --api-permissions "$scope_id=Scope"
+done
+```
+
+Then decide how users consent to these permissions:
+
+- If the user consent settings of the tenant allow it, each user consents at
+  the first sign-in.
+- An administrator consents one time for all users. In the Microsoft Entra
+  admin center, open **API permissions** of the application and select
+  **Grant admin consent**. You can also run
+  `az ad app permission admin-consent --id "$PORTAL_CLIENT_ID"`. A role that
+  can grant tenant-wide consent is necessary, for example Cloud Application
+  Administrator.
+
+Add the federated credential of step 4. If the Istio release uses another
+namespace, use that namespace in the subject:
+
+```bash
+az rest --method post \
+  --url "https://graph.microsoft.com/v1.0/applications/$PORTAL_APP_OBJECT_ID/federatedIdentityCredentials" \
+  --body "$(jq -n --arg issuer "$AKS_OIDC_ISSUER" '{name: "oauth2-proxy",
+    issuer: $issuer, subject: "system:serviceaccount:cetirun-istio:oauth2-proxy",
+    audiences: ["api://AzureADTokenExchange"]}')" --output none
+```
+
+### Supply the Gateway certificate
+
+The Gateway reads its certificate from the `cetirun-tls` Secret in the gateway
+namespace, `aks-istio-ingress` by default. The Secret has the keys `tls.crt`
+and `tls.key`.
+
+The CetiRun Gateway listens only on HTTPS port 443. As a result, an ACME
+HTTP-01 challenge through this Gateway fails. For a domain whose DNS you
+control, use DNS-01 validation, or a certificate from the CA of your
+organization.
+
+You cannot add DNS-01 records to `cloudapp.azure.com`. For a test environment
+with such a name, use a certificate from a private CA or a self-signed
+certificate. Browsers show a warning for these certificates until you trust
+their CA. This example creates a self-signed certificate:
+
+```bash
+umask 077
+INGRESS_TLS_DIR=/absolute/private/ingress-tls
+# Refuse to replace an existing directory.
+mkdir -m 700 "$INGRESS_TLS_DIR" || exit 1
+openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 90 \
+  -subj "/CN=$DOMAIN" -addext "subjectAltName=DNS:$DOMAIN" \
+  -keyout "$INGRESS_TLS_DIR/tls.key" -out "$INGRESS_TLS_DIR/tls.crt"
+```
+
+If a CA issued the certificate, put its intermediate CA certificates after the
+leaf certificate in `tls.crt`. Then create the Secret:
+
+```bash
+kubectl create secret tls cetirun-tls --namespace aks-istio-ingress \
+  --cert="$INGRESS_TLS_DIR/tls.crt" --key="$INGRESS_TLS_DIR/tls.key"
+```
+
+Before it writes, `make deploy` makes sure that the certificate is valid now
+and that it covers `domain`. It does not examine whether browsers trust the
+certificate.
 
 ## Deploy helper inputs
 
@@ -90,6 +277,13 @@ installs or upgrades the Helm resources and waits for OAuth2 Proxy. Then it
 patches the AKS Istio shared ConfigMap with the external authorization
 provider. Context validation only tests if the context name contains
 `AKS_CLUSTER_NAME`. Independently, make sure that the actual target is correct.
+
+AKS managed Istio reads the mesh settings that you add from the shared
+ConfigMap `istio-shared-configmap-<revision>` in `aks-istio-system`. On a new
+cluster, this ConfigMap does not exist yet. A listing of the namespace shows
+`istio-<revision>` instead. AKS manages that ConfigMap, so do not edit it. The
+helper creates the shared ConfigMap when it does not exist. `make deploy` with
+`istio.mode: manage` also creates it, with the name in `istio.meshConfigMap`.
 
 `SKIP_AZ_VALIDATION` skips the Azure validation and the context validation, and
 the subscription ID is then not necessary. The helper still must have the other
@@ -138,15 +332,36 @@ offline rendered Secret to update a live release.
 
 ### OAuth session storage
 
-The default `oauth2Proxy.sessionStore.type: cookie` mode does not request
-`offline_access`. Its 45-minute cookie lifetime ends before the Entra ID token
-expires. As a result, users must sign in again. This mode does not keep a
-refresh token in an encrypted browser cookie. Refresh-token cookies can exceed
-the common 8 KiB request header limits. This can break Portal actions that are
-otherwise unrelated.
+The default `oauth2Proxy.sessionStore.type: redis` mode stores encrypted login
+sessions in a dedicated Valkey. The browser keeps a short session ticket.
+OAuth2 Proxy requests `offline_access` and tries to refresh tokens on the first
+HTTP request after the 30-minute refresh interval. The cookie lifetime is eight
+hours and successful refreshes renew it. These settings are not an absolute
+eight-hour login limit and do not override the identity provider's sign-in or
+revocation policies. Entra must permit refresh tokens for the application.
 
-For refreshable sessions, provision Redis separately. Configure the chart to
-refer to it:
+The bundled `oauth2-proxy-sessions` Deployment has one replica, password
+authentication, and a NetworkPolicy that accepts connections only from
+OAuth2 Proxy Pods in the same namespace. It does not share the AI Gateway's
+cache. Use the namespace's Istio injection and mesh encryption for transport
+protection. The chart does not create a public Redis endpoint.
+
+By default, `oauth2Proxy.sessionStore.redis.bundled.persistence.enabled` is
+`true`. Valkey writes an append-only file to a 1 GiB PVC with the cluster's
+default StorageClass. Configure `persistence.storageClass` and
+`persistence.size` for the environment. The Deployment uses `Recreate` so that
+two Pods do not write the same volume. The chart retains the PVC and generated
+password Secret on uninstall. Remove retained objects only when their sessions
+are no longer needed. Persistence reduces session loss after a restart. A single
+replica is not highly available, and AOF flushes once per second.
+
+Set `persistence.enabled: false` to use temporary storage. A Valkey restart then
+requires users to sign in again. A storage outage prevents session lookup and
+can also require a new sign-in after recovery. Keep backups and storage access
+under the same controls as other credential-bearing data.
+
+An explicit external `connectionURL` takes precedence over the bundled server.
+The chart then creates no session Valkey, PVC, or password Secret:
 
 ```yaml
 oauth2Proxy:
@@ -158,18 +373,32 @@ oauth2Proxy:
       passwordKey: redis-password
 ```
 
-Redis mode requests `offline_access`, stores the session server-side, refreshes
-it every 30 minutes, and keeps only a short session key in the browser. The
-chart does not deploy, persist, back up, or secure Redis. Use a highly
-available service that is correct for the environment. Also use NetworkPolicy,
-encryption in transit, and a pre-created Secret. Keep credentials out of
-`connectionURL` and Helm values. OAuth2 Proxy reads the password from the
-referenced Secret.
+For an external service, configure availability, persistence, network access,
+and encryption separately. Use `rediss://` for a TLS Redis endpoint. Keep
+credentials out of `connectionURL` and Helm values. OAuth2 Proxy reads the
+password from the referenced Secret. To use a pre-created password with the
+bundled server, set `existingSecret` without setting `connectionURL`. This also
+keeps offline GitOps renders from generating a different password each time.
 
 After you rotate the referenced Secret for the Redis password, reconcile the
-Istio Helm release. The chart hashes the live Secret data into the OAuth2 Proxy
-Pod template. As a result, Helm reconciliation rolls the Pods and loads the new
-password. A Secret update alone does not restart the Pods that already exist.
+Istio Helm release. The chart hashes the live Secret data into both Pod
+templates. Helm reconciliation restarts OAuth2 Proxy and the bundled Valkey
+with the new password. Plan for sign-in interruption during this rotation.
+A Secret update alone does not restart existing Pods.
+
+When upgrading a cookie-mode installation, explicitly set
+`oauth2Proxy.sessionStore.type: redis`. An existing values file can retain
+`type: cookie` despite the new default. Keep the existing cookie Secret and
+Entra configuration. Users must sign in again after the storage change.
+Reconcile the mesh with `scripts/ensure-oauth2-proxy-id-token-header.py` through
+the deployment entry point. The external authorization provider must include
+`headersToDownstreamOnAllow: [set-cookie]` so that refreshed cookies reach the
+browser. A Helm upgrade alone does not change that mesh setting.
+
+Explicit `type: cookie` remains available. It does not request `offline_access`
+and expires after 45 minutes without refresh. This avoids large refresh-token
+cookies that can exceed common 8 KiB request header limits. Increasing that
+cookie lifetime alone does not refresh the ID token sent to the Portal.
 
 ### Expired sessions
 
@@ -180,7 +409,8 @@ These sign-ins can come from a page reload and background requests, or from
 several tabs. When a sign-in starts, OAuth2 Proxy deletes the oldest of these
 cookies beyond `oauth2Proxy.cookie.csrfPerRequestLimit` (default 20).
 
-Requests below `/api/`, `/ui/<instance>/api/` and `/ui/<instance>/assets/`
+Requests below `/api/`, `/ui/<instance>/api/`, `/ui/<instance>/assets/`, and
+`/<instance>/cetirun-auth/`
 answer `401` instead of a redirect to Entra. This is because a browser cannot
 follow that redirect from a script. Also, an Agent UI can request dozens of
 assets at one time. Otherwise, each of these asset requests starts a sign-in.
@@ -210,10 +440,13 @@ a sign-in session, and it is never an authorization key. The callback must
 still match the verified tenant and object IDs of the instance owner. As a
 result, if you enable the claim, this does not relax owner isolation.
 
-The Agent authorization client requests both the OIDC `openid` and `profile`
-scopes. Entra's `profile` scope supplies the immutable object ID that the
-callback owner check uses. `openid` alone does not guarantee that claim. Do not
-replace the object-ID check with a username or email fallback.
+The Agent authorization client requests the `access_agent` scope of the
+Blueprint and the OIDC scopes `openid`, `profile`, and `offline_access`. Entra's
+`profile` scope supplies the immutable object ID that the callback owner check
+uses. `openid` alone does not guarantee that claim. Do not replace the
+object-ID check with a username or email fallback. For the consent to these
+scopes, refer to
+[Entra Agent Identity setup](../entra-agent-identity/#add-microsoft-delegated-access-when-needed).
 
 For authenticated Portal routes, OAuth2 Proxy returns its validated ID token in
 the internal `Authorization` header. The gateway filter first removes any

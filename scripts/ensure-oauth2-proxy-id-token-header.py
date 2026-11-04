@@ -69,6 +69,7 @@ def _oauth2_proxy_provider(service="oauth2-proxy.cetirun-istio.svc.cluster.local
                 "authorization",
             ],
             "headersToDownstreamOnDeny": ["set-cookie", "location"],
+            "headersToDownstreamOnAllow": ["set-cookie"],
             "statusOnError": "403",
         },
     }
@@ -128,10 +129,18 @@ def _ensure_provider(mesh_text: str, add_missing: bool, service=None) -> tuple[s
         ext_authz["headersToUpstreamOnAllow"] = headers
     if not isinstance(headers, list) or not all(isinstance(item, str) for item in headers):
         raise RuntimeError("oauth2-proxy upstream header configuration is invalid")
-    if "authorization" in headers:
-        return mesh_text, False
-    headers.append("authorization")
-    return _dump_mesh(mesh), True
+    changed = False
+    if "authorization" not in headers:
+        headers.append("authorization")
+        changed = True
+    if add_missing:
+        downstream = ext_authz.setdefault("headersToDownstreamOnAllow", [])
+        if not isinstance(downstream, list) or not all(isinstance(item, str) for item in downstream):
+            raise RuntimeError("oauth2-proxy downstream header configuration is invalid")
+        if "set-cookie" not in downstream:
+            downstream.append("set-cookie")
+            changed = True
+    return (_dump_mesh(mesh), True) if changed else (mesh_text, False)
 
 
 def ensure_header(mesh_text: str) -> tuple[str, bool]:

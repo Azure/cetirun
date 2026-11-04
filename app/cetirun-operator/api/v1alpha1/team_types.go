@@ -92,8 +92,8 @@ type SkillStorageSpec struct {
 	// +optional
 	StorageSize string `json:"storageSize,omitempty"`
 
-	// MountPath optionally adds a read-only skills alias for native Agents.
-	// The common skills view is always at "$HOME/.agents/skills".
+	// MountPath selects the read-only shared Skills mount for native Agents.
+	// Custom Agents compose shared Skills into "$HOME/.agents/skills".
 	// +optional
 	MountPath string `json:"mountPath,omitempty"`
 }
@@ -128,9 +128,103 @@ type TeamStatus struct {
 	// +listMapKey=name
 	// +optional
 	ModelRouters []TeamModelRouterStatus `json:"modelRouters,omitempty"`
+
+	// Compatibility is the latest configuration-only assessment of this Team's
+	// Policy and selected Sandboxes. It does not authorize an Agent or prove
+	// that a workload, Gateway key, or credential projection is applied.
+	// +optional
+	Compatibility *TeamCompatibilityStatus `json:"compatibility,omitempty"`
 }
 
 const ConditionTeamAccepted = "Accepted"
+
+// CompatibilityState is the configuration compatibility of a Team and its
+// selected Sandboxes. It deliberately does not describe runtime enforcement.
+// +kubebuilder:validation:Enum=Compatible;Incompatible;Unknown
+type CompatibilityState string
+
+const (
+	CompatibilityCompatible   CompatibilityState = "Compatible"
+	CompatibilityIncompatible CompatibilityState = "Incompatible"
+	CompatibilityUnknown      CompatibilityState = "Unknown"
+)
+
+// CompatibilityReference pins a configuration object that an assessment read.
+// A Portal must not show a compatible result after any of these values changes.
+type CompatibilityReference struct {
+	Name       string `json:"name"`
+	UID        string `json:"uid,omitempty"`
+	Generation int64  `json:"generation,omitempty"`
+}
+
+// CompatibilityIssue is safe for administrative display and for Kubernetes
+// admission details. It contains no platform topology or credential data.
+type CompatibilityIssue struct {
+	Code    string                  `json:"code"`
+	Field   string                  `json:"field,omitempty"`
+	Message string                  `json:"message"`
+	Team    *CompatibilityReference `json:"team,omitempty"`
+	Policy  *CompatibilityReference `json:"policy,omitempty"`
+	Sandbox *CompatibilityReference `json:"sandbox,omitempty"`
+}
+
+// CompatibilityIssueMessage returns the fixed, safe message for an issue code.
+// Portal clients must use this contract instead of rendering admission text.
+func CompatibilityIssueMessage(code string) (string, bool) {
+	message, ok := compatibilityIssueMessages[code]
+	return message, ok
+}
+
+// Valid reports whether an issue uses the public compatibility contract.
+func (i CompatibilityIssue) Valid() bool {
+	message, ok := CompatibilityIssueMessage(i.Code)
+	return ok && i.Message == message
+}
+
+var compatibilityIssueMessages = map[string]string{
+	"policy_missing":                        "Choose an Agent Policy.",
+	"sandbox_missing":                       "Choose at least one Sandbox.",
+	"default_sandbox_invalid":               "Choose a default Sandbox from the selected Sandboxes.",
+	"policy_not_found":                      "The selected Agent Policy was not found.",
+	"policy_invalid":                        "The selected Agent Policy is invalid.",
+	"multiple_sandboxes_not_allowed":        "The selected Agent Policy allows one Sandbox per Team.",
+	"sandbox_not_found":                     "The selected Sandbox was not found.",
+	"sandbox_invalid":                       "The selected Sandbox is invalid.",
+	"runtime_not_registered":                "The Sandbox runtime is not registered by the platform.",
+	"execution_profile_unsupported":         "The Sandbox execution profile is not enabled by this platform.",
+	"home_access_mode_unsupported":          "The Sandbox HOME access mode is not supported by this platform.",
+	"network_address_family_unsupported":    "The Policy requests a network address family that the Sandbox does not support.",
+	"network_protocol_unsupported":          "The Policy requests a network protocol that the Sandbox does not support.",
+	"read_only_root_filesystem_unsupported": "The Sandbox does not support the Policy read-only root filesystem requirement.",
+	"ingress_unsupported":                   "The Sandbox does not support the Policy ingress configuration.",
+	"network_control_unsupported":           "The Sandbox does not support one or more requested Policy network controls.",
+	"kubernetes_access_unsupported":         "The Sandbox does not support the Policy Kubernetes access requirement.",
+	"entra_id_unsupported":                  "The Sandbox does not support the Policy Entra ID requirement.",
+	"sandbox_incompatible":                  "The selected Sandbox does not support one or more requested Policy controls.",
+}
+
+// SandboxCompatibilityStatus reports one selected Sandbox within a Team.
+type SandboxCompatibilityStatus struct {
+	Sandbox CompatibilityReference `json:"sandbox"`
+	State   CompatibilityState     `json:"state"`
+	Reason  string                 `json:"reason,omitempty"`
+	Issues  []CompatibilityIssue   `json:"issues,omitempty"`
+}
+
+// TeamCompatibilityStatus records a point-in-time compatibility assessment.
+// ValidUntil bounds the report so stale compatibility is never interpreted as
+// current after its dependencies or platform inventory change.
+type TeamCompatibilityStatus struct {
+	State      CompatibilityState           `json:"state"`
+	Reason     string                       `json:"reason,omitempty"`
+	Message    string                       `json:"message,omitempty"`
+	Team       CompatibilityReference       `json:"team"`
+	Policy     CompatibilityReference       `json:"policy"`
+	Sandboxes  []SandboxCompatibilityStatus `json:"sandboxes,omitempty"`
+	Issues     []CompatibilityIssue         `json:"issues,omitempty"`
+	CheckedAt  metav1.Time                  `json:"checkedAt"`
+	ValidUntil metav1.Time                  `json:"validUntil"`
+}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

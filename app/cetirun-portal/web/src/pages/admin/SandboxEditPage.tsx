@@ -6,6 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Text, Title2 } from "@fluentui/react-components";
 import { createSandbox, getSandbox, updateSandbox, type SandboxSpec, type SandboxUpsertRequest } from "../../api/adminSandbox";
+import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurationErrorMessage";
 
 type SandboxForm = SandboxUpsertRequest & SandboxSpec;
 
@@ -24,7 +25,7 @@ export function SandboxEditPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<SandboxForm>(emptyForm);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<Error | null>(null);
   const { data: existing, isLoading, error } = useQuery({ queryKey: ["admin", "sandbox", name], queryFn: () => getSandbox(name!), enabled: !isCreate });
   useEffect(() => {
     if (existing) setForm({ name: existing.name, uid: existing.uid, resourceVersion: existing.resourceVersion, type: existing.type, resources: existing.resources, storage: existing.storage });
@@ -34,15 +35,15 @@ export function SandboxEditPage() {
     if (name) queryClient.invalidateQueries({ queryKey: ["admin", "sandbox", name] });
     navigate("/admin/sandboxes");
   };
-  const mutation = useMutation({ mutationFn: (request: SandboxUpsertRequest) => isCreate ? createSandbox(request) : updateSandbox(name!, request), onSuccess: success, onError: (error: Error) => setSubmitError(error.message) });
+  const mutation = useMutation({ mutationFn: (request: SandboxUpsertRequest) => isCreate ? createSandbox(request) : updateSandbox(name!, request), onSuccess: success, onError: (error: Error) => setSubmitError(error) });
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setSubmitError(null);
     if (mutation.isPending || existing?.deleting) return;
     if (isCreate && !/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(form.name?.trim() || "")) {
-      setSubmitError("Name must be a DNS-1123 label: lowercase, start with a letter, max 63 chars."); return;
+      setSubmitError(new Error("Name must be a DNS-1123 label: lowercase, start with a letter, max 63 chars.")); return;
     }
-    if (!form.storage.home.storageClassName.trim()) { setSubmitError("Choose the StorageClass used for Agent HOME."); return; }
+    if (!form.storage.home.storageClassName.trim()) { setSubmitError(new Error("Choose the StorageClass used for Agent HOME.")); return; }
     mutation.mutate({ ...form, name: form.name?.trim(), storage: { ...form.storage, home: { ...form.storage.home, storageClassName: form.storage.home.storageClassName.trim() } } });
   };
   if (!isCreate && isLoading) return <Spinner label="Loading Sandbox..." />;
@@ -77,7 +78,7 @@ export function SandboxEditPage() {
         <option value="ReadWriteOncePod">ReadWriteOncePod</option><option value="ReadWriteOnce">ReadWriteOnce</option>
       </Select></Field>
       <Field label="Scratch size limit" required><Input value={form.storage.scratch.sizeLimit} required onChange={(_, data) => setForm({ ...form, storage: { ...form.storage, scratch: { sizeLimit: data.value } } })} /></Field>
-      {submitError && <MessageBar intent="error">{submitError}</MessageBar>}
+      {submitError && <AdminConfigurationErrorMessage error={submitError} />}
       <div style={{ display: "flex", gap: 8 }}>
         <Button appearance="primary" type="submit" disabled={mutation.isPending || !!existing?.deleting}>{mutation.isPending ? "Saving..." : isCreate ? "Create" : "Save"}</Button>
         <Button type="button" onClick={() => navigate("/admin/sandboxes")}>Cancel</Button>

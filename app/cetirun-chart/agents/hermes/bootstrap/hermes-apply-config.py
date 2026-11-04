@@ -85,11 +85,6 @@ def reconcile_memory_lists(existing: dict[str, Any], generated: dict[str, Any], 
         if (section == "skills" and "/opt/cetirun/cetiadmin/skills" in after
                 and not legacy.exists() and not legacy.is_symlink() and not legacy.parent.is_symlink()):
             managed.add("/home/vibe/.aks/skills")
-        # The Pod also mounts the composed skills at this path. An earlier
-        # configuration that lists it makes Hermes see every skill twice.
-        alias = os.environ.get("CETIRUN_SKILLS_VIEW_ALIAS", "")
-        if section == "skills" and alias and owned in after:
-            managed.add(alias)
         values = [item for item in before if item not in managed or item in after]
         if not isinstance(merged.get(section), dict):
             merged[section] = {}

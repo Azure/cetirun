@@ -20,6 +20,29 @@ configuration path described below.
 
 ## Deploy the platform
 
+### Choose the deployment path first
+
+Creating Azure infrastructure, installing the platform, creating an Agent, and
+authorizing its model provider are separate operations. The entry point below
+does not provision the cluster or qualify a Sandbox. Do not interpret its
+workload waits as an end-to-end Agent or model-readiness check.
+
+The full `make deploy` path requires the published artifact inventory, identity
+inputs, shared model tiers, and the `auto`/`decision-1` configuration described
+below. Check these prerequisites before starting that path. A provider quota or
+account restriction is not a slow Pod startup.
+
+A Copilot-only installation instead uses the
+[component chart path](#use-the-component-chart-directly). Shared models are
+optional there; keep the AI Gateway and
+`cetirun-operator.aiGateway.copilotProxy.enabled` enabled. The owner must still
+complete GitHub sign-in before using a Copilot model. This is a deliberately
+selected installation mode, not a way to make the full helper accept missing
+prerequisites. Neither path authorizes copying a user's existing credentials
+or bypassing provider restrictions.
+
+### Prepare and apply the full deployment
+
 Prepare an environment file outside the repository. The
 [synthetic example](ci/deployment-example.yaml) shows the platform input shape.
 The example enables CetiAdmin with a synthetic owner, budget, and API access.

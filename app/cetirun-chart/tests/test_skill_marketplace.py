@@ -24,11 +24,13 @@ TEAM_PATH = "teams/00000000-0000-4000-8000-000000000001"
 SELECTION = "sha256:" + "0123456789abcdef" * 4
 SELECTION_ENV = "CETIRUN_SKILLS_RELEASE_SELECTION"
 CONTEXT_ERROR = "Skill Marketplace skills require the composed Agent context"
+SANDBOX_ERROR = "Skill Marketplace skills require a reconciled Sandbox workload"
 PAIR_ERROR = (
     "Skill Marketplace skills require both skills.subPath and "
     "skills.marketplace.selectionDigest"
 )
 SHARED_ERROR = "Skill Marketplace skills require skills.shared"
+MOUNT_PATH = "/home/vibe/.aks/skills"
 
 
 def render(values):
@@ -132,6 +134,17 @@ def pod_spec(stdout):
     return workload["spec"]["template"]["spec"]
 
 
+def skills_dirs(stdout, agent_type):
+    """The skills directories in the rendered runtime configuration."""
+    for document in yaml.safe_load_all(stdout):
+        data = (document or {}).get("data") or {}
+        if agent_type == "hermes" and "hermes-config.yaml" in data:
+            return yaml.safe_load(data["hermes-config.yaml"])["skills"]["external_dirs"]
+        if agent_type == "openclaw" and "openclaw.json" in data:
+            return json.loads(data["openclaw.json"])["skills"]["load"]["extraDirs"]
+    raise AssertionError(f"no {agent_type} configuration in the render")
+
+
 class SkillMarketplaceChartTests(unittest.TestCase):
     def assert_refused(self, values, error):
         rendered = render(values)
@@ -159,10 +172,13 @@ class SkillMarketplaceChartTests(unittest.TestCase):
                     self.assertEqual(mounts.count("shared-skills"), int(owned), container["name"])
                 main = pod["containers"][0]
                 self.assertNotIn("shared-skills", [m["name"] for m in main["volumeMounts"]])
+                # The runtime reads the release that the initializer copied,
+                # at skills.mountPath; HOME keeps the personal skills.
                 self.assertIn({
-                    "name": "context-view", "mountPath": "/home/vibe/.agents",
-                    "subPath": "current", "readOnly": True,
+                    "name": "context-view", "mountPath": MOUNT_PATH,
+                    "subPath": "current/team-skills", "readOnly": True,
                 }, main["volumeMounts"])
+                self.assertNotIn("/home/vibe/.agents", [m["mountPath"] for m in main["volumeMounts"]])
                 volume = next(v for v in pod["volumes"] if v["name"] == "shared-skills")
                 self.assertEqual(
                     volume["persistentVolumeClaim"], {"claimName": "skills", "readOnly": True},
@@ -182,11 +198,12 @@ class SkillMarketplaceChartTests(unittest.TestCase):
                 containers = pod["initContainers"] + pod["containers"]
                 names = [item["name"] for c in containers for item in c.get("env") or []]
                 self.assertNotIn(SELECTION_ENV, names)
+                # Without the marketplace, native Agents mount the claim itself.
                 initializer = next(c for c in pod["initContainers"] if c["name"] == "init-home-data")
+                self.assertNotIn("shared-skills", [m["name"] for m in initializer["volumeMounts"]])
                 self.assertIn({
-                    "name": "shared-skills", "mountPath": "/etc/cetirun-shared-skills",
-                    "readOnly": True,
-                }, initializer["volumeMounts"])
+                    "name": "shared-skills", "mountPath": MOUNT_PATH, "readOnly": True,
+                }, pod["containers"][0]["volumeMounts"])
 
     def test_marketplace_values_require_the_composed_context(self):
         for agent_type in ("openclaw", "hermes"):
@@ -199,6 +216,16 @@ class SkillMarketplaceChartTests(unittest.TestCase):
             for name, values in (("memory disabled", without_context), ("held", held)):
                 with self.subTest(agent_type=agent_type, case=name):
                     self.assert_refused(values, CONTEXT_ERROR)
+
+    def test_marketplace_values_require_a_reconciled_sandbox(self):
+        # An ordinary Agent has a small context view for the copied release.
+        for agent_type in ("openclaw", "hermes"):
+            with self.subTest(agent_type=agent_type):
+                values = marketplace_values(agent_type)
+                for name in ("sandboxWorkload", "runtimeClassName"):
+                    del values[name]
+                values["sidecarScope"] = {"enabled": True}
+                self.assert_refused(values, SANDBOX_ERROR)
 
     def test_marketplace_values_must_be_set_together(self):
         for agent_type in ("openclaw", "hermes"):
@@ -241,41 +268,18 @@ class SkillMarketplaceChartTests(unittest.TestCase):
                 self.assertNotEqual(rendered.returncode, 0, rendered.stdout)
                 self.assertIn(field, rendered.stderr)
 
-    def test_hermes_lists_the_composed_skills_once(self):
-        # The main container mounts the composed skills at .agents/skills and
-        # at skills.mountPath. Hermes must list only one of the two paths, or
-        # it sees every skill twice and asks which one to use.
-        alias = "/home/vibe/.aks/skills"
-        for name, values, dirs, env in (
-            ("marketplace", marketplace_values("hermes"), ["/home/vibe/.agents/skills"], alias),
-            ("shared skills", reconciled_values("hermes"), ["/home/vibe/.agents/skills"], alias),
-            ("no shared skills", without_shared_skills(), [alias, "/home/vibe/.agents/skills"], None),
-        ):
-            with self.subTest(case=name):
-                rendered = render(values)
+    def test_runtimes_list_the_team_skills_once(self):
+        # The Team's skills are at skills.mountPath and the personal skills in
+        # HOME, so each runtime lists every directory once and sees no skill
+        # twice.
+        for agent_type in ("openclaw", "hermes"):
+            with self.subTest(agent_type=agent_type):
+                rendered = render(marketplace_values(agent_type))
                 self.assertEqual(rendered.returncode, 0, rendered.stderr)
-                documents = [document for document in yaml.safe_load_all(rendered.stdout) if document]
-                config = next(document for document in documents if document["kind"] == "ConfigMap"
-                              and "hermes-config.yaml" in (document.get("data") or {}))
-                hermes = yaml.safe_load(config["data"]["hermes-config.yaml"])
-                self.assertEqual(hermes["skills"]["external_dirs"], dirs)
-                pod = pod_spec(rendered.stdout)
-                initializer = next(c for c in pod["initContainers"] if c["name"] == "init-home-data")
-                aliases = [item.get("value") for item in initializer["env"] if item["name"] == "CETIRUN_SKILLS_VIEW_ALIAS"]
-                self.assertEqual(aliases, [env] if env else [])
-                main = pod["containers"][0]
-                mounted = [m["mountPath"] for m in main["volumeMounts"] if m["name"] == "context-view"]
-                self.assertEqual(alias in mounted, env is not None)
-
-
-def without_shared_skills():
-    # A Sandbox needs a skills claim, so this is an Agent without one.
-    values = reconciled_values("hermes")
-    for name in ("sandboxWorkload", "runtimeClassName"):
-        del values[name]
-    values["skills"] = {"shared": False}
-    values["sidecarScope"] = {"enabled": True}
-    return values
+                dirs = skills_dirs(rendered.stdout, agent_type)
+                self.assertEqual(dirs.count(MOUNT_PATH), 1, dirs)
+                self.assertEqual(dirs.count("/home/vibe/.agents/skills"), 1, dirs)
+                self.assertEqual(len(dirs), len(set(dirs)), dirs)
 
 
 if __name__ == "__main__":

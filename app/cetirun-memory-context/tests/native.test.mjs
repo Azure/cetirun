@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmod, cp, mkdtemp, mkdir, readFile, writeFile, rm, lstat } from "node:fs/promises";
+import { chmod, cp, mkdtemp, mkdir, readFile, writeFile, rm, lstat, readdir, symlink, copyFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,6 +17,11 @@ const stage = await mkdtemp(path.join(os.tmpdir(), "memory-native-tests-"));
 const helper = path.join(stage, "cetirun-memory");
 execFileSync("go", ["build", "-o", helper, "./cmd/cetirun-memory"], { cwd: moduleDir, env: { ...process.env, GOPROXY: "off", GOTOOLCHAIN: "local" } });
 test.after(() => rm(stage, { recursive: true, force: true }));
+
+test("installed CLI recovers process loss and keeps writes working after repair", () => {
+  const output = execFileSync("python3", [path.join(moduleDir, "tests/cli_recovery.py"), "--helper", helper, "--work-dir", stage], { timeout: 120000, encoding: "utf8" });
+  assert.ok(Object.values(JSON.parse(output)).every(result => result === "passed"));
+});
 
 async function fixture(t) {
   const home = await mkdtemp(path.join(stage, "home-"));
@@ -43,6 +48,8 @@ test("native Memory tools describe valid query and capture payloads", () => {
   assert.equal(payload.properties?.queryTerms?.type, "array", "queryTerms must be visible before the first tool call");
   assert.equal(payload.properties.queryTerms.maxItems, 8);
   assert.equal(payload.properties.limit.maximum, 20);
+  assert.equal(payload.properties.sourceRef?.type, "string", "source checks must describe their workspace-file input");
+  assert.match(MEMORY_TOOL.parameters.properties.command.description ?? "", /query.*stored note bodies/);
   const note = payload.properties.note;
   for (const field of ["kind", "title", "body", "scope", "temporalClass", "revalidation", "sources"]) {
     assert.ok(note.required.includes(field), `missing required note input ${field}`);
@@ -53,6 +60,20 @@ test("native Memory tools describe valid query and capture payloads", () => {
   assert.equal(MEMORY_TOOL.parameters.additionalProperties, false);
   assert.equal(payload.properties.requestContext, undefined);
   assert.equal(payload.properties.root, undefined);
+});
+
+test("an unavailable source check does not hide a stored note", async t => {
+  const f = await fixture(t);
+  const session = f.bridge.session(f.binding);
+  const captured = await session.tool({ command: "capture", payload: { note: note(f) } });
+  assert.equal(captured.ok, true);
+  const checked = await session.tool({ command: "source", payload: { ref: captured.data.refs[0] } });
+  assert.equal(checked.ok, false);
+  assert.equal(checked.reason, "SourceAssuranceUnavailable");
+  assert.equal(checked.retryable, false);
+  const queried = await session.tool({ command: "query", payload: { queryTerms: [note(f).title], limit: 1 } });
+  assert.equal(queried.ok, true);
+  assert.equal(queried.data.hits[0].note.body, note(f).body);
 });
 
 // The before_prompt_build context OpenClaw 2026.9.6 builds for an owner's
@@ -254,6 +275,43 @@ test("pinned Hermes host APIs load the adapter and execute bounded native calls"
       HERMES_HOME: path.join(f.home, ".hermes"), HERMES_SKIP_AUTO_UPDATE: "1", PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
   });
   assert.match(output, /Pinned Hermes host checks passed/);
+});
+
+async function skillHost(source, runtime, changed) {
+  const target = await mkdtemp(path.join(stage, `${runtime}-skills-`));
+  async function populate(relative = "") {
+    const directory = path.join(target, relative);
+    await mkdir(directory, { recursive: true });
+    for (const name of await readdir(path.join(source, relative))) {
+      const file = path.join(relative, name), original = path.join(source, file), destination = path.join(target, file);
+      if (changed.includes(file)) await copyFile(original, destination);
+      else if (changed.some(entry => entry.startsWith(`${file}/`))) await populate(file);
+      else await symlink(original, destination);
+    }
+  }
+  await populate();
+  const installer = path.resolve(moduleDir, "../cetirun-chart/configs/apply-memory-skills.py");
+  const args = [installer, "--runtime", runtime, "--root", target];
+  execFileSync("python3", [...args, "--check"]);
+  execFileSync("python3", args);
+  assert.match(execFileSync("python3", args, { encoding: "utf8" }), /0 file\(s\) updated/);
+  return target;
+}
+
+test("pinned Hermes protects Memory discovery through live shared-skill changes", { skip: !process.env.MEMORY_HERMES_SOURCE }, async () => {
+  const host = await skillHost(process.env.MEMORY_HERMES_SOURCE, "hermes", ["agent/skill_utils.py", "tools/skills_tool.py"]);
+  const output = execFileSync(process.env.MEMORY_HERMES_PYTHON ?? "python3", ["-B", path.join(moduleDir, "tests/hermes_skills.py")], {
+    env: { ...process.env, MEMORY_HERMES_SOURCE: host, PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
+  });
+  assert.match(output, /Pinned Hermes live skill-source checks passed/);
+});
+
+test("pinned OpenClaw protects Memory discovery through live shared-skill changes", { skip: !process.env.MEMORY_OPENCLAW_SOURCE }, async () => {
+  const host = await skillHost(process.env.MEMORY_OPENCLAW_SOURCE, "openclaw", ["dist/workspace-skill-loader-CoQ1pd8t.mjs"]);
+  const output = execFileSync(process.execPath, [path.join(moduleDir, "tests/openclaw_skills.mjs")], {
+    env: { ...process.env, MEMORY_OPENCLAW_SOURCE: host }, encoding: "utf8", timeout: 30000,
+  });
+  assert.match(output, /Pinned OpenClaw live skill-source checks passed/);
 });
 
 test("pinned OpenClaw loads the packaged plugin and bounds direct native requests", { skip: !process.env.MEMORY_OPENCLAW_SOURCE }, async t => {

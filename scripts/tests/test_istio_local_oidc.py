@@ -26,6 +26,7 @@ ENTRA_VALUES = {
     "tenantId": "lint-tenant",
     "allowedGroups": "lint-group",
     "cookieSecret": "lint-cookie-secret",
+    "oauth2Proxy": {"sessionStore": {"type": "cookie"}},
 }
 NO_ENV_COLLECTION = {"name": "AZMON_COLLECT_ENV", "value": "False"}
 COOKIE_ENV = {
@@ -61,6 +62,7 @@ ENTRA_ARGS = [
     "--api-route=^/api/",
     "--api-route=^/ui/[^/]+/api/",
     "--api-route=^/ui/[^/]+/assets/",
+    "--api-route=^/[^/]+/cetirun-auth/",
     "--allowed-group=lint-group",
     "--scope=openid email profile",
     "--upstream=static://200",
@@ -80,6 +82,7 @@ def local_values():
     return {
         "cookieSecret": "lint-cookie-secret",
         "oauth2Proxy": {
+            "sessionStore": {"type": "cookie"},
             "mode": "local-oidc",
             "emailClaim": "email",
             "localOIDC": {
@@ -136,10 +139,10 @@ class IstioLocalOIDCTests(unittest.TestCase):
             for document in yaml.safe_load_all(result.stdout) if document
         }
 
-    def test_default_entra_provider_and_session_configuration(self):
+    def test_explicit_cookie_entra_provider_and_session_configuration(self):
         objects = self.render(ENTRA_VALUES)
         self.assertEqual(
-            objects, self.render({**ENTRA_VALUES, "oauth2Proxy": {"mode": "entra-id"}}),
+            objects, self.render({**ENTRA_VALUES, "oauth2Proxy": {"mode": "entra-id", "sessionStore": {"type": "cookie"}}}),
         )
         pod = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]
         self.assertEqual(

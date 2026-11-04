@@ -437,6 +437,35 @@ func TestAgentValidationReadsOnlyNamedReferencesAndRefreshesEachRequest(t *testi
 	}
 }
 
+func TestTeamCompatibilityRejectionReturnsSafeStructuredCauses(t *testing.T) {
+	f := newFixture(t)
+	f.policy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
+	if err := f.client.Update(context.Background(), f.policy); err != nil {
+		t.Fatal(err)
+	}
+	response := f.handler.Validate(context.Background(), requestFor(t, admissionv1.Create, f.team, nil, "administrator"))
+	if response.Allowed || response.Result == nil || response.Result.Details == nil {
+		t.Fatalf("compatibility response = %+v", response)
+	}
+	var found bool
+	for _, cause := range response.Result.Details.Causes {
+		if cause.Type != metav1.CauseType("CetiRunCompatibility") {
+			continue
+		}
+		var issue api.CompatibilityIssue
+		if err := json.Unmarshal([]byte(cause.Message), &issue); err != nil {
+			t.Fatalf("compatibility cause is not JSON: %v", err)
+		}
+		if !issue.Valid() || issue.Code != "network_control_unsupported" || issue.Field != "registration.blockedFQDNs" || issue.Team == nil || issue.Policy == nil || issue.Sandbox == nil {
+			t.Fatalf("unsafe compatibility issue = %+v", issue)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("compatibility causes = %+v", response.Result.Details.Causes)
+	}
+}
+
 func TestConsumerPaginationChecksLaterPagesAndErrors(t *testing.T) {
 	for _, scenario := range []string{"team consumers", "policy references", "sandbox selections", "shared validation", "expired page"} {
 		t.Run(scenario, func(t *testing.T) {

@@ -122,8 +122,9 @@ func (v *snapshot) retainHistory(window int64, generations map[string]int64) {
 // journal only at its own expected generation. An older journal whose receipt
 // is retained has committed, so only the journal goes. Without a receipt, an
 // attempt from the last minimumHistory generations never committed, so its
-// object files go as well; older journals stay because their receipts may
-// already be compacted. Removal is best effort: a file that cannot be removed
+// object files go as well. For older journals, keep every revision of IDs still
+// retained or referenced by the manifest; remove only unreferenced objects.
+// Removal is best effort: a file that cannot be removed
 // keeps its journal for a later write and does not fail this one. The caller
 // holds the write lock.
 func (v *snapshot) removeAbandonedTransactions(ctx context.Context) error {
@@ -135,9 +136,16 @@ func (v *snapshot) removeAbandonedTransactions(ctx context.Context) error {
 		return err
 	}
 	current := map[string]bool{}
+	retained := map[string]bool{}
 	for _, ref := range v.m.Objects {
+		retained[ref.ID] = true
 		if object, err := objectPath(ref); err == nil {
 			current[object] = true
+		}
+	}
+	for _, refs := range v.m.Dependencies {
+		for _, ref := range refs {
+			retained[ref.ID] = true
 		}
 	}
 journals:
@@ -166,19 +174,20 @@ journals:
 			continue
 		}
 		committed := false
+		old := tx.Manifest.Generation <= v.m.Generation-minimumHistory
 		if len(manifest) <= MaxManifest {
 			if tx.ExpectedGeneration >= v.m.Generation {
 				continue
 			}
 			receipt, ok := v.m.Requests[strings.TrimSuffix(name, ".json")]
 			committed = ok && receipt.Generation == tx.Manifest.Generation
-			if !committed && tx.Manifest.Generation <= v.m.Generation-minimumHistory {
-				continue
-			}
 		}
 		if !committed {
 			staged := map[string]bool{}
 			for _, ref := range tx.Manifest.Objects {
+				if old && retained[ref.ID] {
+					continue
+				}
 				if object, err := objectPath(ref); err == nil {
 					staged[object] = true
 				}

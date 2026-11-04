@@ -15,7 +15,7 @@ to the Agents of policy-bound Teams. It does these things:
 4. It creates a read-only claim of the container in each Agent namespace of
    these Teams. The Agent's initializer mounts only the Team's subtree. It
    waits for the release of the Team's current selection, and copies it into
-   the Agent's read-only `~/.agents/skills` view.
+   the Pod. The Agent reads the copy read-only in `~/.aks/skills`.
 5. It writes the catalog ConfigMap `cetirun-skill-marketplace` in the operator
    namespace. The Portal reads it for the skill pickers and the status page.
 

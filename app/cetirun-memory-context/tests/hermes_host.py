@@ -107,6 +107,7 @@ class ModelFixture(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         requests.append(body)
+        assert body.get("metadata", {}).get("tags") == ["cetirun-memory-evaluation", "artifact-contract-v1"]
         assert body.get("tools") is None and body.get("stream") is False
         assert "synthetic concise examples" not in json.dumps(body)
         self.send_response(response_status)

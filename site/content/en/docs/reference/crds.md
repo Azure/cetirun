@@ -141,7 +141,7 @@ check does not prove that an override will reconcile successfully.
 | `plannedMigration` | Controller-owned source and storage identity and acknowledgment checkpoint. The phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, and `Completed`. It is not a physical-fencing receipt, and it does not give permission to edit status |
 | `observedOperatorHash` | Fingerprint of the applied configuration, for use by the reconciliation cache. It includes the content hash of the gateway Secret and the resource version of the referenced team |
 | `lastReconcileTime` | Timestamp that a full Ready or suspension pass writes. It can also be written when the ingress removal for a suspension fails |
-| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`), and `vision` when the model accepts images. It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has its `model` name in the Gateway. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a granted Team router also has `alias`, the router's name, when the key reaches the router under that name. A Hermes instance sends that name, other instances send the internal name. Each granted entry also has its configured limits, and `vision` when the instance sends images to the router. If the router is not granted, the `reason` tells why |
+| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`), and `vision` when the model accepts images. It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). With an Agent Policy, it also shows the models that are the same models as shared models that the Policy does not allow (`copilot.notAllowed`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has its `model` name in the Gateway. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a granted Team router also has `alias`, the router's name, when the key reaches the router under that name. A Hermes instance sends that name, other instances send the internal name. Each granted entry also has its configured limits, and `vision` when the instance sends images to the router. If the router is not granted, the `reason` tells why |
 | `registryCredentials` | Receipt that identifies the UID and resourceVersion of the synchronized source Secret and the UID of the local pull Secret. It is not credential data or proof of a successful image pull |
 | `sandbox` | Last binding that was found correct: `teamUID`, `sandboxUID`, `agentPolicyUID`, and `appliedRevision`. Omitted before enforcement succeeds |
 | `policy` | Resolved effective policy, and the desired Sandbox, Gateway, and credential revisions |
@@ -268,8 +268,8 @@ lowercase letters and digits in words that single hyphens join, and at most
 
 - The operator does not pass the name to `skills.clawHub`.
 - For a Team with an Agent Policy, the Skill Marketplace publishes the
-  selected skills. Its common-executor Sandbox Agents copy them into
-  `$HOME/.agents/skills` when they start.
+  selected skills. Its common-executor Sandbox Agents copy them when they
+  start, and read them in `$HOME/.aks/skills`.
 - An Agent cannot add or remove such a name in `skillOverrides`. The operator
   sets the Agent to `Failed`, with `AgentConfigInvalid` and this message:
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
@@ -289,6 +289,45 @@ Skills. The Team DTO returns these fields together with `uid` and
 `resourceVersion`. Updates and deletes must send those two version fields. A
 stale version returns `409 Conflict`, and a request without those version fields
 returns `428 Precondition Required`.
+
+The Teams list shows compatibility for the saved Policy and all selected
+Sandboxes. Expand a Team to see its overall compatibility, labeled Policy and
+Sandbox references, reasons, and check time. Multiple Sandboxes appear in a
+table with a separate compatibility result for each Policy and Sandbox
+combination. The Policy and Sandbox lists also show their referencing Teams;
+the Sandbox view distinguishes the overall Team result from that Sandbox's
+result. A Policy's
+configuration acceptance and a Sandbox's prerequisites are separate from Team
+compatibility. None of these observations proves that an Agent applied its
+Policy or is ready to run.
+
+The Operator records this report in the optional `Team.status.compatibility`
+field. It checks saved configurations every 15 seconds and after Policy or
+Sandbox changes. The report identifies the Team, Policy, and each Sandbox by
+name, UID, and generation, with `checkedAt` and `validUntil` timestamps. The
+report expires after 30 seconds. The Portal shows `Pending` when no report
+exists and `Unknown` when an observation expires or a referenced version
+changes. Teams without Policy configuration show `Not configured`.
+
+The report is for display. It does not change the existing Team `Accepted`
+condition or authorize Agent execution. The admin Team API includes the report,
+the Team generation, and deletion state. The Sandbox API also returns
+generation, observed generation, and conditions.
+
+Editing pages show field validation and errors from the current save. They do
+not check unsaved drafts or display saved status as a draft result. Kubernetes
+admission checks the submitted configuration before it is stored. For a known
+compatibility rejection, the Portal returns `422 configuration_incompatible`
+with an optional `error.details` list of field and combination diagnostics.
+The editor keeps the unsaved input. Version, permission, and coordination
+errors remain separate. Saving successfully does not imply that the Operator
+has already checked the new version.
+
+When upgrading, update the CRD schema and all strict Team readers, including
+admission, before running the Operator that writes compatibility status. No
+migration of existing Teams is necessary; they receive a report on reconciliation.
+Older objects without the optional field remain readable. Do not downgrade a
+strict reader until it can tolerate the new status field.
 
 The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
 runtime type, Agent and helper resource requests and limits, HOME storage, and
@@ -625,7 +664,8 @@ the
 An accepted API value does not qualify the actual network path.
 
 The Operator keeps the Policy's `Accepted` condition for controller decisions
-and diagnostics. The Portal list and editor do not show this status.
+and diagnostics. The Portal list shows the condition for the current generation;
+the editor shows only field validation and save errors.
 `Accepted=True` describes only configuration acceptance. Sandbox compatibility,
 Agent authorization, and runtime enforcement must still succeed. If you save a
 Policy, the save does not prove that its consumers applied it. If you edit a
@@ -661,16 +701,32 @@ rejects mismatched values.
 
 The Portal then reserves the exact whole-resource mutation. It records
 `Changing` before it submits one conditional Update or background Delete, and
-then it observes the result. It releases only an operation that is definitively
-completed. Its namespaced Role allows access only to the named authority
+then it observes the result. It releases only an operation with a verified
+outcome. Its namespaced Role allows access only to the named authority
 ConfigMap. UID/resource-version checks are still request concurrency
 protection. They do not replace this admission contract.
 
 A reservation conflict returns `409 Conflict`. An unavailable authority or an
 uncertain API write returns `503 Service Unavailable`. In that case, the
 reservation is kept deliberately. Do not blindly repeat the mutation. Recover
-the recorded operation with the Operator's configuration-change procedure. For
-update recovery, the exact original inputs are necessary.
+the recorded operation with the Operator's configuration-change procedure.
+
+Update reservations record the complete writable-content digests before and
+after the change. Before saving, the Portal checks for a recorded update, even
+after a restart. A read of the same live UID at a different resourceVersion
+permits recovery when the content matches either the proposed configuration
+(applied) or the original configuration (superseded). A status-only refresh can
+produce the latter without applying the requested edit. Other configuration
+changes or an unknown outcome keep the reservation. Recovery never resubmits
+the old update or relaxes the caller's version checks; a stale edit still needs
+a fresh read before saving.
+
+CLI update recovery uses the exact original `--before` and `--after` files.
+`--action observe` is read-only and reports
+`update-superseded-reservation-retained` when only the original writable content
+remains at a superseding version. Explicit `--action update` then releases the
+old reservation without writing the configuration and reports
+`update-superseded`.
 
 New deletion reservations durably record the content digest that is necessary
 for recovery. An administrator can use the operation ID from the pinned

@@ -32,9 +32,16 @@ jobs:
           fi
 
   go-unit-tests:
-    name: Operator Go unit and build checks
+    name: Operator Go unit and build checks (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      GO_TEST_SHARD_INDEX: ${{ matrix.shard }}
+      GO_TEST_SHARD_COUNT: ${{ strategy.job-total }}
     defaults:
       run:
         working-directory: app/cetirun-operator
@@ -89,9 +96,16 @@ jobs:
         run: '"$RUNNER_TEMP/cetirun-tools/govulncheck" ./...'
 
   go-api-tests:
-    name: Operator API admission checks
+    name: Operator API admission checks (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      GO_TEST_SHARD_INDEX: ${{ matrix.shard }}
+      GO_TEST_SHARD_COUNT: ${{ strategy.job-total }}
     defaults:
       run:
         working-directory: app/cetirun-operator

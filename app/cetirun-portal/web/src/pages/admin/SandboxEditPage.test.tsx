@@ -9,15 +9,19 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { SandboxEditPage } from "./SandboxEditPage";
 import { SandboxListPage } from "./SandboxListPage";
 import * as api from "../../api/adminSandbox";
+import * as teams from "../../api/adminTeam";
+import { AdminConfigurationError } from "../../api/adminError";
 
 vi.mock("../../api/adminSandbox");
+vi.mock("../../api/adminTeam");
 const quantities = { cpu: "1", memory: "1Gi", "ephemeral-storage": "1Gi" };
-const box: api.SandboxDTO = { name: "example", uid: "sandbox-uid", resourceVersion: "7", type: "kata", ready: "Unknown", deleting: false,
+const box: api.SandboxDTO = { name: "example", uid: "sandbox-uid", resourceVersion: "7", generation: 1, type: "kata", ready: "Unknown", deleting: false,
   resources: { agent: { requests: quantities, limits: quantities }, helpers: { requests: quantities, limits: quantities } },
   storage: { home: { storageClassName: "example-csi", size: "10Gi", accessMode: "ReadWriteOncePod" }, scratch: { sizeLimit: "1Gi" } },
 };
 beforeEach(() => {
   vi.resetAllMocks(); vi.mocked(api.getSandbox).mockResolvedValue(box); vi.mocked(api.listSandboxes).mockResolvedValue([box]);
+  vi.mocked(teams.listTeams).mockResolvedValue([]);
   vi.mocked(api.createSandbox).mockResolvedValue(box); vi.mocked(api.updateSandbox).mockResolvedValue(box);
 });
 function renderPage(path: string) {
@@ -70,6 +74,45 @@ it("edits a Sandbox named new using its exact version and displays rejection det
   expect(api.createSandbox).not.toHaveBeenCalled();
 });
 
+it("keeps the edited Sandbox form and shows safe compatibility diagnostics after a rejected save", async () => {
+  vi.mocked(api.updateSandbox).mockRejectedValue(new AdminConfigurationError("The Sandbox conflicts with Team research.", "configuration_incompatible", [{
+    code: "sandbox_incompatible", field: "spec.storage.home.accessMode", message: "The selected Sandbox does not support one or more requested Policy controls.",
+    team: { name: "research", uid: "team-uid", generation: 1 }, policy: { name: "standard", uid: "policy-uid", generation: 2 }, sandbox: { name: "example", uid: "sandbox-uid", generation: 1 },
+  }]));
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/example/edit");
+  const homeSize = await screen.findByRole("textbox", { name: "HOME size" });
+  await user.clear(homeSize); await user.type(homeSize, "20Gi");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByLabelText("Configuration save error")).toHaveTextContent("spec.storage.home.accessMode");
+  expect(screen.getByLabelText("Configuration save error")).toHaveTextContent("Team research / Policy standard / Sandbox example");
+  expect(homeSize).toHaveValue("20Gi");
+});
+
+it("shows the current Sandbox readiness failure with its referencing Teams", async () => {
+  vi.mocked(api.listSandboxes).mockResolvedValue([{
+    ...box, ready: "False", observedGeneration: 1,
+    conditions: [{ type: "Ready", status: "False", observedGeneration: 1, reason: "PrerequisiteMissing", message: "The runtime class is unavailable." }],
+  }]);
+  const user = userEvent.setup(); renderPage("/admin/sandboxes");
+  await user.click(await screen.findByRole("button", { name: "Show Teams using example" }));
+  expect(await screen.findByText("Readiness: PrerequisiteMissing: The runtime class is unavailable.")).toBeInTheDocument();
+});
+
+it("does not show a stale Team report as compatible after the Sandbox is recreated", async () => {
+  const checkedAt = new Date(Date.now() - 1_000);
+  vi.mocked(api.listSandboxes).mockResolvedValue([{ ...box, uid: "replacement-sandbox-uid", generation: 2, ready: "True" }]);
+  vi.mocked(teams.listTeams).mockResolvedValue([{
+    name: "research", uid: "team-uid", generation: 1, resourceVersion: "1", agentPolicyRef: "standard", sandboxRefs: ["example"], defaultSandboxRef: "example",
+    compatibility: {
+      state: "Compatible", team: { name: "research", uid: "team-uid", generation: 1 }, policy: { name: "standard", uid: "policy-uid", generation: 1 },
+      sandboxes: [{ sandbox: { name: "example", uid: "sandbox-uid", generation: 1 }, state: "Compatible" }], checkedAt: checkedAt.toISOString(), validUntil: new Date(checkedAt.getTime() + 30_000).toISOString(),
+    },
+  }]);
+  const user = userEvent.setup(); renderPage("/admin/sandboxes");
+  await user.click(await screen.findByRole("button", { name: "Show Teams using example" }));
+  expect(await screen.findByText("The saved compatibility report no longer matches this configuration.")).toBeInTheDocument();
+});
+
 it.each(["ReadWriteOnce", "ReadWriteOncePod"] as const)("creates an explicit container Sandbox with %s and an isolation warning", async (accessMode) => {
   const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
   expect(screen.getByRole("combobox", { name: "Runtime" })).toHaveValue("kata");
@@ -104,6 +147,6 @@ it("deletes the version selected for confirmation even if the list refreshes", a
   const user = userEvent.setup(); const client = renderPage("/admin/sandboxes");
   await user.click(await screen.findByRole("button", { name: "Delete example" }));
   await act(async () => { client.setQueryData(["admin", "sandboxes"], [{ ...box, uid: "replacement-uid", resourceVersion: "20" }]); });
-  await user.click(screen.getByRole("button", { name: "Delete", exact: true }));
+  await user.click(await screen.findByRole("button", { name: "Delete", exact: true }));
   await waitFor(() => expect(api.deleteSandbox).toHaveBeenCalledExactlyOnceWith(box));
 });

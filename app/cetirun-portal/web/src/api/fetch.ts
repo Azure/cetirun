@@ -27,6 +27,12 @@ export class PortalError extends Error {
   }
 }
 
+export const SESSION_EXPIRED_MESSAGE = "Session expired, please refresh the page";
+
+export function isSessionExpiredError(error: unknown): error is Error {
+  return error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE;
+}
+
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
   let response: Response;
   try {
@@ -38,12 +44,12 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
       },
     });
   } catch {
-    throw new Error("Session expired, please refresh the page");
+    throw new Error(SESSION_EXPIRED_MESSAGE);
   }
 
   const ct = response.headers.get("content-type") || "";
   if (response.status === 401 || response.redirected || ct.includes("text/html")) {
-    throw new Error("Session expired, please refresh the page");
+    throw new Error(SESSION_EXPIRED_MESSAGE);
   }
 
   return response;

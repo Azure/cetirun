@@ -185,6 +185,12 @@ OpenClaw container env vars (agent-specific only)
 {{- define "cetirun.agent.openclaw.envVars" -}}
 - name: OPENCLAW_STATE_DIR
   value: "/home/vibe/.openclaw"
+{{- if .Values.skills.shared }}
+- name: CHOKIDAR_USEPOLLING
+  value: "true"
+- name: CHOKIDAR_INTERVAL
+  value: "5000"
+{{- end }}
 {{- if .Values.sandboxWorkload }}
 - name: NODE_DISABLE_COMPILE_CACHE
   value: "1"

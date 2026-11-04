@@ -15,6 +15,36 @@ from test_native_gateway_chart import RUNTIME_CHART, native_values, object_of_ki
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm")
 class MemorySandboxBoundaryTests(unittest.TestCase):
+    def test_ordinary_memory_preserves_live_skills_and_personal_directory(self):
+        for agent_type in ("openclaw", "hermes"):
+            values = {
+                "agentType": agent_type,
+                "memoryContext": {"image": "registry.example.com/memory:1.2.3"},
+                "desktop": {"enabled": False},
+                "aiGateway": {"enabled": True, "keySecretName": "synthetic-model-key"},
+                "skills": {"shared": True, "resourceGroup": "test-group", "storageAccount": "testskills", "containerName": "approved-skills"},
+                "secrets": {"provider": "openai", "model": "example-model", "existingSecret": "synthetic-agent-secret", "apiBase": "http://gateway.example.com/v1"},
+            }
+            with self.subTest(agent_type=agent_type):
+                objects = render(RUNTIME_CHART, values)
+                pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
+                mounts = pod["containers"][0]["volumeMounts"]
+                self.assertIn({"name": "shared-skills", "mountPath": "/home/vibe/.aks/skills", "readOnly": True}, mounts)
+                self.assertFalse(any(m["mountPath"] in ("/home/vibe/.agents", "/home/vibe/.agents/skills") for m in mounts))
+                self.assertIn({"name": "context-view", "mountPath": "/home/vibe/.agents/AGENTS.md", "subPath": "current/AGENTS.md", "readOnly": True}, mounts)
+                initializer = next(c for c in pod["initContainers"] if c["name"] == "init-home-data")
+                self.assertFalse(any(m["name"] == "shared-skills" for m in initializer["volumeMounts"]))
+                volume = next(v for v in pod["volumes"] if v["name"] == "context-view")
+                self.assertEqual(volume["emptyDir"]["sizeLimit"], "40Mi")
+                config = object_of_kind(objects, "ConfigMap")["data"]
+                if agent_type == "openclaw":
+                    directories = json.loads(config["openclaw.json"])["skills"]["load"]["extraDirs"]
+                else:
+                    directories = yaml.safe_load(config["hermes-config.yaml"])["skills"]["external_dirs"]
+                self.assertIn("/home/vibe/.aks/skills", directories)
+                self.assertIn("/home/vibe/.agents/skills", directories)
+                self.assertIn("/opt/cetirun-memory/skills", directories)
+
     def test_removed_memory_assets_switch_is_not_accepted_by_protected_schema(self):
         schema = json.loads((RUNTIME_CHART / "values.schema.json").read_text())
         self.assertNotIn("memoryAssets", schema["properties"]["sandboxWorkload"]["properties"])

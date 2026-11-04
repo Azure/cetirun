@@ -602,9 +602,9 @@ func TestConfigurationMetadataScopePinsFutureStartsAndWholeWrites(t *testing.T) 
 	}
 }
 
-func TestConfigurationMetadataRecoveryPreservesConservativeRecords(t *testing.T) {
+func TestConfigurationMetadataRecoveryRejectsGenericRecords(t *testing.T) {
 	ctx := context.Background()
-	store, storage, before, _ := configurationFixture(t, "AgentPolicy")
+	store, _, before, _ := configurationFixture(t, "AgentPolicy")
 	after := before.DeepCopyObject().(client.Object)
 	after.SetAnnotations(map[string]string{"example.com/description": "approved"})
 	change, err := newConfigurationChange(before, after, false)
@@ -615,16 +615,15 @@ func TestConfigurationMetadataRecoveryPreservesConservativeRecords(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := store.AcquireConfigurationChange(ctx, before, after)
-	if err != nil || !reflect.DeepEqual(ticket, recovered) || recovered.Change.UnchangedDigest != "" {
-		t.Fatal("recovery changed the scope of an older record:", err)
+	if _, err := store.AcquireConfigurationChange(ctx, before, after); !errors.Is(err, ErrConflict) {
+		t.Fatal("concrete configuration recovery adopted a generic record:", err)
 	}
 	if _, err := store.AcquireExecution(ctx, configurationIntent(t, before, "conservative")); !errors.Is(err, ErrConflict) {
 		t.Fatal("conservative pending change stopped excluding new executions:", err)
 	}
-	if _, err := store.ReconcileChange(ctx, recovered,
-		configurationAdapter(t, storage, storage, before, after)); err != nil {
-		t.Fatal("older conservative record could not complete:", err)
+	adapter := &syntheticChangeAdapter{outcome: completeChange}
+	if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
+		t.Fatal("generic low-level record could not complete:", err)
 	}
 }
 

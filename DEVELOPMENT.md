@@ -64,7 +64,8 @@ Install tools only for the component that you change:
   and the pinned Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, as in its CI configuration.
 - Helm to lint and render charts locally.
-- Python 3 for the standard-library tests under `scripts/tests/`.
+- Python 3 for the Operator test runner and the standard-library tests under
+  `scripts/tests/`.
 
 When you update tool versions, examine the component manifests and CI. Keep
 dependency changes separate from unrelated work.
@@ -125,31 +126,49 @@ go -C app/cetirun-operator vet ./...
 make -C app/cetirun-operator build
 ```
 
-The unit target discovers all packages with `go list ./...`. It tests the
+The default unit target discovers all packages with `go list ./...`. It tests the
 controller package in two complementary groups because the combined suite has
 exceeded 30 minutes on CI runners. One invocation selects the lifecycle test
 prefixes in `GO_CONTROLLER_TEST_GROUP`; the next skips exactly those prefixes.
 Every controller test runs once, and every other package runs in full. Each
 package or controller group keeps a 30-minute timeout.
 
-`make test-envtest` runs the same seven packages in two complementary passes:
+The default `make test-envtest` runs the same seven packages in two complementary passes:
 test names that match `APIServer`, then all remaining tests with that pattern
 excluded. Both passes keep the `envtest` build tag, disable cached results, and
 use main's bounded 50-minute timeout per package. This is a timing split, not a
 classification of every API test: API tests with other names run in the second
 pass. A failure in either pass fails the target.
 
-Root Go test gates and CI use the same component targets. Neither target
-omits tests from its complete run. These budgets do not change individual test
-assertions or runtime/lifecycle deadlines.
+Root Go test gates and CI use the same component targets. Default local runs
+retain both complete partitions described above. Operator CI instead distributes
+both targets across four independent hash shards using the shared runner.
+Neither mode omits tests or changes individual test assertions or
+runtime/lifecycle deadlines.
 
-Operator CI runs unit/build checks and API admission checks in separate,
-independent jobs. Each job keeps a 60-minute limit. The `Operator Go checks`
-status that already exists combines both jobs and fails unless both succeed.
-For example, the status fails if a job fails, is skipped, or is cancelled.
-With this design, the two full suites do not share one job deadline. The
-design also does not drop the generated-API, Portal, build, or vulnerability
-checks.
+To reproduce one CI shard, set its one-based index and the total shard count:
+
+```bash
+make -C app/cetirun-operator test GO_TEST_SHARD_INDEX=1 GO_TEST_SHARD_COUNT=4
+KUBEBUILDER_ASSETS=/path/to/local/envtest \
+  make -C app/cetirun-operator test-envtest GO_TEST_SHARD_INDEX=1 GO_TEST_SHARD_COUNT=4
+```
+
+Run indices 1 through 4 to cover a full sharded suite. The shared runner in
+`scripts/ci/go_test.py` discovers tests with `go test -json -list .` using the
+same packages and build tags, then assigns each top-level test name to exactly
+one shard with a stable hash. New tests are included automatically. Identical
+names in different packages stay in the same shard. Every selected test runs
+all its subtests; examples and fuzz seed tests are included, but benchmarks
+are not enabled. Discovery failures, invalid indices, empty shards, and test
+failures fail the command. No test assertions or runtime/lifecycle deadlines
+change.
+
+Each CI worker keeps its 60-minute job limit, and a failure does not cancel
+the remaining shards. The existing `Operator Go checks` status combines both
+job matrices and fails unless every shard succeeds, including when a worker
+fails, is skipped, or is cancelled. Generated-API, Portal, build, and
+vulnerability checks remain in their existing worker jobs.
 
 The build writes `app/cetirun-operator/bin/manager`. It does not start the
 operator. The component's `make test` and `make vet` targets are also
@@ -707,6 +726,21 @@ still cause a failure before host installation or qualification. Offline
 helper tests send real curl requests to loopback fixtures to cover recovery and
 retry exhaustion.
 
+The Memory native suite also runs the installed helper through its CLI. It
+terminates its own helper process after a committed HEAD switch, then checks
+physical deletion, damaged-note recovery, and later writes. The same check can
+run against a separately installed helper:
+
+```bash
+python3 -B app/cetirun-memory-context/tests/cli_recovery.py \
+  --helper /path/to/cetirun-memory --work-dir /path/to/writable-test-directory
+```
+
+This Linux-only check creates and removes disposable synthetic stores inside
+the selected existing directory. It does not use the Agent's active Memory
+store or call a model. A canary run requires separate cluster authorization and
+does not replace native conversation or retained-restart acceptance.
+
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests must have the pinned PyYAML dependency in
 `infra/istio/requirements.txt`. The Python command does not run the auth and
@@ -965,9 +999,14 @@ their own notices.
   reserved mutation. This rule also applies to older delayed submissions. File
   inputs still keep the original generation, UID, and resource version.
 
-  A `Changing` operation that already exists is never resubmitted. An unchanged
-  source is still uncertain. Recovery must positively observe the desired state
-  at a newer version of the same UID.
+  A `Changing` operation that already exists is never resubmitted. Recovery
+  requires the same live UID at a different resourceVersion. Exact desired
+  writable content proves the update applied; exact before content proves the
+  old conditional update was superseded and can safely be released. An unchanged
+  resourceVersion or any other content remains uncertain. Unit tests also
+  cover status refreshes while `Reserved`, concurrent recovery, and stale edit
+  rejection. Local API-server tests verify real status-write conflicts, restart
+  recovery, rejection of delayed stale updates, and successful fresh updates.
 
   Build the explicit command with
   `make -C app/cetirun-operator build-sandbox-config-change`. Do not run it

@@ -7,7 +7,7 @@ weight: 27
 The Skill Marketplace delivers approved skills from one Git repository to the
 Agents of policy-bound Teams. An administrator selects the skills of each
 Team. The Agents of the Team receive these skills read-only in
-`$HOME/.agents/skills`.
+`$HOME/.aks/skills`.
 
 The Skill Marketplace is optional, and it is off by default. When you enable
 it, the `cetirun-skill-marketplace` service runs in the platform namespace.
@@ -131,19 +131,22 @@ PersistentVolume refers to the container read-only.
 When the Agent starts, its HOME initializer mounts only the subtree of the
 Team of the Agent, read-only. The initializer waits until `CURRENT` names a
 release of the current selection of the Team. Then it copies the skills of
-that release into the skills view of the Agent, together with the platform
-skills such as `cetirun-memory`. The Agent container receives the view
-read-only at `$HOME/.agents/skills`. It does not mount the claim. The operator
-refuses an Agent chart that mounts the claim in another container, or that
-mounts more than the subtree of the Team.
+that release into the context view of the Pod. The Agent container receives
+this copy read-only at `$HOME/.aks/skills`. It does not mount the claim. The
+operator refuses an Agent chart that mounts the claim in another container,
+or that mounts more than the subtree of the Team.
+
+Personal skills stay in `$HOME/.agents/skills`, where the Agent can write
+them. Platform skills such as `cetirun-memory` come from a separate read-only
+path.
 
 The view is an `emptyDir` volume of the Pod. The scratch size of the Sandbox
 of the Agent limits its size. After the start, the Agent reads only its copy.
 A release that the service publishes later reaches the Agent at its next
 start.
 
-OpenClaw loads the view as an extra skill directory, and Hermes loads it as an
-external skill directory. Refer to
+OpenClaw loads `$HOME/.aks/skills` as an extra skill directory, and Hermes
+loads it as an external skill directory. Refer to
 [Common initialization and discovery](../../reference/agent-harness/#common-initialization-and-discovery).
 
 ## Prerequisites
@@ -509,9 +512,9 @@ skill, remove it from the Team. Then you can remove it from the Policy.
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
   `npm:` entries in `skillOverrides` stay possible.
 - **Name conflicts with private skills.** CetiRun does not compare marketplace
-  names with the skills in the HOME of an Agent. OpenClaw and Hermes give their
-  own skill directories precedence over `$HOME/.agents/skills`. A private skill
-  with the same name hides the marketplace skill.
+  names with the skills in the HOME of an Agent. OpenClaw and Hermes decide
+  which of two skills with the same name they use. A private skill, for
+  example in `$HOME/.agents/skills`, can hide the marketplace skill.
 - **100 entries.** The `skills` of a Team have at most 100 entries, npm
   packages included.
 - **Read-only.** Agents cannot change marketplace skills. Make changes in the

@@ -22,7 +22,7 @@ const withoutMarketplace: Features = { tailscaleEnabled: false, agentIdentityEna
 const features = vi.hoisted(() => ({ data: undefined as Features | undefined }));
 vi.mock("../../hooks/useFeatures", () => ({ useFeatures: () => features }));
 
-const team: teams.TeamDTO = { name: "example", uid: "team-uid", resourceVersion: "7", agentPolicyRef: "standard", sandboxRefs: ["small", "large"], defaultSandboxRef: "large", role: "Engineer" };
+const team: teams.TeamDTO = { name: "example", uid: "team-uid", generation: 1, resourceVersion: "7", agentPolicyRef: "standard", sandboxRefs: ["small", "large"], defaultSandboxRef: "large", role: "Engineer" };
 beforeEach(() => {
   vi.resetAllMocks();
   features.data = withoutMarketplace;

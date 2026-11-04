@@ -365,41 +365,6 @@ def test_hermes_cetiadmin_retires_only_unconfigured_default_skill_alias(agent, a
             assert personal.read_text() == "User-owned skill contents.\n"
 
 
-@pytest.mark.parametrize("alias_mounted", [True, False])
-def test_hermes_drops_a_saved_second_path_of_the_composed_skills(agent, alias_mounted):
-    if agent["kind"] != "hermes":
-        return
-    assert run(agent).returncode == 0
-    legacy, view = "/home/vibe/.aks/skills", "/home/vibe/.agents/skills"
-    source = agent["config"] / "hermes-config.yaml"
-    desired = yaml.safe_load(source.read_text())
-    desired["skills"] = {"external_dirs": [view]}
-    source.write_text(json.dumps(desired))
-    # An earlier chart listed both paths of the same composed skills.
-    saved = read_config(agent)
-    saved["skills"] = {"external_dirs": [legacy, "/fixture/home-skills", view]}
-    agent["config_file"].write_text(json.dumps(saved))
-    if alias_mounted:
-        agent["env"]["CETIRUN_SKILLS_VIEW_ALIAS"] = legacy
-    for _ in range(2):
-        result = run(agent)
-        assert result.returncode == 0, result.stderr
-        current = read_config(agent)["skills"]["external_dirs"]
-        if alias_mounted:
-            assert current == ["/fixture/home-skills", view]
-        else:
-            # Without the second mount, the path is the user's HOME directory.
-            assert current == [legacy, "/fixture/home-skills", view]
-    # The view is not listed: the alias is then the only path to the skills.
-    desired["skills"] = {"external_dirs": ["/fixture/chart-skills"]}
-    source.write_text(json.dumps(desired))
-    saved = read_config(agent)
-    saved["skills"] = {"external_dirs": [legacy]}
-    agent["config_file"].write_text(json.dumps(saved))
-    assert run(agent).returncode == 0
-    assert read_config(agent)["skills"]["external_dirs"] == [legacy, "/fixture/chart-skills"]
-
-
 def test_native_failure_after_seed_resumes_without_recopy(agent):
     source = agent["config"] / ("openclaw.json" if agent["kind"] == "openclaw" else "hermes-config.yaml")
     saved = source.read_text()
@@ -817,9 +782,10 @@ def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth
 
 
 # Skill Marketplace mode: CETIRUN_SHARED_SKILLS_DIR is the Team's subtree, and
-# the initializer composes the release that CURRENT names into the context
-# view. Plain unittest cases: pytest collects them, and python3 -m unittest
-# runs them too where pytest can be imported for the fixtures above.
+# the initializer copies the release that CURRENT names into the context
+# view's team-skills, which native Agents mount at skills.mountPath. Plain
+# unittest cases: pytest collects them, and python3 -m unittest runs them too
+# where pytest can be imported for the fixtures above.
 SELECTION = "sha256:" + "0123456789abcdef" * 4
 RELEASE = "0123456789abcdef0123"
 NEXT_RELEASE = "fedcba9876543210fedc"
@@ -874,7 +840,7 @@ class SkillsReleaseTests(unittest.TestCase):
         return run(self.agent)
 
     def published_skills(self):
-        return sorted(path.name for path in (self.view / "current/skills").iterdir())
+        return sorted(path.name for path in (self.view / "current/team-skills").iterdir())
 
     def assert_refused(self, result, error):
         self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -913,11 +879,13 @@ class SkillsReleaseTests(unittest.TestCase):
                 result = run(self.agent)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.published_skills(), ["second-skill", "team-skill"])
-                skill = self.view / "current/skills/team-skill"
+                skill = self.view / "current/team-skills/team-skill"
                 self.assertEqual((skill / "SKILL.md").read_text(), "Synthetic team-skill instructions.\n")
                 self.assertEqual((skill / "references/guide.md").read_text(), "Synthetic reference.\n")
                 self.assertEqual((skill / "run.sh").stat().st_mode & 0o777, 0o755)
-                self.assertEqual(sorted(os.listdir(self.view / "current")), [".ready", "AGENTS.md", "skills"])
+                self.assertEqual(sorted(os.listdir(self.view / "current")), [".ready", "AGENTS.md", "skills", "team-skills"])
+                # Team skills stay apart from the composed platform skills.
+                self.assertEqual(os.listdir(self.view / "current/skills"), [])
                 self.assertEqual(snapshot(self.team), sources)
 
     def test_waits_for_current_to_name_the_release(self):
@@ -1087,8 +1055,9 @@ class SkillsReleaseTests(unittest.TestCase):
         (self.team / "notes-link").symlink_to(".team-notes")
         result = run(self.agent)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.published_skills(), [".team-notes", "CURRENT", "notes-link", "releases"])
         skills = self.view / "current/skills"
+        self.assertEqual(sorted(path.name for path in skills.iterdir()), [".team-notes", "CURRENT", "notes-link", "releases"])
+        self.assertFalse((self.view / "current/team-skills").exists())
         self.assertEqual(os.readlink(skills / "notes-link"), ".team-notes")
         self.assertEqual((skills / "releases" / RELEASE / ".cetirun-selection").read_text(), SELECTION + "\n")
 

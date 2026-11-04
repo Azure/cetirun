@@ -135,7 +135,7 @@ the first run, because a later `make deploy` stops if they change.
 To see the user name and the groups that the cluster receives for you, run
 `kubectl auth whoami` with the credentials of an administrator. With the local
 admin credentials of AKS, the group is `system:masters`. Refer to
-[Infrastructure](../infrastructure/).
+[Connect to the cluster](../infrastructure/#connect-to-the-cluster).
 
 On a new installation, `make deploy` starts the admission server without
 enforcement. After the server is ready, it enforces admission. After the run,

@@ -114,6 +114,8 @@ export interface AIGatewayInfo {
     shared?: string[];
     /** Account models left out because a shared model already has their name. */
     skipped?: string[];
+    /** Account models left out because the Agent Policy does not allow the shared models that are the same models. */
+    notAllowed?: string[];
   };
   /** The Team's smart-routing models for this Agent: usable or why not. */
   modelRouters?: { name: string; granted: boolean; reason?: string }[];

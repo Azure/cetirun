@@ -5,6 +5,7 @@ package sandboxpolicy
 
 import (
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,12 +16,37 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/egresscapture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
+
+// ValidateNativeTeamPolicyBinding applies the same read-only native policy
+// checks used by admission to one persisted Policy and Sandbox capability
+// binding. It neither creates resources nor authorizes an Agent.
+func ValidateNativeTeamPolicyBinding(ctx context.Context, policy *api.AgentPolicy, capabilities sandbox.Capabilities, platform Platform, reader client.Reader, nativeExecution bool) error {
+	if capabilities.Profile != sandbox.ProfileNativeSingleStart {
+		return nil
+	}
+	if policy == nil {
+		return fmt.Errorf("native policy validation requires the selected AgentPolicy")
+	}
+	if err := sandbox.CheckExecutionProfile(capabilities, nativeExecution); err != nil {
+		return err
+	}
+	if err := ValidatePolicyConfiguration(policy, capabilities, platform); err != nil {
+		return err
+	}
+	if policy.Spec.KubernetesAccess != nil {
+		if err := VerifyPolicyGrants(ctx, reader, policy, platform.Grants); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
 
 // Compile has no side effects and never releases an execution hold. Qualified
 // execution requires external observation; native single-start has its own gate.
