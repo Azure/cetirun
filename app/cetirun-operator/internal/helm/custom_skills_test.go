@@ -137,7 +137,7 @@ func TestCustomSkillsTamperingIsRejected(t *testing.T) {
 		{"shared-skills-pv.yaml", "driver: blob.csi.azure.com", "driver: disk.csi.azure.com"},
 		{"shared-skills-pv.yaml", "namespace: {{ .Release.Namespace }}", "namespace: other-agent"},
 		{"shared-skills-pvc.yaml", `volumeName: {{ include "cetirun.sharedSkillsPVName" . }}`, "volumeName: foreign-volume"},
-		{"_context.tpl", "subPath: current", "subPath: other"},
+		{"_context.tpl", "subPath: current\n", "subPath: other\n"},
 		{"_context.tpl", "mountPath: /etc/cetirun-shared-skills\n  readOnly: true", "mountPath: /etc/cetirun-shared-skills\n  readOnly: false"},
 		{"agents/custom/_runtime.tpl", "claimName: {{ include \"cetirun.sharedSkillsPVCName\" . }}\n            readOnly: true", "claimName: foreign-claim\n            readOnly: true"},
 		{"_context.tpl", "mountPath: /etc/cetirun-context-view", "mountPath: /home-data"},

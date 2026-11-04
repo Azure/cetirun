@@ -125,6 +125,7 @@ type snapshot struct {
 	added        map[string][]byte
 	files        []pendingFile
 	notesChanged bool
+	damaged      []Ref
 }
 
 func (s *Store) point(name string) error {
@@ -269,6 +270,29 @@ func (v *snapshot) current(ref Ref) error {
 		return problem(6, "SourceForgotten")
 	}
 	return nil
+}
+
+func (v *snapshot) damagedObject(ref Ref, err error) bool {
+	var typed *Error
+	if !errors.Is(err, syscall.ENOENT) && !(errors.As(err, &typed) && (typed.Reason == "IntegrityMismatch" || typed.Reason == "LimitReached")) {
+		return false
+	}
+	if !slices.Contains(v.damaged, ref) {
+		v.damaged = append(v.damaged, ref)
+	}
+	return true
+}
+
+func (v *snapshot) damageReport() *Partial {
+	if len(v.damaged) == 0 {
+		return nil
+	}
+	reasons := []string{}
+	for _, ref := range v.damaged {
+		reasons = append(reasons, "DamagedObject:"+ref.ID)
+	}
+	sort.Strings(reasons)
+	return &Partial{Omitted: len(reasons), Reasons: reasons}
 }
 
 // Unpublished files can survive a cancelled commit. Never overwrite them or
@@ -450,6 +474,9 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 		return writeResult{}, 0, err
 	}
 	defer v.fs.close()
+	if err := v.resumePurges(ctx); err != nil {
+		return writeResult{}, v.m.Generation, err
+	}
 	key, hash := requestKey(r.RequestID), requestHash(command, r)
 	if receipt, ok := v.m.Requests[key]; ok {
 		if !requestDigestMatches(receipt.Digest, command, r, receipt.Generation-1) {
@@ -467,6 +494,11 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 	}
 	if err := ctx.Err(); err != nil {
 		return writeResult{}, v.m.Generation, err
+	}
+	if command == "repair-index" {
+		if err := v.preserveEditedViews(); err != nil {
+			return writeResult{}, v.m.Generation, err
+		}
 	}
 	// Finish the previous HEAD's derived files before another generation can
 	// replace their recovery hashes. An interrupted commit may leave old views.
@@ -659,6 +691,9 @@ func (v *snapshot) renderViews() (map[string][]byte, error) {
 		if strings.HasPrefix(id, "note-") {
 			var note Note
 			if err := v.read(ref, &note); err != nil {
+				if v.damagedObject(ref, err) {
+					continue
+				}
 				return nil, err
 			}
 			name := "knowledge/" + id + ".md"
@@ -683,6 +718,9 @@ func (v *snapshot) renderViews() (map[string][]byte, error) {
 		if strings.HasPrefix(id, "proc-") {
 			var proc Procedure
 			if err := v.read(ref, &proc); err != nil {
+				if v.damagedObject(ref, err) {
+					continue
+				}
 				return nil, err
 			}
 			b, _ := encode(proc)
@@ -701,6 +739,11 @@ func (v *snapshot) installViews() error {
 		return err
 	}
 	for name, b := range views {
+		// Damage can change a derived index without changing HEAD. Publish
+		// that new view only once a write has committed its expected hash.
+		if v.m.Views[name].Current != digest(b) {
+			continue
+		}
 		current, err := v.fs.read(name, MaxInput)
 		if err != nil && !errors.Is(err, syscall.ENOENT) {
 			return err
@@ -753,17 +796,51 @@ func (v *snapshot) allowed(ref Ref, r Request) bool {
 	return true
 }
 
-func (s *Store) repair(ctx context.Context, r Request) (int64, error) {
-	if err := validateContext(r, true, false); err != nil {
-		return 0, err
+func (v *snapshot) preserveEditedViews() error {
+	for name, expected := range v.m.Views {
+		if !validViewPath(name) {
+			return problem(6, "IntegrityMismatch")
+		}
+		data, err := v.fs.read(name, MaxInput)
+		if errors.Is(err, syscall.ENOENT) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		hash := digest(data)
+		if hash == expected.Current || hash == expected.Previous {
+			continue
+		}
+		backup := name + ".conflict-" + strings.TrimPrefix(hash, "sha256:")
+		if err := v.fs.create(backup, data); err != nil {
+			if !errors.Is(err, syscall.EEXIST) {
+				return err
+			}
+			prior, err := v.fs.read(backup, MaxInput)
+			if err != nil || !bytes.Equal(prior, data) {
+				return problem(6, "IntegrityMismatch")
+			}
+		}
+		if err := v.fs.remove(name); err != nil {
+			return err
+		}
 	}
-	v, err := s.openSnapshot(ctx, syscall.LOCK_EX)
+	return nil
+}
+
+func (s *Store) repair(ctx context.Context, r Request) (int64, *Partial, error) {
+	_, generation, err := s.write(ctx, r, "repair-index", false, func(v *snapshot) (writeResult, error) {
+		return writeResult{Refs: []Ref{}}, nil
+	})
 	if err != nil {
-		return 0, err
+		return generation, nil, err
+	}
+	v, err := s.openRead(ctx)
+	if err != nil {
+		return generation, nil, err
 	}
 	defer v.fs.close()
-	if *r.ExpectedGeneration != v.m.Generation {
-		return v.m.Generation, problem(3, "Conflict")
-	}
-	return v.m.Generation, v.installViews()
+	_, err = v.renderViews()
+	return generation, v.damageReport(), err
 }

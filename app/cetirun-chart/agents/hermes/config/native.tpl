@@ -43,9 +43,10 @@ Licensed under the MIT License.
 {{- if or .Values.skills.shared $contextSkills }}
 {{- $skills := dig "skills" (dict) $config }}
 {{- $existingDirs := dig "external_dirs" (list) $skills }}
-{{- $skillsPath := "/home/vibe/.agents/skills" }}
-{{- if not $contextSkills }}{{- $skillsPath = .Values.skills.mountPath }}{{- end }}
-{{- $_ := set $skills "external_dirs" (append $existingDirs $skillsPath | uniq) }}
+{{- if .Values.skills.shared }}{{- $existingDirs = append $existingDirs .Values.skills.mountPath }}{{- end }}
+{{- if $contextSkills }}{{- $existingDirs = append $existingDirs "/home/vibe/.agents/skills" }}{{- end }}
+{{- if $contextSkills }}{{- $existingDirs = append $existingDirs "/opt/cetirun-memory/skills" }}{{- end }}
+{{- $_ := set $skills "external_dirs" ($existingDirs | uniq) }}
 {{- $_ := set $config "skills" $skills }}
 {{- end }}
 {{- if .Values.skills.npm }}

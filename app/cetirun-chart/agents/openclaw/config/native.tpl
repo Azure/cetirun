@@ -264,15 +264,16 @@ Licensed under the MIT License.
 {{- end }}
 {{- $emptySkills := eq (dig "skillsMode" "" (.Values.sandboxWorkload | default dict)) "empty" }}
 {{- $contextSkills := and (or (not .Values.sandboxWorkload) (dig "reconciled" false (.Values.sandboxWorkload | default dict))) (dig "enabled" false (.Values.memoryContext | default dict)) }}
-{{- $directSkills := and (not $contextSkills) (or .Values.skills.shared $emptySkills) }}
+{{- $directSkills := or .Values.skills.shared $emptySkills }}
 {{- if or $contextSkills $directSkills }}
 {{- $skills := dig "skills" (dict) $config }}
 {{- $load := dig "load" (dict) $skills }}
 {{- if $contextSkills }}
 {{- $_ := set $load "extraDirs" (append (dig "extraDirs" (list) $load) "/home/vibe/.agents/skills" | uniq) }}
+{{- $_ := set $load "extraDirs" (append (dig "extraDirs" (list) $load) "/opt/cetirun-memory/skills" | uniq) }}
 {{- end }}
 {{- if $directSkills }}
-{{- $_ := set $load "extraDirs" (list .Values.skills.mountPath) }}
+{{- $_ := set $load "extraDirs" (append (dig "extraDirs" (list) $load) .Values.skills.mountPath | uniq) }}
 {{- end }}
 {{- $_ := set $load "watch" true }}
 {{- $_ := set $skills "load" $load }}

@@ -90,8 +90,8 @@ type SkillStorageSpec struct {
 	// +optional
 	StorageSize string `json:"storageSize,omitempty"`
 
-	// MountPath optionally adds a read-only skills alias for native Agents.
-	// The common skills view is always at "$HOME/.agents/skills".
+	// MountPath selects the read-only shared Skills mount for native Agents.
+	// Custom Agents compose shared Skills into "$HOME/.agents/skills".
 	// +optional
 	MountPath string `json:"mountPath,omitempty"`
 }

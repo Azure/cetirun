@@ -48,7 +48,7 @@ Licensed under the MIT License.
 - name: CETIRUN_CONTEXT_VIEW
   value: /etc/cetirun-context-view
 {{- end }}
-{{- if and .Values.skills.shared (include "cetirun.context.enabled" .) }}
+{{- if and .Values.skills.shared (eq (include "cetirun.agent.type" .) "custom") (include "cetirun.context.enabled" .) }}
 - name: CETIRUN_SHARED_SKILLS_DIR
   value: /etc/cetirun-shared-skills
 {{- end }}
@@ -65,7 +65,7 @@ Licensed under the MIT License.
 - name: context-view
   mountPath: /etc/cetirun-context-view
 {{- end }}
-{{- if and .Values.skills.shared (include "cetirun.context.enabled" .) }}
+{{- if and .Values.skills.shared (eq (include "cetirun.agent.type" .) "custom") (include "cetirun.context.enabled" .) }}
 - name: shared-skills
   mountPath: /etc/cetirun-shared-skills
   readOnly: true
@@ -76,6 +76,17 @@ Licensed under the MIT License.
 
 {{- define "cetirun.context.mount" -}}
 {{- if include "cetirun.context.enabled" . }}
+{{- if ne (include "cetirun.agent.type" .) "custom" }}
+{{- if .Values.skills.shared }}
+- name: shared-skills
+  mountPath: {{ .Values.skills.mountPath | quote }}
+  readOnly: true
+{{- end }}
+- name: context-view
+  mountPath: /home/vibe/.agents/AGENTS.md
+  subPath: current/AGENTS.md
+  readOnly: true
+{{- else }}
 - name: context-view
   mountPath: {{ printf "%s/.agents" (include "cetirun.context.home" .) | quote }}
   subPath: current
@@ -87,6 +98,7 @@ Licensed under the MIT License.
   readOnly: true
 {{- end }}
 {{- end }}
+{{- end }}
 {{- end -}}
 
 {{- define "cetirun.context.volume" -}}
@@ -95,6 +107,9 @@ Licensed under the MIT License.
   {{- if and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled }}
   emptyDir:
     sizeLimit: {{ .Values.sandboxWorkload.scratchSizeLimit | quote }}
+  {{- else if ne (include "cetirun.agent.type" .) "custom" }}
+  emptyDir:
+    sizeLimit: 40Mi
   {{- else }}
   emptyDir: {}
   {{- end }}

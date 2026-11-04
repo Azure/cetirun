@@ -24,10 +24,12 @@ const server = createServer(async (request, response) => {
   let delta, reason;
   if (evaluation) {
     extra++;
+    assert.deepEqual(body.metadata?.tags, ["cetirun-memory-evaluation", "artifact-contract-v1"]);
     assert.ok(!body.tools?.length);
     assert.ok(!raw.includes("Private synthetic task history"));
     delta = { role: "assistant", content: '{"total":9}' }; reason = "stop";
   } else if (turn++ % 2 === 0) {
+    assert.ok(!body.metadata?.tags?.includes("cetirun-memory-evaluation"));
     assert.ok(body.tools.some(tool => tool.function.name === "cetirun_memory"));
     delta = { role: "assistant", tool_calls: [{ index: 0, id: `memory-call-${turn}`, type: "function", function: {
       name: "cetirun_memory", arguments: JSON.stringify({ command: "evaluate", payload: { ref: candidate } }),

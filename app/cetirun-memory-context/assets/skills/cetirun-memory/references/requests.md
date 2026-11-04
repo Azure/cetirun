@@ -33,6 +33,11 @@ inside the current project, with its recorded digest, and binds the result to th
 in noCapture mode. Matching bytes do not verify what the note claims; changed or missing bytes neither
 resolve a contradiction nor grant approval.
 
+Use `query` to retrieve a stored note's body, including a note listed by ID in Memory navigation.
+`source` is not a note-read command. `SourceAssuranceUnavailable` means that the helper cannot provide
+that file check, not that the note is missing. Do not repeat the unavailable check. Query the stored
+content when reading is allowed, and keep its existing assurance and any recheck requirement.
+
 For a failed or unknown native write, keep the returned reason and the original tool-call identity. Do
 not recreate the operation under a new ID or switch to the CLI to get around the failure. Owner-only
 `import` and `forget` are explicit maintenance commands, never scheduled.
@@ -102,7 +107,9 @@ automatically; `trace` reports `HistoryCompacted` after that happens and is not 
   "result":"unavailable","evidenceRef":null,"nextReviewAfter":null},"summary":"Could not verify the
   current state"}`.
 - `forget plan`: `{"refs":[...]}`; `forget apply`: `{"plan":...}` with the plan and digest unchanged. The
-  plan lists exactly what will be removed.
+  plan lists the notes, methods, and registered derivatives to remove. Unrelated turns do not invalidate
+  it. Apply also removes later injection and change records for the approved objects. A changed root,
+  new content revision, or new dependent note or method requires another plan and owner confirmation.
 - `import plan`: `{"files":["/absolute/selected/home/file.md"]}`; `import apply`: `{"plan":...}` with the
   plan and digest unchanged. Files that usually hold credentials, keys or shell history are refused with
   `SensitiveContent`: those under `.ssh`, `.aws`, `.azure`, `.kube` or `.docker`, `.env` files,
@@ -114,6 +121,32 @@ stored may be retained exactly even if a newer text check would refuse them as
 new input; this allows body and status corrections without losing provenance.
 New or changed sources and the revised note's other text still pass the current
 checks. This applies to `revise` and batch `revise-note`/`mark-note-state` operations.
+
+## Recover a store after an interruption or file edit
+
+`status` reports `purgePending` and the plan digests in `pendingPurges`. A committed forget removes
+objects from lookup before it finishes deleting their files. If the process stops between these steps,
+the next permitted write or explicit `repair-index` retries the saved deletion. Read-only requests do
+not delete files. Check `status` again before claiming that physical deletion has finished. Files outside
+this store, filesystem snapshots, and external backups are not covered by the helper's deletion.
+
+If a write returns `DataModifiedOutsideHelper`, an owner has edited a generated view such as `index.md`
+or `knowledge/<note-id>.md`. With owner approval, run `repair-index` through the explicit CLI envelope
+above, with an empty payload and the current `expectedGeneration`. Repair first saves each edited view
+beside the original as `<filename>.conflict-<sha256>`, then renders the view again from committed objects.
+It does not import the edit into a note or overwrite the note object. Normal writes still refuse to
+overwrite edited views. Forget plans include conflict copies associated with their selected notes.
+Repair commits the regenerated view hashes in a new generation, so the next write recognizes them
+and an interrupted repair can recover through the normal write journal.
+
+For a missing or damaged note object, query and native context omit that note and report
+`DamagedObject:<id>` in `partial.reasons`. Healthy notes remain available. A damaged related note marks
+the result as needing recheck. `lint` lists damaged objects through the same partial-result field;
+`repair-index` rebuilds only healthy views and reports what it omitted. Neither operation reconstructs
+lost content. After explicit owner approval, forget the damaged note using its committed ref from
+`state/HEAD.json`'s referenced manifest, then capture a verified replacement if needed. Do not edit the
+manifest, reuse a damaged object as evidence, or treat partial results as a clean health check. Damage
+to HEAD or its manifest still stops the store because the helper cannot trust the object inventory.
 
 ## How `query` finds notes
 

@@ -217,7 +217,8 @@ def bounded_completion(ticket, session):
             main_runtime=runtime, messages=[{"role": "system", "content": ticket["system"]},
                                         {"role": "user", "content": ticket["prompt"]}],
             temperature=0, max_tokens=ticket["maxTokens"], tools=None, timeout=ticket["timeoutSeconds"],
-            extra_body=None, reasoning_config=None, extra_headers=None, api_mode=runtime.get("api_mode"), route_info=None,
+            extra_body={"metadata": {"tags": ["cetirun-memory-evaluation", "artifact-contract-v1"]}},
+            reasoning_config=None, extra_headers=None, api_mode=runtime.get("api_mode"), route_info=None,
         )
         model = runtime["provider"] + "/" + prepared.final_model
         if not isinstance(prepared.client, AsyncOpenAI) or model != session.binding["model"] or not runtime.get("base_url") or str(prepared.client.base_url).rstrip("/") != runtime["base_url"].rstrip("/"):
@@ -380,5 +381,5 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
     ctx.register_tool(name="cetirun_memory", toolset="cetirun_memory", handler=tool, schema={
         "name": "cetirun_memory", "description": "Use this Agent's private Memory: look up earlier conversations before answering, save facts, preferences, decisions and your own recommendations worth keeping, correct notes, and propose scoped method candidates. Read the cetirun-memory skill for payload formats. This tool cannot grant authority, change request restrictions or shared skills.",
         "parameters": {"type": "object", "additionalProperties": False, "properties": {
-            "command": {"type": "string", "enum": list(COMMANDS)}, "payload": payload_schema}, "required": ["command", "payload"]},
+            "command": {"type": "string", "description": "Use query with queryTerms to read stored note bodies. source only checks a recorded workspace file against its digest; it requires ref and sourceRef and does not read a note. Do not repeat a source check that returns SourceAssuranceUnavailable.", "enum": list(COMMANDS)}, "payload": payload_schema}, "required": ["command", "payload"]},
     })

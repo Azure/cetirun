@@ -4,7 +4,7 @@
   "properties": {
     "queryTerms": {
       "type": "array",
-      "description": "Required for query/select. One to eight distinctive words or phrases, not a criteria string.",
+      "description": "Required for query/select. query returns stored note bodies. Use a known note's exact title as one term, or one to eight distinctive words or phrases. Do not use source to retrieve a note.",
       "items": { "type": "string" },
       "minItems": 1,
       "maxItems": 8
@@ -82,6 +82,10 @@
         "revision": { "type": "integer", "minimum": 1 },
         "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
       }
+    },
+    "sourceRef": {
+      "type": "string",
+      "description": "For source only: the absolute workspace-file path already recorded in the note. source verifies that file's digest, not a conversation or the note body. If the note has no such file, query its stored content instead; this does not independently verify the claim."
     },
     "procedure": {
       "type": "object",

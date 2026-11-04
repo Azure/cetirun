@@ -18,6 +18,11 @@ const helper = path.join(stage, "cetirun-memory");
 execFileSync("go", ["build", "-o", helper, "./cmd/cetirun-memory"], { cwd: moduleDir, env: { ...process.env, GOPROXY: "off", GOTOOLCHAIN: "local" } });
 test.after(() => rm(stage, { recursive: true, force: true }));
 
+test("installed CLI recovers process loss and keeps writes working after repair", () => {
+  const output = execFileSync("python3", [path.join(moduleDir, "tests/cli_recovery.py"), "--helper", helper, "--work-dir", stage], { timeout: 120000, encoding: "utf8" });
+  assert.ok(Object.values(JSON.parse(output)).every(result => result === "passed"));
+});
+
 async function fixture(t) {
   const home = await mkdtemp(path.join(stage, "home-"));
   const assets = path.join(home, "assets"), workspace = path.join(home, "workspace");
@@ -43,6 +48,8 @@ test("native Memory tools describe valid query and capture payloads", () => {
   assert.equal(payload.properties?.queryTerms?.type, "array", "queryTerms must be visible before the first tool call");
   assert.equal(payload.properties.queryTerms.maxItems, 8);
   assert.equal(payload.properties.limit.maximum, 20);
+  assert.equal(payload.properties.sourceRef?.type, "string", "source checks must describe their workspace-file input");
+  assert.match(MEMORY_TOOL.parameters.properties.command.description ?? "", /query.*stored note bodies/);
   const note = payload.properties.note;
   for (const field of ["kind", "title", "body", "scope", "temporalClass", "revalidation", "sources"]) {
     assert.ok(note.required.includes(field), `missing required note input ${field}`);
@@ -53,6 +60,20 @@ test("native Memory tools describe valid query and capture payloads", () => {
   assert.equal(MEMORY_TOOL.parameters.additionalProperties, false);
   assert.equal(payload.properties.requestContext, undefined);
   assert.equal(payload.properties.root, undefined);
+});
+
+test("an unavailable source check does not hide a stored note", async t => {
+  const f = await fixture(t);
+  const session = f.bridge.session(f.binding);
+  const captured = await session.tool({ command: "capture", payload: { note: note(f) } });
+  assert.equal(captured.ok, true);
+  const checked = await session.tool({ command: "source", payload: { ref: captured.data.refs[0] } });
+  assert.equal(checked.ok, false);
+  assert.equal(checked.reason, "SourceAssuranceUnavailable");
+  assert.equal(checked.retryable, false);
+  const queried = await session.tool({ command: "query", payload: { queryTerms: [note(f).title], limit: 1 } });
+  assert.equal(queried.ok, true);
+  assert.equal(queried.data.hits[0].note.body, note(f).body);
 });
 
 // The before_prompt_build context OpenClaw 2026.9.6 builds for an owner's

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -183,7 +184,7 @@ func (s *Store) forgetPlan(v *snapshot, r Request) (ForgetPlan, error) {
 		matched := atomicTemporary(file.Name)
 		for id := range ids {
 			kind, _, _ := strings.Cut(id, "-")
-			if strings.HasPrefix(file.Name, "objects/"+kind+"/"+id+"/") || file.Name == "knowledge/"+id+".md" || file.Name == "lessons/"+id+".md" || file.Name == "procedures/"+id+".json" {
+			if strings.HasPrefix(file.Name, "objects/"+kind+"/"+id+"/") || file.Name == "knowledge/"+id+".md" || file.Name == "lessons/"+id+".md" || file.Name == "procedures/"+id+".json" || strings.HasPrefix(file.Name, "knowledge/"+id+".md.conflict-") || strings.HasPrefix(file.Name, "lessons/"+id+".md.conflict-") || strings.HasPrefix(file.Name, "procedures/"+id+".json.conflict-") {
 				matched = true
 				break
 			}
@@ -210,7 +211,7 @@ func (s *Store) forgetApply(v *snapshot, r Request) (writeResult, error) {
 		return writeResult{}, err
 	}
 	plan := input.Plan
-	if plan.Digest != plan.hash() || plan.Generation != v.m.Generation {
+	if plan.Digest != plan.hash() || plan.Generation > v.m.Generation || plan.Generation < 1 {
 		return writeResult{}, problem(3, "Conflict")
 	}
 	check := r
@@ -219,9 +220,25 @@ func (s *Store) forgetApply(v *snapshot, r Request) (writeResult, error) {
 	if err != nil {
 		return writeResult{}, err
 	}
-	if actual.Digest != plan.Digest {
-		return writeResult{}, problem(3, "Conflict")
+	// Another turn may add injection/trace records, but not another private
+	// note or method to the owner's approved deletion scope.
+	for _, id := range actual.ObjectIDs {
+		if !slices.Contains(plan.ObjectIDs, id) && !historyObject(id) {
+			return writeResult{}, problem(3, "Conflict")
+		}
 	}
+	for _, id := range plan.ObjectIDs {
+		if !slices.Contains(actual.ObjectIDs, id) && !historyObject(id) {
+			return writeResult{}, problem(3, "Conflict")
+		}
+	}
+	for _, file := range actual.Files {
+		if strings.HasPrefix(file, "objects/") && !strings.HasPrefix(file, "objects/use/") && !strings.HasPrefix(file, "objects/change/") && !slices.Contains(plan.Files, file) {
+			return writeResult{}, problem(3, "Conflict")
+		}
+	}
+	approvedDigest := plan.Digest
+	plan = actual
 	for _, id := range plan.ObjectIDs {
 		if strings.HasPrefix(id, "note-") {
 			v.notesChanged = true
@@ -281,7 +298,7 @@ func (s *Store) forgetApply(v *snapshot, r Request) (writeResult, error) {
 			v.m.ExtraCalls[id] = ModelCall{ID: id, ReservedAt: call.ReservedAt, Finished: true, Outcome: "forgotten", CaseSetDigest: call.CaseSetDigest, Case: call.Case, ProfileRevision: call.ProfileRevision}
 		}
 	}
-	v.m.Purges[plan.Digest] = plan
+	v.m.Purges[approvedDigest] = plan
 	return writeResult{Refs: []Ref{}, PurgePending: true}, nil
 }
 func (s *Store) purge(ctx context.Context, planDigest string) bool {
@@ -291,15 +308,63 @@ func (s *Store) purge(ctx context.Context, planDigest string) bool {
 	}
 	defer v.fs.close()
 	plan, ok := v.m.Purges[planDigest]
-	if !ok || plan.Digest != plan.hash() {
+	if !ok {
+		// Only a committed forget reaches here. A later write may already
+		// have completed and retired this purge before its receipt is replayed.
+		return true
+	}
+	if plan.Digest != plan.hash() {
 		return false
 	}
+	return v.purgeFiles(ctx, plan) == nil
+}
+
+func (v *snapshot) purgeFiles(ctx context.Context, plan ForgetPlan) error {
+	if plan.Digest != plan.hash() {
+		return problem(6, "IntegrityMismatch")
+	}
 	for _, file := range plan.Files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := v.fs.remove(file); err != nil {
-			return false
+			return err
 		}
 	}
-	return true
+	return nil
+}
+
+func (v *snapshot) resumePurges(ctx context.Context) error {
+	for key, plan := range v.m.Purges {
+		if err := v.purgeFiles(ctx, plan); err != nil {
+			return err
+		}
+		delete(v.m.Purges, key)
+	}
+	return nil
+}
+
+func (v *snapshot) pendingPurges() ([]string, error) {
+	keys := []string{}
+	for key, plan := range v.m.Purges {
+		if plan.Digest != plan.hash() {
+			return nil, problem(6, "IntegrityMismatch")
+		}
+		for _, name := range plan.Files {
+			f, err := v.fs.open(name, syscall.O_RDONLY, false)
+			if errors.Is(err, syscall.ENOENT) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			f.Close()
+			keys = append(keys, key)
+			break
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 type traceEntry struct {

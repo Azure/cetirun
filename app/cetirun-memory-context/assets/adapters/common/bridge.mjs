@@ -14,7 +14,7 @@ export const MEMORY_TOOL = {
   parameters: {
     type: "object", additionalProperties: false,
     properties: {
-      command: { type: "string", enum: ["status", "query", "capture", "prepare", "commit", "propose", "check", "advance", "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source", "evaluate"] },
+      command: { type: "string", description: "Use query with queryTerms to read stored note bodies. source only checks a recorded workspace file against its digest; it requires ref and sourceRef and does not read a note. Do not repeat a source check that returns SourceAssuranceUnavailable.", enum: ["status", "query", "capture", "prepare", "commit", "propose", "check", "advance", "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source", "evaluate"] },
       payload: payloadSchema,
     }, required: ["command", "payload"],
   },
