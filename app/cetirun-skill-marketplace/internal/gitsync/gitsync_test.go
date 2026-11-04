@@ -4,11 +4,19 @@
 package gitsync
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net/http"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +25,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 func commitFiles(t *testing.T, dir string, files map[string]string) string {
@@ -107,6 +117,77 @@ func TestValidateAndRedact(t *testing.T) {
 	}
 	if got := Redacted("git@github.com:org/skills.git"); got != "github.com:org/skills.git" {
 		t.Fatalf("redacted %q", got)
+	}
+}
+
+// azureDevOpsLikeServer serves the repositories below root over smart HTTP
+// with git http-backend. Like Azure DevOps, it refuses an upload-pack request
+// whose first want line does not ask for multi_ack (HTTP 400). It counts the
+// upload-pack requests that it passes on.
+func azureDevOpsLikeServer(t *testing.T, root string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	out, err := exec.Command("git", "--exec-path").Output()
+	if err != nil {
+		t.Skip("git is not installed")
+	}
+	backend := filepath.Join(strings.TrimSpace(string(out)), "git-http-backend")
+	if _, err := os.Stat(backend); err != nil {
+		t.Skip("git-http-backend is not installed")
+	}
+	cgiHandler := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
+	served := &atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/git-upload-pack") {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			// The first pkt-line: four hexadecimal digits of length, then the
+			// want line with the requested capabilities.
+			first := ""
+			if size, err := strconv.ParseUint(string(body[:min(4, len(body))]), 16, 16); err == nil && int(size) <= len(body) && size >= 4 {
+				first = string(body[4:size])
+			}
+			if !strings.Contains(first, " multi_ack") {
+				http.Error(w, "multi_ack or multi_ack_detailed is required", http.StatusBadRequest)
+				return
+			}
+			served.Add(1)
+			r.Body, r.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))
+		}
+		cgiHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server, served
+}
+
+func TestFetchWorksWithAServerThatRequiresMultiACK(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "skills")
+	first := commitFiles(t, dir, map[string]string{"skills/pdf-tools/SKILL.md": "---\nname: pdf-tools\ndescription: PDF\n---\n"})
+	commitFiles(t, dir, map[string]string{"skills/pdf-tools/notes.md": "more"})
+	server, served := azureDevOpsLikeServer(t, root)
+	source := Source{URL: server.URL + "/skills", Auth: AuthNone, AllowInsecureHTTP: true}
+	ctx := context.Background()
+	ref, hash, err := source.Resolve(ctx)
+	if err != nil || hash.String() == first {
+		t.Fatalf("resolve: %v %v %v", ref, hash, err)
+	}
+	snapshot, err := source.Fetch(ctx, ref, 1<<20)
+	if err != nil || snapshot.Commit != hash.String() || served.Load() != 1 {
+		t.Fatalf("fetch through a server that requires multi_ack: %v (upload-pack requests: %d)", err, served.Load())
+	}
+	found, problems, err := skills.Discover(snapshot, "skills", skills.DefaultLimits, nil)
+	if err != nil || len(found) != 1 || len(problems) != 0 || len(found[0].Files) != 2 {
+		t.Fatalf("discover: %+v %+v %v", found, problems, err)
+	}
+	// go-git's own default leaves multi_ack out, and such a server refuses it.
+	saved := transport.UnsupportedCapabilities
+	transport.UnsupportedCapabilities = []capability.Capability{capability.MultiACK, capability.MultiACKDetailed, capability.ThinPack}
+	defer func() { transport.UnsupportedCapabilities = saved }()
+	if _, err := source.Fetch(ctx, ref, 1<<20); err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("the test server must refuse a request without multi_ack: %v", err)
 	}
 }
 

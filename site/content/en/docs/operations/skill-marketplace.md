@@ -280,6 +280,21 @@ needs another user name, set `repository.tokenUsername` under
 host whose key is not in `known_hosts`. For an `ssh://` URL without a user, the
 user is `git`.
 
+Use a token that can read only the skills repository:
+
+- **GitHub**: a fine-grained personal access token. Select only the skills
+  repository, and give it read-only access to `Contents`.
+- **Azure Repos**: a personal access token with the `Code (Read)` scope. Such a
+  token can read every repository of the organization that its owner can read.
+  Use an account that can read only the skills repository.
+
+The service does not get Microsoft Entra tokens for itself. An organization
+that does not allow personal access tokens cannot use `token`.
+
+When the token expires or is revoked, each check fails with
+`repository access was refused`. The catalog keeps the last commit, and the
+Teams keep their releases. Replace the Secret with a new token.
+
 Create the Secret in the platform namespace. Use `kubectl create`, not
 `kubectl apply`. The apply command also copies the credential into the
 `last-applied-configuration` annotation. For a token:

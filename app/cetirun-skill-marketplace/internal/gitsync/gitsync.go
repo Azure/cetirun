@@ -23,12 +23,23 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
+
+func init() {
+	// Azure DevOps refuses an upload-pack request that does not ask for
+	// multi_ack or multi_ack_detailed (HTTP 400). go-git leaves both out by
+	// default, because its negotiation does not implement them for a fetch
+	// into a repository that already has objects. Every fetch of this
+	// package is a new clone into empty storage: it sends no "have" lines, so
+	// these capabilities do not change the negotiation. Thin packs stay off.
+	transport.UnsupportedCapabilities = []capability.Capability{capability.ThinPack}
+}
 
 // Auth selects how the repository is accessed.
 type Auth string
