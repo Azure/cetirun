@@ -526,6 +526,19 @@ def test_openclaw_replace_failure_preserves_original(agent):
     assert agent["config_file"].read_bytes() == original
 
 
+@pytest.mark.parametrize("helper", ["hermes-apply-config", "hermes-runtime"])
+def test_hermes_yaml_round_trip_preserves_owner_values(helper):
+    spec = importlib.util.spec_from_file_location(helper, CHART / f"agents/hermes/bootstrap/{helper}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    owner = {"mode": "off", "answer": "yes", "flag": "on", "quiet_from": "22:00"}
+    original = yaml.safe_dump(owner, sort_keys=False)
+    rewritten = module.yaml.safe_dump(module.yaml.safe_load(original), sort_keys=False)
+    actual = yaml.safe_load(rewritten)
+    assert actual == owner
+    assert list(actual) == list(owner)
+
+
 def test_hermes_atomic_replace_failure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("hermes_apply", CHART / "agents/hermes/bootstrap/hermes-apply-config.py")
     module = importlib.util.module_from_spec(spec)

@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import io
 import os
 import re
 import sys
@@ -27,25 +26,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from ruamel.yaml import YAML
-    from ruamel.yaml.error import YAMLError
-
-    class YAMLCodec:
-        YAMLError = YAMLError
-
-        @staticmethod
-        def safe_load(text):
-            return YAML(typ="safe").load(text)
-
-        @staticmethod
-        def safe_dump(value, **_kwargs):
-            output = io.StringIO()
-            parser = YAML(typ="safe")
-            parser.default_flow_style = False
-            parser.dump(value, output)
-            return output.getvalue()
-
-    yaml = YAMLCodec()
+    import hermes_yaml as yaml
 except ImportError:
     # Repository helper tests also run with the shared initializer's PyYAML dependency.
     import yaml

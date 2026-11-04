@@ -123,6 +123,7 @@ def native_values():
                 "models": {"providers": {"other": {"baseUrl": "https://other.example.com"}}},
             },
         },
+        "hermes": {"env": {"HERMES_WEBAPP_PUBLIC_URL": "https://example.com/ui/example-agent"}},
         "aiGateway": {
             "enabled": True, "keySecretName": "example-model-key",
             "models": [{"id": "example-model", "name": "Example model"}],
@@ -200,6 +201,12 @@ class NativeGatewayChartTests(unittest.TestCase):
         })
         managed = yaml.safe_load(object_of_kind(objects, "ConfigMap")["data"]["hermes-managed.yaml"])
         self.assertEqual(managed["webapp"]["public_url"], "https://example.com/ui/example-agent")
+
+    def test_hermes_rejects_an_empty_public_url(self):
+        values = native_values()
+        values["agentType"] = "hermes"
+        values["hermes"]["env"]["HERMES_WEBAPP_PUBLIC_URL"] = ""
+        render(RUNTIME_CHART, values, error="hermes.env.HERMES_WEBAPP_PUBLIC_URL is required for Hermes")
 
     def test_native_initializers_have_an_init_process_without_changing_their_work(self):
         values = native_values()

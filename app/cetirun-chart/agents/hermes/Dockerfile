@@ -64,6 +64,7 @@ RUN (curl -fsSL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 60 
 FROM ${BASE_IMAGE} AS hermes-toolchain
 ARG HERMES_VERSION
 ARG HERMES_GIT_SHA
+ARG NPM_REGISTRY=https://registry.npmjs.org/
 ARG PYPI_INDEX_URL=https://pypi.org/simple/
 
 USER root
@@ -73,6 +74,7 @@ COPY agents/hermes/pm/build.py /usr/local/lib/hermes-agent/cetirun_pm/build.py
 ENV HERMES_HOME=/tmp/cetirun-hermes-build-home
 ENV HERMES_INSTALL_DIR=/usr/local/lib/hermes-agent
 ENV HERMES_RUNTIME_DIR=/usr/local/lib/hermes-agent/tools
+ENV npm_config_registry=${NPM_REGISTRY}
 ENV UV_DEFAULT_INDEX=${PYPI_INDEX_URL}
 RUN python3 cetirun_pm/build.py --source . --phase tools \
       --version "${HERMES_VERSION}" --commit "${HERMES_GIT_SHA}"
@@ -80,8 +82,6 @@ ENV PATH=/usr/local/lib/hermes-agent/bin:$PATH
 ENV HERMES_PYTHON=/usr/local/lib/hermes-agent/bin/python3
 
 FROM hermes-toolchain AS hermes-ui-build
-ARG NPM_REGISTRY=https://registry.npmjs.org/
-ENV npm_config_registry=${NPM_REGISTRY}
 ENV npm_config_install_links=false
 RUN node apps/desktop/scripts/build-webapp.mjs --deps-only && \
     node scripts/build/node-deps.mjs --source . --workspace ui-tui && \

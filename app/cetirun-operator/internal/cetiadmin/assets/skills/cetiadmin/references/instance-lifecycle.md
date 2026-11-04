@@ -247,7 +247,7 @@ jobs, foreign binding files, and uncertain creates require inspection. Never
 clear the record and retry creation blindly. Preserve output and notepad;
 native remove is a separate, explicitly approved retirement after archival.
 
-The runtime image's `.hermes_build_sha` must match
+The `commit` field in the runtime image's `install-stamp.json` must match
 `b200f5bc60e31588ba2cb60e288029c4a54ba5fa`. The bridge calls that version's
 `cron.jobs` API; it never writes native `jobs.json`. Its JSON response includes
 safe status, ID, timezone, and next-run metadata only. Offline fixtures validate

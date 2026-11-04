@@ -51,6 +51,13 @@ class WebappRuntimeTests(unittest.TestCase):
         self.write_managed()
         self.home.joinpath(".env").write_text("")
         self.home.joinpath("config.yaml").write_text("preferences: {theme: dark}\n")
+        self.gateway = {
+            "model": {"default": "synthetic-model", "provider": "cetirun-gateway"},
+            "providers": {"cetirun-gateway": {
+                "api": "https://gateway.example.com/v1", "key_env": "CETIRUN_GATEWAY_API_KEY",
+            }},
+        }
+        (self.config / "hermes-config.yaml").write_text(yaml.safe_dump(self.gateway))
         shutil.copy(BOOTSTRAP / "hermes-apply-config.py", self.config)
         for name, value in {"HOME": self.home, "CONFIG": self.config, "MANAGED": self.managed, "ROOT": self.image}.items():
             mock = patch.object(runtime, name, value)
@@ -64,7 +71,10 @@ class WebappRuntimeTests(unittest.TestCase):
         path = self.managed / "config.yaml"
         if path.exists():
             path.chmod(0o644)
-        path.write_text(yaml.safe_dump({"webapp": self.expected if value is None else value}))
+        managed = {"webapp": self.expected if value is None else value}
+        if self.expected["host"] == "0.0.0.0":
+            managed["dashboard"] = {"trusted_proxies": ["127.0.0.6"]}
+        path.write_text(yaml.safe_dump(managed))
         path.chmod(0o444)
 
     def test_contract_requires_exact_managed_types_and_readonly_file(self):
@@ -140,6 +150,18 @@ class WebappRuntimeTests(unittest.TestCase):
                                 actual["gateway"]["platforms"]["api_server"]):
                         self.assertEqual(row, {"extra": {"model_name": "retained"}})
 
+    def test_restart_restores_platform_model_and_provider(self):
+        path = self.home / "config.yaml"
+        current = yaml.safe_load(path.read_text())
+        current.update(model={"default": "user-model", "provider": "user-provider"},
+                       providers={"user-provider": {"api": "https://models.example.com/v1"}})
+        path.write_text(yaml.safe_dump(current))
+        runtime.remove_home_overrides()
+        actual = yaml.safe_load(path.read_text())
+        self.assertEqual(actual["model"], self.gateway["model"])
+        self.assertEqual(actual["providers"], self.gateway["providers"])
+        self.assertEqual(actual["preferences"], {"theme": "dark"})
+
     def test_readiness_requires_live_socket_provider_and_private_persistent_token(self):
         os.environ["API_SERVER_PORT"] = "8080"
         dist = self.image / "apps/desktop/dist-webapp"
@@ -207,6 +229,9 @@ class WebappChartTests(unittest.TestCase):
         result = self.render()
         self.assertEqual(result.returncode, 0, result.stderr)
         docs = list(yaml.safe_load_all(result.stdout))
+        config = next(d for d in docs if d and d["kind"] == "ConfigMap" and "hermes-managed.yaml" in d["data"])
+        managed = yaml.safe_load(config["data"]["hermes-managed.yaml"])
+        self.assertEqual(managed["dashboard"], {"trusted_proxies": ["127.0.0.6"]})
         pod = next(d for d in docs if d and d["kind"] == "StatefulSet")["spec"]["template"]["spec"]
         main = pod["containers"][0]
         self.assertIn({"name": "hermes-managed", "mountPath": "/etc/cetirun/hermes-managed", "readOnly": True}, main["volumeMounts"])

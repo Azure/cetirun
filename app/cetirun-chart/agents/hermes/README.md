@@ -24,8 +24,13 @@ The [Dockerfile](Dockerfile) downloads the exact commit archive and checks its
 hash. [PM build helper](pm/build.py) consumes that source's `pm/lock.json` and
 uses upstream PM to verify tool downloads, build the application `.venv`, record
 the `all`, `messaging`, `anthropic`, and `azure-identity` selections, and package
-an independent manager runtime. The tools live in the Hermes image directory;
-the shared base's Python and Node installations remain separate.
+an independent manager runtime. The tools live in the Hermes image directory.
+The image's PATH selects PM's `python3`, `node` and `npm` before the base tools;
+`hermes-python` additionally activates Hermes' selected Python dependencies.
+
+`NPM_REGISTRY` applies to the npm tool download and JavaScript dependencies.
+`PYPI_INDEX_URL` selects the Python package index. Python, uv and Node binary
+downloads use the URLs in the upstream PM lock and its checksum-addressed mirror.
 
 The PM Python embeds SQLite 3.53.1. The image compiles the matching CPython
 3.14.9 SQLite extension against the pinned 3.53.4 library, then loads it before
@@ -88,8 +93,11 @@ a working selection. PM still owns building, validation and atomic publication.
 
 The platform manages the API port (default `8642`), Webapp port `9120`, the public URL,
 listener addresses and browser authentication on every supervised gateway start.
-The managed overlay does not replace the owner's models, message channels,
-plugins, sessions or other retained configuration. Invalid managed input causes
+The Gateway model and provider settings are reapplied from the generated
+configuration before each start. Persistent default-model edits in the Webapp
+or CLI are reset to the platform selection; change `spec.model` through CetiRun
+to retain a different platform model. Message channels, plugins, sessions and
+unrelated preferences remain in HOME. Invalid managed input causes
 startup failure. User profiles, `.env` files and alternate configuration loaders
 cannot override these platform settings. External secret sources may populate
 unrelated integration credentials through the pinned OnePassword source's
@@ -202,6 +210,19 @@ Update the release, commit and checksum together, then check the new PM lock,
 Webapp/TUI builders, native configuration and plugin contracts. Synchronize the
 Hermes profile and Memory host pins. A CetiRun release change is separate and
 must use `make set-version VERSION=X.Y.Z` when requested.
+
+Upgrade each Hermes Agent to the matching runtime Chart and image when updating
+the Operator. An Agent still pinned to an older Hermes profile is marked
+`Failed` with `AgentConfigInvalid`; that preparation error does not replace its
+existing workload or route. Portal Restart is unavailable until the Agent is
+Ready again with the matching runtime. Other lifecycle or policy changes can
+still stop a workload according to their normal rules.
+
+The new runtime does not load packages from the old `lazy-packages` directory.
+Install required optional dependencies through the current PM workflow; existing
+files in that directory are retained. Memory playbooks qualified against the
+old native version report `CompatibilityChanged` and require qualification for
+the new version.
 
 Run the repository's offline validation entry points:
 

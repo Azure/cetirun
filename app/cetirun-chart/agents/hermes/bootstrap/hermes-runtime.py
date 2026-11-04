@@ -22,25 +22,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 try:
-    from ruamel.yaml import YAML
-    from ruamel.yaml.error import YAMLError
-
-    class YAMLCodec:
-        YAMLError = YAMLError
-
-        @staticmethod
-        def safe_load(text):
-            return YAML(typ="safe").load(text)
-
-        @staticmethod
-        def safe_dump(value, **_kwargs):
-            output = io.StringIO()
-            parser = YAML(typ="safe")
-            parser.default_flow_style = False
-            parser.dump(value, output)
-            return output.getvalue()
-
-    yaml = YAMLCodec()
+    import hermes_yaml as yaml
 except ImportError:
     # Repository helper tests also run with the shared initializer's PyYAML dependency.
     import yaml
@@ -97,8 +79,11 @@ def contract() -> dict:
             and not parsed.password and not parsed.query and not parsed.fragment
             and bool(re.fullmatch(r"/ui/[a-z0-9][a-z0-9-]*", parsed.path)), "WebappPublicURLInvalid")
     expected = {"enabled": True, "host": host, "port": 9120, "public_url": public_url}
+    expected_managed = {"webapp": expected}
+    if host == "0.0.0.0":
+        expected_managed["dashboard"] = {"trusted_proxies": ["127.0.0.6"]}
     managed = document(MANAGED / "config.yaml")
-    require(managed == {"webapp": expected}, "ManagedWebappInvalid")
+    require(managed == expected_managed, "ManagedWebappInvalid")
     require(all(type(managed["webapp"][name]) is type(value) for name, value in expected.items()),
             "ManagedWebappTypeInvalid")
     require(not ((MANAGED / "config.yaml").stat().st_mode & 0o222), "ManagedConfigWritable")
@@ -193,6 +178,8 @@ def remove_home_overrides() -> None:
             continue
         current = document(path)
         before = json.dumps(current, sort_keys=True)
+        if relative == "config.yaml":
+            apply.apply_gateway(current, document(CONFIG / "hermes-config.yaml"))
         apply.reserve_ingress_listeners(current, {})
         dashboard = current.get("dashboard")
         if isinstance(dashboard, dict):

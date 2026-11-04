@@ -4,6 +4,7 @@ Licensed under the MIT License.
 */}}
 
 {{- define "cetirun.agent.hermes.validateSecrets" -}}
+{{- $_ := required "hermes.env.HERMES_WEBAPP_PUBLIC_URL is required for Hermes" .Values.hermes.env.HERMES_WEBAPP_PUBLIC_URL -}}
 {{- $source := dig "secrets" "onepassword" (dict) .Values.hermes.config -}}
 {{- $keyEnv := dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" .Values.aiGateway -}}
 {{- if or (hasKey (get $source "env" | default dict) $keyEnv) (eq (get $source "service_account_token_env" | default "OP_SERVICE_ACCOUNT_TOKEN") $keyEnv) -}}
@@ -285,6 +286,11 @@ Hermes configmap data
       {{- end }}
       port: 9120
       public_url: {{ .Values.hermes.env.HERMES_WEBAPP_PUBLIC_URL | quote }}
+    {{- if not (.Values.sandboxWorkload | default dict).ingressMTLS }}
+    dashboard:
+      trusted_proxies:
+        - 127.0.0.6
+    {{- end }}
   hermes-config.yaml: |
     {{- if .Values.runtime }}
 {{ index .Values.runtime.configFiles "hermes-config.yaml" | indent 4 }}

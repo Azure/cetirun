@@ -45,7 +45,8 @@ CHARTS = (
         ),
     ),
     ("app/cetirun-chart", ("agentType=hermes", "secrets.model=lint-model",
-        "aiGateway.keySecretName=lint-model-key", "secrets.apiBase=http://gateway.example.com/v1")),
+        "aiGateway.keySecretName=lint-model-key", "secrets.apiBase=http://gateway.example.com/v1",
+        "hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://agents.example.com/ui/validation")),
     ("app/cetirun-operator/chart", ("cetiadmin.enabled=false",)),
     ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",)),
     (

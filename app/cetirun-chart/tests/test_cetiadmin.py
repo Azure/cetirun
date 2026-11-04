@@ -27,6 +27,7 @@ OFFLINE = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.de
 
 def ordinary_values():
     return {"agentType": "hermes", "runtimeClassName": "",
+            "hermes": {"env": {"HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/cetiadmin"}},
             "secrets": {"existingSecret": "native-auth", "model": "fixture-model",
                         "apiBase": "http://gateway.example.svc.cluster.local:4000/v1"},
             "aiGateway": {"keySecretName": "model-key"}}
