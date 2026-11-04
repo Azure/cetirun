@@ -12,6 +12,7 @@ API it came through, and RouterRateLimitError's message.
 """
 
 import asyncio
+import collections
 import copy
 import importlib.util
 import json
@@ -306,13 +307,80 @@ class GuardTest(unittest.TestCase):
     def test_without_litellms_listing_nothing_is_replaced(self):
         self.assertFalse(self.module.install_router_alias_listing())
         self.assertEqual(self.module.PATCHED, {"mark_form": False, "failover_past_affinity": False,
-                                               "router_alias_listing": False})
+                                               "router_alias_listing": False, "savings_provider_lookup": False})
 
     def test_loading_the_guard_replaces_the_listing(self):
         listing = self.install_listing(proxy_loaded=False)
         module = load_guard()
         self.assertIs(module.PATCHED["router_alias_listing"], True)
         self.assertTrue(listing.alias_listing_entries.cetirun_router_aliases)
+
+    # ----- the provider of a router's savings baseline -----
+
+    @staticmethod
+    def restore_module(name, previous):
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+
+    def install_savings(self):
+        """LiteLLM's savings module, whose _resolve_model asks get_llm_provider, and the helper that names a
+        provider that signs in from the model name, as LiteLLM 1.105.6 has them. The lookups the stand-in
+        answers are recorded."""
+        identity = collections.namedtuple("_ModelIdentity", "model provider")
+        asked = []
+
+        def _resolve_model(model, custom_llm_provider):
+            asked.append((model, custom_llm_provider))
+            if not model:
+                return None
+            provider, _, name = model.partition("/")
+            return identity(model=name, provider=provider) if name else identity(model=model, provider="openai")
+
+        def declared_authenticating_provider(model, custom_llm_provider=None):
+            declared = custom_llm_provider or (model.split("/", 1)[0] if model and "/" in model else None)
+            return declared if declared in ("github_copilot", "chatgpt") else None
+
+        savings = types.ModuleType("litellm.proxy.spend_tracking.savings")
+        savings._ModelIdentity = identity
+        savings._resolve_model = _resolve_model
+        logic = types.ModuleType("litellm.litellm_core_utils.get_llm_provider_logic")
+        logic.declared_authenticating_provider = declared_authenticating_provider
+        for module in (savings, logic):
+            self.addCleanup(self.restore_module, module.__name__, sys.modules.get(module.__name__))
+            sys.modules[module.__name__] = module
+        return savings, identity, asked
+
+    def test_a_copilot_baseline_is_named_without_signing_in(self):
+        # Measured on the e2e cluster: after a router answered a request, LiteLLM named the provider of the most
+        # expensive model of its hardest tier, a GitHub Copilot model with the base model github_copilot/grok-4.7.
+        # get_llm_provider started GitHub's device sign-in in the Gateway, and the worker was blocked until the
+        # liveness probe restarted the container.
+        savings, identity, asked = self.install_savings()
+        self.assertTrue(self.module.install_savings_provider_lookup())
+        self.assertTrue(self.module.install_savings_provider_lookup())  # once only
+        self.assertEqual(savings._resolve_model("github_copilot/grok-4.7", None), identity("grok-4.7", "github_copilot"))
+        self.assertEqual(savings._resolve_model("grok-4.7", "github_copilot"), identity("grok-4.7", "github_copilot"))
+        self.assertEqual(savings._resolve_model("chatgpt/gpt-5", None), identity("gpt-5", "chatgpt"))
+        self.assertEqual(asked, [])
+        # Every other name still goes to LiteLLM's own lookup.
+        self.assertEqual(savings._resolve_model("azure/gpt-6-sol", None), identity("gpt-6-sol", "azure"))
+        self.assertEqual(savings._resolve_model("github_copilot/grok-4.7", "litellm_proxy"),
+                         identity("grok-4.7", "github_copilot"))
+        self.assertIsNone(savings._resolve_model("", None))
+        self.assertIsNone(savings._resolve_model(None, None))
+        self.assertEqual(asked, [("azure/gpt-6-sol", None), ("github_copilot/grok-4.7", "litellm_proxy"), ("", None),
+                                 (None, None)])
+
+    def test_without_litellms_savings_module_nothing_is_replaced(self):
+        self.assertFalse(self.module.install_savings_provider_lookup())
+
+    def test_loading_the_guard_replaces_the_savings_lookup(self):
+        savings, _, _ = self.install_savings()
+        module = load_guard()
+        self.assertIs(module.PATCHED["savings_provider_lookup"], True)
+        self.assertTrue(savings._resolve_model.cetirun_declared_provider)
     # ----- request fields -----
 
     def test_client_debug_output_is_always_dropped(self):
@@ -1239,6 +1307,72 @@ class GuardTest(unittest.TestCase):
                 before = None if request is None else dict(request)
                 self.filtered(request, [SHARED])
                 self.assertEqual(request, before)
+
+    # ----- what Azure OpenAI refuses in items that GitHub Copilot returned -----
+
+    # A reasoning item and a message as a GitHub Copilot model returns them, both with a status; the message ID of a
+    # Grok model has 396 characters.
+    COPILOT_REASONING = {"type": "reasoning", "id": "rs_copilot", "status": "completed",
+                         "encrypted_content": "ctrnenc6162xgAAAAcopilot",
+                         "summary": [{"type": "summary_text", "text": "Thought it through."}]}
+    ASSISTANT_MESSAGE = {"type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
+                         "content": [{"type": "output_text", "text": "Done.", "annotations": [], "logprobs": []}]}
+    LONG_ID_MESSAGE = {**ASSISTANT_MESSAGE, "id": "msg_" + "x" * 392}
+
+    def test_items_sent_to_azure_openai_lose_what_it_refuses(self):
+        # Measured on the e2e cluster: Azure OpenAI refused a reasoning item with a status (400 "Unknown
+        # parameter: 'input[1].status'.") and a message ID of 396 characters (400 "Invalid 'input[2].id': string too
+        # long."), and answered the same items without them. A conversation that moved from a GitHub Copilot model
+        # to an Azure tier of a router failed there. Azure OpenAI took the status and the phase of a message.
+        azure = self.model_deployment("gpt-6-sol", "azure/gpt-6-sol")
+        copilot = self.model_deployment("gpt-6-sol", "litellm_proxy/gpt-6-sol")
+        reasoning = {key: value for key, value in self.COPILOT_REASONING.items() if key != "status"}
+        message = {key: value for key, value in self.LONG_ID_MESSAGE.items() if key != "id"}
+        for deployments, request in (([azure], self.responses_request(self.COPILOT_REASONING, self.LONG_ID_MESSAGE)),
+                                     # A merged name: whichever deployment serves the request.
+                                     ([copilot, azure], self.responses_request(self.COPILOT_REASONING, self.LONG_ID_MESSAGE)),
+                                     # A router's Azure tier.
+                                     ([azure], {**self.routed(), "input": [dict(self.COPILOT_REASONING),
+                                                                           dict(self.LONG_ID_MESSAGE)]})):
+            with self.subTest(deployments=[d["litellm_params"]["model"] for d in deployments],
+                              routed="metadata" in request):
+                items = request["input"]
+                with self.assertLogs(LOGGER, "WARNING") as logs:
+                    kept = self.filtered(request, deployments, "gpt-6-sol")
+                self.assertEqual(kept, deployments)
+                # The same list: LiteLLM forwards it, and its fallback hops share it.
+                self.assertIs(request["input"], items)
+                self.assertEqual([item for item in items if item.get("type") in ("reasoning", "message")],
+                                 [reasoning, message])
+                self.assertIn("the status of 1 reasoning item and the ID of 1 item longer than 64", logs.output[0])
+                with self.assertNoLogs(LOGGER, "WARNING"):
+                    self.filtered(request, deployments, "gpt-6-sol")
+
+    def test_ids_that_azure_openai_takes_stay(self):
+        azure = self.model_deployment("gpt-6-sol", "azure/gpt-6-sol")
+        short = {**self.ASSISTANT_MESSAGE, "id": "msg_" + "a" * 60}
+        # LiteLLM reads and restores the IDs it marked itself.
+        marked = {**self.ASSISTANT_MESSAGE, "id": "encitem_" + "b" * 200}
+        # A reasoning item's ID is left to encrypted content affinity.
+        long_reasoning = {key: value for key, value in self.COPILOT_REASONING.items() if key != "status"}
+        long_reasoning["id"] = "rs_" + "c" * 600
+        call = {"type": "function_call", "id": "fc_" + "d" * 30, "call_id": "call_1", "name": "read", "arguments": "{}"}
+        request = self.responses_request(short, marked, long_reasoning, call)
+        before = [dict(item) for item in request["input"]]
+        with self.assertNoLogs(LOGGER, "WARNING"):
+            self.filtered(request, [azure], "gpt-6-sol")
+        self.assertEqual(request["input"], before)
+
+    def test_items_keep_their_fields_for_other_providers(self):
+        for deployment in (self.model_deployment("gpt-6-sol", "litellm_proxy/gpt-6-sol"),
+                           self.model_deployment("gpt-6-sol", "openai/gpt-6-sol"),
+                           self.model_deployment("claude", "azure_ai/claude")):
+            with self.subTest(deployment=deployment["litellm_params"]["model"]):
+                request = self.responses_request(self.COPILOT_REASONING, self.LONG_ID_MESSAGE)
+                before = [dict(item) for item in request["input"]]
+                with self.assertNoLogs(LOGGER, "WARNING"):
+                    self.filtered(request, [deployment], deployment["model_name"])
+                self.assertEqual(request["input"], before)
 
     # ----- the Gateway's form of the mark -----
 

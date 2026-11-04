@@ -206,11 +206,15 @@ also refused.
         "dnsResolverIPs": ["<KUBE_DNS_IP>"],
         "dns": [
           {"name": "coredns", "namespace": "kube-system", "uid": "coredns",
-           "ips": ["<KUBE_DNS_IP>", "<COREDNS_POD_IP>", "<COREDNS_POD_IP>"]}
+           "ips": ["<KUBE_DNS_IP>"],
+           "podSelector": {"k8s-app": "kube-dns"}}
         ],
         "gateway": [
           {"peer": {"name": "cetirun-ai-gateway", "namespace": "cetirun-system", "uid": "ai-gateway",
-                    "ips": ["<GATEWAY_SERVICE_IP>", "<GATEWAY_POD_IP>", "<GATEWAY_POD_IP>"]},
+                    "ips": ["<GATEWAY_SERVICE_IP>"],
+                    "podSelector": {"app.kubernetes.io/name": "cetirun-ai-gateway",
+                                    "app.kubernetes.io/instance": "<PLATFORM_RELEASE>",
+                                    "app.kubernetes.io/component": "gateway"}},
            "ports": [{"port": 4000, "protocol": "TCP"}]}
         ],
         "ingress": [
@@ -244,9 +248,8 @@ Replace the placeholders with values from the cluster:
 | --- | --- |
 | `<CILIUM_VERSION>` | `kubectl get ds cilium -n kube-system -o jsonpath='{.spec.template.spec.containers[0].image}'`, the image tag |
 | `<KUBE_DNS_IP>` | `kubectl get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}'` |
-| `<COREDNS_POD_IP>` | `kubectl get pods -n kube-system -l k8s-app=kube-dns -o jsonpath='{.items[*].status.podIP}'` |
 | `<GATEWAY_SERVICE_IP>` | `kubectl get svc cetirun-ai-gateway -n cetirun-system -o jsonpath='{.spec.clusterIP}'` |
-| `<GATEWAY_POD_IP>` | `kubectl get pods -n cetirun-system -l app.kubernetes.io/name=cetirun-ai-gateway,app.kubernetes.io/component=gateway -o jsonpath='{.items[*].status.podIP}'` |
+| `<PLATFORM_RELEASE>` | `kubectl get svc cetirun-ai-gateway -n cetirun-system -o jsonpath='{.spec.selector}'`, the value of `app.kubernetes.io/instance` |
 | `<INGRESS_DEPLOYMENT_UID>` | `kubectl get deploy -n aks-istio-ingress -l app=aks-istio-ingressgateway-external -o jsonpath='{.items[0].metadata.uid}'` |
 | `<API_SERVER_IP>` | `kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes -o jsonpath='{.items[*].endpoints[*].addresses[*]}'`, one entry each |
 | `<RUNTIMECLASS_UID>`, `<RUNTIMECLASS_HANDLER>` | `kubectl get runtimeclass kata-vm-isolation -o jsonpath='{.metadata.uid} {.handler}'` |
@@ -256,7 +259,10 @@ The CIDRs are the cluster template's defaults: Pods `10.244.0.0/16`, Services
 `172.16.0.0/16`, and the nodes' AKS-managed virtual network `10.224.0.0/12`.
 If your cluster has different ranges, use its own ranges. `trustedProxyCIDRs`
 must be within `podCIDRs`. The `uid` of the DNS and Gateway peers is a name
-that you select. Their Pods carry it as a label, as the next section shows. The
+that you select and keep stable. Their `podSelector` matches labels that the
+workload controllers already put on Pods. Use the actual Service selectors if
+your installation changes these labels. Do not list backend Pod IPs in these
+selector-bound entries. The
 `revision` fields are labels that you change each time that you change what
 they describe.
 
@@ -277,24 +283,32 @@ kubectl create configmap sandbox-platform -n cetirun-system --from-file=platform
 
 ## Peer labels
 
-Cilium lets an Agent reach the Pods of the DNS and Gateway peers only when
-these Pods carry the label `sandbox.cetirun.microsoft.com/peer-uid`. The value
-of this label is the peer's `uid`. Their addresses alone are not sufficient.
-Label CoreDNS and the AI Gateway:
+The DNS and Gateway entries above select Pods by the exact namespace and all
+registered Pod labels. CoreDNS and the AI Gateway controllers keep those labels
+on replacement Pods. Gateway rollouts, CoreDNS scaling, and node changes do not
+require manual `sandbox.cetirun.microsoft.com/peer-uid` labels, new backend IP
+registrations, or an Agent restart for network policy. Only the registered
+ports are allowed. Other Pods and ports remain denied.
 
-```bash
-kubectl label pods -n kube-system -l k8s-app=kube-dns \
-  sandbox.cetirun.microsoft.com/peer-uid=coredns --overwrite
-kubectl label pods -n cetirun-system \
-  -l app.kubernetes.io/name=cetirun-ai-gateway,app.kubernetes.io/component=gateway \
-  sandbox.cetirun.microsoft.com/peer-uid=ai-gateway --overwrite
-```
+Protect these namespaces and labels. Tenants must not be able to create,
+replace, or relabel Pods that match these selectors. The registration does not
+discover or independently verify the Service-to-Pod association. Review the
+actual Service selectors and Pod templates before approving it.
 
-The label belongs to the Pods, not to their Deployments. After an AKS update
-replaces CoreDNS, label the new Pods again as soon as they start. Do this also
-after every Gateway upgrade or restart, for example after a `make deploy` run
-that changes the Gateway's models. Until then, Agents' model requests and
-name lookups fail. A label is not necessary on the Pods of the ingress gateway.
+This mode requires the native Cilium profile and stable Service IPs within
+`serviceCIDRs`, not backend Pod IPs. Service address, selector, namespace, or
+peer identity changes still require a coordinated registration update. A
+blocked CIDR that overlaps `podCIDRs` is rejected with this mode because its
+effect on changing selected backends cannot be established. Explicit Service
+IP and port denies still take precedence.
+
+Before migrating an existing installation, upgrade all Operator/admission
+readers and use the normal configuration-change and lifecycle workflow.
+Registrations without `podSelector` retain the old IP/peer-UID behavior: their
+backend IP inventory and protected peer labels must stay current. Do not remove
+those labels while an Agent still uses that mode. See
+[rollout-stable DNS and AI Gateway]({{< repo "examples/native-sandbox/README.md" >}}#rollout-stable-dns-and-ai-gateway)
+for the contract and validation limits.
 
 ## Enable Sandbox execution
 

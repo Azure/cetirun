@@ -2359,10 +2359,19 @@ The trusted topology must explicitly supply `DNSResolverIPs`, the one to three
 distinct Pod resolver addresses, separately from the `DNS` peer membership.
 Resolvers must belong to approved DNS peers and use qualified IP families.
 Absent or unapproved resolvers cause a rejection. The compiler does not infer
-resolvers from backend addresses or truncate the inventory. DNS peers keep all
-Service and backend IPs for network allowances and DNS deny exemptions. As a
-result, new backend replicas change the enforcement revision, not the Pod's
-nameservers.
+resolvers from backend addresses or truncate the inventory. Legacy DNS peers
+keep all Service and backend IPs for network allowances and DNS deny
+exemptions. In that mode, new backend replicas change the enforcement
+revision, not the Pod's nameservers.
+
+Native Cilium DNS and AI Gateway peers can instead register protected,
+namespace-scoped `podSelector` labels with only stable Service IPs. Pod
+replacement and scaling then require no manual peer labels, backend IP
+updates, or network-policy revision change. Exact ports and complementary
+denies remain enforced. This opt-in rejects blocked CIDRs that overlap Pod
+networks, because changing selected backend IPs cannot be represented by
+stable endpoint denies. See the [service selector contract](../../examples/native-sandbox/README.md#rollout-stable-dns-and-ai-gateway)
+for namespace protection, migration and validation limits.
 
 The current egress posture allows public IP destinations, except explicit
 exclusions. It restricts private, cluster, node, metadata, and management
