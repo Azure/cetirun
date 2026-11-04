@@ -17,6 +17,34 @@ the client ID and object ID of this identity in Agent status. Then it uses that
 identity for the selected access mode. The deployment does not accept a
 user-supplied principal, client ID, or arbitrary Graph endpoint.
 
+## What `make deploy` requires
+
+[`make deploy`](../../getting-started/platform/#platform-chart) always enables
+Agent Identity. It enables the Operator lifecycle
+(`cetirun-operator.agentIdentity.enabled`) and the Portal identity UI. It also
+installs the Broker with Microsoft delegated access and the Auth SDK. If the
+environment file sets other values for these settings, `make deploy` stops.
+Independent Azure access stays enabled, unless the environment file sets
+`broker.values.identityModes.azureAgent.enabled: false`.
+
+As a result, these resources are not optional for an installation with
+`make deploy`:
+
+- The Blueprint, its principal, and its two federated identity credentials
+- The Authorization application, its service principal, its federated identity
+  credential, and the consent for its scopes
+- A client ID for `platform.values.cetirun-operator.azure.clientId`. Refer to
+  [Federate the AKS workloads to the Blueprint](#federate-the-aks-workloads-to-the-blueprint).
+
+`make deploy` reads only the IDs from the environment file. It does not
+examine these resources in Entra. The downstream ARM and Microsoft Graph grants
+in step 5 of [delegated access](#add-microsoft-delegated-access-when-needed)
+are necessary only for the delegated calls that the deployment offers.
+`make deploy` also enables lifecycle creation. For this reason, make a decision
+about the
+[lifecycle permission preflight](#current-lifecycle-permission-preflight)
+before the first run.
+
 ## Choose the access modes
 
 | Mode | What the Agent does | Required Entra resources |
@@ -31,10 +59,11 @@ signed-in person. It is also subject to licenses, Conditional Access, resource
 authorization, and the downstream API.
 
 By default, the current Broker chart enables both modes. For this reason, when
-you introduce the feature, explicitly set the values below. A GitHub- or
-Google-only deployment can keep both modes disabled. But this deployment still
-must have the common encrypted credential infrastructure that the parent guide
-describes.
+you introduce the feature, explicitly set the values below. With a direct Helm
+installation, a GitHub- or Google-only deployment can keep both modes disabled.
+But this deployment still must have the common encrypted credential
+infrastructure that the parent guide describes. `make deploy` does not support
+this deployment.
 
 ## Record identifiers before configuring CetiRun
 
@@ -49,6 +78,7 @@ deployment IDs.
 | Authorization application | Application (client) ID | `<authorization-client-id>` |
 | Encryption workload identity | Client ID | `<encryption-client-id>` |
 | Portal sign-in application | Application (client) ID | `<portal-client-id>` |
+| Operator ServiceAccount | Client ID in `cetirun-operator.azure.clientId` | `<blueprint-client-id>`, unless another identity is intended |
 | Created Agent Identity | Service principal object ID and client ID, from Agent status | Created per Agent |
 
 Do not use a service-principal **object ID** where a chart asks for a client
@@ -76,31 +106,48 @@ Agent Identities for their Blueprint. Supported sponsors are users, dynamic
 membership groups, and Microsoft 365 groups. Microsoft documents that security
 groups and role-assignable groups are not supported as sponsors.
 
-For infrastructure-as-code, use the documented v1.0 request only with an
-administrator-approved delegated Graph session. This is a safe shape to review.
-Replace the placeholders in the deployment pipeline, never in a shell history
-or repository:
+For infrastructure-as-code, use the documented v1.0 requests only with an
+administrator-approved delegated Graph session. The examples on this page send
+them with `az rest`, which adds the Microsoft Graph token of the Azure CLI. Run
+the examples in one Bash session, because later examples use the variables and
+functions of earlier ones. The examples also use jq and Python 3. Make sure
+that the Azure CLI uses the deployment tenant, as
+[Agent Identity setup](../agent-identity/#1-prepare-access-and-record-the-coordinates)
+shows.
 
-```http
-POST https://graph.microsoft.com/v1.0/applications/microsoft.graph.agentIdentityBlueprint
-OData-Version: 4.0
-Content-Type: application/json
+This **connected, mutating** example sends
+`POST https://graph.microsoft.com/v1.0/applications/microsoft.graph.agentIdentityBlueprint`
+with the `OData-Version: 4.0` header. The signed-in user is the sponsor and the
+owner:
 
+```bash
+SPONSOR_OBJECT_ID=$(az ad signed-in-user show --query id --output tsv)
+OWNER_OBJECT_ID=$SPONSOR_OBJECT_ID
+cat > blueprint.json <<EOF
 {
   "@odata.type": "Microsoft.Graph.AgentIdentityBlueprint",
   "displayName": "cetirun-production-blueprint",
   "sponsors@odata.bind": [
-    "https://graph.microsoft.com/v1.0/users/<sponsor-object-id>"
+    "https://graph.microsoft.com/v1.0/users/$SPONSOR_OBJECT_ID"
   ],
   "owners@odata.bind": [
-    "https://graph.microsoft.com/v1.0/users/<owner-object-id>"
+    "https://graph.microsoft.com/v1.0/users/$OWNER_OBJECT_ID"
   ]
 }
+EOF
+BLUEPRINT=$(az rest --method post \
+  --url https://graph.microsoft.com/v1.0/applications/microsoft.graph.agentIdentityBlueprint \
+  --headers OData-Version=4.0 --body @blueprint.json)
+BLUEPRINT_OBJECT_ID=$(jq -r .id <<< "$BLUEPRINT")
+BLUEPRINT_CLIENT_ID=$(jq -r .appId <<< "$BLUEPRINT")
 ```
 
-Record the response `appId` as the Blueprint client ID. The Entra creation guide
-lists these delegated permissions for a client that creates and configures a
-Blueprint: `AgentIdentityBlueprint.Create`,
+`BLUEPRINT_CLIENT_ID` is the response `appId`, the Blueprint client ID. Later
+request URLs use the object ID of the Blueprint, `BLUEPRINT_OBJECT_ID`. If you
+create the Blueprint in the admin center, record both IDs from its page.
+
+The Entra creation guide lists these delegated permissions for a client that
+creates and configures a Blueprint: `AgentIdentityBlueprint.Create`,
 `AgentIdentityBlueprint.AddRemoveCreds.All`,
 `AgentIdentityBlueprint.UpdateAuthProperties.All`, and
 `AgentIdentityBlueprintPrincipal.Create`. Its documented least-privilege roles
@@ -108,19 +155,33 @@ also depend on the type of Graph permissions that the caller grants:
 application or delegated. Those bootstrap permissions belong to the automation
 client of the administrator, **not** to the CetiRun Operator.
 
+The Microsoft Graph token of the Azure CLI does not contain these
+`AgentIdentityBlueprint` permissions. Microsoft Graph can accept the requests
+on this page with this token when the signed-in account has the Global
+Administrator role. For an account with fewer roles, Microsoft Graph can
+refuse them. In that case, send the requests with a client that has the
+permissions above, for example Microsoft Graph PowerShell after
+`Connect-MgGraph -Scopes`.
+
 The admin-center wizard creates the related Blueprint principal. For an API
 workflow, create and examine that principal before you add FICs or deploy the
-Operator. Microsoft documents this v1.0 request and the
-`AgentIdentityBlueprintPrincipal.Create` bootstrap permission:
+Operator. Microsoft documents this v1.0 request,
+`POST https://graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal`,
+and the `AgentIdentityBlueprintPrincipal.Create` bootstrap permission:
 
-```http
-POST https://graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal
-OData-Version: 4.0
-Content-Type: application/json
+```bash
+BLUEPRINT_PRINCIPAL_ID=$(az rest --method post \
+  --url https://graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal \
+  --headers OData-Version=4.0 \
+  --body "$(jq -n --arg appId "$BLUEPRINT_CLIENT_ID" '{appId: $appId}')" \
+  --query id --output tsv)
+```
 
-{
-  "appId": "<blueprint-client-id>"
-}
+If the admin-center wizard created the principal, read its object ID instead:
+
+```bash
+BLUEPRINT_PRINCIPAL_ID=$(az ad sp list --filter "appId eq '$BLUEPRINT_CLIENT_ID'" \
+  --query '[0].id' --output tsv)
 ```
 
 The service principal that the request returns is the tenant presence of the
@@ -164,9 +225,10 @@ recipe. Before lifecycle creation (`enabled`) or cleanup (`cleanupEnabled`) is
 enabled, the Entra team must preflight the exact current calls with the
 Blueprint principal. These calls are typed create at
 `/servicePrincipals/microsoft.graph.agentIdentity`, generic v1.0 get and
-filtered list calls, and beta deletion at `/beta/servicePrincipals/<object-id>`.
-They must approve the smallest set of grants that succeeds under the tenant's
-Agent ID policy, with the ownership behavior that is necessary for deletion.
+filtered list calls, and generic v1.0 deletion at
+`/v1.0/servicePrincipals/<object-id>`. They must approve the smallest set of
+grants that succeeds under the tenant's Agent ID policy, with the ownership
+behavior that is necessary for deletion.
 
 `Application.*` grants are broader than the typed Agent Identity permissions.
 Do not replace a failed preflight with directory-wide permission. If the tenant
@@ -174,6 +236,27 @@ does not approve and demonstrate this path, keep both lifecycle creation and
 cleanup disabled. Keep them disabled until CetiRun uses the typed endpoints and
 the permission design is reviewed. Identities that are created without a proven
 recovery and deletion path can become stranded.
+
+`make deploy` always enables lifecycle creation. If the environment file
+disables it, `make deploy` stops. While creation is enabled, the Operator also
+deletes the identities of deleted Agents. As a result, with `make deploy`, you
+cannot keep the lifecycle disabled until the preflight passes. Before the first
+run, decide on one of these approaches:
+
+- Complete the preflight and the approval first. Then run `make deploy`.
+- Run `make deploy` before the approval, and keep Agents from requesting an
+  identity until the preflight passes. The Operator creates an identity only
+  for an Agent whose `spec.agentIdentity.enabled` is true. The Portal sets this
+  field when the owner selects Agent Identity. It also sets the field when the
+  Agent Policy of the Team requires an identity. Tell owners not to select it,
+  and do not require it in an Agent Policy.
+- Install with the component charts instead of `make deploy`, and keep
+  `agentIdentity.enabled` and `cleanupEnabled` false. Refer to
+  [Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly).
+
+If Microsoft Graph refuses a lifecycle call, the `AgentIdentityReady` condition
+of the Agent stays false. If the Operator cannot delete an identity, it keeps
+the finalizer of the Agent. Then the deletion of the Agent does not complete.
 
 For each Agent, CetiRun sends the equivalent of:
 
@@ -229,16 +312,23 @@ for AKS Workload Identity.
 | `cetirun-broker-blueprint` | Blueprint | `system:serviceaccount:cetirun-credentials:cetirun-agent-broker` |
 
 Use the Entra admin center or Microsoft Graph's documented application
-federated-credential API. This JSON is the request body for each application
-FIC. The two values that change are `name` and `subject`:
+federated-credential API,
+`POST https://graph.microsoft.com/v1.0/applications/<application-object-id>/federatedIdentityCredentials`.
+This **connected, mutating** example defines a function that creates one FIC.
+Then it creates the two FICs of the Blueprint:
 
-```json
-{
-  "name": "cetirun-operator",
-  "issuer": "https://<region>.oic.prod-aks.azure.com/<tenant>/<cluster-id>/",
-  "subject": "system:serviceaccount:cetirun-system:cetirun-operator-controller-manager",
-  "audiences": ["api://AzureADTokenExchange"]
+```bash
+add_federated_credential() {  # application object ID, FIC name, subject
+  az rest --method post \
+    --url "https://graph.microsoft.com/v1.0/applications/$1/federatedIdentityCredentials" \
+    --body "$(jq -n --arg name "$2" --arg issuer "$AKS_OIDC_ISSUER" --arg subject "$3" \
+      '{name: $name, issuer: $issuer, subject: $subject,
+        audiences: ["api://AzureADTokenExchange"]}')" --output none
 }
+add_federated_credential "$BLUEPRINT_OBJECT_ID" cetirun-operator \
+  system:serviceaccount:cetirun-system:cetirun-operator-controller-manager
+add_federated_credential "$BLUEPRINT_OBJECT_ID" cetirun-broker-blueprint \
+  system:serviceaccount:cetirun-credentials:cetirun-agent-broker
 ```
 
 The Broker has a second, independent workload-identity use: Key Vault
@@ -256,6 +346,13 @@ lifecycle code still authenticates explicitly as the Blueprint client ID. For
 this reason, keep the Operator-to-Blueprint FIC, even when a different Operator
 integration uses an `azure.clientId` that already exists. Do not overwrite that
 unrelated identity only to enable Agent Identity.
+
+`make deploy` stops when `platform.values.cetirun-operator.azure.clientId` is
+empty. The chart puts this value only in the Workload Identity annotation of
+the Operator ServiceAccount. The Operator authenticates only as the Blueprint.
+Set the value to the Blueprint client ID, unless another Operator integration
+needs a different identity. Then the annotation is the same as without the
+value, and no other identity or FIC is necessary.
 
 Do not replace these ServiceAccounts, namespaces, or names unless you change
 every applicable FIC subject and render the charts together. After a create or
@@ -291,38 +388,56 @@ Never assign resource roles to either shared identity as a substitute.
 ## Add Microsoft delegated access when needed
 
 This optional path is for personal Azure or Microsoft Graph calls that are
-intended to use the Portal user's authority. It uses the Entra Auth SDK sidecar
-in the Broker Pod. A separate confidential **Authorization application** is
-also necessary for it. This application is not the Portal login application.
+intended to use the Portal user's authority. `make deploy` always enables it.
+It uses the Entra Auth SDK sidecar in the Broker Pod. A separate confidential
+**Authorization application** is also necessary for it. This application is
+not the Portal login application.
 
 1. Register a single-tenant confidential **Web** application named, for
    example, `cetirun-delegated-authorization`. Under its Web platform, add the
    exact HTTPS redirect URI
    `https://portal.example.com/api/v1/connections/callback`. Record its client
    ID as `authorizationClientId`. Do not create a client secret for CetiRun.
-2. Add a FIC to that Authorization application for the Broker workload:
+   Also create the service principal of the application. The consent of step 4
+   applies to this service principal:
 
-   ```json
-   {
-     "name": "cetirun-broker-authorization",
-     "issuer": "https://<region>.oic.prod-aks.azure.com/<tenant>/<cluster-id>/",
-     "subject": "system:serviceaccount:cetirun-credentials:cetirun-agent-broker",
-     "audiences": ["api://AzureADTokenExchange"]
-   }
+   ```bash
+   PORTAL_ORIGIN=https://portal.example.com
+   AUTHORIZATION_APP=$(az ad app create \
+     --display-name cetirun-delegated-authorization \
+     --sign-in-audience AzureADMyOrg \
+     --web-redirect-uris "$PORTAL_ORIGIN/api/v1/connections/callback")
+   AUTHORIZATION_OBJECT_ID=$(jq -r .id <<< "$AUTHORIZATION_APP")
+   AUTHORIZATION_CLIENT_ID=$(jq -r .appId <<< "$AUTHORIZATION_APP")
+   AUTHORIZATION_SP_ID=$(az ad sp create --id "$AUTHORIZATION_CLIENT_ID" \
+     --query id --output tsv)
+   ```
+
+2. Add a FIC to that Authorization application for the Broker workload. Use
+   the function from
+   [Federate the AKS workloads to the Blueprint](#federate-the-aks-workloads-to-the-blueprint):
+
+   ```bash
+   add_federated_credential "$AUTHORIZATION_OBJECT_ID" cetirun-broker-authorization \
+     system:serviceaccount:cetirun-credentials:cetirun-agent-broker
    ```
 
 3. On the Blueprint, expose the identifier URI
    `api://<blueprint-client-id>` and the delegated user scope `access_agent`.
    When you use Graph for this step,
    `AgentIdentityBlueprint.UpdateAuthProperties.All` is necessary for the
-   documented request:
+   documented request,
+   `PATCH https://graph.microsoft.com/v1.0/applications/<blueprint-object-id>`
+   with the `OData-Version: 4.0` header:
 
-   ```json
+   ```bash
+   ACCESS_AGENT_SCOPE_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+   cat > blueprint-scope.json <<EOF
    {
-    "identifierUris": ["api://<blueprint-client-id>"],
+     "identifierUris": ["api://$BLUEPRINT_CLIENT_ID"],
      "api": {
        "oauth2PermissionScopes": [{
-         "id": "<new-guid>",
+         "id": "$ACCESS_AGENT_SCOPE_ID",
          "isEnabled": true,
          "type": "User",
          "value": "access_agent",
@@ -333,6 +448,10 @@ also necessary for it. This application is not the Portal login application.
        }]
      }
    }
+   EOF
+   az rest --method patch \
+     --url "https://graph.microsoft.com/v1.0/applications/$BLUEPRINT_OBJECT_ID" \
+     --headers OData-Version=4.0 --body @blueprint-scope.json
    ```
 
 4. Add the Blueprint's `access_agent` delegated permission to the
@@ -340,6 +459,37 @@ also necessary for it. This application is not the Portal login application.
    makes necessary. The Authorization application is the client that gets the
    user assertion with the Blueprint as its audience. It is not the identity
    that holds downstream ARM or Graph permission grants.
+
+   The Broker asks for the scopes
+   `api://<blueprint-client-id>/access_agent offline_access openid profile`.
+   The last three are Microsoft Graph scopes. Without a consent for all users,
+   each user consents at the first Microsoft connection, if the user consent
+   settings of the tenant allow it. An admin consent for all users is an
+   `oauth2PermissionGrant` with `consentType` `AllPrincipals`. It goes from the
+   service principal of the client to the service principal of the resource.
+   This example adds the permission and grants admin consent for the four
+   scopes:
+
+   ```bash
+   az ad app permission add --id "$AUTHORIZATION_CLIENT_ID" \
+     --api "$BLUEPRINT_CLIENT_ID" --api-permissions "$ACCESS_AGENT_SCOPE_ID=Scope"
+   grant_admin_consent() {  # client principal ID, resource principal ID, scopes
+     az rest --method post --url https://graph.microsoft.com/v1.0/oauth2PermissionGrants \
+       --body "$(jq -n --arg client "$1" --arg resource "$2" --arg scope "$3" \
+         '{clientId: $client, consentType: "AllPrincipals", resourceId: $resource,
+           scope: $scope}')" --output none
+   }
+   GRAPH_SP_ID=$(az ad sp list --filter "displayName eq 'Microsoft Graph'" \
+     --query '[0].id' --output tsv)
+   grant_admin_consent "$AUTHORIZATION_SP_ID" "$BLUEPRINT_PRINCIPAL_ID" access_agent
+   grant_admin_consent "$AUTHORIZATION_SP_ID" "$GRAPH_SP_ID" "openid profile offline_access"
+   ```
+
+   If a grant for the same client and resource exists, Microsoft Graph refuses
+   a second one. To add scopes to that grant, send
+   `PATCH https://graph.microsoft.com/v1.0/oauth2PermissionGrants/<grant-id>`
+   with the complete `scope` value.
+
 5. Configure downstream delegated access on the **Blueprint**. Add the intended
    ARM and Microsoft Graph permissions to its required-resource-access
    declaration. Configure scope inheritance for each downstream resource app,
@@ -365,13 +515,71 @@ also necessary for it. This application is not the Portal login application.
    ```
 
    POST one entry per downstream resource app to
-   `https://graph.microsoft.com/v1.0/applications/microsoft.graph.agentIdentityBlueprint/<blueprint-client-id>/inheritablePermissions`.
+   `https://graph.microsoft.com/v1.0/applications/microsoft.graph.agentIdentityBlueprint/<blueprint-object-id>/inheritablePermissions`,
+   with the `OData-Version: 4.0` header. If an entry for that resource app
+   exists, update it with `PATCH` at
+   `.../inheritablePermissions/<downstream-resource-app-id>`.
+
    `allAllowed` inherits only the scopes that are granted to the Blueprint
    principal. It does not grant every scope that the resource offers. The
    default Broker configuration asks the Auth SDK for
    `https://management.azure.com/user_impersonation` and
-   `https://graph.microsoft.com/.default`. Limit the Blueprint grants and chart
-   scopes to the exact ARM and Graph operations that the deployment exposes.
+   `https://graph.microsoft.com/.default`. The `.default` scope resolves to the
+   Microsoft Graph scopes that are granted to the Blueprint principal. Limit the
+   Blueprint grants and chart scopes to the exact ARM and Graph operations that
+   the deployment exposes.
+
+   This example adds ARM `user_impersonation` and Microsoft Graph `User.Read`
+   to the Blueprint, configures their inheritance, and grants admin consent to
+   the Blueprint principal. Replace `User.Read` with the Graph scopes that the
+   deployment exposes:
+
+   ```bash
+   ARM_APP_ID=$(az ad sp list \
+     --filter "displayName eq 'Windows Azure Service Management API'" \
+     --query '[0].appId' --output tsv)
+   GRAPH_APP_ID=$(az ad sp list --filter "displayName eq 'Microsoft Graph'" \
+     --query '[0].appId' --output tsv)
+   scope_id() {  # resource application ID, scope value
+     az ad sp show --id "$1" \
+       --query "oauth2PermissionScopes[?value=='$2'].id | [0]" --output tsv
+   }
+   cat > blueprint-resource-access.json <<EOF
+   {
+     "requiredResourceAccess": [
+       {
+         "resourceAppId": "$ARM_APP_ID",
+         "resourceAccess": [
+           {"id": "$(scope_id "$ARM_APP_ID" user_impersonation)", "type": "Scope"}
+         ]
+       },
+       {
+         "resourceAppId": "$GRAPH_APP_ID",
+         "resourceAccess": [
+           {"id": "$(scope_id "$GRAPH_APP_ID" User.Read)", "type": "Scope"}
+         ]
+       }
+     ]
+   }
+   EOF
+   az rest --method patch \
+     --url "https://graph.microsoft.com/v1.0/applications/$BLUEPRINT_OBJECT_ID" \
+     --headers OData-Version=4.0 --body @blueprint-resource-access.json
+   for resource_app_id in "$ARM_APP_ID" "$GRAPH_APP_ID"; do
+     az rest --method post \
+       --url "https://graph.microsoft.com/v1.0/applications/microsoft.graph.agentIdentityBlueprint/$BLUEPRINT_OBJECT_ID/inheritablePermissions" \
+       --headers OData-Version=4.0 --body "$(jq -n --arg app "$resource_app_id" '{
+         resourceAppId: $app,
+         inheritableScopes: {"@odata.type": "#microsoft.graph.allAllowedScopes",
+           kind: "allAllowed"},
+         inheritableRoles: {"@odata.type": "#microsoft.graph.noRoles",
+           kind: "none"}}')" --output none
+   done
+   ARM_SP_ID=$(az ad sp show --id "$ARM_APP_ID" --query id --output tsv)
+   grant_admin_consent "$BLUEPRINT_PRINCIPAL_ID" "$ARM_SP_ID" user_impersonation
+   grant_admin_consent "$BLUEPRINT_PRINCIPAL_ID" "$GRAPH_SP_ID" User.Read
+   ```
+
 6. Apply the delegated overlay. The Broker verifies that the user assertion has
    the deployment tenant and Portal owner object ID. It verifies that the
    audience equals the Blueprint client ID and the authorized party equals the
@@ -386,6 +594,11 @@ placeholder. Use the actual public Portal origin, HTTPS only, and the same
 origin that is already configured for Portal sign-in.
 
 ## Deploy the configuration
+
+With `make deploy`, do not use the overlays of this section. `make deploy` sets
+their identity values from `domain` and the `identity` section of the
+environment file. Put other Broker values, for example `armScopes` and
+`graphScopes`, under `broker.values`.
 
 Merge each overlay with the values that already exist for the environment. Do
 not use these partial files as complete chart values. They expect that the

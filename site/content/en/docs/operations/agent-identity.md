@@ -12,6 +12,49 @@ runtime, storage, images, and model prerequisites, start with
 platform chart do not create the external identities, provider registrations,
 encryption key, or certificates that this guide describes.
 
+## What `make deploy` requires
+
+[`make deploy`](../../getting-started/platform/#platform-chart) installs the
+Broker with Microsoft delegated access through the Entra Auth SDK. It also
+enables the Agent Identity lifecycle of the Operator. If the environment file
+turns off one of these features, `make deploy` stops. As a result, the Entra
+parts of this guide are not optional with `make deploy`. GitHub and Google
+connections stay optional.
+
+`make deploy` stops before it writes if one of these values is empty:
+
+| Environment file field | Value | Where to get it |
+| --- | --- | --- |
+| `identity.tenantId` | Entra tenant ID | Your tenant |
+| `identity.portalClientId` | Client ID of the Portal login application | [Istio authentication](../istio/#register-the-portal-login-application) |
+| `identity.encryptionClientId` | Client ID of the Broker encryption identity | [Step 2](#2-create-the-encryption-foundation) |
+| `identity.keyVaultKeyUrl` | Key Vault key URL | [Step 2](#2-create-the-encryption-foundation) |
+| `identity.blueprintClientId` | Client ID of the Agent Identity Blueprint | [Entra Agent Identity setup](../entra-agent-identity/#create-and-govern-the-blueprint) |
+| `identity.authorizationClientId` | Client ID of the Authorization application | [Entra Agent Identity setup](../entra-agent-identity/#add-microsoft-delegated-access-when-needed) |
+| `platform.values.cetirun-operator.azure.clientId` | Client ID for the Operator ServiceAccount | [Entra Agent Identity setup](../entra-agent-identity/#federate-the-aks-workloads-to-the-blueprint) |
+
+`make deploy` does not call Azure or Microsoft Graph. It does not find a wrong
+ID, a missing federated credential, a missing consent or role assignment, or a
+missing key. These problems occur only when a component uses the resource, for
+example when a user connects a provider or an Agent requests its identity.
+
+With `make deploy`, do steps 1 to 4 of this guide. Then, instead of steps 5 and
+6, put the values above and the names of the step 3 Secrets in the environment
+file. `make deploy` sets the Broker, Operator, Portal, and MCP values from
+them. The synthetic example environment file uses these names. If you created
+other names, use them:
+
+| Secret from step 3 | Environment file field |
+| --- | --- |
+| `cetirun-credentials/broker-tls` | `broker.values.tls.secretName` |
+| `cetirun-system/connections-mcp-tls` | `platform.values.cetirun-connections-mcp.tls.secretName` |
+| `cetirun-system/broker-client-tls` | `platform.values.cetirun-connections-mcp.broker.clientTLSSecretName` |
+| `cetirun-system/connections-mcp-ca` | `platform.values.cetirun-operator.connectionsMCP.caSecretName` |
+
+`make deploy` also requires each provider Secret that the environment file
+names under `broker.values.providers`. Remove the entries of the providers that
+you do not register in step 4.
+
 ## Choose the capabilities
 
 Portal login identifies the person who manages an Agent. A **Connection**
@@ -37,6 +80,10 @@ both Broker Entra modes. Add the Entra overlays only after you complete their
 prerequisites. The Broker chart defaults enable both modes. As a result, if
 you omit those flags, you do not get a GitHub/Google-only deployment.
 
+This choice applies to a direct Helm installation. `make deploy` always enables
+Microsoft delegated access and the Operator lifecycle, as
+[What `make deploy` requires](#what-make-deploy-requires) shows.
+
 ## 1. Prepare access and record the coordinates
 
 Use an authorized Azure CLI session and an explicit Kubernetes context. The
@@ -47,9 +94,27 @@ administrator must have these permissions:
 - Registration and consent authority that is specific to each provider
 
 Entra directory roles and Azure subscription roles are different permissions.
-The examples use Azure CLI, kubectl, Helm, Bash, OpenSSL 3 and jq. Install
-these tools before you start. Keep environment values and credentials outside
-the checkout.
+The examples use Azure CLI, kubectl, Helm, Bash, OpenSSL 3, jq and curl.
+Install these tools before you start. Keep environment values and credentials
+outside the checkout.
+
+The `az ad` commands and the `az rest` requests to Microsoft Graph in these
+guides use the tenant of the active subscription of the Azure CLI. The
+`--subscription` argument does not change this tenant. Before you run them,
+make sure that this command prints the deployment tenant ID:
+
+```bash
+az account show --query tenantId --output tsv
+```
+
+If your Azure CLI is also signed in to other tenants, sign in to the
+deployment tenant with a separate CLI configuration directory. Then the
+default subscription of your other sessions does not change:
+
+```bash
+export AZURE_CONFIG_DIR=/absolute/private/azure-cli-cetirun
+az login --tenant "<tenant-id>"
+```
 
 Before you enable the Portal feature, complete these prerequisites:
 
@@ -117,8 +182,10 @@ that the Broker uses are necessary for the identity. Subscription-wide
 Contributor or Graph application-management permissions are not necessary for
 it.
 
-**Connected, mutating setup example.** Replace the inputs. Select the reviewed
-subscription. Use an approved resource group that exists.
+**Connected, mutating setup example.** Replace the inputs. Each command names
+the reviewed subscription with `--subscription`. As a result, the example does
+not change the default subscription of the Azure CLI. Use an approved resource
+group that exists. The example expects the cluster in the same subscription.
 
 The person who creates the key must already have Key Vault data-plane
 key-management authority (for example, Key Vault Crypto Officer).
@@ -131,44 +198,67 @@ IDENTITY_RESOURCE_GROUP=example-platform-rg
 IDENTITY_LOCATION=your-approved-region
 IDENTITY_VAULT_NAME=your-globally-unique-vault-name
 IDENTITY_SUBSCRIPTION_ID=your-subscription-id
-KEY_PROVISIONER_OBJECT_ID=your-administrator-user-object-id
 AKS_RESOURCE_GROUP=example-cluster-rg
 AKS_CLUSTER_NAME=example-cluster
-az account set --subscription "$IDENTITY_SUBSCRIPTION_ID"
+# Your user object ID, from Microsoft Graph in the tenant of the active subscription:
+KEY_PROVISIONER_OBJECT_ID=$(az ad signed-in-user show --query id --output tsv)
 
-AKS_OIDC_ISSUER=$(az aks show --resource-group "$AKS_RESOURCE_GROUP" \
-  --name "$AKS_CLUSTER_NAME" --query oidcIssuerProfile.issuerUrl --output tsv)
+AKS_OIDC_ISSUER=$(az aks show --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --resource-group "$AKS_RESOURCE_GROUP" --name "$AKS_CLUSTER_NAME" \
+  --query oidcIssuerProfile.issuerUrl --output tsv)
 test -n "$AKS_OIDC_ISSUER" && test "$AKS_OIDC_ISSUER" != null
 
-az identity create --resource-group "$IDENTITY_RESOURCE_GROUP" \
+az identity create --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --resource-group "$IDENTITY_RESOURCE_GROUP" \
   --name cetirun-broker-encryption --location "$IDENTITY_LOCATION" --output none
-ENCRYPTION_CLIENT_ID=$(az identity show --resource-group "$IDENTITY_RESOURCE_GROUP" \
+ENCRYPTION_CLIENT_ID=$(az identity show --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --resource-group "$IDENTITY_RESOURCE_GROUP" \
   --name cetirun-broker-encryption --query clientId --output tsv)
-ENCRYPTION_PRINCIPAL_ID=$(az identity show --resource-group "$IDENTITY_RESOURCE_GROUP" \
+ENCRYPTION_PRINCIPAL_ID=$(az identity show --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --resource-group "$IDENTITY_RESOURCE_GROUP" \
   --name cetirun-broker-encryption --query principalId --output tsv)
-az identity federated-credential create --resource-group "$IDENTITY_RESOURCE_GROUP" \
+az identity federated-credential create --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --resource-group "$IDENTITY_RESOURCE_GROUP" \
   --identity-name cetirun-broker-encryption --name cetirun-broker \
   --issuer "$AKS_OIDC_ISSUER" \
   --subject system:serviceaccount:cetirun-credentials:cetirun-agent-broker \
   --audiences api://AzureADTokenExchange --output none
 
-az keyvault create --resource-group "$IDENTITY_RESOURCE_GROUP" \
+az keyvault create --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --resource-group "$IDENTITY_RESOURCE_GROUP" \
   --name "$IDENTITY_VAULT_NAME" --location "$IDENTITY_LOCATION" \
   --enable-rbac-authorization true --enable-purge-protection true --output none
-IDENTITY_VAULT_ID=$(az keyvault show --name "$IDENTITY_VAULT_NAME" \
-  --query id --output tsv)
+IDENTITY_VAULT_ID=$(az keyvault show --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --name "$IDENTITY_VAULT_NAME" --query id --output tsv)
 # If the provisioning user does not already have key-management authority:
-az role assignment create --assignee-object-id "$KEY_PROVISIONER_OBJECT_ID" \
+az role assignment create --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --assignee-object-id "$KEY_PROVISIONER_OBJECT_ID" \
   --assignee-principal-type User --role 'Key Vault Crypto Officer' \
   --scope "$IDENTITY_VAULT_ID" --output none
 # Allow the role assignment to propagate before creating the key:
-az keyvault key create --vault-name "$IDENTITY_VAULT_NAME" \
+az keyvault key create --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --vault-name "$IDENTITY_VAULT_NAME" \
   --name connection-records --kty RSA --size 3072 \
   --ops wrapKey unwrapKey --output none
-az role assignment create --assignee-object-id "$ENCRYPTION_PRINCIPAL_ID" \
+az role assignment create --subscription "$IDENTITY_SUBSCRIPTION_ID" \
+  --assignee-object-id "$ENCRYPTION_PRINCIPAL_ID" \
   --assignee-principal-type ServicePrincipal \
   --role 'Key Vault Crypto Service Encryption User' \
   --scope "$IDENTITY_VAULT_ID/keys/connection-records" --output none
+```
+
+`az ad signed-in-user show` reads your object ID in the tenant of the active
+subscription. If that tenant is not the deployment tenant, read the ID from
+the Microsoft Graph `/me` resource with a token for the deployment tenant.
+This command gives the token to curl through standard input, not as a command
+argument:
+
+```bash
+az account get-access-token --tenant "<tenant-id>" --resource-type ms-graph \
+    --query accessToken --output tsv |
+  sed 's/^/Authorization: Bearer /' |
+  curl --silent --show-error --fail --header @- \
+    'https://graph.microsoft.com/v1.0/me?$select=id' | jq -r .id
 ```
 
 Allow several minutes for new role assignments to propagate. If key creation
@@ -187,6 +277,18 @@ rotated version. Old records keep the exact key version that is necessary for
 decryption. While any saved records or backups depend on old versions, keep
 these versions enabled and accessible. A Key Vault **secret** URL is not a key
 URL.
+
+With `make deploy`, put the same URL in `identity.keyVaultKeyUrl`.
+`make deploy` gives this value to the Broker without a change. The Broker also
+accepts a versioned key URL,
+`https://<vault-name>.vault.azure.net/keys/connection-records/<version>`. With
+a versioned URL, the Broker wraps each new record with that version, and it
+decrypts only the records of that version.
+
+If you later change the URL to another version, the Broker cannot decrypt the
+older records. A change to the versionless URL keeps them readable. For these
+reasons, use the versionless URL. The host of the URL must end in
+`.vault.azure.net`.
 
 For a vault with private access, provision its network path and DNS before
 deployment. The example creates the vault, but it does not implement that
