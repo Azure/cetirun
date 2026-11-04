@@ -3,6 +3,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMe } from "../context/MeContext";
+import { isSessionExpiredError } from "../api/fetch";
 import {
   getInstance,
   createInstance,
@@ -24,7 +25,7 @@ const INSTANCE_KEY = ["instance"] as const;
 
 function useViewerKey() {
   const { me, error } = useMe();
-  return me && !error ? `${me.alias}:${me.email.toLowerCase()}` : undefined;
+  return me && (!error || isSessionExpiredError(error)) ? `${me.alias}:${me.email.toLowerCase()}` : undefined;
 }
 
 export function useInstanceQuery() {

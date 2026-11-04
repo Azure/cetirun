@@ -60,15 +60,14 @@
 {{- $tenantId = required "tenantId is required for OAuth2 Proxy OIDC configuration" .Values.tenantId -}}
 {{- $allowedGroups = required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
 {{- end -}}
-{{- $sessionStore := default (dict) (get .Values.oauth2Proxy "sessionStore") -}}
-{{- $redisSession := default (dict) (get $sessionStore "redis") -}}
+{{- $session := include "cetirun-istio.sessionSettings" . | fromJson -}}
 {{- $cookieSettings := default (dict) (get .Values.oauth2Proxy "cookie") -}}
 {{- $redisSettings := default (dict) (get .Values.oauth2Proxy "redis") -}}
 {{- $oidcEmailClaim := default "preferred_username" (get .Values.oauth2Proxy "emailClaim") -}}
-{{- $sessionStoreType := default "cookie" (get $sessionStore "type") -}}
-{{- $redisConnectionURL := get $redisSession "connectionURL" -}}
-{{- $redisExistingSecret := get $redisSession "existingSecret" -}}
-{{- $redisPasswordKey := default "redis-password" (get $redisSession "passwordKey") -}}
+{{- $sessionStoreType := $session.type -}}
+{{- $redisConnectionURL := $session.connectionURL -}}
+{{- $redisExistingSecret := $session.secretName -}}
+{{- $redisPasswordKey := $session.passwordKey -}}
 {{- $redisSecretData := dict -}}
 {{- $cookieExpire := default "45m" (get $cookieSettings "expire") -}}
 {{- $csrfPerRequestLimit := 20 -}}
@@ -77,9 +76,6 @@
 {{- end -}}
 {{- $redisCookieExpire := default "8h" (get $redisSettings "cookieExpire") -}}
 {{- $redisCookieRefresh := default "30m" (get $redisSettings "cookieRefresh") -}}
-{{- if not (has $sessionStoreType (list "cookie" "redis")) -}}
-{{- fail "oauth2Proxy.sessionStore.type must be cookie or redis" -}}
-{{- end -}}
 {{- if not (regexMatch "^[1-9][0-9]*$" (toString $csrfPerRequestLimit)) -}}
 {{- fail "oauth2Proxy.cookie.csrfPerRequestLimit must be a positive integer" -}}
 {{- end -}}
@@ -87,8 +83,6 @@
 {{- fail "oauth2Proxy.emailClaim must be preferred_username or email" -}}
 {{- end -}}
 {{- if eq $sessionStoreType "redis" -}}
-{{- $_ := required "oauth2Proxy.sessionStore.redis.connectionURL is required for Redis sessions" $redisConnectionURL -}}
-{{- $_ := required "oauth2Proxy.sessionStore.redis.existingSecret is required for Redis sessions" $redisExistingSecret -}}
 {{- $redisSecret := lookup "v1" "Secret" .Release.Namespace $redisExistingSecret -}}
 {{- if and $redisSecret $redisSecret.data -}}
 {{- $redisSecretData = $redisSecret.data -}}
@@ -206,6 +200,7 @@ spec:
             - --api-route=^/api/
             - --api-route=^/ui/[^/]+/api/
             - --api-route=^/ui/[^/]+/assets/
+            - --api-route=^/[^/]+/cetirun-auth/
             {{- range (splitList "," $allowedGroups) }}
             {{- if ne (. | trim) "" }}
             - --allowed-group={{ . | trim }}

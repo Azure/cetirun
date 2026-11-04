@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { render, screen } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkspacePage } from "./WorkspacePage";
@@ -23,8 +23,18 @@ const mockInstance: Instance = {
   createdAt: "2026-01-01T00:00:00Z",
 };
 
+let mockInstanceError: Error | null = null;
+let mockViewerError: Error | null = null;
+let mockHasInstance = true;
+let mockChatError: string | undefined;
+vi.mock("../context/MeContext", () => ({
+  useMe: () => ({ me: { alias: "testuser", email: "testuser@example.com" }, isLoading: false, error: mockViewerError }),
+}));
+vi.mock("../chat/ChatAccount", () => ({
+  useChatAccount: () => ({ error: mockChatError }),
+}));
 vi.mock("../hooks/useInstance", () => ({
-  useInstanceByNameQuery: () => ({ data: mockInstance, isLoading: false }),
+  useInstanceByNameQuery: () => ({ data: mockHasInstance ? mockInstance : undefined, isLoading: false, isError: !!mockInstanceError, error: mockInstanceError }),
   useDeleteInstanceByName: () => ({
     mutate: vi.fn(),
     isPending: false,
@@ -70,6 +80,38 @@ function renderAt(path: string) {
 }
 
 describe("WorkspacePage", () => {
+  afterEach(() => {
+    mockInstanceError = null;
+    mockViewerError = null;
+    mockHasInstance = true;
+    mockChatError = undefined;
+  });
+  it("shows a session expiry from a background Agent refetch", () => {
+    mockInstanceError = new Error("Session expired, please refresh the page");
+    renderAt("/instances/testuser/overview");
+    expect(screen.getByRole("alert")).toHaveTextContent(mockInstanceError.message);
+    expect(screen.queryByText("Agent not found.")).toBeNull();
+    expect(screen.getByText("Agent UI").closest("a")).not.toHaveAttribute("href");
+  });
+  it("shows the viewer error instead of claiming the Agent is missing", () => {
+    mockHasInstance = false;
+    mockViewerError = new Error("Session expired, please refresh the page");
+    renderAt("/instances/testuser/overview");
+    expect(screen.getByRole("alert")).toHaveTextContent(mockViewerError.message);
+    expect(screen.queryByText("Agent not found.")).toBeNull();
+  });
+  it("keeps the expiry message when Chat identity verification clears the cache", () => {
+    mockHasInstance = false;
+    mockChatError = "Session expired, please refresh the page";
+    renderAt("/instances/testuser/overview");
+    expect(screen.getByRole("alert")).toHaveTextContent(mockChatError);
+    expect(screen.queryByText("Agent not found.")).toBeNull();
+  });
+  it("preserves non-authentication errors", () => {
+    mockInstanceError = new Error("Agent service is unavailable");
+    renderAt("/instances/testuser/overview");
+    expect(screen.getByRole("alert")).toHaveTextContent(mockInstanceError.message);
+  });
   it("offers Portal Chat only for an enabled Custom HTTP Agent without Web UI", () => {
     const previous = mockInstance.agent;
     mockInstance.agent = { type: "custom", port: 8080, webUI: false };

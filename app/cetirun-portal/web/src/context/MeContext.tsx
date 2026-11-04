@@ -4,6 +4,7 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { fetchMe, type Me } from "../api/me";
+import { isSessionExpiredError } from "../api/fetch";
 
 interface MeContextValue {
   me: Me | undefined;
@@ -18,6 +19,7 @@ export function MeProvider({ children }: { children: ReactNode }) {
     queryKey: ["me"],
     queryFn: () => fetchMe(),
     staleTime: 60_000,
+    retry: (count, error) => !isSessionExpiredError(error) && count < 1,
   });
   return (
     <MeContext.Provider value={{ me: query.data, isLoading: query.isLoading, error: query.error }}>

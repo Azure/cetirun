@@ -18,6 +18,7 @@ base_args=(
   --set-string tenantId=lint-tenant
   --set-string allowedGroups=lint-group
   --set-string cookieSecret=lint-cookie-secret
+  --set-string oauth2Proxy.sessionStore.type=cookie
 )
 
 assert_ownership_target() {
@@ -48,7 +49,8 @@ assert_sign_in_flags() {
     "- --cookie-csrf-per-request-limit=${limit}" \
     '- --api-route=^/api/' \
     '- --api-route=^/ui/[^/]+/api/' \
-    '- --api-route=^/ui/[^/]+/assets/'; do
+    '- --api-route=^/ui/[^/]+/assets/' \
+    '- --api-route=^/[^/]+/cetirun-auth/'; do
     grep -Fxq -- "            ${flag}" <<< "${output}" || {
       echo "FAIL: oauth2-proxy did not render ${flag}" >&2
       exit 1
@@ -245,7 +247,8 @@ assert_ownership_target "${output}" "cetirun-portal.cetirun-system.svc.cluster.l
 
 echo "==> reject incomplete and invalid Redis session configuration"
 if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
-  --set-string oauth2Proxy.sessionStore.type=redis >/dev/null 2>&1; then
+  --set-string oauth2Proxy.sessionStore.type=redis \
+  --set oauth2Proxy.sessionStore.redis.bundled.enabled=false >/dev/null 2>&1; then
   echo "FAIL: Redis session store rendered without a connection URL and Secret" >&2
   exit 1
 fi

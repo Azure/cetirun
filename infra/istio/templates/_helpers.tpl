@@ -76,3 +76,39 @@ Lua-safe domain pattern (dots escaped as %.).
 {{- fail "authPolicy.oauthCallbackPath supports only /api/v1/connections/callback" -}}
 {{- end -}}
 {{- end }}
+
+{{/* An explicit external URL preserves existing Redis deployments. */}}
+{{- define "cetirun-istio.sessionSettings" -}}
+{{- $store := default dict .Values.oauth2Proxy.sessionStore -}}
+{{- $type := default "redis" $store.type -}}
+{{- if not (has $type (list "cookie" "redis")) -}}
+{{- fail "oauth2Proxy.sessionStore.type must be cookie or redis" -}}
+{{- end -}}
+{{- $redis := default dict $store.redis -}}
+{{- $bundled := default dict $redis.bundled -}}
+{{- $enabled := true -}}
+{{- if hasKey $bundled "enabled" -}}
+{{- if not (kindIs "bool" $bundled.enabled) -}}
+{{- fail "oauth2Proxy.sessionStore.redis.bundled.enabled must be a boolean" -}}
+{{- end -}}
+{{- $enabled = $bundled.enabled -}}
+{{- end -}}
+{{- $url := default "" $redis.connectionURL -}}
+{{- $secret := default "" $redis.existingSecret -}}
+{{- $key := default "redis-password" $redis.passwordKey -}}
+{{- $useBundled := and (eq $type "redis") $enabled (not $url) -}}
+{{- if $useBundled -}}
+{{- $url = printf "redis://oauth2-proxy-sessions.%s.svc.cluster.local:6379/0" .Release.Namespace -}}
+{{- $secret = default "oauth2-proxy-sessions" $secret -}}
+{{- if not (kindIs "bool" $bundled.persistence.enabled) -}}
+{{- fail "oauth2Proxy.sessionStore.redis.bundled.persistence.enabled must be a boolean" -}}
+{{- end -}}
+{{- else if eq $type "redis" -}}
+{{- $_ := required "oauth2Proxy.sessionStore.redis.connectionURL is required for external Redis sessions" $url -}}
+{{- $_ := required "oauth2Proxy.sessionStore.redis.existingSecret is required for external Redis sessions" $secret -}}
+{{- if not (regexMatch `^rediss?://[^/@[:space:]]+(/[0-9]+)?$` $url) -}}
+{{- fail "oauth2Proxy.sessionStore.redis.connectionURL must use redis:// or rediss:// without credentials" -}}
+{{- end -}}
+{{- end -}}
+{{- toJson (dict "type" $type "bundled" $useBundled "connectionURL" $url "secretName" $secret "passwordKey" $key) -}}
+{{- end }}

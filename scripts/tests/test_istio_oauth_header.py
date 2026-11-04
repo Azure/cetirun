@@ -16,6 +16,21 @@ SPEC.loader.exec_module(module)
 
 
 class OAuthHeaderTest(unittest.TestCase):
+    def test_provider_forwards_refreshed_cookie_on_success(self):
+        source = """extensionProviders:
+- name: oauth2-proxy
+  envoyExtAuthzHttp:
+    headersToUpstreamOnAllow: [authorization]
+    headersToDownstreamOnAllow: [x-existing]
+    headersToDownstreamOnDeny: [set-cookie, location]
+"""
+        result, changed = module.ensure_provider(source)
+        self.assertTrue(changed)
+        settings = self.provider(result)["envoyExtAuthzHttp"]
+        self.assertEqual(settings["headersToDownstreamOnAllow"], ["x-existing", "set-cookie"])
+        self.assertEqual(settings["headersToUpstreamOnAllow"], ["authorization"])
+        self.assertEqual(module.ensure_provider(result), (result, False))
+
     def provider(self, mesh_text, name="oauth2-proxy"):
         providers = module._load_mesh(mesh_text).get("extensionProviders", [])
         matches = [provider for provider in providers if provider.get("name") == name]

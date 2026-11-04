@@ -18,6 +18,8 @@ import {
   Desktop20Regular,
 } from "@fluentui/react-icons";
 import { useInstanceByNameQuery } from "../hooks/useInstance";
+import { useMe } from "../context/MeContext";
+import { SESSION_EXPIRED_MESSAGE } from "../api/fetch";
 import { OverviewSection } from "../components/OverviewSection";
 import {
   agentUIUrl,
@@ -96,11 +98,19 @@ export function WorkspacePage() {
   const navigate = useNavigate();
   const {
     data: instance,
-    isLoading,
-    isError,
+    isLoading: instanceLoading,
+    isError: instanceError,
+    error,
   } = useInstanceByNameQuery(instanceName);
+  const viewer = useMe();
   const features = useFeatures();
   const chatAccount = useChatAccount();
+  const chatSessionExpired = chatAccount?.error === SESSION_EXPIRED_MESSAGE;
+  const isError = instanceError || !!viewer.error || chatSessionExpired;
+  const isLoading = !isError && (instanceLoading || viewer.isLoading);
+  const errorMessage = chatSessionExpired ? SESSION_EXPIRED_MESSAGE
+    : viewer.error instanceof Error ? viewer.error.message
+    : error?.message ?? "Failed to load agent. Please refresh the page.";
   const chatEligible =
     instance?.agent.type === "custom" &&
     instance.agent.port != null &&
@@ -271,9 +281,9 @@ export function WorkspacePage() {
         )}
 
         {!isLoading && isError && (
-          <div style={{ padding: 24 }}>
+          <div role="alert" style={{ padding: 24 }}>
             <Text style={{ color: tokens.colorStatusDangerForeground1 }}>
-              Failed to load agent. Please refresh the page.
+              {errorMessage}
             </Text>
           </div>
         )}
