@@ -123,17 +123,21 @@ def fixture(args, out):
                        for obj in objects if obj and obj['kind'] == 'Secret'}
             secrets['synthetic-model-key'] = {'api-key': 'synthetic-model-key'}
             storage = {}
+            init_input = None
             for volume in pod['volumes']:
+                if 'secret' in volume:
+                    ref = volume['secret']
+                    if (volume['name'] != 'secrets' or init_input is not None
+                            or set(ref) != {'secretName', 'optional'} or ref['optional'] is not True):
+                        raise ValueError('unsupported fixture Secret volume')
+                    init_input = secrets[ref['secretName']]['hermes.env']
+                    continue
                 target = directory / volume['name']
                 target.mkdir(mode=0o755)
                 storage[volume['name']] = target
                 if 'configMap' in volume:
                     item = volume['configMap']
                     data = maps[item['name']]
-                    items = item.get('items', [{'key': key, 'path': key} for key in data])
-                elif 'secret' in volume:
-                    item = volume['secret']
-                    data = secrets[item['secretName']]
                     items = item.get('items', [{'key': key, 'path': key} for key in data])
                 else:
                     continue
@@ -149,7 +153,7 @@ def fixture(args, out):
                     '--mount', f'type=bind,src={storage["data"]},dst=/new-home', '--entrypoint=chown', image,
                     '1024:1024', '/new-home', stdout=subprocess.DEVNULL)
 
-            def environment(container, filename):
+            def environment(container):
                 env = {'HOME': '/home/vibe', 'TMPDIR': '/tmp', 'PYTHONDONTWRITEBYTECODE': '1'}
                 for item in container.get('env', []):
                     if 'value' in item:
@@ -161,12 +165,9 @@ def fixture(args, out):
                         env[item['name']] = 'browser-' + name
                     else:
                         raise ValueError('unsupported fixture environment input')
-                file = directory / filename
                 if 'CETIRUN_INIT_IMAGE' in env:
                     env['CETIRUN_INIT_IMAGE'] = 'local.cetirun.invalid/hermes-gateway@' + image_identity
-                file.write_text(''.join(key + '=' + str(value) + '\n' for key, value in env.items()))
-                file.chmod(0o600)
-                return file, env
+                return {key: str(value) for key, value in env.items()}
 
             def mounts(container):
                 result = []
@@ -177,7 +178,11 @@ def fixture(args, out):
                         if relative != child['mountPath'] and parent['name'] != 'tmp':
                             (storage[parent['name']] / relative).mkdir(parents=True, exist_ok=True)
                 for mount in entries:
-                    if mount['name'] == 'tmp':
+                    if mount['name'] == 'secrets':
+                        if mount != {'name': 'secrets', 'mountPath': '/etc/cetirun-secrets', 'readOnly': True}:
+                            raise ValueError('unsupported fixture Secret mount')
+                        result += ['--tmpfs', '/etc/cetirun-secrets:rw,noexec,nosuid,nodev,mode=0700,uid=1024,gid=1024']
+                    elif mount['name'] == 'tmp':
                         result += ['--tmpfs', mount['mountPath'] + ':rw,mode=1777']
                     else:
                         src = storage[mount['name']]
@@ -187,19 +192,27 @@ def fixture(args, out):
                 return result
 
             init = next(container for container in pod['initContainers'] if container['name'] == 'init-home-data')
-            envfile, _ = environment(init, 'init.env')
+            if init_input is None or sum(mount['name'] == 'secrets' for mount in init['volumeMounts']) != 1:
+                raise ValueError('Hermes fixture requires its init Secret input')
+            init_env = environment(init)
             with (directory / 'init.log').open('w') as log:
-                command('docker', 'run', '--rm', '--pull=never', '--network=none', '--user=1024:1024', '--read-only',
-                        '--cap-drop=ALL', '--security-opt=no-new-privileges', '--env-file', envfile, *mounts(init),
-                        '--entrypoint', init['command'][0], image, *init['command'][1:], stdout=log, stderr=log)
+                command('docker', 'run', '--rm', '--interactive', '--pull=never', '--network=none', '--user=1024:1024', '--read-only',
+                        '--cap-drop=ALL', '--security-opt=no-new-privileges',
+                        *[arg for key in init_env for arg in ('--env', key)], *mounts(init),
+                        '--entrypoint', '/bin/sh', image, '-eu', '-c',
+                        'umask 077; cat > /etc/cetirun-secrets/hermes.env; chmod 400 /etc/cetirun-secrets/hermes.env; exec "$@"',
+                        '--', *init['command'], input=init_input, text=True, env={**os.environ, **init_env}, stdout=log, stderr=log)
             main = pod['containers'][0]
-            envfile, env = environment(main, 'main.env')
+            if any(mount['name'] == 'secrets' for mount in main['volumeMounts']):
+                raise ValueError('unexpected fixture main Secret mount')
+            env = environment(main)
             container = network + '-' + name
             containers.append(container)
             command('docker', 'run', '-d', '--name', container, '--pull=never', '--network', network, '--user=1024:1024',
-                    '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--env-file', envfile, *mounts(main),
+                    '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+                    *[arg for key in env for arg in ('--env', key)], *mounts(main),
                     '--mount', f'type=bind,src={REPO}/app/cetirun-chart/tests/fixtures/cetirun-qualification,dst=/qualification-source,readonly',
-                    image, stdout=subprocess.DEVNULL)
+                    image, env={**os.environ, **env}, stdout=subprocess.DEVNULL)
             backend = capture('docker', 'inspect', container, '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
             command('docker', 'exec', '-d', container, 'node', '/etc/cetirun/fixture-sidecar.cjs')
             backends[prefix] = {'hostname': backend, 'port': 19120}

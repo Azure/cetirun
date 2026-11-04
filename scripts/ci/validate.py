@@ -300,12 +300,12 @@ def workflow_gate(root):
 
 def python_tests(root):
     require_file(root / "scripts/ci/python_safety.py")
-    # Fail missing packages rather than replacing the real HTTP and YAML libraries.
+    # Check the actual HTTP and configuration parsers before running the suites.
     run(
         [
             sys.executable,
             "-c",
-            "import pytest, aiohttp, yaml",
+            "import pytest, aiohttp, yaml; from dotenv.parser import parse_stream",
         ],
         root,
         env=offline_env(),

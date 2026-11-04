@@ -63,8 +63,9 @@ class Gateway:
 
     def environment(self):
         env = {name: os.environ[name] for name in ("PATH", "LANG", "LC_ALL", "TMPDIR") if name in os.environ}
+        # Upstream's test guard reserves HOME/.hermes, even when HOME is synthetic.
         env.update(
-            HOME=str(self.home.parent), HERMES_HOME=str(self.home),
+            HOME=str(self.root), HERMES_HOME=str(self.home), HERMES_TEST_ISOLATION="1",
             PYTHONPATH=str(Path(__file__).parent) + os.pathsep + str(SOURCE),
             HERMES_RUNTIME_DIR=str(SOURCE / "tools"), HERMES_WEBAPP_DIST=str(SOURCE / "apps/desktop/dist-webapp"),
             PYTHONDONTWRITEBYTECODE="1", HERMES_DISABLE_LAZY_INSTALLS="1", AWS_EC2_METADATA_DISABLED="true", PYTHONUNBUFFERED="1",
