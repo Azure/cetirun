@@ -537,9 +537,12 @@ restart one time. Refer to
 [Choose a model](../../guides/models/#runtime-configuration).
 
 Other changes also replace the Gateway's Pods, for example a new release
-version. The new Pods do not have the peer label that Sandbox execution needs.
-When Sandbox execution is enabled, label them again after such a run, as
-[Peer labels](../../operations/policy-teams/#peer-labels) shows.
+version. With the rollout-stable DNS and Gateway selectors in
+[Peer labels](../../operations/policy-teams/#peer-labels), replacement Pods keep
+their network authorization without manual labels. Existing IP/peer-UID
+registrations still require current backend IPs and labels until they migrate.
+Upgrade all readers and follow the coordinated configuration-change workflow
+before adopting the new registration.
 
 With `istio.mode: external`, `make deploy` does not upgrade the CetiRun Istio
 release. Configure that release to reach the portal: use

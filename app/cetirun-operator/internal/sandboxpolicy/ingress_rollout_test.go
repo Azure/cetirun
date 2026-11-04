@@ -203,10 +203,10 @@ func TestNativeIngressRejectsUnboundedOrAmbiguousRegistration(t *testing.T) {
 		"metadata overlap": func(i *CompileInput) {
 			i.Platform.Topology.MetadataCIDRs = append(i.Platform.Topology.MetadataCIDRs, "10.244.1.0/24")
 		},
-		"non-ingress destination": func(i *CompileInput) {
+		"proxy CIDRs on egress destination": func(i *CompileInput) {
 			i.Platform.Topology.Gateway = append(i.Platform.Topology.Gateway, i.Platform.Topology.Ingress[0])
 		},
-		"DNS selector": func(i *CompileInput) {
+		"DNS selector without Service IPs": func(i *CompileInput) {
 			i.Platform.Topology.DNS = append(i.Platform.Topology.DNS, i.Platform.Topology.Ingress[0].Peer)
 		},
 		"inventory selector": func(i *CompileInput) {

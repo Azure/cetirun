@@ -216,16 +216,18 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			return fmt.Errorf("%w: peers require names, immutable UIDs and valid namespaces", ErrUnavailable)
 		}
 		if len(peer.PodSelector) != 0 {
-			if peer.Namespace == "" || len(peer.IPs) != 0 {
-				return fmt.Errorf("%w: selector-bound ingress requires a namespace and must not pin Pod IPs", ErrUnsupportedControl)
+			if capabilities.Profile != sandbox.ProfileNativeSingleStart || peer.Namespace == "" {
+				return fmt.Errorf("%w: Pod selectors require a native namespaced peer", ErrUnsupportedControl)
 			}
 			for key, value := range peer.PodSelector {
 				if len(validation.IsQualifiedName(key)) != 0 || len(validation.IsValidLabelValue(value)) != 0 ||
 					key == "io.kubernetes.pod.namespace" {
-					return fmt.Errorf("%w: ingress Pod selectors require valid Pod labels, not namespace identity overrides", ErrUnsupportedControl)
+					return fmt.Errorf("%w: Pod selectors require valid Pod labels, not namespace identity overrides", ErrUnsupportedControl)
 				}
 			}
-			return nil
+			if len(peer.IPs) == 0 {
+				return nil
+			}
 		}
 		if len(peer.IPs) == 0 {
 			return fmt.Errorf("%w: IP-bound peers require resolved IPs", ErrUnavailable)
@@ -240,12 +242,28 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		peer.IPs = sortedUnique(peer.IPs)
 		return nil
 	}
+	validateServiceSelector := func(peer Peer) error {
+		if len(peer.PodSelector) == 0 {
+			return nil
+		}
+		if len(peer.IPs) == 0 {
+			return fmt.Errorf("%w: selector-bound DNS and Gateway peers require Service IPs", ErrUnavailable)
+		}
+		for _, raw := range peer.IPs {
+			ip := netip.MustParseAddr(raw)
+			prefix := netip.PrefixFrom(ip, ip.BitLen())
+			if !containedByAny(prefix, topology.ServiceCIDRs) || overlapsAny(prefix, topology.PodCIDRs) {
+				return fmt.Errorf("%w: selector-bound DNS and Gateway peers must pin Service IPs, not Pod or external IPs", ErrUnsupportedControl)
+			}
+		}
+		return nil
+	}
 	dnsIPs := map[string]bool{}
 	for i := range topology.DNS {
-		if len(topology.DNS[i].PodSelector) != 0 {
-			return platform, fmt.Errorf("%w: Pod selectors are supported only for native ingress", ErrUnsupportedControl)
-		}
 		if err := normalizePeer(&topology.DNS[i]); err != nil {
+			return platform, err
+		}
+		if err := validateServiceSelector(topology.DNS[i]); err != nil {
 			return platform, err
 		}
 		for _, ip := range topology.DNS[i].IPs {
@@ -278,17 +296,24 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	proxyExclusions = append(proxyExclusions, topology.ManagementCIDRs...)
 	proxyExclusions = append(proxyExclusions, topology.MetadataCIDRs...)
 	for _, group := range []struct {
-		destinations *[]Destination
-		ingress      bool
+		destinations     *[]Destination
+		ingress          bool
+		serviceSelectors bool
 	}{
-		{&topology.Gateway, false}, {&topology.Ingress, true}, {&topology.KubernetesAPI, false},
+		{&topology.Gateway, false, true}, {&topology.Ingress, true, false}, {&topology.KubernetesAPI, false, false},
 	} {
 		destinations := group.destinations
 		for i := range *destinations {
 			dest := &(*destinations)[i]
-			if len(dest.Peer.PodSelector) != 0 {
-				if !group.ingress || capabilities.Profile != sandbox.ProfileNativeSingleStart {
-					return platform, fmt.Errorf("%w: Pod selectors are supported only for native single-start ingress", ErrUnsupportedControl)
+			if err := normalizePeer(&dest.Peer); err != nil {
+				return platform, err
+			}
+			if len(dest.TrustedProxyCIDRs) != 0 && (!group.ingress || len(dest.Peer.PodSelector) == 0) {
+				return platform, fmt.Errorf("%w: proxy CIDRs require a selector-bound native ingress peer", ErrUnsupportedControl)
+			}
+			if len(dest.Peer.PodSelector) != 0 && group.ingress {
+				if len(dest.Peer.IPs) != 0 {
+					return platform, fmt.Errorf("%w: selector-bound ingress must not pin Pod IPs", ErrUnsupportedControl)
 				}
 				if len(dest.TrustedProxyCIDRs) == 0 {
 					return platform, fmt.Errorf("%w: selector-bound ingress requires explicit trusted proxy Pod CIDRs", ErrUnavailable)
@@ -305,11 +330,13 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 					dest.TrustedProxyCIDRs[j] = prefix.String()
 				}
 				dest.TrustedProxyCIDRs = sortedUnique(dest.TrustedProxyCIDRs)
-			} else if len(dest.TrustedProxyCIDRs) != 0 {
-				return platform, fmt.Errorf("%w: proxy CIDRs require a selector-bound native ingress peer", ErrUnsupportedControl)
-			}
-			if err := normalizePeer(&dest.Peer); err != nil {
-				return platform, err
+			} else if len(dest.Peer.PodSelector) != 0 {
+				if !group.serviceSelectors {
+					return platform, fmt.Errorf("%w: Pod selectors are supported only for native DNS, Gateway and ingress", ErrUnsupportedControl)
+				}
+				if err := validateServiceSelector(dest.Peer); err != nil {
+					return platform, err
+				}
 			}
 			dest.Ports, err = canonicalPorts(dest.Ports, capabilities)
 			if err != nil {
@@ -343,7 +370,7 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	}
 	for _, peer := range topology.Peers {
 		if len(peer.PodSelector) != 0 {
-			return platform, fmt.Errorf("%w: Pod selectors are supported only in ingress destinations", ErrUnsupportedControl)
+			return platform, fmt.Errorf("%w: Pod selectors must be registered as native DNS, Gateway or ingress destinations", ErrUnsupportedControl)
 		}
 	}
 	allPeers := slices.Clone(topology.Peers)
@@ -513,6 +540,15 @@ func compileNetwork(input CompileInput, tlsPlan ...*ingressmtls.Plan) (NetworkPl
 				}
 			}
 			grants = append(grants, addressGrant{prefix, destination.Ports})
+		}
+		if len(destination.Peer.PodSelector) != 0 {
+			for _, blocked := range blockedCIDRs {
+				// Changing backend IPs cannot be mapped to stable endpoint denies.
+				// Reject this combination rather than bypass a Pod CIDR restriction.
+				if overlapsAny(blocked, topology.PodCIDRs) {
+					return plan, fmt.Errorf("%w: blocked Pod CIDRs cannot be enforced on selector-bound service backends", ErrUnsupportedControl)
+				}
+			}
 		}
 	}
 	exceptions := make([]string, 0, len(grants))
