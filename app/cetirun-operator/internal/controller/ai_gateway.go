@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
@@ -683,6 +684,29 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	routed := r.aiGatewayRequired(instance) && chartSupported
 	copilot := routed && grant.copilot
 	groups := slices.Clone(grant.groups)
+	// With an AgentPolicy, the routes of the Copilot models it does not allow
+	// go before the key is written. While one cannot go, the key does not
+	// hold the Agent's Copilot group, which reaches every route of the Agent
+	// (removeCopilotRoutesNotAllowed); shared models keep working.
+	copilotWithheld := ""
+	if copilot && grant.policyBound && !instance.Spec.Suspended {
+		previous := ""
+		if status.Copilot != nil {
+			previous = status.Copilot.Reason
+		}
+		reason, err := r.removeCopilotRoutesNotAllowed(ctx, client, instance, grant.policy)
+		if reason != "" {
+			copilotWithheld = reason
+			group := copilotAccessGroup(instance)
+			groups = slices.DeleteFunc(groups, func(name string) bool { return name == group })
+			log.FromContext(ctx).Error(err, "the AI Gateway key does not hold the Agent's GitHub Copilot group", "instance", instance.Name, "reason", reason)
+			if previous != reason {
+				r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayCopilotWithheld",
+					"The AI Gateway key %s does not reach the Agent's GitHub Copilot models until the routes of the Copilot models its AgentPolicy does not allow are confirmed removed (%s): %v",
+					status.KeyAlias, reason, err)
+			}
+		}
+	}
 	models := aiGatewayKeyModels(groups)
 	teamID, userID, err := r.ensureAIGatewayOwner(ctx, client, instance, false)
 	if err != nil {
@@ -900,6 +924,13 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		policy = grant.policy
 	}
 	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended, policy)
+	if copilotWithheld != "" && status.Copilot != nil {
+		// Also when the registration removed the route after all: the next
+		// pass, on the short requeue of a degraded Copilot status, gives the
+		// key the group back.
+		status.Copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
+		status.Copilot.Reason = copilotWithheld
+	}
 	if err := r.refreshAIGatewayRouterGrant(ctx, client, instance, grant); err != nil {
 		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayModelRoutersFailed",
 			"Updating the AI Gateway key's model routers after the GitHub Copilot registration failed: %v", err)

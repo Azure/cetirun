@@ -33,6 +33,16 @@ const COPILOT_PHASES: Record<CopilotProxyPhase, { label: string; color: "warning
 const REFRESH_MS = 10_000;
 const REFRESH_WINDOW_MS = 5 * 60_000;
 
+// The Copilot reasons for which the operator keeps the Agent's Copilot models
+// off its key, and what they mean to the owner. Signing in again does not
+// help with them.
+const COPILOT_WITHHELD = new Map<string, string>([
+  ["NotAllowedRouteRemovalFailed",
+    "GitHub Copilot models are unavailable: the Agent Policy no longer allows one of them, and the AI Gateway has not removed it yet. They come back when it is removed. Shared models keep working."],
+  ["PolicyCheckUnavailable",
+    "GitHub Copilot models are unavailable until the operator can check them against the Agent Policy. Shared models keep working."],
+]);
+
 /**
  * The Agent's models in the platform AI Gateway, its default model, and the
  * GitHub Copilot sign-in the Portal runs for the Agent's Copilot proxy.
@@ -214,7 +224,8 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
           )}
           {copilotPhase === "Degraded" && copilot.reason && (
             <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>
-              Copilot models could not be registered ({copilot.reason}). Signing in again may help.
+              {COPILOT_WITHHELD.get(copilot.reason) ??
+                `Copilot models could not be registered (${copilot.reason}). Signing in again may help.`}
             </Text>
           )}
           {copilot.shared && copilot.shared.length > 0 && (

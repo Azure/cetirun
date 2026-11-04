@@ -88,6 +88,14 @@ not allow `enterprise-sol`, the instance does not get the owner's Copilot
 only the Policy's **Allow GitHub Copilot**. An example is a Claude model when
 the Gateway has no Claude deployment.
 
+When the Policy stops allowing such a model, the operator removes the model's
+route from the Gateway before it updates the instance's key. If the Gateway
+cannot remove the route, the key cannot reach any of the owner's Copilot models
+until the route is removed. The same occurs while the operator cannot read the
+Gateway's models or prices. The operator tries again about every 15 seconds.
+Shared models keep working, and the instance page tells why Copilot is not
+available.
+
 The instance's key reaches a Copilot model only by that name. The
 `copilot/<model>` names of earlier versions are removed from the key. An
 instance whose default model is set as `copilot/<model>` uses the current name

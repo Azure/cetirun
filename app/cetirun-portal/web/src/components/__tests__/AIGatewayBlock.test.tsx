@@ -199,6 +199,22 @@ describe("AIGatewayBlock", () => {
     expect(screen.getByText("Not offered because the Agent Policy does not allow these models: gpt-6-astra")).toBeInTheDocument();
   });
 
+  it("says why Copilot models wait for the removal of a model the policy no longer allows", () => {
+    renderBlock(instance({
+      copilot: { phase: "Degraded", reason: "NotAllowedRouteRemovalFailed", models: ["o-mini"], notAllowed: ["gpt-6-astra"] },
+    }));
+    expect(screen.getByText(/the Agent Policy no longer allows one of them, and the AI Gateway has not removed it yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/Signing in again may help/)).toBeNull();
+  });
+
+  it("keeps the sign-in hint for other Copilot failures, also for a reason named like an object property", () => {
+    for (const reason of ["RouteRegistrationFailed", "constructor"]) {
+      const { unmount } = renderBlock(instance({ copilot: { phase: "Degraded", reason, models: [] } }));
+      expect(screen.getByText(`Copilot models could not be registered (${reason}). Signing in again may help.`)).toBeInTheDocument();
+      unmount();
+    }
+  });
+
   it("shows the policy's limits on the agent's key, read-only", () => {
     renderBlock(instance({ rateLimits: { maxParallelRequests: 4, rpm: 60, perModel: { "gpt-6": { tpm: 200000 } } } }));
     const limits = screen.getByLabelText("AI Gateway limits");

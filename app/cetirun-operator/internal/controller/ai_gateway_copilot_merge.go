@@ -212,13 +212,7 @@ func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, mo
 	for _, model := range entitledModels {
 		entitled[model.Name] = true
 	}
-	var allowed map[string]bool
-	if policy != nil {
-		allowed = map[string]bool{}
-		for _, name := range policy.Spec.ModelAccess.SharedModels.Allowed {
-			allowed[name] = true
-		}
-	}
+	allowed := policySharedModelsAllowed(policy)
 	byReal := copilotSharedNamesByReal(view, priced)
 	placements = map[string]copilotPlacement{}
 	for _, model := range models {
@@ -232,7 +226,7 @@ func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, mo
 				continue
 			}
 		}
-		if allowed != nil && len(namesakes) > 0 && !slices.ContainsFunc(namesakes, func(name string) bool { return allowed[name] }) {
+		if copilotModelNotAllowed(namesakes, allowed) {
 			notAllowed = append(notAllowed, model.ID)
 			continue
 		}
@@ -245,6 +239,27 @@ func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, mo
 	slices.Sort(skipped)
 	slices.Sort(notAllowed)
 	return placements, skipped, notAllowed, true
+}
+
+// policySharedModelsAllowed returns the shared model names an AgentPolicy
+// allows, and nil for an Agent without one (policy is nil).
+func policySharedModelsAllowed(policy *cetirunv1alpha1.AgentPolicy) map[string]bool {
+	if policy == nil {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for _, name := range policy.Spec.ModelAccess.SharedModels.Allowed {
+		allowed[name] = true
+	}
+	return allowed
+}
+
+// copilotModelNotAllowed reports that an AgentPolicy does not let the Agent
+// use a Copilot model: one or more shared models are the same real model
+// (namesakes), and the policy allows none of them (allowed). An Agent without
+// a policy, with allowed nil, is never limited this way.
+func copilotModelNotAllowed(namesakes []string, allowed map[string]bool) bool {
+	return allowed != nil && len(namesakes) > 0 && !slices.ContainsFunc(namesakes, func(name string) bool { return allowed[name] })
 }
 
 // copilotSharedNamesByReal lists, for each real model, the shared model names
