@@ -55,9 +55,11 @@ live shared updates. Other skills keep their native discovery rules. The
 compatibility patch checks the pinned native source hashes during image builds.
 With shared Skills enabled, OpenClaw polls its watched files every five seconds.
 This adds file metadata reads so remote storage updates reach native discovery
-even when the filesystem does not deliver change events. The Agents of a Skill
-Marketplace Team read a copy of the Team's release at `skills.mountPath`
-instead. Refer to [Protected Sandbox rendering](#protected-sandbox-rendering).
+even when the filesystem does not deliver change events.
+
+The Agents of a Skill Marketplace Team read a copy of the Team's release at
+`skills.mountPath` instead. Refer to
+[Protected Sandbox rendering](#protected-sandbox-rendering).
 
 Memory no longer mounts a read-only directory over the whole `$HOME/.agents`.
 Personal files and Skills there remain visible and writable. The platform still
@@ -158,6 +160,11 @@ other container mounts the claim. The render fails unless both values are
 set, `skills.shared` is true, the composed Agent context is enabled, and the
 workload is a reconciled Sandbox. When both values are empty, the render does
 not change.
+
+The initializer writes the copied release ID into its termination message as
+`cetirun.skills.release=<id>`. The Portal compares it with the Team's current
+release to show the owner that a restart picks up newer skills. A failed write
+does not stop the initializer.
 
 The legacy pre-upgrade orphan/re-adoption hook is absent from protected
 renders. If a StatefulSet that already exists uses `volumeClaimTemplates`, a

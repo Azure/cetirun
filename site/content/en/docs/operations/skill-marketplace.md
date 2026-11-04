@@ -408,7 +408,10 @@ repository.
 
 On the page of an Agent, its owner sees the marketplace skills of the Team
 under **Team skills**. Each skill has one of these states: **Published**,
-**Pending**, **Retained**, or **Missing**.
+**Pending**, **Retained**, or **Missing**. When the Team has a newer release
+than the Agent copied, the section says that the Agent uses the earlier
+versions until it restarts. Refer to
+[When changes take effect](#when-changes-take-effect).
 
 ### With kubectl
 
@@ -481,6 +484,18 @@ the Agent, its owner selects **Restart Agent**. Refer to
 [Restart while retaining HOME](../../guides/lifecycle/#restart-while-retaining-home).
 An Agent also receives the newest versions when its Pod starts again for
 another reason.
+
+The Portal shows when a restart is necessary. When the HOME initializer of
+the Agent completes, it writes the ID of the release that it copied into its
+termination message, `cetirun.skills.release=<id>`. When the current release
+of the Team has another ID for the same selection, **Team skills** on the page
+of the Agent shows a warning. If the owner can restart the Agent, the warning
+has a **Restart Agent** button. An Agent with an earlier Agent chart writes no
+ID, so the Portal shows no warning for it. To read the ID with `kubectl`:
+
+```bash
+kubectl get pods -n cetirun-<agent> -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.initContainerStatuses[?(@.name=="init-home-data")].state.terminated.message}{end}'
+```
 
 The service examines the repository when it starts, and then at each
 `syncInterval`. After a failed check, it tries again after one minute, or

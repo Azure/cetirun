@@ -29,6 +29,9 @@ const mockSuspension = vi.hoisted(() => ({
   mutate: vi.fn(), reset: vi.fn(), isPending: false, isError: false, error: new Error("Connection interrupted"),
   variables: undefined as SetInstanceSuspendedRequest | undefined,
 }));
+const mockRestart = vi.hoisted(() => ({
+  mutate: vi.fn(), reset: vi.fn(), isPending: false, isError: false, error: null, data: undefined, variables: undefined,
+}));
 
 vi.mock("../hooks/useInstance", () => ({
   useDeleteInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
@@ -36,6 +39,7 @@ vi.mock("../hooks/useInstance", () => ({
   useUpgradeInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useInstanceStatusByNameQuery: () => ({ data: undefined, isLoading: false }),
   useSetInstanceSuspendedByName: () => mockSuspension,
+  useRestartInstanceByName: () => mockRestart,
 }));
 
 vi.mock("../hooks/useFeatures", () => ({
@@ -280,6 +284,27 @@ describe("OverviewSection", () => {
     expect(screen.queryByRole("region", { name: "Team skills" })).toBeNull();
     view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills: [] }} />);
     expect(screen.queryByRole("region", { name: "Team skills" })).toBeNull();
+  });
+
+  it("asks for a restart while the Agent runs an earlier release of the Team's skills", () => {
+    const teamSkills: Instance["teamSkills"] = [
+      { name: "pdf-tools", description: "Reads and fills PDF forms.", version: "bbbbbbbbbbbb", state: "published" },
+    ];
+    const block = () => within(screen.getByRole("region", { name: "Team skills" }));
+    const view = renderInRouter(<OverviewSection instance={{ ...baseInstance, teamSkills, restartAvailable: true }} />);
+    expect(block().queryByText(/changed after this Agent started/)).toBeNull();
+    expect(block().queryByRole("button", { name: "Restart Agent" })).toBeNull();
+
+    view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills, restartAvailable: true, teamSkillsRestartNeeded: true }} />);
+    expect(block().getByText(/changed after this Agent started/)).toBeInTheDocument();
+    // The block's button asks for the same confirmation as the Agent's own.
+    fireEvent.click(block().getByRole("button", { name: "Restart Agent" }));
+    expect(within(screen.getByRole("dialog")).getByText(/Restart this Agent using its current configuration/)).toBeInTheDocument();
+
+    // Without a restart that the owner may request, the block only explains.
+    view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills, restartAvailable: false, teamSkillsRestartNeeded: true }} />);
+    expect(block().getByText(/changed after this Agent started/)).toBeInTheDocument();
+    expect(block().queryByRole("button", { name: "Restart Agent" })).toBeNull();
   });
 
 });

@@ -13,9 +13,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -433,5 +435,81 @@ func TestAgentDetailsSurviveATeamThatCannotBeRead(t *testing.T) {
 	h.GetInstanceByName(w, managementRequest(http.MethodGet, ""))
 	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "teamSkills") {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAgentDetailsAskForARestartForANewerTeamRelease(t *testing.T) {
+	selected := []string{"pdf-tools", "release-notes"}
+	selection := api.SkillMarketplaceSelectionDigest(selected)
+	other := "sha256:" + strings.Repeat("f", 64)
+	current, earlier := strings.Repeat("d", 20), strings.Repeat("a", 20)
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "research", UID: "team-uid"},
+		Spec: api.TeamSpec{AgentPolicyRef: "marketplace-policy", Skills: selected}}
+	catalog := func(releaseSelection string) *corev1.ConfigMap {
+		published := exampleMarketplaceCatalog()
+		published.Teams = []api.SkillMarketplaceTeam{{Name: "research", UID: "team-uid", SelectionDigest: selection,
+			Release: current, ReleaseSelectionDigest: releaseSelection,
+			Skills: []api.SkillMarketplaceReleaseSkill{{Name: "pdf-tools", Version: "0123456789ab"}, {Name: "release-notes", Version: "ba9876543210"}}}}
+		return marketplaceCatalogConfigMap(published)
+	}
+	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	// pod is a Pod of the Agent whose HOME initializer ended with exit and
+	// message, after copying a release of podSelection.
+	pod := func(name string, age time.Duration, podSelection, message string, exit int32) client.Object {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "cetirun-alice", CreationTimestamp: metav1.NewTime(started.Add(-age))},
+			Spec: corev1.PodSpec{InitContainers: []corev1.Container{{Name: "init-home-data",
+				Env: []corev1.EnvVar{{Name: "CETIRUN_SKILLS_RELEASE_SELECTION", Value: podSelection}}}}},
+			Status: corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{{Name: "init-home-data",
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: exit, Message: message}}}}},
+		}
+	}
+	report := func(release string) string { return "cetirun.skills.release=" + release + "\n" }
+	deleting := pod("deleting", 0, selection, report(earlier), 0)
+	deleting.SetDeletionTimestamp(ptr.To(metav1.NewTime(started)))
+	deleting.SetFinalizers([]string{"example.com/hold"})
+	for _, tc := range []struct {
+		name             string
+		releaseSelection string
+		pods             []client.Object
+		want             bool
+	}{
+		{"an earlier release", selection, []client.Object{pod("p", 0, selection, report(earlier), 0)}, true},
+		{"the current release", selection, []client.Object{pod("p", 0, selection, report(current), 0)}, false},
+		{"other lines around the report", selection, []client.Object{pod("p", 0, selection, "note\n"+report(earlier)+"end", 0)}, true},
+		{"no report, as from an earlier chart", selection, []client.Object{pod("p", 0, selection, "", 0)}, false},
+		{"a malformed report", selection, []client.Object{pod("p", 0, selection, report("not-a-release"), 0)}, false},
+		{"a failed initializer", selection, []client.Object{pod("p", 0, selection, report(earlier), 1)}, false},
+		// A changed selection restarts the Agent without the owner.
+		{"a Pod of another selection", selection, []client.Object{pod("p", 0, other, report(earlier), 0)}, false},
+		{"the current selection not published yet", other, []client.Object{pod("p", 0, selection, report(earlier), 0)}, false},
+		{"no Pod", selection, nil, false},
+		{"the newest Pod has the current release", selection,
+			[]client.Object{pod("old", time.Hour, selection, report(earlier), 0), pod("new", 0, selection, report(current), 0)}, false},
+		{"the newest Pod has an earlier release", selection,
+			[]client.Object{pod("old", time.Hour, selection, report(current), 0), pod("new", 0, selection, report(earlier), 0)}, true},
+		{"a Pod being deleted", selection, []client.Object{deleting}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := customManagementInstance()
+			instance.Spec.Team = "research"
+			objects := []client.Object{instance, team.DeepCopy(), catalog(tc.releaseSelection)}
+			for _, object := range tc.pods {
+				objects = append(objects, object.DeepCopyObject().(client.Object))
+			}
+			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(objects...)), Config: marketplaceConfig()}
+			w := httptest.NewRecorder()
+			h.GetInstanceByName(w, managementRequest(http.MethodGet, ""))
+			var response InstanceResponse
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &response) != nil {
+				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			if response.TeamSkillsRestartNeeded != tc.want || strings.Contains(w.Body.String(), "teamSkillsRestartNeeded") != tc.want {
+				t.Fatalf("teamSkillsRestartNeeded = %t, want %t: %s", response.TeamSkillsRestartNeeded, tc.want, w.Body.String())
+			}
+			if len(response.TeamSkills) != len(selected) {
+				t.Fatalf("teamSkills = %+v", response.TeamSkills)
+			}
+		})
 	}
 }

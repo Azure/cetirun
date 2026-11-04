@@ -74,6 +74,8 @@ export interface Instance extends InstanceVersion {
   aiGateway?: AIGatewayInfo;
   /** The Skill Marketplace skills the Agent's Team selects; absent when there are none. */
   teamSkills?: TeamSkill[];
+  /** The Agent runs an earlier release of its Team's skills; a restart copies the current one. */
+  teamSkillsRestartNeeded?: boolean;
 }
 
 /**

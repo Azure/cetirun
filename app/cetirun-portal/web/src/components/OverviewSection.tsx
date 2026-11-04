@@ -221,7 +221,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
       {gatewayRouted && !instance.suspended && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
 
-      <TeamSkillsBlock skills={instance.teamSkills} />
+      <TeamSkillsBlock instance={instance} />
 
       {features?.agentToolsEnabled && <ToolAuthorizationBlock instance={instance} />}
 

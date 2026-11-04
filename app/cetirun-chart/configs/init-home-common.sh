@@ -267,9 +267,9 @@ skills_release_ready() (
 )
 
 # Skill Marketplace: copy the release of the selection digest $2 that the
-# Team subtree $1 names into the skills directory $3. The release may still
-# be publishing, so wait for it, and copy again when CURRENT moves on
-# meanwhile.
+# Team subtree $1 names into the skills directory $3, and print the release
+# id. The release may still be publishing, so wait for it, and copy again
+# when CURRENT moves on meanwhile.
 copy_skills_release() (
   set -e
   team=$1
@@ -291,13 +291,30 @@ copy_skills_release() (
     done
     copied=$(copy_shared_skills "$team/releases/$id" "$dest" release)
     current=$(skills_release_id "$team") || current=
-    if [ "$current" = "$id" ]; then exit 0; fi
+    if [ "$current" = "$id" ]; then
+      printf '%s\n' "$id"
+      exit 0
+    fi
     # Names are skill names, so they split safely.
     for name in $copied; do rm -rf "$dest/$name"; done
   done
   init_error "SkillsReleaseUnstable"
   exit 1
 )
+
+# Report the Skill Marketplace release that the view $1 holds in this
+# container's termination message. The Portal compares it with the Team's
+# current release, to tell the owner that a restart picks up newer skills.
+# The report only informs, so a failed write is ignored.
+report_skills_release() {
+  [ -f "$1/.skills-release" ] || return 0
+  report_id=
+  IFS= read -r report_id < "$1/.skills-release" || :
+  report_log=${CETIRUN_TERMINATION_LOG:-/dev/termination-log}
+  # Kubernetes provides the file; never create one elsewhere.
+  [ -f "$report_log" ] || return 0
+  { printf 'cetirun.skills.release=%s\n' "$report_id" > "$report_log"; } 2>/dev/null || :
+}
 
 # Compose platform context; native Agents mount only its reserved leaves:
 # AGENTS.md and, for a Skill Marketplace Team, the copied Team skills.
@@ -314,6 +331,7 @@ prepare_agent_context() (
   [ ! -L "$view/current" ] || { init_error "InvalidContextView"; exit 1; }
   [ ! -e "$view/current" ] || {
     [ -f "$view/current/.ready" ] || { init_error "IncompleteContextView"; exit 1; }
+    report_skills_release "$view/current"
     exit 0
   }
   stage=$(mktemp -d "$view/.context.XXXXXX")
@@ -344,12 +362,14 @@ prepare_agent_context() (
     # personal skills in HOME.
     [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ] || { init_error "SharedSkillsUnavailable"; exit 1; }
     mkdir "$stage/team-skills"
-    copy_skills_release "$CETIRUN_SHARED_SKILLS_DIR" "$CETIRUN_SKILLS_RELEASE_SELECTION" "$stage/team-skills"
+    release=$(copy_skills_release "$CETIRUN_SHARED_SKILLS_DIR" "$CETIRUN_SKILLS_RELEASE_SELECTION" "$stage/team-skills")
+    printf '%s\n' "$release" > "$stage/.skills-release"
   elif [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ]; then
     copy_shared_skills "$CETIRUN_SHARED_SKILLS_DIR" "$stage/skills"
   fi
   printf 'context-v1\n' > "$stage/.ready"
   mv "$stage" "$view/current"
+  report_skills_release "$view/current"
 )
 
 run_agent_init() {

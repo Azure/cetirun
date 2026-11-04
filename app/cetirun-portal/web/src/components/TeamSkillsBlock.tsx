@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { Badge, Text, tokens } from "@fluentui/react-components";
-import type { TeamSkill, TeamSkillState } from "../types/instance";
+import { Badge, MessageBar, MessageBarBody, Text, tokens } from "@fluentui/react-components";
+import type { Instance, TeamSkillState } from "../types/instance";
 import { shortSkillVersion } from "../utils/skillMarketplace";
+import { RestartAgentButton } from "./RestartAgentButton";
 
 const STATES: Record<TeamSkillState, { label: string; color: "success" | "informative" | "warning" | "danger"; hint?: string }> = {
   published: { label: "Published", color: "success" },
@@ -13,7 +14,8 @@ const STATES: Record<TeamSkillState, { label: string; color: "success" | "inform
 };
 
 /** The Skill Marketplace skills the Agent's Team selects, with their publication state. Renders nothing without any. */
-export function TeamSkillsBlock({ skills }: { skills?: TeamSkill[] }) {
+export function TeamSkillsBlock({ instance }: { instance: Instance }) {
+  const skills = instance.teamSkills;
   if (!skills?.length) return null;
   return (
     <section
@@ -33,6 +35,20 @@ export function TeamSkillsBlock({ skills }: { skills?: TeamSkill[] }) {
       <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
         Chosen by your Team's administrator from the Skill Marketplace. Changes take effect when the Agent next starts.
       </Text>
+      {instance.teamSkillsRestartNeeded && (
+        <>
+          <MessageBar intent="warning">
+            <MessageBarBody>
+              The Team's skills changed after this Agent started. The Agent uses the earlier versions until it restarts.
+            </MessageBarBody>
+          </MessageBar>
+          {instance.restartAvailable && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <RestartAgentButton key={instance.uid} instance={instance} />
+            </div>
+          )}
+        </>
+      )}
       <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
         {skills.map((skill) => {
           const state = STATES[skill.state] ?? { label: skill.state, color: "informative" as const };

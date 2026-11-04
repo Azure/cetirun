@@ -883,7 +883,9 @@ class SkillsReleaseTests(unittest.TestCase):
                 self.assertEqual((skill / "SKILL.md").read_text(), "Synthetic team-skill instructions.\n")
                 self.assertEqual((skill / "references/guide.md").read_text(), "Synthetic reference.\n")
                 self.assertEqual((skill / "run.sh").stat().st_mode & 0o777, 0o755)
-                self.assertEqual(sorted(os.listdir(self.view / "current")), [".ready", "AGENTS.md", "skills", "team-skills"])
+                self.assertEqual(sorted(os.listdir(self.view / "current")),
+                                 [".ready", ".skills-release", "AGENTS.md", "skills", "team-skills"])
+                self.assertEqual((self.view / "current/.skills-release").read_text(), RELEASE + "\n")
                 # Team skills stay apart from the composed platform skills.
                 self.assertEqual(os.listdir(self.view / "current/skills"), [])
                 self.assertEqual(snapshot(self.team), sources)
@@ -1030,6 +1032,7 @@ class SkillsReleaseTests(unittest.TestCase):
         self.assertTrue(moved.exists())
         # The copy of the release CURRENT no longer names is removed.
         self.assertEqual(self.published_skills(), ["second-skill"])
+        self.assertEqual((self.view / "current/.skills-release").read_text(), NEXT_RELEASE + "\n")
 
     def test_current_that_keeps_moving_is_unstable(self):
         self.release(skills=("first-skill",))
@@ -1053,6 +1056,9 @@ class SkillsReleaseTests(unittest.TestCase):
         self.publish()
         (self.team / ".team-notes").write_text("Synthetic notes.\n")
         (self.team / "notes-link").symlink_to(".team-notes")
+        log = self.root / "termination-log"
+        log.write_text("")
+        self.agent["env"]["CETIRUN_TERMINATION_LOG"] = str(log)
         result = run(self.agent)
         self.assertEqual(result.returncode, 0, result.stderr)
         skills = self.view / "current/skills"
@@ -1060,6 +1066,49 @@ class SkillsReleaseTests(unittest.TestCase):
         self.assertFalse((self.view / "current/team-skills").exists())
         self.assertEqual(os.readlink(skills / "notes-link"), ".team-notes")
         self.assertEqual((skills / "releases" / RELEASE / ".cetirun-selection").read_text(), SELECTION + "\n")
+        # Only a Skill Marketplace release is reported.
+        self.assertFalse((self.view / "current/.skills-release").exists())
+        self.assertEqual(log.read_text(), "")
+
+    def test_the_copied_release_is_reported_in_the_termination_message(self):
+        # The Portal compares the report with the Team's current release.
+        self.release(skills=("first-skill",))
+        self.publish()
+        log = self.root / "termination-log"
+        log.write_text("")
+        self.agent["env"]["CETIRUN_TERMINATION_LOG"] = str(log)
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.read_text(), f"cetirun.skills.release={RELEASE}\n")
+        # A later release does not reach a Pod that has its view: an
+        # initializer that runs again in the same Pod reports the copy again.
+        self.release(NEXT_RELEASE, skills=("second-skill",))
+        self.publish(NEXT_RELEASE)
+        log.write_text("")
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.published_skills(), ["first-skill"])
+        self.assertEqual(log.read_text(), f"cetirun.skills.release={RELEASE}\n")
+
+    def test_an_unavailable_termination_message_does_not_stop_the_initializer(self):
+        self.release()
+        self.publish()
+        for case in ("missing", "directory", "read-only"):
+            with self.subTest(case=case):
+                shutil.rmtree(self.view)
+                self.view.mkdir()
+                log = self.root / f"termination-{case}"
+                if case == "directory":
+                    log.mkdir()
+                elif case == "read-only":
+                    log.write_text("")
+                    log.chmod(0o444)
+                result = self.run_init(CETIRUN_TERMINATION_LOG=str(log))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.published_skills(), ["team-skill"])
+                if case == "missing":
+                    # Outside Kubernetes, no file appears at the path.
+                    self.assertFalse(log.exists())
 
     def test_release_mode_configuration_errors(self):
         self.release()

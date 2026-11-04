@@ -125,6 +125,9 @@ type InstanceResponse struct {
 	// TeamSkills are the Skill Marketplace skills of the Agent's Team, when
 	// the Team has a policy. Only the single-Agent read fills them in.
 	TeamSkills []TeamSkill `json:"teamSkills,omitempty"`
+	// TeamSkillsRestartNeeded reports that the Agent runs an earlier release
+	// of its Team's skills than the current one. A restart copies it.
+	TeamSkillsRestartNeeded bool `json:"teamSkillsRestartNeeded,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -260,7 +263,7 @@ func (h *InstanceHandler) GetInstanceByName(w http.ResponseWriter, r *http.Reque
 	if resp.AIGateway != nil {
 		resp.AIGateway.RateLimits = h.policyRateLimits(r.Context(), instance)
 	}
-	resp.TeamSkills = h.teamSkills(r.Context(), instance)
+	resp.TeamSkills, resp.TeamSkillsRestartNeeded = h.teamSkills(r.Context(), instance)
 	w.Header().Set("ETag", kube.RegistryETag(instance))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)

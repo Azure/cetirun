@@ -16,6 +16,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // AdminSkillMarketplaceHandler serves the Skill Marketplace catalog, from
@@ -186,40 +187,45 @@ type TeamSkill struct {
 
 // teamSkills returns the Skill Marketplace skills of the Agent's Team, or
 // nil when the marketplace is disabled, the Team has no policy or selects no
-// marketplace skill, or the Team or the catalog cannot be read. It never
-// fails the Agent's response.
-func (h *InstanceHandler) teamSkills(ctx context.Context, instance *cetirunv1alpha1.Agent) []TeamSkill {
+// marketplace skill, or the Team or the catalog cannot be read. restart
+// reports that the Agent runs an earlier release of the Team's current
+// selection. It never fails the Agent's response.
+func (h *InstanceHandler) teamSkills(ctx context.Context, instance *cetirunv1alpha1.Agent) (skills []TeamSkill, restart bool) {
 	if !h.Config.SkillMarketplaceEnabled || instance.Spec.Team == "" {
-		return nil
+		return nil, false
 	}
 	team, err := h.Kube.GetTeam(ctx, instance.Spec.Team)
 	if err != nil {
 		slog.Debug("Team skills unavailable: Team not readable", "team", instance.Spec.Team, "error", err)
-		return nil
+		return nil, false
 	}
 	if team.Spec.AgentPolicyRef == "" || len(cetirunv1alpha1.SkillMarketplaceSelection(team.Spec.Skills)) == 0 {
-		return nil
+		return nil, false
 	}
 	catalog, _, err := h.Kube.GetSkillMarketplaceCatalog(ctx, h.Config.SkillMarketplaceCatalogNamespace)
 	if err != nil {
 		slog.Warn("Team skills unavailable: the Skill Marketplace catalog is not readable", "team", team.Name, "error", err)
-		return nil
+		return nil, false
 	}
-	return teamSkillStates(team, catalog)
+	return teamSkillStates(team, catalog), h.teamSkillsRestartNeeded(ctx, instance, team, catalog)
 }
 
-// teamSkillStates reports the Team's marketplace skills in name order. The
-// catalog's entry for the Team is matched by UID, so a Team created again
-// under the same name never shows its predecessor's release. Without a
-// catalog every skill is pending.
-func teamSkillStates(team *cetirunv1alpha1.Team, catalog cetirunv1alpha1.SkillMarketplaceCatalog) []TeamSkill {
-	var entry *cetirunv1alpha1.SkillMarketplaceTeam
+// catalogTeam returns the catalog's entry for the Team. It matches the UID,
+// so a Team created again under the same name never sees its predecessor's
+// release.
+func catalogTeam(catalog cetirunv1alpha1.SkillMarketplaceCatalog, team *cetirunv1alpha1.Team) *cetirunv1alpha1.SkillMarketplaceTeam {
 	for i := range catalog.Teams {
 		if team.UID != "" && catalog.Teams[i].UID == string(team.UID) {
-			entry = &catalog.Teams[i]
-			break
+			return &catalog.Teams[i]
 		}
 	}
+	return nil
+}
+
+// teamSkillStates reports the Team's marketplace skills in name order.
+// Without a catalog entry for the Team, every skill is pending.
+func teamSkillStates(team *cetirunv1alpha1.Team, catalog cetirunv1alpha1.SkillMarketplaceCatalog) []TeamSkill {
+	entry := catalogTeam(catalog, team)
 	current := entry != nil && entry.ReleaseSelectionDigest == cetirunv1alpha1.SkillMarketplaceSelectionDigest(team.Spec.Skills)
 	selection := cetirunv1alpha1.SkillMarketplaceSelection(team.Spec.Skills)
 	skills := make([]TeamSkill, 0, len(selection))
@@ -247,4 +253,72 @@ func teamSkillStates(team *cetirunv1alpha1.Team, catalog cetirunv1alpha1.SkillMa
 		skills = append(skills, skill)
 	}
 	return skills
+}
+
+// The HOME initializer of an Agent copies the release of the selection digest
+// in its environment, and reports the release in its termination message
+// (app/cetirun-chart/configs/init-home-common.sh).
+const (
+	skillsInitializer   = "init-home-data"
+	skillsSelectionEnv  = "CETIRUN_SKILLS_RELEASE_SELECTION"
+	skillsReleaseReport = "cetirun.skills.release="
+)
+
+// teamSkillsRestartNeeded reports whether the Agent's newest Pod copied
+// another release of the Team's current selection than the catalog's current
+// one: the marketplace published a repository change after the Pod started,
+// and only a restart copies it. A changed selection restarts the Agent by
+// itself, and a Pod that reports no release, as from an earlier chart, never
+// asks for a restart.
+func (h *InstanceHandler) teamSkillsRestartNeeded(ctx context.Context, instance *cetirunv1alpha1.Agent,
+	team *cetirunv1alpha1.Team, catalog cetirunv1alpha1.SkillMarketplaceCatalog) bool {
+	entry := catalogTeam(catalog, team)
+	selection := cetirunv1alpha1.SkillMarketplaceSelectionDigest(team.Spec.Skills)
+	if entry == nil || entry.Release == "" || entry.ReleaseSelectionDigest != selection {
+		return false
+	}
+	pods, err := h.Kube.GetPods(ctx, "cetirun-"+instance.Name)
+	if err != nil {
+		slog.Debug("Team skills restart unknown: Pods not readable", "instance", instance.Name, "error", err)
+		return false
+	}
+	var newest *corev1.Pod
+	copied := ""
+	for i := range pods {
+		pod := &pods[i]
+		release, ok := copiedSkillsRelease(pod, selection)
+		if ok && (newest == nil || newest.CreationTimestamp.Before(&pod.CreationTimestamp)) {
+			newest, copied = pod, release
+		}
+	}
+	return newest != nil && copied != entry.Release
+}
+
+// copiedSkillsRelease returns the release that the HOME initializer of the
+// Pod reported for the selection digest. A Pod that is being deleted reports
+// nothing.
+func copiedSkillsRelease(pod *corev1.Pod, selection string) (string, bool) {
+	if pod.DeletionTimestamp != nil {
+		return "", false
+	}
+	initializer := slices.IndexFunc(pod.Spec.InitContainers, func(container corev1.Container) bool {
+		return container.Name == skillsInitializer
+	})
+	if initializer < 0 || !slices.ContainsFunc(pod.Spec.InitContainers[initializer].Env, func(env corev1.EnvVar) bool {
+		return env.Name == skillsSelectionEnv && env.Value == selection && env.ValueFrom == nil
+	}) {
+		return "", false
+	}
+	for _, status := range pod.Status.InitContainerStatuses {
+		if status.Name != skillsInitializer || status.State.Terminated == nil || status.State.Terminated.ExitCode != 0 {
+			continue
+		}
+		for _, line := range strings.Split(status.State.Terminated.Message, "\n") {
+			if release, found := strings.CutPrefix(line, skillsReleaseReport); found &&
+				cetirunv1alpha1.ValidSkillMarketplaceReleaseID(release) {
+				return release, true
+			}
+		}
+	}
+	return "", false
 }

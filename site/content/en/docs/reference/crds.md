@@ -387,6 +387,11 @@ behaviors. Keep it equal to the operator's `skillMarketplace.enabled`.
   `description`, `version`, and `state`. The state is `published`, `pending`,
   `retained`, or `missing`. Without a catalog, each skill is `pending`. The
   field is absent when the Portal cannot read the Team or the catalog.
+- The same response has `teamSkillsRestartNeeded: true` when the newest Pod
+  of the Agent copied an earlier Team release. Both releases are of the current
+  Team selection. The Portal reads the copied release ID from the termination
+  message of the `init-home-data` container. Without that ID, the field is
+  absent.
 
 See [Skill Marketplace](../../operations/skill-marketplace/) for the catalog
 fields and the states.
