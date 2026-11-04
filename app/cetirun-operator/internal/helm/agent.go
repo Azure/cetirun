@@ -160,10 +160,10 @@ func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) 
 	if input["cetiadmin"] != nil {
 		return nil, fmt.Errorf("cetiadmin is reserved for the platform")
 	}
-	return prepareRuntimeChart(chrt, input, validateRender)
+	return prepareRuntimeChart(chrt, input, validateRender, nil)
 }
 
-func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender bool) (*PreparedRelease, error) {
+func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender bool, harness agents.Harness) (*PreparedRelease, error) {
 	var request AgentRequest
 	requestJSON, err := json.Marshal(input["agentRequest"])
 	if err != nil {
@@ -200,11 +200,16 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	if request.PullSecretName != "" && chrt.Metadata.Annotations["cetirun.microsoft.com/registry-credentials"] != "v1" {
 		return nil, fmt.Errorf("the selected chart does not support managed registry credentials; upgrade the pinned chart first")
 	}
-	harness, err := builtin.NewRegistry().Lookup(request.Type)
-	if err != nil {
-		return nil, err
+	if harness == nil {
+		harness, err = builtin.NewRegistry().Lookup(request.Type)
+		if err != nil {
+			return nil, err
+		}
 	}
 	descriptor := harness.Describe()
+	if descriptor.Type != request.Type {
+		return nil, fmt.Errorf("harness does not match the runtime request")
+	}
 	if descriptor.Type == "custom" && input[sandboxworkload.ValuesKey] == nil {
 		return prepareCustomChart(chrt, input, request, validateRender)
 	}
