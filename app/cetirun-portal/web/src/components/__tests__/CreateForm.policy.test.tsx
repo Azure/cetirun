@@ -126,6 +126,17 @@ describe("Policy-controlled Agent creation", () => {
     expect(mutation.mutate).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("lets the user choose an optional Identity: %s", async (enabled) => {
+    vi.stubGlobal("fetch", vi.fn(() => respond(options("restricted", { agentIdentity: { allowed: true, required: false } }))));
+    const user = userEvent.setup(); renderForm(); await selectTeam(user);
+    const identity = screen.getByRole("switch", { name: /Entra Agent Identity/ });
+    expect(identity).not.toBeChecked();
+    expect(identity).toBeEnabled();
+    if (enabled) await user.click(identity);
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ agentIdentityEnabled: enabled || undefined }));
+  });
+
   it("enables and locks a required Identity", async () => {
     vi.stubGlobal("fetch", vi.fn(() => respond(options("restricted", { agentIdentity: { allowed: true, required: true } }))));
     const user = userEvent.setup(); renderForm(); await selectTeam(user);
