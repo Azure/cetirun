@@ -131,7 +131,8 @@ export async function approvedResources(home, env = process.env, cwd = path.join
             const result = await current.tool(params, id, modelRuntime && (async (ticket, abortSignal) => {
             const result = await modelRuntime.completeSimple(ctx.model, { systemPrompt: ticket.system,
               messages: [{ role: "user", content: ticket.prompt, timestamp: Date.now() }], tools: [] },
-            { signal: AbortSignal.any([abortSignal, signal, AbortSignal.timeout(ticket.timeoutSeconds * 1000)].filter(Boolean)), maxTokens: ticket.maxTokens, maxRetries: 0, temperature: 0 });
+            { signal: AbortSignal.any([abortSignal, signal, AbortSignal.timeout(ticket.timeoutSeconds * 1000)].filter(Boolean)), maxTokens: ticket.maxTokens, maxRetries: 0, temperature: 0,
+              onPayload: payload => ({ ...payload, metadata: { ...payload.metadata, tags: ["cetirun-memory-evaluation", "artifact-contract-v1"] } }) });
             return { output: result.content.filter(part => part.type === "text").map(part => part.text).join(""),
               outcome: result.stopReason === "stop" ? "completed" : "unknown", model: `${result.provider}/${result.model}`, requests: 1, tokens: result.usage?.totalTokens ?? null };
           }));

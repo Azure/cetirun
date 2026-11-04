@@ -203,12 +203,16 @@ check_agent_context() {
   fi
 }
 
-# Compose one per-Pod view before mounting it read-only at $HOME/.agents.
+# Compose platform context; native Agents mount only its reserved leaves.
 # Sources and the PVC's own .agents contents are never modified.
 prepare_agent_context() (
   set -e
   [ -n "${CETIRUN_CONTEXT_VIEW:-}" ] || exit 0
   home_ensure_dir .agents
+  if [ -z "${CETIRUN_CONTEXT_DIR:-}" ]; then
+    home_ensure_dir .agents/skills
+    home_path .agents/AGENTS.md >/dev/null
+  fi
   view=$CETIRUN_CONTEXT_VIEW
   [ ! -L "$view/current" ] || { init_error "InvalidContextView"; exit 1; }
   [ ! -e "$view/current" ] || {

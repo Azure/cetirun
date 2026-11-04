@@ -122,37 +122,55 @@ func TestMemoryChartDefaultsAndContext(t *testing.T) {
 					t.Fatal("Memory assets must retain their volume-local storage bound")
 				}
 				main, init := pod.Containers[0], pod.InitContainers[1]
+				expectedContext := []corev1.VolumeMount{runtimebindings.ContextMount(home)}
+				if typ != "custom" {
+					expectedContext = []corev1.VolumeMount{
+						{Name: "context-view", MountPath: home + "/.agents/AGENTS.md", SubPath: "current/AGENTS.md", ReadOnly: true},
+					}
+					if shared {
+						expectedContext = append(expectedContext, corev1.VolumeMount{Name: "shared-skills", MountPath: home + "/.aks/skills", ReadOnly: true})
+					}
+				}
 				found := false
 				homeMounted := false
 				for _, mount := range main.VolumeMounts {
 					homeMounted = homeMounted || mount.Name == "data" && mount.MountPath == home
-					if mount.Name == "shared-skills" || strings.HasPrefix(mount.MountPath, home+"/.agents/") {
+					if typ == "custom" && (mount.Name == "shared-skills" || strings.HasPrefix(mount.MountPath, home+"/.agents/")) {
 						t.Fatal("a nested source mount can hide the composed Memory skill")
 					}
 					if mount.MountPath == home+"/.agents" {
-						if !homeMounted || found || !reflect.DeepEqual(mount, runtimebindings.ContextMount(home)) {
+						if typ != "custom" || !homeMounted || found || !reflect.DeepEqual(mount, runtimebindings.ContextMount(home)) {
 							t.Fatal("Agent context is not one read-only composed mount")
 						}
 						found = true
 					}
 				}
-				if !found {
+				if typ == "custom" && !found {
 					t.Fatal("Agent context is missing")
+				}
+				for _, wanted := range expectedContext {
+					if !slices.ContainsFunc(main.VolumeMounts, func(mount corev1.VolumeMount) bool { return reflect.DeepEqual(mount, wanted) }) {
+						t.Fatalf("missing runtime context mount: %+v", wanted)
+					}
 				}
 				for _, helper := range pod.InitContainers {
 					if helper.Name != "doctor" {
 						continue
 					}
-					assets, context := false, false
+					assets := false
 					for _, mount := range helper.VolumeMounts {
 						assets = assets || reflect.DeepEqual(mount, runtimebindings.MemoryMounts()[0])
-						context = context || reflect.DeepEqual(mount, runtimebindings.ContextMount(home))
 					}
-					if !assets || !context {
+					if !assets {
 						t.Fatal("doctor cannot validate the configured Memory plugin and skills")
 					}
+					for _, wanted := range expectedContext {
+						if !slices.ContainsFunc(helper.VolumeMounts, func(mount corev1.VolumeMount) bool { return reflect.DeepEqual(mount, wanted) }) {
+							t.Fatalf("doctor is missing runtime context: %+v", wanted)
+						}
+					}
 				}
-				for _, wanted := range runtimebindings.ContextInitMounts(shared, true) {
+				for _, wanted := range runtimebindings.ContextInitMounts(shared && typ == "custom", true) {
 					matches := 0
 					for _, actual := range init.VolumeMounts {
 						if reflect.DeepEqual(actual, wanted) {
@@ -163,7 +181,7 @@ func TestMemoryChartDefaultsAndContext(t *testing.T) {
 						t.Fatalf("missing or duplicate context initializer mount: %+v", wanted)
 					}
 				}
-				for _, wanted := range runtimebindings.ContextInitEnvironment(shared, true) {
+				for _, wanted := range runtimebindings.ContextInitEnvironment(shared && typ == "custom", true) {
 					found := false
 					for _, actual := range init.Env {
 						found = found || reflect.DeepEqual(actual, wanted)
@@ -233,9 +251,16 @@ func TestReconciledNativeMemoryHasComposedContext(t *testing.T) {
 				}
 				pod := registryRenderedTemplate(t, prepared).Spec
 				if !slices.ContainsFunc(pod.Containers[0].VolumeMounts, func(mount corev1.VolumeMount) bool {
-					return reflect.DeepEqual(mount, runtimebindings.ContextMount("/home/vibe"))
+					return reflect.DeepEqual(mount, corev1.VolumeMount{
+						Name: "context-view", MountPath: "/home/vibe/.agents/AGENTS.md", SubPath: "current/AGENTS.md", ReadOnly: true,
+					})
 				}) {
 					t.Fatal("native Memory cannot load the composed Agent context")
+				}
+				if slices.ContainsFunc(pod.Containers[0].VolumeMounts, func(mount corev1.VolumeMount) bool {
+					return mount.MountPath == "/home/vibe/.agents" || mount.MountPath == "/home/vibe/.agents/skills"
+				}) {
+					t.Fatal("native Memory hides the writable personal context")
 				}
 				foundInitializer := false
 				for _, container := range pod.InitContainers {
@@ -243,19 +268,22 @@ func TestReconciledNativeMemoryHasComposedContext(t *testing.T) {
 						continue
 					}
 					foundInitializer = true
-					for _, mount := range runtimebindings.ContextInitMounts(shared, true) {
+					for _, mount := range runtimebindings.ContextInitMounts(false, true) {
 						if !slices.ContainsFunc(container.VolumeMounts, func(actual corev1.VolumeMount) bool {
 							return reflect.DeepEqual(actual, mount)
 						}) {
 							t.Fatalf("context initializer is missing mount %+v", mount)
 						}
 					}
-					for _, env := range runtimebindings.ContextInitEnvironment(shared, true) {
+					for _, env := range runtimebindings.ContextInitEnvironment(false, true) {
 						if !slices.ContainsFunc(container.Env, func(actual corev1.EnvVar) bool {
 							return reflect.DeepEqual(actual, env)
 						}) {
 							t.Fatalf("context initializer is missing environment %s", env.Name)
 						}
+					}
+					if slices.ContainsFunc(container.VolumeMounts, func(mount corev1.VolumeMount) bool { return mount.Name == "shared-skills" }) {
+						t.Fatal("native initialization still snapshots shared skills")
 					}
 				}
 				if !foundInitializer {
@@ -263,10 +291,10 @@ func TestReconciledNativeMemoryHasComposedContext(t *testing.T) {
 				}
 				if shared && !slices.ContainsFunc(pod.Containers[0].VolumeMounts, func(mount corev1.VolumeMount) bool {
 					return reflect.DeepEqual(mount, corev1.VolumeMount{
-						Name: "context-view", MountPath: "/home/vibe/.aks/skills", SubPath: "current/skills", ReadOnly: true,
+						Name: "shared-skills", MountPath: "/home/vibe/.aks/skills", ReadOnly: true,
 					})
 				}) {
-					t.Fatal("native shared skills alias must use the composed context")
+					t.Fatal("native shared skills must retain the live read-only claim")
 				}
 				seen := map[string]bool{}
 				for _, mount := range pod.Containers[0].VolumeMounts {
@@ -306,11 +334,11 @@ func TestSharedSkillAliasDoesNotReplaceCommonContext(t *testing.T) {
 			pod := registryRenderedTemplate(t, prepared).Spec
 			common, alias := false, false
 			for _, mount := range pod.Containers[0].VolumeMounts {
-				common = common || reflect.DeepEqual(mount, runtimebindings.ContextMount("/home/vibe"))
-				alias = alias || reflect.DeepEqual(mount, corev1.VolumeMount{Name: "context-view", MountPath: aliasPath, SubPath: "current/skills", ReadOnly: true})
+				common = common || reflect.DeepEqual(mount, corev1.VolumeMount{Name: "context-view", MountPath: "/home/vibe/.agents/AGENTS.md", SubPath: "current/AGENTS.md", ReadOnly: true})
+				alias = alias || reflect.DeepEqual(mount, corev1.VolumeMount{Name: "shared-skills", MountPath: aliasPath, ReadOnly: true})
 			}
 			if !common || !alias {
-				t.Fatal("the optional alias must expose the same read-only view")
+				t.Fatal("the shared mount must stay live beside the reserved Memory skill")
 			}
 		})
 	}

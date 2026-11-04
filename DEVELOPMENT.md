@@ -704,6 +704,21 @@ still cause a failure before host installation or qualification. Offline
 helper tests send real curl requests to loopback fixtures to cover recovery and
 retry exhaustion.
 
+The Memory native suite also runs the installed helper through its CLI. It
+terminates its own helper process after a committed HEAD switch, then checks
+physical deletion, damaged-note recovery, and later writes. The same check can
+run against a separately installed helper:
+
+```bash
+python3 -B app/cetirun-memory-context/tests/cli_recovery.py \
+  --helper /path/to/cetirun-memory --work-dir /path/to/writable-test-directory
+```
+
+This Linux-only check creates and removes disposable synthetic stores inside
+the selected existing directory. It does not use the Agent's active Memory
+store or call a model. A canary run requires separate cluster authorization and
+does not replace native conversation or retained-restart acceptance.
+
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests must have the pinned PyYAML dependency in
 `infra/istio/requirements.txt`. The Python command does not run the auth and

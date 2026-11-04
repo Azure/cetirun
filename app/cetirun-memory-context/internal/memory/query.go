@@ -69,6 +69,9 @@ func (v *snapshot) corpus(r Request) ([]corpusNote, *Partial, error) {
 		}
 		var note Note
 		if err := v.read(ref, &note); err != nil {
+			if v.damagedObject(ref, err) {
+				continue
+			}
 			return nil, nil, err
 		}
 		b, _ := encode(note)
@@ -78,7 +81,7 @@ func (v *snapshot) corpus(r Request) ([]corpusNote, *Partial, error) {
 		}
 		items = append(items, corpusNote{ref, note})
 	}
-	return items, nil, nil
+	return items, v.damageReport(), nil
 }
 func evidenceTime(n Note) string {
 	best := ""

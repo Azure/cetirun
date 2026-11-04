@@ -48,6 +48,7 @@ plugin.register(host, root=root)
 assert host.tools["cetirun_memory"]["schema"]["parameters"]["properties"]["payload"] == json.loads(
     (root / "adapters/common/payload-schema.json").read_text()
 )
+assert "query with queryTerms to read stored note bodies" in host.tools["cetirun_memory"]["schema"]["parameters"]["properties"]["command"]["description"]
 assert host.sections["cetirun-memory-context"] == (Path.home() / ".agents/AGENTS.md").read_text()
 host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="cli", turn_id="turn-1", user_message="Fixture", model="model")
 tool = host.tools["cetirun_memory"]["handler"]

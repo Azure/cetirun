@@ -469,6 +469,10 @@ func (s *Store) review(v *snapshot, ref Ref, n Note) (review, error) {
 		}
 		var other Note
 		if err := v.read(otherRef, &other); err != nil {
+			if v.damagedObject(otherRef, err) {
+				out.NeedsRecheck, out.Reason = true, "RelatedMemoryDamaged"
+				continue
+			}
 			return out, err
 		}
 		for _, link := range other.Relations {
