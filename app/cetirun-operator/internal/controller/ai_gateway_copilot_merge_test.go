@@ -508,6 +508,18 @@ func TestAgentPolicyWithholdsCopilotWhileANotAllowedRouteRemains(t *testing.T) {
 			c := newCopilotRevocationTest(t, shared)
 			disallowTestPolicyModels(t, c.kube, "enterprise-sol")
 			c.gateway.deleteModelErr = errors.New("synthetic outage")
+
+			// A pass that fails before the key is written reports nothing.
+			c.gateway.getErr = errors.New("synthetic key API outage")
+			if err := c.r.reconcileAIGateway(context.Background(), c.agent, true); err == nil {
+				t.Fatal("the pass must fail while the key cannot be read")
+			}
+			if events, copilot := copilotWithheldEvents(c.r), c.agent.Status.AIGateway.Copilot; events != 0 ||
+				copilot.Reason == aiGatewayCopilotReasonNotAllowedRouteRemovalFailed {
+				t.Fatalf("%d events, copilot status %+v: nothing is reported before the key is written", events, copilot)
+			}
+			c.gateway.getErr = nil
+
 			c.reconcile(t, "removal fails")
 			copilot := c.agent.Status.AIGateway.Copilot
 			if !c.routeThere() || c.keyHoldsCopilot() {
