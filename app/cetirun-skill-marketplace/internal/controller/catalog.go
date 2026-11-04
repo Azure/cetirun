@@ -122,15 +122,27 @@ func (c *Catalog) SetError(message string) {
 	c.markDirty()
 }
 
-// SetTeam records a Team's publication state.
+// SetTeam records a Team's publication state. Team names are unique, so an
+// entry of another UID with the same name belongs to a deleted Team that the
+// catalog has not forgotten yet: the Team created again under the name
+// replaces it.
 func (c *Catalog) SetTeam(team api.SkillMarketplaceTeam) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if previous, ok := c.teams[team.UID]; ok && reflect.DeepEqual(previous, team) {
-		return
+	changed := false
+	for uid, other := range c.teams {
+		if uid != team.UID && other.Name == team.Name {
+			delete(c.teams, uid)
+			changed = true
+		}
 	}
-	c.teams[team.UID] = team
-	c.markDirty()
+	if previous, ok := c.teams[team.UID]; !ok || !reflect.DeepEqual(previous, team) {
+		c.teams[team.UID] = team
+		changed = true
+	}
+	if changed {
+		c.markDirty()
+	}
 }
 
 // RemoveTeam forgets a Team.

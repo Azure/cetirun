@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -154,6 +155,188 @@ func TestADeletedTeamLeavesTheCatalogAtOnce(t *testing.T) {
 	// Its releases stay until the grace period ends.
 	if id, _, _ := publisher.ReadCurrent(string(team.UID)); id == "" {
 		t.Fatalf("the deleted Team's releases must stay for the grace period")
+	}
+}
+
+// catalogTeams returns the Team entries of the catalog document.
+func catalogTeams(t *testing.T, catalog *Catalog) []api.SkillMarketplaceTeam {
+	t.Helper()
+	raw, err := catalog.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document api.SkillMarketplaceCatalog
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	return document.Teams
+}
+
+// teamRelease is what an Agent of a Team copies: the current release, and the
+// skill directories in it.
+type teamRelease struct {
+	id, published string
+	versions      map[string]string
+	dirs          []string
+}
+
+func readTeamRelease(t *testing.T, publisher *publish.Publisher, uid string) teamRelease {
+	t.Helper()
+	id, release, err := publisher.ReadCurrent(uid)
+	if err != nil || release == nil {
+		t.Fatalf("Team %s has no current release: %q %v", uid, id, err)
+	}
+	state := teamRelease{id: id, published: release.CreatedAt, versions: map[string]string{}}
+	for _, skill := range release.Skills {
+		state.versions[skill.Name] = skill.Version
+	}
+	entries, err := os.ReadDir(filepath.Join(publisher.Root, "teams", uid, "releases", id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".") {
+			state.dirs = append(state.dirs, entry.Name())
+		}
+	}
+	return state
+}
+
+// Teams share the repository, not their releases: each Team's subtree holds
+// only the skills that the Team selects, and a repository change publishes
+// again only for the Teams that select a changed skill.
+func TestTeamsArePublishedIndependently(t *testing.T) {
+	clock := time.Now()
+	publisher := &publish.Publisher{Root: t.TempDir(), Now: func() time.Time { return clock }}
+	if err := publisher.Init(); err != nil {
+		t.Fatal(err)
+	}
+	research := policyTeam("research", "00000000-0000-4000-8000-000000000001", "pdf-tools", "zh-notes")
+	support := policyTeam("support", "00000000-0000-4000-8000-000000000002", "zh-notes")
+	kube := newClient(t, research, support)
+	store := &Store{}
+	catalog := NewCatalog(kube, kube, "cetirun-system", api.SkillMarketplaceRepository{})
+	r := &TeamReconciler{Client: kube, Publisher: publisher, Store: store, Catalog: catalog, GCGrace: time.Hour}
+	ctx := context.Background()
+	newCommit := func(commit, pdf, zh string) {
+		t.Helper()
+		store.set(commit, []skills.Skill{repoSkill("pdf-tools", pdf, "pdf "+pdf), repoSkill("zh-notes", zh, "zh "+zh),
+			repoSkill("unselected", "cccccccccccc", "unselected")})
+		clock = clock.Add(time.Minute)
+		// A new commit reconciles every Team, as the synchronizer's event does.
+		if _, err := r.Reconcile(ctx, reconcile.Request{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releaseCount := func(team *api.Team) int {
+		t.Helper()
+		entries, err := os.ReadDir(filepath.Join(publisher.Root, "teams", string(team.UID), "releases"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+
+	newCommit("c1", "aaaaaaaaaaa1", "bbbbbbbbbbb1")
+	first := map[string]teamRelease{"research": readTeamRelease(t, publisher, string(research.UID)),
+		"support": readTeamRelease(t, publisher, string(support.UID))}
+	if !reflect.DeepEqual(first["research"].dirs, []string{"pdf-tools", "zh-notes"}) ||
+		!reflect.DeepEqual(first["support"].dirs, []string{"zh-notes"}) {
+		t.Fatalf("each release must hold only its Team's selection: %+v", first)
+	}
+
+	// Only research selects pdf-tools.
+	newCommit("c2", "aaaaaaaaaaa2", "bbbbbbbbbbb1")
+	second := map[string]teamRelease{"research": readTeamRelease(t, publisher, string(research.UID)),
+		"support": readTeamRelease(t, publisher, string(support.UID))}
+	if second["research"].id == first["research"].id || second["research"].versions["pdf-tools"] != "aaaaaaaaaaa2" {
+		t.Fatalf("research must get a release with the new pdf-tools: %+v", second["research"])
+	}
+	if !reflect.DeepEqual(second["support"], first["support"]) || releaseCount(support) != 1 {
+		t.Fatalf("support must keep its release: %+v, want %+v", second["support"], first["support"])
+	}
+
+	// Both select zh-notes.
+	newCommit("c3", "aaaaaaaaaaa2", "bbbbbbbbbbb2")
+	third := map[string]teamRelease{"research": readTeamRelease(t, publisher, string(research.UID)),
+		"support": readTeamRelease(t, publisher, string(support.UID))}
+	for name, release := range third {
+		if release.id == second[name].id || release.versions["zh-notes"] != "bbbbbbbbbbb2" {
+			t.Fatalf("%s must get a release with the new zh-notes: %+v", name, release)
+		}
+	}
+	if !reflect.DeepEqual(third["support"].dirs, []string{"zh-notes"}) {
+		t.Fatalf("support must still hold only zh-notes: %+v", third["support"])
+	}
+
+	// The catalog lists each Team once, with its own release.
+	teams := catalogTeams(t, catalog)
+	if len(teams) != 2 || teams[0].Name != "research" || teams[0].Release != third["research"].id ||
+		teams[1].Name != "support" || teams[1].Release != third["support"].id {
+		t.Fatalf("catalog Teams %+v", teams)
+	}
+}
+
+// A Team created again under the name of a deleted Team is a new Team: it gets
+// its own subtree, and the catalog lists it once, also when the marketplace
+// sees the new Team before the deletion. The deleted Team's releases stay
+// until the grace period ends, and other Teams keep theirs.
+func TestATeamCreatedAgainUnderItsNameIsANewTeam(t *testing.T) {
+	publisher := &publish.Publisher{Root: t.TempDir()}
+	if err := publisher.Init(); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		researchUID = "00000000-0000-4000-8000-000000000001"
+		deletedUID  = "00000000-0000-4000-8000-000000000002"
+		createdUID  = "00000000-0000-4000-8000-000000000003"
+	)
+	deleted := policyTeam("support", deletedUID, "zh-notes")
+	kube := newClient(t, policyTeam("research", researchUID, "pdf-tools"), deleted)
+	store := &Store{}
+	store.set("c1", []skills.Skill{repoSkill("pdf-tools", "aaaaaaaaaaa1", "pdf"), repoSkill("zh-notes", "bbbbbbbbbbb1", "zh")})
+	catalog := NewCatalog(kube, kube, "cetirun-system", api.SkillMarketplaceRepository{})
+	r := &TeamReconciler{Client: kube, Publisher: publisher, Store: store, Catalog: catalog, GCGrace: time.Hour}
+	ctx := context.Background()
+	if _, err := r.Reconcile(ctx, reconcile.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	research := readTeamRelease(t, publisher, researchUID)
+	if err := kube.Delete(ctx, deleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Create(ctx, policyTeam("support", createdUID, "pdf-tools")); err != nil {
+		t.Fatal(err)
+	}
+	// The marketplace sees the new Team before the deletion.
+	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "support"}}); err != nil {
+		t.Fatal(err)
+	}
+	teams := catalogTeams(t, catalog)
+	if len(teams) != 2 || teams[1].Name != "support" || teams[1].UID != createdUID {
+		t.Fatalf("the catalog must list the new Team once, without its predecessor: %+v", teams)
+	}
+	if created := readTeamRelease(t, publisher, createdUID); !reflect.DeepEqual(created.dirs, []string{"pdf-tools"}) {
+		t.Fatalf("the new Team must get its own release: %+v", created)
+	}
+	if old := readTeamRelease(t, publisher, deletedUID); !reflect.DeepEqual(old.dirs, []string{"zh-notes"}) {
+		t.Fatalf("the deleted Team's release must stay for the grace period: %+v", old)
+	}
+
+	// After the grace period, a full pass removes only the deleted Team's subtree.
+	r.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if _, err := r.Reconcile(ctx, reconcile.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(publisher.Root, "teams", deletedUID)); !os.IsNotExist(err) {
+		t.Fatalf("the deleted Team's subtree must be removed after the grace period: %v", err)
+	}
+	if got := readTeamRelease(t, publisher, researchUID); !reflect.DeepEqual(got, research) {
+		t.Fatalf("another Team must keep its release: %+v, want %+v", got, research)
+	}
+	readTeamRelease(t, publisher, createdUID)
+	if teams := catalogTeams(t, catalog); len(teams) != 2 || teams[1].UID != createdUID {
+		t.Fatalf("catalog Teams after the grace period %+v", teams)
 	}
 }
 
