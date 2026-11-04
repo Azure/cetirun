@@ -4,6 +4,7 @@
 package sandboxpolicy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/netip"
@@ -127,6 +128,20 @@ func TestCompileNativeProfilePreservesNetworkBaseline(t *testing.T) {
 	qualified := mustCompile(t, input)
 	if native.Revision == qualified.Revision || !reflect.DeepEqual(native.Network.Policy.Spec, qualified.Network.Policy.Spec) {
 		t.Fatal("bounded profile must have its own revision without weakening baseline network rules")
+	}
+}
+
+func TestValidateNativeTeamPolicyBindingChecksAllNativePolicyControls(t *testing.T) {
+	input := nativeCompilerFixture()
+	input.Resolution.AgentPolicy.Network.BlockedFQDNs = []string{"blocked.example.com"}
+	input.Resolution.Capabilities.BlockedFQDNs = false
+	policy := &api.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "native", UID: "native-policy-uid"},
+		Spec:       input.Resolution.AgentPolicy,
+	}
+	err := ValidateNativeTeamPolicyBinding(context.Background(), policy, input.Resolution.Capabilities, input.Platform, nil, true)
+	if !errors.Is(err, ErrUnsupportedControl) {
+		t.Fatalf("native compatibility omitted unsupported FQDN control: %v", err)
 	}
 }
 

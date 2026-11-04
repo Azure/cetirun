@@ -94,17 +94,20 @@ type TeamSkillStorageDTO struct {
 
 // TeamDTO is the JSON shape for Team admin endpoints.
 type TeamDTO struct {
-	UID               string               `json:"uid,omitempty"`
-	ResourceVersion   string               `json:"resourceVersion,omitempty"`
-	AgentPolicyRef    string               `json:"agentPolicyRef"`
-	SandboxRefs       []string             `json:"sandboxRefs"`
-	DefaultSandboxRef string               `json:"defaultSandboxRef"`
-	Name              string               `json:"name"`
-	Role              string               `json:"role,omitempty"`
-	Description       []string             `json:"description,omitempty"`
-	Skills            []string             `json:"skills,omitempty"`
-	SkillStorage      *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
-	CreatedAt         string               `json:"createdAt,omitempty"`
+	Generation        int64                                    `json:"generation"`
+	Deleting          bool                                     `json:"deleting"`
+	Compatibility     *cetirunv1alpha1.TeamCompatibilityStatus `json:"compatibility,omitempty"`
+	UID               string                                   `json:"uid,omitempty"`
+	ResourceVersion   string                                   `json:"resourceVersion,omitempty"`
+	AgentPolicyRef    string                                   `json:"agentPolicyRef"`
+	SandboxRefs       []string                                 `json:"sandboxRefs"`
+	DefaultSandboxRef string                                   `json:"defaultSandboxRef"`
+	Name              string                                   `json:"name"`
+	Role              string                                   `json:"role,omitempty"`
+	Description       []string                                 `json:"description,omitempty"`
+	Skills            []string                                 `json:"skills,omitempty"`
+	SkillStorage      *TeamSkillStorageDTO                     `json:"skillStorage,omitempty"`
+	CreatedAt         string                                   `json:"createdAt,omitempty"`
 	// ModelRouters are the Team's smart-routing models and
 	// ModelRouterStatus the operator's report on them.
 	ModelRouters      []TeamModelRouterDTO       `json:"modelRouters,omitempty"`
@@ -130,7 +133,9 @@ type TeamUpsertRequest struct {
 
 func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 	dto := TeamDTO{
-		UID: string(t.UID), ResourceVersion: t.ResourceVersion,
+		Generation: t.Generation, Deleting: !t.DeletionTimestamp.IsZero(),
+		Compatibility: teamCompatibilityObservation(t),
+		UID:           string(t.UID), ResourceVersion: t.ResourceVersion,
 		AgentPolicyRef: t.Spec.AgentPolicyRef, SandboxRefs: append([]string{}, t.Spec.SandboxRefs...), DefaultSandboxRef: t.Spec.DefaultSandboxRef,
 		Name:        t.Name,
 		Role:        t.Spec.MemberContext.Role,
@@ -206,6 +211,7 @@ func (h *AdminTeamHandler) ListTeams(w http.ResponseWriter, r *http.Request) {
 	for i := range teams {
 		out = append(out, toTeamDTO(&teams[i]))
 	}
+	h.refreshCompatibilityReferences(r.Context(), out)
 	writeJSON(w, http.StatusOK, map[string]any{"teams": out})
 }
 
@@ -226,7 +232,9 @@ func (h *AdminTeamHandler) GetTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get team")
 		return
 	}
-	writeJSON(w, http.StatusOK, toTeamDTO(team))
+	dtos := []TeamDTO{toTeamDTO(team)}
+	h.refreshCompatibilityReferences(r.Context(), dtos)
+	writeJSON(w, http.StatusOK, dtos[0])
 }
 
 // CreateTeam handles POST /api/v1/admin/teams.

@@ -724,6 +724,10 @@ func TestAdminPolicyClassifiesCoordinatedUnavailableErrors(testContext *testing.
 		wantCode      string
 	}{
 		{
+			name: "coordinated compatibility rejection", mutationErr: compatibilityAdmissionError(testContext),
+			wantStatus: http.StatusServiceUnavailable, wantCode: "policy_change_unavailable",
+		},
+		{
 			name:        "coordinated not found",
 			mutationErr: apierrors.NewNotFound(schema.GroupResource{Group: "cetirun.microsoft.com", Resource: "agentpolicies"}, "standard"),
 			wantStatus:  http.StatusServiceUnavailable,

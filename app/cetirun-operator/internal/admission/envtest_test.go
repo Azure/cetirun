@@ -222,6 +222,41 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	}); err != nil {
 		t.Fatal("mutating/validating admission did not become active:", err)
 	}
+	t.Run("compatibility status round-trips through the served Team CRD", func(t *testing.T) {
+		stored := &api.Team{}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(f.team), stored); err != nil {
+			t.Fatal(err)
+		}
+		checkedAt := metav1.NewTime(time.Now().UTC())
+		stored.Status.Compatibility = &api.TeamCompatibilityStatus{
+			State:  api.CompatibilityCompatible,
+			Team:   api.CompatibilityReference{Name: stored.Name, UID: string(stored.UID), Generation: stored.Generation},
+			Policy: api.CompatibilityReference{Name: stored.Spec.AgentPolicyRef},
+			Sandboxes: []api.SandboxCompatibilityStatus{{
+				Sandbox: api.CompatibilityReference{Name: stored.Spec.DefaultSandboxRef}, State: api.CompatibilityCompatible,
+			}},
+			CheckedAt: checkedAt, ValidUntil: metav1.NewTime(checkedAt.Add(time.Minute)),
+		}
+		if err := cl.Status().Update(ctx, stored); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(stored), stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status.Compatibility == nil || stored.Status.Compatibility.State != api.CompatibilityCompatible ||
+			stored.Status.Compatibility.Team.UID != string(stored.UID) || len(stored.Status.Compatibility.Sandboxes) != 1 {
+			t.Fatalf("served Team CRD did not preserve compatibility status: %+v", stored.Status.Compatibility)
+		}
+		// A strict normal update makes the validating webhook decode the served
+		// status, proving the new status does not block later Team edits.
+		if stored.Labels == nil {
+			stored.Labels = map[string]string{}
+		}
+		stored.Labels["example.com/compatibility-status"] = "round-trip"
+		if err := cl.Update(ctx, stored, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			t.Fatalf("admission could not read a Team with served compatibility status: %v", err)
+		}
+	})
 
 	t.Run("legacy create and controller pinning remain available with admission enabled", func(t *testing.T) {
 		team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy-webhook-team"}}
@@ -317,6 +352,38 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 		if err := cl.Create(ctx, obj, client.FieldValidation(metav1.FieldValidationStrict)); !apierrors.IsBadRequest(err) {
 			t.Fatalf("unknown field was not explicitly rejected: %v", err)
+		}
+	})
+	t.Run("served compatibility denial preserves safe structured causes", func(t *testing.T) {
+		stored := &api.Sandbox{}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(f.box), stored); err != nil {
+			t.Fatal(err)
+		}
+		candidate := stored.DeepCopy()
+		candidate.Spec.Storage.Home.AccessMode = corev1.ReadWriteOnce
+		err := cl.Update(ctx, candidate)
+		if !apierrors.IsForbidden(err) {
+			t.Fatalf("incompatible referenced Sandbox update was not denied: %v", err)
+		}
+		status, ok := err.(apierrors.APIStatus)
+		if !ok || status.Status().Details == nil {
+			t.Fatalf("served admission error omitted status details: %#v", err)
+		}
+		found := false
+		for _, cause := range status.Status().Details.Causes {
+			if cause.Type != metav1.CauseType("CetiRunCompatibility") {
+				continue
+			}
+			var issue api.CompatibilityIssue
+			if err := json.Unmarshal([]byte(cause.Message), &issue); err != nil {
+				t.Fatalf("compatibility cause is not typed JSON: %v", err)
+			}
+			if issue.Code == "home_access_mode_unsupported" && issue.Valid() {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("served admission error omitted the safe compatibility cause: %+v", status.Status().Details.Causes)
 		}
 	})
 	t.Run("newer CRD fields fail explicitly while known writes remain available", func(t *testing.T) {

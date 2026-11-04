@@ -143,10 +143,13 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 	if err := source.readPrerequisite(ctx, client.ObjectKey{Name: agent.Spec.Team}, team); err != nil {
 		return empty, err
 	}
-	if team.UID != binding.TeamUID || !requestedTeam.DeletionTimestamp.IsZero() ||
-		team.Generation != requestedTeam.Generation ||
-		sandboxSource(team, api.GroupVersion.String(), "Team") != sandboxSource(requestedTeam, api.GroupVersion.String(), "Team") ||
-		!equality.Semantic.DeepEqual(team.Spec, requestedTeam.Spec) ||
+	teamMatchesRequest := requestedTeam.DeletionTimestamp.IsZero() && team.Generation == requestedTeam.Generation &&
+		sandboxSource(team, api.GroupVersion.String(), "Team") == sandboxSource(requestedTeam, api.GroupVersion.String(), "Team") &&
+		equality.Semantic.DeepEqual(team.Spec, requestedTeam.Spec)
+	if reconciled && source.NativeExecution {
+		teamMatchesRequest = sameReconciledSandboxTeamInputs(requestedTeam, team)
+	}
+	if team.UID != binding.TeamUID || !teamMatchesRequest ||
 		!slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef) {
 		return empty, fmt.Errorf("%w: Sandbox prerequisite Team identity or selection changed", errSandboxSourceChanged)
 	}
@@ -327,7 +330,22 @@ func (p *KubernetesSandboxPrerequisites) resolveCurrent(ctx context.Context, req
 			})
 		}
 	}
-	if err := verifier.verifySandboxSources(ctx, recheckedSources); err != nil {
+	if reconciled && source.NativeExecution {
+		if err := validateSandboxSourceInventory(recheckedSources); err != nil {
+			return empty, err
+		}
+		for _, reference := range recheckedSources {
+			if reference.APIVersion == api.GroupVersion.String() && reference.Kind == "Team" {
+				if err := verifier.verifyReconciledSandboxTeamSource(ctx, reference, team); err != nil {
+					return empty, fmt.Errorf("recheck Sandbox prerequisites: %w", err)
+				}
+				continue
+			}
+			if _, err := verifier.readSandboxSource(ctx, reference); err != nil {
+				return empty, fmt.Errorf("recheck Sandbox prerequisites: %w", err)
+			}
+		}
+	} else if err := verifier.verifySandboxSources(ctx, recheckedSources); err != nil {
 		return empty, fmt.Errorf("recheck Sandbox prerequisites: %w", err)
 	}
 	if err := ctx.Err(); err != nil {

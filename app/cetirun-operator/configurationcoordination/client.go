@@ -63,8 +63,9 @@ func New(writer client.Client, reader client.Reader, authority Authority) (*Clie
 }
 
 // Update reserves and submits one exact resource-version-conditional Update,
-// observes its result, and releases the reservation only after a definitive
-// applied outcome. An uncertain outcome deliberately retains the reservation.
+// then releases the reservation only after a definitive applied or superseded
+// outcome. A superseded operation returns a conflict rather than claiming the
+// desired content committed; an uncertain outcome retains its reservation.
 func (c *Client) Update(ctx context.Context, before, after client.Object) error {
 	adapter, err := sandboxcoordination.NewKubernetesChangeAdapter(c.writer, c.reader, before, after)
 	if err != nil {
@@ -74,15 +75,21 @@ func (c *Client) Update(ctx context.Context, before, after client.Object) error 
 	if err != nil {
 		return err
 	}
-	return c.reconcileChange(ctx, ticket, adapter)
+	observed := &observedChangeAdapter{ChangeAdapter: adapter}
+	if err := c.reconcileChange(ctx, ticket, observed); err != nil {
+		return err
+	}
+	if observed.outcome != nil && observed.outcome.Superseded {
+		return fmt.Errorf("%w: configuration update was superseded before it committed", sandboxcoordination.ErrConflict)
+	}
+	return nil
 }
 
-// RecoverUpdate permits an exact Reserved retry to proceed through Update, or
-// releases a Changing update only when an authoritative read proves its desired
-// content committed to the same UID at a superseding version. Changing recovery
-// needs no original request images. No ticket is a no-op; an uncertain outcome
-// retains its reservation. This never submits a configuration write or changes
-// a caller's version preconditions.
+// RecoverUpdate permits an exact Reserved retry to proceed through Update. A
+// status-only resource-version change may safely release Reserved or Changing
+// work only when an authoritative read proves the exact recorded before content
+// on the same UID. Desired content at a superseding version proves the Changing
+// update committed. No other outcome is released, submitted, or rebased.
 func (c *Client) RecoverUpdate(ctx context.Context, before, after client.Object) error {
 	ticket, found, err := c.store.ReadConfigurationUpdate(ctx, before)
 	if err != nil || !found {
@@ -92,8 +99,34 @@ func (c *Client) RecoverUpdate(ctx context.Context, before, after client.Object)
 		// Only the original request may resume an unsubmitted operation. This
 		// lookup neither acquires nor advances a reservation; the caller must
 		// still validate its version preconditions before invoking Update.
-		_, err := c.store.ReadConfigurationChange(ctx, before, after)
-		return err
+		if ticket.Change.Before.UID == before.GetUID() && ticket.Change.Before.ResourceVersion == before.GetResourceVersion() &&
+			ticket.Change.Before.Name == before.GetName() && ticket.Change.Before.Namespace == before.GetNamespace() {
+			_, err := c.store.ReadConfigurationChange(ctx, before, after)
+			return err
+		}
+		// A status writer can advance only the resourceVersion after Reserve and
+		// before BeginChange. Observe the exact before content first, then use
+		// the journal's CAS transition to exclude a concurrent original submit.
+		adapter, err := sandboxcoordination.NewKubernetesUpdateRecoveryAdapter(c.reader, ticket, before)
+		if err != nil {
+			return err
+		}
+		outcome, err := adapter.ObserveChange(ctx, ticket)
+		if err != nil || !outcome.Superseded {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: reserved configuration update did not remain at its exact before content", sandboxcoordination.ErrConflict)
+		}
+		ticket, err = c.store.BeginChange(ctx, ticket)
+		if err != nil {
+			return err
+		}
+		adapter, err = sandboxcoordination.NewKubernetesUpdateRecoveryAdapter(c.reader, ticket, before)
+		if err != nil {
+			return err
+		}
+		return c.reconcileChange(ctx, ticket, adapter)
 	}
 	adapter, err := sandboxcoordination.NewKubernetesUpdateRecoveryAdapter(c.reader, ticket, before)
 	if err != nil {
@@ -126,6 +159,19 @@ func (coordinator *Client) reconcileChange(ctx context.Context, ticket sandboxco
 		return fmt.Errorf("%w: recorded configuration operation requires recovery: %w", sandboxcoordination.ErrUnavailable, err)
 	}
 	return err
+}
+
+type observedChangeAdapter struct {
+	sandboxcoordination.ChangeAdapter
+	outcome *sandboxcoordination.ChangeOutcome
+}
+
+func (a *observedChangeAdapter) ObserveChange(ctx context.Context, ticket sandboxcoordination.ChangeTicket) (*sandboxcoordination.ChangeOutcome, error) {
+	outcome, err := a.ChangeAdapter.ObserveChange(ctx, ticket)
+	if err == nil {
+		a.outcome = outcome
+	}
+	return outcome, err
 }
 
 func boundedIdentity(value string, limit int) bool {

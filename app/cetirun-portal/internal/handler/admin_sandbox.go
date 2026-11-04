@@ -26,9 +26,12 @@ import (
 type AdminSandboxHandler struct{ Kube *kube.Client }
 
 type SandboxDTO struct {
-	Name            string `json:"name"`
-	UID             string `json:"uid"`
-	ResourceVersion string `json:"resourceVersion"`
+	Generation         int64              `json:"generation"`
+	ObservedGeneration int64              `json:"observedGeneration"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	Name               string             `json:"name"`
+	UID                string             `json:"uid"`
+	ResourceVersion    string             `json:"resourceVersion"`
 	api.SandboxSpec
 	Ready    string `json:"ready"`
 	Deleting bool   `json:"deleting"`
@@ -43,6 +46,8 @@ type SandboxUpsertRequest struct {
 
 func toSandboxDTO(box *api.Sandbox) SandboxDTO {
 	dto := SandboxDTO{Name: box.Name, UID: string(box.UID), ResourceVersion: box.ResourceVersion,
+		Generation: box.Generation, ObservedGeneration: box.Status.ObservedGeneration,
+		Conditions:  append([]metav1.Condition(nil), box.Status.Conditions...),
 		SandboxSpec: *box.Spec.DeepCopy(), Ready: "Unknown", Deleting: !box.DeletionTimestamp.IsZero()}
 	for _, condition := range box.Status.Conditions {
 		if condition.Type == "Ready" && condition.ObservedGeneration == box.Generation {
@@ -95,6 +100,9 @@ func configurationVersion(uid, resourceVersion string) (kube.ConfigurationVersio
 }
 
 func writeConfigurationError(w http.ResponseWriter, operation, kind, name string, err error) {
+	if writeCompatibilityError(w, err) {
+		return
+	}
 	switch {
 	case kube.IsConfigurationCoordinationUnavailable(err):
 		writeError(w, http.StatusServiceUnavailable, "configuration_change_unavailable", "Configuration coordination is unavailable or the write outcome is uncertain; recover the recorded operation before resubmitting")

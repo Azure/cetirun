@@ -15,7 +15,7 @@ vi.mock("../../api/adminTeam");
 vi.mock("../../api/adminPolicy");
 vi.mock("../../api/adminSandbox");
 
-const team: teams.TeamDTO = { name: "example", uid: "team-uid", resourceVersion: "7", agentPolicyRef: "standard", sandboxRefs: ["small", "large"], defaultSandboxRef: "large", role: "Engineer" };
+const team: teams.TeamDTO = { name: "example", uid: "team-uid", generation: 1, resourceVersion: "7", agentPolicyRef: "standard", sandboxRefs: ["small", "large"], defaultSandboxRef: "large", role: "Engineer" };
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(teams.getTeam).mockResolvedValue(team);

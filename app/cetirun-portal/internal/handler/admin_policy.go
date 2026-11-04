@@ -643,6 +643,9 @@ func (h *AdminPolicyHandler) CreatePolicy(w http.ResponseWriter, r *http.Request
 	policy := &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: req.Name}, Spec: spec}
 	created, err := h.Kube.CreateAgentPolicy(r.Context(), policy)
 	if err != nil {
+		if writeCompatibilityError(w, err) {
+			return
+		}
 		if kube.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "policy_exists", "AgentPolicy "+req.Name+" already exists")
 			return
@@ -720,6 +723,9 @@ func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request
 	}
 	updated, err := h.Kube.UpdateAgentPolicySpec(r.Context(), name, desired, version)
 	if err != nil {
+		if writeCompatibilityError(w, err) {
+			return
+		}
 		if kube.IsConfigurationCoordinationUnavailable(err) {
 			writeError(w, http.StatusServiceUnavailable, "policy_change_unavailable", "Policy coordination is unavailable or the write outcome is uncertain; do not resubmit until an administrator recovers the recorded operation")
 			return
