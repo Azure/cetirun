@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:3607c431963c588d69b3be0c31cea63abd197a324bbeede998dda702597d8368 AS builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.3-1@sha256:7a193a3f8ee2ffc8c1420affd7e13cfee4e5d1291a54b1dee370ee1ea3b5241a AS builder
 ARG VERSION=dev
 WORKDIR /src
 COPY app/internal/ ./app/internal/
