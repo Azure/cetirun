@@ -46,7 +46,7 @@ function SharedModelPicker({ value, onChange }: { value: string; onChange: (mode
   const filtered = models.filter((model) => model.toLowerCase().includes(search.toLowerCase()));
 
   return <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-    <Field label="Allowed shared models" hint="Search and select models from the Gateway catalog.">
+    <Field label="Allowed shared models" hint="Search and select models from the Gateway catalog. These models also decide the owners' GitHub Copilot models that are the same models: a Copilot model is offered only when this list allows a shared model that is that model.">
       <Combobox multiselect selectedOptions={selected} value={search} placeholder="Search models"
         disabled={!known || models.length === 0} style={{ width: "100%" }}
         onChange={(event) => setSearch(event.target.value)}

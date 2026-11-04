@@ -5,11 +5,16 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"hash/fnv"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
@@ -111,7 +116,7 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 		}),
 		// The Copilot model's own ID, but another model.
 		sharedDeployment("claude-other", "claude-sonnet-4.5", func(d *aigateway.Deployment) { d.BaseModel = "anthropic/claude-opus-4" }),
-		// The same model, but not granted to this Agent.
+		// The same model, but the Agent's policy does not allow it.
 		sharedDeployment("gpt41", "gpt-4.1", func(d *aigateway.Deployment) { d.Model = "azure/gpt-4.1" }),
 		// A snapshot is never merged, even into the same snapshot.
 		sharedDeployment("team-4o", "team-4o", func(d *aigateway.Deployment) { d.BaseModel = "gpt-4o-2024-11-20" }),
@@ -132,8 +137,8 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 		t.Fatalf("copilot status %+v", copilot)
 	}
 	routes := routesByModel(gateway)
-	merged, own, joined := routes["gpt-5.5"], routes["gpt-4o-2024-11-20"], routes["gpt-4.1"]
-	if len(routes) != 3 || merged.ModelName != "team-gpt" || merged.NoCooldown || merged.Routing.String() != "order=1,weight=2" ||
+	merged, own := routes["gpt-5.5"], routes["gpt-4o-2024-11-20"]
+	if len(routes) != 2 || merged.ModelName != "team-gpt" || merged.NoCooldown || merged.Routing.String() != "order=1,weight=2" ||
 		!slices.Equal(merged.AccessGroups, []string{copilotGroup()}) || merged.BaseModel != "gpt-5.5" {
 		t.Fatalf("the Copilot model joins the shared model at its primary level: %+v", routes)
 	}
@@ -145,25 +150,21 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 			t.Fatalf("every Copilot route is probed without the provider client's retries, and by default not at all: %+v", route)
 		}
 	}
-	// The same model as a shared model the Agent is not granted, under that
-	// name: only the Agent's own access group reaches the route, so the
-	// Agent's key gets its own Copilot route there and never the shared
-	// deployment; it shares nothing, so it is never cooled down.
-	if joined.ModelName != "gpt-4.1" || !joined.NoCooldown || !joined.Routing.IsZero() ||
-		!slices.Equal(joined.AccessGroups, []string{copilotGroup()}) {
-		t.Fatalf("a Copilot model the Agent is not granted the shared model of keeps the name in its own group: %+v", joined)
-	}
+	// The same model as a shared model the Agent's policy does not allow:
+	// the policy decides that model, also from the owner's Copilot, so the
+	// Copilot model is left out and reported.
 	wantRoutes := []cetirunv1alpha1.AIGatewayCopilotRoute{
-		{Model: "gpt-4.1", Name: "gpt-4.1"}, {Model: "gpt-4o-2024-11-20", Name: "gpt-4o-2024-11-20"},
-		{Model: "gpt-5.5", Name: "team-gpt", Shared: true},
+		{Model: "gpt-4o-2024-11-20", Name: "gpt-4o-2024-11-20"}, {Model: "gpt-5.5", Name: "team-gpt", Shared: true},
 	}
-	if !slices.Equal(copilot.Routes, wantRoutes) || !slices.Equal(copilot.Models, []string{"gpt-4.1", "gpt-4o-2024-11-20", "team-gpt"}) ||
-		!slices.Equal(copilot.Skipped, []string{"claude-sonnet-4.5"}) || !slices.Equal(copilot.Unpriced, []string{"grok-code-fast-1"}) {
+	if !slices.Equal(copilot.Routes, wantRoutes) || !slices.Equal(copilot.Models, []string{"gpt-4o-2024-11-20", "team-gpt"}) ||
+		!slices.Equal(copilot.Skipped, []string{"claude-sonnet-4.5"}) || !slices.Equal(copilot.Unpriced, []string{"grok-code-fast-1"}) ||
+		!slices.Equal(copilot.NotAllowed, []string{"gpt-4.1"}) {
 		t.Fatalf("copilot status %+v", copilot)
 	}
 	// The Agent sees one entry per model: the shared model stands for the
-	// Copilot model, with the smaller limits.
-	wantModels := []string{"claude-sonnet-4.5", testSharedModelOne, "team-4o", "team-gpt", "gpt-4.1", "gpt-4o-2024-11-20"}
+	// Copilot model, with the smaller limits. The model the policy does not
+	// allow is not among them.
+	wantModels := []string{"claude-sonnet-4.5", testSharedModelOne, "team-4o", "team-gpt", "gpt-4o-2024-11-20"}
 	if !slices.Equal(agent.Status.AIGateway.Models, wantModels) || agent.Status.AIGateway.DefaultModel != "team-gpt" {
 		t.Fatalf("models %v default %q", agent.Status.AIGateway.Models, agent.Status.AIGateway.DefaultModel)
 	}
@@ -352,6 +353,304 @@ func TestReconcileAIGatewayCopilotFollowsSharedModelsOfALegacyAgent(t *testing.T
 	}
 }
 
+// An AgentPolicy's shared models decide the owner's Copilot models that are
+// the same models: such a Copilot model is offered only when the policy
+// allows a shared model that is that model, whether its name in the Gateway
+// is the Copilot model's ID or another name, and also for the same dated
+// version. A Copilot model that no shared model is needs only Copilot.
+func TestAgentPolicySharedModelsDecideTheSameCopilotModels(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), readyProxy(1))
+	gateway.shared = append(gateway.shared,
+		// Named as the Copilot model is.
+		sharedDeployment("astra", "gpt-6-astra", func(d *aigateway.Deployment) { d.BaseModel = "azure/gpt-6-astra" }),
+		// The same model as a Copilot model, under another name.
+		sharedDeployment("sol", "enterprise-sol", func(d *aigateway.Deployment) { d.BaseModel = "azure/gpt-5.6-sol" }),
+		// The same dated version as a Copilot model.
+		sharedDeployment("dated", "team-4o", func(d *aigateway.Deployment) { d.BaseModel = "gpt-4o-2024-11-20" }),
+	)
+	for _, name := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-4o-2024-11-20"} {
+		gateway.priced[name] = true
+	}
+	ctx := context.Background()
+	reconcile := func(step string) (*cetirunv1alpha1.AIGatewayCopilotStatus, map[string]aigateway.ModelRequest) {
+		t.Helper()
+		if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		copilot := agent.Status.AIGateway.Copilot
+		if copilot == nil || copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady {
+			t.Fatalf("%s: copilot status %+v", step, copilot)
+		}
+		return copilot, routesByModel(gateway)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	signIn(t, kube, agent, `[{"id":"gpt-6-astra"},{"id":"gpt-5.6-sol"},{"id":"gpt-4o-2024-11-20"},{"id":"claude-sonnet-4.5"}]`)
+
+	// The policy allows none of these shared models.
+	copilot, routes := reconcile("policy without them")
+	if !slices.Equal(copilot.NotAllowed, []string{"gpt-4o-2024-11-20", "gpt-5.6-sol", "gpt-6-astra"}) || len(copilot.Skipped) != 0 ||
+		len(routes) != 1 || routes["claude-sonnet-4.5"].ModelName != "claude-sonnet-4.5" {
+		t.Fatalf("only the model that no shared model is is offered: %+v routes %+v", copilot, routes)
+	}
+	for _, name := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-4o-2024-11-20", "enterprise-sol"} {
+		if slices.Contains(agent.Status.AIGateway.Models, name) {
+			t.Fatalf("the Agent is configured with %s: %v", name, agent.Status.AIGateway.Models)
+		}
+	}
+
+	// The policy allows the shared model of another name: the Copilot model
+	// joins it.
+	allowTestPolicyModels(t, kube, "enterprise-sol")
+	copilot, routes = reconcile("policy with enterprise-sol")
+	if joined := routes["gpt-5.6-sol"]; joined.ModelName != "enterprise-sol" || joined.NoCooldown ||
+		!slices.Equal(copilot.NotAllowed, []string{"gpt-4o-2024-11-20", "gpt-6-astra"}) {
+		t.Fatalf("the Copilot model joins the shared model the policy allows: %+v routes %+v", copilot, routes)
+	}
+
+	// The owner turns shared models off. The policy still decides: a model it
+	// allows keeps its own name in the Agent's own group, as for an Agent
+	// without a policy, and one it does not allow stays out.
+	allowTestPolicyModels(t, kube, "gpt-6-astra")
+	agent.Spec.ModelAccess = modelAccess(false, true)
+	copilot, routes = reconcile("shared models off")
+	own, joined := routes["gpt-6-astra"], routes["gpt-5.6-sol"]
+	if own.ModelName != "gpt-6-astra" || !own.NoCooldown || !slices.Equal(own.AccessGroups, []string{copilotGroup()}) ||
+		joined.ModelName != "gpt-5.6-sol" || !slices.Equal(copilot.NotAllowed, []string{"gpt-4o-2024-11-20"}) {
+		t.Fatalf("with shared models off: %+v routes %+v", copilot, routes)
+	}
+}
+
+// copilotRevocationTest is a policy-bound Agent signed in to GitHub Copilot
+// with gpt-5.6-sol, the same model as the shared model enterprise-sol that
+// its policy allows, and claude-sonnet-4.5, which no shared model is.
+type copilotRevocationTest struct {
+	r       *AgentReconciler
+	kube    client.Client
+	gateway *fakeAIGateway
+	agent   *cetirunv1alpha1.Agent
+	token   string
+	// route is the gpt-5.6-sol route.
+	route aigateway.ModelRequest
+}
+
+func newCopilotRevocationTest(t *testing.T, shared bool) *copilotRevocationTest {
+	t.Helper()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Spec.ModelAccess = modelAccess(shared, true)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), readyProxy(1))
+	gateway.shared = append(gateway.shared,
+		sharedDeployment("sol", "enterprise-sol", func(d *aigateway.Deployment) { d.BaseModel = "azure/gpt-5.6-sol" }))
+	gateway.priced["gpt-5.6-sol"] = true
+	allowTestPolicyModels(t, kube, "enterprise-sol")
+	test := &copilotRevocationTest{r: r, kube: kube, gateway: gateway, agent: agent}
+	test.reconcile(t, "before the sign-in")
+	signIn(t, kube, agent, `[{"id":"gpt-5.6-sol"},{"id":"claude-sonnet-4.5"}]`)
+	test.reconcile(t, "signed in")
+	test.token = aigateway.Token(string(readSecret(t, r.Client, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))
+	test.route = routesByModel(gateway)["gpt-5.6-sol"]
+	name := map[bool]string{false: "gpt-5.6-sol", true: "enterprise-sol"}[shared]
+	if test.route.ModelName != name || !test.keyHoldsCopilot() {
+		t.Fatalf("the test needs the route under %s and the Copilot group on the key: %+v, key %v", name, test.route, gateway.keys[test.token].Models)
+	}
+	copilotWithheldEvents(r)
+	return test
+}
+
+// reconcile runs a full pass and requires the key to be read back.
+func (c *copilotRevocationTest) reconcile(t *testing.T, step string) {
+	t.Helper()
+	if err := c.r.reconcileAIGateway(context.Background(), c.agent, true); err != nil {
+		t.Fatalf("%s: %v", step, err)
+	}
+	if c.agent.Status.AIGateway.Phase != cetirunv1alpha1.AIGatewayPhaseReady {
+		t.Fatalf("%s: AI Gateway status %+v", step, c.agent.Status.AIGateway)
+	}
+}
+
+// keyHoldsCopilot reports whether the key, and the status, hold the Agent's
+// Copilot group.
+func (c *copilotRevocationTest) keyHoldsCopilot() bool {
+	return slices.Contains(c.gateway.keys[c.token].Models, copilotGroup()) && slices.Contains(c.agent.Status.AIGateway.AccessGroups, copilotGroup())
+}
+
+// routeThere reports whether the Gateway still has the gpt-5.6-sol route.
+func (c *copilotRevocationTest) routeThere() bool {
+	_, there := c.gateway.models[c.route.ID]
+	return there
+}
+
+// copilotWithheldEvents drains the recorded events and counts the
+// AIGatewayCopilotWithheld ones.
+func copilotWithheldEvents(r *AgentReconciler) int {
+	events := r.EventRecorder.(*record.FakeRecorder).Events
+	count := 0
+	for len(events) > 0 {
+		if strings.Contains(<-events, "AIGatewayCopilotWithheld") {
+			count++
+		}
+	}
+	return count
+}
+
+// With an AgentPolicy, the route of a Copilot model that the policy no longer
+// allows goes before the key is written. While the Gateway cannot remove it,
+// the key does not hold the Agent's Copilot group, which reaches every route
+// of the Agent: the route stays out of reach, under its own name with shared
+// models off, and under the shared model's name it joined with them on. The
+// Agent's configuration does not change for it, and the key gets the group
+// back once the route is removed.
+func TestAgentPolicyWithholdsCopilotWhileANotAllowedRouteRemains(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		t.Run(map[bool]string{false: "shared models off", true: "shared models on"}[shared], func(t *testing.T) {
+			c := newCopilotRevocationTest(t, shared)
+			disallowTestPolicyModels(t, c.kube, "enterprise-sol")
+			c.gateway.deleteModelErr = errors.New("synthetic outage")
+
+			// A pass that fails before the key is written reports nothing.
+			c.gateway.getErr = errors.New("synthetic key API outage")
+			if err := c.r.reconcileAIGateway(context.Background(), c.agent, true); err == nil {
+				t.Fatal("the pass must fail while the key cannot be read")
+			}
+			if events, copilot := copilotWithheldEvents(c.r), c.agent.Status.AIGateway.Copilot; events != 0 ||
+				copilot.Reason == aiGatewayCopilotReasonNotAllowedRouteRemovalFailed {
+				t.Fatalf("%d events, copilot status %+v: nothing is reported before the key is written", events, copilot)
+			}
+			c.gateway.getErr = nil
+
+			c.reconcile(t, "removal fails")
+			copilot := c.agent.Status.AIGateway.Copilot
+			if !c.routeThere() || c.keyHoldsCopilot() {
+				t.Fatalf("the key must not hold the group of a route that is still there: key %v, status %v",
+					c.gateway.keys[c.token].Models, c.agent.Status.AIGateway.AccessGroups)
+			}
+			if copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Reason != aiGatewayCopilotReasonNotAllowedRouteRemovalFailed ||
+				!slices.Equal(copilot.NotAllowed, []string{"gpt-5.6-sol"}) || !slices.Contains(copilot.Registered, c.route.ID) {
+				t.Fatalf("copilot status %+v", copilot)
+			}
+			// The key withholds the other Copilot model; the configuration
+			// keeps it.
+			if models := c.agent.Status.AIGateway.Models; !slices.Contains(models, "claude-sonnet-4.5") || slices.Contains(models, c.route.ModelName) {
+				t.Fatalf("models %v", models)
+			}
+			if events := copilotWithheldEvents(c.r); events != 1 {
+				t.Fatalf("%d AIGatewayCopilotWithheld events, want 1", events)
+			}
+
+			// Another failing pass leaves the key and reports nothing new.
+			updates := len(c.gateway.updates)
+			c.reconcile(t, "removal fails again")
+			if len(c.gateway.updates) != updates || c.keyHoldsCopilot() || copilotWithheldEvents(c.r) != 0 {
+				t.Fatalf("key updates %d -> %d, key %v", updates, len(c.gateway.updates), c.gateway.keys[c.token].Models)
+			}
+
+			// The Gateway removes the route: the key gets the group back.
+			c.gateway.deleteModelErr = nil
+			c.reconcile(t, "removal works")
+			copilot = c.agent.Status.AIGateway.Copilot
+			if c.routeThere() || !c.keyHoldsCopilot() || copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
+				slices.Contains(copilot.Registered, c.route.ID) {
+				t.Fatalf("key %v, copilot status %+v", c.gateway.keys[c.token].Models, copilot)
+			}
+			if _, kept := routesByModel(c.gateway)["claude-sonnet-4.5"]; !kept {
+				t.Fatal("the other Copilot route must stay")
+			}
+		})
+	}
+}
+
+// When the Gateway removes the route of a Copilot model that the policy no
+// longer allows, the key keeps the Agent's Copilot group, and the Agent's
+// other Copilot models are not interrupted.
+func TestAgentPolicyRemovesANotAllowedRouteWithoutWithholdingCopilot(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		t.Run(map[bool]string{false: "shared models off", true: "shared models on"}[shared], func(t *testing.T) {
+			c := newCopilotRevocationTest(t, shared)
+			disallowTestPolicyModels(t, c.kube, "enterprise-sol")
+			updates := len(c.gateway.updates)
+			c.reconcile(t, "revoked")
+			for _, models := range c.gateway.updates[updates:] {
+				if !slices.Contains(models, copilotGroup()) {
+					t.Fatalf("the key lost the Copilot group: %v", c.gateway.updates[updates:])
+				}
+			}
+			copilot := c.agent.Status.AIGateway.Copilot
+			if c.routeThere() || !c.keyHoldsCopilot() || copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
+				!slices.Equal(copilot.NotAllowed, []string{"gpt-5.6-sol"}) || copilotWithheldEvents(c.r) != 0 {
+				t.Fatalf("key %v, copilot status %+v", c.gateway.keys[c.token].Models, copilot)
+			}
+			if _, kept := routesByModel(c.gateway)["claude-sonnet-4.5"]; !kept {
+				t.Fatal("the other Copilot route must stay")
+			}
+		})
+	}
+}
+
+// While the operator cannot list the Gateway's models, as at a start during a
+// Gateway outage, or cannot read its price table, it cannot tell which of the
+// Agent's routes the policy allows. The key does not hold the Agent's Copilot
+// group until it can.
+func TestAgentPolicyWithholdsCopilotWhileTheRoutesCannotBeChecked(t *testing.T) {
+	c := newCopilotRevocationTest(t, false)
+	checkWithheld := func(step string) {
+		t.Helper()
+		copilot := c.agent.Status.AIGateway.Copilot
+		if c.keyHoldsCopilot() || copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseDegraded ||
+			copilot.Reason != aiGatewayCopilotReasonPolicyCheckUnavailable || !c.routeThere() {
+			t.Fatalf("%s: key %v, copilot status %+v", step, c.gateway.keys[c.token].Models, copilot)
+		}
+	}
+	checkRestored := func(step string) {
+		t.Helper()
+		if copilot := c.agent.Status.AIGateway.Copilot; !c.keyHoldsCopilot() || copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady || !c.routeThere() {
+			t.Fatalf("%s: key %v, copilot status %+v", step, c.gateway.keys[c.token].Models, copilot)
+		}
+	}
+	c.r.aiGatewayCatalog = aiGatewayCatalog{}
+	c.gateway.listErr = errors.New("synthetic outage")
+	c.reconcile(t, "models not listed")
+	checkWithheld("models not listed")
+	c.gateway.listErr = nil
+	c.reconcile(t, "models listed")
+	checkRestored("models listed")
+
+	c.r.aiGatewayPrices = aiGatewayPriceCache{}
+	c.gateway.priceErr = errors.New("synthetic outage")
+	c.reconcile(t, "prices not read")
+	checkWithheld("prices not read")
+	c.gateway.priceErr = nil
+	c.reconcile(t, "prices read")
+	checkRestored("prices read")
+}
+
+func TestCopilotRouteModelReadsTheModelFromTheRouteID(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	for _, model := range []string{"gpt-5.5", "claude-sonnet-4.5", "gpt-4.1-2025-04-14", "o3", "a"} {
+		id := copilotRegistrationID(agent, model, copilotRevision("format", "proxy", model))
+		if got, ok := copilotRouteModel(agent, id); !ok || got != model {
+			t.Errorf("copilotRouteModel(%q) = %q, %v; want %q", id, got, ok, model)
+		}
+	}
+	other := aiGatewayTestAgent(testAIGatewayTeam)
+	other.UID = "another-uid"
+	prefix := copilotAccessGroup(agent) + "-"
+	for _, id := range []string{
+		copilotRegistrationID(other, "gpt-5.5", copilotRevision("x")), // another Agent's route
+		prefix + "gpt-5.5",                    // no revision
+		prefix + "gpt-5.5-0123456",            // a revision of another length
+		prefix + "gpt-5.5-0123456g",           // a revision that is not hexadecimal
+		prefix + "bad/model-01234567",         // not a Copilot model ID
+		"cetirun-shared-gpt-5.5-01234567",     // not a Copilot route
+		copilotAccessGroup(agent) + "gpt-5.5", // no separator after the group
+	} {
+		if got, ok := copilotRouteModel(agent, id); ok {
+			t.Errorf("copilotRouteModel(%q) = %q, want none", id, got)
+		}
+	}
+}
+
 func TestPlaceCopilotModelsPicksTheFirstGrantedSharedName(t *testing.T) {
 	r, _, _ := aiGatewayTestReconciler(t)
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
@@ -361,13 +660,13 @@ func TestPlaceCopilotModelsPicksTheFirstGrantedSharedName(t *testing.T) {
 		{ID: "a", ModelName: "a-gpt", AccessGroups: []string{aiGatewaySharedAccessGroup}, BaseModel: "openai/gpt-5.5"},
 	}
 	models := []cetirunv1alpha1.CopilotModel{{ID: "gpt-5.5"}}
-	if _, _, ok := r.placeCopilotModels(agent, models, nil); ok {
+	if _, _, _, ok := r.placeCopilotModels(agent, models, nil, nil); ok {
 		t.Fatal("placements need a listed catalog")
 	}
 	r.aiGatewayCatalog.update(deployments, false, time.Now())
-	placements, skipped, ok := r.placeCopilotModels(agent, models, nil)
-	if !ok || len(skipped) != 0 || placements["gpt-5.5"].name != "a-gpt" || !placements["gpt-5.5"].shared {
-		t.Fatalf("several matching shared names: the first in sort order wins: %+v %v", placements, skipped)
+	placements, skipped, notAllowed, ok := r.placeCopilotModels(agent, models, nil, nil)
+	if !ok || len(skipped) != 0 || len(notAllowed) != 0 || placements["gpt-5.5"].name != "a-gpt" || !placements["gpt-5.5"].shared {
+		t.Fatalf("several matching shared names: the first in sort order wins: %+v %v %v", placements, skipped, notAllowed)
 	}
 }
 

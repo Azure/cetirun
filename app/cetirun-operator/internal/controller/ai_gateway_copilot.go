@@ -8,7 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -178,7 +180,103 @@ func copilotRegistrationID(instance *cetirunv1alpha1.Agent, model, revision stri
 
 func copilotRevision(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return hex.EncodeToString(sum[:])[:8]
+	return hex.EncodeToString(sum[:])[:copilotRevisionLength]
+}
+
+// copilotRevisionLength is the length of a route revision, in hexadecimal
+// digits.
+const copilotRevisionLength = 8
+
+// copilotRouteModel returns the Copilot model ID that copilotRegistrationID
+// put in the ID of one of the Agent's routes, and false for an ID of another
+// form.
+func copilotRouteModel(instance *cetirunv1alpha1.Agent, id string) (string, bool) {
+	rest, ok := strings.CutPrefix(id, copilotAccessGroup(instance)+"-")
+	i := strings.LastIndexByte(rest, '-')
+	if !ok || i < 0 {
+		return "", false
+	}
+	model, revision := rest[:i], rest[i+1:]
+	if _, err := hex.DecodeString(revision); err != nil || len(revision) != copilotRevisionLength {
+		return "", false
+	}
+	return model, copilotModelID.MatchString(model)
+}
+
+// The reasons the Copilot status gives while the Agent's key does not hold
+// the Agent's Copilot group (removeCopilotRoutesNotAllowed).
+const (
+	// A route of a Copilot model the Agent's AgentPolicy does not allow
+	// could not be removed.
+	aiGatewayCopilotReasonNotAllowedRouteRemovalFailed = "NotAllowedRouteRemovalFailed"
+	// The operator could not tell which of the Agent's routes the policy
+	// allows: the Gateway's models or prices could not be read.
+	aiGatewayCopilotReasonPolicyCheckUnavailable = "PolicyCheckUnavailable"
+)
+
+// removeCopilotRoutesNotAllowed removes, before the Agent's key is written,
+// the Agent's Copilot routes of models that its AgentPolicy does not allow
+// (copilotModelNotAllowed). Each route is in the Agent's one Copilot access
+// group, and the key holds that group while Copilot is on, so such a route
+// stays reachable until it is removed. The routes are those the status
+// records and those the Gateway lists in the group; each route's ID names its
+// model.
+//
+// It returns a Copilot status reason when the key must not hold the group in
+// this pass: a route of such a model could not be removed, or the operator
+// could not tell which routes are such routes. The next pass tries again,
+// and the group comes back when no such route is left.
+func (r *AgentReconciler) removeCopilotRoutesNotAllowed(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent,
+	policy *cetirunv1alpha1.AgentPolicy) (string, error) {
+	var copilot *cetirunv1alpha1.AIGatewayCopilotStatus
+	if status := instance.Status.AIGateway; status != nil {
+		copilot = status.Copilot
+	}
+	if _, known := r.aiGatewayCatalog.copilotMergeSnapshot(); !known {
+		r.refreshAIGatewayCatalogWithin(ctx, client, aiGatewayCatalogMaxAge)
+	}
+	routes := map[string]bool{}
+	if copilot != nil {
+		for _, id := range copilot.Registered {
+			routes[id] = true
+		}
+	}
+	listed, _ := r.aiGatewayCatalog.groupDeployments(copilotAccessGroup(instance))
+	for _, id := range listed {
+		routes[id] = true
+	}
+	if len(routes) == 0 {
+		return "", nil
+	}
+	view, known := r.aiGatewayCatalog.copilotMergeSnapshot()
+	if !known {
+		return aiGatewayCopilotReasonPolicyCheckUnavailable, fmt.Errorf("the AI Gateway's models have not been listed")
+	}
+	table, err := r.priceTable(ctx, client)
+	if err != nil {
+		return aiGatewayCopilotReasonPolicyCheckUnavailable, fmt.Errorf("read the AI Gateway's price table: %w", err)
+	}
+	byReal := copilotSharedNamesByReal(view, table.Priced)
+	allowed := policySharedModelsAllowed(policy)
+	var failed error
+	for _, id := range slices.Sorted(maps.Keys(routes)) {
+		model, ok := copilotRouteModel(instance, id)
+		if !ok || !copilotModelNotAllowed(byReal[realModelKey(model)], allowed) {
+			continue
+		}
+		if err := client.DeleteModel(ctx, id); err != nil {
+			failed = errors.Join(failed, fmt.Errorf("remove the route of %s: %w", model, err))
+			continue
+		}
+		r.aiGatewayCatalog.noteDeleted(id)
+		if copilot != nil {
+			copilot.Registered = slices.DeleteFunc(copilot.Registered, func(registered string) bool { return registered == id })
+		}
+	}
+	if failed != nil {
+		return aiGatewayCopilotReasonNotAllowedRouteRemovalFailed, failed
+	}
+	return "", nil
 }
 
 // copilotRouteFormat names what every Copilot route carries besides its
@@ -201,9 +299,12 @@ func copilotRouteFormat(healthChecks bool) string {
 // model routes in line with the owner's sign-in. The proxy reads the token
 // Secret, which the Portal writes; the Portal also records the account's
 // models on the Agent. Each model becomes a Gateway route to this Agent's
-// proxy in the Agent's own access group. Problems are reported on the
-// Copilot status; they never fail the key reconcile.
-func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, active bool) {
+// proxy in the Agent's own access group, but for a model that the Agent's
+// AgentPolicy, policy, does not allow (placeCopilotModels); policy is nil for
+// an Agent without one. Problems are reported on the Copilot status; they
+// never fail the key reconcile.
+func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, active bool,
+	policy *cetirunv1alpha1.AgentPolicy) {
 	logger := log.FromContext(ctx)
 	status := instance.Status.AIGateway
 	if !active {
@@ -278,7 +379,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	}
 
 	desired := map[string]copilotRegistration{}
-	var unpriced, skipped []string
+	var unpriced, skipped, notAllowed []string
 	if len(wanted) > 0 {
 		table, err := r.priceTable(ctx, client)
 		if err != nil {
@@ -291,12 +392,12 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 		if _, known := r.aiGatewayCatalog.copilotMergeSnapshot(); !known {
 			r.refreshAIGatewayCatalogWithin(ctx, client, aiGatewayCatalogMaxAge)
 		}
-		placements, skippedModels, ok := r.placeCopilotModels(instance, wanted, priced)
+		placements, skippedModels, notAllowedModels, ok := r.placeCopilotModels(instance, wanted, priced, policy)
 		if !ok {
 			degraded("CatalogUnavailable", fmt.Errorf("the AI Gateway's models have not been listed"))
 			return
 		}
-		skipped = skippedModels
+		skipped, notAllowed = skippedModels, notAllowedModels
 		proxyURL := copilotProxyURL(instance)
 		format := copilotRouteFormat(r.AIGateway.CopilotHealthChecks)
 		for _, model := range wanted {
@@ -408,6 +509,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	copilot.Routes = routes
 	copilot.Unpriced = unpriced
 	copilot.Skipped = skipped
+	copilot.NotAllowed = notAllowed
 	switch {
 	case failed != nil:
 		degraded("RouteRegistrationFailed", failed)

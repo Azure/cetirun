@@ -188,38 +188,78 @@ func (r *AgentReconciler) aiGatewayEntitledShared(instance *cetirunv1alpha1.Agen
 // model, which the Agent is not granted: the route stays in the Agent's own
 // access group, so the Agent's key reaches only its own route under that
 // name, and like any route it does not share, it is never cooled down.
-// Otherwise it is skipped, as the name means another model. ok is false
-// until the Gateway has been listed.
-func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, models []cetirunv1alpha1.CopilotModel, priced map[string]bool) (map[string]copilotPlacement, []string, bool) {
+// Otherwise it is skipped, as the name means another model.
+//
+// With an AgentPolicy (policy is not nil), the policy's shared models apply
+// to the owner's Copilot models too: a Copilot model that is the same real
+// model as one or more shared models is placed only when the policy allows
+// one of them, whether the shared deployments or the owner's Copilot would
+// serve it. Otherwise it is not allowed, and returned as such. A model with a
+// date version is the same model only as the same version; it is still never
+// merged. A Copilot model that no shared model is needs only Copilot, which
+// the policy allows as a whole. An Agent without a policy, nil, is not
+// limited this way.
+//
+// ok is false until the Gateway has been listed.
+func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, models []cetirunv1alpha1.CopilotModel, priced map[string]bool,
+	policy *cetirunv1alpha1.AgentPolicy) (placements map[string]copilotPlacement, skipped, notAllowed []string, ok bool) {
 	view, known := r.aiGatewayCatalog.copilotMergeSnapshot()
 	entitledModels, entitledKnown := r.aiGatewayEntitledShared(instance)
 	if !known || !entitledKnown {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	entitled := map[string]bool{}
 	for _, model := range entitledModels {
 		entitled[model.Name] = true
 	}
+	allowed := policySharedModelsAllowed(policy)
 	byReal := copilotSharedNamesByReal(view, priced)
-	placements := map[string]copilotPlacement{}
-	var skipped []string
+	placements = map[string]copilotPlacement{}
 	for _, model := range models {
+		// The shared models that are the same real model, in sort order.
+		namesakes := byReal[realModelKey(model.ID)]
 		sameModel := !datedModelID(model.ID)
 		if sameModel {
-			if i := slices.IndexFunc(byReal[realModelKey(model.ID)], func(name string) bool { return entitled[name] }); i >= 0 {
-				name := byReal[realModelKey(model.ID)][i]
+			if i := slices.IndexFunc(namesakes, func(name string) bool { return entitled[name] }); i >= 0 {
+				name := namesakes[i]
 				placements[model.ID] = copilotPlacement{name: name, shared: true, routing: copilotRouting(view.shared[name])}
 				continue
 			}
 		}
-		if view.served[model.ID] && !(sameModel && slices.Contains(byReal[realModelKey(model.ID)], model.ID)) {
+		if copilotModelNotAllowed(namesakes, allowed) {
+			notAllowed = append(notAllowed, model.ID)
+			continue
+		}
+		if view.served[model.ID] && !(sameModel && slices.Contains(namesakes, model.ID)) {
 			skipped = append(skipped, model.ID)
 			continue
 		}
 		placements[model.ID] = copilotPlacement{name: model.ID}
 	}
 	slices.Sort(skipped)
-	return placements, skipped, true
+	slices.Sort(notAllowed)
+	return placements, skipped, notAllowed, true
+}
+
+// policySharedModelsAllowed returns the shared model names an AgentPolicy
+// allows, and nil for an Agent without one (policy is nil).
+func policySharedModelsAllowed(policy *cetirunv1alpha1.AgentPolicy) map[string]bool {
+	if policy == nil {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for _, name := range policy.Spec.ModelAccess.SharedModels.Allowed {
+		allowed[name] = true
+	}
+	return allowed
+}
+
+// copilotModelNotAllowed reports that an AgentPolicy does not let the Agent
+// use a Copilot model: one or more shared models are the same real model
+// (namesakes), and the policy allows none of them (allowed). An Agent without
+// a policy, with allowed nil, is never limited this way.
+func copilotModelNotAllowed(namesakes []string, allowed map[string]bool) bool {
+	return allowed != nil && len(namesakes) > 0 && !slices.ContainsFunc(namesakes, func(name string) bool { return allowed[name] })
 }
 
 // copilotSharedNamesByReal lists, for each real model, the shared model names
