@@ -20,13 +20,14 @@ func (s Store) ReadConfigurationUpdate(ctx context.Context, object client.Object
 	}
 	return s.matchConfigurationTicket(ctx, image.reference, func(change Change) bool {
 		return change.Before.UID == image.reference.UID &&
-			(change.Phase == Reserved || change.Phase == Changing) && change.DeletionContentDigest == ""
+			(change.Phase == Reserved || change.Phase == Changing) && change.DeletionContentDigest == "" &&
+			change.BeforeContentDigest != ""
 	})
 }
 
 // KubernetesUpdateRecoveryAdapter observes a recorded update without retaining
-// or replaying its original request. The journal's desired digest covers the
-// complete writable content, including metadata, for all configuration kinds.
+// or replaying its original request. The journal pins complete writable before
+// and desired content, including metadata, for all configuration kinds.
 type KubernetesUpdateRecoveryAdapter struct {
 	reader client.Reader
 	ticket ChangeTicket
@@ -41,10 +42,11 @@ func NewKubernetesUpdateRecoveryAdapter(reader client.Reader, ticket ChangeTicke
 		return nil, err
 	}
 	if reader == nil || !literal(string(ticket.AuthorityUID), 128) || !literal(ticket.Change.ID, 128) ||
-		ticket.Change.Phase != Changing || ticket.Change.DeletionContentDigest != "" ||
-		!validSource(ticket.Change.Before) || !digest(ticket.Change.DesiredDigest) ||
+		(ticket.Change.Phase != Reserved && ticket.Change.Phase != Changing) || ticket.Change.DeletionContentDigest != "" ||
+		!validSource(ticket.Change.Before) || !digest(ticket.Change.DesiredDigest) || !digest(ticket.Change.BeforeContentDigest) ||
+		ticket.Change.BeforeContentDigest == ticket.Change.DesiredDigest ||
 		sourceKey(image.reference) != sourceKey(ticket.Change.Before) || image.reference.UID != ticket.Change.Before.UID {
-		return nil, fmt.Errorf("%w: an authoritative reader and matching Changing update are required", ErrConflict)
+		return nil, fmt.Errorf("%w: an authoritative reader and matching concrete Reserved or Changing update are required", ErrConflict)
 	}
 	return &KubernetesUpdateRecoveryAdapter{reader: reader, ticket: ticket.DeepCopy(), source: &configurationChange{before: image}}, nil
 }
@@ -67,16 +69,25 @@ func (a *KubernetesUpdateRecoveryAdapter) ObserveChange(ctx context.Context, tic
 	}
 	before := ticket.Change.Before
 	if current.reference.UID != before.UID || current.reference.ResourceVersion == before.ResourceVersion ||
-		current.digest != ticket.Change.DesiredDigest || !current.object.GetDeletionTimestamp().IsZero() ||
+		!current.object.GetDeletionTimestamp().IsZero() ||
 		current.object.GetDeletionGracePeriodSeconds() != nil {
 		return nil, fmt.Errorf("%w: recorded update is not observed at a superseding version of the same UID", ErrUnavailable)
 	}
-	// The authoritative GET proves the exact desired writable content and a
-	// different resourceVersion of the same UID. Any delayed original Update
-	// still carries the old resourceVersion and can no longer commit.
-	return &ChangeOutcome{
+	// The authoritative read proves the old resourceVersion cannot commit.
+	// It may release the operation only for the exact desired content, or for
+	// the exact before content after a non-configuration status refresh.
+	outcome := &ChangeOutcome{
 		AuthorityUID: string(ticket.AuthorityUID), OperationID: ticket.Change.ID,
 		Before: before, After: current.reference, DesiredDigest: ticket.Change.DesiredDigest,
-		Applied: true, NoPendingSubmissions: true,
-	}, ctx.Err()
+		NoPendingSubmissions: true,
+	}
+	switch current.digest {
+	case ticket.Change.DesiredDigest:
+		outcome.Applied = true
+	case ticket.Change.BeforeContentDigest:
+		outcome.Aborted, outcome.Superseded = true, true
+	default:
+		return nil, fmt.Errorf("%w: recorded update is not observed at an exact desired or before content version", ErrUnavailable)
+	}
+	return outcome, ctx.Err()
 }

@@ -1047,7 +1047,7 @@ and resource version. Before one Update that is conditional on the resource
 version, the adapter does these steps:
 
 - It makes sure that the before image is authoritative.
-- It pins the complete proposed write.
+- It pins the complete writable content before and after the update.
 - It reserves the affected scope.
 - It records submission intent.
 
@@ -1077,27 +1077,36 @@ executions. Spec, ownership, finalizer and control-metadata changes still
 exclude affected executions. The complete mutation digest still authorizes every
 field. Updates of the same source that compete still serialize.
 
-Older reservations without this optional digest stay conservative during
-recovery. Their scope is never rewritten. Upgrade all coordination readers
-before you issue the new records. Older strict readers reject the extra field.
-Mismatched digests that were recorded before are not rewritten or accepted as
-aliases. This does not enable execution or replace source rechecks.
+Recovery uses the complete writable-content digests, including labels,
+annotations, owner references and finalizers. Status is excluded from those
+digests. The effective execution digest cannot substitute for them because it
+deliberately ignores fields that still belong to the configuration update.
 
-After an Update reply is lost, use the same input files to observe the original
-operation. A current object that matches, with the same UID and an advanced
-resource version, proves that the desired write is present. It also proves that
-a request with the old version cannot commit again. An object that is
-unchanged, absent, replaced or changed in a different way does not prove
-completion or cancellation.
+After a conditional Update fails or its reply is lost, use the same input files
+to observe the original operation. An authoritative read of the same live UID
+at a different resourceVersion proves that the old conditional request cannot
+commit. Recovery then checks the writable content:
 
-These outcomes keep their reservations. Do not edit the journal. Do not change
-the original files. Do not automatically repeat the write.
+- Content matching the proposed write confirms that it applied.
+- Content matching the original configuration establishes a superseded update.
+  For example, a status refresh can invalidate the original resourceVersion
+  before the configuration write. The desired configuration is not applied.
+- Other content changes, an unchanged resourceVersion, a missing or replaced
+  object, termination, or a failed read keep the outcome uncertain and retain
+  the reservation.
 
-The application of defaults does not rewrite or release a reservation that
-already exists with a different, older digest. That reservation stays subject
-to the same recovery boundary. Observation never releases a reservation. After
-committed content that matches is reported, an explicit `--action update` can
-finalize that same change operation. It does not submit the operation again.
+Observation never releases a reservation. `--action observe` reports either
+`applied-reservation-retained` or `update-superseded-reservation-retained` for
+the two verified outcomes. An explicit `--action update` with the same files
+then releases that operation without resubmitting it. The CLI reports
+`completed` for applied content or `update-superseded` for the original content.
+Read the current configuration before preparing a new update. Do not edit the
+journal, refresh the original files, or replay the old request.
+
+The Portal uses the same recovery rules before saving. It can recover a
+superseded update after a restart without retaining the original request body.
+Its normal UID/resourceVersion checks still reject a stale edit. A save using
+the freshly read version can proceed after the old reservation is released.
 
 For deletion, use `--action delete --before FILE` without `--after`.
 Before one background Delete with exact UID and resourceVersion preconditions,

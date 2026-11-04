@@ -7,7 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
@@ -115,6 +118,261 @@ func TestClientRetainsReservationWhenUpdateOutcomeIsUnknown(t *testing.T) {
 	ticket, err := store.ReadConfigurationChange(ctx, before, after)
 	if err != nil || ticket.Change.Phase != sandboxcoordination.Changing {
 		t.Fatalf("unknown outcome did not retain its Changing reservation: ticket=%+v err=%v", ticket, err)
+	}
+}
+
+func TestClientRecoversReservedStatusOnlySupersession(t *testing.T) {
+	ctx := context.Background()
+	storage, store, authority, before := coordinationFixture(t)
+	after := before.DeepCopy()
+	after.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+	ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := &api.AgentPolicy{}
+	if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.ObservedGeneration = current.Generation
+	if err := storage.Status().Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.ResourceVersion == before.ResourceVersion {
+		t.Fatal("status update did not advance the resource version")
+	}
+	coordinator, err := New(storage, storage, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RecoverUpdate(ctx, current, after); err != nil {
+		t.Fatal("status-only Reserved update did not recover:", err)
+	}
+	assertNoChanges(t, store)
+	if err := storage.Get(ctx, client.ObjectKeyFromObject(current), current); err != nil {
+		t.Fatal(err)
+	}
+	after = current.DeepCopy()
+	after.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+	if err := coordinator.Update(ctx, current, after); err != nil {
+		t.Fatal("fresh update after status-only recovery failed:", err)
+	}
+	if err := storage.Get(ctx, client.ObjectKeyFromObject(current), current); err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Spec.Harnesses.Allowed) != 1 || current.Spec.Harnesses.Allowed[0] != api.AgentTypeHermes {
+		t.Fatal("fresh update did not commit its desired configuration")
+	}
+	if ticket.Change.Phase != sandboxcoordination.Reserved {
+		t.Fatal("fixture did not retain an unsubmitted reservation")
+	}
+}
+
+func TestClientUpdateReportsConflictForChangingStatusOnlySupersession(t *testing.T) {
+	ctx := context.Background()
+	storage, store, authority, before := coordinationFixture(t)
+	after := before.DeepCopy()
+	after.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+	ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BeginChange(ctx, ticket); err != nil {
+		t.Fatal(err)
+	}
+	current := &api.AgentPolicy{}
+	if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.ObservedGeneration = current.Generation
+	if err := storage.Status().Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := New(storage, storage, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Update(ctx, before, after); !IsConflict(err) {
+		t.Fatalf("superseded Update did not report a conflict: %v", err)
+	}
+	assertNoChanges(t, store)
+	if err := storage.Get(ctx, client.ObjectKeyFromObject(current), current); err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Spec.Harnesses.Allowed) != 1 || current.Spec.Harnesses.Allowed[0] != api.AgentTypeOpenClaw {
+		t.Fatal("superseded Update changed the desired configuration")
+	}
+}
+
+func TestClientReservedStatusRecoveryRetainsChangingRecordWhenContentDrifts(t *testing.T) {
+	ctx := context.Background()
+	storage, store, authority, before := coordinationFixture(t)
+	after := before.DeepCopy()
+	after.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+	if _, err := store.AcquireConfigurationChange(ctx, before, after); err != nil {
+		t.Fatal(err)
+	}
+	current := &api.AgentPolicy{}
+	if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.ObservedGeneration = current.Generation
+	if err := storage.Status().Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+
+	var policyReads atomic.Int32
+	policyKey := client.ObjectKeyFromObject(before)
+	reader := interceptor.NewClient(storage, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			if key == policyKey && policyReads.Add(1) == 2 {
+				drift := &api.AgentPolicy{}
+				if err := storage.Get(ctx, key, drift); err != nil {
+					return err
+				}
+				drift.Annotations = map[string]string{"example.com/drift": "after-first-observation"}
+				if err := storage.Update(ctx, drift); err != nil {
+					return err
+				}
+			}
+			return c.Get(ctx, key, object, opts...)
+		},
+	})
+	coordinator, err := New(storage, reader, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = coordinator.RecoverUpdate(ctx, current, after)
+	if !IsUnavailable(err) {
+		observed := &api.AgentPolicy{}
+		if getErr := storage.Get(ctx, client.ObjectKeyFromObject(before), observed); getErr != nil {
+			t.Fatal(getErr)
+		}
+		t.Fatalf("second observation accepted content drift: %v (policy reads=%d annotations=%v)", err, policyReads.Load(), observed.Annotations)
+	}
+	if policyReads.Load() != 2 {
+		t.Fatalf("recovery made %d policy observations, want two", policyReads.Load())
+	}
+	recorded, found, err := store.ReadConfigurationUpdate(ctx, current)
+	if err != nil || !found || recorded.Change.Phase != sandboxcoordination.Changing {
+		t.Fatalf("content drift did not retain the Changing reservation: ticket=%+v found=%v err=%v", recorded, found, err)
+	}
+}
+
+func TestClientReservedStatusRecoveryAndOriginalUpdateHaveOneBeginWinner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	storage, store, authority, before := coordinationFixture(t)
+	after := before.DeepCopy()
+	after.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+	if _, err := store.AcquireConfigurationChange(ctx, before, after); err != nil {
+		t.Fatal(err)
+	}
+	current := &api.AgentPolicy{}
+	if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.ObservedGeneration = current.Generation
+	if err := storage.Status().Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+
+	firstObservation := make(chan struct{})
+	allowRecovery := make(chan struct{})
+	policyKey := client.ObjectKeyFromObject(before)
+	reader := interceptor.NewClient(storage, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			if key == policyKey {
+				if err := c.Get(ctx, key, object, opts...); err != nil {
+					return err
+				}
+				select {
+				case <-firstObservation:
+				default:
+					close(firstObservation)
+					select {
+					case <-allowRecovery:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				return nil
+			}
+			return c.Get(ctx, key, object, opts...)
+		},
+	})
+	var changingWrites, successfulChangingWrites atomic.Int32
+	firstChangingWrite := make(chan struct{})
+	secondChangingWrite := make(chan struct{})
+	writer := interceptor.NewClient(storage, interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+			if authorityObject, ok := object.(*corev1.ConfigMap); ok {
+				var state struct {
+					Changes []sandboxcoordination.Change `json:"changes"`
+				}
+				if err := json.Unmarshal([]byte(authorityObject.Data[sandboxcoordination.DataKey]), &state); err != nil {
+					return err
+				}
+				if len(state.Changes) == 1 && state.Changes[0].Phase == sandboxcoordination.Changing {
+					switch changingWrites.Add(1) {
+					case 1:
+						close(firstChangingWrite)
+						select {
+						case <-secondChangingWrite:
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					case 2:
+						close(secondChangingWrite)
+					}
+				}
+			}
+			err := c.Update(ctx, object, opts...)
+			if err == nil {
+				if authorityObject, ok := object.(*corev1.ConfigMap); ok {
+					var state struct {
+						Changes []sandboxcoordination.Change `json:"changes"`
+					}
+					if json.Unmarshal([]byte(authorityObject.Data[sandboxcoordination.DataKey]), &state) == nil &&
+						len(state.Changes) == 1 && state.Changes[0].Phase == sandboxcoordination.Changing {
+						successfulChangingWrites.Add(1)
+					}
+				}
+			}
+			return err
+		},
+	})
+	coordinator, err := New(writer, reader, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	var group sync.WaitGroup
+	group.Go(func() { results <- coordinator.RecoverUpdate(ctx, current, after) })
+	select {
+	case <-firstObservation:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	group.Go(func() { results <- coordinator.Update(ctx, before, after) })
+	select {
+	case <-firstChangingWrite:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	close(allowRecovery)
+	group.Wait()
+	close(results)
+	for err := range results {
+		if err == nil {
+			continue
+		}
+		if !IsConflict(err) && !IsUnavailable(err) {
+			t.Fatalf("concurrent recovery returned an unexpected error: %v", err)
+		}
+	}
+	if changingWrites.Load() != 2 || successfulChangingWrites.Load() != 1 {
+		t.Fatalf("concurrent BeginChange calls=%d successful=%d, want exactly two calls and one winner", changingWrites.Load(), successfulChangingWrites.Load())
 	}
 }
 

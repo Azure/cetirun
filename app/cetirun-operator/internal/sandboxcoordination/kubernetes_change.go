@@ -65,7 +65,7 @@ func (s Store) AcquireConfigurationChange(ctx context.Context, before, after cli
 	if team, ok := change.before.object.(*api.Team); ok && change.team != nil {
 		return s.AcquireTeamChange(ctx, team, change.after.object.(*api.Team))
 	}
-	return s.acquireChange(ctx, change.before.reference, change.after.digest, nil, change.unchangedDigest, "")
+	return s.acquireChange(ctx, change.before.reference, change.after.digest, change.before.digest, nil, change.unchangedDigest, "")
 }
 
 // ReadConfigurationChange only looks up the exact journaled update. It neither
@@ -305,7 +305,9 @@ func (change *configurationChange) updateRequest(current configurationImage) (cl
 }
 
 // ObserveChange never submits, adopts, aborts or clears an operation. An
-// unchanged, missing, replaced or mismatched object leaves its outcome unknown.
+// unchanged resourceVersion, missing, replaced or mismatched object leaves its
+// outcome unknown; unchanged writable content at a new resourceVersion is a
+// definitive supersession.
 func (a *KubernetesChangeAdapter) ObserveChange(ctx context.Context, ticket ChangeTicket) (*ChangeOutcome, error) {
 	ticket = ticket.DeepCopy()
 	if err := a.validate(ctx, ticket); err != nil {
@@ -322,23 +324,31 @@ func (a *KubernetesChangeAdapter) ObserveChange(ctx context.Context, ticket Chan
 	newMetadata.ManagedFields = oldMetadata.ManagedFields
 	if current.reference.UID != before.reference.UID ||
 		current.reference.ResourceVersion == before.reference.ResourceVersion ||
-		current.digest != a.change.after.digest ||
+		!current.object.GetDeletionTimestamp().IsZero() || current.object.GetDeletionGracePeriodSeconds() != nil ||
 		!equality.Semantic.DeepEqual(oldMetadata, newMetadata) {
 		return nil, fmt.Errorf("%w: configuration outcome is still uncertain; observe with the same inputs", ErrUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// A current, matching version of this same UID supersedes the original
-	// resourceVersion. Any delayed submission still carries that old version:
-	// Kubernetes CAS can no longer commit it, even if its reply was lost.
-	// Resource versions are opaque; advancement is established by this
-	// authoritative GET returning a different version, not numeric comparison.
-	return &ChangeOutcome{
+	outcome := &ChangeOutcome{
 		AuthorityUID: string(ticket.AuthorityUID), OperationID: ticket.Change.ID,
 		Before: before.reference, After: current.reference, DesiredDigest: a.change.after.digest,
-		Applied: true, NoPendingSubmissions: true,
-	}, nil
+		NoPendingSubmissions: true,
+	}
+	switch current.digest {
+	case a.change.after.digest:
+		outcome.Applied = true
+	case a.change.before.digest:
+		// The current resourceVersion excludes every delayed conditional
+		// submission, but the complete writable content is still the exact
+		// before image. This is a safe aborted, superseded update rather than
+		// evidence that the desired configuration committed.
+		outcome.Aborted, outcome.Superseded = true, true
+	default:
+		return nil, fmt.Errorf("%w: configuration outcome is still uncertain; observe with the same inputs", ErrUnavailable)
+	}
+	return outcome, nil
 }
 
 func (a *KubernetesChangeAdapter) validate(ctx context.Context, ticket ChangeTicket) error {
@@ -356,9 +366,8 @@ func (a *KubernetesChangeAdapter) validate(ctx context.Context, ticket ChangeTic
 }
 
 func (change *configurationChange) matches(recorded Change) bool {
-	// Older conservative reservations remain recoverable without narrowing them.
 	return recorded.Before == change.before.reference && recorded.DesiredDigest == change.after.digest &&
-		(recorded.UnchangedDigest == "" || recorded.UnchangedDigest == change.unchangedDigest) &&
+		recorded.BeforeContentDigest == change.before.digest && recorded.UnchangedDigest == change.unchangedDigest &&
 		equality.Semantic.DeepEqual(recorded.Team, change.team)
 }
 

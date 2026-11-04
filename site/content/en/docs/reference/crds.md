@@ -630,16 +630,32 @@ rejects mismatched values.
 
 The Portal then reserves the exact whole-resource mutation. It records
 `Changing` before it submits one conditional Update or background Delete, and
-then it observes the result. It releases only an operation that is definitively
-completed. Its namespaced Role allows access only to the named authority
+then it observes the result. It releases only an operation with a verified
+outcome. Its namespaced Role allows access only to the named authority
 ConfigMap. UID/resource-version checks are still request concurrency
 protection. They do not replace this admission contract.
 
 A reservation conflict returns `409 Conflict`. An unavailable authority or an
 uncertain API write returns `503 Service Unavailable`. In that case, the
 reservation is kept deliberately. Do not blindly repeat the mutation. Recover
-the recorded operation with the Operator's configuration-change procedure. For
-update recovery, the exact original inputs are necessary.
+the recorded operation with the Operator's configuration-change procedure.
+
+Update reservations record the complete writable-content digests before and
+after the change. Before saving, the Portal checks for a recorded update, even
+after a restart. A read of the same live UID at a different resourceVersion
+permits recovery when the content matches either the proposed configuration
+(applied) or the original configuration (superseded). A status-only refresh can
+produce the latter without applying the requested edit. Other configuration
+changes or an unknown outcome keep the reservation. Recovery never resubmits
+the old update or relaxes the caller's version checks; a stale edit still needs
+a fresh read before saving.
+
+CLI update recovery uses the exact original `--before` and `--after` files.
+`--action observe` is read-only and reports
+`update-superseded-reservation-retained` when only the original writable content
+remains at a superseding version. Explicit `--action update` then releases the
+old reservation without writing the configuration and reports
+`update-superseded`.
 
 New deletion reservations durably record the content digest that is necessary
 for recovery. An administrator can use the operation ID from the pinned

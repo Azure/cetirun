@@ -14,6 +14,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -154,6 +155,26 @@ func TestTeamChangeRejectsStaleOrMisrepresentedBeforeImage(t *testing.T) {
 				t.Fatal("misrepresented or stale Team change acquired authority")
 			}
 		})
+	}
+}
+
+func TestTeamChangeRejectsNoopBeforeCreatingReservation(t *testing.T) {
+	ctx := context.Background()
+	store, storage, before := teamChangeFixture(t)
+	key := client.ObjectKey{Namespace: store.Namespace, Name: store.Identity.Name}
+	original := &corev1.ConfigMap{}
+	if err := storage.Get(ctx, key, original); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireTeamChange(ctx, before, before.DeepCopy()); !errors.Is(err, ErrConflict) {
+		t.Fatalf("no-op Team change acquired a reservation: %v", err)
+	}
+	current := &corev1.ConfigMap{}
+	if err := storage.Get(ctx, key, current); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(original, current) {
+		t.Fatal("no-op Team change wrote the coordination authority")
 	}
 }
 

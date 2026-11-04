@@ -943,9 +943,14 @@ their own notices.
   reserved mutation. This rule also applies to older delayed submissions. File
   inputs still keep the original generation, UID, and resource version.
 
-  A `Changing` operation that already exists is never resubmitted. An unchanged
-  source is still uncertain. Recovery must positively observe the desired state
-  at a newer version of the same UID.
+  A `Changing` operation that already exists is never resubmitted. Recovery
+  requires the same live UID at a different resourceVersion. Exact desired
+  writable content proves the update applied; exact before content proves the
+  old conditional update was superseded and can safely be released. An unchanged
+  resourceVersion or any other content remains uncertain. Unit tests also
+  cover status refreshes while `Reserved`, concurrent recovery, and stale edit
+  rejection. Local API-server tests verify real status-write conflicts, restart
+  recovery, rejection of delayed stale updates, and successful fresh updates.
 
   Build the explicit command with
   `make -C app/cetirun-operator build-sandbox-config-change`. Do not run it
