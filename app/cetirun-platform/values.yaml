@@ -9,8 +9,6 @@ global:
   # -- Optional full Memory image override. Empty follows registry/version.
   memoryContext:
     image: ""
-    # -- Optional Memory image used only by Hermes; empty follows the shared image.
-    hermesImage: ""
   # -- Enable both Portal Chat and its private runtime caller. No database.
   portalChat:
     enabled: false

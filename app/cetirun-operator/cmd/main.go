@@ -63,7 +63,6 @@ func main() {
 	var istioGateway string
 	var defaultModel string
 	var memoryImage string
-	var hermesMemoryImage string
 	var memoryEnabled bool
 	var showVersion bool
 	var mode string
@@ -99,7 +98,6 @@ func main() {
 	flag.StringVar(&defaultModel, "default-model", "gpt-6-astra", "Default GitHub Copilot model for instances without spec.model.")
 	flag.BoolVar(&memoryEnabled, "memory-context-enabled", true, "Install Memory Context for Agents.")
 	flag.StringVar(&memoryImage, "memory-context-image", "", "Memory Context image override; empty uses each selected runtime chart's registry and appVersion.")
-	flag.StringVar(&hermesMemoryImage, "memory-context-hermes-image", "", "Memory Context image override for Hermes; empty uses the shared Memory image selection.")
 	flag.BoolVar(&showVersion, "version", false, "Print version information and exit.")
 
 	opts := zap.Options{
@@ -180,7 +178,7 @@ func main() {
 	// image.repository so that all clusters pull images from the correct ACR.
 	chartRegistry := extractRegistryHost(chartRepoURL)
 	if !memoryEnabled {
-		memoryImage, hermesMemoryImage = "", ""
+		memoryImage = ""
 	}
 	setupLog.Info("Using OCI chart repository", "url", chartRepoURL, "version", chartVersion, "registry", chartRegistry)
 	if chartRegistry != "" {
@@ -314,7 +312,6 @@ func main() {
 		SkillsStorageAccount:               skillsStorageAccount,
 		CetiRunHelmValues:                  cetirunHelmValues,
 		MemoryImage:                        memoryImage,
-		HermesMemoryImage:                  hermesMemoryImage,
 		MemoryEnabled:                      memoryEnabled,
 		MemoryRegistry:                     memoryRegistry(chartRepoURL),
 		ChartRegistry:                      chartRegistry,

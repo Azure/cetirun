@@ -242,7 +242,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	values["agentRequest"] = runtimeRequest(instance, "")
 	values["agentRequest"].(map[string]any)["releaseName"] = helmReleaseName(instance.Name)
 	values["customBindings"] = bindings
-	values["memoryOptions"] = r.memoryOptions(instance.Spec.Agent.Type)
+	values["memoryOptions"] = r.memoryOptions()
 	values["fullnameOverride"] = instanceServiceName(instance.Name)
 	values["replicaCount"] = 1
 	current := &appsv1.StatefulSet{}

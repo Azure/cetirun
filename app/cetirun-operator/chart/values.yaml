@@ -414,5 +414,3 @@ memoryContext:
   # -- Optional full image reference. Empty uses cetirun-memory-context from
   # each selected runtime chart's registry and appVersion. A digest may pin exact bytes.
   image: ""
-  # -- Optional Memory image used only by Hermes; empty uses the shared image selection.
-  hermesImage: ""

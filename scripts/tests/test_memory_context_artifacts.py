@@ -43,27 +43,7 @@ class MemoryArtifactTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 args = yaml.safe_load(result.stdout)["spec"]["template"]["spec"]["containers"][0]["args"]
-                self.assertEqual([arg for arg in args if arg.startswith("--memory-context-")], expected + ["--memory-context-hermes-image="])
-
-    @unittest.skipUnless(shutil.which("helm"), "requires Helm")
-    def test_hermes_memory_image_override_precedence(self):
-        chart = ROOT / "app/cetirun-operator/chart"
-        for values, selected in (
-            ({"memoryContext": {"hermesImage": "registry.example.com/hermes-memory:1.0.0"}}, "registry.example.com/hermes-memory:1.0.0"),
-            ({"global": {"memoryContext": {"hermesImage": "registry.example.com/hermes-memory:2.0.0"}}}, "registry.example.com/hermes-memory:2.0.0"),
-            ({"global": {"memoryContext": {"hermesImage": "registry.example.com/hermes-memory:2.0.0"}}, "memoryContext": {"hermesImage": "registry.example.com/hermes-memory:3.0.0"}}, "registry.example.com/hermes-memory:3.0.0"),
-        ):
-            with self.subTest(values=values):
-                values.setdefault("memoryContext", {})["image"] = "registry.example.com/shared-memory:1.0.0"
-                result = subprocess.run(
-                    ["helm", "template", "fixture", str(chart), "--values", "-", "--show-only", "templates/deployment.yaml"],
-                    input=json.dumps({**values, "cetiadmin": {"enabled": False}}), capture_output=True, text=True, timeout=30,
-                    env={**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.devnull},
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                args = yaml.safe_load(result.stdout)["spec"]["template"]["spec"]["containers"][0]["args"]
-                self.assertIn("--memory-context-hermes-image=" + selected, args)
-                self.assertIn("--memory-context-image=registry.example.com/shared-memory:1.0.0", args)
+                self.assertEqual([arg for arg in args if arg.startswith("--memory-context-")], expected)
 
     def test_help_needs_no_tools_or_registry(self):
         for script in (BUILD,):

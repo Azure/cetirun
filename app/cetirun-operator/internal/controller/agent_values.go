@@ -254,7 +254,7 @@ func (r *AgentReconciler) agentPreparationValues(instance *api.Agent, team *api.
 			return nil, err
 		}
 	}
-	values["memoryOptions"] = r.memoryOptions(instance.Spec.Agent.Type)
+	values["memoryOptions"] = r.memoryOptions()
 	return values, nil
 }
 

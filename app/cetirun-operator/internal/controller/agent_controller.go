@@ -90,7 +90,6 @@ type AgentReconciler struct {
 	SkillsStorageAccount        string
 	CetiRunHelmValues           map[string]interface{} // Operator-level Helm value overrides for all instances
 	MemoryImage                 string
-	HermesMemoryImage           string
 	MemoryEnabled               bool
 	MemoryRegistry              string
 	ChartRegistry               string // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
@@ -948,7 +947,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if err := r.applyAIGatewayValues(helmValues, instance); err != nil {
 			return r.rejectAgentConfig(ctx, instance, err)
 		}
-		helmValues["memoryOptions"] = r.memoryOptions(instance.Spec.Agent.Type)
+		helmValues["memoryOptions"] = r.memoryOptions()
 		if err := r.applyCetiAdminValues(ctx, instance, helmValues); err != nil {
 			return r.rejectAgentConfig(ctx, instance, err)
 		}

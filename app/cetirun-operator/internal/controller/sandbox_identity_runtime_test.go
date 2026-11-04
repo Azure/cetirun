@@ -269,7 +269,7 @@ func restartEntraReconciler(r *AgentReconciler) *AgentReconciler {
 		HelmClient: r.HelmClient, OperatorNamespace: r.OperatorNamespace, OperatorSAName: r.OperatorSAName,
 		ChartVersion: r.ChartVersion, ChartRegistry: r.ChartRegistry, DefaultModel: r.DefaultModel,
 		IstioRevision: r.IstioRevision, IstioGateway: r.IstioGateway, DomainSuffix: r.DomainSuffix,
-		CetiRunHelmValues: r.CetiRunHelmValues, MemoryImage: r.MemoryImage, HermesMemoryImage: r.HermesMemoryImage, MemoryEnabled: r.MemoryEnabled,
+		CetiRunHelmValues: r.CetiRunHelmValues, MemoryImage: r.MemoryImage, MemoryEnabled: r.MemoryEnabled,
 		MemoryRegistry: r.MemoryRegistry, SkillsStorageAccount: r.SkillsStorageAccount,
 		SandboxPreparation: r.SandboxPreparation, SandboxNativeCoordination: r.SandboxNativeCoordination,
 		AIGateway: r.AIGateway, AIGatewayHTTPClient: r.AIGatewayHTTPClient, aiGatewayClientFactory: r.aiGatewayClientFactory,
