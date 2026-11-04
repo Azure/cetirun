@@ -138,7 +138,7 @@ make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 ```
 
 The plan validates the inputs and renders local charts in a temporary
-directory. Its JSON lists the target, releases, workloads, all 14 images and 9
+directory. Its JSON lists the target, releases, workloads, all 13 images and 8
 charts, and `referenceCounts` by resource kind. The JSON does not contain
 reference names, Secret keys, or extra input fields. YAML errors report their
 position but do not show the contents. The plan does not connect to a cluster

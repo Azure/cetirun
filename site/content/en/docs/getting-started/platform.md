@@ -147,12 +147,11 @@ make publish REGISTRY=registry.example.com VERSION=0.1.1 \
   GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
 ```
 
-The command builds and pushes the 14 images and 9 charts of
+The command builds and pushes the 13 images and 8 charts of
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
-These include the operator, Portal, AI Gateway, Broker, Skill Marketplace,
-OpenClaw, Hermes, and VS Code Server images, and the platform, Istio, and
-Agent (`helm/cetirun`) charts. Then the command pulls each chart back to
-examine it. Refer to the
+These include the operator, Portal, AI Gateway, Broker, OpenClaw, Hermes, and
+VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)
+charts. Then the command pulls each chart back to examine it. Refer to the
 [unified release inventory]({{< repo "DEVELOPMENT.md" >}}#unified-release-inventory).
 
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` records that you accept the VS Code
