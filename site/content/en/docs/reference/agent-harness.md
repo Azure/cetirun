@@ -441,9 +441,9 @@ updates.
 ### Common initialization and discovery
 
 The `memory-assets` init container installs the helper, adapters and source
-instructions into an `emptyDir`. Then the HOME initializer that already exists
-uses the Agent's own image to run the common context composer. All three
-Harness types receive:
+instructions into an `emptyDir`, mounted read-only at `/opt/cetirun-memory`.
+The HOME initializer uses the Agent's own image to prepare its managed
+instructions. Custom receives a composed context view:
 
 ```text
 $HOME/.agents/AGENTS.md
@@ -452,23 +452,37 @@ $HOME/.agents/skills/cetirun-memory/references/requests.md
 $HOME/.agents/skills/<shared-skill>/...
 ```
 
-The composer builds one complete view and mounts it read-only at
+For Custom, the composer builds one complete view and mounts it read-only at
 `$HOME/.agents`. During init, it reads shared skills from a separate read-only
 source mount. The main container never mounts the shared PVC over
 `.agents/skills`. A shared `cetirun-memory` directory or another collision with
 canonical skills fails initialization and does not replace a platform skill.
 
 The sources and the PVC's `.agents` files that already exist are preserved.
-This does not change how shared storage is provisioned. For native Agents, a
+This does not change how shared storage is provisioned. For Custom, a
 non-default `skills.mountPath` also exposes a read-only alias of the composed
 skills view. It is not a second source over the canonical path.
 
-The view is stable for the Pod's lifetime and is rebuilt for a new Pod.
+The composed view is stable for the Pod's lifetime and is rebuilt for a new Pod.
 Publish shared content before a replacement. A copy of a shared source that
-changes concurrently is not a transactional snapshot. The binary and adapters
-stay available read-only at `/opt/cetirun-memory`. Private notes stay in
-`$HOME/.cetirun/memory` on the HOME volume that already exists, outside the
-instruction view.
+changes concurrently is not a transactional snapshot.
+
+Hermes and OpenClaw mount managed instructions only at
+`$HOME/.agents/AGENTS.md`. Personal files and skills elsewhere in `$HOME/.agents`
+remain visible and writable.
+The shared Skills PVC is mounted directly, read-only, at `skills.mountPath`,
+so updates remain visible without rebuilding a context snapshot. If that path
+is explicitly `$HOME/.agents/skills`, the shared mount occupies that directory.
+The platform Memory skill is loaded separately from
+`/opt/cetirun-memory/skills/cetirun-memory/SKILL.md`. Both runtimes reserve that
+skill name for the installed asset and ignore conflicting personal or shared
+copies. Ordinary native instances limit the platform context volume to `40Mi`;
+reconciled Sandboxes keep their configured scratch limit. Existing HOME files
+and shared storage contents are not moved or deleted.
+
+The binary and adapters stay available read-only at `/opt/cetirun-memory`.
+Private notes stay in `$HOME/.cetirun/memory` on the HOME volume that already
+exists, outside the instruction view.
 
 The HOME context files and older note directories that already exist are
 preserved. They are not imported automatically. An owner can import selected
@@ -494,7 +508,9 @@ Directory placement and host discovery are separate:
   non-default OpenClaw state directories.
 - Hermes discovers project `AGENTS.md` from its working directory and Git-root
   chain. Its Memory plugin explicitly loads the common file, and
-  `skills.external_dirs` refers to `$HOME/.agents/skills`.
+  `skills.external_dirs` preserves configured directories and includes personal
+  `$HOME/.agents/skills`, the shared mount when enabled, and the platform's
+  `/opt/cetirun-memory/skills` directory.
 - Custom images must load the common context and skills. They must also
   connect the helper through a native adapter or MCP. The Pi example does this
   through its SDK. It does not assemble the view, and it does not replace

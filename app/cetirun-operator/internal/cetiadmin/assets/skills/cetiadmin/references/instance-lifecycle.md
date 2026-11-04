@@ -248,7 +248,7 @@ clear the record and retry creation blindly. Preserve output and notepad;
 native remove is a separate, explicitly approved retirement after archival.
 
 The runtime image's `.hermes_build_sha` must match
-`f97608f178d1ffeca59860195ab7da295f7c8e5f`. The bridge calls that version's
+`b200f5bc60e31588ba2cb60e288029c4a54ba5fa`. The bridge calls that version's
 `cron.jobs` API; it never writes native `jobs.json`. Its JSON response includes
 safe status, ID, timezone, and next-run metadata only. Offline fixtures validate
 the bridge contract, not the native scheduler or Slack. Use the separate

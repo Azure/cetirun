@@ -270,7 +270,8 @@ test("OpenClaw turns that cannot use Memory start no helper for context or the b
 
 test("pinned Hermes host APIs load the adapter and execute bounded native calls", { skip: !process.env.MEMORY_HERMES_SOURCE }, async t => {
   const f = await fixture(t);
-  const output = execFileSync(process.env.MEMORY_HERMES_PYTHON ?? "python3", ["-B", path.join(moduleDir, "tests/hermes_host.py")], {
+  assert.ok(process.env.MEMORY_HERMES_PYTHON, "select the provisioned Hermes PM interpreter");
+  const output = execFileSync(process.env.MEMORY_HERMES_PYTHON, ["-B", path.join(moduleDir, "tests/hermes_host.py")], {
     env: { ...f.env, MEMORY_TEST_ASSETS: f.assets, MEMORY_TEST_WORKSPACE: f.workspace, MEMORY_HERMES_SOURCE: process.env.MEMORY_HERMES_SOURCE,
       HERMES_HOME: path.join(f.home, ".hermes"), HERMES_SKIP_AUTO_UPDATE: "1", PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
   });
@@ -299,7 +300,7 @@ async function skillHost(source, runtime, changed) {
 }
 
 test("pinned Hermes protects Memory discovery through live shared-skill changes", { skip: !process.env.MEMORY_HERMES_SOURCE }, async () => {
-  const host = await skillHost(process.env.MEMORY_HERMES_SOURCE, "hermes", ["agent/skill_utils.py", "tools/skills_tool.py"]);
+  const host = await skillHost(process.env.MEMORY_HERMES_SOURCE, "hermes", ["agent/skill_utils.py", "tools/skills_tool.py", "agent/prompt_builder.py"]);
   const output = execFileSync(process.env.MEMORY_HERMES_PYTHON ?? "python3", ["-B", path.join(moduleDir, "tests/hermes_skills.py")], {
     env: { ...process.env, MEMORY_HERMES_SOURCE: host, PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 30000,
   });

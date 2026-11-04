@@ -1742,7 +1742,7 @@ func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger
 	return r.ensureHermesSecretKeys(ctx, logger, secret, instance)
 }
 
-// ensureCetiRunAuthKey preserves the runtime key used by Hermes Dashboard
+// ensureCetiRunAuthKey preserves the runtime key used by Hermes Webapp
 // sessions.
 func (r *AgentReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.Logger, secret *corev1.Secret) error {
 	if secret.Data == nil {

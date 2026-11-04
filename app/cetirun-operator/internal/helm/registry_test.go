@@ -166,7 +166,11 @@ func TestRegistryBuiltinBindingsAndRolloutClassification(t *testing.T) {
 			if !reflect.DeepEqual(secondTemplate.Spec.ImagePullSecrets, []corev1.LocalObjectReference{{Name: "registry-pull-exampleuid"}}) {
 				t.Fatal("missing native pull binding")
 			}
-			input["agentRequest"].(map[string]any)["port"] = 8085
+			if typ == "hermes" {
+				input["hermes"].(map[string]any)["config"] = map[string]any{"display": map[string]any{"compact": true}}
+			} else {
+				input["agentRequest"].(map[string]any)["port"] = 8085
+			}
 			third, err := PrepareChart(chart, input)
 			if err != nil {
 				t.Fatal(err)

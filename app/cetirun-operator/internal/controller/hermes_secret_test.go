@@ -4,6 +4,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -49,18 +50,33 @@ func TestEnsureGatewayTokenHermesCreatesHermesEnv(t *testing.T) {
 	if apiKey == "" {
 		t.Fatal("API_SERVER_KEY was not populated")
 	}
-	if string(secret.Data["CETIRUN_AUTH_KEY"]) == "" {
-		t.Fatal("CETIRUN_AUTH_KEY was not populated")
+	if string(secret.Data["CETIRUN_AUTH_KEY"]) == "" || bytes.Equal(secret.Data["CETIRUN_AUTH_KEY"], secret.Data["API_SERVER_KEY"]) {
+		t.Fatal("independent CETIRUN_AUTH_KEY was not populated")
+	}
+	original := secret.DeepCopy()
+	for _, suspended := range []bool{false, true, false} {
+		instance.Spec.Suspended = suspended
+		if err := r.ensureGatewayToken(ctx, instance); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Get(ctx, key, secret); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"API_SERVER_KEY", "CETIRUN_AUTH_KEY"} {
+			if !bytes.Equal(secret.Data[name], original.Data[name]) {
+				t.Fatalf("%s changed during reconciliation", name)
+			}
+		}
 	}
 	hermesEnv := string(secret.Data["hermes.env"])
 	if hermesEnv == "" {
 		t.Fatal("hermes.env was not populated")
 	}
 	if !strings.Contains(hermesEnv, "API_SERVER_KEY="+apiKey+"\n") {
-		t.Fatalf("hermes.env does not contain generated API_SERVER_KEY: %q", hermesEnv)
+		t.Fatal("hermes.env does not contain generated API_SERVER_KEY")
 	}
 	if !strings.Contains(hermesEnv, "API_SERVER_CORS_ORIGINS=https://claws.example.com\n") {
-		t.Fatalf("hermes.env does not contain API_SERVER_CORS_ORIGINS from DomainSuffix: %q", hermesEnv)
+		t.Fatal("hermes.env does not contain API_SERVER_CORS_ORIGINS from DomainSuffix")
 	}
 }
 
@@ -131,17 +147,17 @@ func TestEnsureGatewayTokenHermesPreservesServerAndToolCredentials(t *testing.T)
 		t.Fatalf("get gateway token secret: %v", err)
 	}
 	if got := string(updated.Data["CETIRUN_AUTH_KEY"]); got != "existing-auth-key" {
-		t.Fatalf("CETIRUN_AUTH_KEY was changed: got %q", got)
+		t.Fatal("CETIRUN_AUTH_KEY was changed")
 	}
 	hermesEnv := string(updated.Data["hermes.env"])
 	if !strings.Contains(hermesEnv, "API_SERVER_KEY=api-key\n") {
-		t.Fatalf("hermes.env does not preserve API_SERVER_KEY: %q", hermesEnv)
+		t.Fatal("hermes.env does not preserve API_SERVER_KEY")
 	}
 	if !strings.Contains(hermesEnv, "BRAVE_API_KEY=tool-key\n") {
 		t.Fatal("Hermes tool credential was lost")
 	}
 	if !strings.Contains(hermesEnv, "API_SERVER_CORS_ORIGINS=https://claws.example.com\n") {
-		t.Fatalf("hermes.env does not contain API_SERVER_CORS_ORIGINS: %q", hermesEnv)
+		t.Fatal("hermes.env does not contain API_SERVER_CORS_ORIGINS")
 	}
 }
 

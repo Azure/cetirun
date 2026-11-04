@@ -6,52 +6,17 @@ set -e
 
 if [ "${CETIRUN_INGRESS_MTLS:-}" = "true" ]; then
   export TTYD_BIND_ARGS="--interface 127.0.0.1"
-  gateway_command="/bin/sh /etc/cetirun/hermes-mtls-gateway.sh"
 else
   export TTYD_BIND_ARGS=""
-  gateway_command="hermes gateway run --replace --accept-hooks --external-supervisor"
 fi
 
 export HERMES_HOME="${HERMES_HOME:-/home/vibe/.hermes}"
-PYTHON_BIN="${HERMES_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}"
-if [ ! -x "$PYTHON_BIN" ]; then
-  PYTHON_BIN="python3"
-fi
-
-if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-  echo "ERROR: config.yaml missing from $HERMES_HOME" >&2
+export HERMES_PYTHON=/usr/local/bin/hermes-python
+if [ "${CETIRUN_AI_GATEWAY:-}" != true ]; then
+  echo "AI Gateway is required" >&2
   exit 1
 fi
-if [ ! -f "$HERMES_HOME/.env" ]; then
-  echo "ERROR: .env missing from $HERMES_HOME" >&2
-  exit 1
-fi
-if ! "$PYTHON_BIN" - "$HERMES_HOME/config.yaml" <<'PY' >/dev/null 2>&1
-import sys
-import yaml
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    yaml.safe_load(f)
-PY
-then
-  echo "ERROR: config.yaml has invalid YAML syntax" >&2
-  exit 1
-fi
-
-# Hermes reads ~/.hermes/.env directly — no need to export into process env.
-# Only export API_SERVER_* vars needed by supervisord %(ENV_...)s substitution.
-while IFS= read -r line || [ -n "$line" ]; do
-  case "$line" in
-    '#'*|'') continue ;;
-    API_SERVER_*) ;;
-    *) continue ;;
-  esac
-  key="${line%%=*}"
-  value="${line#*=}"
-  # Explicit process bindings take precedence over a retained HOME .env.
-  if [ -z "${!key+x}" ]; then
-    export "$key=$value"
-  fi
-done < "$HERMES_HOME/.env"
+"$HERMES_PYTHON" /etc/cetirun/hermes-runtime.py check
 
 if [ "${CETIRUN_CETIADMIN_ENABLED:-}" = "true" ]; then
   if [ ! -x "${HERMES_PYTHON:-}" ] || [ ! -f "${CETIRUN_CETIADMIN_CONFIG:-}" ]; then
@@ -91,19 +56,6 @@ print(timezone)
   unset cetiadmin_sync_result cetiadmin_timezone
 fi
 
-# CETIRUN_AUTH_KEY signs Hermes Dashboard sessions. The
-# chart injects it as a container env var; if it's missing (e.g. an old chart
-# rolling forward to a newer image), fall back to API_SERVER_KEY so the
-# helper service still has a key to compare against.
-export CETIRUN_AUTH_KEY="${CETIRUN_AUTH_KEY:-${API_SERVER_KEY:-}}"
-export CETIRUN_AGENT_TYPE="${CETIRUN_AGENT_TYPE:-hermes}"
-
-# Keep image-only upgrades compatible with charts predating Dashboard auth.
-export HERMES_DASHBOARD_HOST="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
-export HERMES_DASHBOARD_BASIC_AUTH_USERNAME="${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-cetirun}"
-export HERMES_DASHBOARD_BASIC_AUTH_PASSWORD="${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-${API_SERVER_KEY:-}}"
-export HERMES_DASHBOARD_BASIC_AUTH_SECRET="${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-${CETIRUN_AUTH_KEY:-}}"
-
 cat > /tmp/supervisord.conf << EOF
 [unix_http_server]
 file=/tmp/supervisor.sock
@@ -121,7 +73,7 @@ logfile_maxbytes=0
 pidfile=/tmp/supervisord.pid
 
 [program:hermes-gateway]
-command=${gateway_command}
+command=/bin/sh /etc/cetirun/hermes-gateway.sh
 priority=40
 autorestart=true
 stopasgroup=true
@@ -133,34 +85,6 @@ stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 
 EOF
-
-# Model authentication is owned by the platform AI Gateway.
-if [ "${CETIRUN_AI_GATEWAY:-}" != true ]; then
-  echo "AI Gateway is required" >&2
-  exit 1
-fi
-
-if [ "${HERMES_DASHBOARD_ENABLED:-true}" = "true" ]; then
-  if ! echo "${HERMES_DASHBOARD_PORT}" | grep -qE '^[0-9]+$' || [ "${HERMES_DASHBOARD_PORT}" -lt 1024 ] || [ "${HERMES_DASHBOARD_PORT}" -gt 65535 ]; then
-    echo "ERROR: HERMES_DASHBOARD_PORT must be a number between 1024 and 65535, got '${HERMES_DASHBOARD_PORT}'" >&2
-    exit 1
-  fi
-  # Dashboard auth supplements the existing oauth2-proxy and NetworkPolicy.
-  # Never expose port 9119 directly outside the cluster.
-  cat >> /tmp/supervisord.conf << 'DASHBOARD_EOF'
-
-[program:hermes-dashboard]
-command=hermes dashboard --host %(ENV_HERMES_DASHBOARD_HOST)s --port %(ENV_HERMES_DASHBOARD_PORT)s --no-open --skip-build
-priority=30
-autorestart=true
-startretries=5
-environment=HERMES_HOME="%(ENV_HERMES_HOME)s"
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-DASHBOARD_EOF
-fi
 
 if [ "${TTYD_ENABLED}" = "true" ]; then
   if ! echo "${TTYD_PORT}" | grep -qE '^[0-9]+$' || [ "${TTYD_PORT}" -lt 1024 ] || [ "${TTYD_PORT}" -gt 65535 ]; then

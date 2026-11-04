@@ -150,7 +150,7 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 	} {
 		for _, previouslyPrepared := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/prepared=%v", tc.name, previouslyPrepared), func(t *testing.T) {
-				f := newPreparationFixture(t, "hermes")
+				f := newHeldOpenClawFixture(t)
 				if previouslyPrepared {
 					if err := f.reconcile(); err != nil {
 						t.Fatal(err)
@@ -377,7 +377,7 @@ func TestSandboxPreparationDeletionResumesReleasedEmptyJournal(t *testing.T) {
 }
 
 func TestSandboxBuiltinDeletionAttemptsShutdownWhenRevocationFails(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		for _, revocation := range []string{"journal read", "binding deletion"} {
 			for _, failure := range []string{"none", "workload", "route", "status", "all"} {
 				t.Run(typ+"/"+revocation+"/"+failure, func(t *testing.T) {
@@ -570,7 +570,7 @@ func TestSandboxBuiltinDeletionAttemptsShutdownWhenRevocationFails(t *testing.T)
 
 func TestSandboxPreparationDeletionKeepsRegistryCleanupBehindShutdown(t *testing.T) {
 	ctx := context.Background()
-	f := newPreparationFixture(t, "hermes")
+	f := newHeldOpenClawFixture(t)
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +704,7 @@ func (s *preparationStatusCounts) Update(ctx context.Context, object client.Obje
 func TestSandboxPreparationUnchangedRequestBudget(t *testing.T) {
 	for _, admin := range []bool{false, true} {
 		t.Run(fmt.Sprintf("admin=%v", admin), func(t *testing.T) {
-			f := newPreparationFixture(t, "hermes")
+			f := newHeldOpenClawFixture(t)
 			if admin {
 				f.makeAdmin(t)
 			}
@@ -815,7 +815,7 @@ func TestSandboxPreparationReuseKeepsFreshFailureChecks(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newPreparationFixture(t, "hermes")
+			f := newHeldOpenClawFixture(t)
 			if err := f.reconcile(); err != nil {
 				t.Fatal(err)
 			}

@@ -75,16 +75,16 @@ not proof that ingress works.
 
 | External path | Destination at default ports |
 | --- | --- |
-| `/ui/<instance>/` | OpenClaw Control UI/gateway on 18789, or Hermes Dashboard on 9119 |
+| `/ui/<instance>/` | OpenClaw Control UI/gateway on 18789, or Hermes Webapp on 9120 |
 | `/ui/<instance>/v1...` and `/ui/<instance>/health...` for Hermes | Hermes API on 8642, with the UI prefix removed |
 | `/<instance>/term/` | ttyd on 7681 |
 | `/<instance>/desktop/` | noVNC on 6080 |
 
 OpenClaw keeps `/ui/<instance>` in its gateway requests. An exact WebSocket
-upgrade at that path is routed without an HTTP redirect. Hermes Dashboard
+upgrade at that path is routed without an HTTP redirect. Hermes Webapp
 receives an `x-forwarded-prefix` header. After the platform sign-in, the Hermes
 application login is also necessary. For this login, use `cetirun` as the
-username and the instance's Hermes API / Dashboard key as the password.
+username and the instance's Hermes API / Webapp key as the password.
 Neither routing rule establishes compatibility with every OpenAI-style
 inference endpoint.
 

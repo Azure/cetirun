@@ -97,7 +97,7 @@ func preparationPlacementReceipt(t *testing.T, f *preparationFixture) (*corev1.C
 }
 
 func TestSandboxPreparationPersistsPlacementBeforeHeldExpectation(t *testing.T) {
-	for _, typ := range []string{"hermes", "openclaw"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
 			f, node, registry := placementPreparationFixture(t, typ)
 			if err := f.reconcile(); err != nil {
@@ -145,7 +145,7 @@ func TestSandboxPreparationPersistsPlacementBeforeHeldExpectation(t *testing.T) 
 func TestSandboxPreparationPlacementCannotBeReassignedOrDisabled(t *testing.T) {
 	for _, scenario := range []string{"missing registry", "registry replacement", "node replacement", "HOME change", "disabled"} {
 		t.Run(scenario, func(t *testing.T) {
-			f, node, registry := placementPreparationFixture(t, "hermes")
+			f, node, registry := placementPreparationFixture(t, "openclaw")
 			ctx := context.Background()
 			if err := f.reconcile(); err != nil {
 				t.Fatal(err)
@@ -191,7 +191,7 @@ func TestSandboxPreparationPlacementCannotBeReassignedOrDisabled(t *testing.T) {
 }
 
 func TestSandboxPlacementRegistryRefreshPreservesLifetime(t *testing.T) {
-	f, _, registry := placementPreparationFixture(t, "hermes")
+	f, _, registry := placementPreparationFixture(t, "openclaw")
 	ctx := context.Background()
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
@@ -236,7 +236,7 @@ func TestSandboxPlacementStillRequiresQualifiedWriterExclusion(t *testing.T) {
 func TestSandboxPlacementReceiptCommitPrecedesExpectationAndRecovers(t *testing.T) {
 	for _, committed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("lost-response=%v", committed), func(t *testing.T) {
-			f, _, _ := placementPreparationFixture(t, "hermes")
+			f, _, _ := placementPreparationFixture(t, "openclaw")
 			intercepted := false
 			f.reconciler.Client = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
 				Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
@@ -291,7 +291,7 @@ func TestSandboxPlacementReceiptCommitPrecedesExpectationAndRecovers(t *testing.
 }
 
 func TestSandboxPlacementIncompleteV2ReceiptDoesNotBecomeUnassigned(t *testing.T) {
-	f, _, _ := placementPreparationFixture(t, "hermes")
+	f, _, _ := placementPreparationFixture(t, "openclaw")
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestSandboxPlacementIncompleteV2ReceiptDoesNotBecomeUnassigned(t *testing.T
 }
 
 func TestSandboxPlacementCleanupUsesHistoryWithoutCurrentRegistry(t *testing.T) {
-	f, node, registry := placementPreparationFixture(t, "hermes")
+	f, node, registry := placementPreparationFixture(t, "openclaw")
 	ctx := context.Background()
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)

@@ -154,6 +154,7 @@ func renderMemoryWorkload(t *testing.T, kind api.AgentType, options helm.MemoryO
 		"agentType": string(kind), "agentRequest": map[string]any{"type": string(kind)},
 		"secrets":       map[string]any{"provider": "openai", "existingSecret": "native-auth", "model": "synthetic-model", "apiBase": "http://gateway.example.com/v1"},
 		"aiGateway":     map[string]any{"enabled": true, "keySecretName": "model-key", "keySecretKey": "api-key"},
+		"hermes":        map[string]any{"env": map[string]any{"HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/example"}},
 		"memoryOptions": options,
 	})
 	if err != nil {

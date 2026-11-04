@@ -88,6 +88,10 @@ var laterAdditions = map[string][]string{
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
 	var err error
+	chrt.Schema, err = restoreHermesWebappSchema(chrt.Schema)
+	if err != nil {
+		return err
+	}
 	chrt.Schema, err = stripCetiAdminSchema(chrt.Schema)
 	if err != nil {
 		return err
@@ -665,4 +669,103 @@ func restoreRemovedTeamsAssets(assets map[string]*[]byte) error {
 		return err
 	}
 	return nil
+}
+
+func restoreHermesWebappSchema(schema []byte) ([]byte, error) {
+	for _, change := range [][2]string{
+		{`                    "description": "Hermes native config.yaml content",
+                    "properties": {
+                        "webapp": false,
+                        "api_server": false,
+                        "platforms": {"properties": {"api_server": false}},
+                        "gateway": {"properties": {
+                            "api_server": false,
+                            "platforms": {"properties": {"api_server": false}}
+                        }},
+                        "dashboard": {"properties": {"basic_auth": false}},
+                        "secrets": {
+                            "type": "object",
+                            "properties": {
+                                "sources": {"type": "array", "items": {"type": "string"}},
+                                "preserve_existing": {"type": "array", "items": {"type": "string"}},
+                                "profile_alias": {"type": "boolean"},
+                                "onepassword": {
+                                    "type": "object",
+                                    "properties": {
+                                        "enabled": {"type": "boolean"},
+                                        "env": {"type": "object", "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "not": {"pattern": "^(API_SERVER_|HERMES_WEBAPP_|HERMES_DASHBOARD_|CETIRUN_|HERMES_(HOME$|PROFILE|CONFIG|ENV|MANAGED|PYTHON$|INSTALL_|RUNTIME_DIR$|IGNORE_USER_CONFIG$|GATEWAY_CONFIG$)|HOME$|PATH$|PYTHONPATH$|PYTHONHOME$|NODE_PATH$|NODE_OPTIONS$)"}}},
+                                        "service_account_token_env": {"type": "string", "not": {"pattern": "^(API_SERVER_|HERMES_WEBAPP_|HERMES_DASHBOARD_|CETIRUN_|HERMES_(HOME$|PROFILE|CONFIG|ENV|MANAGED|PYTHON$|INSTALL_|RUNTIME_DIR$|IGNORE_USER_CONFIG$|GATEWAY_CONFIG$)|HOME$|PATH$|PYTHONPATH$|PYTHONHOME$|NODE_PATH$|NODE_OPTIONS$)"}}
+                                    }
+                                }
+                            },
+                            "additionalProperties": {"type": "object", "properties": {"enabled": {"const": false}}}
+                        }
+                    },
+`, `                    "description": "Hermes native config.yaml content",
+`},
+		{`                    "description": "Environment variables written into ~/.hermes/.env",
+                    "additionalProperties": false,
+`, `                    "description": "Environment variables written into ~/.hermes/.env",
+`},
+		{`                        "API_SERVER_ENABLED": {
+                            "type": "string",
+                            "const": "true",
+                            "default": "true"
+                        },
+`, `                        "API_SERVER_ENABLED": {
+                            "type": "string",
+                            "default": "true"
+                        },
+`},
+		{`                        "API_SERVER_HOST": {
+                            "type": "string",
+                            "enum": ["0.0.0.0", "127.0.0.1"],
+                            "default": "0.0.0.0"
+                        },
+`, `                        "API_SERVER_HOST": {
+                            "type": "string",
+                            "default": "0.0.0.0"
+                        },
+`},
+		{`                        "API_SERVER_PORT": {
+                            "type": "string",
+                            "const": "8642",
+                            "default": "8642"
+                        },
+`, `                        "API_SERVER_PORT": {
+                            "type": [
+                                "string",
+                                "integer"
+                            ],
+                            "pattern": "^[0-9]+$",
+                            "default": "8642"
+                        },
+`},
+		{`                        "HERMES_WEBAPP_PUBLIC_URL": {
+                            "type": "string",
+                            "description": "Operator-owned external Webapp URL including its instance prefix",
+                            "pattern": "^$|^https://[A-Za-z0-9.-]+(?::[0-9]+)?/ui/[a-z0-9][a-z0-9-]*$",
+                            "default": ""
+                        }
+`, `                        "HERMES_DASHBOARD_PUBLIC_URL": {
+                            "type": "string",
+                            "description": "Operator-owned external Dashboard URL including its instance prefix",
+                            "default": ""
+                        }
+`},
+		{`        {
+            "if": {"properties": {"agentType": {"const": "hermes"}}},
+            "then": {"properties": {
+                "extraEnv": {"items": {"properties": {"name": {"not": {"pattern": "^(API_SERVER_|HERMES_WEBAPP_|HERMES_DASHBOARD_|CETIRUN_(AI_GATEWAY$|AUTH_KEY$|GATEWAY_.*|INGRESS_.*)|HERMES_(HOME|PROFILE.*|CONFIG.*|ENV.*|MANAGED.*|PYTHON|INSTALL_.*|RUNTIME_DIR|IGNORE_USER_CONFIG|GATEWAY_CONFIG)$|HOME$|PATH$|PYTHONPATH$|PYTHONHOME$)"}}}}},
+                "extraEnvFrom": {"maxItems": 0}
+            }}
+        },
+`, ``},
+	} {
+		if bytes.Count(schema, []byte(change[0])) != 1 {
+			return nil, fmt.Errorf("pre-proxy fixture requires the exact Hermes Webapp schema")
+		}
+		schema = bytes.Replace(schema, []byte(change[0]), []byte(change[1]), 1)
+	}
+	return schema, nil
 }

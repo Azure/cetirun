@@ -499,6 +499,9 @@ func ValidateRenderedPod(pod *corev1.Pod, workload RenderedWorkload, owner metav
 
 func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, image string, memoryEnabled bool) error {
 	spec := template.Spec
+	if err := b.validateHermesTemplate(spec); err != nil {
+		return err
+	}
 	if err := b.validateEgressTemplate(template); err != nil {
 		return err
 	}

@@ -209,6 +209,26 @@ func TestSandboxNativeProxyTrustWithPreProxyChart(t *testing.T) {
 	}
 }
 
+func TestSandboxPreProxyFixtureRejectsHermesSchemaDrift(t *testing.T) {
+	for _, tt := range []struct {
+		name, current, changed string
+	}{
+		{"webapp restriction", `"webapp": false`, `"webapp": true`},
+		{"unchanged image", `"default": "cetirun.azurecr.io/hermes-gateway"`, `"default": "registry.example.com/changed"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			chrt := testChart(t)
+			if bytes.Count(chrt.Schema, []byte(tt.current)) != 1 {
+				t.Fatal("schema drift fixture does not match the current chart")
+			}
+			chrt.Schema = bytes.Replace(chrt.Schema, []byte(tt.current), []byte(tt.changed), 1)
+			if err := helmfixture.RestorePreProxyContract(chrt); err == nil {
+				t.Fatal("historical fixture accepted changed Hermes schema bytes")
+			}
+		})
+	}
+}
+
 func TestSandboxPreProxyCompatibilityRetainsSchemaValidation(t *testing.T) {
 	chrt := testChart(t)
 	if err := helmfixture.RestorePreProxyContract(chrt); err != nil {

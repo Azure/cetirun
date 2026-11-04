@@ -109,7 +109,7 @@ func writeRunningExpectation(t *testing.T, f *preparationFixture, intent sandbox
 }
 
 func TestSandboxRunningSourcesAreDistinctFromHeldPreparation(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
 			ctx := context.Background()
 			held, target := executionIntentFixture(t, typ)
@@ -266,7 +266,7 @@ func TestSandboxRunningSourcesRejectIncompleteOrChangedHandoff(t *testing.T) {
 
 func TestSandboxRunningSourcesAllowCurrentObservationMetadata(t *testing.T) {
 	ctx := context.Background()
-	f, _, intent := runningExecutionFixture(t, "hermes")
+	f, _, intent := runningExecutionFixture(t, "openclaw")
 	workload := &appsv1.StatefulSet{}
 	if err := f.client.Get(ctx, client.ObjectKey{Namespace: intent.Namespace.Name, Name: intent.Workload.Name}, workload); err != nil {
 		t.Fatal(err)
@@ -333,7 +333,7 @@ func TestSandboxRunningSourcesVerifyScheduledTopology(t *testing.T) {
 }
 
 func TestSandboxRunningSourcesUseKubernetesPrerequisiteReader(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
 			f, _, intent := runningExecutionFixture(t, typ, func(f *preparationFixture) {
 				installKubernetesPrerequisites(t, f, &testSandboxWriterExclusion{})
@@ -384,7 +384,7 @@ func TestSandboxRunningSourcesRecheckPodDuringReadback(t *testing.T) {
 	for _, scenario := range []string{"deleted", "replaced", "template changed", "status only"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
-			f, _, intent := runningExecutionFixture(t, "hermes")
+			f, _, intent := runningExecutionFixture(t, "openclaw")
 			readPod, changed := false, false
 			f.reconciler.APIReader = &prerequisitesAPIReader{
 				Reader: f.client, reads: map[client.ObjectKey]int{},

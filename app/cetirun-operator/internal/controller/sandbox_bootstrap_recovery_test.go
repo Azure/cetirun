@@ -393,7 +393,7 @@ func TestSandboxBootstrapReceiptPatchFailureRetainsIntent(t *testing.T) {
 
 func TestSandboxBootstrapHeldPreparationStillRequiresFence(t *testing.T) {
 	ctx := context.Background()
-	f := preparedBootstrapFixture(t, "hermes")
+	f := preparedBootstrapFixture(t, "openclaw")
 	prerequisites := f.reconciler.SandboxPreparation.Prerequisites.(*controller.KubernetesSandboxPrerequisites)
 	workload := &appsv1.StatefulSet{}
 	if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: "openclaw-example-cetirun"}, workload); err != nil {

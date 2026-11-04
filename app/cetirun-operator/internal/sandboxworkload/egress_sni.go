@@ -163,6 +163,8 @@ func (b *Bundle) validateEgressTemplate(template *corev1.PodTemplateSpec) error 
 	probeCommand := []string{"node", "/etc/cetirun/health-probe.cjs"}
 	if b.input.AgentType == "custom" {
 		probeCommand = []string{"/cetirun-probe/http-probe"}
+	} else if b.input.AgentType == "hermes" {
+		probeCommand = []string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", "readiness"}
 	}
 	if len(spec.Containers) == 0 || spec.Containers[0].ReadinessProbe == nil ||
 		spec.Containers[0].ReadinessProbe.Exec == nil ||

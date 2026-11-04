@@ -1,13 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-import os
 import re
-import subprocess
-import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "app/cetirun-chart"
@@ -35,25 +31,6 @@ class HarnessAssetsTests(unittest.TestCase):
             profile = (CHART / f"agents/{kind}/profile.yaml").read_text()
             self.assertIn(f'nativeVersion: "{native_version}"', profile)
 
-    def test_hermes_process_binding_wins_over_retained_home(self):
-        source = (CHART / "agents/hermes/bootstrap/hermes-entrypoint.sh").read_text()
-        start = source.index("while IFS= read")
-        end = source.index('done < "$HERMES_HOME/.env"', start)
-        loop = source[start:end] + 'done < "$HERMES_HOME/.env"\n'
-        with tempfile.TemporaryDirectory() as directory:
-            Path(directory, ".env").write_text("API_SERVER_PORT=8642\nAPI_SERVER_HOST=127.0.0.1\n")
-            for port, expected in (("8080", "8080"), (None, "8642")):
-                env = dict(os.environ, HERMES_HOME=directory)
-                env.pop("API_SERVER_PORT", None)
-                env.pop("API_SERVER_HOST", None)
-                if port:
-                    env["API_SERVER_PORT"] = port
-                result = subprocess.run(
-                    ["bash", "-eu", "-c", loop + 'printf "%s %s" "$API_SERVER_PORT" "$API_SERVER_HOST"'],
-                    env=env, capture_output=True, text=True, check=True,
-                )
-                self.assertEqual(result.stdout, f"{expected} 127.0.0.1")
-
     def test_hermes_uses_supported_runtime_interfaces(self):
         entrypoint = (
             CHART / "agents/hermes/bootstrap/hermes-entrypoint.sh"
@@ -64,12 +41,12 @@ class HarnessAssetsTests(unittest.TestCase):
 
         self.assertIn(
             "hermes gateway run --replace --accept-hooks --external-supervisor",
-            entrypoint,
+            (CHART / "agents/hermes/bootstrap/hermes-gateway.sh").read_text(),
         )
         self.assertNotIn("| tee -a", entrypoint)
         self.assertNotIn("--insecure", entrypoint)
-        self.assertIn("HERMES_DASHBOARD_HOST", entrypoint)
-        self.assertIn("/usr/local/lib/hermes-agent/venv/bin/python", entrypoint)
+        self.assertNotIn("[program:hermes-dashboard]", entrypoint)
+        self.assertIn("/usr/local/bin/hermes-python", entrypoint)
 
         for name, key in (
             ("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "API_SERVER_KEY"),
@@ -93,35 +70,6 @@ class HarnessAssetsTests(unittest.TestCase):
         entrypoint = (CHART / "agents/hermes/bootstrap/hermes-entrypoint.sh").read_text()
         self.assertNotIn("[program:cetirun-auth]", entrypoint)
         self.assertIn("AI Gateway is required", entrypoint)
-
-    def test_hermes_dashboard_defaults_preserve_explicit_bindings(self):
-        source = (CHART / "agents/hermes/bootstrap/hermes-entrypoint.sh").read_text()
-        bindings = "\n".join(
-            line for line in source.splitlines()
-            if line.startswith("export HERMES_DASHBOARD_")
-        )
-        names = (
-            "HERMES_DASHBOARD_HOST",
-            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
-            "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
-            "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
-        )
-        env = {key: value for key, value in os.environ.items() if key not in names}
-        env.update(API_SERVER_KEY="test-api-key", CETIRUN_AUTH_KEY="test-auth-key")
-        output = 'printf "%s\\n" ' + " ".join(f'"${name}"' for name in names)
-        for overrides, expected in (
-            ({}, ["0.0.0.0", "cetirun", "test-api-key", "test-auth-key"]),
-            (
-                dict(zip(names, ["127.0.0.1", "custom", "password", "secret"])),
-                ["127.0.0.1", "custom", "password", "secret"],
-            ),
-        ):
-            with self.subTest(overrides=bool(overrides)):
-                result = subprocess.run(
-                    ["bash", "-eu", "-c", bindings + "\n" + output],
-                    env=env | overrides, capture_output=True, text=True, check=True,
-                )
-                self.assertEqual(result.stdout.splitlines(), expected)
 
     def test_hermes_config_uses_current_memory_keys(self):
         values = (CHART / "values.yaml").read_text()

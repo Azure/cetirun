@@ -75,7 +75,7 @@ func isWorkloadBinding(object client.Object, ref sandboxpolicy.BindingReference)
 }
 
 func TestSandboxPreparationRecoversDeletedWorkloadGrants(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		for _, kind := range []string{"RoleBinding", "ClusterRoleBinding"} {
 			for _, late := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/late=%v", typ, kind, late), func(t *testing.T) {

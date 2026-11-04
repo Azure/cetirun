@@ -19,7 +19,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "assets/scripts/cron_sync.py"
-HERMES_SHA = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+HERMES_SHA = "b200f5bc60e31588ba2cb60e288029c4a54ba5fa"
 PRIVATE_TEXT = "sk-dummy-must-not-appear"
 
 NATIVE_JOBS = r'''
@@ -166,7 +166,16 @@ class CronSyncCLITest(unittest.TestCase):
         self.home.mkdir(mode=0o700)
         self.install = self.directory / "native-install"
         (self.install / "cron").mkdir(parents=True)
-        (self.install / ".hermes_build_sha").write_text(HERMES_SHA)
+        (self.install / "install-stamp.json").write_text(json.dumps({
+            "commit": HERMES_SHA, "baseVersion": "0.22.7", "updateMechanism": "external", "distribution": "docker"
+        }))
+        (self.install / "hermes_cli").mkdir()
+        (self.install / "hermes_cli/__init__.py").write_text("")
+        (self.install / "hermes_cli/version_info.py").write_text(
+            "from types import SimpleNamespace\n"
+            "def get_version_info():\n"
+            f"    return SimpleNamespace(base_version='0.22.7', commit='{HERMES_SHA}', source='docker')\n"
+        )
         (self.install / "cron/__init__.py").write_text("")
         (self.install / "cron/jobs.py").write_text(NATIVE_JOBS)
         (self.install / "hermes_time.py").write_text(
@@ -546,7 +555,7 @@ class CronSyncCLITest(unittest.TestCase):
                 value = self.environment.pop(field)
                 self.assertEqual(self.run_cli(success=False)["code"], "invalid_runtime")
                 self.environment[field] = value
-        (self.install / ".hermes_build_sha").write_text("not-the-pinned-version")
+        (self.install / "install-stamp.json").write_text("not-the-pinned-version")
         self.assertEqual(self.run_cli(success=False)["code"], "native_version_mismatch")
         self.assertEqual(self.calls("import"), [])
 

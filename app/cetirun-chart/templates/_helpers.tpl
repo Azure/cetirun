@@ -567,7 +567,19 @@ Protected built-in probes run inside the container, without host ingress grants.
 {{- define "cetirun.agent.healthProbe" -}}
 {{- $root := .root -}}
 {{- $kind := include "cetirun.agent.type" $root -}}
-{{- if and $root.Values.sandboxWorkload (or (eq $kind "openclaw") (and (eq $kind "hermes") ($root.Values.sandboxWorkload.reconciled | default false))) -}}
+{{- if eq $kind "hermes" -}}
+exec:
+  command:
+    - /usr/local/bin/hermes-python
+    - /etc/cetirun/hermes-runtime.py
+    {{- if eq .pathPort "cetirun.agent.probePathPort" }}
+    - liveness
+    {{- else }}
+    - readiness
+    {{- end }}
+    - --timeout
+    - {{ .timeoutSeconds | quote }}
+{{- else if and $root.Values.sandboxWorkload (eq $kind "openclaw") -}}
 {{- $endpoint := include .pathPort $root | fromYaml -}}
 {{- $port := 0 -}}
 {{- range (include "cetirun.agent.ports" $root | fromYamlArray) -}}

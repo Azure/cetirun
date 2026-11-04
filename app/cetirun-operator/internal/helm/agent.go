@@ -413,29 +413,20 @@ func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registr
 	var definition struct {
 		ContractVersion string   `json:"contractVersion"`
 		NativeVersion   string   `json:"nativeVersion"`
+		NativeCommit    string   `json:"nativeCommit"`
+		WebappPort      int32    `json:"webappPort"`
 		Port            int32    `json:"port"`
 		QualifiedImages []string `json:"qualifiedImages"`
 	}
 	if err := yaml.UnmarshalStrict(asset(chrt, profilePath), &definition); err != nil ||
-		definition.ContractVersion != "v1" || definition.NativeVersion == "" || definition.Port != descriptor.DefaultPort {
+		definition.ContractVersion != "v1" || definition.NativeVersion == "" || definition.Port != descriptor.DefaultPort ||
+		(descriptor.NativeVersion != "" && (definition.NativeVersion != descriptor.NativeVersion || definition.NativeCommit != descriptor.NativeCommit || definition.WebappPort != descriptor.WebappPort)) {
 		return agents.Profile{}, fmt.Errorf("chart lacks a supported %s runtime profile", descriptor.Type)
 	}
 
-	baseImage := object(object(chrt.Values[descriptor.Type])["image"])
-	repository := text(baseImage["repository"])
-	if registry != "" {
-		repository = registry + "/" + descriptor.Type + "-gateway"
-	}
-	tag := text(baseImage["tag"])
-	if tag == "" {
-		tag = chrt.Metadata.AppVersion
-	}
-	if repository == "" || tag == "" || tag == "latest" {
-		return agents.Profile{}, fmt.Errorf("built-in profile requires a versioned default image")
-	}
-	image := repository + ":" + tag
-	if digest := text(baseImage["digest"]); digest != "" {
-		image += "@" + digest
+	image, err := defaultRuntimeImage(chrt, descriptor.Type, registry)
+	if err != nil {
+		return agents.Profile{}, err
 	}
 	return agents.Profile{
 		ID:              chrt.Metadata.Version + "/" + descriptor.Type + "/" + definition.NativeVersion,
@@ -443,6 +434,26 @@ func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registr
 		Port:            definition.Port,
 		QualifiedImages: definition.QualifiedImages,
 	}, nil
+}
+
+func defaultRuntimeImage(chrt *chart.Chart, kind, registry string) (string, error) {
+	baseImage := object(object(chrt.Values[kind])["image"])
+	repository := text(baseImage["repository"])
+	if registry != "" {
+		repository = registry + "/" + kind + "-gateway"
+	}
+	tag := text(baseImage["tag"])
+	if tag == "" {
+		tag = chrt.Metadata.AppVersion
+	}
+	if repository == "" || tag == "" || tag == "latest" {
+		return "", fmt.Errorf("built-in profile requires a versioned default image")
+	}
+	image := repository + ":" + tag
+	if digest := text(baseImage["digest"]); digest != "" {
+		image += "@" + digest
+	}
+	return image, nil
 }
 
 func prepareRuntimeValues(chrt *chart.Chart, input map[string]any) (map[string]any, error) {

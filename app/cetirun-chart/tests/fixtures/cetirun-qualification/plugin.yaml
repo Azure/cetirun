@@ -1,0 +1,9 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+name: cetirun-qualification
+version: 1.0.0
+description: Synthetic package for native Webapp plugin qualification.
+author: CetiRun contributors
+kind: backend
+requires_hermes: "==0.22.7"

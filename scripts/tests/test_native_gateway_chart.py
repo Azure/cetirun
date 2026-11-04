@@ -188,15 +188,18 @@ class NativeGatewayChartTests(unittest.TestCase):
                     else:
                         self.assertNotIn("NODE_DISABLE_COMPILE_CACHE", env)
 
-    def test_hermes_dashboard_receives_the_explicit_public_url(self):
+    def test_hermes_webapp_receives_the_explicit_public_url(self):
         values = native_values()
         values["agentType"] = "hermes"
-        values["hermes"] = {"env": {"HERMES_DASHBOARD_PUBLIC_URL": "https://example.com/ui/example-agent"}}
-        pod = object_of_kind(render(RUNTIME_CHART, values), "StatefulSet")["spec"]["template"]["spec"]
+        values["hermes"] = {"env": {"HERMES_WEBAPP_PUBLIC_URL": "https://example.com/ui/example-agent"}}
+        objects = render(RUNTIME_CHART, values)
+        pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
         env = {item["name"]: item for item in pod["containers"][0]["env"]}
-        self.assertEqual(env["HERMES_DASHBOARD_PUBLIC_URL"], {
-            "name": "HERMES_DASHBOARD_PUBLIC_URL", "value": "https://example.com/ui/example-agent",
+        self.assertEqual(env["HERMES_WEBAPP_PUBLIC_URL"], {
+            "name": "HERMES_WEBAPP_PUBLIC_URL", "value": "https://example.com/ui/example-agent",
         })
+        managed = yaml.safe_load(object_of_kind(objects, "ConfigMap")["data"]["hermes-managed.yaml"])
+        self.assertEqual(managed["webapp"]["public_url"], "https://example.com/ui/example-agent")
 
     def test_native_initializers_have_an_init_process_without_changing_their_work(self):
         values = native_values()
@@ -393,15 +396,19 @@ class NativeGatewayChartTests(unittest.TestCase):
         main = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
         self.assertFalse(any(kind in main for kind in ("livenessProbe", "readinessProbe", "startupProbe")))
 
-    def test_held_hermes_probes_are_unchanged(self):
+    def test_held_hermes_keeps_api_liveness_separate_from_webapp_readiness(self):
         values = native_values()
         values["agentType"] = "hermes"
         objects = render(RUNTIME_CHART, values)
         main = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
         for kind in ("livenessProbe", "readinessProbe", "startupProbe"):
             with self.subTest(probe=kind):
-                self.assertEqual(main[kind]["httpGet"], {"path": "/health", "port": "api"})
-                self.assertNotIn("exec", main[kind])
+                mode = "liveness" if kind == "livenessProbe" else "readiness"
+                self.assertEqual(main[kind]["exec"]["command"], [
+                    "/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode,
+                    "--timeout", str(main[kind]["timeoutSeconds"]),
+                ])
+                self.assertNotIn("httpGet", main[kind])
         self.assertNotIn("health-probe.cjs", object_of_kind(objects, "ConfigMap")["data"])
 
     def test_packaged_chart_contains_the_native_runtime_assets(self):

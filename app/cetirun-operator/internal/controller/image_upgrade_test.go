@@ -39,6 +39,9 @@ func TestChartOnlyUpgradeRepinsDefaultBeforeDeployment(t *testing.T) {
 			agent := newCR("upgrade", api.PhaseReady, nil, 2, 1, "old-config")
 			agent.Spec.Helm.Version = "2.0.0"
 			agent.Spec.Agent.Type = kind
+			if kind == api.AgentTypeHermes {
+				agent.Spec.Agent.Port = ptr.To[int32](8642)
+			}
 			agent.Spec.Agent.Image = ptr.To("registry.example.com/" + string(kind) + "-gateway:1.0.0")
 			agent.Status.HelmReleaseName = "openclaw-upgrade"
 			scheme := testScheme()

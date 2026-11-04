@@ -1,241 +1,247 @@
 # Maintaining the Hermes runtime
 
-CetiRun builds Hermes from an immutable upstream source release. The Dockerfile
-downloads the selected GitHub tag and verifies the archive checksum. It makes
-sure that the package version in `pyproject.toml` is correct. It installs the
-repository's checked-in `uv.lock`. It then builds the upstream Dashboard and TUI
-assets.
+CetiRun serves the Hermes browser workspace from the gateway's Webapp listener.
+The same gateway owns API requests, message-channel sessions, queues, and the
+workspace. There is one supervised gateway, plus the separate ttyd and Tailscale
+services. Closing a browser does not stop the gateway. Restarting the gateway
+ends its host-terminal shells; persistent history does not make in-flight tools
+or model requests resumable.
 
-The reference for this release is the
-[upstream v2026.9.24 Dockerfile](https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/Dockerfile)
-and [installer](https://github.com/NousResearch/hermes-agent/blob/v2026.9.24/scripts/install.sh).
-CetiRun follows the container's `uv sync --frozen` path with the `all`,
-`anthropic`, and `azure-identity` extras. It uses the upstream npm workspace
-installation and Dashboard/TUI build commands. It does not run the interactive
-host installer or replace CetiRun's HOME and process supervision.
+## Pinned build
 
-CetiRun does not download the upstream Playwright browser, because the chart
-supplies a separate Chrome/CDP desktop sidecar. UI assets build on the native
-architecture of the builder with the upstream-pinned Node 26 image. Only their
-architecture-independent output enters the target image. Python, SQLite, and
-the final image build for `linux/amd64`. The runtime keeps Node 24.21.0 from
-the shared base. This version is in the Node engine range of the upstream
-package.
-
-## Compatibility cleanup in 0.21.5
-
-| Previous integration | Replacement |
+| Input | Value |
 | --- | --- |
-| Checksum-verified PyPI wheel, `--no-deps` install, then a second `[all]` install | One source release and its checked-in `uv.lock` |
-| Separate Azure Identity and PyJWT version overrides | Dependencies from the upstream lock and the `azure-identity` extra |
-| Copilot helper that imports private Python functions | Public `hermes model` and `hermes auth status copilot` commands |
-| Gateway shell pipeline and Dashboard `--insecure` | Supervisor-owned gateway process and the upstream Dashboard password provider |
+| Hermes release | `v0.22.7` |
+| Source commit | `b200f5bc60e31588ba2cb60e288029c4a54ba5fa` |
+| Commit archive SHA-256 | `1f7d43fa1a515283929a739c42e10bf8d48910e523eccec74b2a2bece858d2b5` |
+| Python | PM `3.14.9+20261021` |
+| Node / npm | PM `26.12.1` / `12.0.2` |
+| uv | PM `0.13.5` |
+| SQLite | `3.53.4`, tested by the Hermes interpreter |
+| CPython SQLite extension source | `Python-3.14.9.tar.xz`, SHA-256 `e02d9ac21cebda6e46435369744a92c65cc7cd8669697694122cf97ffacd1e53` |
 
-The unrelated dependency fixes in the shared base stay unchanged. The pinned
-SQLite build is kept because the SQLite in the base does not pass the WAL safety
-check of this release. Its compiler, linker, C headers, Linux kernel headers,
-and Make stay in a separate build stage. The runtime gets only the library.
+The [Dockerfile](Dockerfile) downloads the exact commit archive and checks its
+hash. [PM build helper](pm/build.py) consumes that source's `pm/lock.json` and
+uses upstream PM to verify tool downloads, build the application `.venv`, record
+the `all`, `messaging`, `anthropic`, and `azure-identity` selections, and package
+an independent manager runtime. The tools live in the Hermes image directory;
+the shared base's Python and Node installations remain separate.
 
-## CetiRun-owned integration
+The PM Python embeds SQLite 3.53.1. The image compiles the matching CPython
+3.14.9 SQLite extension against the pinned 3.53.4 library, then loads it before
+Hermes imports SQLite. It keeps the PM interpreter artifact unchanged. Both the
+PM entry point and the base environment source binding install this extension;
+a missing or mismatched extension fails qualification and startup.
 
-CetiRun keeps these layers on top of the upstream source:
+The package metadata intentionally reports `0.0.0`. The release identity comes
+from upstream `scripts/write_install_stamp.py`, including the exact release,
+commit, Docker distribution and external update ownership. Runtime checks use
+`hermes_cli.version_info`, the image provenance, and the PM tool facts.
+`hermes update` does not upgrade the CetiRun image.
 
-- The persistent user and HOME contract at UID/GID `1024` and
-  `/home/vibe/.hermes`.
-- Mandatory AI Gateway routing. Owners connect GitHub Copilot through the
-  Portal, and the image has no platform direct-provider login service.
-- Supervisor configuration for the Hermes gateway, Dashboard, terminal, and
-  Tailscale.
-- The external shared-skills directory and CetiRun-owned persona/context files.
-- The SQLite version and compile flags that the upstream container uses to
-  prevent the WAL-reset corruption bug on older distribution packages.
-- Dashboard password authentication. The username is `cetirun`. The password is
-  the `API_SERVER_KEY` that already exists. `CETIRUN_AUTH_KEY` signs Dashboard
-  sessions.
+The image builds `apps/desktop/dist-webapp` with upstream
+`build-webapp.mjs --deps-only`, followed by `--no-install`, and builds the TUI
+with `scripts/build/tui.mjs`. It retains product receipts and the upstream agent
+manifest. Browser startup does not install npm packages or download Electron.
+The Chrome/CDP sidecar remains available for agent browser tools.
 
-The Chart supplies the Dashboard settings explicitly. Keys that are not set do
-not disable upstream authentication.
+## Dependency lifecycle
 
-Charts that disable the AI Gateway are not supported. The runtime rejects them
-before initialization. It does not give an in-Agent model sign-in path instead.
+`HERMES_PYTHON=/usr/local/bin/hermes-python` is the supported Python entry point
+for the gateway, CLI, administrative helpers and native probes. It checks the
+PM selection before activating dependencies and imports application code only
+after that check. The image `.venv` is a build artifact, not a bypass for a
+persisted plugin selection.
 
-Do not replace these contracts with the upstream container layout unless you
-also qualify these items:
+A fresh HOME uses the image's prepared environment. An explicit plugin install
+uses upstream PM to create a generation below
+`$HERMES_HOME/installs/<install-key>/environments`; the accompanying `facts.json`
+is PM's selection record. The manifest keeps tool and core source writes out
+of the immutable image. Platform extras remain required after plugin changes.
+Desktop plugin files live under the persistent Hermes root's `desktop-plugins`.
+Browser-compatible Desktop plugins can run without Electron; native windows,
+global shortcuts, updater actions and unsupported file APIs retain upstream's
+unavailable behavior.
 
-- persistent HOME ownership
-- chart probes and ports
-- Istio routes
-- Portal authentication flows
-- upgrade behavior
+Normal startup, gateway restart, Pod recreation and suspend/resume only validate
+and activate prepared dependencies. They never call `refresh_dependencies()`
+or rebuild a missing environment. A stale, incomplete or missing generation
+stops startup without changing the selection or falling back to the base.
+
+An image upgrade with extra plugin dependencies requires a separate preparation
+step against the candidate image and the instance's retained HOME. With that
+target and any downloads explicitly authorized, run
+`hermes-prepare-dependencies` in the candidate environment before starting the
+new gateway. The command asks upstream PM to preserve the recorded plugin and
+extra selection while adding the required platform extras, publishes a verified
+generation, and validates startup imports. A failed PM build leaves the previous
+selection available for diagnosis. Startup after successful preparation must
+also pass with external network access disabled. Back up the instance before
+upgrading its runtime or database; do not run an old image on a migrated database.
+
+The image applies a source-hash guarded change to the pinned PM candidate builder:
+its existing startup import check runs before every generation publication, not
+only dependency repair. This keeps a plugin with broken imports from replacing
+a working selection. PM still owns building, validation and atomic publication.
+
+For native qualification outside an image, the same builder accepts an extracted
+verified checkout and a synthetic HOME:
+
+```bash
+export HERMES_HOME=/tmp/hermes-build-home
+python3 app/cetirun-chart/agents/hermes/pm/build.py --source /tmp/hermes-source --phase tools
+python3 app/cetirun-chart/agents/hermes/pm/build.py --source /tmp/hermes-source --phase dependencies
+```
+
+These two commands download the pinned build inputs and are setup steps, not
+offline tests. Source-layout probes set `PYTHONPATH=/tmp/hermes-source` until
+assembly writes the upstream source binding.
+
+## Platform-owned settings and access
+
+The platform manages API port `8642`, Webapp port `9120`, the public URL,
+listener addresses and browser authentication on every supervised gateway start.
+The managed overlay does not replace the owner's models, message channels,
+plugins, sessions or other retained configuration. Invalid managed input causes
+startup failure. User profiles, `.env` files and alternate configuration loaders
+cannot override these platform settings. External secret sources may populate
+unrelated integration credentials through the pinned OnePassword source's
+explicit environment mappings. Reserved variable mappings and bulk sources with
+undeclared output names are rejected before hydration; this also applies to
+profile aliases and the AI Gateway key.
+
+The browser username is `cetirun`; the password is the existing `API_SERVER_KEY`.
+`CETIRUN_AUTH_KEY` is the independent session-signing key. Both keys must exist
+and are reused across normal restarts. The upstream browser credential at
+`$HERMES_HOME/webapp/session-token` also persists, with directory mode `0700`
+and file mode `0600`. Browser cookies still expire or can be signed out; the
+persistent password is not an unlimited browser session. Never print these
+values in logs, commands, URLs or test results.
+
+The Operator routes `/ui/<instance>/`, removes the prefix when forwarding, and
+sets `X-Forwarded-Prefix`. `webapp.public_url` carries the full HTTPS instance
+URL. Native Webapp prefix handling owns assets, auth, files and sockets; there
+is no Dashboard prefix rewrite middleware. Cookie paths, storage, WebSocket
+tickets and plugin/file URLs must be qualified using two instances on one host.
+
+Before building the Webapp, `compat/apply_webapp_storage.py` verifies the pinned
+renderer entry and native window handoff source hashes, and installs browser
+state scoping before any preference stores load. Local storage, session storage, storage events and
+BroadcastChannel names are scoped to `/ui/<instance>`. Clearing one instance's
+storage leaves the others intact. Existing unscoped browser keys are not
+migrated because their owning instance is unknown. Only a native launch grant
+already bound to the current origin and instance is carried into that instance's
+session storage; child-window authorization uses the same scoped channel.
+Native Desktop keeps its
+existing storage behavior. The patch changes source modules, without rewriting
+served HTML or JavaScript.
+
+In managed ingress mTLS mode, both application listeners bind to loopback.
+External TLS `15443` forwards API requests to `8642`; TLS `15444` forwards Webapp
+requests to `9120`. The target registration must explicitly approve the new
+Webapp port. An old approval for `9119` does not authorize `9120`.
+
+Readiness includes API health, gateway control-socket Webapp state, the password
+auth provider and prebuilt products. Both readiness and liveness also verify
+managed ingress certificates against Envoy's active certificate and check the
+managed egress proxy when those helpers are enabled. Liveness otherwise uses
+API `/health`, so a browser-side failure does not restart a gateway executing
+other work.
+Missing bundles, port conflicts, missing signing keys and invalid overlays must
+never report Webapp Ready or select another listener or authentication mode.
 
 ## Bounded long-running tools
 
-The pinned Hermes release has an outer tool-execution deadline of 420 seconds.
-If you increase only the requested `timeout` of a terminal tool, that outer
-deadline does not increase. As a result, an eight-minute foreground command can
-fail at 420 seconds, even when it requested 520 seconds. If the child process
-writes a file later, this does not show that the foreground tool completed
-successfully.
+Hermes defaults to a 420-second outer tool deadline. Increasing a terminal
+tool's requested timeout alone does not increase that deadline. For longer
+work, merge finite limits into the existing native configuration:
 
-For a longer task that is explicitly approved, use a finite outer deadline that
-is longer than the requested timeout of the tool. Also set an overall run
-budget that is larger, but still finite. For example, use this command in the
-normal owner terminal:
-
-```bash
-HERMES_CONCURRENT_TOOL_TIMEOUT_S=600 hermes chat \
-  --oneshot -Q --max-turns 8 --run-budget 660 --query-file -
+```yaml
+timeouts:
+  tools:
+    concurrent_batch: 600
+    sequential_call: 600
 ```
 
-This override affects only that CLI process. The supported persistent
-configuration is `timeouts.tools.concurrent_batch` in the Hermes configuration
-that already exists. By default, `timeouts.tools.sequential_call` uses the
-concurrent deadline. But you can set it independently. Explicit configuration
-has priority over the environment bridge. If an override has no effect,
-examine both.
-
-Merge only the intended keys. Do not replace a retained configuration. Do not
-show authentication files to diagnose timeouts.
-
-Do not change the approval controls. Do not set these deadlines to zero or to a
-negative value, because such a value disables them. Do not detach a task and
-then report it as a foreground pass. Examine the native tool result and its
-duration. Also examine an independent output.
-
-Long tasks and lifecycle operations must have separate limits. A change to an
-application deadline does not extend startup, restart, or migration.
-
-## Instance URL prefixes
-
-The Operator's Dashboard route owns `/ui/<instance>/`. Before it forwards a
-request, it removes that prefix and supplies it in `X-Forwarded-Prefix`. The
-Dashboard must use that value for browser requests, resources, and redirects.
-After a browser sends an unprefixed `/auth/...` request, ingress cannot recover
-the intended instance.
-
-The Operator also supplies `HERMES_DASHBOARD_PUBLIC_URL` with the same HTTPS
-origin and `/ui/<instance>` prefix. When managed ingress mTLS binds the backend
-to loopback, this value gives the public hostname to the Dashboard's Host and
-WebSocket Origin checks. It does not disable those checks or password
-authentication. Under mTLS, `.env` assignments that stay in HOME cannot override
-this Pod-owned value. This also applies after a supervised restart.
-
-In 0.21.5, two upstream paths must be changed:
-
-- The standalone login page submits to `/auth/password-login`.
-- The default Vite build loads Chat's lazy JavaScript and CSS from `/assets/`.
-
-Both paths omit the instance prefix. A rewrite of `fetch` alone cannot fix
-browser-managed module preloads.
-
-The image keeps the prefix at the points where URLs are generated:
-
-- The [shared HTTP response adapter](compat/dashboard_prefix.py) uses upstream
-  prefix validation. It inserts one `<base href="/ui/<instance>/">` in every
-  HTML document. Root deployments get `<base href="/">`. The adapter also adds
-  the prefix one time to origin-relative document assets, CSS references, and
-  HTTP redirects.
-- The Dashboard builds with Vite's [`--base=./` option](https://vite.dev/guide/build#relative-base).
-  Initial assets resolve against the document base. Lazy imports and their CSS
-  resolve relative to the module that imports them. The same build works at
-  root, under an instance prefix, and on a nested route that is opened directly.
-- The login template resolves its submission URL against `document.baseURI`.
-  The shared auth completion path adds the validated prefix to local return
-  paths. For API and WebSocket URLs, the SPA keeps the upstream
-  `__HERMES_BASE_PATH__` logic.
-
-There are no global fetch, XHR, WebSocket, or EventSource overrides. Hermes
-continues to own cookies and authorization. Ingress ownership checks stay
-unchanged. An origin-root request no longer has its instance identity. As a
-result, ingress cannot repair it unless ingress guesses or adds shared routes.
-
-The adapter processes UTF-8 HTML/CSS documents up to 8 MiB. Attachments, already
-encoded bodies, non-UTF-8 content, JSON, SSE, and WebSocket messages pass
-through, and the adapter does not rewrite their content. It does not interpret
-arbitrary application JSON strings as URLs or rewrite JavaScript source text.
-
-This pinned release has no HTTP middleware registration API. As a result,
-[the build-time installer](compat/apply.py) changes three integration points:
-the server wrapper, login submission, and the shared auth return path. Before
-it changes any file, it verifies the original hashes of all three files. If the
-upstream source changes, the image build fails and a review is necessary.
-When an upstream release passes the root and prefixed browser regressions
-without this adapter, remove the adapter. Do not replace the adapter with
-per-endpoint ingress exceptions or routing guesses based on Referer or cookies.
-
-## Upgrade procedure
-
-1. Identify the current stable release on the
-   [Hermes releases page](https://github.com/NousResearch/hermes-agent/releases).
-2. Resolve the tag to its commit. Download the source archive that matches it.
-3. Update `HERMES_VERSION`, `HERMES_RELEASE`, `HERMES_GIT_SHA`, and
-   `HERMES_SOURCE_SHA256` together in `Dockerfile`.
-4. Update `profile.yaml` to the same package version.
-5. Compare the new upstream `pyproject.toml`, `uv.lock`, `package.json`, and
-   `scripts/install.sh` with the current CetiRun integration. Do the same
-   comparison for the new upstream Dockerfile, gateway/dashboard commands,
-   plugin API, and configuration keys. Examine the pinned uv, Node, and SQLite
-   images/sources and their checksums again.
-6. Remove obsolete compatibility code only when the new public interface
-   replaces it. Do not keep imports from private `hermes_cli` functions.
-7. Regenerate the Hermes native render fixtures. Then run the checks that
-   follow.
-
-## Required checks
+Keep the overall run budget larger than the tool deadline and limit turns:
 
 ```bash
-python3 -m unittest \
-  scripts.tests.test_cetirun_image_dependencies \
-  scripts.tests.test_harness_assets -v
-make python-test
-bash scripts/cetirun-helm-lint.sh
-bash scripts/cetirun-helm-test.sh
-go -C app/cetirun-operator test ./internal/agents/... ./internal/helm/... ./internal/controller/... -count=1
-npm --prefix app/cetirun-portal/web test
-npm --prefix app/cetirun-portal/web run build
+hermes chat --oneshot -Q --max-turns 8 --run-budget 660 --query-file -
 ```
 
-Build the shared base and the Hermes image for `linux/amd64`. Qualify the
-runtime in an isolated container with synthetic configuration and no external
-network. We recommend that the runtime checks cover:
+CLI requests execute through the resident gateway, so a timeout environment
+variable set only on the CLI process does not configure gateway execution.
+Apply the native settings to the gateway without replacing unrelated retained
+configuration. A child process writing output after a tool timeout does not
+mean the foreground tool completed successfully.
 
-- the installed package version and the prebuilt Dashboard/TUI assets
-- SQLite WAL persistence and FTS5 trigram search
-- Gateway health and the web-terminal endpoint
-- Dashboard rejection of unauthenticated requests and incorrect passwords,
-  followed by password login and a session-authenticated request
-- the CetiRun auth helper with and without its bearer key
+## Sessions and integrations
 
-These checks use synthetic files and credentials. For model responses, real
-Copilot login, Chrome/CDP, Tailscale, and Kubernetes ingress, separately
-authorized integrations are still necessary. These checks do not claim to
-validate them.
+A browser can resume an eligible gateway message-channel session. A reply to a
+Discord-origin session retains its original delivery source; opening it in the
+browser does not create a private branch. Old history without an executable
+source binding remains history. The UI's source and takeover state must stay
+visible when validating this behavior.
+
+CetiRun keeps AI Gateway routing, model selection, workload-authenticated
+Connections MCP and the platform Memory plugin. Memory authorization follows
+the trusted session source and parent relationship: a Webapp owner-private
+session can use private Memory, while a message-channel or subagent session
+does not become private merely because the browser opened it. Plugin operations
+must preserve the platform-managed integrations.
+
+With Memory enabled, Hermes mounts platform instructions read-only at
+`$HOME/.agents/AGENTS.md` and keeps personal files and skills elsewhere in
+`$HOME/.agents` writable. Shared Skills stay on their direct read-only PVC mount
+at `skills.mountPath`, so published updates do not require a Pod restart.
+An explicit shared mount at `$HOME/.agents/skills` still occupies that directory.
+Ordinary Hermes context volumes have a `40Mi` limit; protected reconciled
+workloads retain their configured scratch limit.
+
+Hermes discovers personal, configured and shared skills alongside the installed
+Memory assets. The source-hash guarded `configs/apply-memory-skills.py` patch keeps
+the reserved `cetirun-memory` skill bound to
+`/opt/cetirun-memory/skills/cetirun-memory/SKILL.md` in both the native catalog and
+direct skill lookup. User or shared copies cannot replace it by directory name,
+flat filename or frontmatter name. Ordinary skills keep native discovery and
+precedence; a symlink to the canonical read-only skill remains valid.
+When Memory is enabled, native prompt construction reads skill metadata from the
+files and does not read or write persisted skill snapshots. Disabling Memory
+restores native snapshot behavior without replacing an existing snapshot.
+
+## Validation and upgrades
+
+Update the release, commit and checksum together, then check the new PM lock,
+Webapp/TUI builders, native configuration and plugin contracts. Synchronize the
+Hermes profile and Memory host pins. A CetiRun release change is separate and
+must use `make set-version VERSION=X.Y.Z` when requested.
+
+Run the repository's offline validation entry points:
 
 ```bash
-docker buildx build --platform linux/amd64 \
-  -f app/cetirun-chart/Dockerfile.base \
-  -t cetirun-base:validation --load app/cetirun-chart
-docker buildx build --platform linux/amd64 \
-  --build-arg BASE_IMAGE=cetirun-base:validation \
-  -f app/cetirun-chart/agents/hermes/Dockerfile \
-  -t hermes-gateway:validation --load app/cetirun-chart
+python3 -B -m unittest scripts.tests.test_cetirun_image_dependencies scripts.tests.test_hermes_pm_runtime -v
+make check
+make docs-check
 ```
 
-For rendered checks, use a synthetic local Dashboard behind an ingress-like
-loopback proxy. Then examine these items:
+Use a specifically built candidate image for offline native qualification.
+`pm/verify.py` checks the actual Python version, Node/npm pins, Webapp/TUI products,
+time zones and SQLite WAL persistence with FTS5 trigram search. The candidate
+must also pass the repository fixture `scripts/tests/hermes_pm_generation.py`.
+Mount it read-only into the candidate, then run
+`hermes-python /candidate/hermes_pm_generation.py --prepare` in a fresh synthetic
+HOME. Run the same fixture with `--verify`, the same HOME and external networking
+disabled. Preparation is a separate explicit dependency operation and can
+download pinned inputs.
 
-- desktop and mobile login/logout, redirects, asset paths, and cookie isolation
-  between two prefixes
-- Chat opened from navigation, by direct URL, and after a full-page refresh
-- terminal output and draft input echoed through the authenticated PTY
-  WebSocket, without a prompt submitted to a model
-- a nested profile route, and the same flows at root
+With `CETIRUN_HERMES_IMAGE` set to the cached candidate,
+`app/cetirun-chart/tests/test_hermes_native_skills.py` checks the packaged Memory
+skill guard through the real native catalog and lookup. It uses synthetic HOME
+and assets mounted read-only at `/opt/cetirun-memory`, with networking disabled.
 
-When you reproduce the login or lazy CSS preload regression, include a control
-with an image that fails. Keep screenshots and results outside the repository.
-Use a new browser profile without real credentials.
-
-The synthetic fixture has no Copilot credentials. Its side panel can show that
-the model is not configured. Record that expected warning separately from
-unexpected console warnings or errors. A terminal that renders and echoes draft
-input does not prove that a model can respond.
+The candidate must also pass real browser login, prefix/lazy asset loading, WebSocket, two
+instance isolation, normal restart and explicit credential rotation tests.
+Exercise files, Git diff, artifacts, cron, shell lifecycle, message-channel
+continuation and plugin installation with synthetic data. Report source checks,
+offline tests, candidate-image tests and authorized live deployment results
+separately; a successful HTTP probe does not prove browser or model behavior.

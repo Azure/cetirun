@@ -315,7 +315,7 @@ func TestReconciledNativeMemoryHasComposedContext(t *testing.T) {
 }
 
 func TestSharedSkillAliasDoesNotReplaceCommonContext(t *testing.T) {
-	for _, path := range []string{"", "/home/vibe/team-skills"} {
+	for _, path := range []string{"", "/home/vibe/team-skills", "/home/vibe/.agents/skills"} {
 		t.Run(fmt.Sprintf("alias=%s", path), func(t *testing.T) {
 			input := sampleInput("hermes", "openai", false)
 			skills := sharedSkillValues()
@@ -482,10 +482,10 @@ func TestHermesMemoryRegistrationMatchesExecutionMode(t *testing.T) {
 						"shared": shared, "resourceGroup": "test", "storageAccount": "test", "containerName": "skills",
 					}
 					input["memoryOptions"] = MemoryOptions{Enabled: enabled, Image: "registry.example.com/memory:1.2.3"}
-					input["hermes"] = map[string]any{"config": map[string]any{
+					input["hermes"].(map[string]any)["config"] = map[string]any{
 						"plugins": map[string]any{"enabled": []any{"example-plugin"}},
 						"skills":  map[string]any{"external_dirs": []any{"/home/vibe/example-skills"}},
-					}}
+					}
 					var prepared *PreparedRelease
 					var err error
 					if mode == "ordinary" {
@@ -499,6 +499,10 @@ func TestHermesMemoryRegistrationMatchesExecutionMode(t *testing.T) {
 							return
 						}
 						fixture.Input.Reconciled = true
+						if !shared {
+							fixture.Input.SkillsMode = w.SkillsModeEmpty
+							fixture.Input.Skills = nil
+						}
 						bundle, buildErr := w.Build(fixture.Input)
 						if buildErr != nil {
 							t.Fatal(buildErr)
@@ -519,6 +523,8 @@ func TestHermesMemoryRegistrationMatchesExecutionMode(t *testing.T) {
 						{array(object(native["plugins"])["enabled"]), "cetirun-memory-context", registered},
 						{array(object(native["plugins"])["enabled"]), "example-plugin", true},
 						{array(object(native["skills"])["external_dirs"]), "/home/vibe/.agents/skills", registered},
+						{array(object(native["skills"])["external_dirs"]), "/opt/cetirun-memory/skills", registered},
+						{array(object(native["skills"])["external_dirs"]), "/home/vibe/.aks/skills", shared},
 						{array(object(native["skills"])["external_dirs"]), "/home/vibe/example-skills", true},
 					} {
 						count := 0

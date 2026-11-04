@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -202,6 +203,13 @@ func legacyHeldChart(t *testing.T) *chart.Chart {
 	return loaded
 }
 
+// The archived held executor remains covered with OpenClaw. Hermes requires
+// the current gateway/Webapp contract, exercised by the common-executor suite.
+func newHeldOpenClawFixture(t *testing.T) *preparationFixture {
+	t.Helper()
+	return newPreparationFixture(t, "openclaw")
+}
+
 func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
 	t.Helper()
 	f := testfixture.New(typ)
@@ -291,7 +299,7 @@ func (f *preparationFixture) expectation(t *testing.T) sandboxworkload.Expectati
 }
 
 func TestSandboxPreparationNativeHeldPipeline(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
 			f := newPreparationFixture(t, typ)
 			if err := f.reconcile(); err != nil {
@@ -303,7 +311,7 @@ func TestSandboxPreparationNativeHeldPipeline(t *testing.T) {
 }
 
 func TestSandboxPreparationClearsAccessBeforePrerequisiteCalls(t *testing.T) {
-	f := newPreparationFixture(t, "hermes")
+	f := newHeldOpenClawFixture(t)
 	agent := f.current(t)
 	agent.Status.Phase, agent.Status.AccessURL = api.PhaseReady, "https://example.example.com"
 	apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
@@ -352,7 +360,7 @@ func TestSandboxPreparationJournalFailurePrecedesGrantWrites(t *testing.T) {
 }
 
 func TestSandboxPreparationForeignSourceRoleIsNotAdopted(t *testing.T) {
-	f := newPreparationFixture(t, "hermes")
+	f := newHeldOpenClawFixture(t)
 	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{Name: "cetirun-sandbox-sources", Namespace: f.fixture.Namespace.Name},
 		Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get"}}},
@@ -504,7 +512,7 @@ func TestSandboxPreparationRefreshesMetadataWithoutAgentGenerationChange(t *test
 func TestSandboxPreparationPartialStageRevokesAndRetries(t *testing.T) {
 	for _, race := range []bool{false, true} {
 		t.Run(fmt.Sprintf("source-race=%v", race), func(t *testing.T) {
-			f := newPreparationFixture(t, "hermes")
+			f := newHeldOpenClawFixture(t)
 			if race {
 				f.installer.after = func(ctx context.Context) error {
 					secret := &corev1.Secret{}
@@ -640,7 +648,7 @@ func (f *preparationFixture) makeAdmin(t *testing.T) *rbacv1.ClusterRole {
 }
 
 func TestSandboxPreparationAdminGrantsRevokeOnRoleDrift(t *testing.T) {
-	f := newPreparationFixture(t, "hermes")
+	f := newHeldOpenClawFixture(t)
 	role := f.makeAdmin(t)
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
@@ -727,7 +735,7 @@ func TestSandboxPreparationMetadataOnlyReauthorization(t *testing.T) {
 }
 
 func TestSandboxPreparationMissingJournalRequiresRecovery(t *testing.T) {
-	f := newPreparationFixture(t, "hermes")
+	f := newHeldOpenClawFixture(t)
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +768,7 @@ func TestSandboxPreparationMissingJournalRequiresRecovery(t *testing.T) {
 }
 
 func TestSandboxPreparationDeletionWaitsForRevocationFenceAndPods(t *testing.T) {
-	f := newPreparationFixture(t, "hermes")
+	f := newHeldOpenClawFixture(t)
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -876,5 +884,37 @@ func assertSandboxPrepared(t *testing.T, f *preparationFixture) {
 	}})
 	if response.Allowed || response.Result == nil || !strings.HasPrefix(response.Result.Message, "ExecutionHeld:") {
 		t.Fatalf("preparation did not retain the admission hold: %+v", response)
+	}
+}
+
+func TestSandboxPreparationRejectsLegacyHermesProfile(t *testing.T) {
+	f := newPreparationFixture(t, "hermes")
+	before := f.current(t).Spec.DeepCopy()
+	home := &corev1.PersistentVolumeClaim{}
+	secret := &corev1.Secret{}
+	ctx := context.Background()
+	homeKey := client.ObjectKeyFromObject(f.fixture.Input.Home)
+	secretKey := client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: f.fixture.Agent.Spec.GatewayTokenSecretRef}
+	if err := f.client.Get(ctx, homeKey, home); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Get(ctx, secretKey, secret); err != nil {
+		t.Fatal(err)
+	}
+	homeBefore, secretBefore := home.DeepCopy(), secret.DeepCopy()
+	if err := f.reconcile(); err == nil || !strings.Contains(err.Error(), "supported hermes runtime profile") {
+		t.Fatalf("legacy Hermes profile did not fail preparation: %v", err)
+	}
+	if f.installer.stages != 0 || !reflect.DeepEqual(before, f.current(t).Spec.DeepCopy()) {
+		t.Fatal("rejected legacy Hermes profile changed runtime intent or staged a workload")
+	}
+	if err := f.client.Get(ctx, homeKey, home); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Get(ctx, secretKey, secret); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(homeBefore, home) || !reflect.DeepEqual(secretBefore, secret) {
+		t.Fatal("rejected legacy Hermes profile changed retained HOME or runtime Secret")
 	}
 }

@@ -59,7 +59,7 @@ func preparedRevision(t *testing.T, f *preparationFixture) *appsv1.ControllerRev
 }
 
 func TestSandboxPreparationStartInputPins(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		for _, explicit := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/explicit-image=%v", typ, explicit), func(t *testing.T) {
 				f := newPreparationFixture(t, typ)
@@ -144,7 +144,7 @@ func TestSandboxPreparationStartInputPins(t *testing.T) {
 func TestSandboxPreparationRejectsUntrustedRevision(t *testing.T) {
 	for _, scenario := range []string{"foreign-owner", "different-template", "missing", "unobserved-generation"} {
 		t.Run(scenario, func(t *testing.T) {
-			f := newPreparationFixture(t, "hermes")
+			f := newHeldOpenClawFixture(t)
 			ctx := context.Background()
 			if err := f.reconcile(); err != nil {
 				t.Fatal(err)
@@ -192,7 +192,7 @@ func TestSandboxPreparationRejectsUntrustedRevision(t *testing.T) {
 }
 
 func TestSandboxPreparationMetadataChurnKeepsBoundedStateAndGrants(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
 			f := newPreparationFixture(t, typ)
 			ctx := context.Background()
@@ -292,7 +292,7 @@ func TestSandboxPreparationMetadataChurnKeepsBoundedStateAndGrants(t *testing.T)
 }
 
 func TestSandboxPreparationKeepsV1ReceiptAndRejectsUnsupportedFormats(t *testing.T) {
-	f := newPreparationFixture(t, "hermes")
+	f := newHeldOpenClawFixture(t)
 	ctx := context.Background()
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)

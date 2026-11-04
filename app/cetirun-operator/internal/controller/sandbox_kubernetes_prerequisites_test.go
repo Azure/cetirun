@@ -1025,7 +1025,7 @@ func TestKubernetesSandboxPrerequisitesUnavailableFenceDoesNotPersistPreparation
 }
 
 func TestKubernetesSandboxPrerequisitesPreparationAndCleanupCallers(t *testing.T) {
-	for _, typ := range []string{"openclaw", "hermes"} {
+	for _, typ := range []string{"openclaw"} {
 		t.Run(typ, func(t *testing.T) {
 			f := newPreparationFixture(t, typ)
 			source := installKubernetesPrerequisites(t, f, nil)
@@ -1113,7 +1113,7 @@ func TestKubernetesSandboxPrerequisitesPreparationAndCleanupCallers(t *testing.T
 }
 
 func TestKubernetesSandboxPrerequisitesFirstPreparationDoesNotInvalidateItself(t *testing.T) {
-	f := newPreparationFixture(t, "hermes")
+	f := newHeldOpenClawFixture(t)
 	installKubernetesPrerequisites(t, f, &testSandboxWriterExclusion{})
 	if err := f.reconcile(); err != nil {
 		t.Fatalf("first preparation invalidated prerequisites after recording its cleanup finalizer: %v", err)

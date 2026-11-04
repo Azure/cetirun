@@ -101,11 +101,16 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 	if _, ok := values["image"]; ok {
 		return fmt.Errorf("helm.values.image must use spec.agent.image")
 	}
+	if agentType == "hermes" {
+		if sources, ok := values["extraEnvFrom"].([]any); ok && len(sources) != 0 {
+			return fmt.Errorf("Hermes bulk environment sources cannot override platform configuration")
+		}
+	}
 	if extraEnv, ok := values["extraEnv"].([]any); ok {
 		for _, item := range extraEnv {
 			entry, _ := item.(map[string]any)
 			name, _ := entry["name"].(string)
-			if name == "CETIRUN_AGENT_BROKER_URL" || name == "CETIRUN_CONNECTIONS_MCP_URL" || name == "SSL_CERT_FILE" || name == "NODE_EXTRA_CA_CERTS" || strings.HasPrefix(name, "CETIRUN_MEMORY_") || strings.HasPrefix(name, "CETIADMIN_") || name == "KUBECONFIG" {
+			if agentType == "hermes" && hermesReservedEnvironment(name) || name == "CETIRUN_AGENT_BROKER_URL" || name == "CETIRUN_CONNECTIONS_MCP_URL" || name == "SSL_CERT_FILE" || name == "NODE_EXTRA_CA_CERTS" || strings.HasPrefix(name, "CETIRUN_MEMORY_") || strings.HasPrefix(name, "CETIADMIN_") || name == "KUBECONFIG" {
 				return fmt.Errorf("helm.values.extraEnv contains a platform-reserved environment variable")
 			}
 		}
@@ -113,6 +118,11 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 	if native, ok := values[agentType].(map[string]any); ok {
 		if _, ok := native["image"]; ok {
 			return fmt.Errorf("native image overrides must use spec.agent.image")
+		}
+		if agentType == "hermes" {
+			if err := validateHermesOverrides(native); err != nil {
+				return err
+			}
 		}
 		if env, ok := native["env"].(map[string]any); ok {
 			if _, ok := env["API_SERVER_PORT"]; ok {
@@ -135,6 +145,72 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 			if _, ok := service[field]; ok {
 				return fmt.Errorf("service.%s must use spec.agent.port", field)
 			}
+		}
+	}
+	return nil
+}
+
+func hermesReservedEnvironment(name string) bool {
+	for _, prefix := range []string{"HERMES_WEBAPP_", "HERMES_DASHBOARD_", "HERMES_CONFIG_", "HERMES_ENV_", "HERMES_INSTALL_", "HERMES_PROFILE", "API_SERVER_", "CETIRUN_GATEWAY_"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	switch name {
+	case "HERMES_HOME", "HERMES_MANAGED_DIR", "HERMES_CONFIG", "HERMES_CONFIG_FILE", "HERMES_CONFIG_PATH", "HERMES_ENV", "HERMES_ENV_FILE", "HERMES_PROFILE", "HERMES_IGNORE_USER_CONFIG", "HERMES_GATEWAY_CONFIG", "HERMES_RUNTIME_DIR", "HERMES_PYTHON", "HERMES_INSTALL_DIR", "CETIRUN_AUTH_KEY", "CETIRUN_AI_GATEWAY", "CETIRUN_INGRESS_MTLS", "PYTHONPATH", "PYTHONHOME", "NODE_PATH", "NODE_OPTIONS", "PATH", "HOME":
+		return true
+	}
+	return false
+}
+
+func validateHermesOverrides(native map[string]any) error {
+	if env, ok := native["env"].(map[string]any); ok {
+		for name := range env {
+			if hermesReservedEnvironment(name) {
+				return fmt.Errorf("Hermes listener, authentication and runtime environment are platform-owned")
+			}
+		}
+	}
+	config, _ := native["config"].(map[string]any)
+	if sources, ok := config["secrets"].(map[string]any); ok {
+		for name, value := range sources {
+			if name == "sources" || name == "preserve_existing" || name == "profile_alias" {
+				continue
+			}
+			settings, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("Hermes secret source configuration must be an object")
+			}
+			if name != "onepassword" && settings["enabled"] != nil && settings["enabled"] != false {
+				return fmt.Errorf("Hermes secret sources must declare their output names")
+			}
+			if name == "onepassword" {
+				bindings, _ := settings["env"].(map[string]any)
+				for variable := range bindings {
+					if hermesReservedEnvironment(variable) || strings.HasPrefix(variable, "CETIRUN_") {
+						return fmt.Errorf("Hermes secret sources must not replace platform environment")
+					}
+				}
+				variable, _ := settings["service_account_token_env"].(string)
+				if hermesReservedEnvironment(variable) || strings.HasPrefix(variable, "CETIRUN_") {
+					return fmt.Errorf("Hermes secret sources must not consume platform credentials")
+				}
+			}
+		}
+	}
+	for _, name := range []string{"webapp", "dashboard", "api_server", "dashboard_auth"} {
+		if _, present := config[name]; present {
+			return fmt.Errorf("Hermes listener and authentication configuration are platform-owned")
+		}
+	}
+	if platforms, ok := config["platforms"].(map[string]any); ok {
+		if _, present := platforms["api_server"]; present {
+			return fmt.Errorf("Hermes API listener configuration is platform-owned")
+		}
+	}
+	if gateway, ok := config["gateway"].(map[string]any); ok {
+		if err := validateHermesOverrides(map[string]any{"config": gateway}); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -73,6 +73,9 @@ func Resolve(request Request, profile Profile) (ResolvedAgent, error) {
 	if *request.Port < 1 || *request.Port > 65535 {
 		return ResolvedAgent{}, fmt.Errorf("spec.agent.port must be between 1 and 65535")
 	}
+	if request.Type == "hermes" && *request.Port != 8642 {
+		return ResolvedAgent{}, fmt.Errorf("Hermes API port is fixed at 8642")
+	}
 	return ResolvedAgent{
 		Type: request.Type, Image: request.Image, Username: request.Username,
 		HomeDir: "/home/" + request.Username, Port: ptr.To(*request.Port),
@@ -86,10 +89,13 @@ func Validate(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) err
 	if agent.Username != "vibe" || agent.HomeDir != "/home/vibe" || agent.Image == "" || agent.Port == nil {
 		return fmt.Errorf("invalid resolved built-in identity or image")
 	}
+	if agent.Type == "hermes" && *agent.Port != descriptor.DefaultPort {
+		return fmt.Errorf("Hermes API port is fixed at 8642")
+	}
 	ports := append([]PortBinding{{Name: descriptor.PortName, Number: *agent.Port}}, bindings.ReservedPorts...)
 	ports = append(ports, PortBinding{Name: "cetirun-auth", Number: 18790})
-	if descriptor.DashboardPort != 0 {
-		ports = append(ports, PortBinding{Name: "dashboard", Number: descriptor.DashboardPort})
+	if descriptor.WebappPort != 0 {
+		ports = append(ports, PortBinding{Name: "webapp", Number: descriptor.WebappPort})
 	}
 	seen := map[int32]string{}
 	for _, port := range ports {

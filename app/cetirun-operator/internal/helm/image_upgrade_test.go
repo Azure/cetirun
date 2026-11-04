@@ -17,6 +17,9 @@ func TestResolveImageUpgrade(t *testing.T) {
 		for _, scenario := range []string{"default", "same chart", "owner image", "target default", "custom", "no release", "different deployed image", "different deployed type", "download failure", "invalid target profile", "qualified old default", "explicit tag and digest"} {
 			t.Run(kind+"/"+scenario, func(t *testing.T) {
 				old, target := testChart(t), testChart(t)
+				if kind == "hermes" {
+					useHistoricalHermesProfile(old)
+				}
 				old.Metadata.Version, old.Metadata.AppVersion = "1.0.0", "1.0.0"
 				target.Metadata.Version, target.Metadata.AppVersion = "2.0.0", "2.0.0"
 				registry := "registry.example.com"
@@ -92,6 +95,102 @@ func TestResolveImageUpgrade(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func useHistoricalHermesProfile(chrt *chart.Chart) {
+	for _, file := range chrt.Files {
+		if file.Name == "agents/hermes/profile.yaml" {
+			file.Data = []byte(`contractVersion: v1
+nativeVersion: "0.21.5"
+port: 8642
+# Additional exact image references validated with this profile.
+qualifiedImages: []
+`)
+		}
+	}
+}
+
+func TestHistoricalHermesPinPreparesSelectedChart(t *testing.T) {
+	for _, scenario := range []string{"historical profile", "missing profile", "malformed profile", "owner image"} {
+		t.Run(scenario, func(t *testing.T) {
+			old, target := testChart(t), testChart(t)
+			old.Metadata.Version, old.Metadata.AppVersion = "1.0.0", "1.0.0"
+			target.Metadata.Version, target.Metadata.AppVersion = "3.0.0", "3.0.0"
+			useHistoricalHermesProfile(old)
+			image := "registry.example.com/hermes-gateway:2.0.0@sha256:" + strings.Repeat("a", 64)
+			deployedImage := "registry.example.com/hermes-gateway:1.0.0"
+			switch scenario {
+			case "missing profile":
+				old.Files = nil
+			case "malformed profile":
+				for _, file := range old.Files {
+					if file.Name == "agents/hermes/profile.yaml" {
+						file.Data = []byte("not: [valid")
+					}
+				}
+			case "owner image":
+				image = "registry.example.com/owner-hermes:kept"
+				deployedImage = image
+			}
+			for _, file := range target.Files {
+				if file.Name == "agents/hermes/profile.yaml" {
+					file.Data = []byte(strings.Replace(string(file.Data), "qualifiedImages: []", "qualifiedImages: ["+image+"]", 1))
+				}
+			}
+			previous := &release.Release{Chart: old, Config: map[string]any{"runtime": map[string]any{
+				"agent": map[string]any{"type": "hermes", "image": deployedImage},
+			}}}
+			got, err := resolveImageUpgrade(previous, target.Metadata.Version, "hermes", image, "registry.example.com", func() (*chart.Chart, error) {
+				t.Fatal("an explicit image must not load the target during default-image migration")
+				return nil, nil
+			})
+			if err != nil || got != image {
+				t.Fatalf("explicit image was not retained: image=%q error=%v", got, err)
+			}
+			input := sampleInput("hermes", "openai", false)
+			input["agentRequest"] = map[string]any{"type": "hermes", "registry": "registry.example.com", "image": got}
+			prepared, err := PrepareChart(target, input)
+			if err != nil || prepared.Agent.Image != image {
+				t.Fatalf("qualified explicit image cannot prepare its selected profile: %v", err)
+			}
+		})
+	}
+}
+
+func TestHistoricalHermesUpgradeKeepsTargetProfileValidation(t *testing.T) {
+	for _, replacement := range [][2]string{
+		{"0.22.7", "0.21.5"},
+		{"b200f5bc60e31588ba2cb60e288029c4a54ba5fa", strings.Repeat("0", 40)},
+		{"webappPort: 9120", "webappPort: 9119"},
+		{"port: 8642", "port: 8643"},
+	} {
+		t.Run(replacement[0], func(t *testing.T) {
+			old, target := testChart(t), testChart(t)
+			old.Metadata.Version, old.Metadata.AppVersion = "1.0.0", "1.0.0"
+			target.Metadata.Version, target.Metadata.AppVersion = "2.0.0", "2.0.0"
+			useHistoricalHermesProfile(old)
+			for _, file := range target.Files {
+				if file.Name == "agents/hermes/profile.yaml" {
+					file.Data = []byte(strings.Replace(string(file.Data), replacement[0], replacement[1], 1))
+				}
+			}
+			oldImage := "registry.example.com/hermes-gateway:1.0.0"
+			previous := &release.Release{Chart: old, Config: map[string]any{"runtime": map[string]any{
+				"agent": map[string]any{"type": "hermes", "image": oldImage},
+			}}}
+			loaded := false
+			_, err := resolveImageUpgrade(previous, target.Metadata.Version, "hermes", oldImage, "registry.example.com", func() (*chart.Chart, error) {
+				loaded = true
+				return target, nil
+			})
+			if !loaded || err == nil || !strings.Contains(err.Error(), "supported hermes runtime profile") {
+				t.Fatalf("selected target profile was not checked: loaded=%t error=%v", loaded, err)
+			}
+			if _, err := PrepareChart(target, sampleInput("hermes", "openai", false)); err == nil {
+				t.Fatal("target preparation accepted an incompatible Hermes profile")
+			}
+		})
 	}
 }
 

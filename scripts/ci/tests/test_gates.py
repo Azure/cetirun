@@ -842,8 +842,11 @@ class NativeHostDownloadTests(unittest.TestCase):
                 }.items():
                     self.assertEqual(command.count(flag), 1)
                     self.assertEqual(command[command.index(flag) + 1], expected)
-        self.assertIn("https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/v2026.9.24", self.script)
-        self.assertIn("15b15ce4e6ec8ea424a081823709d1e17f0943e7b42b59597d24ebb94cbd1742  $native_dir/hermes.tgz", self.script)
+        self.assertIn("https://codeload.github.com/NousResearch/hermes-agent/tar.gz/b200f5bc60e31588ba2cb60e288029c4a54ba5fa", self.script)
+        self.assertIn("1f7d43fa1a515283929a739c42e10bf8d48910e523eccec74b2a2bece858d2b5  $native_dir/hermes.tgz", self.script)
+        self.assertIn("agents/hermes/pm/build.py", self.script)
+        self.assertIn('--source "$native_dir/hermes" --phase dependencies', self.script)
+        self.assertNotIn("pip\" install", self.script)
         self.assertIn("https://registry.npmjs.org/openclaw/-/openclaw-2026.9.6.tgz", self.script)
         self.assertIn("Ie0kyQSCVfFqixsgVg39vevUDq01Ch5u3+7Yu5Y3qARczmdAe+lzp8bVnO9925rHiW/+CFp70zfORCyPmCH31g==", self.script)
         self.assertLess(self.script.index("sha256sum --check"), self.script.index("tar xzf"))

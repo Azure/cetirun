@@ -65,7 +65,7 @@ func TestSandboxBootstrapForegroundGCWaitsForCleanup(t *testing.T) {
 	for _, failure := range []string{"shutdown", "receipt", "fence"} {
 		t.Run(failure, func(t *testing.T) {
 			ctx := context.Background()
-			f := preparedBootstrapFixture(t, "hermes")
+			f := preparedBootstrapFixture(t, "openclaw")
 			workload := &appsv1.StatefulSet{}
 			key := client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: "openclaw-example-cetirun"}
 			if err := f.client.Get(ctx, key, workload); err != nil {

@@ -90,6 +90,58 @@ def native_marker(agent):
     return agent["target"] / f'.{agent["kind"]}/.initialized'
 
 
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_context_preserves_personal_home_files(agent, tmp_path):
+    view = tmp_path / "context-view"
+    view.mkdir()
+    agent["env"]["CETIRUN_CONTEXT_VIEW"] = str(view)
+    personal = agent["source"] / ".agents/skills/personal"
+    personal.mkdir(parents=True)
+    (personal / "SKILL.md").write_text("personal skill")
+    (agent["source"] / ".agents/AGENTS.md").write_text("personal instructions")
+
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    home_skill = agent["target"] / ".agents/skills/personal/SKILL.md"
+    instructions = agent["target"] / ".agents/AGENTS.md"
+    assert home_skill.read_text() == "personal skill"
+    assert instructions.read_text() == "personal instructions"
+    home_skill.write_text("updated personal skill")
+    instructions.write_text("updated personal instructions")
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert home_skill.read_text() == "updated personal skill"
+    assert instructions.read_text() == "updated personal instructions"
+    assert not (view / "current/skills/personal").exists()
+
+
+@pytest.mark.parametrize("unsafe", ["instructions-link", "instructions-directory", "skills-link", "skills-file"])
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_context_rejects_unsafe_home_mount_targets(agent, tmp_path, unsafe):
+    assert run(agent).returncode == 0
+    view = tmp_path / "context-view"
+    view.mkdir()
+    agent["env"]["CETIRUN_CONTEXT_VIEW"] = str(view)
+    personal = agent["target"] / ".agents"
+    personal.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("retained")
+    target = personal / ("AGENTS.md" if unsafe.startswith("instructions") else "skills")
+    if unsafe.endswith("link"):
+        target.symlink_to(sentinel if unsafe.startswith("instructions") else outside)
+    elif unsafe.endswith("directory"):
+        target.mkdir()
+    else:
+        target.write_text("retained")
+
+    result = run(agent)
+    assert result.returncode != 0
+    assert sentinel.read_text() == "retained"
+    assert not (view / "current").exists()
+
+
 def test_native_first_start_and_repeat_preserve_user_files(agent):
     first = run(agent)
     assert first.returncode == 0, first.stderr

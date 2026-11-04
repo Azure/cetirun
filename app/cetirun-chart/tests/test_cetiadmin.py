@@ -52,7 +52,7 @@ def prepared_values():
             "contractVersion": "v1",
             "agent": {"type": "hermes", "image": "registry.example.com/hermes-gateway:0.1.1",
                       "username": "vibe", "home": "/home/vibe", "port": 8642},
-            "ports": [{"name": "api", "number": 8642}, {"name": "dashboard", "number": 9119}],
+            "ports": [{"name": "api", "number": 8642}, {"name": "webapp", "number": 9120}],
             "http": {"portName": "api", "healthPath": "/health", "readinessPath": "/health", "startupPath": "/health"},
             "configFiles": {"hermes-config.yaml": yaml.safe_dump({
                 "model": {"default": "fixture-model"},

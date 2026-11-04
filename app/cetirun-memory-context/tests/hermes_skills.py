@@ -32,16 +32,20 @@ with tempfile.TemporaryDirectory(prefix="memory-skills-hermes-") as temporary:
     skill(shared / "team-skill", "team-skill", "Version one")
     skill(personal / "personal-skill", "personal-skill", "Personal fixture")
     sys.path.insert(0, os.environ["MEMORY_HERMES_SOURCE"])
-    from tools.skills_tool import _find_all_skills, _locate_skill, _SKILLS_CACHE
+    from tools.skills_tool import find_all_skills, locate_skill, clear_skills_cache
+    from agent.skill_utils import TIER_EXTERNAL
     from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
+
+    def locate(name, directories):
+        return locate_skill(name, None, [(TIER_EXTERNAL, directory) for directory in directories])
 
     def check(description):
         for directories in ([shared, personal, platform], [platform, personal, shared]):
-            error, _, found = _locate_skill("cetirun-memory", None, [], directories)
+            error, _, found = locate("cetirun-memory", directories)
             assert error is None, error
             assert found == platform / "cetirun-memory/SKILL.md", found
-        _SKILLS_CACHE.clear()
-        entries = _find_all_skills()
+        clear_skills_cache()
+        entries = find_all_skills()
         reserved = [entry for entry in entries if entry["name"] == "cetirun-memory"]
         assert len(reserved) == 1 and "collision" not in reserved[0]["description"], reserved
         assert next(entry for entry in entries if entry["name"] == "team-skill")["description"] == description
@@ -59,11 +63,11 @@ with tempfile.TemporaryDirectory(prefix="memory-skills-hermes-") as temporary:
     skill(shared / "team-skill", "team-skill", "Version two")
     skill(shared / "added-later", "added-later", "Live publication")
     check("Version two")
-    assert any(entry["name"] == "added-later" for entry in _find_all_skills())
+    assert any(entry["name"] == "added-later" for entry in find_all_skills())
     skill(personal / "team-skill", "team-skill", "Unrelated collision")
-    error, _, found = _locate_skill("team-skill", None, [], [shared, personal, platform])
+    error, _, found = locate("team-skill", [shared, personal, platform])
     assert found is None and "Ambiguous skill name" in error
     del os.environ["CETIRUN_MEMORY_ASSETS"]
-    error, _, found = _locate_skill("cetirun-memory", None, [], [shared, personal, platform])
+    error, _, found = locate("cetirun-memory", [shared, personal, platform])
     assert found is None and "Ambiguous skill name" in error
     print("Pinned Hermes live skill-source checks passed")

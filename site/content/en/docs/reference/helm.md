@@ -120,16 +120,16 @@ notes do not print port-forward commands for that runtime class.
 | `hermes.gateway.enabled` | `true` |
 
 Agents sign in to model sources through the Portal and the AI Gateway. Hermes
-exposes its native dashboard on `9119`. The operator routes native UI requests
-to that dashboard, not to the Hermes API. These ports are defined in
+exposes its native Webapp on `9120`. The operator routes native UI requests
+to the Webapp; native API paths continue to reach port 8642. These ports are defined in
 [agent helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
 and [controller routing]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}).
 
-For operator-managed Agents, use `spec.agent.port`. The operator applies the
-resolved primary port to the runtime and to its primary Istio routes.
+For operator-managed Agents, use `spec.agent.port`. Hermes keeps its API fixed
+at 8642 and Webapp at 9120. OpenClaw applies the resolved primary port to the runtime and to its primary Istio routes.
 Primary-port overrides through `service.port`, `service.targetPort`, or native
 Helm settings are rejected. Standalone Helm still uses the settings in this
-table. Native helper and dashboard ports are still part of the qualified
+table. Native helper and Webapp ports are still part of the qualified
 integration profile.
 
 The desktop runs Chrome, Xvfb, Fluxbox, x11vnc, and websockify in a separate
@@ -231,10 +231,13 @@ them, but it does not authenticate the user to a model provider. If a
 standalone release uses a Secret that already exists, supply the necessary keys
 yourself. A successful render does not make sure that they are present.
 
-Hermes 0.21.5 must have an authentication provider when its Dashboard binds to
+Hermes 0.22.7 must have an authentication provider when its Webapp binds to
 a non-loopback address. CetiRun enables Hermes' built-in password provider. The
-username is `cetirun`, and `API_SERVER_KEY` is the Dashboard password.
-`CETIRUN_AUTH_KEY` signs Dashboard sessions. The outer Istio OAuth2 Proxy still
+username is `cetirun`, and `API_SERVER_KEY` is the Webapp password.
+`CETIRUN_AUTH_KEY` independently signs Webapp sessions. Both keys are retained
+across gateway restarts, Pod replacement and suspend/resume. The persistent
+`$HERMES_HOME/webapp/session-token` is an internal browser credential and is
+not the user login key. The outer Istio OAuth2 Proxy still
 controls access to the instance route. The Hermes login is another gate, at the
 application level.
 
@@ -271,9 +274,10 @@ provider values are rendered into the native format of the selected agent.
 | Startup | `true` | 10s | 10s | 5s | 30 |
 
 OpenClaw uses these paths on the gateway port: `/startupz` for startup,
-`/healthz` for liveness, and `/readyz` for readiness. Hermes uses `/health` for
-all three probes on the API port. These probes do not examine model entitlement
-or the native dashboard.
+`/healthz` for liveness, and `/readyz` for readiness. Hermes checks `/health`
+on the API port. Its startup and readiness probes also check the Webapp health
+endpoint and built assets. These probes do not examine model entitlement or
+complete a browser login.
 Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}}),
 [Hermes helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}), and
 [StatefulSet]({{< repo "app/cetirun-chart/templates/statefulset.yaml" >}}).
@@ -291,7 +295,7 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `sidecarScope.enabled` | `true`. It limits the scope of service discovery. |
 | `logger.enabled`, `logger.scanInterval` | `true`, 30 seconds |
 | `skills.shared` | `false`. An optional static Blob CSI PV and PVC. |
-| `skills.protocol`, `skills.mountPath` | `nfs`, `/home/vibe/.aks/skills`. Ordinary Agents expose this path as a read-only alias to the composed view. |
+| `skills.protocol`, `skills.mountPath` | `nfs`, `/home/vibe/.aks/skills`. Native Agents mount shared skills directly, read-only. Custom exposes a read-only alias to its composed context view. |
 | `skills.secretName`, `skills.mountOptions` | Empty, `[]`. Non-NFS protocols must have a namespace-local staging Secret. |
 | `skills.npm`, `skills.clawHub` | Empty lists. The ClawHub installer is not implemented. |
 | `skills.npmRegistry` | An environment-specific feed. Explicitly select your approved and reachable registry. |

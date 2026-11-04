@@ -30,7 +30,7 @@ const (
 	ConfigPath             = "/etc/cetirun-ingress/envoy.json"
 	AdminPort              = 15440
 	APIPort                = chataccess.MTLSAPIPort
-	DashboardPort          = 15444
+	WebappPort             = 15444
 	TerminalPort           = 15445
 	DesktopPort            = 15446
 	MaxConnectionSeconds   = 300
@@ -127,9 +127,12 @@ func (b Binding) Validate() error {
 		len(validation.IsDNS1123Label(b.Namespace)) != 0 ||
 		!slices.Contains([]string{"openclaw", "hermes", "custom"}, b.Harness) ||
 		b.Port < 1024 || b.Port > 65535 ||
-		slices.Contains([]int32{AdminPort, APIPort, DashboardPort, TerminalPort, 7681, 9119}, b.Port) ||
+		slices.Contains([]int32{AdminPort, APIPort, WebappPort, TerminalPort, 7681, 9119}, b.Port) ||
 		(b.Desktop && slices.Contains([]int32{DesktopPort, 5900, 6080, 18800}, b.Port)) {
 		return fmt.Errorf("mTLS requires a per-Agent supported harness and nonconflicting primary port")
+	}
+	if b.Harness == "hermes" && b.Port != 8642 {
+		return fmt.Errorf("Hermes mTLS requires the fixed API port 8642")
 	}
 	if b.Harness == "custom" && b.Desktop || b.Harness != "custom" && len(b.ChatClients) != 0 || len(b.ChatClients) > 8 {
 		return fmt.Errorf("mTLS Custom supports declared HTTP and terminal endpoints, not desktop or unrelated Chat clients")
@@ -207,7 +210,7 @@ func (p Plan) Ports() []Port {
 	}
 	ports := []Port{{Name: name, Backend: p.Port, TLS: APIPort}}
 	if p.Harness == "hermes" {
-		ports = append(ports, Port{Name: "dashboard", Backend: 9119, TLS: DashboardPort})
+		ports = append(ports, Port{Name: "webapp", Backend: 9120, TLS: WebappPort})
 	}
 	if p.Terminal && p.Harness != "custom" {
 		ports = append(ports, Port{Name: "ttyd", Backend: 7681, TLS: TerminalPort})
