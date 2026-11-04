@@ -235,7 +235,7 @@ kubectl create secret tls cetirun-tls --namespace aks-istio-ingress \
 ```
 
 Before it writes, `make deploy` makes sure that the certificate is valid now
-and that it covers `domain`. It does not examine whether browsers trust the
+and that it covers `domain`. It does not examine if browsers trust the
 certificate.
 
 ## Deploy helper inputs

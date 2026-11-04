@@ -141,7 +141,7 @@ check does not prove that an override will reconcile successfully.
 | `plannedMigration` | Controller-owned source and storage identity and acknowledgment checkpoint. The phases are `Protecting`, `Stopping`, `SourceTerminated`, `Detached`, `Starting`, and `Completed`. It is not a physical-fencing receipt, and it does not give permission to edit status |
 | `observedOperatorHash` | Fingerprint of the applied configuration, for use by the reconciliation cache. It includes the content hash of the gateway Secret and the resource version of the referenced team |
 | `lastReconcileTime` | Timestamp that a full Ready or suspension pass writes. It can also be written when the ingress removal for a suspension fails |
-| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`), and `vision` when the model accepts images. It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). With an Agent Policy, it also shows the models that are the same models as shared models that the Policy does not allow (`copilot.notAllowed`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has its `model` name in the Gateway. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a granted Team router also has `alias`, the router's name, when the key reaches the router under that name. A Hermes instance sends that name, other instances send the internal name. Each granted entry also has its configured limits, and `vision` when the instance sends images to the router. If the router is not granted, the `reason` tells why |
+| `aiGateway` | AI Gateway state. It shows the phase and reason, the key alias and ID (never the key), access groups, and models. It also shows native USD budget, spend, and reset observations, the block state, and the applied policy and pricing revisions. For GitHub Copilot, it shows the Gateway name of each registered model (`copilot.routes`), and `vision` when the model accepts images. It also shows the models that are excluded because they have no price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`). With an Agent Policy, it also shows the models that are the same models as shared models that the Policy does not allow (`copilot.notAllowed`). `modelRouters` lists the smart-routing models of the Team. For an instance with an Agent Policy, it also lists the routers that are configured in the Gateway and that the Policy lists. Each entry has `granted`. If the router is granted, the entry has its `model` name in the Gateway. For a Team router, this is its internal name. For a Gateway router, this is its own name. The entry of a granted Team router also has `alias`, the router's name, when the key reaches the router under that name. A Hermes instance sends that name. Other instances send the internal name. Each granted entry also has its configured limits, and `vision` when the instance sends images to the router. If the router is not granted, the `reason` tells why |
 | `registryCredentials` | Receipt that identifies the UID and resourceVersion of the synchronized source Secret and the UID of the local pull Secret. It is not credential data or proof of a successful image pull |
 | `sandbox` | Last binding that was found correct: `teamUID`, `sandboxUID`, `agentPolicyUID`, and `appliedRevision`. Omitted before enforcement succeeds |
 | `policy` | Resolved effective policy, and the desired Sandbox, Gateway, and credential revisions |
@@ -217,7 +217,7 @@ termination. The chart allows zero or one replica and limits any enabled HPA to
 | `modelRouters[].gatewayModel` | Internal Gateway model name that instances send requests to. It stays the same when the configuration of the router changes |
 | `modelRouters[].ready` / `message` | Shows if the router is registered with its current configuration. If it is not, it shows why |
 | `modelRouters[].sharedModels` | The shared models that the router's tiers send requests to, as registered. A GitHub Copilot tier that joins a shared model is included, and the classifier is not. An Agent with an AgentPolicy gets the router only when the policy allows each of these models |
-| `modelRouters[].copilotModels` | The `copilot/<model>` tiers that are registered under the ID of the Copilot model. An Agent needs GitHub Copilot and that model |
+| `modelRouters[].copilotModels` | The `copilot/<model>` tiers that are registered under the ID of the Copilot model. An Agent must have GitHub Copilot and that model |
 | `conditions[type=ModelRoutersReady]` | `True` when every router is registered. `False` names each router that is not registered. `Unknown` when the Gateway cannot be reached |
 
 Each Team has a single `agentPolicyRef`. Agents do not select a policy class.
@@ -276,40 +276,43 @@ The Teams list shows compatibility for the saved Policy and all selected
 Sandboxes. Expand a Team to see its overall compatibility, labeled Policy and
 Sandbox references, reasons, and check time. Multiple Sandboxes appear in a
 table with a separate compatibility result for each Policy and Sandbox
-combination. The Policy and Sandbox lists also show their referencing Teams;
-the Sandbox view distinguishes the overall Team result from that Sandbox's
-result. A Policy's
-configuration acceptance and a Sandbox's prerequisites are separate from Team
-compatibility. None of these observations proves that an Agent applied its
-Policy or is ready to run.
+combination.
+
+The Policy and Sandbox lists also show the Teams that refer to them. The Sandbox
+view shows the overall Team result separately from the result of that Sandbox. A
+Policy's configuration acceptance and a Sandbox's prerequisites are separate
+from Team compatibility. None of these observations proves that an Agent applied
+its Policy or is ready to run.
 
 The Operator records this report in the optional `Team.status.compatibility`
-field. It checks saved configurations every 15 seconds and after Policy or
+field. It examines saved configurations every 15 seconds and after Policy or
 Sandbox changes. The report identifies the Team, Policy, and each Sandbox by
 name, UID, and generation, with `checkedAt` and `validUntil` timestamps. The
 report expires after 30 seconds. The Portal shows `Pending` when no report
 exists and `Unknown` when an observation expires or a referenced version
 changes. Teams without Policy configuration show `Not configured`.
 
-The report is for display. It does not change the existing Team `Accepted`
-condition or authorize Agent execution. The admin Team API includes the report,
-the Team generation, and deletion state. The Sandbox API also returns
-generation, observed generation, and conditions.
+The report is for display. It does not change the Team `Accepted` condition or
+authorize Agent execution. The admin Team API includes the report, the Team
+generation, and deletion state. The Sandbox API also returns generation,
+observed generation, and conditions.
 
-Editing pages show field validation and errors from the current save. They do
-not check unsaved drafts or display saved status as a draft result. Kubernetes
-admission checks the submitted configuration before it is stored. For a known
-compatibility rejection, the Portal returns `422 configuration_incompatible`
-with an optional `error.details` list of field and combination diagnostics.
-The editor keeps the unsaved input. Version, permission, and coordination
-errors remain separate. Saving successfully does not imply that the Operator
-has already checked the new version.
+Edit pages show field validation and errors from the current save. They do not
+examine unsaved drafts or show saved status as a draft result. Kubernetes
+admission examines the submitted configuration before it is stored.
 
-When upgrading, update the CRD schema and all strict Team readers, including
-admission, before running the Operator that writes compatibility status. No
-migration of existing Teams is necessary; they receive a report on reconciliation.
-Older objects without the optional field remain readable. Do not downgrade a
-strict reader until it can tolerate the new status field.
+For a known compatibility rejection, the Portal returns
+`422 configuration_incompatible` with an optional `error.details` list of field
+and combination diagnostics. The editor keeps the unsaved input. Version,
+permission, and coordination errors stay separate. A successful save does not
+mean that the Operator already examined the new version.
+
+For an upgrade, update the CRD schema, admission, and all other strict Team
+readers. Then run the Operator that writes compatibility status. A migration of
+the Teams that already exist is not necessary. They get a report when the
+Operator reconciles them. Older objects without the optional field stay
+readable. Do not downgrade a strict reader until it can tolerate the new status
+field.
 
 The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
 runtime type, Agent and helper resource requests and limits, HOME storage, and
@@ -508,9 +511,10 @@ The total limits count every request on the key. This includes the Agent's
 GitHub Copilot models. A per-model limit applies to the model name that a
 request uses after model aliases. For an `auto` router, that is the name of the
 router, not the model that it routes to. For a router of a Team, that is the
-internal name of the router, also when the Agent sends the router's name. A
-request over a limit gets HTTP 429
-with a `retry-after` header. Gateway replicas share the counters through Redis.
+internal name of the router, also when the Agent sends the router's name.
+
+A request over a limit gets HTTP 429 with a `retry-after` header. Gateway
+replicas share the counters through Redis.
 
 The Gateway counts `tpm` from the tokens of each finished request. Cached input
 tokens are excluded. When the count for the minute reaches the limit, the
@@ -593,12 +597,12 @@ the
 An accepted API value does not qualify the actual network path.
 
 The Operator keeps the Policy's `Accepted` condition for controller decisions
-and diagnostics. The Portal list shows the condition for the current generation;
-the editor shows only field validation and save errors.
-`Accepted=True` describes only configuration acceptance. Sandbox compatibility,
-Agent authorization, and runtime enforcement must still succeed. If you save a
-Policy, the save does not prove that its consumers applied it. If you edit a
-Policy that is already bound, the edit can affect those consumers.
+and diagnostics. The Portal list shows the condition for the current generation,
+and the editor shows only field validation and save errors. `Accepted=True`
+describes only configuration acceptance. Sandbox compatibility, Agent
+authorization, and runtime enforcement must still succeed. If you save a Policy,
+the save does not prove that its consumers applied it. If you edit a Policy that
+is already bound, the edit can affect those consumers.
 
 #### HTTP API
 
@@ -630,8 +634,8 @@ rejects mismatched values.
 
 The Portal then reserves the exact whole-resource mutation. It records
 `Changing` before it submits one conditional Update or background Delete, and
-then it observes the result. It releases only an operation with a verified
-outcome. Its namespaced Role allows access only to the named authority
+then it observes the result. It releases only an operation whose outcome is
+confirmed. Its namespaced Role allows access only to the named authority
 ConfigMap. UID/resource-version checks are still request concurrency
 protection. They do not replace this admission contract.
 
@@ -641,21 +645,23 @@ reservation is kept deliberately. Do not blindly repeat the mutation. Recover
 the recorded operation with the Operator's configuration-change procedure.
 
 Update reservations record the complete writable-content digests before and
-after the change. Before saving, the Portal checks for a recorded update, even
+after the change. Before a save, the Portal looks for a recorded update, also
 after a restart. A read of the same live UID at a different resourceVersion
-permits recovery when the content matches either the proposed configuration
-(applied) or the original configuration (superseded). A status-only refresh can
-produce the latter without applying the requested edit. Other configuration
-changes or an unknown outcome keep the reservation. Recovery never resubmits
-the old update or relaxes the caller's version checks; a stale edit still needs
-a fresh read before saving.
+allows recovery when the content matches the proposed configuration (applied).
+It also allows recovery when the content matches the original configuration
+(superseded). A status-only refresh can cause a superseded result, and then the
+requested edit is not applied.
+
+Other configuration changes or an unknown outcome keep the reservation. Recovery
+never submits the old update again, and it never relaxes the version checks of
+the caller. A stale edit must still get a new read before a save.
 
 CLI update recovery uses the exact original `--before` and `--after` files.
-`--action observe` is read-only and reports
-`update-superseded-reservation-retained` when only the original writable content
-remains at a superseding version. Explicit `--action update` then releases the
-old reservation without writing the configuration and reports
-`update-superseded`.
+`--action observe` is read-only. It reports
+`update-superseded-reservation-retained` when a newer version still has only the
+original writable content. Explicit `--action update` then releases the old
+reservation and reports `update-superseded`. It does not write the
+configuration.
 
 New deletion reservations durably record the content digest that is necessary
 for recovery. An administrator can use the operation ID from the pinned

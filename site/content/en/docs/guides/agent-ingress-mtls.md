@@ -283,9 +283,9 @@ For leaf rotation, CA changes, Gateway changes, or revocation, use the
 4. Resume the Agent. Before you treat access as restored, examine the
    replacement Pod, readiness, route, and actual TLS handshake.
 
-Custom suspension keeps the approved terminal selection unchanged while
-stopping both the application and its separate terminal. It does not authorize
-terminal access or remove the shutdown acknowledgement requirement.
+When a Custom Agent is suspended, its application and its separate terminal
+stop. The approved terminal selection does not change. The suspension does not
+authorize terminal access. The shutdown must still be acknowledged.
 
 This implementation does not promise restart-free rotation. Unapproved Secret
 changes, replacement, deletion, or unavailable pinned Gateway inputs stop the

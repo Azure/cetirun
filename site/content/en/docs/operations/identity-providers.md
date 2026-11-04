@@ -22,9 +22,9 @@ Secret only in the Broker namespace. Do not commit credentials or put them in
 Helm values. Do not paste a Secret manifest or command output into a ticket.
 
 With `make deploy`, put the Broker overlays of this page under `broker.values`
-in the environment file. `make deploy` requires each provider Secret that the
-environment file names. Remove the entries of the providers that you do not
-register.
+in the environment file. `make deploy` stops if a provider Secret that the
+environment file names does not exist. Remove the entries of the providers that
+you do not register.
 
 ## Shared GitHub App
 

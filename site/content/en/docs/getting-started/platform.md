@@ -343,7 +343,7 @@ Before the first run, make sure that these items exist:
   [Agent Identity setup](../../operations/agent-identity/).
 - A client ID for `platform.values.cetirun-operator.azure.clientId`. Use the
   client ID of the Agent Identity Blueprint, unless another operator
-  integration needs a different identity. `make deploy` stops if the value is
+  integration must use a different identity. `make deploy` stops if the value is
   empty. Refer to
   [Federate the AKS workloads to the Blueprint](../../operations/entra-agent-identity/#federate-the-aks-workloads-to-the-blueprint).
 - The Sandbox admission certificate. Refer to
@@ -365,10 +365,11 @@ Before the first run, make sure that these items exist:
   request more quota. To see if a region offers the model, use
   `az cognitiveservices model list --location <region>`.
 
-  `make deploy` requires the `decision-1` entry, but it does not call the
-  deployment. If the deployment does not work, `auto` sends each request to its
-  default model. Each request to `auto` can cause a classifier call of up to
-  32,768 tokens. Size the capacity of the deployment for this traffic. Refer to
+  With `make deploy`, the `decision-1` entry is necessary, but `make deploy`
+  does not call the deployment. If the deployment does not work, `auto` sends
+  each request to its default model. Each request to `auto` can cause a
+  classifier call of up to 32,768 tokens. Size the capacity of the deployment
+  for this traffic. Refer to
   [Choose a classifier](../../operations/smart-routing/#choose-a-classifier).
 - The digests of the Custom images that you approve. Examples are the Pi and
   VS Code Server images that `make publish` pushed. To read a digest, use

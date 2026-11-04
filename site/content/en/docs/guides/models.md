@@ -84,16 +84,16 @@ such a model as not allowed by the Agent Policy.
 For example, the shared model `enterprise-sol` has the `base_model`
 `azure/gpt-6-sol`, and no other shared model is that model. If the Policy does
 not allow `enterprise-sol`, the instance does not get the owner's Copilot
-`gpt-6-sol`. A Copilot model that is not the same model as a shared model needs
-only the Policy's **Allow GitHub Copilot**. An example is a Claude model when
-the Gateway has no Claude deployment.
+`gpt-6-sol`. For a Copilot model that is not the same model as a shared model,
+only the Policy's **Allow GitHub Copilot** is necessary. An example is a Claude
+model when the Gateway has no Claude deployment.
 
-When the Policy stops allowing such a model, the operator removes the model's
+When the Policy no longer allows such a model, the operator removes the model's
 route from the Gateway before it updates the instance's key. If the Gateway
 cannot remove the route, the key cannot reach any of the owner's Copilot models
 until the route is removed. The same occurs while the operator cannot read the
 Gateway's models or prices. The operator tries again about every 15 seconds.
-Shared models keep working, and the instance page tells why Copilot is not
+Shared models continue to work, and the instance page tells why Copilot is not
 available.
 
 The instance's key reaches a Copilot model only by that name. The
@@ -370,8 +370,9 @@ among the router's tier models that the Gateway reports. As a result, a request
 sized for the router fits every tier. When the owner's GitHub Copilot model is
 merged into a tier's shared model, the instance's requests for that tier can
 also reach its Copilot route. As a result, the router's limits include the
-limits of the route, as the instance's entry for that shared model does. A
-router configured in the Gateway gets its limits in the same way, from the
+limits of the route, as the instance's entry for that shared model does.
+
+A router configured in the Gateway gets its limits in the same way, from the
 models of its tiers and from its default model. If the router sets its own
 `max_input_tokens` and `max_output_tokens` in `model_info`, these values are
 used instead.
