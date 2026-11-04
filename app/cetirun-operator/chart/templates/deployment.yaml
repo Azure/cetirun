@@ -54,6 +54,7 @@ spec:
             - {{ printf "--default-model=%s" .Values.cetirun.defaultModel | quote }}
             - --memory-context-enabled={{ .Values.memoryContext.enabled }}
             - {{ printf "--memory-context-image=%s" (default (dig "memoryContext" "image" "" (.Values.global | default dict)) .Values.memoryContext.image) | quote }}
+            - {{ printf "--memory-context-hermes-image=%s" (default (dig "memoryContext" "hermesImage" "" (.Values.global | default dict)) .Values.memoryContext.hermesImage) | quote }}
           env:
             - name: CETIRUN_CETIADMIN_CONFIG_MAP
               value: {{ include "cetirun-operator.cetiadminConfigName" . | quote }}

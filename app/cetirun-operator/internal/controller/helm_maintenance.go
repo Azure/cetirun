@@ -301,7 +301,7 @@ func (r *AgentReconciler) maintenanceIntentHash(ctx context.Context, agent *api.
 	}
 	data, err := json.Marshal([]any{copy.Spec, copy.Annotations, copy.Labels, team,
 		r.CetiRunHelmValues, r.ChartRegistry, r.ChartVersion, r.DomainSuffix, r.SkillsStorageAccount, r.DefaultModel,
-		r.AIGateway, r.MemoryEnabled, r.MemoryImage, r.MemoryRegistry, r.ChatAccess, customRevision,
+		r.AIGateway, r.MemoryEnabled, r.memoryOptions(agent.Spec.Agent.Type).Image, r.MemoryRegistry, r.ChatAccess, customRevision,
 		r.AgentIdentityEnabled, r.AgentIdentityTenantID, r.AgentIdentityBrokerURL, r.ConnectionsMCPURL,
 		r.ConnectionsMCPAudience, r.ConnectionsMCPCASecretName, r.ConnectionsMCPRuntimeTypes})
 	if err != nil {
@@ -1430,7 +1430,7 @@ func (r *AgentReconciler) prepareHelmMaintenance(ctx context.Context, agent *api
 	values["aiGateway"] = map[string]any{"enabled": true, "keySecretName": secret.Name, "keySecretKey": aiGatewayKeySecretField,
 		"models": models, "copilotProxy": proxy}
 	values["networkPolicy"] = deepMerge(values["networkPolicy"], map[string]any{"gatewayNamespace": namespace, "gatewayPort": port})
-	values["memoryOptions"] = r.memoryOptions()
+	values["memoryOptions"] = r.memoryOptions(agent.Spec.Agent.Type)
 	native := &corev1.Secret{}
 	if agent.Spec.GatewayTokenSecretRef == "" || r.customReader().Get(ctx, client.ObjectKey{Namespace: record.Target.Namespace.Name, Name: agent.Spec.GatewayTokenSecretRef}, native) != nil ||
 		!attributableRuntimeObject(native, agent, record.Target.Release) {
@@ -1588,7 +1588,7 @@ func (r *AgentReconciler) prepareCustomHelmMaintenance(ctx context.Context, agen
 	values["agentType"], values["desktop"] = "custom", deepMerge(values["desktop"], desktop)
 	values["agentRequest"] = runtimeRequest(agent, "")
 	values["agentRequest"].(map[string]any)["releaseName"] = record.Target.Release
-	values["customBindings"], values["memoryOptions"] = bindings, r.memoryOptions()
+	values["customBindings"], values["memoryOptions"] = bindings, r.memoryOptions(agent.Spec.Agent.Type)
 	values["fullnameOverride"], values["replicaCount"] = instanceServiceName(agent.Name), 0
 	prepared, err := r.HelmClient.Prepare(namespace.Name, values, agent.Spec.Helm.Version)
 	if err != nil {

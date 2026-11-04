@@ -600,7 +600,7 @@ func (f *maintenanceFixture) prepareInitialCustom(agent *api.Agent, namespace *c
 	}
 	values["agentType"], values["agentRequest"] = "custom", runtimeRequest(agent, "")
 	values["agentRequest"].(map[string]any)["releaseName"] = helmReleaseName(agent.Name)
-	values["customBindings"], values["memoryOptions"] = bindings, r.memoryOptions()
+	values["customBindings"], values["memoryOptions"] = bindings, r.memoryOptions(agent.Spec.Agent.Type)
 	values["fullnameOverride"], values["replicaCount"] = instanceServiceName(agent.Name), 1
 	values["desktop"] = deepMerge(values["desktop"], map[string]any{"novncPathPrefix": agent.Name + "/desktop/", "image": map[string]any{"repository": r.ChartRegistry + "/cetirun-desktop"}})
 	values["ttyd"] = deepMerge(values["ttyd"], map[string]any{"image": map[string]any{"repository": r.ChartRegistry + "/cetirun-terminal"}})

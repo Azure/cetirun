@@ -417,6 +417,15 @@ Agents whose Charts support Memory, set `global.memoryContext.image` in the
 platform chart. You can set the more specific
 `cetirun-operator.memoryContext.image` instead.
 
+To update the Hermes adapter independently, set
+`cetirun-operator.memoryContext.hermesImage`, or its umbrella default
+`global.memoryContext.hermesImage`. This maps to the Operator's
+`--memory-context-hermes-image` flag. An empty value uses the shared image
+selection above. Changing this override updates only Hermes Memory delivery
+and its configuration checks; OpenClaw and Custom keep their selected images.
+The Operator's `memoryContext.enabled: false` (`--memory-context-enabled=false`)
+disables Memory even when either image override is set.
+
 The standalone runtime chart uses `memoryContext.image` with the same release
 defaults. Release tags and explicit SHA-256 digests are accepted, but `latest`
 is not. A release tag selects a version, not immutable bytes. If you must pin

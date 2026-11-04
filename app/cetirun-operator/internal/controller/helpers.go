@@ -149,8 +149,8 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 		config = append(config, revision)
 	}
 	config = append(config, teamRV)
-	if r.MemoryEnabled || r.MemoryImage != "" {
-		config = append(config, "memory-context/v2", r.MemoryImage, r.MemoryRegistry)
+	if memory := r.memoryOptions(instance.Spec.Agent.Type); memory.Enabled {
+		config = append(config, "memory-context/v2", memory.Image, memory.Registry)
 	}
 	// Older suspended-state caches must not skip the retention repair.
 	if instance.Spec.Suspended && !sandboxRequested(instance, team) &&

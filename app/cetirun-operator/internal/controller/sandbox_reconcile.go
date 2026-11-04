@@ -172,7 +172,7 @@ func (r *AgentReconciler) prepareReconciledSandbox(ctx context.Context, agent *a
 		if len(user) != 0 {
 			values = deepMerge(values, user).(map[string]any)
 		}
-		values["memoryOptions"] = r.memoryOptions()
+		values["memoryOptions"] = r.memoryOptions(agent.Spec.Agent.Type)
 		if agent.Spec.Suspended {
 			values["replicaCount"] = 0
 		}
