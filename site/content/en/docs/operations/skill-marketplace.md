@@ -168,10 +168,6 @@ this copy read-only at `$HOME/.aks/skills`. It does not mount the claim. The
 operator refuses an Agent chart that mounts the claim in another container,
 or that mounts more than the subtree of the Team.
 
-Personal skills stay in `$HOME/.agents/skills`, where the Agent can write
-them. Platform skills such as `cetirun-memory` come from a separate read-only
-path.
-
 The view is an `emptyDir` volume of the Pod. The scratch size of the Sandbox
 of the Agent limits its size. After the start, the Agent reads only its copy.
 A release that the service publishes later reaches the Agent at its next
@@ -180,6 +176,36 @@ start.
 OpenClaw loads `$HOME/.aks/skills` as an extra skill directory, and Hermes
 loads it as an external skill directory. Refer to
 [Common initialization and discovery](../../reference/agent-harness/#common-initialization-and-discovery).
+
+### Skill sources of an Agent
+
+The Skill Marketplace is one of two sources of Team skills. Each Agent uses
+only one of them:
+
+| Agent | Source of the Team skills |
+| --- | --- |
+| An OpenClaw or Hermes Sandbox Agent of a Team with an Agent Policy | The Skill Marketplace. The Agent receives only the skills that its Team selects, from the release that is current when the Agent starts. |
+| An Agent of a Team without an Agent Policy, or an Agent without a Team | The shared skills container: `sharedSkills` of `make deploy`, or the container that the `skillStorage` of the Team names. The Agent receives all the skills in the container. |
+
+A Skill Marketplace Agent does not mount the shared skills container. The
+other Agents do not receive marketplace skills. A Custom Agent of a Team with
+an Agent Policy receives no Team skills. Refer to [Limits](#limits).
+
+`make deploy` requires the `sharedSkills` container, but it does not add skills
+to it. If no Agent uses the container, the container stays empty.
+
+An OpenClaw or Hermes Agent of the Skill Marketplace loads its skills from
+these locations:
+
+- `$HOME/.aks/skills`: the Team skills, read-only.
+- `$HOME/.agents/skills`: personal skills in HOME. The user and the Agent can
+  change them.
+- `/opt/cetirun-memory/skills`: the platform skills, such as
+  `cetirun-memory`.
+- The skills that are part of OpenClaw or Hermes.
+
+If two skills have the same name, the runtime selects one of them. Refer to
+[Limits](#limits).
 
 ## Prerequisites
 
@@ -204,7 +230,8 @@ loads it as an external skill directory. Refer to
 The service needs a Blob container of its own. The container must be in a
 storage account with NFS 3.0, such as the Premium BlockBlobStorage account
 that the storage helper creates. Do not use the container of the shared skills
-(`sharedSkills`). `make deploy` refuses it.
+(`sharedSkills`). `make deploy` refuses it. The two containers serve different
+Agents. Refer to [Skill sources of an Agent](#skill-sources-of-an-agent).
 
 NFS 3.0 has no client authentication. The storage service authorizes NFS
 requests only by the network that they come from. Use a storage account that
