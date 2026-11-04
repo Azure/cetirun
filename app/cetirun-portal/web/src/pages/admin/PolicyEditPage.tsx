@@ -126,7 +126,7 @@ function validateRequest(request: AgentPolicyUpsertRequest, isCreate: boolean): 
   const network = request.network;
   if (network?.blockedCIDRs?.some((cidr) => !validCIDR(cidr))) return "Blocked CIDRs must be valid IPv4 or IPv6 CIDR values.";
   const allPorts = [...(network?.blockedPorts || []), ...(network?.allowedInternalCIDRs || []).flatMap((rule) => rule.ports)];
-  if (allPorts.some((port) => !validPort(port))) return "Ports must be 1ΓÇô65535 and use TCP, UDP, or SCTP.";
+  if (allPorts.some((port) => !validPort(port))) return "Ports must be 1–65535 and use TCP, UDP, or SCTP.";
   if (new Set((network?.blockedPorts || []).map((port) => `${port.port}/${port.protocol}`)).size !== (network?.blockedPorts || []).length) return "Blocked ports must be unique.";
   if (network?.allowedInternalCIDRs?.some((rule) => !validCIDR(rule.cidr) || rule.ports.length === 0)) return "Each internal CIDR rule needs a valid CIDR and at least one port.";
   return null;
