@@ -98,17 +98,20 @@ identity. It reuses the HOME claim that already exists and projects immutable
 canonical context at its actual HOME. HTTP modes use the static probe that is
 packaged in the approved terminal image. Headless mode has no probes. The
 optional isolated terminal is rendered separately, is resource-bounded, and is
-policy-controlled. Common Custom terminals also retain the exact
-Agent-UID-bound exec admission gate used by registry credential isolation.
-This allows private-image credential repair and rotation after the terminal
-starts, without weakening the registry checks or replacing the running Pod.
-Before Registry synchronization, common Custom reconciliation repairs this gate
-even if a pending credential operation does not yet match the source Secret.
+policy-controlled.
+
+Common Custom terminals also keep the exact Agent-UID-bound exec admission gate
+that registry credential isolation uses. With this gate, private-image
+credentials can be repaired and rotated after the terminal starts. The repair
+and the rotation do not weaken the registry checks or replace the running Pod.
+Before Registry synchronization, common Custom reconciliation repairs this gate,
+even if a pending credential operation does not match the source Secret yet.
 Gate repair does not complete that operation or grant terminal exec permissions.
 The common Sandbox admission checks continue to apply independently.
-Changes to pull references use the common executor's sealed desired manifest.
-The legacy deferred-rollout flag must not change those values after sealing.
-For registration, artifact pins, and unsupported
+
+Changes to pull references use the sealed desired manifest of the common
+executor. After the manifest is sealed, the legacy deferred-rollout flag must
+not change those values. For registration, artifact pins, and unsupported
 combinations, see the
 [governed Custom contract](../../site/content/en/docs/reference/agent-harness.md#policy-governed-custom-execution).
 

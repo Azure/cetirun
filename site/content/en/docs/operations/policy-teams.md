@@ -15,8 +15,8 @@ is created for such a Team with `kubectl` is held and never starts.
 The steps on this page enable Sandbox execution for an installation that
 `make deploy` makes, as in [Install CetiRun](../../getting-started/platform/),
 in the release namespace `cetirun-system`. Do steps 1 to 3 before the first
-`make deploy`, because it needs the admission certificate. Do the other steps
-after the first run:
+`make deploy`, because it must have the admission certificate. Do the other
+steps after the first run:
 
 1. [Examine the cluster](#the-cluster).
 2. [Create a HOME StorageClass](#home-storage).
@@ -335,7 +335,7 @@ In the Portal, under **Admin**:
 2. **Agent policies → New policy**: select the harnesses that Agents can run and
    the shared models that they can use. Also set their monthly Gateway budget.
    This budget is necessary if they can use a model. To let Agents use their
-   owners' GitHub Copilot, also turn on **Allow GitHub Copilot**.
+   owners' GitHub Copilot, also enable **Allow GitHub Copilot**.
 3. **Teams → New Team**: select the Policy. Select the Sandbox as the allowed
    and default Sandbox.
 

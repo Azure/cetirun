@@ -127,24 +127,25 @@ make -C app/cetirun-operator build
 ```
 
 The default unit target discovers all packages with `go list ./...`. It tests the
-controller package in two complementary groups because the combined suite has
-exceeded 30 minutes on CI runners. One invocation selects the lifecycle test
-prefixes in `GO_CONTROLLER_TEST_GROUP`; the next skips exactly those prefixes.
-Every controller test runs once, and every other package runs in full. Each
-package or controller group keeps a 30-minute timeout.
+controller package in two complementary groups, because the combined suite took
+more than 30 minutes on CI runners. One invocation selects the lifecycle test
+prefixes in `GO_CONTROLLER_TEST_GROUP`. The next invocation skips exactly those
+prefixes. Every controller test runs one time, and every other package runs in
+full. Each package or controller group keeps a 30-minute timeout.
 
-The default `make test-envtest` runs the same seven packages in two complementary passes:
-test names that match `APIServer`, then all remaining tests with that pattern
-excluded. Both passes keep the `envtest` build tag, disable cached results, and
-use main's bounded 50-minute timeout per package. This is a timing split, not a
-classification of every API test: API tests with other names run in the second
+The default `make test-envtest` runs the same seven packages in two
+complementary passes. The first pass runs the tests whose names match
+`APIServer`, and the second pass runs all other tests. Both passes keep the
+`envtest` build tag, disable cached results, and use main's bounded 50-minute
+timeout per package. The split only divides the run time, and the first pass
+does not contain all API tests. API tests with other names run in the second
 pass. A failure in either pass fails the target.
 
 Root Go test gates and CI use the same component targets. Default local runs
-retain both complete partitions described above. Operator CI instead distributes
-both targets across four independent hash shards using the shared runner.
-Neither mode omits tests or changes individual test assertions or
-runtime/lifecycle deadlines.
+keep both complete partitions described above. Operator CI instead distributes
+both targets across four independent hash shards with the shared runner. Neither
+mode omits tests or changes individual test assertions or runtime/lifecycle
+deadlines.
 
 To reproduce one CI shard, set its one-based index and the total shard count:
 
@@ -155,20 +156,21 @@ KUBEBUILDER_ASSETS=/path/to/local/envtest \
 ```
 
 Run indices 1 through 4 to cover a full sharded suite. The shared runner in
-`scripts/ci/go_test.py` discovers tests with `go test -json -list .` using the
-same packages and build tags, then assigns each top-level test name to exactly
-one shard with a stable hash. New tests are included automatically. Identical
-names in different packages stay in the same shard. Every selected test runs
-all its subtests; examples and fuzz seed tests are included, but benchmarks
-are not enabled. Discovery failures, invalid indices, empty shards, and test
-failures fail the command. No test assertions or runtime/lifecycle deadlines
-change.
+`scripts/ci/go_test.py` runs `go test -json -list .` with the same packages and
+build tags to discover tests. Then it assigns each top-level test name to
+exactly one shard with a stable hash. New tests are included automatically.
+Identical names in different packages stay in the same shard.
+
+Every selected test runs all its subtests. Examples and fuzz seed tests are
+included, but benchmarks are not enabled. Discovery failures, invalid indices,
+empty shards, and test failures fail the command. No test assertions or
+runtime/lifecycle deadlines change.
 
 Each CI worker keeps its 60-minute job limit, and a failure does not cancel
-the remaining shards. The existing `Operator Go checks` status combines both
-job matrices and fails unless every shard succeeds, including when a worker
-fails, is skipped, or is cancelled. Generated-API, Portal, build, and
-vulnerability checks remain in their existing worker jobs.
+the other shards. The `Operator Go checks` status combines both job matrices,
+and it passes only when every shard succeeds. If a worker fails, is skipped, or
+is cancelled, the status fails. Generated-API, Portal, build, and vulnerability
+checks stay in their worker jobs.
 
 The build writes `app/cetirun-operator/bin/manager`. It does not start the
 operator. The component's `make test` and `make vet` targets are also
@@ -1000,13 +1002,15 @@ their own notices.
   inputs still keep the original generation, UID, and resource version.
 
   A `Changing` operation that already exists is never resubmitted. Recovery
-  requires the same live UID at a different resourceVersion. Exact desired
-  writable content proves the update applied; exact before content proves the
-  old conditional update was superseded and can safely be released. An unchanged
-  resourceVersion or any other content remains uncertain. Unit tests also
-  cover status refreshes while `Reserved`, concurrent recovery, and stale edit
-  rejection. Local API-server tests verify real status-write conflicts, restart
-  recovery, rejection of delayed stale updates, and successful fresh updates.
+  must find the same live UID at a different resourceVersion. Exact desired
+  writable content proves that the update applied. Exact before content proves
+  that the old conditional update was superseded and can safely be released. An
+  unchanged resourceVersion or any other content stays uncertain.
+
+  Unit tests also cover status refreshes while `Reserved`, concurrent recovery,
+  and stale edit rejection. Local API-server tests examine real status-write
+  conflicts, restart recovery, rejection of delayed stale updates, and
+  successful fresh updates.
 
   Build the explicit command with
   `make -C app/cetirun-operator build-sandbox-config-change`. Do not run it

@@ -51,9 +51,9 @@ other names, use them:
 | `cetirun-system/broker-client-tls` | `platform.values.cetirun-connections-mcp.broker.clientTLSSecretName` |
 | `cetirun-system/connections-mcp-ca` | `platform.values.cetirun-operator.connectionsMCP.caSecretName` |
 
-`make deploy` also requires each provider Secret that the environment file
-names under `broker.values.providers`. Remove the entries of the providers that
-you do not register in step 4.
+`make deploy` also stops if a provider Secret that the environment file names
+under `broker.values.providers` does not exist. Remove the entries of the
+providers that you do not register in step 4.
 
 ## Choose the capabilities
 

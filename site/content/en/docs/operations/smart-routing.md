@@ -21,8 +21,8 @@ Team with an Agent Policy. For these steps, the installation must run
 A router is defined in one of two places:
 
 - **In the Gateway's models**: routers that a Policy can grant, and that Agents
-  without a Team get. `make deploy` requires one Gateway router, `auto`, with
-  the decision model `decision-1` as its classifier. See
+  without a Team get. With `make deploy`, the Gateway must have one router,
+  `auto`, with the decision model `decision-1` as its classifier. See
   [Routers in the Gateway](#routers-in-the-gateway).
 - **On a Team**, in the Portal: the Team's own routers, which its Agents use.
   No change to the Gateway is necessary. The classifier is `heuristic`, `llm`,
@@ -102,9 +102,9 @@ platform:
             max_output_tokens: 16384
 ```
 
-`make deploy` needs the entries `decision-1` and `auto` in this form. `auto`
-must be a router with a `jev` classifier, `deployment_name: decision-1`, and
-all four tiers. `decision-1` uses LiteLLM's `azure_ai` provider,
+With `make deploy`, the entries `decision-1` and `auto` must have this form.
+`auto` must be a router with a `jev` classifier, `deployment_name: decision-1`,
+and all four tiers. `decision-1` uses LiteLLM's `azure_ai` provider,
 `azure_ai/Microsoft-Decision-1` as its `base_model`, and `mode: evaluation`.
 `base_model` gives each model LiteLLM's price for that model. Without the
 `azure_ai/` prefix, LiteLLM finds no price for Microsoft-Decision-1, the
@@ -216,11 +216,11 @@ or `auto` for the Gateway's router.
 
 The Agents of the Team that already run also get a new router if their policy
 allows it. A change to an Agent's available models can restart that Agent to
-update its model configuration. Editing only the Team's router definitions
-does not invalidate Sandbox execution or restart Agents whose model
-configuration is unchanged. Router status updates also do not interrupt
-Sandbox bootstrap; changes to shared runtime context or selected policy still
-require current execution approval.
+update its model configuration. A change to only the Team's router definitions
+does not invalidate Sandbox execution. It also does not restart Agents whose
+model configuration does not change. Router status updates also do not interrupt
+Sandbox bootstrap. But for a change to the shared runtime context or to the
+selected policy, a current execution approval is still necessary.
 
 Owners can make a router the default model in the **Models** section of the
 Agent's page. This restarts the Agent.
@@ -274,13 +274,14 @@ See
 ### When a tier fails
 
 The model of a tier can fail, for example when the GitHub Copilot proxy of an
-Agent is down. The Gateway then sends the request to the router's other models:
-first the other models of the tier, then the higher tiers, then the router's
-default model, and then the lower tiers. It uses only the models that the
-Agent's key can use. In the log, the tier's line has the status `failure`. The
-line of the model that answered has `fallback_from`, which names the router.
-The error that the Agent gets when every model fails does not contain the
-router's internal name.
+Agent is down. The Gateway then sends the request to the router's other models.
+First, it uses the other models of the tier. Then it uses the higher tiers, the
+router's default model, and the lower tiers, in this order. It uses only the
+models that the Agent's key can use.
+
+In the log, the tier's line has the status `failure`. The line of the model that
+answered has `fallback_from`, which names the router. The error that the Agent
+gets when every model fails does not contain the router's internal name.
 
 ## Choose a classifier
 
@@ -340,8 +341,8 @@ the newest user message fits, the Gateway keeps it whole. Refer to
 A router can also be an entry in the Gateway's `models`, next to the tier
 models, as `auto` in step 1. Every Agent Policy that lists the router's name,
 its tier models, and its default model grants the router. An Agent without a
-Team gets the router when all of these models are shared models. A change
-needs a `make deploy` run, and it reaches Agents within about two minutes.
+Team gets the router when all of these models are shared models. Changes apply
+only after a `make deploy` run, and they reach Agents within about two minutes.
 Each Agent that gets the router is configured with the smallest context window
 and output limit among its tier models and its default model. If the router
 sets its own limits in `model_info`, the Agent gets these limits.
