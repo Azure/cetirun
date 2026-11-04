@@ -150,7 +150,11 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 	} {
 		for _, previouslyPrepared := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/prepared=%v", tc.name, previouslyPrepared), func(t *testing.T) {
-				f := newHeldOpenClawFixture(t)
+				typ := "hermes"
+				if previouslyPrepared {
+					typ = "openclaw"
+				}
+				f := newPreparationFixture(t, typ)
 				if previouslyPrepared {
 					if err := f.reconcile(); err != nil {
 						t.Fatal(err)
@@ -161,6 +165,9 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 				result, err := f.reconciler.Reconcile(context.Background(), ctrl.Request{
 					NamespacedName: client.ObjectKey{Name: f.fixture.Agent.Name},
 				})
+				if !previouslyPrepared && f.installer.renders != 0 {
+					t.Fatal("failed prerequisites reached the held renderer")
+				}
 				agent := f.current(t)
 				condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionAgentConfigReady)
 				sandboxCondition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)

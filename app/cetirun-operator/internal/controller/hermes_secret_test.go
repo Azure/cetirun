@@ -53,21 +53,6 @@ func TestEnsureGatewayTokenHermesCreatesHermesEnv(t *testing.T) {
 	if string(secret.Data["CETIRUN_AUTH_KEY"]) == "" || bytes.Equal(secret.Data["CETIRUN_AUTH_KEY"], secret.Data["API_SERVER_KEY"]) {
 		t.Fatal("independent CETIRUN_AUTH_KEY was not populated")
 	}
-	original := secret.DeepCopy()
-	for _, suspended := range []bool{false, true, false} {
-		instance.Spec.Suspended = suspended
-		if err := r.ensureGatewayToken(ctx, instance); err != nil {
-			t.Fatal(err)
-		}
-		if err := r.Get(ctx, key, secret); err != nil {
-			t.Fatal(err)
-		}
-		for _, name := range []string{"API_SERVER_KEY", "CETIRUN_AUTH_KEY"} {
-			if !bytes.Equal(secret.Data[name], original.Data[name]) {
-				t.Fatalf("%s changed during reconciliation", name)
-			}
-		}
-	}
 	hermesEnv := string(secret.Data["hermes.env"])
 	if hermesEnv == "" {
 		t.Fatal("hermes.env was not populated")

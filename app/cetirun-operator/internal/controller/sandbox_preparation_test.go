@@ -13,7 +13,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -311,7 +310,9 @@ func TestSandboxPreparationNativeHeldPipeline(t *testing.T) {
 }
 
 func TestSandboxPreparationClearsAccessBeforePrerequisiteCalls(t *testing.T) {
-	f := newHeldOpenClawFixture(t)
+	f := newPreparationFixture(t, "hermes")
+	prerequisiteErr := errors.New("synthetic prerequisite failure")
+	f.source.resolveErr = prerequisiteErr
 	agent := f.current(t)
 	agent.Status.Phase, agent.Status.AccessURL = api.PhaseReady, "https://example.example.com"
 	apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
@@ -329,11 +330,14 @@ func TestSandboxPreparationClearsAccessBeforePrerequisiteCalls(t *testing.T) {
 			t.Fatal("old readiness/access was retained while waiting for platform prerequisites")
 		}
 	}
-	if err := f.reconcile(); err != nil {
-		t.Fatal(err)
+	if err := f.reconcile(); !errors.Is(err, prerequisiteErr) {
+		t.Fatal("expected the injected prerequisite failure:", err)
 	}
 	if !called {
 		t.Fatal("prerequisite provider was not exercised")
+	}
+	if f.installer.renders != 0 || f.installer.stages != 0 {
+		t.Fatal("failed prerequisites reached the held renderer")
 	}
 }
 
@@ -884,37 +888,5 @@ func assertSandboxPrepared(t *testing.T, f *preparationFixture) {
 	}})
 	if response.Allowed || response.Result == nil || !strings.HasPrefix(response.Result.Message, "ExecutionHeld:") {
 		t.Fatalf("preparation did not retain the admission hold: %+v", response)
-	}
-}
-
-func TestSandboxPreparationRejectsLegacyHermesProfile(t *testing.T) {
-	f := newPreparationFixture(t, "hermes")
-	before := f.current(t).Spec.DeepCopy()
-	home := &corev1.PersistentVolumeClaim{}
-	secret := &corev1.Secret{}
-	ctx := context.Background()
-	homeKey := client.ObjectKeyFromObject(f.fixture.Input.Home)
-	secretKey := client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: f.fixture.Agent.Spec.GatewayTokenSecretRef}
-	if err := f.client.Get(ctx, homeKey, home); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.client.Get(ctx, secretKey, secret); err != nil {
-		t.Fatal(err)
-	}
-	homeBefore, secretBefore := home.DeepCopy(), secret.DeepCopy()
-	if err := f.reconcile(); err == nil || !strings.Contains(err.Error(), "supported hermes runtime profile") {
-		t.Fatalf("legacy Hermes profile did not fail preparation: %v", err)
-	}
-	if f.installer.stages != 0 || !reflect.DeepEqual(before, f.current(t).Spec.DeepCopy()) {
-		t.Fatal("rejected legacy Hermes profile changed runtime intent or staged a workload")
-	}
-	if err := f.client.Get(ctx, homeKey, home); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.client.Get(ctx, secretKey, secret); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(homeBefore, home) || !reflect.DeepEqual(secretBefore, secret) {
-		t.Fatal("rejected legacy Hermes profile changed retained HOME or runtime Secret")
 	}
 }

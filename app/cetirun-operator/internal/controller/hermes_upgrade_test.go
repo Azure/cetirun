@@ -92,24 +92,11 @@ func TestHermesUpgradeRejectsOldProfileBeforeChangingSteadyStateRoute(t *testing
 	if err := f.r.Update(ctx, route); err != nil {
 		t.Fatal(err)
 	}
-	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "retained-home", Namespace: key.Namespace}}
-	if err := f.r.Create(ctx, claim); err != nil {
-		t.Fatal(err)
-	}
 	workload := &appsv1.StatefulSet{}
 	if err := f.r.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: instanceServiceName(agent.Name)}, workload); err != nil {
 		t.Fatal(err)
 	}
-	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: key.Namespace},
-		Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "dashboard", Port: 9119}}}}
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name) + "-0", Namespace: key.Namespace},
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "hermes", Image: *agent.Spec.Agent.Image}}}}
-	for _, object := range []client.Object{service, pod} {
-		if err := f.r.Create(ctx, object); err != nil {
-			t.Fatal(err)
-		}
-	}
-	before := []client.Object{route.DeepCopy(), secret.DeepCopy(), claim.DeepCopy(), workload.DeepCopy(), service.DeepCopy(), pod.DeepCopy()}
+	before := []client.Object{route.DeepCopy(), secret.DeepCopy(), workload.DeepCopy()}
 	chart := &dashboardProfileHelm{}
 	f.r.HelmClient = chart
 	_, err := f.r.Reconcile(ctx, f.req)

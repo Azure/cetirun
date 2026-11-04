@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix="memory-skills-hermes-") as temporary:
     sys.path.insert(0, os.environ["MEMORY_HERMES_SOURCE"])
     from tools.skills_tool import find_all_skills, locate_skill, clear_skills_cache
     from agent.skill_utils import TIER_EXTERNAL
-    from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
+    from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache, _skills_prompt_snapshot_path
 
     def locate(name, directories):
         return locate_skill(name, None, [(TIER_EXTERNAL, directory) for directory in directories])
@@ -64,6 +64,29 @@ with tempfile.TemporaryDirectory(prefix="memory-skills-hermes-") as temporary:
     skill(shared / "added-later", "added-later", "Live publication")
     check("Version two")
     assert any(entry["name"] == "added-later" for entry in find_all_skills())
+
+    skill(profile / "skills/snapshot-fixture", "snapshot-fixture", "Snapshot fixture")
+    del os.environ["CETIRUN_MEMORY_ASSETS"]
+    clear_skills_system_prompt_cache(clear_snapshot=True)
+    build_skills_system_prompt()
+    snapshot_path = _skills_prompt_snapshot_path()
+    snapshot = json.loads(snapshot_path.read_text())
+    entry = next(item for item in snapshot["skills"] if item["skill_name"] == "snapshot-fixture")
+    entry.update(frontmatter_name="cetirun-memory", description="Retained snapshot collision")
+    snapshot_path.write_text(json.dumps(snapshot))
+    retained = snapshot_path.read_bytes()
+    for enabled in (True, False):
+        if enabled:
+            os.environ["CETIRUN_MEMORY_ASSETS"] = str(assets)
+        else:
+            del os.environ["CETIRUN_MEMORY_ASSETS"]
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        prompt = build_skills_system_prompt()
+        assert ("Retained snapshot collision" in prompt) == (not enabled)
+        assert "cetirun-memory" in prompt
+        assert snapshot_path.read_bytes() == retained
+    os.environ["CETIRUN_MEMORY_ASSETS"] = str(assets)
+
     skill(personal / "team-skill", "team-skill", "Unrelated collision")
     error, _, found = locate("team-skill", [shared, personal, platform])
     assert found is None and "Ambiguous skill name" in error

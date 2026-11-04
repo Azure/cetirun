@@ -722,7 +722,7 @@ the selected existing directory. It does not use the Agent's active Memory
 store or call a model. A canary run requires separate cluster authorization and
 does not replace native conversation or retained-restart acceptance.
 
-Hermes qualification uses the same PM-locked Python 3.14 environment as the
+Hermes adapter tests use the same PM-locked Python 3.14 environment as the
 image. Prepare its tools and dependencies separately with
 `agents/hermes/pm/build.py` under the runtime chart, using a synthetic
 `HERMES_HOME` and the checksum-verified source. Select that source and its
@@ -736,26 +736,18 @@ the native MCP SDK over loopback TLS. This includes workload token rotation,
 CA verification, and rejection of redirects and SSE fallback. Both checks use
 synthetic HOME directories and do not access an existing Agent.
 
-For the browser qualification, prepare Playwright 1.64.0 and its Chromium
-separately, then select an already-built Hermes image:
+The focused browser storage test uses a prepared Playwright 1.64.0 and Chromium:
 
 ```bash
-python3 -B scripts/tests/hermes_webapp_fixture.py \
-  --image registry.example.com/hermes-gateway:qualification \
-  --helm /path/to/helm \
-  --playwright-module /path/to/node_modules/playwright \
-  --chromium /path/to/chrome
+PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
+CHROMIUM_EXECUTABLE=/path/to/chrome \
+node scripts/tests/hermes_webapp_storage.cjs
 ```
 
-This starts two synthetic HOMEs on an internal Docker network, a synthetic
-model endpoint, and an HTTPS loopback proxy. It checks password and cookie
-isolation, real bundles, hash-route refresh, WebSockets, native API streaming,
-file upload/download, interactive Artifacts, and a pinned local mixed plugin.
-The two pages share a browser context so plugin preferences must remain
-isolated by instance. Optional fonts and the public plugin catalog are blocked
-and reported separately. The runner retains evidence in its printed temporary
-directory and removes its containers and network. These checks do not qualify
-public identity login or a deployed cluster.
+This checks storage, storage events and BroadcastChannel isolation between
+instance prefixes on loopback pages. It needs no Hermes image, upstream source
+checkout or model endpoint. It does not exercise public login or a deployed
+cluster.
 
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests must have the pinned PyYAML dependency in

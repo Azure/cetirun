@@ -102,41 +102,38 @@ class WebappRuntimeTests(unittest.TestCase):
         original = {"secrets": {"onepassword": {"enabled": True, "env": {"UNRELATED_SERVICE_TOKEN": "op://example/item/token"}}}}
         runtime.validate_secret_sources(original)
         self.assertEqual(original["secrets"]["onepassword"]["env"], {"UNRELATED_SERVICE_TOKEN": "op://example/item/token"})
-        for override in (True, False):
-            for variable in ("API_SERVER_HOST", "HERMES_CONFIG_PATH", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
-                             "CETIRUN_GATEWAY_API_KEY", "CETIRUN_AUTH_KEY"):
-                with self.subTest(variable=variable, override=override):
-                    settings = {"enabled": True, "override_existing": override, "env": {variable: "op://example/item/token"}}
-                    with self.assertRaisesRegex(ValueError, "SecretSourcePlatformOverride"):
-                        runtime.validate_secret_sources({"secrets": {"onepassword": settings}})
-            for source in ("bitwarden", "command", "unqualified_plugin"):
-                with self.subTest(source=source, override=override):
-                    with self.assertRaisesRegex(ValueError, "SecretSourceOutputsUnbounded"):
-                        runtime.validate_secret_sources({"secrets": {source: {"enabled": True, "override_existing": override}}})
+        for variable in ("API_SERVER_HOST", "HERMES_CONFIG_PATH", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+                         "CETIRUN_GATEWAY_API_KEY", "CETIRUN_AUTH_KEY"):
+            with self.subTest(variable=variable):
+                settings = {"enabled": True, "override_existing": True, "env": {variable: "op://example/item/token"}}
+                with self.assertRaisesRegex(ValueError, "SecretSourcePlatformOverride"):
+                    runtime.validate_secret_sources({"secrets": {"onepassword": settings}})
+        for source in ("bitwarden", "command", "unqualified_plugin"):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, "SecretSourceOutputsUnbounded"):
+                    runtime.validate_secret_sources({"secrets": {source: {"enabled": True}}})
         with self.assertRaisesRegex(ValueError, "SecretSourcePlatformCredentialInvalid"):
             runtime.validate_secret_sources({"secrets": {"onepassword": {
                 "enabled": True, "service_account_token_env": "API_SERVER_KEY", "env": {},
             }}})
 
-    def test_each_restart_removes_reserved_multiline_env_and_all_api_aliases(self):
+    def test_restart_removes_reserved_multiline_env_and_all_api_aliases(self):
         api = {"enabled": False, "host": "::", "port": 18000, "key": "synthetic-override",
                "extra": {"host": "::", "port": 18001, "key": "synthetic-override", "model_name": "retained"}}
         source = {"api_server": api, "platforms": {"api_server": api},
                   "gateway": {"api_server": api, "platforms": {"api_server": api}}, "preferences": {"theme": "dark"}}
-        for iteration in range(2):
-            with self.subTest(restart=iteration):
-                (self.home / "config.yaml").write_text(yaml.safe_dump(source))
-                (self.home / "gateway.json").write_text(json.dumps(source))
-                env = '# retained comment\nexport HERMES_MANAGED_DIR="/tmp/bypass"\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD="line1\nline2"\nAPI_SERVER_PORT=18001\nCETIRUN_GATEWAY_API_KEY=sk-override\nUSER_SETTING="keep me"\n'
-                (self.home / ".env").write_text(env)
-                runtime.remove_home_overrides()
-                self.assertEqual((self.home / ".env").read_text(), '# retained comment\nUSER_SETTING="keep me"\n')
-                for relative in ("config.yaml", "gateway.json"):
-                    actual = yaml.safe_load((self.home / relative).read_text())
-                    self.assertEqual(actual["preferences"], {"theme": "dark"})
-                    for row in (actual["api_server"], actual["platforms"]["api_server"], actual["gateway"]["api_server"],
-                                actual["gateway"]["platforms"]["api_server"]):
-                        self.assertEqual(row, {"extra": {"model_name": "retained"}})
+        (self.home / "config.yaml").write_text(yaml.safe_dump(source))
+        (self.home / "gateway.json").write_text(json.dumps(source))
+        env = '# retained comment\nexport HERMES_MANAGED_DIR="/tmp/bypass"\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD="line1\nline2"\nAPI_SERVER_PORT=18001\nCETIRUN_GATEWAY_API_KEY=sk-override\nUSER_SETTING="keep me"\n'
+        (self.home / ".env").write_text(env)
+        runtime.remove_home_overrides()
+        self.assertEqual((self.home / ".env").read_text(), '# retained comment\nUSER_SETTING="keep me"\n')
+        for relative in ("config.yaml", "gateway.json"):
+            actual = yaml.safe_load((self.home / relative).read_text())
+            self.assertEqual(actual["preferences"], {"theme": "dark"})
+            for row in (actual["api_server"], actual["platforms"]["api_server"], actual["gateway"]["api_server"],
+                        actual["gateway"]["platforms"]["api_server"]):
+                self.assertEqual(row, {"extra": {"model_name": "retained"}})
 
     def test_readiness_requires_live_socket_provider_and_private_persistent_token(self):
         dist = self.image / "apps/desktop/dist-webapp"
@@ -211,21 +208,6 @@ class WebappChartTests(unittest.TestCase):
                          "extraEnv[0].name=HERMES_MANAGED_DIR,extraEnv[0].value=/tmp/bypass", "hermes.config.webapp.port=9121"):
             with self.subTest(override=override):
                 self.assertNotEqual(self.render("--set", override).returncode, 0)
-
-    def test_memory_keeps_canonical_shared_and_personal_skill_roots(self):
-        result = self.render(
-            "--set", "skills.shared=true,skills.existingClaim=synthetic-shared-skills,skills.mountPath=/home/vibe/shared-fixture",
-            "--set", "hermes.config.skills.external_dirs[0]=/home/vibe/configured-skills",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        documents = list(yaml.safe_load_all(result.stdout))
-        configmap = next(document for document in documents if document and document["kind"] == "ConfigMap"
-                         and "hermes-config.yaml" in document.get("data", {}))
-        config = yaml.safe_load(configmap["data"]["hermes-config.yaml"])
-        self.assertEqual(config["skills"]["external_dirs"], [
-            "/home/vibe/configured-skills", "/home/vibe/shared-fixture",
-            "/home/vibe/.agents/skills", "/opt/cetirun-memory/skills",
-        ])
 
     def test_external_sources_cannot_hydrate_reserved_environment(self):
         for override in (

@@ -84,19 +84,6 @@ its existing startup import check runs before every generation publication, not
 only dependency repair. This keeps a plugin with broken imports from replacing
 a working selection. PM still owns building, validation and atomic publication.
 
-For native qualification outside an image, the same builder accepts an extracted
-verified checkout and a synthetic HOME:
-
-```bash
-export HERMES_HOME=/tmp/hermes-build-home
-python3 app/cetirun-chart/agents/hermes/pm/build.py --source /tmp/hermes-source --phase tools
-python3 app/cetirun-chart/agents/hermes/pm/build.py --source /tmp/hermes-source --phase dependencies
-```
-
-These two commands download the pinned build inputs and are setup steps, not
-offline tests. Source-layout probes set `PYTHONPATH=/tmp/hermes-source` until
-assembly writes the upstream source binding.
-
 ## Platform-owned settings and access
 
 The platform manages API port `8642`, Webapp port `9120`, the public URL,
@@ -224,24 +211,12 @@ make check
 make docs-check
 ```
 
-Use a specifically built candidate image for offline native qualification.
-`pm/verify.py` checks the actual Python version, Node/npm pins, Webapp/TUI products,
-time zones and SQLite WAL persistence with FTS5 trigram search. The candidate
-must also pass the repository fixture `scripts/tests/hermes_pm_generation.py`.
-Mount it read-only into the candidate, then run
-`hermes-python /candidate/hermes_pm_generation.py --prepare` in a fresh synthetic
-HOME. Run the same fixture with `--verify`, the same HOME and external networking
-disabled. Preparation is a separate explicit dependency operation and can
-download pinned inputs.
+The image build runs `pm/verify.py` to check Python, Node/npm, Webapp/TUI assets,
+time zones and SQLite WAL/FTS5. Unit tests cover environment selection, startup
+configuration, authentication keys, routing and retained state. Memory and MCP
+tests exercise the changed native adapter interfaces.
 
-With `CETIRUN_HERMES_IMAGE` set to the cached candidate,
-`app/cetirun-chart/tests/test_hermes_native_skills.py` checks the packaged Memory
-skill guard through the real native catalog and lookup. It uses synthetic HOME
-and assets mounted read-only at `/opt/cetirun-memory`, with networking disabled.
-
-The candidate must also pass real browser login, prefix/lazy asset loading, WebSocket, two
-instance isolation, normal restart and explicit credential rotation tests.
-Exercise files, Git diff, artifacts, cron, shell lifecycle, message-channel
-continuation and plugin installation with synthetic data. Report source checks,
-offline tests, candidate-image tests and authorized live deployment results
-separately; a successful HTTP probe does not prove browser or model behavior.
+The focused browser storage test and existing native ingress test are described
+in [DEVELOPMENT.md](../../../../DEVELOPMENT.md#runtime-chart-and-python-helpers).
+They use synthetic data. Report offline validation and live deployment results
+separately; local checks do not establish public login or model access.
