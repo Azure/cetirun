@@ -230,6 +230,35 @@ func (r *AgentReconciler) verifySandboxSources(ctx context.Context, sources []sa
 	return nil
 }
 
+func sameReconciledSandboxTeamInputs(expected, current *api.Team) bool {
+	if expected == nil || current == nil || expected.UID == "" || expected.ResourceVersion == "" ||
+		!expected.DeletionTimestamp.IsZero() || current.UID == "" || current.ResourceVersion == "" ||
+		!current.DeletionTimestamp.IsZero() {
+		return false
+	}
+	return equality.Semantic.DeepEqual(normalizedTeamRuntimeInputs(expected), normalizedTeamRuntimeInputs(current))
+}
+
+// verifyReconciledSandboxTeamSource re-reads the Team used by common native
+// reconciliation. Compatibility is diagnostic status and changes its resource
+// version, so this boundary compares the complete meaningful Team object rather
+// than treating that bookkeeping update as a new authorization input.
+func (r *AgentReconciler) verifyReconciledSandboxTeamSource(ctx context.Context, source sandboxworkload.SourceReference, expected *api.Team) error {
+	if expected == nil || source.APIVersion != api.GroupVersion.String() || source.Kind != "Team" ||
+		source != sandboxSource(expected, api.GroupVersion.String(), "Team") {
+		return fmt.Errorf("%w: reconciled Sandbox Team source identity changed", errSandboxSourceChanged)
+	}
+	current := &api.Team{}
+	key := client.ObjectKey{Namespace: source.Namespace, Name: source.Name}
+	if err := r.APIReader.Get(ctx, key, current); err != nil {
+		return err
+	}
+	if client.ObjectKeyFromObject(current) != key || !sameReconciledSandboxTeamInputs(expected, current) {
+		return fmt.Errorf("%w: reconciled Sandbox Team source inputs changed", errSandboxSourceChanged)
+	}
+	return nil
+}
+
 func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt *sandboxPreparationAttempt,
 	bundle *sandboxworkload.Bundle, template *corev1.PodTemplateSpec, role *rbacv1.Role, binding *rbacv1.RoleBinding,
 	bindings []sandboxpolicy.BindingReference, stageDigest string,

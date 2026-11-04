@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { apiFetch } from "./fetch";
+import { adminResponseError } from "./adminError";
 
 export type SandboxResources = Record<"cpu" | "memory" | "ephemeral-storage", string>;
 export interface SandboxSpec {
@@ -16,6 +17,9 @@ export interface SandboxDTO extends SandboxSpec {
   name: string;
   uid: string;
   resourceVersion: string;
+  generation: number;
+  observedGeneration?: number;
+  conditions?: { type: string; status: string; reason?: string; message?: string; observedGeneration?: number }[];
   ready: string;
   deleting: boolean;
 }
@@ -29,9 +33,7 @@ export interface SandboxUpsertRequest extends Omit<SandboxSpec, "type"> {
 async function request(path: string, method = "GET", body?: unknown): Promise<Response> {
   const response = await apiFetch(`/api/v1/admin/sandboxes${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
   if (!response.ok) {
-    let message = "Unable to manage Sandbox";
-    try { message = (await response.json())?.error?.message || message; } catch { /* Use the default for non-JSON errors. */ }
-    throw new Error(message);
+    throw await adminResponseError(response, "Unable to manage Sandbox");
   }
   return response;
 }

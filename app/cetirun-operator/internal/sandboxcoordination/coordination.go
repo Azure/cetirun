@@ -121,8 +121,12 @@ type Change struct {
 	ID            string            `json:"id"`
 	Before        w.SourceReference `json:"before"`
 	DesiredDigest string            `json:"desiredDigest"`
-	Phase         Phase             `json:"phase"`
-	Team          *TeamChange       `json:"team,omitempty"`
+	// BeforeContentDigest pins the complete writable content before a concrete
+	// configuration update. It lets recovery distinguish a superseded
+	// resourceVersion from an unrelated configuration change.
+	BeforeContentDigest string      `json:"beforeContentDigest,omitempty"`
+	Phase               Phase       `json:"phase"`
+	Team                *TeamChange `json:"team,omitempty"`
 	// UnchangedDigest pins equal before/after effective Sandbox or AgentPolicy inputs.
 	UnchangedDigest       string `json:"unchangedDigest,omitempty"`
 	DeletionContentDigest string `json:"deletionContentDigest,omitempty"`
@@ -231,7 +235,7 @@ func (s Store) AcquireExecution(ctx context.Context, intent Intent) (Ticket, err
 }
 
 func (s Store) AcquireChange(ctx context.Context, before w.SourceReference, desiredDigest string) (ChangeTicket, error) {
-	return s.acquireChange(ctx, before, desiredDigest, nil, "", "")
+	return s.acquireChange(ctx, before, desiredDigest, "", nil, "", "")
 }
 
 // AcquireTeamChange derives the affected execution selections from an exact
@@ -256,6 +260,13 @@ func (s Store) AcquireTeamChange(ctx context.Context, before, after *api.Team) (
 	if err != nil {
 		return ChangeTicket{}, err
 	}
+	beforeContentDigest, err := w.TeamMutationDigest(before)
+	if err != nil {
+		return ChangeTicket{}, err
+	}
+	if beforeContentDigest == desiredDigest {
+		return ChangeTicket{}, fmt.Errorf("%w: Team configuration updates require a writable-content change", ErrConflict)
+	}
 	reference := w.SourceReference{APIVersion: api.GroupVersion.String(), Kind: "Team",
 		Name: before.Name, UID: before.UID, ResourceVersion: before.ResourceVersion}
 	scope := &TeamChange{Before: oldInputs, After: newInputs}
@@ -269,7 +280,7 @@ func (s Store) AcquireTeamChange(ctx context.Context, before, after *api.Team) (
 		}
 		// A committed API mutation can advance the live Team before its reply
 		// arrives. Recover the exact journaled operation, never a new write.
-		if existing.Before == reference && existing.DesiredDigest == desiredDigest &&
+		if existing.Before == reference && existing.DesiredDigest == desiredDigest && existing.BeforeContentDigest == beforeContentDigest &&
 			equality.Semantic.DeepEqual(existing.Team, scope) {
 			return ChangeTicket{object.UID, cloneChange(existing)}, nil
 		}
@@ -279,23 +290,20 @@ func (s Store) AcquireTeamChange(ctx context.Context, before, after *api.Team) (
 	if err := s.APIReader.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
 		return ChangeTicket{}, err
 	}
-	oldDigest, err := w.TeamMutationDigest(before)
-	if err != nil {
-		return ChangeTicket{}, err
-	}
 	currentDigest, err := w.TeamMutationDigest(current)
 	if err != nil {
 		return ChangeTicket{}, err
 	}
 	if current.UID != before.UID || current.ResourceVersion != before.ResourceVersion ||
-		!current.DeletionTimestamp.IsZero() || oldDigest != currentDigest {
+		!current.DeletionTimestamp.IsZero() || beforeContentDigest != currentDigest {
 		return ChangeTicket{}, ErrConflict
 	}
-	return s.acquireChange(ctx, reference, desiredDigest, scope, "", "")
+	return s.acquireChange(ctx, reference, desiredDigest, beforeContentDigest, scope, "", "")
 }
 
-func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desiredDigest string, team *TeamChange, unchangedDigest, deletionContentDigest string) (ChangeTicket, error) {
-	if !validSource(before) || !digest(desiredDigest) {
+func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desiredDigest, beforeContentDigest string, team *TeamChange, unchangedDigest, deletionContentDigest string) (ChangeTicket, error) {
+	if !validSource(before) || !digest(desiredDigest) || (beforeContentDigest != "" &&
+		(!digest(beforeContentDigest) || beforeContentDigest == desiredDigest)) {
 		return ChangeTicket{}, fmt.Errorf("%w: change requires an exact source and desired-content digest", ErrUnavailable)
 	}
 	object, state, err := s.read(ctx)
@@ -314,7 +322,7 @@ func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desi
 	}
 	for _, existing := range state.Changes {
 		if sourceKey(existing.Before) == sourceKey(before) {
-			if existing.Before == before && existing.DesiredDigest == desiredDigest &&
+			if existing.Before == before && existing.DesiredDigest == desiredDigest && existing.BeforeContentDigest == beforeContentDigest &&
 				existing.UnchangedDigest == unchangedDigest && existing.DeletionContentDigest == deletionContentDigest &&
 				equality.Semantic.DeepEqual(existing.Team, team) {
 				return ChangeTicket{object.UID, cloneChange(existing)}, nil
@@ -322,8 +330,8 @@ func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desi
 			return ChangeTicket{}, ErrConflict
 		}
 	}
-	change := Change{ID: rand.Text(), Before: before, DesiredDigest: desiredDigest, Phase: Reserved,
-		Team: team, UnchangedDigest: unchangedDigest, DeletionContentDigest: deletionContentDigest}
+	change := Change{ID: rand.Text(), Before: before, DesiredDigest: desiredDigest, BeforeContentDigest: beforeContentDigest,
+		Phase: Reserved, Team: team, UnchangedDigest: unchangedDigest, DeletionContentDigest: deletionContentDigest}
 	state.Changes = append(state.Changes, change)
 	if err := s.write(ctx, object, state); err != nil {
 		return ChangeTicket{}, err
@@ -615,14 +623,15 @@ func validateRecord(state record) error {
 	for _, change := range state.Changes {
 		key := sourceKey(change.Before)
 		if !literal(change.ID, 128) || ids[change.ID] || !validSource(change.Before) ||
-			!digest(change.DesiredDigest) || keys[key] ||
+			!digest(change.DesiredDigest) || (change.BeforeContentDigest != "" && !digest(change.BeforeContentDigest)) || keys[key] ||
 			(change.Phase != Reserved && change.Phase != Changing) {
 			return fmt.Errorf("%w: invalid or duplicate source change", ErrUnavailable)
 		}
 		ids[change.ID], keys[key] = true, true
 		if change.Team != nil {
 			if change.Before.APIVersion != api.GroupVersion.String() || change.Before.Kind != "Team" ||
-				change.Before.Namespace != "" || change.Team.Before.Validate() != nil || change.Team.After.Validate() != nil {
+				change.Before.Namespace != "" || !digest(change.BeforeContentDigest) ||
+				change.BeforeContentDigest == change.DesiredDigest || change.Team.Before.Validate() != nil || change.Team.After.Validate() != nil {
 				return fmt.Errorf("%w: invalid scoped Team change", ErrUnavailable)
 			}
 		}
@@ -636,6 +645,11 @@ func validateRecord(state record) error {
 			if err := validateConfigurationDeletion(change); err != nil {
 				return err
 			}
+		} else if change.BeforeContentDigest != "" &&
+			(change.Before.APIVersion != api.GroupVersion.String() || change.Before.Namespace != "" ||
+				(change.Before.Kind != "Team" && change.Before.Kind != "Sandbox" && change.Before.Kind != "AgentPolicy") ||
+				change.BeforeContentDigest == change.DesiredDigest) {
+			return fmt.Errorf("%w: invalid configuration update recovery metadata", ErrUnavailable)
 		}
 		for _, execution := range state.Executions {
 			if changeAffects(execution.Intent, change) {

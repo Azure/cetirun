@@ -272,6 +272,45 @@ Skills. The Team DTO returns these fields together with `uid` and
 stale version returns `409 Conflict`, and a request without those version fields
 returns `428 Precondition Required`.
 
+The Teams list shows compatibility for the saved Policy and all selected
+Sandboxes. Expand a Team to see its overall compatibility, labeled Policy and
+Sandbox references, reasons, and check time. Multiple Sandboxes appear in a
+table with a separate compatibility result for each Policy and Sandbox
+combination. The Policy and Sandbox lists also show their referencing Teams;
+the Sandbox view distinguishes the overall Team result from that Sandbox's
+result. A Policy's
+configuration acceptance and a Sandbox's prerequisites are separate from Team
+compatibility. None of these observations proves that an Agent applied its
+Policy or is ready to run.
+
+The Operator records this report in the optional `Team.status.compatibility`
+field. It checks saved configurations every 15 seconds and after Policy or
+Sandbox changes. The report identifies the Team, Policy, and each Sandbox by
+name, UID, and generation, with `checkedAt` and `validUntil` timestamps. The
+report expires after 30 seconds. The Portal shows `Pending` when no report
+exists and `Unknown` when an observation expires or a referenced version
+changes. Teams without Policy configuration show `Not configured`.
+
+The report is for display. It does not change the existing Team `Accepted`
+condition or authorize Agent execution. The admin Team API includes the report,
+the Team generation, and deletion state. The Sandbox API also returns
+generation, observed generation, and conditions.
+
+Editing pages show field validation and errors from the current save. They do
+not check unsaved drafts or display saved status as a draft result. Kubernetes
+admission checks the submitted configuration before it is stored. For a known
+compatibility rejection, the Portal returns `422 configuration_incompatible`
+with an optional `error.details` list of field and combination diagnostics.
+The editor keeps the unsaved input. Version, permission, and coordination
+errors remain separate. Saving successfully does not imply that the Operator
+has already checked the new version.
+
+When upgrading, update the CRD schema and all strict Team readers, including
+admission, before running the Operator that writes compatibility status. No
+migration of existing Teams is necessary; they receive a report on reconciliation.
+Older objects without the optional field remain readable. Do not downgrade a
+strict reader until it can tolerate the new status field.
+
 The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
 runtime type, Agent and helper resource requests and limits, HOME storage, and
 scratch size. They use these admin-only endpoints:
@@ -554,7 +593,8 @@ the
 An accepted API value does not qualify the actual network path.
 
 The Operator keeps the Policy's `Accepted` condition for controller decisions
-and diagnostics. The Portal list and editor do not show this status.
+and diagnostics. The Portal list shows the condition for the current generation;
+the editor shows only field validation and save errors.
 `Accepted=True` describes only configuration acceptance. Sandbox compatibility,
 Agent authorization, and runtime enforcement must still succeed. If you save a
 Policy, the save does not prove that its consumers applied it. If you edit a
@@ -590,16 +630,32 @@ rejects mismatched values.
 
 The Portal then reserves the exact whole-resource mutation. It records
 `Changing` before it submits one conditional Update or background Delete, and
-then it observes the result. It releases only an operation that is definitively
-completed. Its namespaced Role allows access only to the named authority
+then it observes the result. It releases only an operation with a verified
+outcome. Its namespaced Role allows access only to the named authority
 ConfigMap. UID/resource-version checks are still request concurrency
 protection. They do not replace this admission contract.
 
 A reservation conflict returns `409 Conflict`. An unavailable authority or an
 uncertain API write returns `503 Service Unavailable`. In that case, the
 reservation is kept deliberately. Do not blindly repeat the mutation. Recover
-the recorded operation with the Operator's configuration-change procedure. For
-update recovery, the exact original inputs are necessary.
+the recorded operation with the Operator's configuration-change procedure.
+
+Update reservations record the complete writable-content digests before and
+after the change. Before saving, the Portal checks for a recorded update, even
+after a restart. A read of the same live UID at a different resourceVersion
+permits recovery when the content matches either the proposed configuration
+(applied) or the original configuration (superseded). A status-only refresh can
+produce the latter without applying the requested edit. Other configuration
+changes or an unknown outcome keep the reservation. Recovery never resubmits
+the old update or relaxes the caller's version checks; a stale edit still needs
+a fresh read before saving.
+
+CLI update recovery uses the exact original `--before` and `--after` files.
+`--action observe` is read-only and reports
+`update-superseded-reservation-retained` when only the original writable content
+remains at a superseding version. Explicit `--action update` then releases the
+old reservation without writing the configuration and reports
+`update-superseded`.
 
 New deletion reservations durably record the content digest that is necessary
 for recovery. An administrator can use the operation ID from the pinned

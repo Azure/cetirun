@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { apiFetch } from "./fetch";
+import { adminResponseError } from "./adminError";
 
 export interface TeamSkillStorage {
   resourceGroup: string;
@@ -36,9 +37,45 @@ export interface TeamModelRouterStatus {
   message?: string;
 }
 
+export interface CompatibilityReference {
+  name: string;
+  uid: string;
+  generation: number;
+}
+
+export interface CompatibilityIssue {
+  code: string;
+  field?: string;
+  message: string;
+  team?: CompatibilityReference;
+  policy?: CompatibilityReference;
+  sandbox?: CompatibilityReference;
+}
+
+export interface SandboxCompatibilityStatus {
+  sandbox: CompatibilityReference;
+  state: "Compatible" | "Incompatible" | "Unknown";
+  reason?: string;
+  issues?: CompatibilityIssue[];
+}
+
+export interface TeamCompatibilityStatus {
+  state: "Compatible" | "Incompatible" | "Unknown";
+  reason?: string;
+  message?: string;
+  team: CompatibilityReference;
+  policy: CompatibilityReference;
+  sandboxes?: SandboxCompatibilityStatus[];
+  issues?: CompatibilityIssue[];
+  checkedAt: string;
+  validUntil: string;
+}
+
 export interface TeamDTO {
   uid: string;
   resourceVersion: string;
+  generation: number;
+  deleting?: boolean;
   agentPolicyRef: string;
   sandboxRefs: string[];
   defaultSandboxRef: string;
@@ -50,6 +87,7 @@ export interface TeamDTO {
   createdAt?: string;
   modelRouters?: TeamModelRouter[];
   modelRouterStatus?: TeamModelRouterStatus[];
+  compatibility?: TeamCompatibilityStatus;
 }
 
 export interface TeamUpsertRequest {
@@ -66,25 +104,16 @@ export interface TeamUpsertRequest {
   modelRouters?: TeamModelRouter[];
 }
 
-async function parseError(response: Response, fallback: string): Promise<string> {
-  try {
-    const err = await response.json();
-    return err?.error?.message || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 export async function listTeams(): Promise<TeamDTO[]> {
   const response = await apiFetch("/api/v1/admin/teams");
-  if (!response.ok) throw new Error(await parseError(response, "Failed to list teams"));
+  if (!response.ok) throw await adminResponseError(response, "Failed to list teams");
   const data = await response.json();
   return data.teams || [];
 }
 
 export async function getTeam(name: string): Promise<TeamDTO> {
   const response = await apiFetch(`/api/v1/admin/teams/${encodeURIComponent(name)}`);
-  if (!response.ok) throw new Error(await parseError(response, "Failed to get team"));
+  if (!response.ok) throw await adminResponseError(response, "Failed to get team");
   return response.json();
 }
 
@@ -93,7 +122,7 @@ export async function createTeam(req: TeamUpsertRequest): Promise<TeamDTO> {
     method: "POST",
     body: JSON.stringify(req),
   });
-  if (!response.ok) throw new Error(await parseError(response, "Failed to create team"));
+  if (!response.ok) throw await adminResponseError(response, "Failed to create team");
   return response.json();
 }
 
@@ -102,7 +131,7 @@ export async function updateTeam(name: string, req: TeamUpsertRequest): Promise<
     method: "PUT",
     body: JSON.stringify(req),
   });
-  if (!response.ok) throw new Error(await parseError(response, "Failed to update team"));
+  if (!response.ok) throw await adminResponseError(response, "Failed to update team");
   return response.json();
 }
 
@@ -112,6 +141,6 @@ export async function deleteTeam(team: Pick<TeamDTO, "name" | "uid" | "resourceV
     body: JSON.stringify({ uid: team.uid, resourceVersion: team.resourceVersion }),
   });
   if (!response.ok && response.status !== 404) {
-    throw new Error(await parseError(response, "Failed to delete team"));
+    throw await adminResponseError(response, "Failed to delete team");
   }
 }

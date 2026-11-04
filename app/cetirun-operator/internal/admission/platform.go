@@ -86,12 +86,12 @@ func (h *Handler) checkNativePolicyBinding(ctx context.Context, kind api.Sandbox
 	if policy == nil {
 		return fmt.Errorf("native policy validation requires the selected AgentPolicy")
 	}
+	// Admission preserves its established scope: native topology and grant
+	// validation is required only for these controls. Compatibility reporting
+	// deliberately evaluates the broader persisted policy surface.
 	if len(policy.Spec.Network.BlockedCIDRs) == 0 && len(policy.Spec.Network.BlockedPorts) == 0 &&
 		len(policy.Spec.Network.AllowedInternalCIDRs) == 0 && policy.Spec.KubernetesAccess == nil {
 		return nil
-	}
-	if err := ctx.Err(); err != nil {
-		return err
 	}
 	if h.platformSnapshot == nil {
 		return fmt.Errorf("%w: native policy controls require a current platform topology and approvals", sandboxpolicy.ErrUnavailable)
@@ -100,13 +100,10 @@ func (h *Handler) checkNativePolicyBinding(ctx context.Context, kind api.Sandbox
 	if !ok {
 		return fmt.Errorf("%w: the selected native network platform is missing", sandboxpolicy.ErrUnavailable)
 	}
-	if err := sandboxpolicy.ValidatePolicyConfiguration(policy, capabilities, platform); err != nil {
+	if err := sandboxpolicy.ValidateNativeTeamPolicyBinding(ctx, policy, capabilities, platform, h.reader, h.config.NativeExecution); err != nil {
 		return err
 	}
 	if policy.Spec.KubernetesAccess != nil {
-		if err := sandboxpolicy.VerifyPolicyGrants(ctx, h.reader, policy, platform.Grants); err != nil {
-			return err
-		}
 		h.nativeGrantChecks = append(h.nativeGrantChecks, nativePolicyGrantCheck{policy: policy.DeepCopy(), kind: kind})
 	}
 	return ctx.Err()

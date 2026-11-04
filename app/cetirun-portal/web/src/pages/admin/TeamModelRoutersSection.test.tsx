@@ -19,7 +19,7 @@ vi.mock("../../api/adminSandbox");
 vi.mock("../../api/aiGateway");
 
 const team: teams.TeamDTO = {
-  name: "research", uid: "team-uid", resourceVersion: "7", agentPolicyRef: "standard", sandboxRefs: ["small"], defaultSandboxRef: "small",
+  name: "research", uid: "team-uid", generation: 1, resourceVersion: "7", agentPolicyRef: "standard", sandboxRefs: ["small"], defaultSandboxRef: "small",
   modelRouters: [{ name: "auto", classifier: "heuristic", simple: "small-model", medium: "medium-model", complex: "large-model" }],
   modelRouterStatus: [{ name: "auto", ready: false, message: "router auto: tier medium names medium-model, which is not a shared model of the AI Gateway" }],
 };

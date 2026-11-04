@@ -313,7 +313,7 @@ func TestKubernetesSandboxPrerequisitesRejectsInvalidConfigurationAndIntent(t *t
 		}
 	})
 	for _, target := range []string{"agent", "team"} {
-		for _, field := range []string{"nil", "UID", "generation", "intent", "resourceVersion"} {
+		for _, field := range []string{"nil", "UID", "generation", "intent", "resourceVersion", "deletion"} {
 			if target == "agent" && field == "resourceVersion" {
 				continue // Agent status-only resource versions do not change intent.
 			}
@@ -337,6 +337,9 @@ func TestKubernetesSandboxPrerequisitesRejectsInvalidConfigurationAndIntent(t *t
 					object.SetGeneration(object.GetGeneration() + 1)
 				case "resourceVersion":
 					object.SetResourceVersion("stale-version")
+				case "deletion":
+					now := metav1.NewTime(time.Now())
+					object.SetDeletionTimestamp(&now)
 				case "intent":
 					if target == "agent" {
 						agent.Spec.User.DisplayName = "Stale intent"
@@ -708,6 +711,147 @@ func TestKubernetesSandboxPrerequisitesRejectsConcurrentReadbackChanges(t *testi
 			t.Fatalf("lost cancellation: %v", err)
 		}
 	})
+}
+
+func TestKubernetesSandboxPrerequisitesReconciledTeamReadbackIgnoresCompatibilityOnly(t *testing.T) {
+	for _, change := range []struct {
+		name   string
+		mutate func(*api.Team)
+		accept bool
+	}{
+		{
+			name: "compatibility", accept: true,
+			mutate: func(team *api.Team) {
+				team.ResourceVersion = "compatibility-status-version"
+				team.Status.Compatibility = &api.TeamCompatibilityStatus{
+					State: api.CompatibilityCompatible,
+					Team:  api.CompatibilityReference{Name: team.Name, UID: string(team.UID), Generation: team.Generation},
+				}
+			},
+		},
+		{
+			name: "spec", mutate: func(team *api.Team) { team.Spec.Skills = append(team.Spec.Skills, "npm:changed") },
+		},
+		{
+			name: "generation", mutate: func(team *api.Team) { team.Generation++ },
+		},
+		{
+			name: "UID", mutate: func(team *api.Team) { team.UID = "replacement-team-uid" },
+		},
+		{
+			name: "deletion", mutate: func(team *api.Team) { now := metav1.NewTime(time.Now()); team.DeletionTimestamp = &now },
+		},
+		{
+			name: "accepted status", mutate: func(team *api.Team) {
+				team.Status.Conditions = append(team.Status.Conditions, metav1.Condition{Type: api.ConditionTeamAccepted, Status: metav1.ConditionFalse})
+			},
+		},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			f := newKubernetesPrerequisitesFixture(t, "hermes")
+			f.source.NativeExecution = true
+			f.editAgent(t, func(agent *api.Agent) { agent.Spec.Helm.Version = f.source.ChartVersion })
+			team := f.fixture.Team.DeepCopy()
+			if err := f.client.Get(context.Background(), client.ObjectKeyFromObject(team), team); err != nil {
+				t.Fatal(err)
+			}
+			key := client.ObjectKeyFromObject(team)
+			changed := false
+			f.reader.afterGet = func(actual client.ObjectKey, object client.Object) error {
+				if actual == key && f.reader.reads[key] == 2 {
+					changed = true
+					if change.name != "compatibility" {
+						change.mutate(object.(*api.Team))
+					} else {
+						// The current common path reads a full Team while the baseline
+						// raw-RV verifier reads only metadata. Both observe the version
+						// change produced by a compatibility status update.
+						object.SetResourceVersion("compatibility-status-version")
+						if team, ok := object.(*api.Team); ok {
+							team.Status.Compatibility = &api.TeamCompatibilityStatus{
+								State: api.CompatibilityCompatible,
+								Team:  api.CompatibilityReference{Name: team.Name, UID: string(team.UID), Generation: team.Generation},
+							}
+						}
+					}
+				}
+				return nil
+			}
+			got, err := f.source.ResolveCurrent(context.Background(), f.agent(t), team)
+			if !changed {
+				t.Fatal("fixture did not update Team between capture and final readback")
+			}
+			if change.accept {
+				if err != nil || got.Revision == "" {
+					t.Fatalf("compatibility-only Team status update fenced common reconciliation: %+v, %v", got, err)
+				}
+				return
+			}
+			assertPrerequisiteRejection(t, got, err)
+			if !strings.Contains(err.Error(), "Sandbox source identity changed") {
+				t.Fatalf("meaningful Team update bypassed the source fence: %v", err)
+			}
+		})
+	}
+}
+
+func TestKubernetesSandboxPrerequisitesReconciledTeamInitialReadIgnoresCompatibilityOnly(t *testing.T) {
+	for _, change := range []struct {
+		name   string
+		mutate func(*api.Team)
+		accept bool
+	}{
+		{
+			name: "compatibility", accept: true,
+			mutate: func(team *api.Team) {
+				team.ResourceVersion = "compatibility-status-version"
+				team.Status.Compatibility = &api.TeamCompatibilityStatus{
+					State: api.CompatibilityCompatible,
+					Team:  api.CompatibilityReference{Name: team.Name, UID: string(team.UID), Generation: team.Generation},
+				}
+			},
+		},
+		{"spec", func(team *api.Team) { team.Spec.Skills = append(team.Spec.Skills, "npm:changed") }, false},
+		{"generation", func(team *api.Team) { team.Generation++ }, false},
+		{"UID", func(team *api.Team) { team.UID = "replacement-team-uid" }, false},
+		{"deletion", func(team *api.Team) { now := metav1.NewTime(time.Now()); team.DeletionTimestamp = &now }, false},
+		{"accepted status", func(team *api.Team) {
+			team.Status.Conditions = append(team.Status.Conditions, metav1.Condition{Type: api.ConditionTeamAccepted, Status: metav1.ConditionFalse})
+		}, false},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			f := newKubernetesPrerequisitesFixture(t, "hermes")
+			f.source.NativeExecution = true
+			f.editAgent(t, func(agent *api.Agent) { agent.Spec.Helm.Version = f.source.ChartVersion })
+			team := f.fixture.Team.DeepCopy()
+			if err := f.client.Get(context.Background(), client.ObjectKeyFromObject(team), team); err != nil {
+				t.Fatal(err)
+			}
+			key := client.ObjectKeyFromObject(team)
+			changed := false
+			f.reader.afterGet = func(actual client.ObjectKey, object client.Object) error {
+				if actual == key && f.reader.reads[key] == 1 {
+					changed = true
+					change.mutate(object.(*api.Team))
+				}
+				return nil
+			}
+			got, err := f.source.ResolveCurrent(context.Background(), f.agent(t), team)
+			if !changed {
+				t.Fatal("fixture did not update Team at the initial authoritative read")
+			}
+			if change.accept {
+				if err != nil || got.Revision == "" {
+					t.Fatalf("compatibility-only Team status update fenced common reconciliation: %+v, %v", got, err)
+				}
+				return
+			}
+			assertPrerequisiteRejection(t, got, err)
+			if !strings.Contains(err.Error(), "Sandbox source identity changed") {
+				t.Fatalf("meaningful Team update bypassed the source fence: %v", err)
+			}
+		})
+	}
 }
 
 // This records injected test calls only; it is not a fencing implementation.

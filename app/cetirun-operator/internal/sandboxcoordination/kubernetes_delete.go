@@ -38,7 +38,7 @@ func (s Store) AcquireConfigurationDeletion(ctx context.Context, before client.O
 	if err := deletion.source().checkBefore(ctx, s.APIReader); err != nil {
 		return ChangeTicket{}, err
 	}
-	return s.acquireChange(ctx, deletion.before.reference, deletion.digest, nil, "", deletion.before.digest)
+	return s.acquireChange(ctx, deletion.before.reference, deletion.digest, "", nil, "", deletion.before.digest)
 }
 
 // ReadConfigurationDeletion only finds the exact recorded operation.
@@ -317,7 +317,7 @@ func validateConfigurationDeletion(change Change) error {
 	before := change.Before
 	if !validSource(before) || before.APIVersion != api.GroupVersion.String() || before.Namespace != "" ||
 		(before.Kind != "Team" && before.Kind != "Sandbox" && before.Kind != "AgentPolicy") ||
-		!digest(change.DeletionContentDigest) || change.Team != nil || change.UnchangedDigest != "" {
+		!digest(change.DeletionContentDigest) || change.BeforeContentDigest != "" || change.Team != nil || change.UnchangedDigest != "" {
 		return fmt.Errorf("%w: invalid configuration deletion recovery metadata", ErrUnavailable)
 	}
 	expected, err := configurationDeletionDigest(before, change.DeletionContentDigest)
@@ -336,6 +336,6 @@ func (d *configurationDeletion) source() *configurationChange {
 
 func (d *configurationDeletion) matches(recorded Change) bool {
 	return recorded.Before == d.before.reference && recorded.DesiredDigest == d.digest &&
-		recorded.Team == nil && recorded.UnchangedDigest == "" &&
+		recorded.BeforeContentDigest == "" && recorded.Team == nil && recorded.UnchangedDigest == "" &&
 		(recorded.DeletionContentDigest == "" || recorded.DeletionContentDigest == d.before.digest)
 }

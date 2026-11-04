@@ -392,7 +392,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentPolicy")
 		os.Exit(1)
 	}
-	if err := (&controller.TeamReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.TeamReconciler{Source: sandboxSource, NativeExecution: sandboxSourcesConfig.NativeExecution}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Team")
 		os.Exit(1)
 	}

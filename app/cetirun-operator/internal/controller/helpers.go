@@ -572,16 +572,39 @@ func deepMerge(base, override interface{}) interface{} {
 	return merged
 }
 
-// teamResourceVersion returns the Team ResourceVersion (or "" when
-// team is nil). Used as a cache-invalidation token in configHash so that
-// edits to a referenced team — which do not bump the instance Generation —
-// still force a full reconcile when the team-watch handler re-enqueues the
-// instance.
-func teamResourceVersion(team *cetirunv1alpha1.Team) string {
+// normalizedTeamRuntimeInputs returns the Team fields that can affect an
+// Agent's rendered runtime configuration. Compatibility is a short-lived
+// diagnostic report, so its status refresh must neither requeue dependent
+// Agents nor invalidate their Helm cache. Kubernetes transport bookkeeping is
+// also excluded. All other metadata, spec, and status remain meaningful.
+func normalizedTeamRuntimeInputs(team *cetirunv1alpha1.Team) *cetirunv1alpha1.Team {
 	if team == nil {
+		return nil
+	}
+	normalized := team.DeepCopy()
+	normalized.TypeMeta = metav1.TypeMeta{}
+	normalized.ResourceVersion = ""
+	normalized.ManagedFields = nil
+	normalized.Status.Compatibility = nil
+	return normalized
+}
+
+// teamRuntimeInputFingerprint is a stable cache-invalidation token for the
+// Team fields that can affect an Agent without changing the Agent generation.
+func teamRuntimeInputFingerprint(team *cetirunv1alpha1.Team) string {
+	normalized := normalizedTeamRuntimeInputs(team)
+	if normalized == nil {
 		return ""
 	}
-	return team.ResourceVersion
+	data, err := json.Marshal(normalized)
+	if err != nil {
+		// Team's API fields are JSON serializable. Keep a conservative fallback
+		// if that contract is ever violated: a transport update must still miss
+		// the cache rather than sharing a constant invalid fingerprint.
+		return "invalid-team-runtime-inputs:" + string(team.UID) + ":" + team.ResourceVersion
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:8])
 }
 
 // stringsToInterfaces converts a []string to []interface{} so that values

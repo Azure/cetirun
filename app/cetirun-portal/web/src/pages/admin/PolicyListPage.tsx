@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -26,7 +26,9 @@ import {
 } from "@fluentui/react-components";
 import { Add20Regular, Delete20Regular, Edit20Regular } from "@fluentui/react-icons";
 import { deletePolicy, listPolicies, type AgentPolicyDTO } from "../../api/adminPolicy";
+import { listTeams, type TeamDTO } from "../../api/adminTeam";
 import { describeRateLimits } from "../../utils/rateLimits";
+import { CompatibilityReferences } from "../../components/CompatibilityReport";
 
 function modelAccessLabel(policy: AgentPolicyDTO): string {
   const labels: string[] = [];
@@ -37,16 +39,33 @@ function modelAccessLabel(policy: AgentPolicyDTO): string {
   return labels.join(", ") || "—";
 }
 
+function acceptedLabel(policy: AgentPolicyDTO): string {
+  const condition = acceptedCondition(policy);
+  if (!condition) return "Pending";
+  return condition.status === "True" ? "Accepted" : condition.status === "False" ? "Rejected" : "Unknown";
+}
+
+function acceptedCondition(policy: AgentPolicyDTO) {
+  return policy.conditions?.find((candidate) => candidate.type === "Accepted" && candidate.observedGeneration === policy.generation);
+}
+
+function conditionDetails(condition: { status: string; reason?: string; message?: string } | undefined) {
+  if (!condition || condition.status === "True" || (!condition.reason && !condition.message)) return undefined;
+  return [condition.reason, condition.message].filter(Boolean).join(": ");
+}
+
 export function PolicyListPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: policies, isLoading, error } = useQuery<AgentPolicyDTO[], Error>({
     queryKey: ["admin", "policies"],
     queryFn: listPolicies,
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
   });
+  const teamsQuery = useQuery<TeamDTO[], Error>({ queryKey: ["admin", "teams"], queryFn: listTeams, refetchInterval: 15_000 });
   const [pendingDelete, setPendingDelete] = useState<AgentPolicyDTO | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const deleteMutation = useMutation({
     mutationFn: (policy: AgentPolicyDTO) => deletePolicy(policy),
     onSuccess: () => {
@@ -78,25 +97,36 @@ export function PolicyListPage() {
               <TableHeaderCell>Harnesses</TableHeaderCell>
               <TableHeaderCell>Skills</TableHeaderCell>
               <TableHeaderCell>Model access</TableHeaderCell>
+              <TableHeaderCell>Configuration</TableHeaderCell>
               <TableHeaderCell style={{ width: 120 }}>Actions</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>
             {policies.length === 0 && (
-              <TableRow><TableCell colSpan={5}>No policies yet.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={6}>No policies yet.</TableCell></TableRow>
             )}
-            {policies.map((policy) => (
-              <TableRow key={policy.name}>
+            {policies.map((policy) => <Fragment key={policy.name}>
+              <TableRow>
                 <TableCell>{policy.name}</TableCell>
                 <TableCell>{policy.harnesses.allowed.join(", ")}</TableCell>
                 <TableCell>{policy.skills?.allowed?.length ?? 0}</TableCell>
                 <TableCell>{modelAccessLabel(policy)}</TableCell>
+                <TableCell>{policy.deleting ? "Deleting" : acceptedLabel(policy)}</TableCell>
                 <TableCell>
+                  <Button size="small" appearance="subtle" onClick={() => setExpanded(expanded === policy.name ? null : policy.name)} aria-expanded={expanded === policy.name} aria-label={`Show Teams using ${policy.name}`}>Teams</Button>
                   <Button size="small" appearance="subtle" icon={<Edit20Regular />} aria-label={`Edit ${policy.name}`} disabled={policy.deleting} onClick={() => navigate(`/admin/policies/${policy.name}/edit`)} />
                   <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={`Delete ${policy.name}`} disabled={policy.deleting} onClick={() => { setDeleteError(null); setPendingDelete(policy); }} />
                 </TableCell>
               </TableRow>
-            ))}
+              {expanded === policy.name && <TableRow><TableCell colSpan={6}>
+                {conditionDetails(acceptedCondition(policy)) && <Text block size={200} style={{ marginBottom: 8 }}>
+                  Configuration: {conditionDetails(acceptedCondition(policy))}
+                </Text>}
+                {teamsQuery.isLoading && <Spinner size="tiny" label="Loading referencing Teams..." />}
+                {teamsQuery.error && <MessageBar intent="error">Failed to load Teams: {teamsQuery.error.message}</MessageBar>}
+                {teamsQuery.data && <CompatibilityReferences teams={teamsQuery.data.filter((team) => team.agentPolicyRef === policy.name)} dependency={{ kind: "policy", name: policy.name, uid: policy.uid, generation: policy.generation ?? 0, deleting: policy.deleting }} />}
+              </TableCell></TableRow>}
+            </Fragment>)}
           </TableBody>
         </Table>
       )}
