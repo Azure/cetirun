@@ -31,6 +31,12 @@ export interface AgentPolicyKubernetesAccess {
   clusterRoleBindings?: { clusterRoleName: string }[];
 }
 
+export interface AgentPolicyIdentity {
+  allowed: boolean;
+  required: boolean;
+  credentialServices: string[];
+}
+
 export interface AgentPolicyCondition {
   type: string;
   status: "True" | "False" | "Unknown" | string;
@@ -88,6 +94,10 @@ export interface AgentPolicyUpsertRequest {
     /** Replaces the policy's limits; leaving it out removes them. */
     rateLimits?: AgentPolicyRateLimits;
   };
+  /** Replaces the identity policy; omission or null disables it. */
+  agentIdentity: AgentPolicyIdentity;
+  /** Replaces workload identity projection; omission or null disables it. */
+  entraID: { enabled: boolean };
   sandboxSelection?: { allowMultiple?: boolean };
   security?: { readOnlyRootFilesystem?: boolean };
   network?: {

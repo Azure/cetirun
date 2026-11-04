@@ -26,9 +26,9 @@ type AgentPolicySpec struct {
 	// +optional
 	AgentIdentity AgentPolicyAgentIdentity `json:"agentIdentity,omitempty"`
 
-	// EntraID remains the Sandbox adapter capability switch. Policy uses
-	// AgentIdentity for the user-facing entitlement and requires both controls
-	// before an Agent Identity can be provisioned.
+	// EntraID requests explicitly approved workload identity projection into
+	// the main container. It is independent of AgentIdentity, which controls
+	// the directory identity and Broker credential-service entitlement.
 	// +kubebuilder:default={}
 	// +optional
 	EntraID AgentPolicyEntraID `json:"entraID,omitempty"`

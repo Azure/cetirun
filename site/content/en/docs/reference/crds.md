@@ -614,8 +614,24 @@ The admin Portal shows the complete cluster-scoped `AgentPolicy` configuration.
 Administrators can edit allowed Harnesses and skills, Copilot and shared model
 access, monthly USD budgets, and per-Agent rate limits. They can also edit
 multiple-Sandbox selection, read-only root filesystem, network CIDR and port
-rules, and ingress mode. With the Skill Marketplace, the editor also lists the
-skills of its catalog, so that administrators can select the allowed skills.
+rules, ingress mode, Agent Identity, and Entra workload identity. With the Skill
+Marketplace, the editor also lists the skills of its catalog, so that
+administrators can select the allowed skills.
+
+The **Identity** section has two independent controls. **Agent Identity**
+selects `Disabled`, `Optional`, or `Required` for an independent Microsoft Entra
+directory identity used through Broker/Connections. Optional lets the user
+choose during Agent creation; Required selects it automatically. Both enabled
+modes set the current credential-service entitlement, `azure-resource-manager`.
+Disabled clears that entitlement. The platform must have the
+[Agent Identity setup](../../operations/agent-identity/) in place.
+
+**Entra workload identity** controls `entraID.enabled`. It projects an exchange
+token and Azure SDK environment into the main application container using an
+explicitly approved identity. It requires platform registration, a pinned
+ServiceAccount, federation, and external resource permissions. It does not
+create the Broker-backed directory identity or grant Kubernetes access. Neither
+control automatically enables the other. New policies default both to disabled.
 
 The Portal shows Kubernetes API access under Read-only policy capabilities. The
 summary shows any requested ServiceAccount and namespace or cluster-wide
@@ -645,8 +661,8 @@ In the editor, ports are comma-separated, for example `443, 5432, 53/UDP`. A
 port uses TCP unless it has `/UDP` or `/SCTP`. Rule changes are submitted when
 the Policy is saved.
 
-Agent Identity, Entra ID, blocked FQDNs, and ingress mTLS are read-only in this
-editor. Values that exist stay visible, and they are kept when other fields are
+Blocked FQDNs and ingress mTLS are read-only in this editor. Values that exist
+stay visible, and they are kept when other fields are
 saved. For observed-SNI FQDN filtering, separately registered controlled Envoy
 and trusted capture-init images are necessary. This feature is not full
 hostname enforcement. After the explicit one-second inspection window, it
@@ -692,15 +708,21 @@ previous read returned. Stale requests fail with `409 Conflict`. Responses
 include all Policy configuration groups, `generation`, `observedGeneration`,
 `conditions`, and `deleting`. These status fields are read-only.
 
-For newly exposed fields, omission keeps the stored value. This also applies
-to omitted nested network fields. Explicit empty arrays clear editable lists.
-Kubernetes access, Identity, Entra ID, blocked FQDNs, and mTLS cannot be
-changed through this API.
+Each create or update replaces `agentIdentity` and `entraID` as complete
+objects. Omitting a group or sending `null` disables that group; an empty
+object also uses disabled defaults. The Portal always sends both groups.
+`agentIdentity.required` requires `allowed: true`. Allowed identities must
+include `azure-resource-manager` in `credentialServices`; disabled identities
+must have no credential services. Unknown and duplicate services are rejected.
+There is no dependency between `agentIdentity` and `entraID.enabled`.
+
+For Sandbox selection, root filesystem security, and editable network fields,
+omission keeps the stored value. Explicit empty arrays clear editable lists.
+Kubernetes access, blocked FQDNs, and mTLS cannot be changed through this API.
 
 A request that tries to change or clear Kubernetes access is rejected. If a
-request omits it, the configuration that exists is kept. Clients that already
-exist and that send only Harnesses, skills, and model access still keep all
-other configuration. Updates keep metadata, status, and the coordinated
+request omits it, the configuration that exists is kept. Updates keep metadata,
+status, and the coordinated
 mutation and optimistic concurrency protections that exist.
 
 When strict Sandbox admission uses a UID-pinned configuration authority, set
@@ -780,7 +802,8 @@ models intersect the Gateway catalog with `modelAccess.sharedModels.allowed`.
 For Copilot, both deployment availability and Policy permission are necessary.
 If Agent Identity is necessary, it is selected automatically, and it cannot be
 turned off. Agent Identity must also have the deployment feature, a confirmed
-owner, a Policy credential-service entitlement, and Entra capability.
+owner and a Policy credential-service entitlement. The separate
+`entraID.enabled` workload projection is not required for Agent Identity.
 Prerequisites that are not met block creation.
 
 Both Agent creation endpoints re-read the same constraints before they write an

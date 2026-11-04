@@ -185,8 +185,8 @@ type AgentPolicyUpsertRequest struct {
 	present          map[string]bool
 }
 
-// UnmarshalJSON records top-level field presence so read-only fields can
-// distinguish omission from an explicit request to change them.
+// UnmarshalJSON records top-level field presence so the remaining read-only
+// fields can distinguish omission from an explicit request to change them.
 func (r *AgentPolicyUpsertRequest) UnmarshalJSON(data []byte) error {
 	type plain AgentPolicyUpsertRequest
 	var decoded plain
@@ -317,10 +317,22 @@ func toAgentPolicyGatewayBudget(budget *AgentPolicyGatewayBudgetDTO) *cetirunv1a
 	}
 }
 
-// applyAgentPolicyRequest applies only fields that a Portal administrator can
-// manage. The caller starts with the current spec for updates, which keeps
-// runtime-owned fields intact when old clients omit newly introduced fields.
+// applyAgentPolicyRequest applies the Portal-managed fields. Identity groups
+// replace their complete stored value: omitted or null identity groups disable
+// the corresponding capability.
 func applyAgentPolicyRequest(spec *cetirunv1alpha1.AgentPolicySpec, req AgentPolicyUpsertRequest) {
+	spec.AgentIdentity = cetirunv1alpha1.AgentPolicyAgentIdentity{}
+	if req.AgentIdentity != nil {
+		spec.AgentIdentity = cetirunv1alpha1.AgentPolicyAgentIdentity{
+			Allowed:            req.AgentIdentity.Allowed,
+			Required:           req.AgentIdentity.Required,
+			CredentialServices: append([]string(nil), req.AgentIdentity.CredentialServices...),
+		}
+	}
+	spec.EntraID = cetirunv1alpha1.AgentPolicyEntraID{}
+	if req.EntraID != nil {
+		spec.EntraID.Enabled = req.EntraID.Enabled
+	}
 	if req.SandboxSelection != nil && req.SandboxSelection.AllowMultiple != nil {
 		spec.SandboxSelection.AllowMultiple = *req.SandboxSelection.AllowMultiple
 	}
@@ -414,7 +426,34 @@ func validateAgentPolicyRequest(req AgentPolicyUpsertRequest) string {
 	if hasDuplicateStrings(req.ModelAccess.SharedModels.Allowed) {
 		return "sharedModels.allowed must not contain duplicate entries"
 	}
+	if message := validateAgentPolicyIdentity(req.AgentIdentity); message != "" {
+		return message
+	}
 	return validateAgentPolicyRateLimits(req.ModelAccess.RateLimits)
+}
+
+func validateAgentPolicyIdentity(identity *AgentPolicyAgentIdentityDTO) string {
+	if identity == nil {
+		return ""
+	}
+	if identity.Required && !identity.Allowed {
+		return "agentIdentity.required requires agentIdentity.allowed=true"
+	}
+	if !identity.Allowed && len(identity.CredentialServices) != 0 {
+		return "agentIdentity.credentialServices requires agentIdentity.allowed=true"
+	}
+	if identity.Allowed && !slices.Contains(identity.CredentialServices, "azure-resource-manager") {
+		return "agentIdentity.allowed requires the azure-resource-manager credential service"
+	}
+	for _, service := range identity.CredentialServices {
+		if service != "azure-resource-manager" {
+			return "agentIdentity.credentialServices may contain only azure-resource-manager"
+		}
+	}
+	if hasDuplicateStrings(identity.CredentialServices) {
+		return "agentIdentity.credentialServices must not contain duplicate entries"
+	}
+	return ""
 }
 
 func hasDuplicateStrings(values []string) bool {
@@ -432,12 +471,6 @@ func validateAgentPolicyReadOnlyCreate(req AgentPolicyUpsertRequest) string {
 	if req.KubernetesAccess != nil {
 		return "kubernetesAccess is read-only in the Portal"
 	}
-	if req.AgentIdentity != nil && (req.AgentIdentity.Allowed || req.AgentIdentity.Required || len(req.AgentIdentity.CredentialServices) != 0) {
-		return "agentIdentity is read-only in the Portal"
-	}
-	if req.EntraID != nil && req.EntraID.Enabled {
-		return "entraID is read-only in the Portal"
-	}
 	if req.Network != nil {
 		if req.Network.BlockedFQDNs != nil && len(*req.Network.BlockedFQDNs) != 0 {
 			return "network.blockedFQDNs is read-only in the Portal"
@@ -452,12 +485,6 @@ func validateAgentPolicyReadOnlyCreate(req AgentPolicyUpsertRequest) string {
 func validateAgentPolicyReadOnlyUpdate(req AgentPolicyUpsertRequest, current cetirunv1alpha1.AgentPolicySpec) string {
 	if req.has("kubernetesAccess") && !equalKubernetesAccess(req.KubernetesAccess, current.KubernetesAccess) {
 		return "kubernetesAccess is read-only in the Portal"
-	}
-	if req.AgentIdentity != nil && (req.AgentIdentity.Allowed != current.AgentIdentity.Allowed || req.AgentIdentity.Required != current.AgentIdentity.Required || !slices.Equal(req.AgentIdentity.CredentialServices, current.AgentIdentity.CredentialServices)) {
-		return "agentIdentity is read-only in the Portal"
-	}
-	if req.EntraID != nil && req.EntraID.Enabled != current.EntraID.Enabled {
-		return "entraID is read-only in the Portal"
 	}
 	if req.Network != nil {
 		if req.Network.BlockedFQDNs != nil && !slices.Equal(*req.Network.BlockedFQDNs, current.Network.BlockedFQDNs) {
@@ -713,8 +740,8 @@ func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request
 		return
 	}
 	desired := *current.Spec.DeepCopy()
-	// The original fields remain required update fields. New fields are applied
-	// only when present, so older Portal clients retain them unchanged.
+	// Replace entitlements and identity groups; applyAgentPolicyRequest retains
+	// omitted Sandbox, security, and network controls.
 	requested := toAgentPolicySpec(req)
 	desired.Harnesses = requested.Harnesses
 	desired.Skills = requested.Skills

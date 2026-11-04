@@ -337,12 +337,116 @@ describe("PolicyEditPage", () => {
         allowedInternalCIDRs: [{ cidr: "10.1.0.0/16", ports: [{ port: 53, protocol: "UDP" }] }], ingress: { mode: "disabled" },
       },
       modelAccess: { gatewayBudget: { defaultMonthlyUSD: "20", maxMonthlyUSD: "50" } },
+      agentIdentity: { allowed: true, required: true, credentialServices: ["azure-resource-manager"] },
+      entraID: { enabled: true },
     });
     expect(request).not.toHaveProperty("kubernetesAccess");
-    expect(JSON.stringify(request)).not.toContain("agentIdentity");
-    expect(JSON.stringify(request)).not.toContain("entraID");
     expect(JSON.stringify(request)).not.toContain("blockedFQDNs");
     expect(JSON.stringify(request)).not.toContain("requireMTLS");
+  });
+
+  it.each([
+    ["disabled", false], ["disabled", true],
+    ["optional", false], ["optional", true],
+    ["required", false], ["required", true],
+  ] as const)("creates %s Agent Identity with Entra projection %s independently", async (mode, entraEnabled) => {
+    vi.mocked(policyAPI.createPolicy).mockResolvedValue(cachedPolicy);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={["/admin/policies/create"]}><Routes>
+      <Route path="/admin/policies/create" element={<PolicyEditPage />} />
+      <Route path="/admin/policies" element={<div>Policy list</div>} />
+    </Routes></MemoryRouter></QueryClientProvider>);
+
+    const identity = screen.getByRole("combobox", { name: "Agent Identity", exact: true });
+    const entra = screen.getByRole("switch", { name: "Entra workload identity" });
+    expect(identity).toHaveValue("disabled");
+    expect(entra).not.toBeChecked();
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "standard" } });
+    fireEvent.change(identity, { target: { value: mode } });
+    expect(entra).not.toBeChecked();
+    if (entraEnabled) fireEvent.click(entra);
+    expect(identity).toHaveValue(mode);
+    fireEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+
+    await waitFor(() => expect(policyAPI.createPolicy).toHaveBeenCalledWith(expect.objectContaining({
+      agentIdentity: {
+        allowed: mode !== "disabled", required: mode === "required",
+        credentialServices: mode === "disabled" ? [] : ["azure-resource-manager"],
+      },
+      entraID: { enabled: entraEnabled },
+    }), expect.anything()));
+    expect(await screen.findByText("Policy list")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["disabled", false], ["disabled", true],
+    ["optional", false], ["optional", true],
+    ["required", false], ["required", true],
+  ] as const)("loads and saves %s Agent Identity with Entra projection %s", async (mode, entraEnabled) => {
+    const policy = {
+      ...cachedPolicy,
+      agentIdentity: {
+        allowed: mode !== "disabled", required: mode === "required",
+        credentialServices: mode === "disabled" ? [] : ["azure-resource-manager"],
+      },
+      entraID: { enabled: entraEnabled },
+    };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(policy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(policy);
+    renderCachedPolicy(policy);
+    expect(screen.getByRole("combobox", { name: "Agent Identity", exact: true })).toHaveValue(mode);
+    expect((screen.getByRole("switch", { name: "Entra workload identity" }) as HTMLInputElement).checked).toBe(entraEnabled);
+    fireEvent.change(screen.getByRole("textbox", { name: "Allowed skills" }), { target: { value: "updated-skill" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledWith("standard", expect.objectContaining({
+      agentIdentity: policy.agentIdentity, entraID: policy.entraID, skills: { allowed: ["updated-skill"] },
+    })));
+  });
+
+  it("disables both identities and clears credential services", async () => {
+    const policy = {
+      ...cachedPolicy,
+      agentIdentity: { allowed: true, required: true, credentialServices: ["azure-resource-manager"] },
+      entraID: { enabled: true },
+    };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(policy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(policy);
+    renderCachedPolicy(policy);
+    fireEvent.change(screen.getByRole("combobox", { name: "Agent Identity", exact: true }), { target: { value: "disabled" } });
+    const entra = screen.getByRole("switch", { name: "Entra workload identity" });
+    expect(entra).toBeChecked();
+    fireEvent.click(entra);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledWith("standard", expect.objectContaining({
+      agentIdentity: { allowed: false, required: false, credentialServices: [] }, entraID: { enabled: false },
+    })));
+  });
+
+  it("keeps identity drafts on a policy conflict and reloads the current identity settings", async () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(cachedPolicy);
+    const queryClient = renderCachedPolicy();
+    const identity = screen.getByRole("combobox", { name: "Agent Identity", exact: true });
+    const entra = screen.getByRole("switch", { name: "Entra workload identity" });
+    fireEvent.change(identity, { target: { value: "required" } });
+    fireEvent.click(entra);
+    const latest = {
+      ...cachedPolicy, resourceVersion: "43",
+      agentIdentity: { allowed: true, required: false, credentialServices: ["azure-resource-manager"] },
+      entraID: { enabled: false },
+    };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(latest);
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["admin", "policy", "standard"] }); });
+    expect(identity).toHaveValue("required");
+    expect(entra).toBeChecked();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Discard edits and reload" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Agent Identity", exact: true })).toHaveValue("optional"));
+    expect(screen.getByRole("switch", { name: "Entra workload identity" })).not.toBeChecked();
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(latest);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledWith("standard", expect.objectContaining({
+      resourceVersion: "43", agentIdentity: latest.agentIdentity, entraID: latest.entraID,
+    })));
   });
 
   it.each(["skills", "budget"])("saves %s edits without resubmitting legacy network duplicates", async (field) => {
