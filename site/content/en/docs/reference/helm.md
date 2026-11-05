@@ -398,7 +398,7 @@ are important when you install the chart alone:
 
 | Value | Source default |
 | --- | --- |
-| `global.registry`, `global.version` | Empty. With a registry, the image is `<registry>/cetirun-ai-gateway`. Without one, it is `image.repository`, `cetirun.azurecr.io/cetirun-ai-gateway`. The tag is `global.version`, then `image.tag`, then the `appVersion` of the chart. |
+| `global.registry`, `global.version` | Empty. With a registry, the image is `<registry>/cetirun-ai-gateway`. Without one, it is `image.repository`, `mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-ai-gateway`. The tag is `global.version`, then `image.tag`, then the `appVersion` of the chart. |
 | `imagePullSecrets` | `[]`. Set it when the cluster cannot pull from the registry without credentials. |
 | `replicaCount` | `2`. Redis or Valkey is necessary for more than one replica. The bundled Valkey supplies it. |
 | `operatorIntegration` | `false`. The platform chart sets `true`. Keep `false` for a Gateway that does not serve CetiRun Agents. |

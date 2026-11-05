@@ -161,6 +161,7 @@ class PublicTLSDeploymentTests(unittest.TestCase):
         self.assertEqual(cluster.config["domain"], "portal-ingress.example.cloudapp.azure.com")
         self.assertEqual(cluster.config["release"]["registry"], registry)
         self.assertEqual(cluster.config["release"]["version"], version)
+        self.assertEqual(cluster.config["_releaseOrigins"], {"registry": "explicit override", "version": "explicit override"})
         for component, values, _ in cluster.applied:
             if component == "platform":
                 self.assertEqual(values["global"]["registry"], registry)

@@ -95,7 +95,7 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             "AGENT_TEMPDIRECTORY": str(self.root / "temporary"), "HELM_BIN": str(self.bin),
             "GIT_SHA": "a" * 40, "ACCEPT_VSCODE_SERVER_LICENSE_TERMS": "true",
         }
-        for name in ("awk", "dirname", "grep", "mkdir", "rm", "tr", "cmp"):
+        for name in ("awk", "dirname", "grep", "mkdir", "rm", "tr", "cmp", "git"):
             executable = shutil.which(name)
             self.assertIsNotNone(executable, f"requires {name}")
             (self.bin / name).symlink_to(executable)
@@ -120,6 +120,8 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         # exercised separately; this fixture contains only chart metadata.
         (self.root / "scripts/cetirun-version.py").write_text(
             (ROOT / "scripts/cetirun-version.py").read_text().partition('if __name__ == "__main__":')[0])
+        subprocess.run([shutil.which("git"), "-c", "init.defaultBranch=main", "init", "--quiet"], cwd=self.root, check=True)
+        subprocess.run([shutil.which("git"), "add", "app", "infra", "scripts"], cwd=self.root, check=True)
         pipeline = yaml.safe_load((ROOT / ".pipelines/release-mcr.yml").read_text())
         self.pipeline = pipeline
         self.steps = {step["displayName"]: step for step in pipeline["jobs"][0]["steps"]
@@ -209,7 +211,9 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertNotIn("--load", build)
         self.assertEqual(build[build.index("--platform") + 1], "linux/amd64")
         self.assertIn(f"VERSION={VERSION}", build)
-        self.assertIn(str(self.root / "app/cetirun-connections-mcp/Dockerfile"), build)
+        build_root = Path(build[-1])
+        self.assertNotEqual(build_root, self.root, "image builds must use the filtered source snapshot")
+        self.assertIn(str(build_root / "app/cetirun-connections-mcp/Dockerfile"), build)
         self.assertIn(["docker", "buildx", "imagetools", "inspect", self.staged], commands)
         promoted = ["docker", "buildx", "imagetools", "create", "--tag", self.image, self.staged]
         self.assertIn(promoted, commands)

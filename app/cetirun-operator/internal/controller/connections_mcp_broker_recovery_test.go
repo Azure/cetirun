@@ -72,6 +72,71 @@ func TestReconcileConnectionsMCPBrokerRecoversMissingNamespaceFromSteadyState(t 
 	}
 }
 
+func TestReconcileBuiltinRegistryMigrationRequiresExplicitImagePin(t *testing.T) {
+	for _, kind := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes} {
+		for _, migration := range []struct{ old, target string }{
+			{"cetirun.azurecr.io", "mcr.microsoft.com/aks/ai-runtime/cetirun"},
+			{"registry.example.com", "registry.example.com/team/test"},
+		} {
+			for _, scenario := range []string{"retain coordinates", "registry changed", "explicit new pin"} {
+				t.Run(string(kind)+"/"+migration.target+"/"+scenario, func(t *testing.T) {
+					instance := connectionsMCPBrokerRecoveryAgent(api.PhaseReady)
+					instance.Spec.Agent.Type = kind
+					if kind == api.AgentTypeOpenClaw {
+						instance.Spec.Agent.Port = ptr.To[int32](18789)
+					}
+					image := migration.old + "/" + string(kind) + "-gateway:0.1.1"
+					instance.Spec.Agent.Image = ptr.To(image)
+					reconciler, kube := newConnectionsMCPBrokerRecoveryReconciler(t, instance)
+					reconciler.ChartRegistry = migration.old
+					setConnectionsMCPBrokerRecoveryHash(t, kube, instance, reconciler, "")
+					if scenario != "retain coordinates" {
+						reconciler.ChartRegistry = migration.target
+						if reconciler.configHash(instance, nil, "", "") == instance.Status.ObservedOperatorHash {
+							t.Fatal("registry change must invalidate the cached configuration")
+						}
+					}
+					if scenario == "explicit new pin" {
+						current := &api.Agent{}
+						if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), current); err != nil {
+							t.Fatal(err)
+						}
+						image = migration.target + "/" + string(kind) + "-gateway:0.1.1"
+						current.Spec.Agent.Image = ptr.To(image)
+						current.Generation++
+						if err := kube.Update(context.Background(), current); err != nil {
+							t.Fatal(err)
+						}
+					}
+					_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)})
+					if scenario == "registry changed" {
+						if err == nil || !strings.Contains(err.Error(), "AgentConfigInvalid: spec.agent.image is not qualified") {
+							t.Fatalf("expected an unqualified image rejection, got %v", err)
+						}
+					} else if err != nil {
+						t.Fatal(err)
+					}
+					current := &api.Agent{}
+					if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), current); err != nil {
+						t.Fatal(err)
+					}
+					if *current.Spec.Agent.Image != image {
+						t.Fatal("reconciliation silently changed the image pin")
+					}
+					installs := reconciler.HelmClient.(*chartHelm).installs
+					if scenario == "registry changed" {
+						if installs != 0 || current.Status.Phase != api.PhaseFailed {
+							t.Fatalf("unmigrated pin: installs=%d, phase=%s", installs, current.Status.Phase)
+						}
+					} else if installs == 0 {
+						t.Fatal("explicitly selected image and registry did not reach Helm apply")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestReconcileConnectionsMCPBrokerSuspensionDoesNotRecreateMissingNamespace(t *testing.T) {
 	instance := connectionsMCPBrokerRecoveryAgent(api.PhaseSuspended)
 	reconciler, kube := newConnectionsMCPBrokerRecoveryReconciler(t, instance)

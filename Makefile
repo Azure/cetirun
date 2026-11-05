@@ -76,4 +76,4 @@ build-images publish-images publish-charts publish: require-registry artifact-ch
 
 deploy-plan deploy deploy-verify:
 	@test -n "$(DEPLOY_CONFIG)" || { echo "DEPLOY_CONFIG is required; see app/cetirun-platform/README.md" >&2; exit 1; }
-	bash scripts/cetirun-platform-deploy.sh --config "$(DEPLOY_CONFIG)" $(if $(filter deploy-plan,$@),--plan,) $(if $(filter deploy-verify,$@),--verify,) $(if $(filter environment command line,$(origin VERSION)),--version "$(VERSION)",) $(if $(filter environment command line,$(origin REGISTRY)),--registry "$(REGISTRY)",)
+	bash scripts/cetirun-platform-deploy.sh --config "$(DEPLOY_CONFIG)" $(if $(filter deploy-plan,$@),--plan,) $(if $(filter deploy-verify,$@),--verify,) $(if $(filter command line,$(origin VERSION)),--version "$(VERSION)",) $(if $(filter command line,$(origin REGISTRY)),--registry "$(REGISTRY)",)

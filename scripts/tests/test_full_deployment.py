@@ -260,6 +260,7 @@ class ReleaseCoordinateTests(DeploymentFixture, unittest.TestCase):
         config, _ = self.configure(self.config)
         self.assertEqual(config["release"]["registry"], "mcr.microsoft.com/aks/ai-runtime/cetirun")
         self.assertEqual(config["release"]["version"], DEPLOY.RELEASE.VERSIONS.top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version"))
+        self.assertEqual(config["_releaseOrigins"], {"registry": "source default", "version": "source default"})
         for invalid in (None, [], "invalid"):
             self.config["release"] = invalid
             with self.assertRaisesRegex(ValueError, "release must be an object"):
@@ -311,6 +312,22 @@ class ReleaseCoordinateTests(DeploymentFixture, unittest.TestCase):
                 plan = json.loads(result.stdout)
                 self.assertEqual(plan["release"]["registry"], registry)
                 self.assertEqual(plan["release"]["version"], version)
+                for key in ("registry", "version"):
+                    origin = f"--{key}" if extra else f"environment {key.upper()}" if overrides else "environment file"
+                    self.assertEqual(plan["releaseOrigins"][key], origin)
+
+    def test_execute_reports_coordinates_before_any_external_operation(self):
+        deployment = self.deployment()
+        original = deployment.execute_platform
+        with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            def execute_platform():
+                for key in ("registry", "version"):
+                    self.assertIn(f"Deployment {key}: {deployment.config['release'][key]} (from environment file)", stdout.getvalue())
+                self.assertFalse(deployment.writes)
+                original()
+            with patch.object(deployment, "execute_platform", side_effect=execute_platform):
+                deployment.execute()
+        self.assertTrue(deployment.writes)
 
 
 class DeploymentInputTests(DeploymentFixture, unittest.TestCase):

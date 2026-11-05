@@ -7,7 +7,7 @@ IMAGE_TAG  ?= $(VERSION)
 NPM_REGISTRY ?= https://registry.npmjs.org/
 VERSION ?= $(shell ../../scripts/cetirun-release-metadata.sh version)
 GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo.Version=$(VERSION) \
+LDFLAGS = -X github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo.Version=$(VERSION) \
 	-X github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo.Commit=$(GIT_SHA)
 
 ##@ Development

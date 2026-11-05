@@ -94,7 +94,9 @@ the central release metadata. `PUSH=false` loads a local image, and `PUSH=true`
 publishes the image.
 
 `cetirun-connections-mcp-helm-release.sh` lints and packages the independent
-chart. It pushes the chart under `oci://$REGISTRY/${CHART_NAMESPACE:-helm}`.
+chart. It pushes the chart under `oci://$REGISTRY/helm`.
+`CHART_NAMESPACE` must be `helm`; put repository prefixes in `REGISTRY` so
+the Operator can derive the same image repositories from its Runtime Chart URL.
 Set `REGISTRY` to an authorized writable registry; the default MCR address
 is valid for packaging, not publication.
 Then it compares the pulled package with the published package. Pull verification

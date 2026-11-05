@@ -70,8 +70,8 @@ def coordinates(args):
     VERSIONS.validate_version(args.version)
     if not re.fullmatch(r"[0-9a-f]{40}", args.git_sha):
         raise ValueError("GIT_SHA must be the full source commit SHA")
-    if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", args.chart_namespace):
-        raise ValueError("Invalid chart namespace")
+    if args.chart_namespace != "helm":
+        raise ValueError("CHART_NAMESPACE must be helm; use REGISTRY for a repository prefix")
 
 
 def require_license(images):
@@ -100,7 +100,9 @@ def preflight(args, data, kinds):
         for entry in data[kind]:
             path = entry["name"] if kind == "images" else f"{args.chart_namespace}/{entry['name']}"
             reference = f"{args.registry}/{path}:{args.version}"
-            result = subprocess.run(["docker", "buildx", "imagetools", "inspect", reference],
+            command = (["docker", "buildx", "imagetools", "inspect", reference] if kind == "images" else
+                       ["helm", "show", "chart", f"oci://{args.registry}/{path}", "--version", args.version])
+            result = subprocess.run(command,
                                     cwd=ROOT, text=True, capture_output=True)
             if result.returncode == 0:
                 raise ValueError(f"{reference} already exists; choose a new version or explicitly use --force")
@@ -113,9 +115,6 @@ def preflight(args, data, kinds):
 
 @contextmanager
 def build_source(version, source_version):
-    if version == source_version:
-        yield ROOT
-        return
     with tempfile.TemporaryDirectory(prefix="cetirun-build-source-") as temporary:
         root = Path(temporary) / "source"
         root.mkdir()
@@ -133,9 +132,10 @@ def build_source(version, source_version):
         # the source directory modes, including under a private umask 077.
         for relative in directories:
             shutil.copystat(ROOT / relative, root / relative, follow_symlinks=False)
-        run([sys.executable, "-B", "scripts/cetirun-version.py", "set", version], root=root)
-        run(["helm", "dependency", "update", "--skip-refresh", "app/cetirun-platform"], root=root)
-        run([sys.executable, "-B", "scripts/cetirun-version.py", "check", version], root=root)
+        if version != source_version:
+            run([sys.executable, "-B", "scripts/cetirun-version.py", "set", version], root=root)
+        # Images do not consume Chart.lock; package_charts rebuilds dependencies
+        # in its own chart copy when chart publication is requested.
         yield root
 
 
@@ -221,7 +221,8 @@ def main(argv=None):
     parser.add_argument("--registry", default=os.environ.get("REGISTRY", VERSIONS.DEFAULT_REGISTRY))
     parser.add_argument("--version", default=os.environ.get("VERSION"))
     parser.add_argument("--git-sha", default=os.environ.get("GIT_SHA", ""))
-    parser.add_argument("--chart-namespace", default=os.environ.get("CHART_NAMESPACE", "helm"))
+    parser.add_argument("--chart-namespace", default=os.environ.get("CHART_NAMESPACE", "helm"),
+                        help="must be helm; put any repository prefix in REGISTRY")
     parser.add_argument("--force", action="store_true", help="explicitly permit replacing existing version tags")
     parser.add_argument("--prune", action="store_true", help="prune build cache after each image on a disposable CI agent")
     parser.add_argument("--package-dir", type=Path)

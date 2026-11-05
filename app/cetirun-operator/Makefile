@@ -13,7 +13,7 @@ GOFLAGS ?=
 CGO_ENABLED ?= 0
 VERSION ?= $(shell ../../scripts/cetirun-release-metadata.sh version)
 GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=$(VERSION) \
+LDFLAGS = -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=$(VERSION) \
 	-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=$(GIT_SHA)
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen

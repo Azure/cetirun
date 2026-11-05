@@ -52,6 +52,10 @@ if args[:2] == ["buildx", "build"] and os.environ.get("ARTIFACT_SOURCE_VERSION")
     assert f'"version": "{version}"' in (root / "examples/pi-agent/package.json").read_text()
     assert (root / "scripts/cetirun-release.py").stat().st_mode & 0o111
     source = pathlib.Path(os.environ["ARTIFACT_ORIGINAL_SOURCE"])
+    assert root != source
+    assert not (root / ".git").exists()
+    assert not (root / "app/cetirun-portal/web/node_modules").exists()
+    assert not (root / "site/node_modules").exists()
     for relative in (".", "app", "app/cetirun-chart", "scripts"):
         assert (root / relative).stat().st_mode == (source / relative).stat().st_mode
 '''
@@ -62,7 +66,16 @@ args = sys.argv[1:]
 store = pathlib.Path(os.environ["ARTIFACT_CHART_STORE"])
 with pathlib.Path(os.environ["ARTIFACT_COMMANDS"]).open("a") as output:
     output.write(json.dumps(["helm", *args]) + "\n")
-if args[0] == "push":
+if args[:2] == ["show", "chart"]:
+    reference = args[2].removeprefix("oci://") + ":" + args[args.index("--version") + 1]
+    if os.environ.get("ARTIFACT_HELM_ERROR"):
+        print(os.environ["ARTIFACT_HELM_ERROR"], file=sys.stderr)
+        sys.exit(1)
+    if reference == os.environ.get("ARTIFACT_EXISTS"):
+        sys.exit(0)
+    print(reference + ": not found", file=sys.stderr)
+    sys.exit(1)
+elif args[0] == "push":
     shutil.copy2(args[1], store / pathlib.Path(args[1]).name)
 elif args[0] == "pull":
     name = args[1].rsplit("/", 1)[1] + "-" + args[args.index("--version") + 1] + ".tgz"
@@ -174,20 +187,57 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertIn(f"--chart-repo-url=oci://{registry}/helm/cetirun", result.stdout)
             self.assertIn(f"--chart-version={version}", result.stdout)
 
-    def test_version_override_builds_current_source_without_editing_checkout(self):
-        if not shutil.which("helm"):
-            self.skipTest("requires existing Helm")
+    def test_image_builds_filter_source_with_and_without_version_override_without_helm(self):
         tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
         before = {name: ((ROOT / name).read_bytes(), (ROOT / name).stat().st_mode) for name in tracked if (ROOT / name).is_file()}
-        self.env["VERSION"] = "0.1.1-dev.20990101.gabcdef0"
-        self.env["ARTIFACT_SOURCE_VERSION"] = self.env["VERSION"]
         self.env["ARTIFACT_ORIGINAL_SOURCE"] = str(ROOT)
-        result = subprocess.run(["bash", "-c", "umask 077; exec make build-images"], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        builds = [c for c in self.commands() if c[:2] == ["buildx", "build"]]
-        self.assertEqual({next(c[i + 1] for i, word in enumerate(c) if word in ("-t", "--tag")) for c in builds},
-                         {self.image(name) for name in IMAGES})
+        helm = self.root / "helm"
+        helm.write_text("#!/bin/sh\necho 'Helm must not run for image-only builds' >&2\nexit 97\n")
+        helm.chmod(0o755)
+        for version in (self.env["VERSION"], "0.1.1-dev.20990101.gabcdef0"):
+            with self.subTest(version=version):
+                self.env["VERSION"] = self.env["ARTIFACT_SOURCE_VERSION"] = version
+                start = len(self.commands())
+                result = subprocess.run(["bash", "-c", "umask 077; exec make build-images"], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                builds = [c for c in self.commands()[start:] if c[:2] == ["buildx", "build"]]
+                self.assertEqual({next(c[i + 1] for i, word in enumerate(c) if word in ("-t", "--tag")) for c in builds},
+                                 {self.image(name) for name in IMAGES})
         self.assertEqual(before, {name: ((ROOT / name).read_bytes(), (ROOT / name).stat().st_mode) for name in before})
+
+    def test_istio_publisher_uses_helm_auth_without_docker_auth(self):
+        store = self.fake_registry()
+        self.env["ARTIFACT_REGISTRY_ERROR"] = "401 Unauthorized: Docker is not logged in"
+        result = subprocess.run(["bash", "scripts/istio-helm-release.sh"], env=self.env, cwd=ROOT,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((store / f"cetirun-istio-{self.env['VERSION']}.tgz").is_file())
+        self.assertTrue(all(c[0] == "helm" for c in self.commands()))
+
+    def test_chart_preflight_rejects_existing_tags_and_unknown_errors(self):
+        self.fake_registry()
+        reference = f"{self.env['REGISTRY']}/helm/cetirun-istio:{self.env['VERSION']}"
+        cases = (({"ARTIFACT_EXISTS": reference}, "already exists"),
+                 ({"ARTIFACT_HELM_ERROR": "401 Unauthorized"}, "Cannot determine"),
+                 ({"ARTIFACT_HELM_ERROR": "connection refused"}, "Cannot determine"))
+        for variables, error in cases:
+            with self.subTest(variables=variables):
+                self.env.pop("ARTIFACT_EXISTS", None)
+                self.env.pop("ARTIFACT_HELM_ERROR", None)
+                self.env.update(variables)
+                start = len(self.commands())
+                result = self.run_release("publish-charts", "--chart", "cetirun-istio", success=False)
+                self.assertIn(error, result.stderr)
+                self.assertEqual(self.commands()[start:], [["helm", "show", "chart", "oci://" + reference.rsplit(":", 1)[0],
+                                                          "--version", self.env["VERSION"]]])
+
+    def test_nonstandard_chart_namespace_is_rejected_before_publication(self):
+        for flags, env in ((["--chart-namespace", "custom/charts"], {}), ([], {"CHART_NAMESPACE": "charts"})):
+            with self.subTest(flags=flags, env=env):
+                self.env.update(env)
+                result = self.run_release("publish-charts", *flags, success=False)
+                self.assertIn("CHART_NAMESPACE must be helm", result.stderr)
+                self.assertEqual(self.commands(), [])
 
     def test_unified_publish_overrides_both_coordinates_with_local_registry_double(self):
         store = self.fake_registry()
@@ -269,6 +319,18 @@ class ReleaseInventoryTests(unittest.TestCase):
                     registry = overrides.get("REGISTRY", "mcr.microsoft.com/aks/ai-runtime/cetirun")
                     self.assertIn(f"{registry}/cetirun-{component}:{version}", command)
                     self.assertIn(f"VERSION={version}", command)
+
+    def test_nonbuild_make_targets_do_not_evaluate_release_metadata(self):
+        python = self.root / "python3"
+        python.write_text("#!/bin/sh\necho 'unexpected metadata lookup' >&2\nexit 97\n")
+        python.chmod(0o755)
+        env = {key: value for key, value in self.env.items() if key not in ("VERSION", "GIT_SHA", "REGISTRY")}
+        for component, targets in (("operator", ["test", "vet"]), ("portal", ["test", "lint"])):
+            with self.subTest(component=component):
+                result = subprocess.run(["make", "-n", "-C", f"app/cetirun-{component}", *targets],
+                                        env=env, cwd=ROOT, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("unexpected metadata lookup", result.stderr)
 
     def test_unified_publish_rejects_mcr_before_preflight_even_with_force(self):
         for registry in (None, "mcr.microsoft.com/aks/ai-runtime/cetirun", "mcr.microsoft.com:443/example"):
