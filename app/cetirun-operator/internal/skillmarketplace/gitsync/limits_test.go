@@ -16,9 +16,106 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/skills"
+	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/object"
 )
+
+// commitRepeatedTree commits a tree in which the directory skills holds
+// width copies of one directory, each copy holds width copies of the next,
+// depth levels deep, and the last level holds one file. Git stores each
+// level once: the commit has depth+4 objects, and width^depth paths of the
+// file.
+func commitRepeatedTree(t *testing.T, dir string, width, depth int) {
+	t.Helper()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := func(value interface {
+		Encode(plumbing.EncodedObject) error
+	}, kind plumbing.ObjectType) plumbing.Hash {
+		t.Helper()
+		encoded := repo.Storer.NewEncodedObject()
+		encoded.SetType(kind)
+		if err := value.Encode(encoded); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := repo.Storer.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	blob := repo.Storer.NewEncodedObject()
+	blob.SetType(plumbing.BlobObject)
+	writer, err := blob.Writer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = writer.Write([]byte("x"))
+	_ = writer.Close()
+	file, err := repo.Storer.SetEncodedObject(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	level := store(&object.Tree{Entries: []object.TreeEntry{{Name: "f", Mode: filemode.Regular, Hash: file}}}, plumbing.TreeObject)
+	for i := 0; i < depth; i++ {
+		tree := &object.Tree{}
+		for j := 0; j < width; j++ {
+			tree.Entries = append(tree.Entries, object.TreeEntry{Name: fmt.Sprintf("d%d", j), Mode: filemode.Dir, Hash: level})
+		}
+		level = store(tree, plumbing.TreeObject)
+	}
+	root := store(&object.Tree{Entries: []object.TreeEntry{{Name: "skills", Mode: filemode.Dir, Hash: level}}}, plumbing.TreeObject)
+	signature := object.Signature{Name: "test", Email: "test@example.invalid", When: time.Now()}
+	commit := store(&object.Commit{Author: signature, Committer: signature, Message: "repeated", TreeHash: root}, plumbing.CommitObject)
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(plumbing.Master, commit)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A commit can hold one directory at many paths. Nine levels of four copies
+// are 13 objects, which the fetch limits accept, but 349,524 directories and
+// 262,144 files below the repository path. Discover stops at the default
+// tree limit, before it keeps more entries. Copies within the limits are
+// read as usual.
+func TestDiscoverStopsAtTheTreeLimitOfAnExpandedCommit(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		width, depth int
+		message      string
+	}{
+		"expanded": {4, 9, "more than 100000 files and directories"},
+		"small":    {2, 3, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			commitRepeatedTree(t, dir, tc.width, tc.depth)
+			source := Source{URL: dir, Auth: AuthNone}
+			ref, _, err := source.Resolve(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := source.Fetch(ctx, ref, Limits{MaxBytes: 1 << 20, MaxObjects: 20})
+			if err != nil {
+				t.Fatalf("the pack holds each directory once: %v", err)
+			}
+			_, _, err = skills.Discover(snapshot, "skills", skills.DefaultLimits, nil)
+			if tc.message == "" {
+				if err != nil {
+					t.Fatalf("a tree within the limits: %v", err)
+				}
+			} else if !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("discover: %v, want %q", err, tc.message)
+			}
+		})
+	}
+}
 
 var testLimits = Limits{MaxBytes: 1 << 20, MaxObjects: 1000}
 

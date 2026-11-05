@@ -81,8 +81,8 @@ func parse(args []string) (options, error) {
 	fs.StringVar(&o.reserved, "reserved-names", strings.Join(skills.DefaultReserved, ","), "comma-separated reserved skill names")
 	fs.DurationVar(&o.teamGCGrace, "team-gc-grace", time.Hour, "how long the releases of a Team that left the Teams document stay after its last publication")
 	defaults := skills.DefaultLimits
-	fs.StringVar(&o.maxRepositorySize, "max-repository-size", "256Mi", "largest repository commit to load: the pack that the Git server sends, and its objects together")
-	fs.Int64Var(&o.maxObjects, "max-repository-objects", 100000, "most objects (files, directories and the commit) in the repository commit")
+	fs.StringVar(&o.maxRepositorySize, "max-repository-size", "256Mi", "largest repository commit to load: the pack that the Git server sends, its objects together, and the paths below the repository path together")
+	fs.Int64Var(&o.maxObjects, "max-repository-objects", 100000, "most objects (files, directories and the commit) in the repository commit, and most files and directories below the repository path, counted per path")
 	fs.IntVar(&o.limits.MaxFiles, "max-skill-files", defaults.MaxFiles, "most files in one skill")
 	fs.StringVar(&o.maxSkillSize, "max-skill-size", size(defaults.MaxBytes), "largest total size of the files of one skill")
 	fs.StringVar(&o.maxSkillMDSize, "max-skill-md-size", size(defaults.MaxSkillMD), "largest SKILL.md")
@@ -136,6 +136,9 @@ func parse(args []string) (options, error) {
 	if o.maxObjects < 1 {
 		return o, fmt.Errorf("--max-repository-objects must be at least 1")
 	}
+	// The repository limits bound the tree below the repository path too,
+	// where each path of a file or directory counts.
+	o.limits.MaxTreeEntries, o.limits.MaxTreePathBytes = int(o.maxObjects), o.maxRepository
 	if o.limits.MaxSkillMD > o.limits.MaxBytes {
 		return o, fmt.Errorf("--max-skill-md-size cannot be larger than --max-skill-size")
 	}

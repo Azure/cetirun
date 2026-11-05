@@ -7,6 +7,7 @@ package skills
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -47,7 +48,8 @@ type Tree interface {
 	TreeHash(dir string) (string, error)
 }
 
-// Limits bound what a single skill may contain.
+// Limits bound what a single skill may contain, and the tree that Discover
+// reads.
 type Limits struct {
 	MaxFiles   int
 	MaxBytes   int64
@@ -55,12 +57,25 @@ type Limits struct {
 	MaxDepth   int
 	// MaxDescription is the longest SKILL.md description, in characters.
 	MaxDescription int
+	// MaxTreeEntries and MaxTreePathBytes bound the tree below the
+	// repository path, as Discover reads it: the number of its files and
+	// directories, and the bytes of their paths together. A Git commit can
+	// hold one directory at many paths, so each path counts. Zero uses the
+	// default.
+	MaxTreeEntries   int
+	MaxTreePathBytes int64
 }
 
 // DefaultLimits are the limits used unless configured otherwise. The
 // description limit is the one of the Agent Skills specification; the others
-// keep a skill small enough to copy into the Pod of each Agent.
-var DefaultLimits = Limits{MaxFiles: 500, MaxBytes: 5 << 20, MaxSkillMD: 256 << 10, MaxDepth: 8, MaxDescription: 1024}
+// keep a skill small enough to copy into the Pod of each Agent. The tree
+// limits equal the default repository limits of the worker.
+var DefaultLimits = Limits{MaxFiles: 500, MaxBytes: 5 << 20, MaxSkillMD: 256 << 10, MaxDepth: 8, MaxDescription: 1024,
+	MaxTreeEntries: 100000, MaxTreePathBytes: 256 << 20}
+
+// ErrLimit reports a repository commit that exceeds the limits of the Skill
+// Marketplace.
+var ErrLimit = errors.New("the repository commit exceeds the limits of the Skill Marketplace")
 
 // DefaultReserved are the names of skills that CetiRun or its images supply.
 var DefaultReserved = []string{"cetirun-memory", "connected-services"}
@@ -86,13 +101,11 @@ type Skill struct {
 const skillFile = "SKILL.md"
 
 // Discover returns the valid skills below root and the rejected directories.
+// A tree that exceeds the tree limits is an ErrLimit error.
 func Discover(tree Tree, root string, limits Limits, reserved []string) ([]Skill, []api.SkillMarketplaceProblem, error) {
 	root = strings.Trim(root, "/")
-	var all []Entry
-	if err := tree.Walk(root, func(entry Entry) error {
-		all = append(all, entry)
-		return nil
-	}); err != nil {
+	all, err := inventory(tree, root, limits)
+	if err != nil {
 		return nil, nil, err
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Path < all[j].Path })
@@ -117,8 +130,9 @@ func Discover(tree Tree, root string, limits Limits, reserved []string) ([]Skill
 
 	var problems []api.SkillMarketplaceProblem
 	var outer []string
+	isOuter := map[string]bool{}
 	for _, dir := range candidates {
-		if parent := enclosing(outer, dir); parent != "" {
+		if parent := enclosing(isOuter, dir); parent != "" {
 			problems = append(problems, api.SkillMarketplaceProblem{Path: dir, Name: path.Base(dir),
 				Reason: fmt.Sprintf("nested inside skill %s; only the outer skill is published", path.Base(parent))})
 			continue
@@ -129,12 +143,13 @@ func Discover(tree Tree, root string, limits Limits, reserved []string) ([]Skill
 			continue
 		}
 		outer = append(outer, dir)
+		isOuter[dir] = true
 	}
 
 	byName := map[string][]int{}
 	var found []Skill
 	for _, dir := range outer {
-		skill, reason := validate(tree, all, dir, limits, reserved)
+		skill, reason := validate(tree, below(all, dir), dir, limits, reserved)
 		if reason != "" {
 			problems = append(problems, api.SkillMarketplaceProblem{Path: dir, Name: path.Base(dir), Reason: reason})
 			continue
@@ -163,6 +178,56 @@ func displayPath(dir string) string {
 	return dir
 }
 
+// treeLimits returns the tree limits, with the defaults for zero.
+func (l Limits) treeLimits() (int, int64) {
+	maxEntries, maxPathBytes := l.MaxTreeEntries, l.MaxTreePathBytes
+	if maxEntries <= 0 {
+		maxEntries = DefaultLimits.MaxTreeEntries
+	}
+	if maxPathBytes <= 0 {
+		maxPathBytes = DefaultLimits.MaxTreePathBytes
+	}
+	return maxEntries, maxPathBytes
+}
+
+// inventory reads the tree below root. It counts each entry and the bytes of
+// its path when the walk visits it, and stops with ErrLimit before it keeps
+// more than the tree limits allow: the pack limits count each object once,
+// but a commit can hold one directory at many paths.
+func inventory(tree Tree, root string, limits Limits) ([]Entry, error) {
+	maxEntries, maxPathBytes := limits.treeLimits()
+	var all []Entry
+	var pathBytes int64
+	err := tree.Walk(root, func(entry Entry) error {
+		if len(all) >= maxEntries {
+			return fmt.Errorf("%w: the repository path %s holds more than %d files and directories; each path counts",
+				ErrLimit, displayPath(root), maxEntries)
+		}
+		if pathBytes += int64(len(entry.Path)); pathBytes > maxPathBytes {
+			return fmt.Errorf("%w: the paths of the files and directories below the repository path %s add up to more than %d bytes",
+				ErrLimit, displayPath(root), maxPathBytes)
+		}
+		all = append(all, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
+// below returns the entries below dir. all is sorted by path, so the paths
+// that start with dir/ are one run of it.
+func below(all []Entry, dir string) []Entry {
+	prefix := dir + "/"
+	start := sort.Search(len(all), func(i int) bool { return all[i].Path >= prefix })
+	end := start
+	for end < len(all) && strings.HasPrefix(all[end].Path, prefix) {
+		end++
+	}
+	return all[start:end]
+}
+
 // hiddenBelow reports whether dir has a hidden segment below root.
 func hiddenBelow(root, dir string) bool {
 	rel := strings.TrimPrefix(strings.TrimPrefix(dir, root), "/")
@@ -177,16 +242,20 @@ func hiddenBelow(root, dir string) bool {
 	return false
 }
 
-func enclosing(outer []string, dir string) string {
-	for _, candidate := range outer {
-		if candidate == "" || strings.HasPrefix(dir, candidate+"/") {
-			return candidate
+// enclosing returns the outer skill directory that holds dir, if any. The
+// candidates are processed in path order, so an outer directory is known
+// before the directories below it.
+func enclosing(isOuter map[string]bool, dir string) string {
+	for parent := path.Dir(dir); parent != "." && parent != "/"; parent = path.Dir(parent) {
+		if isOuter[parent] {
+			return parent
 		}
 	}
 	return ""
 }
 
-func validate(tree Tree, all []Entry, dir string, limits Limits, reserved []string) (Skill, string) {
+// validate checks the skill in dir. entries are the entries below dir.
+func validate(tree Tree, entries []Entry, dir string, limits Limits, reserved []string) (Skill, string) {
 	name := path.Base(dir)
 	if !api.ValidSkillMarketplaceName(name) {
 		return Skill{}, "the directory name is not a valid skill name: use at most 64 lowercase letters and digits, in words joined by single hyphens"
@@ -199,11 +268,8 @@ func validate(tree Tree, all []Entry, dir string, limits Limits, reserved []stri
 	skill := Skill{Name: name, Path: dir}
 	prefix := dir + "/"
 	var skillMD *Entry
-	for i := range all {
-		entry := all[i]
-		if !strings.HasPrefix(entry.Path, prefix) {
-			continue
-		}
+	for i := range entries {
+		entry := entries[i]
 		rel := strings.TrimPrefix(entry.Path, prefix)
 		for _, segment := range strings.Split(rel, "/") {
 			if unsafeName(segment) {
@@ -224,7 +290,7 @@ func validate(tree Tree, all []Entry, dir string, limits Limits, reserved []stri
 		skill.Files = append(skill.Files, File{RelPath: rel, Executable: entry.Mode == Executable, Size: entry.Size, Open: entry.Open})
 		skill.Bytes += entry.Size
 		if rel == skillFile {
-			skillMD = &all[i]
+			skillMD = &entries[i]
 		}
 	}
 	if len(skill.Files) > limits.MaxFiles {

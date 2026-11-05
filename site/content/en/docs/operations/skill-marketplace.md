@@ -116,8 +116,8 @@ The other limits are defaults that CetiRun chose to keep each skill small.
 
 | Value | Default | Limit |
 | --- | --- | --- |
-| `limits.maxRepositorySize` | `256Mi` | Size of the repository commit: the pack that the Git server sends for it, and its objects together |
-| `limits.maxRepositoryObjects` | `100000` | Objects of the repository commit: its files, its directories, and the commit |
+| `limits.maxRepositorySize` | `256Mi` | Size of the repository commit: the pack that the Git server sends for it, its objects together, and the paths of its files and directories below `repository.path` together |
+| `limits.maxRepositoryObjects` | `100000` | Objects of the repository commit: its files, its directories, and the commit. Below `repository.path`, each path counts |
 | `limits.maxSkillFiles` | `500` | Number of files in one skill |
 | `limits.maxSkillSize` | `5Mi` | Total size of the files of one skill |
 | `limits.maxSkillMDSize` | `256Ki` | Size of `SKILL.md`. It cannot be larger than `maxSkillSize`. |
@@ -131,6 +131,12 @@ before it decodes any object. A commit that exceeds a limit does not reach
 memory. Until the repository has a commit within the limits, the catalog keeps
 the last commit that the worker read.
 
+Git stores a directory once, also when the commit holds it at many paths. When
+the worker reads the tree below `repository.path`, it counts each path. A
+directory that the commit holds at two paths counts twice, with all the files
+and directories in it. The worker stops at the first path over
+`maxRepositoryObjects`, or when the paths together exceed `maxRepositorySize`.
+
 You cannot change the 64-character name limit, because Team and Policy
 validation also use it. Before you increase a size limit, do these checks:
 
@@ -139,9 +145,11 @@ validation also use it. Before you increase a size limit, do these checks:
   the Sandboxes of the Team.
 - Keep the memory limit of the worker, `skillMarketplace.worker.resources.limits.memory`, at least
   twice `maxRepositorySize` plus 256 MiB. A commit needs memory for its
-  objects and once more for its largest object. The default memory limit,
-  `1Gi`, fits the default repository limits. The worker sets the soft memory
-  limit of its Go runtime to 90% of the memory limit of its container.
+  objects, and once more for its largest object or for the paths below
+  `repository.path`. The default memory limit, `1Gi`, fits the default
+  repository limits. Increase the memory limit together with either
+  repository limit. The worker sets the soft memory limit of its Go runtime
+  to 90% of the memory limit of its container.
 - The worker writes the pack of a check to an `emptyDir` volume of its Pod.
   It removes the pack after the check. The pack is at most
   `maxRepositorySize`.
@@ -704,7 +712,7 @@ kubectl logs -n cetirun-system deployment/cetirun-skill-marketplace --tail=50
 | `the repository path "<path>" does not exist in the commit` | Correct `repository.path` |
 | `read known_hosts (required for SSH)`, or a host key error | Add the host keys of the Git host to `known_hosts` |
 | `parse the SSH private key` | Use a private key without a passphrase |
-| `the repository commit exceeds the limits of the Skill Marketplace` | The message names the limit. Make the commit smaller, or increase `limits.maxRepositorySize` (256 MiB by default) or `limits.maxRepositoryObjects` (100,000 by default). Files outside `repository.path` count too. Refer to [Skill limits](#skill-limits). |
+| `the repository commit exceeds the limits of the Skill Marketplace` | The message names the limit. Make the commit smaller, or increase `limits.maxRepositorySize` (256 MiB by default) or `limits.maxRepositoryObjects` (100,000 by default). Files outside `repository.path` count too. Below `repository.path`, each path counts, also for a directory that the commit holds at several paths. Refer to [Skill limits](#skill-limits). |
 
 ### A Team release is pending
 

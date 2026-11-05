@@ -52,7 +52,9 @@ func TestParseLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := skills.Limits{MaxFiles: 1000, MaxBytes: 20 << 20, MaxSkillMD: 512 << 10, MaxDepth: 12, MaxDescription: 2048}
+	// The repository limits bound the tree that the synchronizer walks too.
+	want := skills.Limits{MaxFiles: 1000, MaxBytes: 20 << 20, MaxSkillMD: 512 << 10, MaxDepth: 12, MaxDescription: 2048,
+		MaxTreeEntries: 5000, MaxTreePathBytes: 1 << 30}
 	if o.limits != want || o.maxRepository != 1<<30 || o.maxObjects != 5000 {
 		t.Fatalf("limits = %+v, repository %d bytes, %d objects", o.limits, o.maxRepository, o.maxObjects)
 	}

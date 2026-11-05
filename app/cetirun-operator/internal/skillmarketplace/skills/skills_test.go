@@ -6,6 +6,8 @@ package skills
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"path"
 	"sort"
@@ -188,6 +190,116 @@ func TestDiscoverRootSkillIsRejected(t *testing.T) {
 	_, problems, _ := Discover(newTree(map[string]string{"skills/SKILL.md": skillMD("skills", "root")}), "skills", DefaultLimits, nil)
 	if len(problems) != 1 || !strings.Contains(problems[0].Reason, "below the repository path") {
 		t.Fatalf("root SKILL.md: %+v", problems)
+	}
+}
+
+// generatedTree yields directories with paths of a given length, without
+// keeping them, and counts the entries that it yields.
+type generatedTree struct {
+	entries, pathBytes, visited int
+}
+
+func (t *generatedTree) Walk(root string, fn func(Entry) error) error {
+	for i := 0; i < t.entries; i++ {
+		t.visited++
+		name := fmt.Sprintf("%s/d%07d", root, i)
+		if pad := t.pathBytes - len(name); pad > 0 {
+			name += strings.Repeat("x", pad)
+		}
+		if err := fn(Entry{Path: name, Mode: Dir}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *generatedTree) TreeHash(string) (string, error) { return "", errors.New("not used") }
+
+// A Git commit can hold one directory at many paths, so a small commit can
+// expand into a large tree. The walk stops at the first entry over a tree
+// limit, before Discover keeps it.
+func TestDiscoverStopsAtTheTreeLimits(t *testing.T) {
+	for name, tc := range map[string]struct {
+		tree    generatedTree
+		change  func(*Limits)
+		visited int
+		message string
+	}{
+		"entries":          {generatedTree{entries: 1000}, func(l *Limits) { l.MaxTreeEntries = 50 }, 51, "more than 50 files and directories"},
+		"entries fit":      {generatedTree{entries: 50}, func(l *Limits) { l.MaxTreeEntries = 50 }, 50, ""},
+		"path bytes":       {generatedTree{entries: 1000, pathBytes: 200}, func(l *Limits) { l.MaxTreePathBytes = 10000 }, 51, "add up to more than 10000 bytes"},
+		"path bytes fit":   {generatedTree{entries: 50, pathBytes: 200}, func(l *Limits) { l.MaxTreePathBytes = 10000 }, 50, ""},
+		"default entries":  {generatedTree{entries: 200000}, func(l *Limits) { l.MaxTreeEntries = 0 }, 100001, "more than 100000 files and directories"},
+		"root of the repo": {generatedTree{entries: 10}, func(l *Limits) { l.MaxTreeEntries = 5 }, 6, "the repository path / holds"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			limits := DefaultLimits
+			tc.change(&limits)
+			tree := tc.tree
+			root := "skills"
+			if name == "root of the repo" {
+				root = ""
+			}
+			_, _, err := Discover(&tree, root, limits, nil)
+			if tc.message == "" {
+				if err != nil {
+					t.Fatalf("a tree within the limits: %v", err)
+				}
+			} else if !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("error %v, want %q", err, tc.message)
+			}
+			if tree.visited != tc.visited {
+				t.Fatalf("the walk visited %d entries, want %d", tree.visited, tc.visited)
+			}
+		})
+	}
+}
+
+// Unset tree limits use the defaults; they never mean "no limit".
+func TestTreeLimitsDefaultToTheRepositoryDefaults(t *testing.T) {
+	for _, limits := range []Limits{{}, {MaxTreeEntries: -1, MaxTreePathBytes: -1}} {
+		if entries, pathBytes := limits.treeLimits(); entries != 100000 || pathBytes != 256<<20 {
+			t.Fatalf("%+v: %d entries, %d path bytes", limits, entries, pathBytes)
+		}
+	}
+	if entries, pathBytes := (Limits{MaxTreeEntries: 7, MaxTreePathBytes: 9}).treeLimits(); entries != 7 || pathBytes != 9 {
+		t.Fatalf("configured limits: %d entries, %d path bytes", entries, pathBytes)
+	}
+}
+
+// Each skill gets exactly the files below its own directory, also next to
+// directories whose names start with the same characters, and a skill below
+// another skill is nested at any depth.
+func TestDiscoverAssignsFilesToTheirSkill(t *testing.T) {
+	files := map[string]string{}
+	for name, count := range map[string]int{"tool": 1, "tool-kit": 2, "tool2": 3, "toolbox": 4} {
+		files["skills/"+name+"/SKILL.md"] = skillMD(name, "A tool")
+		for i := 0; i < count; i++ {
+			files[fmt.Sprintf("skills/%s/f%d", name, i)] = "x"
+		}
+	}
+	files["skills/tool/a/b/inner/SKILL.md"] = skillMD("inner", "Two levels below tool")
+	files["skills/tool-kit/x/SKILL.md"] = skillMD("x", "Below tool-kit")
+	found, problems, err := Discover(newTree(files), "skills", DefaultLimits, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, skill := range found {
+		counts[skill.Name] = len(skill.Files)
+	}
+	// SKILL.md and its own files; the nested SKILL.md files belong to the outer skills.
+	want := map[string]int{"tool": 3, "tool-kit": 4, "tool2": 4, "toolbox": 5}
+	if fmt.Sprint(counts) != fmt.Sprint(want) {
+		t.Fatalf("files per skill %v, want %v", counts, want)
+	}
+	reasons := map[string]string{}
+	for _, problem := range problems {
+		reasons[problem.Path] = problem.Reason
+	}
+	if len(problems) != 2 || !strings.Contains(reasons["skills/tool/a/b/inner"], "nested inside skill tool") ||
+		!strings.Contains(reasons["skills/tool-kit/x"], "nested inside skill tool-kit") {
+		t.Fatalf("problems %+v", problems)
 	}
 }
 

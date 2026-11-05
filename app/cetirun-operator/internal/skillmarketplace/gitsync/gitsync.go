@@ -233,8 +233,9 @@ type Limits struct {
 	TempDir string
 }
 
-// ErrLimit reports a commit that exceeds the fetch limits.
-var ErrLimit = errors.New("the repository commit exceeds the limits of the Skill Marketplace")
+// ErrLimit reports a commit that exceeds the fetch limits. It is the error
+// that skills.Discover reports for a tree that exceeds its limits too.
+var ErrLimit = skills.ErrLimit
 
 // Fetch reads the commit that ref names into memory (depth 1).
 func (s Source) Fetch(ctx context.Context, ref plumbing.ReferenceName, limits Limits) (*Snapshot, error) {

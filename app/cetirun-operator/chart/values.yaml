@@ -337,12 +337,15 @@ skillMarketplace:
   # start, so raise the size limits only together with that space.
   limits:
     # -- Largest repository commit that the worker loads: the pack that the Git
-    # server sends for the commit, and the commit's objects together. The
-    # worker checks both before it decodes the commit into memory. Keep
-    # worker.resources.limits.memory at least twice this size plus 256Mi.
+    # server sends for the commit, the commit's objects together, and the paths
+    # of the files and directories below repository.path together. The worker
+    # checks the pack and the objects before it decodes the commit, and the
+    # paths while it reads the tree. Keep worker.resources.limits.memory at
+    # least twice this size plus 256Mi.
     maxRepositorySize: 256Mi
     # -- Most objects in the repository commit: its files, its directories and
-    # the commit itself.
+    # the commit itself. Below repository.path, the worker also counts each
+    # path: a directory that the commit holds at two paths counts twice.
     maxRepositoryObjects: 100000
     # -- Most files in one skill.
     maxSkillFiles: 500
