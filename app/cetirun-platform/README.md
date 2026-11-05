@@ -27,8 +27,10 @@ provision the cluster or qualify a Sandbox. Do not interpret its workload waits
 as an end-to-end Agent or model-readiness check.
 
 The full `make deploy` path must have the published artifact inventory, identity
-inputs, shared model tiers, and the `auto`/`decision-1` configuration described
-below. Before you start that path, make sure that you have these prerequisites.
+inputs, and callable shared models. Its default routing mode also requires
+shared model tiers and the `auto`/`decision-1` configuration described below.
+Explicit `modelRouting.mode: direct` omits that classifier dependency. Before
+you start, make sure that you have the prerequisites for the selected mode.
 A provider quota or account restriction is not a slow Pod startup.
 
 A Copilot-only installation instead uses the
@@ -116,7 +118,7 @@ and does not convert their values. Before you remove them from an older
 environment file, confirm the intended model access against the running Operator
 configuration.
 
-Configure the logical model `auto` with `auto_router/complexity_router`,
+By default, `modelRouting.mode` is `auto`. Configure the logical model `auto` with `auto_router/complexity_router`,
 `classifier_type: jev`, and `jev_classifier_config.deployment_name: decision-1`.
 The separate `decision-1` entry refers to the real `azure_ai/<deployment>` and
 uses `model_info.base_model: azure_ai/Microsoft-Decision-1` with
@@ -135,6 +137,24 @@ Put all four tiers and the real provider deployments in the environment file.
 The router's price fields are necessary guard metadata, not an average of route
 prices. Use the highest real tier rates. Billing stays on the selected backend
 and classifier. Do not copy the synthetic fixture prices into service.
+
+For an environment without Decision-1 quota, explicitly set:
+
+```yaml
+modelRouting:
+  mode: direct
+```
+
+Keep at least one callable shared model in
+`platform.values.cetirun-ai-gateway.models`. The model mode must be omitted,
+empty, `chat`, `completion`, or `responses`; embedding and evaluation models
+cannot serve Agent conversations. Omit `auto`, `decision-1`, and
+classifier or `auto_router/` entries. If CetiAdmin is enabled, set
+`platform.values.cetirun-operator.cetiadmin.model.default` to one of these
+configured model names. Direct mode does not provide automatic model routing.
+All identity, certificate, Secret, artifact, storage, admission, and pricing
+checks still apply. After quota is available, provision and qualify Decision-1,
+restore the router entries, and select `mode: auto`.
 
 Run the offline plan first:
 
@@ -691,8 +711,9 @@ also have a price.
 In this example, the provider key is in a Secret that you create in the release
 namespace. With `make deploy`, put the same entries under
 `platform.values.cetirun-ai-gateway` in the environment file. `make deploy`
-also must have the `auto` and `decision-1` entries that
-[Deploy the platform](#deploy-the-platform) describes:
+also requires the `auto` and `decision-1` entries in its default routing mode.
+With explicit `modelRouting.mode: direct`, supply callable models without
+those entries. Refer to [Deploy the platform](#deploy-the-platform):
 
 ```yaml
 cetirun-ai-gateway:
@@ -722,7 +743,8 @@ keep the configuration that they started with until they are replaced. The
 operator applies a changed model list after the rollout ends.
 
 Shared models are optional for a direct install of this chart. `make deploy`
-must have them, because it must have `auto`. Without shared models, OpenClaw
+must have them. Its default routing mode requires `auto`; explicit
+`modelRouting.mode: direct` requires callable shared models without a classifier. Without shared models, OpenClaw
 Agents use their owners' GitHub Copilot. With
 `cetirun-operator.aiGateway.copilotProxy.enabled` disabled, the Portal creates
 no OpenClaw Agent until a shared model is offered.

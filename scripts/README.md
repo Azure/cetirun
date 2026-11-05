@@ -25,6 +25,12 @@ for the input shape, the certificate ownership modes, and staged admission.
 This guide also shows which identity and runtime qualification is still
 necessary.
 
+The default model routing mode requires the JEV `auto` router and a real
+Decision-1 deployment. Set `modelRouting.mode: direct` to deploy callable
+shared models while classifier quota is unavailable. Omit router/classifier
+entries and give enabled CetiAdmin a configured direct model as its default;
+all other deployment checks remain in effect.
+
 `cetirun-release.py` drives the root build and publish targets and the MCR
 pipeline from `release-artifacts.json`. Its `list`, `check`, and `plan`
 commands do not connect to a registry. Image builds must have an explicit

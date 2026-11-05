@@ -790,6 +790,70 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "conflicts with the complete deployment"):
                         self.configure(config)
 
+    def direct_config(self):
+        config = copy.deepcopy(self.config)
+        config["modelRouting"] = {"mode": "direct"}
+        config["platform"]["values"]["cetirun-ai-gateway"]["models"] = config["platform"]["values"]["cetirun-ai-gateway"]["models"][:2]
+        return config
+
+    def test_direct_models_render_without_classifier_and_keep_platform_controls(self):
+        deployment = self.deployment(self.direct_config(), "direct-models")
+        values = deployment.values["platform"]
+        self.assertEqual(deployment.plan()["modelRouting"], {"mode": "direct"})
+        self.assertEqual([model["model_name"] for model in values["cetirun-ai-gateway"]["models"]], ["gpt-mini", "gpt-main"])
+        self.assertTrue(values["cetirun-operator"]["sandboxAdmission"]["enforce"])
+        self.assertTrue(values["cetirun-operator"]["agentIdentity"]["enabled"])
+        self.assertTrue(values["cetirun-ai-gateway"]["blockUnpricedModels"])
+        self.assertTrue(values["global"]["portalChat"]["enabled"])
+        deployment.preflight()
+        self.assertFalse(deployment.writes)
+
+    def test_direct_models_require_explicit_mode(self):
+        config = self.direct_config()
+        del config["modelRouting"]
+        with self.assertRaisesRegex(ValueError, "models must configure auto"):
+            self.configure(config)
+
+    def test_direct_models_reject_missing_models_classifiers_and_routers(self):
+        configs = []
+        empty = self.direct_config()
+        empty["platform"]["values"]["cetirun-ai-gateway"]["models"] = []
+        configs.append(empty)
+        for field, value in (("model_name", "auto"), ("model_name", "decision-1"),
+                             ("litellm_params.model", "auto_router/complexity_router"),
+                             ("litellm_params.model", ""), ("model_info.mode", "evaluation"),
+                             ("model_info.mode", "embedding"), ("model_info.mode", "rerank")):
+            config = self.direct_config()
+            DEPLOY.set_value(config["platform"]["values"]["cetirun-ai-gateway"]["models"][0], field, value)
+            configs.append(config)
+        for config in configs:
+            with self.subTest(config=config), patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("Tool before validation")):
+                with self.assertRaisesRegex(ValueError, "Direct model routing"):
+                    self.configure(config)
+
+    def test_model_routing_rejects_unknown_modes_and_fields(self):
+        for routing in ({"mode": "heuristic"}, {"mode": False}, {"mode": "direct", "skipChecks": True}, "direct"):
+            with self.subTest(routing=routing):
+                config = self.direct_config()
+                config["modelRouting"] = routing
+                with self.assertRaisesRegex(ValueError, "modelRouting"):
+                    self.configure(config)
+
+    def test_direct_cetiadmin_requires_a_configured_default_model(self):
+        config = self.direct_config()
+        admin = yaml.safe_load(FIXTURE.read_text())["platform"]["values"]["cetirun-operator"]["cetiadmin"]
+        config["platform"]["values"]["cetirun-operator"]["cetiadmin"] = admin
+        with self.assertRaisesRegex(ValueError, "cetiadmin.model.default"):
+            self.configure(config)
+        admin["model"]["default"] = "gpt-main"
+        models = config["platform"]["values"]["cetirun-ai-gateway"]["models"]
+        models[1]["model_info"]["mode"] = "embedding"
+        with self.assertRaisesRegex(ValueError, "Direct model routing requires callable models"):
+            self.configure(config)
+        models[1]["model_info"]["mode"] = "responses"
+        _, values = self.configure(config)
+        self.assertTrue(values["platform"]["cetirun-operator"]["cetiadmin"]["enabled"])
+
     def test_decision_accepts_the_priced_base_model_and_optional_api_version(self):
         for api_version in (None, "2024-05-01-preview"):
             with self.subTest(api_version=api_version):

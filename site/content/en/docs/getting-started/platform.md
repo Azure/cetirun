@@ -394,12 +394,18 @@ Before the first run, make sure that these items exist:
   request more quota. To see if a region offers the model, use
   `az cognitiveservices model list --location <region>`.
 
-  With `make deploy`, the `decision-1` entry is necessary, but `make deploy`
+  With the default `modelRouting.mode: auto`, the `decision-1` entry is
+  necessary, but `make deploy`
   does not call the deployment. If the deployment does not work, `auto` sends
   each request to its default model. Each request to `auto` can cause a
   classifier call of up to 32,768 tokens. Size the capacity of the deployment
   for this traffic. Refer to
   [Choose a classifier](../../operations/smart-routing/#choose-a-classifier).
+  To deploy before classifier quota is available, set `modelRouting.mode: direct`
+  in the environment file. Configure callable shared models without `auto`,
+  `decision-1`, or other classifier/router entries. Set enabled CetiAdmin's
+  `model.default` to one of the configured models. This explicit mode preserves
+  the other deployment checks and leaves automatic model routing unavailable.
 - The digests of the Custom images that you approve. Examples are the Pi and
   VS Code Server images that `make publish` pushed. To read a digest, use
   `docker buildx imagetools inspect <image>:<version>`. After each
@@ -513,7 +519,8 @@ Make a decision about these inputs before the first run:
   `ownerAlias`. The default model of CetiAdmin is `auto`. Refer to
   [Configure CetiAdmin]({{< repo "app/cetirun-platform/README.md" >}}#configure-cetiadmin).
 - `platform.values.cetirun-ai-gateway.models` holds the shared models. It must
-  contain the smart-routing model `auto`, which uses the decision model
+  contain callable models. The default `modelRouting.mode: auto` also requires
+  the smart-routing model `auto`, which uses the decision model
   `decision-1` as its classifier. The `base_model` of `decision-1` must be
   `azure_ai/Microsoft-Decision-1`. Refer to
   [Smart routing](../../operations/smart-routing/).
@@ -686,8 +693,11 @@ kubectl rollout status deployment/cetirun-ai-gateway -n cetirun-system --timeout
 ```
 
 `make deploy` sends no request to a model. Send one to the AI Gateway with its
-master key: list the models, and ask `auto` a question. These commands use the
-default namespace and do not print the key:
+master key: list the models, and ask a configured model a question. The plan
+reports the selected mode in `modelRouting.mode`. For `auto` mode, use the
+request below. For `direct` mode, replace `"model": "auto"` with a configured
+model name, such as `"model": "gpt-main"`. These commands use the default
+namespace and do not print the key:
 
 ```bash
 kubectl port-forward -n cetirun-system svc/cetirun-ai-gateway 4000:4000 &
@@ -699,15 +709,19 @@ curl -si http://localhost:4000/v1/chat/completions \
   -d '{"model": "auto", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
 ```
 
-The list contains the names of `models`. Agents do not see `decision-1`,
-because the Gateway lists it only for keys that the operator did not issue. The
-answer from `auto` has the header `x-litellm-complexity-router-tier`, and
+The list contains the names of `models`. In direct mode, verify that the
+selected model returns a normal response; there is no classifier or routing
+header to verify. Stop the port-forward after the test.
+
+In auto mode, Agents do not see `decision-1`, because the Gateway lists it only
+for keys that the operator did not issue. The answer from `auto` has the header `x-litellm-complexity-router-tier`, and
 `x-litellm-complexity-router-cause` is `jev_classifier`. Any other cause shows
 that the classifier did not decide. Then examine the `decision-1` entry, its
 key, and the Gateway's log. Stop the port-forward after the test.
 
 A Team is optional for a new agent. An agent without a Team can use every
-shared model, which includes the smart-routing model `auto`. An administrator
+shared conversational model, including `auto` when automatic routing is
+configured. An administrator
 creates Teams in the portal's administration pages, with an Agent Policy and a
 Sandbox. The agents of such a Team run in its Sandbox, after you configure
 [Policy-bound Teams](../../operations/policy-teams/). A Team can also give its

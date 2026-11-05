@@ -552,26 +552,43 @@ def configuration(path):
     if not ai["postgresql"]["bundled"]["enabled"] or not ai["redis"]["bundled"]["enabled"]:
         raise ValueError("This deployment manages bundled PostgreSQL and Valkey; external database migration needs a separate plan")
     models = {entry.get("model_name"): entry for entry in ai["models"]}
-    auto = models.get("auto", {}).get("litellm_params", {})
-    decision = models.get("decision-1", {})
-    router = auto.get("complexity_router_config", {})
-    if (auto.get("model") != "auto_router/complexity_router" or router.get("classifier_type") != "jev"
-            or router.get("jev_classifier_config", {}).get("deployment_name") != "decision-1"):
-        raise ValueError("models must configure auto with the existing jev classifier and logical decision-1 deployment")
-    if (not decision.get("litellm_params", {}).get("model", "").startswith("azure_ai/")
-            or decision.get("model_info", {}).get("base_model") != "azure_ai/Microsoft-Decision-1"
-            or decision.get("model_info", {}).get("mode") != "evaluation"):
-        raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, base_model azure_ai/Microsoft-Decision-1 and evaluation mode. "
-                         "LiteLLM prices the model only by that name, and the Operator does not offer an unpriced classifier to auto")
-    decision_params = decision["litellm_params"]
-    if not decision_params["model"].removeprefix("azure_ai/"):
-        raise ValueError("decision-1 requires a real Azure deployment name")
-    for field in ("api_base", "api_key"):
-        required(decision_params, field)
-    if "api_version" in decision_params:
-        required(decision_params, "api_version")
-    if set(router.get("tiers", {})) != {"SIMPLE", "MEDIUM", "COMPLEX", "REASONING"}:
-        raise ValueError("auto requires explicit SIMPLE, MEDIUM, COMPLEX and REASONING tiers")
+    routing = mapping(config.get("modelRouting", {}), "modelRouting")
+    mode = routing.get("mode", "auto")
+    if set(routing) - {"mode"} or mode not in ("auto", "direct"):
+        raise ValueError("modelRouting.mode must be auto or direct")
+    if mode == "direct":
+        if not models or any(name in ("auto", "decision-1") for name in models):
+            raise ValueError("Direct model routing requires configured models without auto or decision-1")
+        if any(not isinstance(entry.get("litellm_params", {}).get("model"), str)
+               or not entry["litellm_params"]["model"]
+               or entry["litellm_params"]["model"].startswith("auto_router/")
+               or entry.get("model_info", {}).get("mode") not in (None, "", "chat", "completion", "responses")
+               for entry in ai["models"]):
+            raise ValueError("Direct model routing requires callable models without classifiers or auto routers")
+        admin = operator["cetiadmin"]
+        if admin["enabled"] and admin["model"]["default"] not in models:
+            raise ValueError("Direct model routing requires cetiadmin.model.default to name a configured model")
+    else:
+        auto = models.get("auto", {}).get("litellm_params", {})
+        decision = models.get("decision-1", {})
+        router = auto.get("complexity_router_config", {})
+        if (auto.get("model") != "auto_router/complexity_router" or router.get("classifier_type") != "jev"
+                or router.get("jev_classifier_config", {}).get("deployment_name") != "decision-1"):
+            raise ValueError("models must configure auto with the existing jev classifier and logical decision-1 deployment")
+        if (not decision.get("litellm_params", {}).get("model", "").startswith("azure_ai/")
+                or decision.get("model_info", {}).get("base_model") != "azure_ai/Microsoft-Decision-1"
+                or decision.get("model_info", {}).get("mode") != "evaluation"):
+            raise ValueError("decision-1 needs an explicit azure_ai/<deployment>, base_model azure_ai/Microsoft-Decision-1 and evaluation mode. "
+                             "LiteLLM prices the model only by that name, and the Operator does not offer an unpriced classifier to auto")
+        decision_params = decision["litellm_params"]
+        if not decision_params["model"].removeprefix("azure_ai/"):
+            raise ValueError("decision-1 requires a real Azure deployment name")
+        for field in ("api_base", "api_key"):
+            required(decision_params, field)
+        if "api_version" in decision_params:
+            required(decision_params, "api_version")
+        if set(router.get("tiers", {})) != {"SIMPLE", "MEDIUM", "COMPLEX", "REASONING"}:
+            raise ValueError("auto requires explicit SIMPLE, MEDIUM, COMPLEX and REASONING tiers")
     for entry in ai["models"]:
         params = entry.get("litellm_params", {})
         if "api_key" in params and not re.fullmatch(r"os\.environ/[A-Za-z_][A-Za-z0-9_]*", str(params["api_key"])):
@@ -1412,6 +1429,7 @@ class Deployment:
                              for name, docs in self.documents.items()},
                 "artifacts": {kind: [entry["name"] for entry in entries] for kind, entries in release_inventory(self.config).items() if kind in ("images", "charts")},
                 "referenceCounts": dict(Counter(kind for kind, _, _ in references)),
+                "modelRouting": {"mode": self.config.get("modelRouting", {}).get("mode", "auto")},
                 "cetiadmin": {"enabled": self.values["platform"]["cetirun-operator"]["cetiadmin"]["enabled"],
                               "operatorRemovalRequested": not self.values["platform"]["cetirun-operator"]["enabled"],
                               "stopConfirmed": False},
