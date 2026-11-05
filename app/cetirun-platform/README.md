@@ -195,6 +195,11 @@ still checks strict server validation and admission without a schema download.
 The offline plan reports this choice. There is no automatic fallback after a
 validation error.
 
+Helm 3 validates hook manifests independently, even with this option. A failed
+hook schema download still stops deployment. Resolve schema access or populate
+the client's genuine discovery cache before retrying; do not skip the
+CetiAdmin hooks. The option never suppresses their installation checks.
+
 Before a write, the command also examines these items:
 
 - The configured admission CA and service DNS name
