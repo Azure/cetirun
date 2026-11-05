@@ -22,6 +22,36 @@ global:
   # -- Shared by Portal and Operator; separate from the Agent Identity Broker.
   registryCredentialNamespace: cetirun-registry-credentials
 
+# -- Optional public HTTP-01 certificate preparation on an existing managed
+# Istio ingress listener. cert-manager itself is installed separately.
+publicTLS:
+  enabled: false
+  # -- Render only the public TLS resources. This is intended for a
+  # certificate-first bootstrap before the rest of the platform is deployed.
+  bootstrapOnly: false
+  # -- Reserved for the deployment helper: expected next Helm revision.
+  # Bootstrap upgrades refuse a stale revision after a concurrent deployment.
+  bootstrapRevision: 1
+  # One exact public hostname. Wildcard certificates and DNS-01 are outside
+  # this HTTP-01 mode.
+  domain: ""
+  ingressNamespace: aks-istio-ingress
+  ingressServiceHostname: aks-istio-ingressgateway-external.aks-istio-ingress.svc.cluster.local
+  gateway:
+    name: cetirun-acme-http
+  acme:
+    # Optional ACME account contact. Certificates remain opt-in so operators
+    # can request and verify staging before production.
+    email: ""
+    stagingIssuerName: cetirun-letsencrypt-staging
+    productionIssuerName: cetirun-letsencrypt-production
+    stagingCertificateEnabled: false
+    stagingCertificateName: cetirun-tls-staging
+    stagingSecretName: cetirun-tls-staging
+    productionCertificateEnabled: false
+    productionCertificateName: cetirun-tls
+    productionSecretName: cetirun-tls
+
 cetirun-connections-mcp:
   enabled: false
 

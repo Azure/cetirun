@@ -11,7 +11,8 @@
 #           with pull access to the ACR registry.
 #
 # Environment variables:
-#   REGISTRY             — OCI registry          (default: cetirun.azurecr.io)
+#   REGISTRY             — OCI registry prefix   (default: public CetiRun MCR prefix)
+#   VERSION              — Shared chart/image version (default: source release)
 #   CHART_VERSION        — Chart version          (default: ...)
 #   NAMESPACE            — Target namespace       (default: cetirun-portal)
 #   RELEASE_NAME         — Helm release name      (default: cetirun-portal)
@@ -36,9 +37,9 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # OCI chart / deploy defaults (override via environment variables)
-REGISTRY="${REGISTRY:-cetirun.azurecr.io}"
+REGISTRY="${REGISTRY:-$("${SCRIPT_DIR}/../../../scripts/cetirun-release-metadata.sh" registry)}"
 CHART_REF="oci://${REGISTRY}/helm/cetirun-portal"
-CHART_VERSION="${CHART_VERSION:-0.1.1}"
+CHART_VERSION="${CHART_VERSION:-${VERSION:-0.1.1}}"
 NAMESPACE="${NAMESPACE:-cetirun-portal}"
 RELEASE_NAME="${RELEASE_NAME:-cetirun-portal}"
 IMAGE_REPO="${IMAGE_REPO:-${REGISTRY}/cetirun-portal}"
@@ -93,7 +94,7 @@ fi
 HELM_ARGS+=(--set "image.repository=${IMAGE_REPO}")
 
 # Optional overrides
-[ -n "${IMAGE_TAG:-}" ]      && HELM_ARGS+=(--set "image.tag=${IMAGE_TAG}")
+HELM_ARGS+=(--set-string "image.tag=${IMAGE_TAG:-${VERSION:-${CHART_VERSION}}}")
 [ -n "${IMAGE_DIGEST:-}" ]   && HELM_ARGS+=(--set "image.digest=${IMAGE_DIGEST}")
 [ -n "${ISTIO_HOST:-}" ]      && HELM_ARGS+=(--set "istio.host=${ISTIO_HOST}")
 [ -n "${ISTIO_LEGACY_HOST:-}" ] && HELM_ARGS+=(--set "istio.legacyHost=${ISTIO_LEGACY_HOST}")

@@ -7,7 +7,7 @@ Licensed under the MIT License.
 {{- end -}}
 
 {{- define "cetirun.memory.image" -}}
-{{- .Values.memoryContext.image | default (printf "%s/cetirun-memory-context:%s" (include "cetirun.registry" . | default "cetirun.azurecr.io") (include "cetirun.version" . | default .Chart.AppVersion)) -}}
+{{- .Values.memoryContext.image | default (printf "%s/cetirun-memory-context:%s" (include "cetirun.registry" . | default "mcr.microsoft.com/aks/ai-runtime/cetirun") (include "cetirun.version" . | default .Chart.AppVersion)) -}}
 {{- end -}}
 
 {{- define "cetirun.memory.validate" -}}

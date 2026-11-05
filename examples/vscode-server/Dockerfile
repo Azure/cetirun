@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:0.1.1
+ARG BASE_IMAGE=mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-base:0.1.1
 FROM ${BASE_IMAGE} AS runtime-source
 USER root
 WORKDIR /opt/cetirun-vscode

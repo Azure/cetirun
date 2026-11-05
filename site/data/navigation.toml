@@ -59,6 +59,7 @@
     pages = [
       "/docs/getting-started/platform",
       "/docs/operations/infrastructure",
+      "/docs/operations/public-ingress",
       "/docs/operations/policy-teams",
       "/docs/operations/agent-identity",
     ]
@@ -68,6 +69,7 @@
       "/docs/concepts/configuration",
       "/docs/guides/teams",
       "/docs/operations/smart-routing",
+      "/docs/operations/skill-marketplace",
       "/docs/operations/storage",
       "/docs/operations/istio",
       "/docs/guides/agent-ingress-mtls",

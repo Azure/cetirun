@@ -761,7 +761,7 @@
                         "repository": {
                             "type": "string",
                             "description": "Image repository including registry",
-                            "default": "cetirun.azurecr.io/openclaw-gateway"
+                            "default": "mcr.microsoft.com/aks/ai-runtime/cetirun/openclaw-gateway"
                         },
                         "tag": {
                             "type": "string",
@@ -867,7 +867,7 @@
                         "repository": {
                             "type": "string",
                             "description": "Image repository including registry",
-                            "default": "cetirun.azurecr.io/hermes-gateway"
+                            "default": "mcr.microsoft.com/aks/ai-runtime/cetirun/hermes-gateway"
                         },
                         "tag": {
                             "type": "string",
@@ -1421,7 +1421,7 @@
                         "repository": {
                             "type": "string",
                             "description": "Image repository",
-                            "default": "cetirun.azurecr.io/cetirun-desktop"
+                            "default": "mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-desktop"
                         },
                         "tag": {
                             "type": "string",
@@ -1594,6 +1594,25 @@
                     "type": "string",
                     "description": "Separately owned namespace-local skills PVC; suppresses chart PV/PVC creation",
                     "default": ""
+                },
+                "subPath": {
+                    "type": "string",
+                    "description": "Operator-set Skill Marketplace Team subtree (teams/<team-uid>) of the shared skills claim; only the HOME initializer mounts it, read-only",
+                    "pattern": "^$|^teams/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                    "default": ""
+                },
+                "marketplace": {
+                    "type": "object",
+                    "description": "Operator-set Skill Marketplace selection of the Agent's Team; set together with subPath",
+                    "additionalProperties": false,
+                    "properties": {
+                        "selectionDigest": {
+                            "type": "string",
+                            "description": "Team selection digest that the HOME initializer waits for",
+                            "pattern": "^$|^sha256:[a-f0-9]{64}$",
+                            "default": ""
+                        }
+                    }
                 },
                 "shared": {
                     "type": "boolean",

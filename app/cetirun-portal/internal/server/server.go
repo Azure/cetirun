@@ -118,6 +118,10 @@ func New(
 	adminMux.HandleFunc("GET /api/v1/admin/policies/{name}", adminPolicyHandler.GetPolicy)
 	adminMux.HandleFunc("PUT /api/v1/admin/policies/{name}", adminPolicyHandler.UpdatePolicy)
 	adminMux.HandleFunc("DELETE /api/v1/admin/policies/{name}", adminPolicyHandler.DeletePolicy)
+	// The Skill Marketplace catalog Team skills are chosen from; it shares
+	// the Team handler's client and configuration.
+	adminSkillMarketplaceHandler := &handler.AdminSkillMarketplaceHandler{Kube: adminTeamHandler.Kube, Config: adminTeamHandler.Config}
+	adminMux.HandleFunc("GET /api/v1/admin/skill-marketplace", adminSkillMarketplaceHandler.GetSkillMarketplace)
 	adminMux.HandleFunc("GET /api/v1/admin/instances", adminInstanceHandler.ListAllInstances)
 	adminMux.HandleFunc("GET /api/v1/admin/instances/{name}", adminInstanceHandler.GetInstance)
 	adminMux.HandleFunc("GET /api/v1/admin/instances/{name}/status", adminInstanceHandler.GetInstanceStatus)

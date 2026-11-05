@@ -7,7 +7,8 @@ platform includes the Operator, admission server, Portal, AI Gateway,
 PostgreSQL, Valkey, and Connections MCP. The Operator installs CetiAdmin through
 its Hermes runtime and asset export path. The same configuration enables Portal
 Chat and supplies Custom runtime, terminal, Memory, and shared Skills/HOME
-references.
+references. The optional [Skill Marketplace](#skill-marketplace) is installed
+only when the environment file configures it.
 
 The `cetirun-platform` Helm chart contains the platform components. Its
 switches stay available to chart consumers. The full set is necessary for the
@@ -54,28 +55,56 @@ credentials or qualification.
 
 The file contains these inputs:
 
+For a test release, `REGISTRY` and `VERSION` environment variables or Make
+command-line assignments override only the release coordinates in memory.
+They do not rewrite the environment file. Without explicit overrides, the
+file's coordinates take precedence over defaults. The Python entry point also
+accepts `--registry` and `--version`. Use the same values for `deploy-plan`
+and the separately authorized `deploy` invocation. Existing explicit image
+and digest pins are not cleared; conflicting coordinated values fail validation.
+
+```bash
+REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
+  make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
+```
+
 | Input | Meaning |
 | --- | --- |
 | `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
-| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images |
+| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images. Omitted registry/version use the public MCR prefix and source Runtime Chart version |
 | `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
+| `publicTLS` | Optional Azure Public IP DNS or custom-DNS HTTP-01 certificate configuration. It derives the Helm release from `platform`, and the ingress namespace from `istio` |
 | `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
 | `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper stops if a provider Secret that the file names does not exist. Remove the providers that you do not register |
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
 | `sharedSkills` | The shared Skills storage fields that exist in the runtime chart, for example, storage class, resource group, account, and container |
+| `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
 federation/permissions, storage classes, and referenced Secrets are
-prerequisites that must already exist. Provision them through the environment's
-approved workflow. The helper does not call `az`, get Key Vault secrets, change
-subscriptions, or change `current-context`. Every cluster operation uses
-`target.context`. Before a write, the helper examines the cluster name, API
-origin, and cluster UID of that context.
+prerequisites unless the optional public DNS/TLS preparation below supplies
+the public hostname and certificate. Provision the other requirements through
+the environment's approved workflow. Azure DNS mode uses `az` with the configured
+subscription; the helper does not get Key Vault secrets or change
+`current-context`. Every cluster operation uses `target.context`. Before a
+write, the helper examines the cluster name, API origin, and cluster UID.
 
-The helper uses the kubeconfig of the shell, from `KUBECONFIG` or the default
-file. Read the `target` values from the context after you make sure that it
+For one exact public hostname, add `publicTLS` to this same environment file.
+`make deploy` then configures the Azure Public IP DNS label or verifies custom
+DNS, installs or checks the separately managed cert-manager controller, and
+uses the platform chart's certificate-only mode to issue staging and production
+HTTP-01 certificates before it installs the normal CetiRun releases. See
+[Public DNS and TLS](../../site/content/en/docs/operations/public-ingress.md).
+The normal full platform upgrade retains the same public TLS resources. A full
+release is never replaced with certificate-only values. Existing externally
+supplied certificates and Key Vault workflows remain supported when
+`publicTLS` is absent.
+
+When `publicTLS` is enabled, `target.kubeconfig` is required and every command
+uses that file with `target.context`; the shell `KUBECONFIG` is ignored. For
+other deployments, read the target values from the context after making sure it
 selects the intended cluster. The server must be the same string as in the
 kubeconfig, with its port if it has one:
 
@@ -175,6 +204,10 @@ After the target deployment is authorized, run:
 make deploy DEPLOY_CONFIG=/path/to/environment.yaml
 ```
 
+After the Portal is available, `make deploy-verify` performs the read-only
+public DNS, Gateway, certificate, redirect, Portal readiness, and OAuth redirect
+checks when `publicTLS` is enabled. It does not complete an interactive sign-in.
+
 This command must also have kubectl, OpenSSL, and Docker buildx for read-only
 artifact inspection. Their normal authentication must be configured before you
 run the command. Before its first persistent write, the command examines
@@ -240,7 +273,8 @@ patch the mesh.
 
 Next, the Broker and its Auth SDK start in the credential namespace. Then the
 helper installs the platform. It waits for every Deployment and StatefulSet,
-which includes PostgreSQL, Valkey, MCP, and the admission server.
+which includes PostgreSQL, Valkey, MCP, the admission server, and the
+configured Skill Marketplace.
 
 On a new installation, the helper starts the admission server before it
 activates global Sandbox enforcement. CetiAdmin's dedicated fail-closed webhooks
@@ -720,6 +754,72 @@ Administrator groups cannot be blanket groups, for example
 `system:authenticated` or `system:serviceaccounts:<namespace>`. The admission
 server refuses to start with these groups. As a result, the chart also refuses
 them.
+
+## Skill Marketplace
+
+The Operator runs the optional Skill Marketplace. A worker syncs one Git
+repository of skills, and publishes the skills that each policy-bound Team
+selects to a Blob NFS container. The Operator gives each Sandbox Agent of
+these Teams that the common executor runs, built-in or Custom, a read-only
+claim of the container. The marketplace is off by
+default. To enable it, set `cetirun-operator.skillMarketplace` and enable
+`cetirun-portal.skillMarketplace.enabled`. The Operator chart accepts the
+marketplace only with `sandboxSources.enabled` and `nativeExecution`, with a
+`sandboxSources.skillsClaimName`, and without
+`sandboxSources.skillsCatalogConfigMapName`.
+
+The worker is the Deployment `cetirun-skill-marketplace` in the operator
+namespace. It runs the operator image, and it can only read the Teams document
+of the Operator and update the catalog. The platform chart refuses these
+settings:
+
+- The marketplace of the bundled Operator is on, and the setting of the bundled
+  Portal is off.
+- The Portal setting is on, and the bundled Operator or its marketplace is off.
+- The Portal's `skillMarketplace.catalogNamespace` is not
+  `cetirun-operator.namespace`.
+
+`make deploy` sets these values from the optional `skillMarketplace` block of
+the environment file:
+
+```yaml
+skillMarketplace:
+  repository:
+    url: https://git.example.com/example/skills.git
+    ref: main                # Optional. Empty uses the remote HEAD.
+    path: skills             # Optional. Empty is the repository root.
+    auth: token              # none, token, or ssh
+    existingSecret: skills-repository
+    syncInterval: 5m         # Optional. At least 30s.
+  storage:
+    resourceGroup: example-rg
+    storageAccount: examplemarketplace
+    containerName: marketplace
+    storageClassName: azureblob-nfs-premium
+```
+
+With `auth: ssh`, use an `ssh://` URL or the `user@host:path` form. The URL
+must not contain credentials. For `auth: token`, the Secret in
+`platform.namespace` has the key `token`. For `auth: ssh`, it has the keys
+`ssh-privatekey` and `known_hosts`. Before its first write, the command makes
+sure that these keys and the StorageClass exist.
+
+The command refuses the block if the native Sandbox sources are off. It also
+refuses it if the Operator uses a published skills catalog, or if the storage
+is the `sharedSkills` container. Set other values of the marketplace, for
+example `repository.tokenUsername` or `limits`, under
+`platform.values.cetirun-operator.skillMarketplace`.
+
+On a new installation, the bootstrap upgrade does not install the marketplace.
+The command waits for the rollout of the worker after the final platform
+upgrade. A ready worker has not necessarily synchronized the repository. The
+catalog ConfigMap `cetirun-skill-marketplace` in the operator namespace shows
+the synchronized commit and any sync error.
+
+NFS 3.0 authorizes clients only by network. Use a storage account that only
+private endpoints can reach, and turn off its public network access. Refer to
+[Storage](../../site/content/en/docs/operations/storage.md) and
+[Skill Marketplace](../../site/content/en/docs/operations/skill-marketplace.md).
 
 ## AI Gateway
 

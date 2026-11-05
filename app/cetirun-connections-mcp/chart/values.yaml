@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/azure/cetirun-connections-mcp
+  repository: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-connections-mcp
   tag: ""
   digest: ""
   pullPolicy: IfNotPresent

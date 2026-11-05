@@ -113,7 +113,7 @@ agent helper builds for `linux/amd64`. Its inputs include:
 
 | Variable | Purpose |
 | --- | --- |
-| `REGISTRY`, `IMAGE_NAME`, `IMAGE_TAG` | Image destination and identity |
+| `REGISTRY`, `VERSION`, `IMAGE_NAME`, `IMAGE_TAG` | Registry prefix and image identity; component scripts can override the version with `IMAGE_TAG` where supported |
 | `PUSH` | `false` for a local load. `true` publishes externally |
 | `DOCKERFILE`, `BASE_IMAGE` | Agent Dockerfile and base override |
 | `BUILD_BASE`, `BUILD_DESKTOP` | Default `true` |
@@ -121,6 +121,13 @@ agent helper builds for `linux/amd64`. Its inputs include:
 | `NPM_REGISTRY` | Registry that most build stages use |
 | `OPENCLAW_NPM_REGISTRY` | Separate OpenClaw package registry |
 | `PYPI_INDEX_URL` | Default Python package index supplied to Hermes' locked `uv` install |
+
+The public MCR default is a pull address, not a writable registry. Set an
+explicit writable `REGISTRY` for `PUSH=true`, `docker-push` or chart publication;
+these entry points reject direct pushes to MCR. Official MCR publication uses
+the ADO pipeline to push to the backing ACR, followed by automatic MCR sync.
+The pipeline embeds MCR URLs during local chart packaging but sends all image
+and chart writes to ACR.
 
 `NPM_REGISTRY` and `OPENCLAW_NPM_REGISTRY` default to
 `https://registry.npmjs.org/`. Runtime skill installation separately uses
@@ -304,7 +311,7 @@ result, this prototype must not be connected to execution authorization.
   prerequisites, then install the operator chart with its packaged CRDs.
 - `app/cetirun-portal/deploy/deploy.sh`: portal namespace injection and Helm.
 
-Operator deployment inputs include `REGISTRY`, `CHART_VERSION`, `NAMESPACE`,
+Operator deployment inputs include `REGISTRY`, `VERSION`, `CHART_VERSION`, `NAMESPACE`,
 `RELEASE_NAME`, `LOCAL_CHART`, `IMAGE_REPO`, `IMAGE_TAG`, `IMAGE_DIGEST`,
 `DOMAIN`, `CETIRUN_REPO_URL`, `CETIRUN_CHART_VERSION`, and `HELM_SET_ARGS`.
 `ISTIO_GATEWAY` selects the Gateway resource as `namespace/name`.
@@ -312,8 +319,11 @@ Operator deployment inputs include `REGISTRY`, `CHART_VERSION`, `NAMESPACE`,
 NetworkPolicies.
 
 Portal deployment also uses `ISTIO_HOST`, `ISTIO_REV`, `NOTICE_BANNER`,
-`ADMIN_ALIASES`, and `MAX_INSTANCES_PER_USER`. The helpers default to
-deployment-specific OCI locations. Configure actual, accessible artifacts.
+`ADMIN_ALIASES`, and `MAX_INSTANCES_PER_USER`. The default registry prefix is
+`mcr.microsoft.com/aks/ai-runtime/cetirun`. `VERSION` selects both the chart
+and image version unless a component-specific override is explicit. Configure
+actual, accessible artifacts; changing defaults does not migrate existing
+Agents or their pinned images.
 
 The platform helper reads one environment file: `--config <file>`. With
 `--plan`, it validates the file and renders the charts offline. It does not

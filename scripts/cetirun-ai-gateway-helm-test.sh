@@ -188,7 +188,7 @@ assert_contains "user_api_key_cache_ttl: 0" \
 # the other CetiRun charts in taking its registry and version from the umbrella
 # chart's global values.
 echo "==> the Gateway runs the CetiRun image"
-assert_contains "image: cetirun.azurecr.io/cetirun-ai-gateway:${app_version}$" \
+assert_contains "image: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-ai-gateway:${app_version}$" \
   "the default image is cetirun-ai-gateway at the chart's appVersion" "${output}"
 assert_absent "berriai" "no upstream LiteLLM image is referenced" "${output}"
 umbrella="$(render --set-string global.registry=registry.example.invalid/ --set-string global.version=9.9.9)"

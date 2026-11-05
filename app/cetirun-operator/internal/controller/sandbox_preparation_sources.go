@@ -118,6 +118,14 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		Home:      home, Skills: skills, SkillsMode: inputs.SkillsMode, RuntimeClass: runtimeClass,
 		Helpers: inputs.Helpers, AuthorizedSecrets: []string{inputs.RuntimeSecret.Name},
 	}
+	if r.SkillMarketplace && attempt.reconciled && inputs.SkillsMode != sandboxworkload.SkillsModeEmpty {
+		// The claim holds every Team's subtree. Select the bound Team's and
+		// the release of its current selection; the Team is a pinned source.
+		attempt.input.SkillMarketplace = &sandboxworkload.SkillMarketplaceInput{
+			TeamPath:        api.SkillMarketplaceTeamPath(string(attempt.resolution.Binding.TeamUID)),
+			SelectionDigest: api.SkillMarketplaceSelectionDigest(attempt.team.Spec.Skills),
+		}
+	}
 	if agent.Spec.Agent.Type == api.AgentTypeCustom {
 		if err := r.configureCustomSandboxInput(ctx, attempt); err != nil {
 			return err

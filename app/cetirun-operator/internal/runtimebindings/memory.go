@@ -15,7 +15,7 @@ var memoryImagePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./:_-]*(@sha2
 
 func DefaultMemoryImage(registry, version string) string {
 	if registry == "" {
-		registry = "cetirun.azurecr.io"
+		registry = "mcr.microsoft.com/aks/ai-runtime/cetirun"
 	}
 	return strings.TrimSuffix(registry, "/") + "/cetirun-memory-context:" + version
 }

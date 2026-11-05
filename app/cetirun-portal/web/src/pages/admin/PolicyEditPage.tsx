@@ -19,6 +19,9 @@ import {
   type RateLimitRow,
 } from "../../utils/rateLimits";
 import { InternalNetworkRules, formatInternalNetworkRules, parseInternalNetworkRules, validCIDR, type InternalNetworkRule } from "./InternalNetworkRules";
+import { useFeatures } from "../../hooks/useFeatures";
+import { useSkillMarketplace } from "../../hooks/useSkillMarketplace";
+import { SkillChecklist } from "./SkillChecklist";
 import { useAIGatewayCatalog } from "../../hooks/useAIGateway";
 import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurationErrorMessage";
 
@@ -38,6 +41,14 @@ const emptyForm: PolicyFormState = {
 };
 
 function lines(value: string): string[] { return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); }
+
+/** The Allowed skills text with one skill name added at the end or removed; other lines stay as written. */
+export function toggleAllowedSkill(text: string, name: string, checked: boolean): string {
+  const kept = text.split(/\r?\n/).filter((line) => line.trim() !== name);
+  if (!checked) return kept.join("\n");
+  while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
+  return [...kept, name].join("\n");
+}
 
 function SharedModelPicker({ value, onChange }: { value: string; onChange: (models: string[]) => void }) {
   const catalog = useAIGatewayCatalog(true);
@@ -158,6 +169,9 @@ export function PolicyEditPage() {
     queryKey: ["admin", "policy", name], queryFn: () => getPolicy(name!), enabled: !isCreate,
     refetchInterval: 30_000, refetchOnMount: "always",
   });
+  const { data: features } = useFeatures();
+  const marketplaceEnabled = !!features?.skillMarketplaceEnabled;
+  const marketplace = useSkillMarketplace(marketplaceEnabled);
   useLayoutEffect(() => {
     activePolicyName.current = name;
     baseline.current = null;
@@ -232,6 +246,7 @@ export function PolicyEditPage() {
   if (!isCreate && error && !existing) return <MessageBar intent="error">Failed to load: {error.message}</MessageBar>;
   const pending = createMutation.isPending || updateMutation.isPending;
   const readonlyNetwork = existing?.network;
+  const allowedSkills = lines(form.skills);
   return <form onSubmit={submit} style={{ maxWidth: 820, display: "flex", flexDirection: "column", gap: 16 }}>
     <Title2>{isCreate ? "New agent policy" : `Agent policy: ${name}`}</Title2>
     <Text>Configure the harnesses, skills, model access, and Sandbox controls that Agents may use.</Text>
@@ -241,6 +256,19 @@ export function PolicyEditPage() {
     <Switch checked={form.hermes} label="Hermes" onChange={(_, data) => setForm({ ...form, hermes: data.checked })} />
     <Switch checked={form.custom} label="Custom" onChange={(_, data) => setForm({ ...form, custom: data.checked })} />
     <Field label="Allowed skills" hint="Enter one skill identifier per line; commas are not separators. Leave empty to allow no Team or Agent skills."><Textarea rows={4} value={form.skills} onChange={(_, data) => setForm({ ...form, skills: data.value })} placeholder={"skill-a\nnpm:@scope/skill-b\nskill-c@1.2.0"} /></Field>
+    {marketplaceEnabled && <section aria-label="Skill Marketplace skills" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <Text size={300} weight="semibold">Skill Marketplace skills</Text>
+      <Text size={200}>Checking a skill adds its name to Allowed skills; unchecking removes it. Other entries, such as npm packages, stay in the list above. A skill that a Team using this policy selects cannot be removed until the Team drops it.</Text>
+      {marketplace.error && <MessageBar intent="error">Failed to load the skill catalog: {marketplace.error.message}</MessageBar>}
+      {marketplace.isLoading && <Spinner size="tiny" label="Loading the skill catalog..." />}
+      {marketplace.data && !marketplace.data.catalog && <Text size={200}>The skill catalog is not available yet.</Text>}
+      {marketplace.data?.catalog && <SkillChecklist label="Allowed marketplace skills"
+        choices={(marketplace.data.catalog.skills ?? []).map((skill) => ({
+          name: skill.name, description: skill.description, version: skill.version, updatedAt: skill.updatedAt, checked: allowedSkills.includes(skill.name),
+        }))}
+        emptyText="The skills repository has no valid skills yet."
+        onToggle={(skill, checked) => setForm({ ...form, skills: toggleAllowedSkill(form.skills, skill, checked) })} />}
+    </section>}
     <Divider /><Text weight="semibold">AI Gateway</Text>
     <Switch checked={form.copilot} label="Allow GitHub Copilot" onChange={(_, data) => {
       const copilot = data.checked;

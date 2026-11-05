@@ -7,8 +7,10 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PolicyEditPage } from "./PolicyEditPage";
-import { fromPolicyDTO, toPolicyRequest } from "./PolicyEditPage";
+import { fromPolicyDTO, toggleAllowedSkill, toPolicyRequest } from "./PolicyEditPage";
 import * as policyAPI from "../../api/adminPolicy";
+import * as marketplaceAPI from "../../api/skillMarketplace";
+import type { Features } from "../../types/features";
 import * as gatewayAPI from "../../api/aiGateway";
 
 vi.mock("../../api/aiGateway");
@@ -22,6 +24,9 @@ vi.mock("../../api/adminPolicy", async (importOriginal) => {
     updatePolicy: vi.fn(),
   };
 });
+vi.mock("../../api/skillMarketplace");
+const features = vi.hoisted(() => ({ data: undefined as Features | undefined }));
+vi.mock("../../hooks/useFeatures", () => ({ useFeatures: () => features }));
 
 const cachedPolicy: policyAPI.AgentPolicyDTO = {
   name: "standard", uid: "policy-uid", resourceVersion: "42",
@@ -60,9 +65,58 @@ describe("PolicyEditPage", () => {
     vi.mocked(policyAPI.createPolicy).mockReset();
     vi.mocked(policyAPI.getPolicy).mockReset();
     vi.mocked(policyAPI.updatePolicy).mockReset();
+    vi.mocked(marketplaceAPI.getSkillMarketplace).mockReset();
+    features.data = undefined;
     vi.mocked(gatewayAPI.getAIGatewayCatalog).mockReset().mockResolvedValue({
       known: true, sharedModels: [], githubCopilot: true, agentTypes: ["openclaw"],
     });
+  });
+
+  it("adds and removes one catalog skill in the allowed skills text without touching other entries", () => {
+    expect(toggleAllowedSkill("", "pdf-tools", true)).toBe("pdf-tools");
+    expect(toggleAllowedSkill("npm:@scope/tool\n\n", "pdf-tools", true)).toBe("npm:@scope/tool\npdf-tools");
+    expect(toggleAllowedSkill("pdf-tools", "pdf-tools", true)).toBe("pdf-tools");
+    expect(toggleAllowedSkill("pdf-tools\n npm:@scope/tool\n pdf-tools ", "pdf-tools", false)).toBe(" npm:@scope/tool");
+    expect(toggleAllowedSkill("pdf-tools-extra", "pdf-tools", false)).toBe("pdf-tools-extra");
+  });
+
+  it("toggles Skill Marketplace skills in the allowed skills and keeps other entries", async () => {
+    features.data = { tailscaleEnabled: false, agentIdentityEnabled: false, agentToolsEnabled: false, maxInstancesPerUser: 1, skillMarketplaceEnabled: true };
+    vi.mocked(marketplaceAPI.getSkillMarketplace).mockResolvedValue({ enabled: true, known: true, catalog: {
+      version: "v1", repository: { url: "https://git.example.com/org/skills.git" },
+      skills: [
+        { name: "pdf-tools", description: "Reads and fills PDF forms.", version: "bbbbbbbbbbbb", path: "skills/pdf-tools", files: 5, bytes: 4096 },
+        { name: "web-search", description: "Searches the web.", version: "cccccccccccc", path: "skills/web-search", files: 1, bytes: 512 },
+      ],
+    } });
+    const policy = { ...cachedPolicy, skills: { allowed: ["original-skill", "npm:@scope/tool", "web-search"] } };
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(policy);
+    vi.mocked(policyAPI.updatePolicy).mockResolvedValue(policy);
+    const user = userEvent.setup();
+    renderCachedPolicy(policy);
+    const skills = screen.getByRole("textbox", { name: "Allowed skills" });
+    const list = within(await screen.findByRole("group", { name: "Allowed marketplace skills" }));
+    expect(list.getByRole("checkbox", { name: "web-search" })).toBeChecked();
+    expect(list.getByRole("checkbox", { name: "pdf-tools" })).not.toBeChecked();
+    await user.click(list.getByRole("checkbox", { name: "pdf-tools" }));
+    expect(skills).toHaveValue("original-skill\nnpm:@scope/tool\nweb-search\npdf-tools");
+    await user.click(list.getByRole("checkbox", { name: "web-search" }));
+    expect(skills).toHaveValue("original-skill\nnpm:@scope/tool\npdf-tools");
+    // A name typed into the list checks its box too.
+    fireEvent.change(skills, { target: { value: "original-skill\nnpm:@scope/tool\npdf-tools\nweb-search" } });
+    expect(list.getByRole("checkbox", { name: "web-search" })).toBeChecked();
+    await user.click(list.getByRole("checkbox", { name: "web-search" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(policyAPI.updatePolicy).toHaveBeenCalledOnce());
+    expect(vi.mocked(policyAPI.updatePolicy).mock.calls[0][1].skills).toEqual({ allowed: ["original-skill", "npm:@scope/tool", "pdf-tools"] });
+  });
+
+  it("offers no catalog checklist without the Skill Marketplace", () => {
+    vi.mocked(policyAPI.getPolicy).mockResolvedValue(cachedPolicy);
+    renderCachedPolicy();
+    expect(screen.getByRole("textbox", { name: "Allowed skills" })).toHaveValue("original-skill");
+    expect(screen.queryByRole("region", { name: "Skill Marketplace skills" })).not.toBeInTheDocument();
+    expect(marketplaceAPI.getSkillMarketplace).not.toHaveBeenCalled();
   });
 
   it("preserves Custom policy permission and supports explicit removal", async () => {

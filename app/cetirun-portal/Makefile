@@ -1,12 +1,13 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-IMAGE_REPO ?= ghcr.io/azure/cetirun-portal
-IMAGE_TAG  ?= latest
+REGISTRY ?= $(shell ../../scripts/cetirun-release-metadata.sh registry)
+IMAGE_REPO ?= $(REGISTRY)/cetirun-portal
+IMAGE_TAG  ?= $(VERSION)
 NPM_REGISTRY ?= https://registry.npmjs.org/
-VERSION ?= dev
+VERSION ?= $(shell ../../scripts/cetirun-release-metadata.sh version)
 GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo.Version=$(VERSION) \
+LDFLAGS = -X github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo.Version=$(VERSION) \
 	-X github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo.Commit=$(GIT_SHA)
 
 ##@ Development
@@ -53,6 +54,7 @@ docker-build: ## Build Docker image (run from repo root)
 
 .PHONY: docker-push
 docker-push: ## Push Docker image
+	../../scripts/cetirun-release-metadata.sh check-push-registry "$(IMAGE_REPO)"
 	docker push $(IMAGE_REPO):$(IMAGE_TAG)
 
 ##@ Deploy

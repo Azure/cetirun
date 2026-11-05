@@ -97,6 +97,12 @@ spec:
             {{- if .Values.skills.shared }}
             - name: CETIRUN_SHARED_SKILLS_DIR
               value: /etc/cetirun-shared-skills
+            {{- /* Skill Marketplace: the initializer copies the release of the
+               Team's selection from the Team's subtree of the claim. */}}
+            {{- with (.Values.skills.marketplace | default dict).selectionDigest }}
+            - name: CETIRUN_SKILLS_RELEASE_SELECTION
+              value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.memoryContext.enabled }}
             - name: CETIRUN_MEMORY_ASSETS
@@ -119,6 +125,9 @@ spec:
             - name: shared-skills
               mountPath: /etc/cetirun-shared-skills
               readOnly: true
+              {{- with .Values.skills.subPath }}
+              subPath: {{ . | quote }}
+              {{- end }}
             {{- end }}
             {{- if .Values.memoryContext.enabled }}
             - name: memory-assets

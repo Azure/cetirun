@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -29,6 +29,9 @@ const mockSuspension = vi.hoisted(() => ({
   mutate: vi.fn(), reset: vi.fn(), isPending: false, isError: false, error: new Error("Connection interrupted"),
   variables: undefined as SetInstanceSuspendedRequest | undefined,
 }));
+const mockRestart = vi.hoisted(() => ({
+  mutate: vi.fn(), reset: vi.fn(), isPending: false, isError: false, error: null, data: undefined, variables: undefined,
+}));
 
 vi.mock("../hooks/useInstance", () => ({
   useDeleteInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
@@ -36,6 +39,7 @@ vi.mock("../hooks/useInstance", () => ({
   useUpgradeInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useInstanceStatusByNameQuery: () => ({ data: undefined, isLoading: false }),
   useSetInstanceSuspendedByName: () => mockSuspension,
+  useRestartInstanceByName: () => mockRestart,
 }));
 
 vi.mock("../hooks/useFeatures", () => ({
@@ -253,6 +257,74 @@ describe("OverviewSection", () => {
   it("shows Suspended warning when phase is Suspended", () => {
     renderInRouter(<OverviewSection instance={{ ...baseInstance, phase: "Suspended" }} />);
     expect(screen.getByText(/The controller reports Suspended/i)).toBeInTheDocument();
+  });
+
+  it("lists the Team's skills with their publication state", () => {
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, teamSkills: [
+      { name: "pdf-tools", description: "Reads and fills PDF forms.", version: "bbbbbbbbbbbb", state: "published" },
+      { name: "web-search", description: "Searches the web.", version: "", repositoryVersion: "cccccccccccc", state: "pending" },
+      { name: "old-skill", description: "", version: "dddddddddddd", state: "retained" },
+      { name: "unknown-skill", description: "", version: "", state: "missing" },
+    ] }} />);
+    const block = within(screen.getByRole("region", { name: "Team skills" }));
+    const items = block.getAllByRole("listitem");
+    expect(items.map((item) => within(item).getByText(/^(Published|Pending|Retained|Missing)$/).textContent))
+      .toEqual(["Published", "Pending", "Retained", "Missing"]);
+    expect(within(items[0]).getByText("pdf-tools")).toBeInTheDocument();
+    expect(within(items[0]).getByText("Reads and fills PDF forms.")).toBeInTheDocument();
+    expect(within(items[0]).getByText("Version bbbbbbb")).toBeInTheDocument();
+    expect(within(items[0]).queryByText(/^Repository version/)).toBeNull();
+    expect(within(items[1]).getByText(/next start waits for it/)).toBeInTheDocument();
+    expect(within(items[1]).getByText("Repository version ccccccc")).toBeInTheDocument();
+    expect(within(items[1]).queryByText(/^Version/)).toBeNull();
+    expect(within(items[2]).getByText(/keeps the last published version/)).toBeInTheDocument();
+    expect(within(items[3]).getByText(/does not have it/)).toBeInTheDocument();
+    expect(within(items[3]).queryByText(/^Version/)).toBeNull();
+  });
+
+  it("tells a repository change that the Team's release lacks, and a failed publication, from what the Team published", () => {
+    const teamSkills: Instance["teamSkills"] = [
+      { name: "pdf-tools", description: "Reads and fills PDF forms.", version: "aaaaaaaaaaaa", repositoryVersion: "bbbbbbbbbbbb", state: "updating" },
+    ];
+    const block = () => within(screen.getByRole("region", { name: "Team skills" }));
+    const view = renderInRouter(<OverviewSection instance={{ ...baseInstance, teamSkills }} />);
+    const [item] = block().getAllByRole("listitem");
+    expect(within(item).getByText("Update pending")).toBeInTheDocument();
+    expect(within(item).getByText("Version aaaaaaa")).toBeInTheDocument();
+    expect(within(item).getByText("Repository version bbbbbbb")).toBeInTheDocument();
+    expect(within(item).getByText(/does not have the change yet, so the Agent gets the version shown/)).toBeInTheDocument();
+    expect(block().queryByText(/could not publish/)).toBeNull();
+
+    view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills, teamSkillsPublicationFailed: true }} />);
+    expect(block().getByText(/could not publish the Team's current skills/)).toBeInTheDocument();
+  });
+
+  it("shows no Team skills block without Team skills", () => {
+    const view = renderInRouter(<OverviewSection instance={baseInstance} />);
+    expect(screen.queryByRole("region", { name: "Team skills" })).toBeNull();
+    view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills: [] }} />);
+    expect(screen.queryByRole("region", { name: "Team skills" })).toBeNull();
+  });
+
+  it("asks for a restart while the Agent runs an earlier release of the Team's skills", () => {
+    const teamSkills: Instance["teamSkills"] = [
+      { name: "pdf-tools", description: "Reads and fills PDF forms.", version: "bbbbbbbbbbbb", state: "published" },
+    ];
+    const block = () => within(screen.getByRole("region", { name: "Team skills" }));
+    const view = renderInRouter(<OverviewSection instance={{ ...baseInstance, teamSkills, restartAvailable: true }} />);
+    expect(block().queryByText(/changed after this Agent started/)).toBeNull();
+    expect(block().queryByRole("button", { name: "Restart Agent" })).toBeNull();
+
+    view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills, restartAvailable: true, teamSkillsRestartNeeded: true }} />);
+    expect(block().getByText(/changed after this Agent started/)).toBeInTheDocument();
+    // The block's button asks for the same confirmation as the Agent's own.
+    fireEvent.click(block().getByRole("button", { name: "Restart Agent" }));
+    expect(within(screen.getByRole("dialog")).getByText(/Restart this Agent using its current configuration/)).toBeInTheDocument();
+
+    // Without a restart that the owner may request, the block only explains.
+    view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills, restartAvailable: false, teamSkillsRestartNeeded: true }} />);
+    expect(block().getByText(/changed after this Agent started/)).toBeInTheDocument();
+    expect(block().queryByRole("button", { name: "Restart Agent" })).toBeNull();
   });
 
 });

@@ -29,10 +29,14 @@ RUN go mod download
 COPY app/cetirun-operator/ .
 COPY app/internal/ ../internal/
 
-# Build the manager binary.
+# Build the manager binary, and the Skill Marketplace worker that the chart
+# runs in a separate Pod.
 RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -a \
     -ldflags "-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=${VERSION} -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=${GIT_SHA}" \
     -o /manager ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build \
+    -ldflags "-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=${VERSION} -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=${GIT_SHA}" \
+    -o /skill-marketplace ./cmd/skill-marketplace
 
 # ──────────────────────────────────────────────
 # Runtime stage
@@ -47,8 +51,9 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 WORKDIR /
 
-# Copy the compiled binary.
+# Copy the compiled binaries.
 COPY --from=builder /manager /manager
+COPY --from=builder /skill-marketplace /skill-marketplace
 COPY --from=cetiadmin-tools --chmod=0755 /out/bin/helm /usr/local/share/cetirun/cetiadmin/bin/helm
 
 # Chart is now pulled from OCI registry at runtime.

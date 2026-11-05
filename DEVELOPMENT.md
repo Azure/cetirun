@@ -44,6 +44,13 @@ model/tier, storage, and owner. Refer to the
 [platform deployment guide](app/cetirun-platform/README.md#deploy-the-platform).
 The old invocation with only `DOMAIN`/`VALUES_FILE` is no longer enough.
 
+For an existing AKS managed Istio ingress, configure `publicTLS` in the
+environment file used by `make deploy`. `make deploy-plan` renders its
+certificate-only umbrella values offline, `make deploy` prepares public DNS,
+cert-manager HTTP-01 resources, and the full platform, and `make deploy-verify`
+performs the read-only public endpoint check. See `infra/cert-manager/README.md`.
+These operations do not replace the full platform deployment prerequisites.
+
 `scripts/cetirun-dev-deploy.sh` must have an explicit `REGISTRY` and alias
 argument. It no longer inserts a default user team label. To see its modes,
 use `--help`. The other helpers for build, deployment, and Helm publication
@@ -631,6 +638,36 @@ headers. Keep this server local. It is not a production authentication
 configuration. If you start the Go backend or operator, it uses Kubernetes
 configuration. This step is outside the offline validation loop.
 
+### Skill Marketplace
+
+The operator runs the Skill Marketplace, which publishes approved skills from
+one Git repository to the native Sandbox Agents of policy-bound Teams. The
+code has two parts:
+
+- `app/cetirun-operator/internal/skillmarketplace/` runs in the operator. It
+  lists the policy-bound Teams for the worker, and it creates the read-only
+  skills claim of each of their Agents.
+- `app/cetirun-operator/cmd/skill-marketplace/` is the worker. It syncs the
+  repository, publishes the selection of each Team to Blob NFS storage, and
+  writes the catalog. It is a second binary of the operator image. The
+  operator chart runs it in a separate Deployment. The worker reads
+  repository content, holds the repository credentials, and writes to the
+  storage.
+
+`make deploy` enables the Skill Marketplace from the `skillMarketplace` block
+of the environment file. Run its offline checks with these commands:
+
+```bash
+go -C app/cetirun-operator test ./internal/skillmarketplace/... ./cmd/skill-marketplace/ -count=1
+python3 -B -m unittest scripts.tests.test_skill_marketplace_platform \
+  scripts.tests.test_full_deployment.SkillMarketplaceTests -v
+```
+
+These checks do not contact a Git remote, mount Blob NFS storage, or call a
+cluster. Refer to
+[Skill Marketplace](site/content/en/docs/operations/skill-marketplace.md) for
+the repository, storage, and security requirements.
+
 ### Sandbox Entra projection core
 
 The generic `AgentPolicy.spec.entraID` projection is different from Broker
@@ -795,6 +832,67 @@ driver calls the image builders that already exist, stamps the explicit
 version/source SHA, and builds the base image before its consumers. It never
 logs in or installs tools.
 
+`REGISTRY` defaults to `mcr.microsoft.com/aks/ai-runtime/cetirun`, including
+the repository prefix. `VERSION` defaults to the Runtime Chart version.
+Both accept environment variables or Make command-line assignments; an
+assignment on the command line takes precedence. For a local test build:
+
+```bash
+REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
+  make build-images ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+```
+
+Set the license acceptance only after accepting the VS Code Server terms.
+MCR is a public pull endpoint, not a push destination. Its default is used
+for local image tags and chart packaging. Local builds can shadow official
+tags in the local Docker store; use an explicit test registry prefix to keep
+them separate. Deployment requires a matching, complete published release;
+the source version alone does not establish artifact availability or runtime
+compatibility. Until that release has synchronized to MCR, use explicit
+registry/version coordinates for a complete compatible test release.
+`deploy-plan` renders source offline and does not check published artifacts;
+`deploy` checks artifact availability before writing and prints the effective
+registry/version and their origins. Direct Runtime Dockerfile builds must
+provide an available `BASE_IMAGE`; the build wrappers select its versioned
+tag instead of relying on `latest`. Publishing (`make
+publish*`, component chart publishers, `PUSH=true`, or component `docker-push`)
+requires an explicit writable registry and rejects MCR before a push. For
+official MCR publication, use the existing ADO pipeline: it pushes to the
+backing ACR, whose artifacts are automatically synchronized to MCR. Do not
+run `make publish REGISTRY=mcr.microsoft.com/...` or use the backing ACR as
+the deployed chart's public pull address.
+
+Build and publish targets do not edit the source checkout. Image builds always
+copy tracked and nonignored working-tree source files to a temporary directory
+and preserve their modes. When the version differs, the driver runs the existing
+version setter there. Image-only builds need no Helm; chart packaging rebuilds
+dependencies and their lock in its separate copy. Ignored dependencies, local
+configuration and Git metadata are not copied. The build therefore includes uncommitted source
+changes; `GIT_SHA` identifies the base commit, not a clean-tree guarantee.
+Only `make set-version VERSION=X.Y.Z` changes the checked-in release version.
+`make version-check` still checks source consistency, not a proposed build.
+
+Chart packages contain the selected registry and version defaults, including
+the Operator's Runtime Chart URL/version, embedded subcharts and first-party
+runtime images. A registry prefix such as `registry.example.com/team/test`
+is retained when the Operator resolves OpenClaw, Hermes, Desktop, Terminal
+and Memory images. Third-party images and explicit Custom image/digest pins
+keep their own coordinates. Existing Agents keep their pinned Runtime Chart
+and image; an explicit chart upgrade advances a default image only within the
+same registry. Registry migration requires an explicit image-pin migration as
+described below. Charts use the fixed `helm` namespace; `CHART_NAMESPACE` and
+`--chart-namespace` reject other values. Put all repository prefixes in
+`REGISTRY` so packaged URLs and the Operator's runtime image paths agree.
+
+The component `*-helm-release.sh` entry points use the same packager and
+publish only their selected chart. `CHART_VERSION` and `APP_VERSION` can
+still override `VERSION` separately. `CHART_DIR` selects a source override;
+`VALUES_FILE` supplies additional lint/render values, not packaged secrets.
+These publishers now use the shared registry preflight and mandatory chart
+pull comparison, so they require Python and Helm. Chart existence checks use
+Helm's registry authentication; image checks use Docker buildx. They do not
+log in. `VERIFY_PULL=false` does not disable their pull comparison.
+
 After registry authentication and publication authorization:
 
 ```bash
@@ -812,7 +910,12 @@ Every chart is pulled back and compared with its package. `VERIFY_PULL=false`
 is rejected for the unified release. `build-images` builds locally and does
 not publish. `publish-images` and `publish-charts` select one artifact class.
 
-The MCR pipeline uses the same inventory and builders. It keeps staged pushes,
+The MCR pipeline uses `REGISTRY=mcr.microsoft.com/...` only for local chart
+packaging, so the package contains public pull coordinates. Image staging,
+image promotion and every Helm push still target the backing ACR; MCR
+serves the automatically synchronized artifacts. The public MCR checks are
+reads, not pushes. The pipeline uses the same
+inventory and builders. It keeps staged pushes,
 digest verification, and the promotion of `latest` only after all versioned
 images and charts succeed. It passes the
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` value, which is already configured in
@@ -833,6 +936,34 @@ These tests never build an image with Docker or connect to a registry/cluster.
 They test the real image build wrappers with a command double and package real
 local charts. These tests do not examine production image builds, registry
 publication, OAuth, provider calls, or live deployment.
+
+### Migrating an existing Agent registry
+
+Changing the Operator's Runtime Chart URL also changes the registry used to
+qualify built-in Agent images. Existing `spec.agent.image` pins are not rewritten.
+If a pin belongs to the previous registry, reconciliation rejects it with
+`AgentConfigInvalid` before Helm applies a workload; a Portal chart-version
+upgrade alone does not migrate that pin. The same applies when a corrected
+chart URL starts preserving a previously ignored repository prefix.
+
+Before upgrading an installation that used the previous defaults, explicitly
+retain its existing chart URL/version (`cetirun.chart.repoURL` and
+`cetirun.chart.version`) and image coordinates. The previous registry default
+was `cetirun.azurecr.io`; use the coordinates actually deployed, including any
+custom overrides. With a registry-prefixed chart URL, the new Operator uses the
+full prefix rather than the old hostname-only interpretation, so retaining that
+URL alone does not retain the old image registry.
+
+To move registries, first publish and qualify compatible images and charts at
+the target coordinates. In an authorized migration window, update the Operator's
+chart URL and each built-in Agent's `spec.agent.image` together with its selected
+`spec.helm.version`: use `<target-registry>/openclaw-gateway:<appVersion>` or
+`<target-registry>/hermes-gateway:<appVersion>` from the selected chart. Existing
+Sandbox Agents must use their normal coordinated configuration-change workflow;
+do not bypass admission or lifecycle controls with a raw patch. Keep Custom
+images and explicitly qualified digest pins unchanged unless their owners
+authorize a separate migration. A registry change is not evidence that images
+from both registries are equivalent.
 
 ### Release-agent build storage
 

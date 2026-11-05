@@ -14,6 +14,28 @@ Licensed under the MIT License.
 {{- end -}}
 
 {{- define "cetirun.context.validate" -}}
+{{- $marketplaceSubPath := .Values.skills.subPath -}}
+{{- $marketplaceSelection := (.Values.skills.marketplace | default dict).selectionDigest -}}
+{{- if or $marketplaceSubPath $marketplaceSelection -}}
+{{- /* A reconciled Custom Sandbox composes its context view in its own
+   template (agents/custom/_sandbox.tpl). */ -}}
+{{- $customSandbox := and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled (eq (include "cetirun.agent.type" .) "custom") -}}
+{{- if not (or (include "cetirun.context.enabled" .) $customSandbox) -}}
+{{- fail "Skill Marketplace skills require the composed Agent context" -}}
+{{- end -}}
+{{- /* The copied release lives in the context view, which only a reconciled
+   Sandbox sizes for it. Native Agents mount it at skills.mountPath, and
+   Custom Agents read it in .agents/skills. */ -}}
+{{- if not (and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled) -}}
+{{- fail "Skill Marketplace skills require a reconciled Sandbox workload" -}}
+{{- end -}}
+{{- if not (and $marketplaceSubPath $marketplaceSelection) -}}
+{{- fail "Skill Marketplace skills require both skills.subPath and skills.marketplace.selectionDigest" -}}
+{{- end -}}
+{{- if not .Values.skills.shared -}}
+{{- fail "Skill Marketplace skills require skills.shared" -}}
+{{- end -}}
+{{- end -}}
 {{- if include "cetirun.context.enabled" . -}}
 {{- $root := printf "%s/.agents" (include "cetirun.context.home" .) -}}
 {{- if and .Values.skills.shared (ne .Values.skills.mountPath (printf "%s/skills" $root)) -}}
@@ -48,9 +70,15 @@ Licensed under the MIT License.
 - name: CETIRUN_CONTEXT_VIEW
   value: /etc/cetirun-context-view
 {{- end }}
-{{- if and .Values.skills.shared (eq (include "cetirun.agent.type" .) "custom") (include "cetirun.context.enabled" .) }}
+{{- /* Custom Agents compose shared skills into the view; for a Skill
+   Marketplace Team, the initializer copies the Team's release. */}}
+{{- if and .Values.skills.shared (or (eq (include "cetirun.agent.type" .) "custom") (.Values.skills.marketplace | default dict).selectionDigest) (include "cetirun.context.enabled" .) }}
 - name: CETIRUN_SHARED_SKILLS_DIR
   value: /etc/cetirun-shared-skills
+{{- with (.Values.skills.marketplace | default dict).selectionDigest }}
+- name: CETIRUN_SKILLS_RELEASE_SELECTION
+  value: {{ . | quote }}
+{{- end }}
 {{- end }}
 {{- if .Values.memoryContext.enabled }}
 - name: CETIRUN_MEMORY_ASSETS
@@ -65,10 +93,13 @@ Licensed under the MIT License.
 - name: context-view
   mountPath: /etc/cetirun-context-view
 {{- end }}
-{{- if and .Values.skills.shared (eq (include "cetirun.agent.type" .) "custom") (include "cetirun.context.enabled" .) }}
+{{- if and .Values.skills.shared (or (eq (include "cetirun.agent.type" .) "custom") (.Values.skills.marketplace | default dict).selectionDigest) (include "cetirun.context.enabled" .) }}
 - name: shared-skills
   mountPath: /etc/cetirun-shared-skills
   readOnly: true
+{{- with .Values.skills.subPath }}
+  subPath: {{ . | quote }}
+{{- end }}
 {{- end }}
 {{- include "cetirun.memory.mounts" . }}
 {{- end }}
@@ -77,7 +108,14 @@ Licensed under the MIT License.
 {{- define "cetirun.context.mount" -}}
 {{- if include "cetirun.context.enabled" . }}
 {{- if ne (include "cetirun.agent.type" .) "custom" }}
-{{- if .Values.skills.shared }}
+{{- if (.Values.skills.marketplace | default dict).selectionDigest }}
+{{- /* Skill Marketplace: the Team's release that the initializer copied, not
+   the claim, which holds every Team's subtree. */}}
+- name: context-view
+  mountPath: {{ .Values.skills.mountPath | quote }}
+  subPath: current/team-skills
+  readOnly: true
+{{- else if .Values.skills.shared }}
 - name: shared-skills
   mountPath: {{ .Values.skills.mountPath | quote }}
   readOnly: true

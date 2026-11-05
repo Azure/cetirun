@@ -91,12 +91,38 @@ var laterAdditions = map[string][]string{
                             "type": "string",
                             "description": "Operator-owned external Dashboard URL including its instance prefix",
                             "default": ""
+`, `                "subPath": {
+                    "type": "string",
+                    "description": "Operator-set Skill Marketplace Team subtree (teams/<team-uid>) of the shared skills claim; only the HOME initializer mounts it, read-only",
+                    "pattern": "^$|^teams/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                    "default": ""
+                },
+                "marketplace": {
+                    "type": "object",
+                    "description": "Operator-set Skill Marketplace selection of the Agent's Team; set together with subPath",
+                    "additionalProperties": false,
+                    "properties": {
+                        "selectionDigest": {
+                            "type": "string",
+                            "description": "Team selection digest that the HOME initializer waits for",
+                            "pattern": "^$|^sha256:[a-f0-9]{64}$",
+                            "default": ""
+                        }
+                    }
+                },
 `},
 }
 
 // RestorePreProxyContract reconstructs the three chart assets changed by the
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
+	// Restore only the later publication defaults before checking the
+	// immutable historical schema checksum below.
+	for _, image := range []string{"openclaw-gateway", "hermes-gateway", "cetirun-desktop"} {
+		chrt.Schema = bytes.ReplaceAll(chrt.Schema,
+			[]byte(`"default": "mcr.microsoft.com/aks/ai-runtime/cetirun/`+image+`"`),
+			[]byte(`"default": "cetirun.azurecr.io/`+image+`"`))
+	}
 	var err error
 	chrt.Schema, err = restoreHermesWebappSchema(chrt.Schema)
 	if err != nil {

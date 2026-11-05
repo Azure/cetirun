@@ -50,7 +50,7 @@ operatorIntegration: false
 # app/cetirun-ai-gateway. The same image serves the per-agent Copilot proxy.
 image:
   # -- Image repository. global.registry, when set, replaces the registry host.
-  repository: cetirun.azurecr.io/cetirun-ai-gateway
+  repository: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-ai-gateway
   # -- Image pull policy
   pullPolicy: IfNotPresent
   # -- Image tag. Empty uses global.version, then the chart appVersion, which

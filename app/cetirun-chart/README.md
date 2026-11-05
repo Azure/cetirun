@@ -57,6 +57,10 @@ With shared Skills enabled, OpenClaw polls its watched files every five seconds.
 This adds file metadata reads so remote storage updates reach native discovery
 even when the filesystem does not deliver change events.
 
+The Agents of a Skill Marketplace Team read a copy of the Team's release at
+`skills.mountPath` instead, and Custom Agents in `$HOME/.agents/skills`. Refer
+to [Protected Sandbox rendering](#protected-sandbox-rendering).
+
 Memory no longer mounts a read-only directory over the whole `$HOME/.agents`.
 Personal files and Skills there remain visible and writable. The platform still
 mounts its instructions over `$HOME/.agents/AGENTS.md`; any underlying HOME copy
@@ -153,6 +157,29 @@ The protected inventory includes:
   cluster-domain suffix is invented. Where necessary, use fully qualified
   names. The compiler's bound ingress mode must also match the shared
   resolution.
+
+For a Skill Marketplace Team, the operator sets two values. `skills.subPath`
+is the Team subtree of the skills claim (`teams/<team-uid>`).
+`skills.marketplace.selectionDigest` is the Team selection digest. Only the
+HOME initializer mounts that subtree, read-only.
+
+The initializer receives the digest as `CETIRUN_SKILLS_RELEASE_SELECTION`,
+waits for the matching Team release, and copies it into the context view. The
+Agent container mounts this copy read-only at `skills.mountPath` instead of
+the claim, so a repository change reaches the Agent at its next start. A
+Custom Agent reads the copy in `$HOME/.agents/skills`, with the other skills
+of its context view. No other container mounts the claim.
+
+The render fails unless both values are set, `skills.shared` is true, the
+Agent context is composed, and the workload is a reconciled Sandbox. When both
+values are empty, the render does not change. The chart annotation
+`cetirun.microsoft.com/custom-skill-marketplace: v1` tells the operator that
+the chart gives Custom Agents their Team's release.
+
+The initializer writes the copied release ID into its termination message as
+`cetirun.skills.release=<id>`. The Portal compares it with the Team's current
+release to show the owner that a restart picks up newer skills. A failed write
+does not stop the initializer.
 
 The legacy pre-upgrade orphan/re-adoption hook is absent from protected
 renders. If a StatefulSet that already exists uses `volumeClaimTemplates`, a

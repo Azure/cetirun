@@ -42,7 +42,7 @@ func TestCustomSkillConfiguration(t *testing.T) {
 		t.Fatal("Custom mutated global settings")
 	}
 	native := map[string]any{"skills": deepMerge(nil, global["skills"])}
-	if err := applySkillValues(native, team, instance.Spec.SkillOverrides, ""); err != nil {
+	if err := applySkillValues(native, team, instance.Spec.SkillOverrides, "", false); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(skills, native["skills"]) {

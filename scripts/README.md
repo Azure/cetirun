@@ -33,8 +33,11 @@ all other deployment checks remain in effect.
 
 `cetirun-release.py` drives the root build and publish targets and the MCR
 pipeline from `release-artifacts.json`. Its `list`, `check`, and `plan`
-commands do not connect to a registry. Image builds must have an explicit
-registry, version, and source SHA; selections containing VS Code require an
+commands do not connect to a registry. `REGISTRY` defaults to the public
+`mcr.microsoft.com/aks/ai-runtime/cetirun` prefix; `VERSION` defaults to the
+Runtime Chart version, and the source SHA defaults to HEAD. Environment or
+CLI overrides affect temporary build/package inputs, not the source checkout.
+Selections containing VS Code require an
 explicit license acceptance. Publication refuses a tag that already exists
 unless `--force` is explicit. It distinguishes registry errors from artifacts
 that do not exist, and makes sure that chart pulls work. You can still use each
@@ -50,6 +53,19 @@ profiles before packaging. The source chart and `VALUES_FILE` behavior remain
 unchanged; the values file is used only for linting. Partial, invalid, or
 replacement digest inputs fail before publication. The unified publisher also
 rejects `--force` when runtime image locking is enabled.
+
+MCR is only a pull endpoint. Local builds and chart packaging may use its
+default coordinates, but publishing requires an explicit writable `REGISTRY`.
+All publish entry points reject a direct MCR push. Official MCR releases use
+the ADO pipeline's backing ACR and automatic synchronization, not `make publish`
+against MCR.
+
+Chart publishers share the same packager, registry preflight and mandatory
+pull comparison. Packages carry the selected image defaults and the Operator's
+downstream Runtime Chart URL/version. MCR publication keeps public pull
+coordinates separate from its backing ACR and staging push destinations:
+the pipeline's MCR `REGISTRY` assignment is for `package-charts` only, while
+all image and chart writes go to ACR.
 
 `cetirun-vscode` is currently the only declared optional image. To defer its
 license acceptance, pass `--exclude-image cetirun-vscode` to the release CLI
@@ -67,16 +83,35 @@ python3 -B -m unittest scripts.tests.test_release_inventory scripts.tests.test_f
 
 The tests use command doubles and local Helm. They do not deploy or publish.
 
+## Public DNS and TLS preparation
+
+`cetirun_platform_deploy.py` handles optional public DNS and HTTP-01 TLS as a
+phase of the normal deployment. Set `publicTLS.enabled: true` in the same
+absolute `DEPLOY_CONFIG` file used by `make deploy`. `make deploy-plan` renders
+the certificate-only umbrella values without external calls, `make deploy`
+prepares DNS/cert-manager/certificates before the normal releases, and
+`make deploy-verify` reads the finished public endpoint. The upstream
+cert-manager controller remains a separately managed Helm release; its pinned
+support assets are in [cert-manager](../infra/cert-manager/). See
+[public DNS and TLS](../site/content/en/docs/operations/public-ingress.md) for
+the configuration and connected-operation boundary.
+
 ## CetiRun Connections MCP artifacts
 
 `cetirun-connections-mcp-docker-build.sh` builds the standalone MCP image from
-the repository root. Set `REGISTRY`. The default value of `VERSION` comes from
+the repository root. Override `REGISTRY` to use a test registry or repository
+prefix instead of public MCR. The default value of `VERSION` comes from
 the central release metadata. `PUSH=false` loads a local image, and `PUSH=true`
 publishes the image.
 
 `cetirun-connections-mcp-helm-release.sh` lints and packages the independent
-chart. It pushes the chart under `oci://$REGISTRY/${CHART_NAMESPACE:-helm}`.
-Then it makes sure that the chart pull works, unless `VERIFY_PULL=false`.
+chart. It pushes the chart under `oci://$REGISTRY/helm`.
+`CHART_NAMESPACE` must be `helm`; put repository prefixes in `REGISTRY` so
+the Operator can derive the same image repositories from its Runtime Chart URL.
+Set `REGISTRY` to an authorized writable registry; the default MCR address
+is valid for packaging, not publication.
+Then it compares the pulled package with the published package. Pull verification
+cannot be disabled with `VERIFY_PULL=false`.
 Neither helper logs in or deploys resources. Image builds can download pinned
 dependencies and base images. For publication, explicit authorization and
 registry authentication are necessary.

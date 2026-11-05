@@ -111,6 +111,41 @@ qualifiedImages: []
 	}
 }
 
+func TestImageUpgradeRequiresExplicitRegistryMigration(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, version := range []string{"1.0.0", "2.0.0"} {
+			t.Run(kind+"/"+version, func(t *testing.T) {
+				old, target := testChart(t), testChart(t)
+				old.Metadata.Version, old.Metadata.AppVersion = "1.0.0", "1.0.0"
+				target.Metadata.Version, target.Metadata.AppVersion = version, version
+				image := "cetirun.azurecr.io/" + kind + "-gateway:1.0.0"
+				registry := "mcr.microsoft.com/aks/ai-runtime/cetirun"
+				previous := &release.Release{Chart: old, Config: map[string]any{"runtime": map[string]any{
+					"agent": map[string]any{"type": kind, "image": image},
+				}}}
+				got, err := resolveImageUpgrade(previous, version, kind, image, registry, func() (*chart.Chart, error) {
+					t.Fatal("registry migration must not infer that the old pin is a target default")
+					return nil, nil
+				})
+				if err != nil || got != image {
+					t.Fatalf("old pin was changed: %q, %v", got, err)
+				}
+				input := sampleInput(kind, "openai", false)
+				input["agentRequest"] = map[string]any{"type": kind, "registry": registry, "image": got}
+				if _, err := PrepareChart(target, input); err == nil || !strings.Contains(err.Error(), "not qualified") {
+					t.Fatalf("previous registry pin must require migration: %v", err)
+				}
+				want := registry + "/" + kind + "-gateway:" + version
+				object(input["agentRequest"])["image"] = want
+				prepared, err := PrepareChart(target, input)
+				if err != nil || prepared.Agent.Image != want {
+					t.Fatalf("explicit target pin did not recover: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestImageUpgradePreservesOwnerImageQualification(t *testing.T) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, test := range []struct {

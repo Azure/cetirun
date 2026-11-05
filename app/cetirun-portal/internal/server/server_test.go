@@ -6,11 +6,22 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
 func TestSPAHandler_ExistingFile(t *testing.T) {
@@ -227,6 +238,53 @@ func TestAdminAgentManagementRoutesRequireAuthenticatedAdministrator(t *testing.
 			mux.ServeHTTP(nonAdmin, nonAdminRequest)
 			if nonAdmin.Code != http.StatusForbidden {
 				t.Fatalf("non-admin status=%d want=%d body=%s", nonAdmin.Code, http.StatusForbidden, nonAdmin.Body.String())
+			}
+		})
+	}
+}
+
+func TestSkillMarketplaceRouteRequiresAuthenticatedAdministrator(t *testing.T) {
+	catalog := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: cetirunv1alpha1.SkillMarketplaceCatalogConfigMap, Namespace: "operator-system"},
+		Data:       map[string]string{cetirunv1alpha1.SkillMarketplaceCatalogKey: `{"version":"v1","repository":{"url":"https://git.example.com/skills.git"},"skills":[{"name":"pdf-tools","description":"Read and write PDF files","version":"0123456789ab","path":"skills/pdf-tools","files":1,"bytes":10}]}`},
+	}
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	kubeClient := kube.NewClient(fake.NewClientBuilder().WithScheme(scheme).WithObjects(catalog).Build())
+	for _, tc := range []struct {
+		name string
+		cfg  config.Config
+		want string
+	}{
+		{name: "disabled", want: `{"enabled":false,"known":false,"catalog":null}`},
+		{name: "enabled", cfg: config.Config{SkillMarketplaceEnabled: true, SkillMarketplaceCatalogNamespace: "operator-system"},
+			want: `{"enabled":true,"known":true,"catalog":{"version":"v1","repository":{"url":"https://git.example.com/skills.git"},"skills":[{"name":"pdf-tools","description":"Read and write PDF files","version":"0123456789ab","path":"skills/pdf-tools","files":1,"bytes":10}]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The route uses the Team handler's client and configuration.
+			mux := New(fstest.MapFS{}, &handler.InstanceHandler{}, &handler.HealthHandler{},
+				&handler.FeaturesHandler{}, &handler.ConfigHandler{}, &handler.MeHandler{},
+				&handler.AdminTeamHandler{Kube: kubeClient, Config: tc.cfg}, &handler.AdminInstanceHandler{}, &handler.AdminPolicyHandler{},
+				auth.Middleware(auth.NewAdminSet([]string{"administrator"})), auth.RequireAdmin())
+			for _, caller := range []struct {
+				email  string
+				status int
+			}{{"", http.StatusUnauthorized}, {"owner@example.com", http.StatusForbidden}, {"administrator@example.com", http.StatusOK}} {
+				request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/skill-marketplace", nil)
+				if caller.email != "" {
+					request.Header.Set("X-Auth-Request-Email", caller.email)
+				}
+				response := httptest.NewRecorder()
+				mux.ServeHTTP(response, request)
+				if response.Code != caller.status {
+					t.Fatalf("%q: status=%d want=%d body=%s", caller.email, response.Code, caller.status, response.Body.String())
+				}
+				if caller.status == http.StatusOK && strings.TrimSpace(response.Body.String()) != tc.want {
+					t.Fatalf("administrator body=%s want=%s", response.Body.String(), tc.want)
+				}
+				if caller.status != http.StatusOK && strings.Contains(response.Body.String(), "pdf-tools") {
+					t.Fatalf("%q saw the catalog: %s", caller.email, response.Body.String())
+				}
 			}
 		})
 	}

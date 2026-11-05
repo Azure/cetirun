@@ -236,7 +236,7 @@ func (r *AgentReconciler) prepareRuntimeAgent(ctx context.Context, instance *api
 }
 
 func (r *AgentReconciler) agentPreparationValues(instance *api.Agent, team *api.Team) (map[string]any, error) {
-	values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
+	values, err := r.builtinHelmValues(instance, team, AgentIdentityHelmConfig{})
 	if err != nil {
 		return nil, err
 	}

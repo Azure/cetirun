@@ -37,6 +37,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	helmclient "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
@@ -88,7 +89,7 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.StringVar(&chartRepoURL, "chart-repo-url", "oci://cetirun.azurecr.io/helm/cetirun",
+	flag.StringVar(&chartRepoURL, "chart-repo-url", "oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun",
 		"OCI registry URL for the CetiRun Helm chart.")
 	flag.StringVar(&chartVersion, "chart-version", "0.1.1",
 		"Version of the CetiRun Helm chart to deploy.")
@@ -172,12 +173,8 @@ func main() {
 		RepoURL: chartRepoURL,
 		Version: chartVersion,
 	}
-	// Derive the image registry from the chart repo URL (e.g.
-	// "oci://registry.example.com/staging/helm/cetirun" →
-	// "registry.example.com/staging"). This is passed to the reconciler to
-	// override the chart's default image.repository so that all clusters pull
-	// images from the same publication prefix as their selected chart.
-	chartRegistry := imageRegistryFromChartRepoURL(chartRepoURL)
+	// Runtime images share the chart's registry prefix, not just its hostname.
+	chartRegistry := runtimeRegistry(chartRepoURL)
 	if !memoryEnabled {
 		memoryImage = ""
 	}
@@ -229,6 +226,21 @@ func main() {
 		setupLog.Error(err, "invalid Sandbox source configuration")
 		os.Exit(1)
 	}
+	skillMarketplaceConfig, err := controller.ParseSkillMarketplaceConfig(os.Getenv("CETIRUN_SKILL_MARKETPLACE"))
+	if err != nil {
+		setupLog.Error(err, "invalid Skill Marketplace configuration")
+		os.Exit(1)
+	}
+	if skillMarketplaceConfig.Enabled {
+		setupLog.Info("Skill Marketplace enabled: skill entries without the npm: prefix name Skill Marketplace skills")
+		if sandboxSourcesConfig.SkillsClaimName == "" {
+			setupLog.Error(fmt.Errorf("empty sandboxSources.skillsClaimName"), "the Skill Marketplace needs the name of the skills claim")
+			os.Exit(1)
+		}
+	}
+	// The operator creates the skills claims of native Agents; prerequisites
+	// wait for a missing claim instead of refusing the Agent.
+	sandboxSourcesConfig.SkillMarketplace = skillMarketplaceConfig.Enabled
 
 	agentIdentityEnabled := strings.EqualFold(os.Getenv("AGENT_ID_ENABLED"), "true")
 	agentIdentityCleanupEnabled := strings.EqualFold(os.Getenv("AGENT_ID_CLEANUP_ENABLED"), "true")
@@ -311,6 +323,7 @@ func main() {
 		IstioGateway:                       istioGateway,
 		DomainSuffix:                       domainSuffix,
 		SkillsStorageAccount:               skillsStorageAccount,
+		SkillMarketplace:                   skillMarketplaceConfig.Enabled,
 		CetiRunHelmValues:                  cetirunHelmValues,
 		MemoryImage:                        memoryImage,
 		MemoryEnabled:                      memoryEnabled,
@@ -401,6 +414,12 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "TeamModelRouter")
 		os.Exit(1)
 	}
+	if skillMarketplaceConfig.Enabled {
+		if err := setupSkillMarketplace(mgr, skillMarketplaceConfig, sandboxSourcesConfig.SkillsClaimName, agentReconciler.OperatorNamespace); err != nil {
+			setupLog.Error(err, "unable to set up the Skill Marketplace")
+			os.Exit(1)
+		}
+	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -424,10 +443,24 @@ func getEnvOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
-// imageRegistryFromChartRepoURL returns the image registry and optional
-// publication prefix for the standard CetiRun chart repository layout. For
-// other paths, it preserves the historical hostname-only fallback.
-func imageRegistryFromChartRepoURL(repoURL string) string {
+// setupSkillMarketplace adds the operator's part of the Skill Marketplace: the
+// Teams document for the worker, the Agents' skills claims, and the removal of
+// the volumes whose claim is gone.
+func setupSkillMarketplace(mgr ctrl.Manager, config controller.SkillMarketplaceConfig, claimName, namespace string) error {
+	storage := skillmarketplace.StorageSource{
+		ResourceGroup: config.Storage.ResourceGroup, StorageAccount: config.Storage.StorageAccount,
+		ContainerName: config.Storage.ContainerName, StorageClassName: config.Storage.StorageClassName,
+	}
+	if err := (&skillmarketplace.TeamsReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Namespace: namespace}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+	if err := (&skillmarketplace.ClaimReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Storage: storage, ClaimName: claimName}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+	return mgr.Add(&skillmarketplace.VolumeCollector{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: 5 * time.Minute})
+}
+
+func runtimeRegistry(repoURL string) string {
 	registry := extractRegistryHost(repoURL)
 	if registry == "" {
 		return ""

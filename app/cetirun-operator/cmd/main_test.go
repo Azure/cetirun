@@ -5,10 +5,15 @@ package main
 
 import "testing"
 
-func TestImageRegistryFromChartRepoURL(t *testing.T) {
+func TestRuntimeRegistryPreservesPublicationPrefix(t *testing.T) {
 	for _, test := range []struct {
 		name, repo, want string
 	}{
+		{
+			name: "MCR publication prefix",
+			repo: "oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun",
+			want: "mcr.microsoft.com/aks/ai-runtime/cetirun",
+		},
 		{
 			name: "default publication path",
 			repo: "oci://registry.example.com/helm/cetirun",
@@ -41,8 +46,8 @@ func TestImageRegistryFromChartRepoURL(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := imageRegistryFromChartRepoURL(test.repo); got != test.want {
-				t.Errorf("imageRegistryFromChartRepoURL(%q) = %q, want %q", test.repo, got, test.want)
+			if got := runtimeRegistry(test.repo); got != test.want {
+				t.Errorf("runtimeRegistry(%q) = %q, want %q", test.repo, got, test.want)
 			}
 		})
 	}

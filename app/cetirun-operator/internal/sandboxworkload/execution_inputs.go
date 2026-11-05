@@ -114,8 +114,8 @@ func EffectiveSource(source SourceReference) bool {
 	return false
 }
 
-// ExecutionObjectDigest excludes observation metadata and Gateway-only rate
-// limits, not execution controls.
+// ExecutionObjectDigest excludes observation metadata, Gateway-only rate
+// limits and the AgentPolicy skill allowlist, not execution controls.
 // API reads must separately validate the requested key and immutable UID.
 func ExecutionObjectDigest(object client.Object) (string, error) {
 	if object == nil || object.GetUID() == "" || object.GetResourceVersion() == "" || !object.GetDeletionTimestamp().IsZero() {
@@ -164,7 +164,6 @@ func canonicalPolicyExecutionBody(body map[string]any) error {
 		{[]string{"spec", "network", "blockedFQDNs"}, []any{}},
 		{[]string{"spec", "network", "blockedPorts"}, []any{}},
 		{[]string{"spec", "network", "allowedInternalCIDRs"}, []any{}},
-		{[]string{"spec", "skills", "allowed"}, []any{}},
 		{[]string{"spec", "modelAccess", "copilot", "allowed"}, false},
 		{[]string{"spec", "modelAccess", "sharedModels", "allowed"}, []any{}},
 		{[]string{"spec", "agentIdentity", "allowed"}, false},
@@ -189,8 +188,14 @@ func canonicalPolicyExecutionBody(body map[string]any) error {
 			unstructured.RemoveNestedField(body, "spec", "kubernetesAccess", field)
 		}
 	}
+	// Gateway rate limits are applied to the Agent's key in place, and the
+	// skill allowlist only gates which skills Teams and Agents may select.
+	// Neither is an execution control, so editing them must not restart
+	// native Agents. The allowlist is pinned to its empty default instead of
+	// being removed, so a policy without one keeps the digest that earlier
+	// operators recorded.
 	unstructured.RemoveNestedField(body, "spec", "modelAccess", "rateLimits")
-	return nil
+	return unstructured.SetNestedField(body, map[string]any{"allowed": []any{}}, "spec", "skills")
 }
 
 type executionMetadata struct {

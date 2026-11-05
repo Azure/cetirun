@@ -1,13 +1,14 @@
 ---
 title: "Helm configuration"
-description: "This page gives the values and defaults for the agent, platform, AI Gateway, operator, and portal Helm charts."
+description: "This page gives the values and defaults for the agent, platform, AI Gateway, operator, portal, and Skill Marketplace Helm charts."
 weight: 20
 ---
 
 There are separate charts for the agent, the AI Gateway, the operator, the
-portal, and shared Istio infrastructure. The platform chart packages the
-operator, the portal, and the AI Gateway. A chart render does not prove that
-their images, storage, RuntimeClass, or identity integrations are available.
+portal, the Skill Marketplace, and shared Istio infrastructure. The platform
+chart packages the operator, the portal, the AI Gateway, and the Skill
+Marketplace. A chart render does not prove that their images, storage,
+RuntimeClass, or identity integrations are available.
 
 ## Offline rendering
 
@@ -337,8 +338,8 @@ describe all containers as read-only or privilege-escalation-disabled.
 Source: [platform values]({{< repo "app/cetirun-platform/values.yaml" >}}).
 The umbrella chart packages the operator, the portal, and the AI Gateway. Their
 values are nested under `cetirun-operator`, `cetirun-portal`, and
-`cetirun-ai-gateway`. Runtime agent values are still under
-`cetirun-operator.cetirun.helmValues`.
+`cetirun-ai-gateway`. The operator runs the optional Skill Marketplace. Runtime
+agent values are still under `cetirun-operator.cetirun.helmValues`.
 
 | Value | Purpose / default |
 | --- | --- |
@@ -369,6 +370,7 @@ values are nested under `cetirun-operator`, `cetirun-portal`, and
 | `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` | The namespace that contains the gateway workload that is allowed to reach agents |
 | `cetirun-portal.istio.gatewayNamespace`, `gatewayServiceAccount` | The Gateway workload identity that portal access controls use |
 | `cetirun-operator.sandboxAdmission.portalServiceAccount` | `cetirun-portal` in the platform. The operator chart defaults to empty. When Sandbox admission is enabled, this value adds the Portal's service account in the release namespace to the admission administrators. The Portal must have this access to write to policy-bound Agents. Keep it equal to `cetirun-portal.serviceAccount.name`. If the Portal is disabled, clear it. See the [platform chart README]({{< repo "app/cetirun-platform/README.md" >}}). |
+| `cetirun-operator.skillMarketplace.enabled`, `cetirun-portal.skillMarketplace.enabled` | `false`. Turn on both for the optional [Skill Marketplace](#skill-marketplace-values). The chart refuses one without the other while the bundled Operator and Portal are installed, and a Portal `skillMarketplace.catalogNamespace` other than `cetirun-operator.namespace`. `make deploy` sets these values from the `skillMarketplace` block of its environment file. |
 
 The chart does not own managed Istio, the independent CetiRun Istio release,
 certificates, credentials, agent instances, or agent data that is kept. If you
@@ -396,7 +398,7 @@ are important when you install the chart alone:
 
 | Value | Source default |
 | --- | --- |
-| `global.registry`, `global.version` | Empty. With a registry, the image is `<registry>/cetirun-ai-gateway`. Without one, it is `image.repository`, `cetirun.azurecr.io/cetirun-ai-gateway`. The tag is `global.version`, then `image.tag`, then the `appVersion` of the chart. |
+| `global.registry`, `global.version` | Empty. With a registry, the image is `<registry>/cetirun-ai-gateway`. Without one, it is `image.repository`, `mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-ai-gateway`. The tag is `global.version`, then `image.tag`, then the `appVersion` of the chart. |
 | `imagePullSecrets` | `[]`. Set it when the cluster cannot pull from the registry without credentials. |
 | `replicaCount` | `2`. Redis or Valkey is necessary for more than one replica. The bundled Valkey supplies it. |
 | `operatorIntegration` | `false`. The platform chart sets `true`. Keep `false` for a Gateway that does not serve CetiRun Agents. |
@@ -445,6 +447,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`. Claims that already exist stay read-only. Bootstrap can create an owned HOME only in new namespaces. Published skills stay external. |
 | `sandboxSources.skillsCatalogConfigMapName` | Empty. It opts in to a separate operator-owned `skills.json` catalog. This catalog binds exact Team identities to Blob NFS content that is already published. Owned bootstrap is necessary. |
 | `sandboxSources.helpers` | `doctor`, `logger`, `desktop` default to `false`. The helper selection for legacy held preparation. It does not enable reconciled (`v2`) helpers. |
+| `skillMarketplace.enabled` | `false`. It uses the [Skill Marketplace](../../operations/skill-marketplace/) for the Team skills of policy-bound Agents, through `CETIRUN_SKILL_MARKETPLACE`. Every skill entry without the `npm:` prefix then names a marketplace skill. The operator does not pass these entries to `skills.clawHub`, and it refuses an Agent whose `skillOverrides` add or remove one. The operator creates the skills claim of each common-executor Agent of a policy-bound Team. Until the claim exists, the Agent waits (`SkillsMaterializationPending`); this is not a configuration error. The value needs `sandboxSources.enabled`, `sandboxSources.nativeExecution`, `sandboxSources.skillsClaimName`, and an empty `sandboxSources.skillsCatalogConfigMapName`. The chart refuses other settings. A release that `--reuse-values` upgrades from a chart without this value keeps it off. The other values are in [Skill Marketplace values](#skill-marketplace-values). |
 
 Reconciled (`v2`) native lifetimes use the helper settings of the runtime
 chart, not `sandboxSources.helpers`. The chart sets both
@@ -725,6 +728,7 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`. It also accepts opt-in `custom`. The form and the backend both examine it. |
 | `sandboxRuntimeProfiles` | Approved chart/image/port pins for built-in Sandbox creation. If a profile is absent, creation is rejected, unless controller defaults are explicitly enabled. |
 | `sandboxRuntimeDefaultsFromController` | `false`. Allow absent profiles only after the Operator's common Sandbox executor is enabled. |
+| `skillMarketplace.enabled`, `skillMarketplace.catalogNamespace` | `false`, `cetirun-system`. When enabled, Team skills come from the Skill Marketplace catalog in the operator namespace. Team saves examine new skills against the catalog, Policy saves keep the skills that a Team still selects, and the Agent page shows the Team's skills. It also adds the **Skills** administration page and `get` access to the `cetirun-skill-marketplace` ConfigMap. Keep it equal to the operator's `skillMarketplace.enabled`. See [Skill Marketplace administration](../crds/#skill-marketplace-administration). |
 | `noticeBanner` | `""` (no banner). Set it to show a deployment notice. |
 | `image`, `imagePullSecrets` | Portal image pin and pull access |
 
@@ -758,3 +762,42 @@ UI. By default, `noticeBanner` is empty. When a notice is necessary, set it to
 deployment text that you reviewed.
 
 For shared authentication settings, use [Istio operations](../../operations/istio/).
+
+## Skill Marketplace values
+
+Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}}).
+The operator chart runs the Skill Marketplace with the values below
+`skillMarketplace`. In the platform chart, they are below
+`cetirun-operator.skillMarketplace`. `make deploy` sets most of them from the
+`skillMarketplace` block of the environment file. For the procedure, see
+[Skill Marketplace](../../operations/skill-marketplace/).
+
+| Value | Purpose / default |
+| --- | --- |
+| `enabled` | `false`. See the [operator values](#operator-chart). |
+| `repository.url` | Necessary. An `https://` URL, or with `auth: ssh` an `ssh://` URL or the `user@host:path` form. The chart refuses an `https://` URL with credentials. It also refuses an `http://` URL, unless `allowInsecureHTTP` is `true`. |
+| `repository.ref` | Empty. A branch, a tag, or a full ref. Empty uses the branch that the remote HEAD names. |
+| `repository.path` | Empty. The directory of the skills, relative to the repository root. Empty is the root. |
+| `repository.syncInterval` | `5m`. How often the worker examines the remote. At least `30s`. |
+| `repository.auth` | `none`. Also `token` or `ssh`. |
+| `repository.existingSecret` | Empty. Necessary for `token` and `ssh`. A Secret in the operator namespace with the key `token`, or with the keys `ssh-privatekey` and `known_hosts`. |
+| `repository.tokenUsername` | `x-access-token`. The user name that the worker sends with the token. |
+| `repository.allowInsecureHTTP` | `false`. `true` allows an `http://` URL. Use it only for tests in a private network. |
+| `storage.resourceGroup`, `storage.storageAccount`, `storage.containerName` | Necessary. The Blob NFS container of the Team releases. The account name has 3 to 24 lowercase letters and digits. |
+| `storage.storageClassName` | `azureblob-nfs-premium`. The StorageClass of the worker's volume and of the Agents' volumes. |
+| `storage.size` | `100Gi`. The capacity of the worker's own read-write volume and claim. Helm keeps both when you turn off the Skill Marketplace. |
+| `reservedNames` | `cetirun-memory`, `connected-services`. Skill names that CetiRun or its images supply. The worker rejects repository skills with these names. |
+| `teamGCGrace` | `1h`. How long the worker keeps the releases of a deleted Team after its last publication. |
+| `limits.maxRepositorySize`, `limits.maxRepositoryObjects`, `limits.maxSkillFiles`, `limits.maxSkillSize`, `limits.maxSkillMDSize`, `limits.maxSkillDepth`, `limits.maxDescriptionLength` | `256Mi`, `100000`, `500`, `5Mi`, `256Ki`, `8`, `1024`. The largest repository commit that the worker loads, the most objects in it, and the limits of each skill. The worker refuses a commit over a repository limit before it decodes the commit. Below `repository.path`, the repository limits also bound the paths of the tree as the worker reads it: each path counts, and the paths together count against `maxRepositorySize`. The worker does not publish a skill that exceeds a skill limit. Keep `worker.resources.limits.memory` at least twice `maxRepositorySize` plus 256 MiB. Sizes take a whole number of bytes, optionally with `Ki`, `Mi` or `Gi`; the chart refuses other forms. `maxSkillMDSize` cannot be larger than `maxSkillSize`, or the worker does not start. See [Skill limits](../../operations/skill-marketplace/#skill-limits). |
+| `worker.resources` | Requests: CPU `50m`, memory `128Mi`. Limits: CPU `1`, memory `1Gi`. |
+| `worker.podAnnotations`, `worker.nodeSelector`, `worker.tolerations`, `worker.affinity` | Empty |
+
+The worker is the Deployment `cetirun-skill-marketplace` in the operator
+namespace. It runs the operator image with the command `/skill-marketplace`,
+one replica with the `Recreate` strategy, as a non-root user, with a read-only
+root filesystem and without an Istio sidecar. Its ServiceAccount
+`cetirun-skill-marketplace` has only a Role in the operator namespace. The Role
+lets the worker read the ConfigMap `cetirun-skill-marketplace-teams` and read
+and update the ConfigMap `cetirun-skill-marketplace`. The operator writes the
+first ConfigMap, and it creates the second one. The operator also creates the
+Agents' claims and volumes. Its ClusterRole already has these permissions.

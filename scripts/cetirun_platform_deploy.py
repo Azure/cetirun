@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from urllib.parse import urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -98,6 +99,22 @@ def step(command):
         elif not Path(word).is_absolute():
             shown.append(word)
     return " ".join(shown)
+# The optional Skill Marketplace, which the Operator runs. Only the top-level
+# skillMarketplace block of the environment file turns its switches on, and it
+# turns on both.
+SKILL_MARKETPLACE = "cetirun-operator.skillMarketplace"
+SKILL_MARKETPLACE_SWITCHES = (f"{SKILL_MARKETPLACE}.enabled", "cetirun-portal.skillMarketplace.enabled")
+SKILL_MARKETPLACE_FIELDS = {
+    "skillMarketplace": ("repository", "storage"),
+    "skillMarketplace.repository": ("url", "ref", "path", "auth", "existingSecret", "syncInterval"),
+    "skillMarketplace.storage": ("resourceGroup", "storageAccount", "containerName", "storageClassName"),
+}
+# Keys that the marketplace reads from the repository credentials Secret.
+SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-privatekey", "known_hosts")}
+SCP_URL = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/\s]\S*")
+DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+DNS_SUBDOMAIN = rf"(?=.{{1,253}}$){DNS_LABEL}(?:\.{DNS_LABEL})*"
+DURATION_UNITS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1, "m": 60, "h": 3600}
 
 
 def load_helper(filename):
@@ -109,6 +126,7 @@ def load_helper(filename):
 
 MESH = load_helper("ensure-oauth2-proxy-id-token-header.py")
 RELEASE = load_helper("cetirun-release.py")
+PUBLIC_TLS = load_helper("cetirun_public_ingress.py")
 
 
 def mapping(value, name):
@@ -158,6 +176,114 @@ def walk(value):
 
 def yaml_file(path):
     return mapping(yaml.load(path.read_text(), Loader=MESH.UniqueKeyLoader), str(path))
+
+
+def duration_seconds(value):
+    """Seconds of a Go duration such as 5m or 1h30m; None for anything else."""
+    if not isinstance(value, str):
+        return None
+    parts = re.findall(r"(\d+(?:\.\d*)?|\.\d+)(ns|us|ms|s|m|h)", value)
+    if not parts or "".join(number + unit for number, unit in parts) != value:
+        return None
+    return sum(float(number) * DURATION_UNITS[unit] for number, unit in parts)
+
+
+def check_repository_url(url, auth):
+    # The marketplace logs this URL and lists it in the catalog that the Portal
+    # shows, so it must not carry credentials. Errors never repeat the URL.
+    secret = "; keep credentials in the Secret that skillMarketplace.repository.existingSecret names"
+    if re.search(r"\s", url):
+        raise ValueError("skillMarketplace.repository.url must not contain whitespace")
+    if auth == "ssh" and SCP_URL.fullmatch(url):
+        return
+    parts = urllib.parse.urlsplit(url)
+    if (parts.password is not None or (parts.username is not None and parts.scheme != "ssh")
+            or parts.query or parts.fragment):
+        raise ValueError("skillMarketplace.repository.url must not contain credentials, a query or a fragment" + secret)
+    if auth == "ssh":
+        if parts.scheme != "ssh" or not parts.hostname:
+            raise ValueError("skillMarketplace.repository.auth ssh needs an ssh:// URL or the user@host:path form")
+    elif parts.scheme != "https" or not parts.hostname:
+        raise ValueError(f"skillMarketplace.repository.auth {auth} needs an https:// URL")
+
+
+def skill_marketplace(config, platform):
+    """Platform values of the optional Skill Marketplace, from its own input block."""
+    if "skillMarketplace" not in config:
+        for field in SKILL_MARKETPLACE_SWITCHES:
+            if get_value(config["platform"].get("values", {}), field):
+                raise ValueError(f"platform.values.{field} needs the top-level skillMarketplace block, which configures the Skill Marketplace")
+        return dict.fromkeys(SKILL_MARKETPLACE_SWITCHES, False)
+    block = mapping(config["skillMarketplace"], "skillMarketplace")
+    for name in ("repository", "storage"):
+        if block.get(name) is None:
+            raise ValueError(f"skillMarketplace.{name} is required")
+    repository = mapping(block["repository"], "skillMarketplace.repository")
+    storage = mapping(block["storage"], "skillMarketplace.storage")
+    for name, section in (("skillMarketplace", block), ("skillMarketplace.repository", repository),
+                          ("skillMarketplace.storage", storage)):
+        unknown = sorted(map(str, set(section) - set(SKILL_MARKETPLACE_FIELDS[name])))
+        if unknown:
+            raise ValueError(f"{name}.{unknown[0]} is not supported; set other chart values under platform.values.{SKILL_MARKETPLACE}")
+
+    url = required(config, "skillMarketplace.repository.url")
+    auth = repository.get("auth")
+    if not isinstance(auth, str) or auth not in SKILL_MARKETPLACE_SECRET_KEYS:
+        raise ValueError("skillMarketplace.repository.auth must be none, token or ssh")
+    check_repository_url(url, auth)
+    secret, keys = repository.get("existingSecret"), SKILL_MARKETPLACE_SECRET_KEYS[auth]
+    if not keys and secret not in (None, ""):
+        raise ValueError("skillMarketplace.repository.existingSecret is used only with auth token or ssh")
+    if keys and not (isinstance(secret, str) and re.fullmatch(DNS_SUBDOMAIN, secret)):
+        raise ValueError(f"skillMarketplace.repository.auth {auth} needs existingSecret: the name of a Secret in platform.namespace "
+                         f"with the {'key' if len(keys) == 1 else 'keys'} {' and '.join(keys)}")
+    defaults = yaml_file(OPERATOR_VALUES)["skillMarketplace"]["repository"]
+    optional = {}
+    for field, default in (("ref", ""), ("path", ""), ("syncInterval", defaults["syncInterval"])):
+        optional[field] = default if repository.get(field) is None else repository[field]
+        if not isinstance(optional[field], str):
+            raise ValueError(f"skillMarketplace.repository.{field} must be a string")
+    if re.search(r"[\s~^:?*\[\\]", optional["ref"]) or ".." in optional["ref"]:
+        raise ValueError("skillMarketplace.repository.ref must name a branch, a tag or a full ref")
+    if optional["path"].startswith("/") or ".." in optional["path"]:
+        raise ValueError("skillMarketplace.repository.path must be relative to the repository root, without ..")
+    seconds = duration_seconds(optional["syncInterval"])
+    if seconds is None or seconds < 30:
+        raise ValueError("skillMarketplace.repository.syncInterval must be a duration of at least 30s, for example 5m")
+
+    for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]:
+        required(config, f"skillMarketplace.storage.{field}")
+    if not re.fullmatch(r"[a-z0-9]{3,24}", storage["storageAccount"]):
+        raise ValueError("skillMarketplace.storage.storageAccount must be 3-24 lowercase letters and digits")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", storage["containerName"]) or "--" in storage["containerName"]:
+        raise ValueError("skillMarketplace.storage.containerName must be a Blob container name")
+    if not re.fullmatch(DNS_SUBDOMAIN, storage["storageClassName"]):
+        raise ValueError("skillMarketplace.storage.storageClassName must be a StorageClass name")
+    shared = config.get("sharedSkills") if isinstance(config.get("sharedSkills"), dict) else {}
+    if (storage["storageAccount"], storage["containerName"]) == (shared.get("storageAccount"), shared.get("containerName")):
+        raise ValueError("skillMarketplace.storage must name a container other than the sharedSkills container: "
+                         "the marketplace writes Team releases into its container")
+
+    # The Operator creates the skills claims only in native Sandbox execution,
+    # and its chart refuses the marketplace next to a published skills catalog.
+    sources = mapping(platform["cetirun-operator"].get("sandboxSources"), "cetirun-operator.sandboxSources")
+    if sources.get("enabled") is not True or sources.get("nativeExecution") is not True:
+        raise ValueError("skillMarketplace needs native Sandbox execution: set platform.values.cetirun-operator.sandboxSources "
+                         "enabled and nativeExecution to true")
+    if sources.get("skillsCatalogConfigMapName"):
+        raise ValueError("skillMarketplace replaces the published skills catalog: leave "
+                         "platform.values.cetirun-operator.sandboxSources.skillsCatalogConfigMapName empty")
+    claim = sources.get("skillsClaimName")
+    if not isinstance(claim, str) or not re.fullmatch(DNS_LABEL, claim):
+        raise ValueError("skillMarketplace needs cetirun-operator.sandboxSources.skillsClaimName, a DNS label: "
+                         "the Operator creates that claim in each Agent namespace")
+
+    namespace = config["platform"]["namespace"]
+    values = {"enabled": True, "repository.url": url, "repository.auth": auth, "repository.existingSecret": secret if keys else "",
+              **{f"repository.{field}": value for field, value in optional.items()},
+              **{f"storage.{field}": storage[field] for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]}}
+    return {**{f"{SKILL_MARKETPLACE}.{field}": value for field, value in values.items()},
+            "cetirun-portal.skillMarketplace.enabled": True, "cetirun-portal.skillMarketplace.catalogNamespace": namespace}
 
 
 def resource_name(value, *, label=False, limit=253):
@@ -386,8 +512,57 @@ def validate_cetiadmin_writers(kind, rows):
             raise ValueError("CetiAdmin writers have not stopped: " + kind)
 
 
-def configuration(path):
-    config = yaml_file(path)
+def public_tls_config(config):
+    tls = mapping(config.get("publicTLS", {}), "publicTLS")
+    PUBLIC_TLS.keys(tls, {"enabled", "dns", "azure", "certManager", "acme", "stateDirectory",
+                          "timeoutSeconds", "ingressService", "gatewayName"}, "publicTLS")
+    if type(tls.get("enabled", False)) is not bool:
+        raise ValueError("publicTLS.enabled must be a boolean")
+    if "publicTLS" in config.get("platform", {}).get("values", {}):
+        raise ValueError("Use the top-level publicTLS configuration; platform.values.publicTLS is reserved")
+    if not tls.get("enabled", False):
+        return None
+    if os.environ.get("HELM_DRIVER", "secret") not in ("", "secret"):
+        raise ValueError("publicTLS requires Helm's Secret storage driver")
+    if config.get("istio", {}).get("tlsMode", "external") != "external":
+        raise ValueError("Managed publicTLS requires istio.tlsMode=external")
+    wildcard = get_value(config, "istio.values.gateway.includeWildcardHost")
+    if wildcard is not None and wildcard is not False:
+        raise ValueError("Managed publicTLS supports one exact hostname; includeWildcardHost must be false")
+    result = {key: tls[key] for key in ("dns", "azure", "certManager", "acme", "stateDirectory", "timeoutSeconds") if key in tls}
+    result["target"] = config.get("target", {})
+    result["ingress"] = {"namespace": required(config, "istio.ingressNamespace"),
+                         "release": required(config, "platform.release"),
+                         "releaseNamespace": required(config, "platform.namespace"),
+                         "service": tls.get("ingressService", "aks-istio-ingressgateway-external"),
+                         "gatewayName": tls.get("gatewayName", "cetirun-acme-http")}
+    return PUBLIC_TLS.normalize(result)
+
+
+def configuration(path, *, domain=None, registry=None, version=None, coordinate_origins=None):
+    config = copy.deepcopy(path) if isinstance(path, dict) else yaml_file(path)
+    release = config.setdefault("release", {})
+    if not isinstance(release, dict):
+        raise ValueError("release must be an object")
+    origins = config.setdefault("_releaseOrigins", {})
+    for key, override in (("registry", registry), ("version", version)):
+        if override is not None:
+            origins[key] = (coordinate_origins or {}).get(key, "explicit override")
+        else:
+            origins.setdefault(key, "environment file" if key in release else "source default")
+    if registry is not None:
+        release["registry"] = registry.rstrip("/")
+    if version is not None:
+        release["version"] = version
+    release.setdefault("registry", RELEASE.VERSIONS.DEFAULT_REGISTRY)
+    release.setdefault("version", RELEASE.VERSIONS.top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version"))
+    source = copy.deepcopy(config)
+    tls_config = public_tls_config(config)
+    if tls_config:
+        resolved = domain or tls_config["dns"].get("domain")
+        if resolved and config.get("domain") and config["domain"] != resolved:
+            raise ValueError("domain does not match the publicTLS hostname")
+        config["domain"] = resolved or config.get("domain") or "pending-public-tls.example.invalid"
     for field in ("target.context", "target.cluster", "target.server", "target.clusterUID",
                   "release.registry", "release.version", "release.gitSHA", "domain", "identityRealm", "ownerAlias",
                   "istio.namespace", "istio.release", "istio.revision", "istio.controlPlaneNamespace",
@@ -496,6 +671,7 @@ def configuration(path):
     }
     for field in ("tenantId", "blueprintClientId", "authorizationClientId", "encryptionClientId", "keyVaultKeyUrl"):
         assignments["broker"][f"agentIdentity.{field}"] = identity[field]
+    assignments["platform"].update(skill_marketplace(config, platform))
     for name, fields in assignments.items():
         for field, value in fields.items():
             supplied = get_value(config[name].get("values", {}), field)
@@ -604,6 +780,11 @@ def configuration(path):
             raise ValueError("Model api_key must reference a provider Secret environment variable")
     validate_cetiadmin(config, operator)
     validate_excluded_images(config)
+    if tls_config:
+        values["platform"].update(PUBLIC_TLS.chart_values(tls_config, config["domain"], production=True, bootstrap=False))
+        values["istio"]["tls"]["enabled"] = False
+        values["istio"]["gateway"]["includeWildcardHost"] = False
+    config["_source"] = source
     return config, values
 
 
@@ -632,12 +813,19 @@ class Deployment:
     def __init__(self, config, values, scratch):
         self.config, self.values, self.scratch = config, values, scratch
         self.documents, self.files, self.charts = {}, {}, {}
+        self.bootstrap_documents = []
         self.existing_releases, self.namespaces = set(), {}
         self.mesh_uid = None
         self.cetiadmin_stop_pin = None
         self.cetiadmin_migration_receipt = None
+        self.ingress = None
+        self.defer_public_tls = False
 
     def run(self, command, *, env=None, input_text=None):
+        if env is None and self.config["target"].get("kubeconfig"):
+            env = {**os.environ, "KUBECONFIG": self.config["target"]["kubeconfig"]}
+            if self.config.get("publicTLS", {}).get("enabled"):
+                env["HELM_DRIVER"] = "secret"
         result = subprocess.run(command, cwd=ROOT, env=env, input=input_text, text=True, capture_output=True)
         if result.returncode:
             # Name the step, but do not echo Helm-rendered Secrets or external tool response bodies.
@@ -848,11 +1036,16 @@ class Deployment:
             raise ValueError("Preserve existing Portal coordination and native MCP identity before Operator removal")
 
     def render(self):
-        for entry in release_inventory(self.config)["charts"]:
-            source = ROOT / entry["path"]
-            shutil.copytree(source, self.scratch / entry["path"], ignore=shutil.ignore_patterns("charts", "__pycache__"))
         offline = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.devnull}
-        self.run(["helm", "dependency", "build", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
+        if not self.charts:
+            for entry in release_inventory(self.config)["charts"]:
+                source = ROOT / entry["path"]
+                shutil.copytree(source, self.scratch / entry["path"], ignore=shutil.ignore_patterns("charts", "__pycache__"))
+            updates = RELEASE.VERSIONS.chart_updates(self.scratch,
+                [entry["path"] for entry in release_inventory(self.config)["charts"]], self.config["release"]["version"])
+            for path, content in updates.items():
+                path.write_text(content)
+            self.run(["helm", "dependency", "update", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
         for name, relative in CHARTS.items():
             self.charts[name] = self.scratch / relative
             self.files[name] = self.scratch / f"{name}-values.json"
@@ -871,6 +1064,11 @@ class Deployment:
             raw = self.run(["helm", "template", section["release"], str(self.charts[name]), "--namespace", section["namespace"],
                             "--kube-version", "1.37.0", "--values", str(render_values)], env=offline)
             self.documents[name] = [doc for doc in yaml.safe_load_all(raw) if doc]
+        tls_config = public_tls_config(self.config)
+        if tls_config:
+            if self.ingress is None:
+                self.ingress = PUBLIC_TLS.Ingress(tls_config, self.scratch)
+            self.ingress.render(self.config["domain"])
         if not self.values["platform"]["cetirun-operator"]["enabled"]:
             return
         # Render the bootstrap too, before any cluster writes.
@@ -882,17 +1080,24 @@ class Deployment:
             bootstrapOwnedPrerequisites=False, skillsCatalogConfigMapName="", placementConfigMapName="")
         bootstrap["cetirun-operator"]["connectionsMCP"]["nativeEnabled"] = False
         bootstrap["cetirun-portal"]["sandboxRuntimeDefaultsFromController"] = False
+        # The Skill Marketplace needs the native sources that the bootstrap turns
+        # off; the Operator chart refuses its setting without them.
+        bootstrap["cetirun-operator"]["skillMarketplace"]["enabled"] = False
+        bootstrap["cetirun-portal"]["skillMarketplace"]["enabled"] = False
         self.files["bootstrap"] = self.scratch / "bootstrap-values.json"
         self.files["bootstrap"].write_text(json.dumps(bootstrap))
-        self.run(["helm", "template", self.config["platform"]["release"], str(self.charts["platform"]),
-                  "--namespace", self.config["platform"]["namespace"], "--kube-version", "1.37.0",
-                  "--values", str(self.files["bootstrap"])], env=offline)
+        raw = self.run(["helm", "template", self.config["platform"]["release"], str(self.charts["platform"]),
+                        "--namespace", self.config["platform"]["namespace"], "--kube-version", "1.37.0",
+                        "--values", str(self.files["bootstrap"])], env=offline)
+        self.bootstrap_documents = [doc for doc in yaml.safe_load_all(raw) if doc]
 
     def references(self):
         refs = set()
         for name, documents in self.documents.items():
             generated = {(doc["kind"], doc.get("metadata", {}).get("namespace", self.config[name]["namespace"]), doc["metadata"]["name"]) for doc in documents}
             for doc in documents:
+                if self.is_public_tls(doc):
+                    continue
                 namespace = doc.get("metadata", {}).get("namespace", self.config[name]["namespace"])
                 for item in walk(doc):
                     for field in ("secretKeyRef", "secretRef", "configMapKeyRef", "configMapRef"):
@@ -933,8 +1138,16 @@ class Deployment:
             for value in entry.get("litellm_params", {}).values():
                 if isinstance(value, str) and value.startswith("os.environ/"):
                     refs.add(("Secret", c["platform"]["namespace"], ai["providerCredentials"]["existingSecret"], value.removeprefix("os.environ/")))
-        for storage in (operator["customRuntime"]["storageClass"], c["sharedSkills"]["storageClassName"],
-                        ai["postgresql"]["bundled"]["persistence"]["storageClass"]):
+        storage_classes = [operator["customRuntime"]["storageClass"], c["sharedSkills"]["storageClassName"],
+                           ai["postgresql"]["bundled"]["persistence"]["storageClass"]]
+        marketplace = operator["skillMarketplace"]
+        if marketplace.get("enabled"):
+            # The repository credentials stay in an existing Secret of the platform namespace.
+            repository = marketplace["repository"]
+            for key in SKILL_MARKETPLACE_SECRET_KEYS[repository["auth"]]:
+                refs.add(("Secret", c["platform"]["namespace"], repository["existingSecret"], key))
+            storage_classes.append(marketplace["storage"]["storageClassName"])
+        for storage in storage_classes:
             refs.add(("StorageClass", "", storage, ""))
         return sorted(refs)
 
@@ -985,6 +1198,8 @@ class Deployment:
         self.verify_certificate("broker-client", self.public_certificate(ns, mcp["broker"]["clientTLSSecretName"], "tls.crt"),
                                 self.public_certificate(bns, b["tls"]["secretName"], b["tls"]["clientCAKey"]),
                                 client_uri=f"spiffe://cluster.local/ns/{b['toolService']['namespace']}/sa/{b['toolService']['serviceAccount']}")
+        if self.defer_public_tls:
+            return
         ingress = self.scratch / "ingress-public.pem"
         ingress.write_text(self.public_certificate(c["istio"]["ingressNamespace"], "cetirun-tls", "tls.crt"))
         self.run(["openssl", "x509", "-in", str(ingress), "-noout", "-checkend", "0"])
@@ -1231,8 +1446,17 @@ class Deployment:
             if document["spec"].get("storageClassName"):
                 match("storageClassName", read(".spec.storageClassName"), document["spec"]["storageClassName"])
 
+    def is_public_tls(self, doc):
+        def identity(value):
+            metadata = value.get("metadata", {})
+            return value.get("apiVersion"), value.get("kind"), metadata.get("namespace"), metadata.get("name")
+        return self.ingress is not None and identity(doc) in {identity(value) for value in self.ingress.documents}
+
     def preflight(self):
         c = self.config
+        self.existing_releases.clear()
+        if self.ingress:
+            self.ingress.ingress_ownership_check()
         target = self.kubectl("config", "view", "--minify", "-o", 'jsonpath={.contexts[0].context.cluster}{"\\n"}{.clusters[0].cluster.server}')
         if target.splitlines() != [c["target"]["cluster"], c["target"]["server"]]:
             raise ValueError("The selected context does not match target.cluster and target.server")
@@ -1268,15 +1492,30 @@ class Deployment:
             if releases:
                 if releases[0]["status"].startswith("pending-"):
                     raise ValueError(f"Release {section['release']} has an unfinished operation")
-                self.existing_releases.add(name)
+                if name == "platform":
+                    if self.ingress:
+                        if self.ingress.platform_state == "full":
+                            self.existing_releases.add(name)
+                    else:
+                        previous = json.loads(self.helm("get", "values", section["release"], "--namespace", section["namespace"], "-o", "json")) or {}
+                        if previous.get("publicTLS", {}).get("enabled"):
+                            raise ValueError("Cannot disable managed publicTLS during a platform upgrade; migrate it separately")
+                        self.existing_releases.add(name)
+                else:
+                    self.existing_releases.add(name)
             for doc in self.documents[name]:
+                if self.is_public_tls(doc):
+                    continue  # Fully qualified API reads and owner/spec checks belong to the TLS phase.
                 kind, metadata = doc["kind"], doc["metadata"]
                 namespace = "" if kind in CLUSTER_KINDS else metadata.get("namespace", section["namespace"])
-                current = self.resource(kind, metadata["name"], namespace)
+                qualified = "gateways.networking.istio.io" if kind == "Gateway" else kind
+                current = self.resource(qualified, metadata["name"], namespace)
                 if current:
                     annotations = current.get("annotations", {})
                     if (annotations.get("meta.helm.sh/release-name"), annotations.get("meta.helm.sh/release-namespace")) != (section["release"], section["namespace"]):
                         raise ValueError(f"Refusing to adopt {kind} {namespace}/{metadata['name']} from another owner")
+                    if name == "platform" and self.ingress and self.ingress.platform_state != "full":
+                        raise ValueError("Certificate bootstrap has surviving platform resources; refusing regeneration or downgrade")
                     if kind == "Secret" and not set(doc.get("data", {})).issubset(self.secret_keys(namespace, metadata["name"])):
                         raise ValueError(f"Retained Secret {namespace}/{metadata['name']} is missing required keys; refusing regeneration")
                     if name == "istio" and c["istio"].get("mode", "manage") == "external" and kind != "Secret":
@@ -1299,6 +1538,8 @@ class Deployment:
         self.check_agent_mcp_conflicts()
         self.check_excluded_agent_images()
         for kind, namespace, name, key in self.references():
+            if self.defer_public_tls and (kind, namespace, name) == ("Secret", c["istio"]["ingressNamespace"], "cetirun-tls"):
+                continue
             metadata = self.resource(kind, name, namespace)
             if not metadata:
                 raise ValueError(f"Required {kind} reference is missing: {namespace}/{name}")
@@ -1365,13 +1606,16 @@ class Deployment:
                 "--values", str(self.files[values or name]), "--timeout", timeout]
         if name == "istio" and section.get("tlsMode") == "retain":
             args.append("--reuse-values")
+        else:
+            args.append("--reset-values")
         if not self.config["release"].get("clientOpenAPIValidation", True):
             args.append("--disable-openapi-validation")
         self.helm(*args)
 
-    def ready(self, name):
+    def ready(self, name, documents=None):
         section = self.config[name]
-        workloads = [doc for doc in self.documents[name] if doc["kind"] in ("Deployment", "StatefulSet")]
+        workloads = [doc for doc in (self.documents[name] if documents is None else documents)
+                     if doc["kind"] in ("Deployment", "StatefulSet")]
         workloads.sort(key=lambda doc: (doc["kind"] != "StatefulSet", "valkey" not in doc["metadata"]["name"]))
         for doc in workloads:
             namespace, workload = doc["metadata"].get("namespace", section["namespace"]), doc["metadata"]["name"]
@@ -1385,7 +1629,30 @@ class Deployment:
                 if workload == "cetirun-agent-broker" and any("auth-sdk" not in line.split() for line in output.splitlines()):
                     raise ValueError("Broker pods are missing the Auth SDK")
 
+    def resolve_public_domain(self, domain):
+        self.config, self.values = configuration(self.config["_source"], domain=domain)
+        self.render()
+        self.preflight()
+
     def execute(self):
+        for key in ("registry", "version"):
+            print(f"Deployment {key}: {self.config['release'][key]} "
+                  f"(from {self.config['_releaseOrigins'][key]})", flush=True)
+        if self.ingress:
+            self.ingress.load_state()
+            self.ingress.preflight()
+            self.defer_public_tls = True
+            if self.ingress.domain:
+                self.resolve_public_domain(self.ingress.domain)
+            else:
+                self.preflight()
+            result = self.ingress.prepare(resolved=self.resolve_public_domain, complete=self.execute_platform)
+            print(json.dumps(result, indent=2))
+        else:
+            self.execute_platform()
+
+    def execute_platform(self):
+        self.defer_public_tls = False
         self.preflight()
         c = self.config
         for name in CHARTS:
@@ -1414,7 +1681,8 @@ class Deployment:
         # Never withdraw existing admission protection during an upgrade.
         if not self.enforced:
             self.upgrade("platform", "bootstrap")
-            self.ready("platform")
+            # Wait for what the bootstrap installs: it has no Skill Marketplace.
+            self.ready("platform", self.bootstrap_documents)
         else:
             self.kubectl("rollout", "status", "deployment/cetirun-sandbox-admission", "--namespace", c["platform"]["namespace"], "--timeout=180s")
         self.upgrade("platform")
@@ -1431,9 +1699,18 @@ class Deployment:
 
     def plan(self):
         references = {(kind, namespace, name) for kind, namespace, name, _ in self.references()}
+        not_qualified = ["native Sandbox execution and physical fencing", "end-to-end CetiAdmin operations", "live model/OAuth calls"]
+        if self.values["platform"]["cetirun-operator"]["skillMarketplace"].get("enabled"):
+            # Its readiness does not wait for a repository sync.
+            not_qualified.append("Skill Marketplace repository access and Team publication")
         return {"target": {key: self.config["target"][key] for key in ("context", "cluster", "server", "clusterUID")},
                 "release": {key: self.config["release"][key] for key in ("registry", "version", "gitSHA")},
-                "stages": ["verify target, managed Istio, references, ownership and all artifacts",
+                "releaseOrigins": self.config["_releaseOrigins"],
+                "publicTLS": self.ingress.render() if self.ingress else {"enabled": False},
+                "domain": self.config["domain"],
+                "domainIsPlaceholder": bool(self.ingress and not self.ingress.domain and not self.config["_source"].get("domain")),
+                "stages": (["full prerequisites except the managed public certificate", "DNS, upstream cert-manager, umbrella certificate bootstrap",
+                            "wait for staging and production certificates; full releases never enter certificate-only mode"] if self.ingress else []) + ["verify target, managed Istio, references, ownership and all artifacts",
                            "confirm retained CetiAdmin shutdown before any Operator removal; recheck immediately before its upgrade",
                            "CetiRun Istio/OAuth2 release and mesh provider", "isolated Broker/Auth SDK release",
                            "platform data services, Operator, Portal Chat, MCP, Custom/terminal and Memory bindings",
@@ -1450,20 +1727,36 @@ class Deployment:
                               "operatorRemovalRequested": not self.values["platform"]["cetirun-operator"]["enabled"],
                               "stopConfirmed": False},
                 "preserves": ["existing Agents and HOME/PVCs except the explicit CetiAdmin retained lifecycle", "OAuth cookie and database keys", "other Helm releases"],
-                "notQualified": ["native Sandbox execution and physical fencing", "end-to-end CetiAdmin operations", "live model/OAuth calls"]}
+                "notQualified": not_qualified}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path, help="explicit environment YAML; never sourced as shell code")
-    parser.add_argument("--plan", action="store_true", help="validate inputs and render locally without cluster/registry calls")
+    parser.add_argument("--registry", help="override release.registry (or REGISTRY) without editing the environment file")
+    parser.add_argument("--version", help="override release.version (or VERSION) without editing the environment file")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--verify", action="store_true", help="read-only public DNS, TLS and Portal verification")
+    mode.add_argument("--plan", action="store_true", help="validate inputs and render locally without cluster/registry calls")
     args = parser.parse_args(argv)
     try:
-        config, values = configuration(args.config)
+        overrides = {key: getattr(args, key) if getattr(args, key) is not None else os.environ.get(key.upper())
+                     for key in ("registry", "version")}
+        origins = {key: f"--{key}" if getattr(args, key) is not None else f"environment {key.upper()}"
+                   for key in overrides}
+        config, values = configuration(args.config, **overrides, coordinate_origins=origins)
         with tempfile.TemporaryDirectory(prefix="cetirun-platform-") as temporary:
             deployment = Deployment(config, values, Path(temporary))
             deployment.render()
-            if args.plan:
+            if args.verify:
+                if not deployment.ingress:
+                    raise ValueError("--verify requires publicTLS.enabled=true")
+                result = deployment.ingress.verify()
+                expected = config["_source"].get("domain")
+                if expected and expected != result["domain"]:
+                    raise ValueError("domain does not match the publicTLS hostname")
+                print(json.dumps(result, indent=2))
+            elif args.plan:
                 print(json.dumps(deployment.plan(), indent=2))
             else:
                 deployment.execute()

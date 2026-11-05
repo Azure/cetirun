@@ -25,7 +25,7 @@ chat:
 
 # -- Portal container image.
 image:
-  repository: ghcr.io/azure/cetirun-portal
+  repository: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-portal
   pullPolicy: IfNotPresent
   tag: "" # Defaults to .Chart.AppVersion
   # -- Image digest for pinning (e.g. sha256:abc123...). When set, pins the image; the tag is kept for readability.
@@ -131,6 +131,17 @@ sandboxRuntimeProfiles: {}
 aiGateway:
   # -- Namespace where the operator publishes the shared-model catalog (the
   # operator's namespace).
+  catalogNamespace: cetirun-system
+
+# -- Skill Marketplace: Team skills from one synchronized Git repository.
+# When enabled, every Team skill without the npm: prefix is a marketplace
+# skill: Team saves check new skills against the marketplace catalog, Policy
+# saves keep skills a Team still selects, and Agent details show the Team's
+# skills. Keep it in step with the operator's skillMarketplace.enabled.
+skillMarketplace:
+  enabled: false
+  # -- Namespace where the marketplace publishes its catalog (the operator's
+  # namespace).
   catalogNamespace: cetirun-system
 
 # -- Optional UID-pinned authority shared with strict Sandbox admission.

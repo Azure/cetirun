@@ -165,3 +165,30 @@ func TestAgentToolsOptIn(t *testing.T) {
 		t.Fatal("Agent Tools opt-in configuration was not loaded independently")
 	}
 }
+
+func TestSkillMarketplaceConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, enabled, namespace string
+		wantEnabled              bool
+		wantNamespace            string
+	}{
+		{name: "unset", wantNamespace: "cetirun-system"},
+		{name: "disabled", enabled: "false", namespace: "operator-system", wantNamespace: "operator-system"},
+		{name: "only true enables", enabled: "1", wantNamespace: "cetirun-system"},
+		{name: "enabled", enabled: "true", wantEnabled: true, wantNamespace: "cetirun-system"},
+		{name: "enabled elsewhere", enabled: "true", namespace: "operator-system", wantEnabled: true, wantNamespace: "operator-system"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SKILL_MARKETPLACE_ENABLED", tc.enabled)
+			t.Setenv("SKILL_MARKETPLACE_CATALOG_NAMESPACE", tc.namespace)
+			t.Setenv("AI_GATEWAY_CATALOG_NAMESPACE", "")
+			cfg := Load()
+			if cfg.SkillMarketplaceEnabled != tc.wantEnabled || cfg.SkillMarketplaceCatalogNamespace != tc.wantNamespace {
+				t.Fatalf("enabled=%v namespace=%q, want %v %q", cfg.SkillMarketplaceEnabled, cfg.SkillMarketplaceCatalogNamespace, tc.wantEnabled, tc.wantNamespace)
+			}
+			if cfg.AIGatewayCatalogNamespace != "cetirun-system" {
+				t.Fatalf("the marketplace namespace changed the AI Gateway's: %q", cfg.AIGatewayCatalogNamespace)
+			}
+		})
+	}
+}

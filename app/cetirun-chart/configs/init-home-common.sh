@@ -203,7 +203,122 @@ check_agent_context() {
   fi
 }
 
-# Compose platform context; native Agents mount only its reserved leaves.
+# Copy the entries of $1 into the skills directory $2 of a staged view
+# without following links; none may replace the canonical context. For a
+# Skill Marketplace release ($3 = release), only entries named like skills
+# are copied, a skill may contain no links, and each copied name is printed.
+copy_shared_skills() (
+  set -e
+  from=$1
+  dest=$2
+  release=${3:-}
+  for entry in "$from"/* "$from"/.[!.]* "$from"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name=${entry##*/}
+    if [ -n "$release" ]; then
+      case "$name" in -*|*-|*--*|*[!a-z0-9-]*) continue;; esac
+    fi
+    if [ "$name" = cetirun-memory ] || [ -e "$dest/$name" ] || [ -L "$dest/$name" ]; then
+      init_error "SharedSkillConflictsWithCanonicalContext"
+      exit 1
+    fi
+    special=$(find "$entry" ! -type d ! -type f ! -type l -print)
+    [ -z "$special" ] || { init_error "UnsupportedSkillFile"; exit 1; }
+    if [ -n "$release" ]; then
+      links=$(find "$entry" -type l -print)
+      [ -z "$links" ] || { init_error "UnsupportedSkillFile"; exit 1; }
+    fi
+    cp -RP "$entry" "$dest/$name"
+    [ -z "$release" ] || printf '%s\n' "$name"
+  done
+)
+
+# Print the release id in CURRENT of the Team subtree $1: a regular file
+# holding one line of 20 lowercase hexadecimal digits.
+skills_release_id() (
+  set -e
+  current=$1/CURRENT
+  [ -f "$current" ] && [ ! -L "$current" ] || exit 1
+  id=
+  rest=
+  {
+    IFS= read -r id || :
+    ! IFS= read -r rest || exit 1
+  } < "$current"
+  [ -z "$rest" ] && [ "${#id}" -eq 20 ] || exit 1
+  case "$id" in *[!0-9a-f]*) exit 1;; esac
+  printf '%s\n' "$id"
+)
+
+# Print the release id that CURRENT of the Team subtree $1 names once that
+# release is a real directory whose .cetirun-selection has the selection
+# digest $2 on its first line.
+skills_release_ready() (
+  set -e
+  id=$(skills_release_id "$1") || exit 1
+  release=$1/releases/$id
+  [ ! -L "$1/releases" ] && [ -d "$release" ] && [ ! -L "$release" ] || exit 1
+  marker=$release/.cetirun-selection
+  [ -f "$marker" ] && [ ! -L "$marker" ] || exit 1
+  selection=
+  IFS= read -r selection < "$marker" || :
+  [ "$selection" = "$2" ] || exit 1
+  printf '%s\n' "$id"
+)
+
+# Skill Marketplace: copy the release of the selection digest $2 that the
+# Team subtree $1 names into the skills directory $3, and print the release
+# id. The release may still be publishing, so wait for it, and copy again
+# when CURRENT moves on meanwhile.
+copy_skills_release() (
+  set -e
+  team=$1
+  selection=$2
+  dest=$3
+  limit=${CETIRUN_SKILLS_RELEASE_TIMEOUT:-180}
+  case "$limit" in *[!0-9]*) init_error "InvalidSkillsReleaseTimeout"; exit 1;; esac
+  command -v sleep >/dev/null 2>&1 || { init_error "InitToolsMissing: sleep"; exit 1; }
+  waited=0
+  attempt=0
+  while [ "$attempt" -lt 5 ]; do
+    attempt=$((attempt + 1))
+    until id=$(skills_release_ready "$team" "$selection"); do
+      [ "$waited" -lt "$limit" ] || { init_error "SkillsReleasePending"; exit 1; }
+      step=2
+      [ $((waited + 2)) -le "$limit" ] || step=1
+      sleep "$step"
+      waited=$((waited + step))
+    done
+    copied=$(copy_shared_skills "$team/releases/$id" "$dest" release)
+    current=$(skills_release_id "$team") || current=
+    if [ "$current" = "$id" ]; then
+      printf '%s\n' "$id"
+      exit 0
+    fi
+    # Names are skill names, so they split safely.
+    for name in $copied; do rm -rf "$dest/$name"; done
+  done
+  init_error "SkillsReleaseUnstable"
+  exit 1
+)
+
+# Report the Skill Marketplace release that the view $1 holds in this
+# container's termination message. The Portal compares it with the Team's
+# current release, to tell the owner that a restart picks up newer skills.
+# The report only informs, so a failed write is ignored.
+report_skills_release() {
+  [ -f "$1/.skills-release" ] || return 0
+  report_id=
+  IFS= read -r report_id < "$1/.skills-release" || :
+  report_log=${CETIRUN_TERMINATION_LOG:-/dev/termination-log}
+  # Kubernetes provides the file; never create one elsewhere.
+  [ -f "$report_log" ] || return 0
+  { printf 'cetirun.skills.release=%s\n' "$report_id" > "$report_log"; } 2>/dev/null || :
+}
+
+# Compose platform context; native Agents mount only its reserved leaves:
+# AGENTS.md and, for a Skill Marketplace Team, the copied Team skills. A Custom
+# Agent mounts the whole view at .agents, so its Team skills join its skills.
 # Sources and the PVC's own .agents contents are never modified.
 prepare_agent_context() (
   set -e
@@ -217,6 +332,7 @@ prepare_agent_context() (
   [ ! -L "$view/current" ] || { init_error "InvalidContextView"; exit 1; }
   [ ! -e "$view/current" ] || {
     [ -f "$view/current/.ready" ] || { init_error "IncompleteContextView"; exit 1; }
+    report_skills_release "$view/current"
     exit 0
   }
   stage=$(mktemp -d "$view/.context.XXXXXX")
@@ -241,21 +357,25 @@ prepare_agent_context() (
     done < "$CETIRUN_MEMORY_ASSETS/AGENTS.md"
     cp -R "$CETIRUN_MEMORY_ASSETS/skills/cetirun-memory" "$stage/skills/cetirun-memory"
   fi
-  if [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ]; then
-    for entry in "$CETIRUN_SHARED_SKILLS_DIR"/* "$CETIRUN_SHARED_SKILLS_DIR"/.[!.]* "$CETIRUN_SHARED_SKILLS_DIR"/..?*; do
-      [ -e "$entry" ] || [ -L "$entry" ] || continue
-      name=${entry##*/}
-      if [ "$name" = cetirun-memory ] || [ -e "$stage/skills/$name" ] || [ -L "$stage/skills/$name" ]; then
-        init_error "SharedSkillConflictsWithCanonicalContext"
-        exit 1
-      fi
-      special=$(find "$entry" ! -type d ! -type f ! -type l -print)
-      [ -z "$special" ] || { init_error "UnsupportedSkillFile"; exit 1; }
-      cp -RP "$entry" "$stage/skills/$name"
-    done
+  if [ -n "${CETIRUN_SKILLS_RELEASE_SELECTION:-}" ]; then
+    # Skill Marketplace mode: the shared directory is the Team's subtree.
+    # Native Agents mount the copy at skills.mountPath, apart from the
+    # personal skills in HOME. A Custom Agent (CETIRUN_CONTEXT_DIR) finds its
+    # skills in .agents/skills, so the Team's skills go there.
+    [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ] || { init_error "SharedSkillsUnavailable"; exit 1; }
+    team_skills=$stage/skills
+    if [ -z "${CETIRUN_CONTEXT_DIR:-}" ]; then
+      team_skills=$stage/team-skills
+      mkdir "$team_skills"
+    fi
+    release=$(copy_skills_release "$CETIRUN_SHARED_SKILLS_DIR" "$CETIRUN_SKILLS_RELEASE_SELECTION" "$team_skills")
+    printf '%s\n' "$release" > "$stage/.skills-release"
+  elif [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ]; then
+    copy_shared_skills "$CETIRUN_SHARED_SKILLS_DIR" "$stage/skills"
   fi
   printf 'context-v1\n' > "$stage/.ready"
   mv "$stage" "$view/current"
+  report_skills_release "$view/current"
 )
 
 run_agent_init() {

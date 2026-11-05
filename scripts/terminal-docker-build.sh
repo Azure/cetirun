@@ -19,7 +19,7 @@ esac
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-registry="${REGISTRY:-cetirun.azurecr.io}"
+registry="${REGISTRY:-$("${script_dir}/cetirun-release-metadata.sh" registry)}"
 release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
 image_tag="${IMAGE_TAG:-${release_version}}"
 git_sha="${GIT_SHA:-$(git -C "${repo_root}" rev-parse HEAD)}"
@@ -43,6 +43,7 @@ args=(
   --build-arg "GIT_SHA=${git_sha}"
 )
 if [[ "${push}" == "true" ]]; then
+  "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${registry}"
   args+=(--push)
 else
   args+=(--load)

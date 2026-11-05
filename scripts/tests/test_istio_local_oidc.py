@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -94,6 +95,21 @@ def local_values():
     }
 
 
+def oidc_values():
+    return {
+        **ENTRA_VALUES,
+        "cloud": "AzureChinaCloud",
+        "oauth2Proxy": {
+            "sessionStore": {"type": "cookie"},
+            "mode": "oidc",
+            "oidc": {
+                "clientID": "lint-client",
+                "existingSecret": "portal-oidc",
+            },
+        },
+    }
+
+
 def local_args(issuer):
     replacements = {
         "--provider=entra-id": "--provider=oidc",
@@ -109,22 +125,23 @@ def local_args(issuer):
     ]
 
 
-def client_secret_env(key="client-secret"):
+def client_secret_env(key="client-secret", *, name="cetirun-local-oidc"):
     return {
         "name": "OAUTH2_PROXY_CLIENT_SECRET",
         "valueFrom": {
-            "secretKeyRef": {"name": "cetirun-local-oidc", "key": key},
+            "secretKeyRef": {"name": name, "key": key},
         },
     }
 
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class IstioLocalOIDCTests(unittest.TestCase):
-    def render(self, values, *, error=None):
+    def render(self, values, *, error=None, args=(), chart=CHART):
         result = subprocess.run(
             [
-                "helm", "template", "cetirun-istio", str(CHART),
+                "helm", "template", "cetirun-istio", str(chart),
                 "--namespace", "cetirun-istio", "--values", "-",
+                *args,
             ],
             input=json.dumps(values), text=True, capture_output=True,
             env=OFFLINE, timeout=30, check=False,
@@ -158,6 +175,150 @@ class IstioLocalOIDCTests(unittest.TestCase):
             {"azure.workload.identity/client-id": "lint-client"},
         )
         self.assertEqual(account["metadata"]["labels"]["azure.workload.identity/use"], "true")
+
+    def test_cloud_default_keeps_entra_federation_unchanged(self):
+        self.assertEqual(self.render(ENTRA_VALUES), self.render({**ENTRA_VALUES, "cloud": "AzureCloud"}))
+        self.render({**ENTRA_VALUES, "cloud": "AzureChinaCloud"}, error="requires oauth2Proxy.mode=oidc")
+        for cloud in ("", "unknown", False, 123, [], {}):
+            with self.subTest(cloud=cloud):
+                self.render({**ENTRA_VALUES, "cloud": cloud}, error="cloud must be")
+
+    def test_oidc_cloud_selection_changes_only_provider_and_client_auth(self):
+        for cloud, authority in (
+            ("AzureCloud", "login.microsoftonline.com"),
+            ("AzureChinaCloud", "login.partner.microsoftonline.cn"),
+        ):
+            with self.subTest(cloud=cloud):
+                values = {**oidc_values(), "cloud": cloud}
+                expected = self.render(ENTRA_VALUES)
+                pod = expected[("Deployment", "oauth2-proxy")]["spec"]["template"]
+                del pod["metadata"]["labels"]["azure.workload.identity/use"]
+                container = pod["spec"]["containers"][0]
+                replacements = {
+                    "--provider=entra-id": "--provider=oidc",
+                    "--oidc-issuer-url=https://login.microsoftonline.com/lint-tenant/v2.0":
+                        f"--oidc-issuer-url=https://{authority}/lint-tenant/v2.0",
+                    "--skip-jwt-bearer-tokens=true": "--skip-jwt-bearer-tokens=false",
+                }
+                container["args"] = [
+                    replacements.get(arg, arg) for arg in ENTRA_ARGS
+                    if arg != "--entra-id-federated-token-auth"
+                ]
+                container["env"].append(client_secret_env(name="portal-oidc"))
+                account = expected[("ServiceAccount", "oauth2-proxy")]
+                del account["metadata"]["annotations"]
+                del account["metadata"]["labels"]["azure.workload.identity/use"]
+                self.assertEqual(self.render(values), expected)
+
+    def test_oidc_cli_overrides_issuer_and_secret_reference(self):
+        objects = self.render({}, args=[
+            "--set-string", "cloud=AzureChinaCloud",
+            "--set-string", "oauth2Proxy.mode=oidc",
+            "--set-string", "oauth2Proxy.oidc.issuerURL=https://identity.example.com:8443/tenant",
+            "--set-string", "oauth2Proxy.oidc.clientID=custom-client",
+            "--set-string", "oauth2Proxy.oidc.existingSecret=custom-secret",
+            "--set-string", "oauth2Proxy.oidc.clientSecretKey=secret-key",
+            "--set-string", "allowedGroups=group-a\\,group-b",
+        ])
+        container = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]["containers"][0]
+        self.assertIn("--oidc-issuer-url=https://identity.example.com:8443/tenant", container["args"])
+        self.assertIn("--client-id=custom-client", container["args"])
+        self.assertIn("--allowed-group=group-a", container["args"])
+        self.assertIn("--allowed-group=group-b", container["args"])
+        self.assertIn("--scope=openid email profile offline_access", container["args"])
+        self.assertIn("--session-store-type=redis", container["args"])
+        self.assertIn(client_secret_env("secret-key", name="custom-secret"), container["env"])
+        self.assertNotIn(("Secret", "custom-secret"), objects)
+
+    def test_oidc_upgrade_supplies_defaults_missing_from_retained_values(self):
+        # Helm --reuse-values uses the old chart defaults with the new templates.
+        with tempfile.TemporaryDirectory(prefix="cetirun-oidc-upgrade-") as temporary:
+            chart = Path(temporary) / "chart"
+            shutil.copytree(CHART, chart)
+            defaults_path = chart / "values.yaml"
+            defaults = yaml.safe_load(defaults_path.read_text())
+            defaults.pop("cloud")
+            defaults["oauth2Proxy"].pop("oidc")
+            defaults_path.write_text(yaml.safe_dump(defaults))
+            for cloud in (None, "AzureChinaCloud"):
+                for overrides in ({}, {"issuerURL": "https://identity.example.com/tenant"}, {"clientSecretKey": "oidc-secret"}):
+                    with self.subTest(cloud=cloud, overrides=overrides):
+                        values = oidc_values()
+                        if cloud is None:
+                            values.pop("cloud")
+                        values["oauth2Proxy"]["oidc"].update(overrides)
+                        self.assertEqual(
+                            self.render(values, chart=chart, args=["--is-upgrade"]),
+                            self.render(values, args=["--is-upgrade"]),
+                        )
+            for field in ("issuerURL", "clientSecretKey"):
+                values = oidc_values()
+                values["oauth2Proxy"]["oidc"][field] = False
+                self.render(values, chart=chart, error=f"oauth2Proxy.oidc.{field}")
+            values = oidc_values()
+            values["oauth2Proxy"]["oidc"]["clientSecretKey"] = ""
+            self.render(values, chart=chart, error="oauth2Proxy.oidc.clientSecretKey")
+
+    def test_group_names_remain_complete_string_arguments(self):
+        for values in (copy.deepcopy(ENTRA_VALUES), oidc_values()):
+            with self.subTest(mode=values["oauth2Proxy"].get("mode", "entra-id")):
+                values["allowedGroups"] = 'cetirun-admins #ops, eng: admins, team "quoted"'
+                objects = self.render(values)
+                args = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]["containers"][0]["args"]
+                self.assertTrue(all(isinstance(arg, str) for arg in args))
+                self.assertEqual([arg for arg in args if arg.startswith("--allowed-group=")], [
+                    "--allowed-group=cetirun-admins #ops",
+                    "--allowed-group=eng: admins",
+                    '--allowed-group=team "quoted"',
+                ])
+
+    def test_entra_rejects_empty_group_lists(self):
+        for groups in (",", " , ", " ", False, 123, [], {}):
+            with self.subTest(groups=groups):
+                self.render({**ENTRA_VALUES, "allowedGroups": groups}, error="allowedGroups")
+
+    def test_oidc_requires_groups_and_does_not_allow_bearer_auth(self):
+        for groups in ("", " , ", False, 123, [], {}):
+            with self.subTest(groups=groups):
+                self.render({**oidc_values(), "allowedGroups": groups}, error="allowedGroups")
+        values = oidc_values()
+        values["oauth2Proxy"]["skipJwtBearerTokens"] = True
+        self.render(values, error="oauth2Proxy.skipJwtBearerTokens=true is not supported in oidc mode")
+        self.render({**oidc_values(), "tenantId": ""}, error="tenantId is required")
+
+    def test_oidc_rejects_unsafe_issuer_and_secret_settings(self):
+        for issuer in (
+            "http://identity.example.com", "http://localhost:5556", "https://user@identity.example.com",
+            "https://identity.example.com?query=value", "https://identity.example.com#fragment",
+            "https://identity.example.com:65536", "https://:8443", "https://",
+            "https://identity.example.com/\n--insecure-oidc-skip-issuer-verification", False, 123, [], {},
+        ):
+            with self.subTest(issuer=issuer):
+                values = oidc_values()
+                values["oauth2Proxy"]["oidc"]["issuerURL"] = issuer
+                self.render(values, error="oauth2Proxy.oidc.issuerURL")
+        for key, invalid in (
+            ("clientID", ""), ("existingSecret", ""), ("existingSecret", "ns/secret"),
+            ("clientSecretKey", ""), ("clientSecretKey", "../key"),
+        ):
+            with self.subTest(key=key, invalid=invalid):
+                values = oidc_values()
+                values["oauth2Proxy"]["oidc"][key] = invalid
+                self.render(values, error=f"oauth2Proxy.oidc.{key}")
+        for key in ("allowHTTP", "clientSecret", "skipIssuerVerification", "skipTLSVerify"):
+            with self.subTest(key=key):
+                values = oidc_values()
+                values["oauth2Proxy"]["oidc"][key] = True
+                self.render(values, error=f"oauth2Proxy.oidc.{key} is not supported")
+
+    def test_oidc_settings_do_not_implicitly_change_authentication_mode(self):
+        values = oidc_values()
+        values["cloud"] = "AzureCloud"
+        values["oauth2Proxy"]["mode"] = "entra-id"
+        self.render(values, error="oauth2Proxy.oidc settings require oauth2Proxy.mode=oidc")
+        values = oidc_values()
+        values["oauth2Proxy"]["localOIDC"] = local_values()["oauth2Proxy"]["localOIDC"]
+        self.render(values, error="oauth2Proxy.localOIDC settings require oauth2Proxy.mode=local-oidc")
 
     def test_entra_still_requires_its_configuration(self):
         for key in ("clientId", "tenantId", "allowedGroups"):
@@ -310,7 +471,7 @@ class IstioLocalOIDCTests(unittest.TestCase):
                 self.render(values, error=f"oauth2Proxy.localOIDC.{key}")
 
     def test_rejects_invalid_mode_and_local_settings(self):
-        for invalid in ("", "oidc", "local", "disabled", None, False, 123, [], {}):
+        for invalid in ("", "local", "disabled", None, False, 123, [], {}):
             with self.subTest(mode=invalid):
                 values = local_values()
                 values["oauth2Proxy"]["mode"] = invalid

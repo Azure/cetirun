@@ -41,6 +41,7 @@ import { StatusTab } from "./StatusTab";
 import { ToolAuthorizationBlock } from "./ToolAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
 import { AIGatewayBlock } from "./AIGatewayBlock";
+import { TeamSkillsBlock } from "./TeamSkillsBlock";
 import { RestartAgentButton } from "./RestartAgentButton";
 import { SuspendAgentButton } from "./SuspendAgentButton";
 
@@ -219,6 +220,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       )}
 
       {gatewayRouted && !instance.suspended && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
+
+      <TeamSkillsBlock instance={instance} />
 
       {features?.agentToolsEnabled && <ToolAuthorizationBlock instance={instance} />}
 
