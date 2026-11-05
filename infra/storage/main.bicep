@@ -16,6 +16,19 @@ param tags object = {
 @description('AKS node subnet IDs allowed to access the storage account via NFS.')
 param allowedSubnetIds array = []
 
+@description('Subnet of an optional private endpoint for the blob service. Empty creates no private endpoint.')
+param privateEndpointSubnetId string = ''
+
+@description('Private DNS zone (privatelink.blob) where the private endpoint registers its address. Empty registers none.')
+param privateDnsZoneId string = ''
+
+@description('Public network access of the account. Disabled leaves only private endpoints.')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param publicNetworkAccess string = 'Enabled'
+
 // --- Modules ---
 
 module storage 'modules/storage-account.bicep' = {
@@ -26,6 +39,9 @@ module storage 'modules/storage-account.bicep' = {
     containerName: containerName
     tags: tags
     allowedSubnetIds: allowedSubnetIds
+    privateEndpointSubnetId: privateEndpointSubnetId
+    privateDnsZoneId: privateDnsZoneId
+    publicNetworkAccess: publicNetworkAccess
   }
 }
 

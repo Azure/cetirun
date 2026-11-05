@@ -553,7 +553,7 @@ func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (m
 	}
 	copy := agent.DeepCopy()
 	copy.Spec.Helm.Values = nil
-	platform, err := buildHelmValues(copy, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
+	platform, err := r.builtinHelmValues(copy, team, AgentIdentityHelmConfig{})
 	if err != nil {
 		return nil, nil, err
 	}

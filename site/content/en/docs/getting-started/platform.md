@@ -566,7 +566,9 @@ Run `make deploy` again after each change to the environment file. A run does
 not change the admission administrators, and it does not remove the Sandbox
 settings that are in effect. If the file tries to do this, the run stops.
 Sandbox execution stays disabled until you enable it, as
-[Policy-bound Teams](../../operations/policy-teams/) shows.
+[Policy-bound Teams](../../operations/policy-teams/) shows. The
+[Skill Marketplace](../../operations/skill-marketplace/) is optional. A later
+`make deploy` run enables it, together with Sandbox execution or after it.
 
 A change to the models replaces the Gateway's Pods. When a shared model is
 added or removed, or when its limits change, the Agents that use shared models

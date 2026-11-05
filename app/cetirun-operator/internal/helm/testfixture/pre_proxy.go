@@ -91,6 +91,25 @@ var laterAdditions = map[string][]string{
                             "type": "string",
                             "description": "Operator-owned external Dashboard URL including its instance prefix",
                             "default": ""
+`, `                "subPath": {
+                    "type": "string",
+                    "description": "Operator-set Skill Marketplace Team subtree (teams/<team-uid>) of the shared skills claim; only the HOME initializer mounts it, read-only",
+                    "pattern": "^$|^teams/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                    "default": ""
+                },
+                "marketplace": {
+                    "type": "object",
+                    "description": "Operator-set Skill Marketplace selection of the Agent's Team; set together with subPath",
+                    "additionalProperties": false,
+                    "properties": {
+                        "selectionDigest": {
+                            "type": "string",
+                            "description": "Team selection digest that the HOME initializer waits for",
+                            "pattern": "^$|^sha256:[a-f0-9]{64}$",
+                            "default": ""
+                        }
+                    }
+                },
 `},
 }
 

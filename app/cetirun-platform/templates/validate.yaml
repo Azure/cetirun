@@ -31,6 +31,24 @@
 {{- fail "cetirun-portal.sandboxRuntimeDefaultsFromController requires an enabled Operator with sandboxSources.enabled and nativeExecution" }}
 {{- end }}
 {{- end }}
+{{- /* The Operator runs the Skill Marketplace: it lists the policy-bound Teams
+       for its worker, creates the Agents' skills claims, and its worker writes
+       the catalog in the operator namespace, where the Portal reads it. The
+       Operator chart checks the marketplace's own values. */}}
+{{- $operatorMarketplace := ($operator.skillMarketplace | default dict).enabled | default false }}
+{{- $portalMarketplace := $portal.skillMarketplace | default dict }}
+{{- if and $operator.enabled $operatorMarketplace $portal.enabled }}
+{{- if not $portalMarketplace.enabled }}
+{{- fail "cetirun-portal.skillMarketplace.enabled must be true when cetirun-operator.skillMarketplace.enabled is: the Portal offers and checks Team skills from the marketplace catalog" }}
+{{- end }}
+{{- $portalCatalog := $portalMarketplace.catalogNamespace | default "cetirun-system" }}
+{{- if ne $portalCatalog $operator.namespace }}
+{{- fail (printf "cetirun-portal.skillMarketplace.catalogNamespace is %s, but cetirun-operator.namespace is %s: the marketplace writes its catalog in the operator namespace, where the Portal reads it, so set both to the same namespace" $portalCatalog $operator.namespace) }}
+{{- end }}
+{{- end }}
+{{- if and $portal.enabled $portalMarketplace.enabled (not (and $operator.enabled $operatorMarketplace)) }}
+{{- fail "cetirun-portal.skillMarketplace.enabled requires the bundled Operator with skillMarketplace.enabled: the Operator runs the Skill Marketplace that writes the catalog" }}
+{{- end }}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) }}
 {{- if or (not $portal.enabled) (not $operator.enabled) }}
 {{- fail "global.portalChat requires both Portal and Operator" }}

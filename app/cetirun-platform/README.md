@@ -7,7 +7,8 @@ platform includes the Operator, admission server, Portal, AI Gateway,
 PostgreSQL, Valkey, and Connections MCP. The Operator installs CetiAdmin through
 its Hermes runtime and asset export path. The same configuration enables Portal
 Chat and supplies Custom runtime, terminal, Memory, and shared Skills/HOME
-references.
+references. The optional [Skill Marketplace](#skill-marketplace) is installed
+only when the environment file configures it.
 
 The `cetirun-platform` Helm chart contains the platform components. Its
 switches stay available to chart consumers. The full set is necessary for the
@@ -65,6 +66,7 @@ The file contains these inputs:
 | `platform` | Platform release/namespace and umbrella values, for example, admission, provider credentials, model deployments, and qualified Custom images |
 | `platform.values.cetirun-operator.cetiadmin` | CetiAdmin owner assignment, initial budget, exact API access, optional migration source, and runtime options |
 | `sharedSkills` | The shared Skills storage fields that exist in the runtime chart, for example, storage class, resource group, account, and container |
+| `skillMarketplace` | Optional. The Git repository of the [Skill Marketplace](#skill-marketplace), its credentials Secret, and its Blob NFS container |
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
 federation/permissions, storage classes, and referenced Secrets are
@@ -227,7 +229,8 @@ patch the mesh.
 
 Next, the Broker and its Auth SDK start in the credential namespace. Then the
 helper installs the platform. It waits for every Deployment and StatefulSet,
-which includes PostgreSQL, Valkey, MCP, and the admission server.
+which includes PostgreSQL, Valkey, MCP, the admission server, and the
+configured Skill Marketplace.
 
 On a new installation, the helper starts the admission server before it
 activates global Sandbox enforcement. CetiAdmin's dedicated fail-closed webhooks
@@ -707,6 +710,72 @@ Administrator groups cannot be blanket groups, for example
 `system:authenticated` or `system:serviceaccounts:<namespace>`. The admission
 server refuses to start with these groups. As a result, the chart also refuses
 them.
+
+## Skill Marketplace
+
+The Operator runs the optional Skill Marketplace. A worker syncs one Git
+repository of skills, and publishes the skills that each policy-bound Team
+selects to a Blob NFS container. The Operator gives each Sandbox Agent of
+these Teams that the common executor runs, built-in or Custom, a read-only
+claim of the container. The marketplace is off by
+default. To enable it, set `cetirun-operator.skillMarketplace` and enable
+`cetirun-portal.skillMarketplace.enabled`. The Operator chart accepts the
+marketplace only with `sandboxSources.enabled` and `nativeExecution`, with a
+`sandboxSources.skillsClaimName`, and without
+`sandboxSources.skillsCatalogConfigMapName`.
+
+The worker is the Deployment `cetirun-skill-marketplace` in the operator
+namespace. It runs the operator image, and it can only read the Teams document
+of the Operator and update the catalog. The platform chart refuses these
+settings:
+
+- The marketplace of the bundled Operator is on, and the setting of the bundled
+  Portal is off.
+- The Portal setting is on, and the bundled Operator or its marketplace is off.
+- The Portal's `skillMarketplace.catalogNamespace` is not
+  `cetirun-operator.namespace`.
+
+`make deploy` sets these values from the optional `skillMarketplace` block of
+the environment file:
+
+```yaml
+skillMarketplace:
+  repository:
+    url: https://git.example.com/example/skills.git
+    ref: main                # Optional. Empty uses the remote HEAD.
+    path: skills             # Optional. Empty is the repository root.
+    auth: token              # none, token, or ssh
+    existingSecret: skills-repository
+    syncInterval: 5m         # Optional. At least 30s.
+  storage:
+    resourceGroup: example-rg
+    storageAccount: examplemarketplace
+    containerName: marketplace
+    storageClassName: azureblob-nfs-premium
+```
+
+With `auth: ssh`, use an `ssh://` URL or the `user@host:path` form. The URL
+must not contain credentials. For `auth: token`, the Secret in
+`platform.namespace` has the key `token`. For `auth: ssh`, it has the keys
+`ssh-privatekey` and `known_hosts`. Before its first write, the command makes
+sure that these keys and the StorageClass exist.
+
+The command refuses the block if the native Sandbox sources are off. It also
+refuses it if the Operator uses a published skills catalog, or if the storage
+is the `sharedSkills` container. Set other values of the marketplace, for
+example `repository.tokenUsername` or `limits`, under
+`platform.values.cetirun-operator.skillMarketplace`.
+
+On a new installation, the bootstrap upgrade does not install the marketplace.
+The command waits for the rollout of the worker after the final platform
+upgrade. A ready worker has not necessarily synchronized the repository. The
+catalog ConfigMap `cetirun-skill-marketplace` in the operator namespace shows
+the synchronized commit and any sync error.
+
+NFS 3.0 authorizes clients only by network. Use a storage account that only
+private endpoints can reach, and turn off its public network access. Refer to
+[Storage](../../site/content/en/docs/operations/storage.md) and
+[Skill Marketplace](../../site/content/en/docs/operations/skill-marketplace.md).
 
 ## AI Gateway
 

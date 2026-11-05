@@ -4,9 +4,16 @@
 package config
 
 import (
+	"errors"
 	"os/exec"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	appsv1 "k8s.io/api/apps/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"sigs.k8s.io/yaml"
 )
 
 func TestCustomChartKeepsAgentIdentitySeparate(t *testing.T) {
@@ -140,6 +147,106 @@ func TestAgentToolsChartRequiresVerifiedOwnerConfiguration(t *testing.T) {
 			}
 			if strings.Contains(text, "name: AGENT_ID_BROKER_URL") {
 				t.Error("Agent Tools implicitly enabled legacy authorization")
+			}
+		})
+	}
+}
+
+// renderedPortal returns the environment of the Portal container and the
+// rules of the Portal's own ClusterRole.
+func renderedPortal(t *testing.T, output []byte) (map[string]string, []rbacv1.PolicyRule) {
+	t.Helper()
+	env := map[string]string{}
+	var rules []rbacv1.PolicyRule
+	for _, document := range strings.Split(string(output), "\n---") {
+		var object struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(document), &object); err != nil {
+			t.Fatalf("parse rendered object: %v", err)
+		}
+		switch {
+		case object.Kind == "Deployment" && object.Metadata.Name == "cetirun-portal":
+			var deployment appsv1.Deployment
+			if err := yaml.Unmarshal([]byte(document), &deployment); err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range deployment.Spec.Template.Spec.Containers[0].Env {
+				env[item.Name] = item.Value
+			}
+		case object.Kind == "ClusterRole" && object.Metadata.Name == "cetirun-portal":
+			var role rbacv1.ClusterRole
+			if err := yaml.Unmarshal([]byte(document), &role); err != nil {
+				t.Fatal(err)
+			}
+			rules = role.Rules
+		}
+	}
+	if len(env) == 0 || len(rules) == 0 {
+		t.Fatalf("the render has no Portal Deployment or ClusterRole:\n%s", output)
+	}
+	return env, rules
+}
+
+func TestSkillMarketplaceChartWiring(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("Helm is required for the Portal chart rendering check")
+	}
+	catalogReader := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"configmaps"}, ResourceNames: []string{"cetirun-skill-marketplace"}, Verbs: []string{"get"}}
+	gatewayReader := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"configmaps"}, ResourceNames: []string{"cetirun-ai-gateway-catalog"}, Verbs: []string{"get"}}
+	base := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com"}
+	for _, tc := range []struct {
+		name          string
+		values        []string
+		wantNamespace string
+		wantError     string
+	}{
+		{name: "defaults"},
+		{name: "disabled", values: []string{"--set", "skillMarketplace.enabled=false", "--set", "skillMarketplace.catalogNamespace=operator-system"}},
+		{name: "enabled", values: []string{"--set", "skillMarketplace.enabled=true"}, wantNamespace: "cetirun-system"},
+		{name: "enabled elsewhere", values: []string{"--set", "skillMarketplace.enabled=true", "--set", "skillMarketplace.catalogNamespace=operator-system"}, wantNamespace: "operator-system"},
+		{name: "a string is not a switch", values: []string{"--set-string", "skillMarketplace.enabled=false"}, wantError: "skillMarketplace.enabled must be a boolean"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Only standard output is YAML; Helm reports failures on standard error.
+			output, err := exec.Command(helm, append(append([]string{}, base...), tc.values...)...).Output()
+			var failure string
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) {
+				failure = string(exitError.Stderr)
+			}
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(failure, tc.wantError) {
+					t.Fatalf("expected %q, got %v: %s", tc.wantError, err, failure)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("render: %v: %s", err, failure)
+			}
+			env, rules := renderedPortal(t, output)
+			enabled := tc.wantNamespace != ""
+			if got, ok := env["SKILL_MARKETPLACE_ENABLED"]; ok != enabled || (enabled && got != "true") {
+				t.Errorf("SKILL_MARKETPLACE_ENABLED = %q (set %v), want set %v", got, ok, enabled)
+			}
+			if got := env["SKILL_MARKETPLACE_CATALOG_NAMESPACE"]; got != tc.wantNamespace {
+				t.Errorf("SKILL_MARKETPLACE_CATALOG_NAMESPACE = %q, want %q", got, tc.wantNamespace)
+			}
+			hasReader := slices.ContainsFunc(rules, func(rule rbacv1.PolicyRule) bool { return reflect.DeepEqual(rule, catalogReader) })
+			if hasReader != enabled {
+				t.Errorf("catalog reader present=%v, want %v: %+v", hasReader, enabled, rules)
+			}
+			if !slices.ContainsFunc(rules, func(rule rbacv1.PolicyRule) bool { return reflect.DeepEqual(rule, gatewayReader) }) {
+				t.Error("the AI Gateway catalog reader changed")
+			}
+			for _, rule := range rules {
+				if slices.Contains(rule.Resources, "configmaps") && len(rule.ResourceNames) == 0 {
+					t.Errorf("a ConfigMap rule is not limited to named ConfigMaps: %+v", rule)
+				}
 			}
 		})
 	}

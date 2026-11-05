@@ -281,6 +281,99 @@ sandboxSources:
     logger: false
     desktop: false
 
+skillMarketplace:
+  # -- Use the Skill Marketplace for Team skills of policy-bound Agents. On,
+  # every skill entry without the npm: prefix names a marketplace skill: the
+  # operator stops passing such Team entries to the reserved ClawHub list, and
+  # refuses an Agent whose skillOverrides add or remove one (marketplace skills
+  # are selected on the Team). The operator lists the policy-bound Teams for the
+  # worker and gives each of their Agents a read-only claim of the storage,
+  # named sandboxSources.skillsClaimName. The worker, a separate Deployment
+  # that runs the operator image, synchronizes the repository, publishes the
+  # Team releases and writes the catalog. Requires sandboxSources.enabled and
+  # sandboxSources.nativeExecution, and an empty
+  # sandboxSources.skillsCatalogConfigMapName: the marketplace replaces the
+  # published skills catalog.
+  enabled: false
+  # -- One Git repository of skills for the installation. Every directory that
+  # holds a SKILL.md below `path` is a skill. The worker never executes
+  # repository content.
+  repository:
+    # -- https:// URL, or ssh:// / user@host:path with auth ssh. Never put credentials in the URL.
+    url: ""
+    # -- Branch, tag or full ref. Empty uses the remote HEAD.
+    ref: ""
+    # -- Directory of the repository that holds the skills. Empty is the root.
+    path: ""
+    syncInterval: 5m
+    # -- none, token or ssh.
+    auth: none
+    # -- Existing Secret in the operator namespace: key `token` for auth token;
+    # keys `ssh-privatekey` and `known_hosts` for auth ssh.
+    existingSecret: ""
+    tokenUsername: x-access-token
+    # -- Allows an http:// URL. Only for tests inside a private network.
+    allowInsecureHTTP: false
+  # -- The Blob NFS container that holds the Team releases. Use a storage
+  # account that only private endpoints can reach: NFS 3.0 has no client
+  # authentication.
+  storage:
+    resourceGroup: ""
+    storageAccount: ""
+    containerName: ""
+    storageClassName: azureblob-nfs-premium
+    # -- Capacity of the worker's read-write volume and claim. Helm keeps both
+    # when the marketplace is turned off.
+    size: 100Gi
+  # -- Skill names that the platform or images supply.
+  reservedNames:
+    - cetirun-memory
+    - connected-services
+  # -- How long the releases of a deleted Team stay after the Team's last publication.
+  teamGCGrace: 1h
+  # -- Limits of the repository and of each skill. The worker does not publish
+  # a skill that exceeds a limit, and the Skills page shows the reason. Agents
+  # copy their Team's skills into the scratch space of their Sandbox when they
+  # start, so raise the size limits only together with that space.
+  limits:
+    # -- Largest repository commit that the worker loads: the pack that the Git
+    # server sends for the commit, the commit's objects together, and the paths
+    # of the files and directories below repository.path together. The worker
+    # checks the pack and the objects before it decodes the commit, and the
+    # paths while it reads the tree. Keep worker.resources.limits.memory at
+    # least twice this size plus 256Mi.
+    maxRepositorySize: 256Mi
+    # -- Most objects in the repository commit: its files, its directories and
+    # the commit itself. Below repository.path, the worker also counts each
+    # path: a directory that the commit holds at two paths counts twice.
+    maxRepositoryObjects: 100000
+    # -- Most files in one skill.
+    maxSkillFiles: 500
+    # -- Largest total size of the files of one skill.
+    maxSkillSize: 5Mi
+    # -- Largest SKILL.md file. At most maxSkillSize.
+    maxSkillMDSize: 256Ki
+    # -- Deepest directory level of a file in a skill.
+    maxSkillDepth: 8
+    # -- Longest description in the SKILL.md frontmatter, in characters. The
+    # Agent Skills specification allows 1024.
+    maxDescriptionLength: 1024
+  # -- The worker Deployment `cetirun-skill-marketplace`. It runs without an
+  # Istio sidecar and talks only to the Kubernetes API, the Git host and its
+  # NFS mount.
+  worker:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    podAnnotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
 # -- Native MCP runtime integration and optional access to Agent credential records.
 connectionsMCP:
   # Opt-in common-executor integration, using current/default SA source pins.

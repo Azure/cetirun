@@ -92,7 +92,8 @@ type Input struct {
 	RuntimeClass      *nodev1.RuntimeClass
 	Home              *corev1.PersistentVolumeClaim
 	Skills            *corev1.PersistentVolumeClaim
-	SkillsMode        SkillsMode `json:",omitempty"`
+	SkillsMode        SkillsMode             `json:",omitempty"`
+	SkillMarketplace  *SkillMarketplaceInput `json:",omitempty"`
 	Helpers           Helpers
 	Controls          Controls
 	AuthorizedSecrets []string

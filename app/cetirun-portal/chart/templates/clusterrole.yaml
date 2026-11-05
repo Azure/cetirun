@@ -53,3 +53,11 @@ rules:
     resources: ["configmaps"]
     resourceNames: ["cetirun-ai-gateway-catalog"]
     verbs: ["get"]
+  {{- if ((.Values.skillMarketplace).enabled) }}
+  # The Skill Marketplace catalog: skill names, descriptions and versions,
+  # and each Team's publication state.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cetirun-skill-marketplace"]
+    verbs: ["get"]
+  {{- end }}

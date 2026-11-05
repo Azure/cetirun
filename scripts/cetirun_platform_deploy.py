@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from urllib.parse import urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -98,6 +99,22 @@ def step(command):
         elif not Path(word).is_absolute():
             shown.append(word)
     return " ".join(shown)
+# The optional Skill Marketplace, which the Operator runs. Only the top-level
+# skillMarketplace block of the environment file turns its switches on, and it
+# turns on both.
+SKILL_MARKETPLACE = "cetirun-operator.skillMarketplace"
+SKILL_MARKETPLACE_SWITCHES = (f"{SKILL_MARKETPLACE}.enabled", "cetirun-portal.skillMarketplace.enabled")
+SKILL_MARKETPLACE_FIELDS = {
+    "skillMarketplace": ("repository", "storage"),
+    "skillMarketplace.repository": ("url", "ref", "path", "auth", "existingSecret", "syncInterval"),
+    "skillMarketplace.storage": ("resourceGroup", "storageAccount", "containerName", "storageClassName"),
+}
+# Keys that the marketplace reads from the repository credentials Secret.
+SKILL_MARKETPLACE_SECRET_KEYS = {"none": (), "token": ("token",), "ssh": ("ssh-privatekey", "known_hosts")}
+SCP_URL = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/\s]\S*")
+DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+DNS_SUBDOMAIN = rf"(?=.{{1,253}}$){DNS_LABEL}(?:\.{DNS_LABEL})*"
+DURATION_UNITS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1, "m": 60, "h": 3600}
 
 
 def load_helper(filename):
@@ -158,6 +175,114 @@ def walk(value):
 
 def yaml_file(path):
     return mapping(yaml.load(path.read_text(), Loader=MESH.UniqueKeyLoader), str(path))
+
+
+def duration_seconds(value):
+    """Seconds of a Go duration such as 5m or 1h30m; None for anything else."""
+    if not isinstance(value, str):
+        return None
+    parts = re.findall(r"(\d+(?:\.\d*)?|\.\d+)(ns|us|ms|s|m|h)", value)
+    if not parts or "".join(number + unit for number, unit in parts) != value:
+        return None
+    return sum(float(number) * DURATION_UNITS[unit] for number, unit in parts)
+
+
+def check_repository_url(url, auth):
+    # The marketplace logs this URL and lists it in the catalog that the Portal
+    # shows, so it must not carry credentials. Errors never repeat the URL.
+    secret = "; keep credentials in the Secret that skillMarketplace.repository.existingSecret names"
+    if re.search(r"\s", url):
+        raise ValueError("skillMarketplace.repository.url must not contain whitespace")
+    if auth == "ssh" and SCP_URL.fullmatch(url):
+        return
+    parts = urllib.parse.urlsplit(url)
+    if (parts.password is not None or (parts.username is not None and parts.scheme != "ssh")
+            or parts.query or parts.fragment):
+        raise ValueError("skillMarketplace.repository.url must not contain credentials, a query or a fragment" + secret)
+    if auth == "ssh":
+        if parts.scheme != "ssh" or not parts.hostname:
+            raise ValueError("skillMarketplace.repository.auth ssh needs an ssh:// URL or the user@host:path form")
+    elif parts.scheme != "https" or not parts.hostname:
+        raise ValueError(f"skillMarketplace.repository.auth {auth} needs an https:// URL")
+
+
+def skill_marketplace(config, platform):
+    """Platform values of the optional Skill Marketplace, from its own input block."""
+    if "skillMarketplace" not in config:
+        for field in SKILL_MARKETPLACE_SWITCHES:
+            if get_value(config["platform"].get("values", {}), field):
+                raise ValueError(f"platform.values.{field} needs the top-level skillMarketplace block, which configures the Skill Marketplace")
+        return dict.fromkeys(SKILL_MARKETPLACE_SWITCHES, False)
+    block = mapping(config["skillMarketplace"], "skillMarketplace")
+    for name in ("repository", "storage"):
+        if block.get(name) is None:
+            raise ValueError(f"skillMarketplace.{name} is required")
+    repository = mapping(block["repository"], "skillMarketplace.repository")
+    storage = mapping(block["storage"], "skillMarketplace.storage")
+    for name, section in (("skillMarketplace", block), ("skillMarketplace.repository", repository),
+                          ("skillMarketplace.storage", storage)):
+        unknown = sorted(map(str, set(section) - set(SKILL_MARKETPLACE_FIELDS[name])))
+        if unknown:
+            raise ValueError(f"{name}.{unknown[0]} is not supported; set other chart values under platform.values.{SKILL_MARKETPLACE}")
+
+    url = required(config, "skillMarketplace.repository.url")
+    auth = repository.get("auth")
+    if not isinstance(auth, str) or auth not in SKILL_MARKETPLACE_SECRET_KEYS:
+        raise ValueError("skillMarketplace.repository.auth must be none, token or ssh")
+    check_repository_url(url, auth)
+    secret, keys = repository.get("existingSecret"), SKILL_MARKETPLACE_SECRET_KEYS[auth]
+    if not keys and secret not in (None, ""):
+        raise ValueError("skillMarketplace.repository.existingSecret is used only with auth token or ssh")
+    if keys and not (isinstance(secret, str) and re.fullmatch(DNS_SUBDOMAIN, secret)):
+        raise ValueError(f"skillMarketplace.repository.auth {auth} needs existingSecret: the name of a Secret in platform.namespace "
+                         f"with the {'key' if len(keys) == 1 else 'keys'} {' and '.join(keys)}")
+    defaults = yaml_file(OPERATOR_VALUES)["skillMarketplace"]["repository"]
+    optional = {}
+    for field, default in (("ref", ""), ("path", ""), ("syncInterval", defaults["syncInterval"])):
+        optional[field] = default if repository.get(field) is None else repository[field]
+        if not isinstance(optional[field], str):
+            raise ValueError(f"skillMarketplace.repository.{field} must be a string")
+    if re.search(r"[\s~^:?*\[\\]", optional["ref"]) or ".." in optional["ref"]:
+        raise ValueError("skillMarketplace.repository.ref must name a branch, a tag or a full ref")
+    if optional["path"].startswith("/") or ".." in optional["path"]:
+        raise ValueError("skillMarketplace.repository.path must be relative to the repository root, without ..")
+    seconds = duration_seconds(optional["syncInterval"])
+    if seconds is None or seconds < 30:
+        raise ValueError("skillMarketplace.repository.syncInterval must be a duration of at least 30s, for example 5m")
+
+    for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]:
+        required(config, f"skillMarketplace.storage.{field}")
+    if not re.fullmatch(r"[a-z0-9]{3,24}", storage["storageAccount"]):
+        raise ValueError("skillMarketplace.storage.storageAccount must be 3-24 lowercase letters and digits")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", storage["containerName"]) or "--" in storage["containerName"]:
+        raise ValueError("skillMarketplace.storage.containerName must be a Blob container name")
+    if not re.fullmatch(DNS_SUBDOMAIN, storage["storageClassName"]):
+        raise ValueError("skillMarketplace.storage.storageClassName must be a StorageClass name")
+    shared = config.get("sharedSkills") if isinstance(config.get("sharedSkills"), dict) else {}
+    if (storage["storageAccount"], storage["containerName"]) == (shared.get("storageAccount"), shared.get("containerName")):
+        raise ValueError("skillMarketplace.storage must name a container other than the sharedSkills container: "
+                         "the marketplace writes Team releases into its container")
+
+    # The Operator creates the skills claims only in native Sandbox execution,
+    # and its chart refuses the marketplace next to a published skills catalog.
+    sources = mapping(platform["cetirun-operator"].get("sandboxSources"), "cetirun-operator.sandboxSources")
+    if sources.get("enabled") is not True or sources.get("nativeExecution") is not True:
+        raise ValueError("skillMarketplace needs native Sandbox execution: set platform.values.cetirun-operator.sandboxSources "
+                         "enabled and nativeExecution to true")
+    if sources.get("skillsCatalogConfigMapName"):
+        raise ValueError("skillMarketplace replaces the published skills catalog: leave "
+                         "platform.values.cetirun-operator.sandboxSources.skillsCatalogConfigMapName empty")
+    claim = sources.get("skillsClaimName")
+    if not isinstance(claim, str) or not re.fullmatch(DNS_LABEL, claim):
+        raise ValueError("skillMarketplace needs cetirun-operator.sandboxSources.skillsClaimName, a DNS label: "
+                         "the Operator creates that claim in each Agent namespace")
+
+    namespace = config["platform"]["namespace"]
+    values = {"enabled": True, "repository.url": url, "repository.auth": auth, "repository.existingSecret": secret if keys else "",
+              **{f"repository.{field}": value for field, value in optional.items()},
+              **{f"storage.{field}": storage[field] for field in SKILL_MARKETPLACE_FIELDS["skillMarketplace.storage"]}}
+    return {**{f"{SKILL_MARKETPLACE}.{field}": value for field, value in values.items()},
+            "cetirun-portal.skillMarketplace.enabled": True, "cetirun-portal.skillMarketplace.catalogNamespace": namespace}
 
 
 def resource_name(value, *, label=False, limit=253):
@@ -493,6 +618,7 @@ def configuration(path):
     }
     for field in ("tenantId", "blueprintClientId", "authorizationClientId", "encryptionClientId", "keyVaultKeyUrl"):
         assignments["broker"][f"agentIdentity.{field}"] = identity[field]
+    assignments["platform"].update(skill_marketplace(config, platform))
     for name, fields in assignments.items():
         for field, value in fields.items():
             supplied = get_value(config[name].get("values", {}), field)
@@ -625,6 +751,7 @@ class Deployment:
     def __init__(self, config, values, scratch):
         self.config, self.values, self.scratch = config, values, scratch
         self.documents, self.files, self.charts = {}, {}, {}
+        self.bootstrap_documents = []
         self.existing_releases, self.namespaces = set(), {}
         self.mesh_uid = None
         self.cetiadmin_stop_pin = None
@@ -875,11 +1002,16 @@ class Deployment:
             bootstrapOwnedPrerequisites=False, skillsCatalogConfigMapName="", placementConfigMapName="")
         bootstrap["cetirun-operator"]["connectionsMCP"]["nativeEnabled"] = False
         bootstrap["cetirun-portal"]["sandboxRuntimeDefaultsFromController"] = False
+        # The Skill Marketplace needs the native sources that the bootstrap turns
+        # off; the Operator chart refuses its setting without them.
+        bootstrap["cetirun-operator"]["skillMarketplace"]["enabled"] = False
+        bootstrap["cetirun-portal"]["skillMarketplace"]["enabled"] = False
         self.files["bootstrap"] = self.scratch / "bootstrap-values.json"
         self.files["bootstrap"].write_text(json.dumps(bootstrap))
-        self.run(["helm", "template", self.config["platform"]["release"], str(self.charts["platform"]),
-                  "--namespace", self.config["platform"]["namespace"], "--kube-version", "1.37.0",
-                  "--values", str(self.files["bootstrap"])], env=offline)
+        raw = self.run(["helm", "template", self.config["platform"]["release"], str(self.charts["platform"]),
+                        "--namespace", self.config["platform"]["namespace"], "--kube-version", "1.37.0",
+                        "--values", str(self.files["bootstrap"])], env=offline)
+        self.bootstrap_documents = [doc for doc in yaml.safe_load_all(raw) if doc]
 
     def references(self):
         refs = set()
@@ -926,8 +1058,16 @@ class Deployment:
             for value in entry.get("litellm_params", {}).values():
                 if isinstance(value, str) and value.startswith("os.environ/"):
                     refs.add(("Secret", c["platform"]["namespace"], ai["providerCredentials"]["existingSecret"], value.removeprefix("os.environ/")))
-        for storage in (operator["customRuntime"]["storageClass"], c["sharedSkills"]["storageClassName"],
-                        ai["postgresql"]["bundled"]["persistence"]["storageClass"]):
+        storage_classes = [operator["customRuntime"]["storageClass"], c["sharedSkills"]["storageClassName"],
+                           ai["postgresql"]["bundled"]["persistence"]["storageClass"]]
+        marketplace = operator["skillMarketplace"]
+        if marketplace.get("enabled"):
+            # The repository credentials stay in an existing Secret of the platform namespace.
+            repository = marketplace["repository"]
+            for key in SKILL_MARKETPLACE_SECRET_KEYS[repository["auth"]]:
+                refs.add(("Secret", c["platform"]["namespace"], repository["existingSecret"], key))
+            storage_classes.append(marketplace["storage"]["storageClassName"])
+        for storage in storage_classes:
             refs.add(("StorageClass", "", storage, ""))
         return sorted(refs)
 
@@ -1362,9 +1502,10 @@ class Deployment:
             args.append("--disable-openapi-validation")
         self.helm(*args)
 
-    def ready(self, name):
+    def ready(self, name, documents=None):
         section = self.config[name]
-        workloads = [doc for doc in self.documents[name] if doc["kind"] in ("Deployment", "StatefulSet")]
+        workloads = [doc for doc in (self.documents[name] if documents is None else documents)
+                     if doc["kind"] in ("Deployment", "StatefulSet")]
         workloads.sort(key=lambda doc: (doc["kind"] != "StatefulSet", "valkey" not in doc["metadata"]["name"]))
         for doc in workloads:
             namespace, workload = doc["metadata"].get("namespace", section["namespace"]), doc["metadata"]["name"]
@@ -1407,7 +1548,8 @@ class Deployment:
         # Never withdraw existing admission protection during an upgrade.
         if not self.enforced:
             self.upgrade("platform", "bootstrap")
-            self.ready("platform")
+            # Wait for what the bootstrap installs: it has no Skill Marketplace.
+            self.ready("platform", self.bootstrap_documents)
         else:
             self.kubectl("rollout", "status", "deployment/cetirun-sandbox-admission", "--namespace", c["platform"]["namespace"], "--timeout=180s")
         self.upgrade("platform")
@@ -1424,6 +1566,10 @@ class Deployment:
 
     def plan(self):
         references = {(kind, namespace, name) for kind, namespace, name, _ in self.references()}
+        not_qualified = ["native Sandbox execution and physical fencing", "end-to-end CetiAdmin operations", "live model/OAuth calls"]
+        if self.values["platform"]["cetirun-operator"]["skillMarketplace"].get("enabled"):
+            # Its readiness does not wait for a repository sync.
+            not_qualified.append("Skill Marketplace repository access and Team publication")
         return {"target": {key: self.config["target"][key] for key in ("context", "cluster", "server", "clusterUID")},
                 "release": {key: self.config["release"][key] for key in ("registry", "version", "gitSHA")},
                 "stages": ["verify target, managed Istio, references, ownership and all artifacts",
@@ -1443,7 +1589,7 @@ class Deployment:
                               "operatorRemovalRequested": not self.values["platform"]["cetirun-operator"]["enabled"],
                               "stopConfirmed": False},
                 "preserves": ["existing Agents and HOME/PVCs except the explicit CetiAdmin retained lifecycle", "OAuth cookie and database keys", "other Helm releases"],
-                "notQualified": ["native Sandbox execution and physical fencing", "end-to-end CetiAdmin operations", "live model/OAuth calls"]}
+                "notQualified": not_qualified}
 
 
 def main(argv=None):

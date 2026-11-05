@@ -10,6 +10,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
+import time
+import unittest
 
 import pytest
 import yaml
@@ -21,7 +25,10 @@ IMAGE = "registry.example.com/agent@sha256:" + "a" * 64
 
 @pytest.fixture(params=["openclaw", "hermes"])
 def agent(request, tmp_path):
-    kind = request.param
+    return make_agent(request.param, tmp_path)
+
+
+def make_agent(kind, tmp_path):
     source, target, config, secrets, binaries = [tmp_path / name for name in ("source", "pvc", "config", "secrets", "bin")]
     for directory in (source, target, config, secrets, binaries):
         directory.mkdir()
@@ -884,3 +891,344 @@ def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth
     result = run(agent)
     assert result.returncode == 0, result.stderr
     assert read_config(agent)["gateway"]["auth"] == {"mode": "password"}
+
+
+# Skill Marketplace mode: CETIRUN_SHARED_SKILLS_DIR is the Team's subtree, and
+# the initializer copies the release that CURRENT names into the context
+# view's team-skills, which native Agents mount at skills.mountPath. Plain
+# unittest cases: pytest collects them, and python3 -m unittest runs them too
+# where pytest can be imported for the fixtures above.
+SELECTION = "sha256:" + "0123456789abcdef" * 4
+RELEASE = "0123456789abcdef0123"
+NEXT_RELEASE = "fedcba9876543210fedc"
+
+
+def snapshot(root):
+    """Every path below root with its link target or file content."""
+    return {
+        str(path.relative_to(root)): os.readlink(path) if path.is_symlink()
+        else path.read_bytes() if path.is_file() else None
+        for path in root.rglob("*")
+    }
+
+
+class SkillsReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.use("hermes")
+
+    def use(self, kind):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.agent = make_agent(kind, self.root)
+        self.team, self.view = self.root / "team", self.root / "view"
+        self.team.mkdir()
+        self.view.mkdir()
+        self.agent["env"].update(
+            CETIRUN_CONTEXT_VIEW=str(self.view),
+            CETIRUN_SHARED_SKILLS_DIR=str(self.team),
+            CETIRUN_SKILLS_RELEASE_SELECTION=SELECTION,
+        )
+
+    def release(self, release_id=RELEASE, selection=SELECTION, skills=("team-skill",)):
+        """A release directory as the marketplace publishes it."""
+        directory = self.team / "releases" / release_id
+        directory.mkdir(parents=True)
+        for name in skills:
+            (directory / name).mkdir()
+            (directory / name / "SKILL.md").write_text(f"Synthetic {name} instructions.\n")
+        (directory / ".cetirun-selection").write_text(selection + "\n")
+        (directory / ".cetirun-release.json").write_text(json.dumps({"skills": list(skills)}) + "\n")
+        return directory
+
+    def publish(self, release_id=RELEASE):
+        """Name a release in CURRENT: written aside, then renamed into place."""
+        written = self.root / "CURRENT.new"
+        written.write_text(release_id + "\n")
+        os.replace(written, self.team / "CURRENT")
+
+    def run_init(self, **env):
+        self.agent["env"].update(env)
+        return run(self.agent)
+
+    def published_skills(self):
+        return sorted(path.name for path in (self.view / "current/team-skills").iterdir())
+
+    def assert_refused(self, result, error):
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn(error, result.stderr)
+        self.assertNotIn("[agent-init] complete", result.stderr)
+        # Neither a view nor its staging copy is left behind.
+        self.assertEqual(list(self.view.iterdir()), [])
+
+    def stub_release_copy(self, script):
+        """Run script whenever the initializer copies a released skill."""
+        real = shutil.which("cp")
+        stub = self.agent["binaries"] / "cp"
+        stub.write_text(
+            f'#!/bin/sh\ncase "$1 $2" in "-RP {self.team}/releases/"*)\n{script}\n;;\nesac\n'
+            f'exec "{real}" "$@"\n'
+        )
+        stub.chmod(0o755)
+
+    def test_only_skills_of_the_current_release_are_copied(self):
+        for kind in ("openclaw", "hermes"):
+            with self.subTest(kind=kind):
+                self.use(kind)
+                self.release(NEXT_RELEASE, skills=("older-skill",))
+                release = self.release(skills=("team-skill", "second-skill"))
+                (release / "team-skill/references").mkdir()
+                (release / "team-skill/references/guide.md").write_text("Synthetic reference.\n")
+                (release / "team-skill/run.sh").write_text("#!/bin/sh\n")
+                (release / "team-skill/run.sh").chmod(0o755)
+                (release / "README.md").write_text("Synthetic release notes.\n")
+                for name in (".hidden-skill", "Upper-skill", "double--dash", "-leading", "trailing-"):
+                    (release / name).mkdir()
+                    (release / name / "SKILL.md").write_text("Not a skill name.\n")
+                (release / "Latest").symlink_to("team-skill")
+                self.publish()
+                sources = snapshot(self.team)
+                result = run(self.agent)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.published_skills(), ["second-skill", "team-skill"])
+                skill = self.view / "current/team-skills/team-skill"
+                self.assertEqual((skill / "SKILL.md").read_text(), "Synthetic team-skill instructions.\n")
+                self.assertEqual((skill / "references/guide.md").read_text(), "Synthetic reference.\n")
+                self.assertEqual((skill / "run.sh").stat().st_mode & 0o777, 0o755)
+                self.assertEqual(sorted(os.listdir(self.view / "current")),
+                                 [".ready", ".skills-release", "AGENTS.md", "skills", "team-skills"])
+                self.assertEqual((self.view / "current/.skills-release").read_text(), RELEASE + "\n")
+                # Team skills stay apart from the composed platform skills.
+                self.assertEqual(os.listdir(self.view / "current/skills"), [])
+                self.assertEqual(snapshot(self.team), sources)
+
+    def test_waits_for_current_to_name_the_release(self):
+        self.release()
+        self.assertFalse((self.team / "CURRENT").exists())
+        writer = threading.Timer(3, self.publish)
+        writer.start()
+        self.addCleanup(writer.join)
+        self.addCleanup(writer.cancel)
+        result = self.run_init(CETIRUN_SKILLS_RELEASE_TIMEOUT="10")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.published_skills(), ["team-skill"])
+
+    def test_release_that_never_arrives_is_pending_after_the_timeout(self):
+        self.release()  # Published, but CURRENT never names it.
+        started = time.monotonic()
+        result = self.run_init(CETIRUN_SKILLS_RELEASE_TIMEOUT="3")
+        self.assert_refused(result, "SkillsReleasePending")
+        self.assertGreaterEqual(time.monotonic() - started, 3)
+
+    def test_release_of_another_selection_is_pending(self):
+        release = self.release(selection="sha256:" + "f" * 64)
+        self.publish()
+        started = time.monotonic()
+        result = self.run_init(CETIRUN_SKILLS_RELEASE_TIMEOUT="2")
+        self.assert_refused(result, "SkillsReleasePending")
+        self.assertGreaterEqual(time.monotonic() - started, 2)
+        # Only the first line counts, and only exactly.
+        self.agent["env"]["CETIRUN_SKILLS_RELEASE_TIMEOUT"] = "0"
+        for content in (f"\n{SELECTION}\n", f"{SELECTION} \n", ""):
+            with self.subTest(selection=content):
+                (release / ".cetirun-selection").write_text(content)
+                self.assert_refused(run(self.agent), "SkillsReleasePending")
+        (release / ".cetirun-selection").write_text(f"{SELECTION}\nsynthetic note\n")
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.published_skills(), ["team-skill"])
+
+    def test_invalid_current_is_pending(self):
+        self.agent["env"]["CETIRUN_SKILLS_RELEASE_TIMEOUT"] = "0"
+        self.release()
+        # Each malformed id names a release that would otherwise be accepted.
+        malformed = [RELEASE.upper(), RELEASE[:19], RELEASE + "4", "./" + RELEASE[:18]]
+        for value in malformed:
+            self.release(value)
+        current = self.team / "CURRENT"
+        for content in [value + "\n" for value in malformed] + ["", f" {RELEASE}\n", f"{RELEASE}\n{RELEASE}\n"]:
+            with self.subTest(current=content):
+                current.write_text(content)
+                self.assert_refused(run(self.agent), "SkillsReleasePending")
+        current.unlink()
+        pointer = self.root / "pointer"
+        pointer.write_text(RELEASE + "\n")
+        current.symlink_to(pointer)
+        with self.subTest(current="link"):
+            self.assert_refused(run(self.agent), "SkillsReleasePending")
+        current.unlink()
+        current.mkdir()
+        with self.subTest(current="directory"):
+            self.assert_refused(run(self.agent), "SkillsReleasePending")
+        current.rmdir()
+        current.write_text(RELEASE)  # One line needs no final newline.
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.published_skills(), ["team-skill"])
+
+    def test_release_that_is_not_in_place_is_pending(self):
+        self.agent["env"]["CETIRUN_SKILLS_RELEASE_TIMEOUT"] = "0"
+        other = self.release(NEXT_RELEASE)
+        self.publish()
+        releases = self.team / "releases"
+        with self.subTest(release="missing"):
+            self.assert_refused(run(self.agent), "SkillsReleasePending")
+        (releases / RELEASE).symlink_to(NEXT_RELEASE)
+        with self.subTest(release="link"):
+            self.assert_refused(run(self.agent), "SkillsReleasePending")
+        (releases / RELEASE).unlink()
+        marker = self.release() / ".cetirun-selection"
+        marker.unlink()
+        with self.subTest(selection="missing"):
+            self.assert_refused(run(self.agent), "SkillsReleasePending")
+        marker.symlink_to(other / ".cetirun-selection")
+        with self.subTest(selection="link"):
+            self.assert_refused(run(self.agent), "SkillsReleasePending")
+        marker.unlink()
+        marker.write_text(SELECTION + "\n")
+        moved = self.root / "releases"
+        releases.rename(moved)
+        releases.symlink_to(moved)
+        with self.subTest(releases="link"):
+            self.assert_refused(run(self.agent), "SkillsReleasePending")
+        releases.unlink()
+        moved.rename(releases)
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.published_skills(), ["team-skill"])
+
+    def test_links_and_special_files_in_a_released_skill_are_refused(self):
+        outside = self.root / "outside-skill"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text("Synthetic skill outside the release.\n")
+        for case in ("file", "dangling", "nested", "skill", "fifo"):
+            with self.subTest(case=case):
+                shutil.rmtree(self.team / "releases", ignore_errors=True)
+                skill = self.release() / "team-skill"
+                if case == "file":
+                    (skill / "copy.md").symlink_to("SKILL.md")
+                elif case == "dangling":
+                    (skill / "absent").symlink_to("/nonexistent/synthetic")
+                elif case == "nested":
+                    (skill / "references").mkdir()
+                    (skill / "references/parent").symlink_to("..")
+                elif case == "skill":
+                    shutil.rmtree(skill)
+                    skill.symlink_to(outside)
+                else:
+                    os.mkfifo(skill / "pipe")
+                self.publish()
+                self.assert_refused(run(self.agent), "UnsupportedSkillFile")
+
+    def test_released_skill_cannot_replace_the_memory_skill(self):
+        # These tests mount no Memory assets; the shared conflict check
+        # reserves the Memory skill's name in any case.
+        self.release(skills=("team-skill", "cetirun-memory"))
+        self.publish()
+        self.assert_refused(run(self.agent), "SharedSkillConflictsWithCanonicalContext")
+
+    def test_current_moving_during_the_copy_copies_the_new_release(self):
+        self.release(skills=("first-skill",))
+        self.release(NEXT_RELEASE, skills=("second-skill",))
+        self.publish()
+        moved = self.root / "moved"
+        self.stub_release_copy(
+            f'if [ ! -e "{moved}" ]; then\n'
+            f'  : > "{moved}"\n'
+            f'  printf "%s\\n" {NEXT_RELEASE} > "{self.root}/CURRENT.new"\n'
+            f'  mv "{self.root}/CURRENT.new" "{self.team}/CURRENT"\n'
+            "fi"
+        )
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(moved.exists())
+        # The copy of the release CURRENT no longer names is removed.
+        self.assertEqual(self.published_skills(), ["second-skill"])
+        self.assertEqual((self.view / "current/.skills-release").read_text(), NEXT_RELEASE + "\n")
+
+    def test_current_that_keeps_moving_is_unstable(self):
+        self.release(skills=("first-skill",))
+        self.release(NEXT_RELEASE, skills=("second-skill",))
+        self.publish()
+        copies = self.root / "copies"
+        self.stub_release_copy(
+            f'printf "copy\\n" >> "{copies}"\n'
+            f'IFS= read -r id < "{self.team}/CURRENT"\n'
+            f"next={NEXT_RELEASE}\n"
+            f'[ "$id" = {RELEASE} ] || next={RELEASE}\n'
+            f'printf "%s\\n" "$next" > "{self.root}/CURRENT.new"\n'
+            f'mv "{self.root}/CURRENT.new" "{self.team}/CURRENT"'
+        )
+        self.assert_refused(run(self.agent), "SkillsReleaseUnstable")
+        self.assertEqual(copies.read_text().splitlines(), ["copy"] * 5)
+
+    def test_without_a_selection_the_shared_directory_is_copied_as_before(self):
+        del self.agent["env"]["CETIRUN_SKILLS_RELEASE_SELECTION"]
+        self.release()
+        self.publish()
+        (self.team / ".team-notes").write_text("Synthetic notes.\n")
+        (self.team / "notes-link").symlink_to(".team-notes")
+        log = self.root / "termination-log"
+        log.write_text("")
+        self.agent["env"]["CETIRUN_TERMINATION_LOG"] = str(log)
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        skills = self.view / "current/skills"
+        self.assertEqual(sorted(path.name for path in skills.iterdir()), [".team-notes", "CURRENT", "notes-link", "releases"])
+        self.assertFalse((self.view / "current/team-skills").exists())
+        self.assertEqual(os.readlink(skills / "notes-link"), ".team-notes")
+        self.assertEqual((skills / "releases" / RELEASE / ".cetirun-selection").read_text(), SELECTION + "\n")
+        # Only a Skill Marketplace release is reported.
+        self.assertFalse((self.view / "current/.skills-release").exists())
+        self.assertEqual(log.read_text(), "")
+
+    def test_the_copied_release_is_reported_in_the_termination_message(self):
+        # The Portal compares the report with the Team's current release.
+        self.release(skills=("first-skill",))
+        self.publish()
+        log = self.root / "termination-log"
+        log.write_text("")
+        self.agent["env"]["CETIRUN_TERMINATION_LOG"] = str(log)
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.read_text(), f"cetirun.skills.release={RELEASE}\n")
+        # A later release does not reach a Pod that has its view: an
+        # initializer that runs again in the same Pod reports the copy again.
+        self.release(NEXT_RELEASE, skills=("second-skill",))
+        self.publish(NEXT_RELEASE)
+        log.write_text("")
+        result = run(self.agent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.published_skills(), ["first-skill"])
+        self.assertEqual(log.read_text(), f"cetirun.skills.release={RELEASE}\n")
+
+    def test_an_unavailable_termination_message_does_not_stop_the_initializer(self):
+        self.release()
+        self.publish()
+        for case in ("missing", "directory", "read-only"):
+            with self.subTest(case=case):
+                shutil.rmtree(self.view)
+                self.view.mkdir()
+                log = self.root / f"termination-{case}"
+                if case == "directory":
+                    log.mkdir()
+                elif case == "read-only":
+                    log.write_text("")
+                    log.chmod(0o444)
+                result = self.run_init(CETIRUN_TERMINATION_LOG=str(log))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.published_skills(), ["team-skill"])
+                if case == "missing":
+                    # Outside Kubernetes, no file appears at the path.
+                    self.assertFalse(log.exists())
+
+    def test_release_mode_configuration_errors(self):
+        self.release()
+        self.publish()
+        for timeout in ("3m", "-1", "1.5"):
+            with self.subTest(timeout=timeout):
+                result = self.run_init(CETIRUN_SKILLS_RELEASE_TIMEOUT=timeout)
+                self.assert_refused(result, "InvalidSkillsReleaseTimeout")
+        del self.agent["env"]["CETIRUN_SKILLS_RELEASE_TIMEOUT"]
+        del self.agent["env"]["CETIRUN_SHARED_SKILLS_DIR"]
+        self.assert_refused(run(self.agent), "SharedSkillsUnavailable")

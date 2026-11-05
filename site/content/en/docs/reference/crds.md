@@ -65,7 +65,7 @@ data migration. Retention does not protect against a schema downgrade.
 | `modelAccess.sharedModels` | Explicit request for policy-bound Agents. On by default for legacy Agents |
 | `modelAccess.githubCopilot` | Explicit request for policy-bound Agents. On by default for legacy Agents when the deployment offers Copilot |
 | `modelAccess.monthlyBudgetUSD` | Optional override of the monthly LiteLLM budget in USD, up to the policy maximum |
-| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 for each list. The effective IDs are `(team ∪ add) − remove` |
+| `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 for each list. The effective IDs are `(team ∪ add) − remove`. With the Skill Marketplace, the operator refuses an entry without the `npm:` prefix with `AgentConfigInvalid` |
 | `helm.version` | Agent chart pin. It is backfilled from the operator default on the first reconciliation |
 | `helm.values` | Map-shaped top-level entries. See the admission notes below |
 | `suspended` | Requests zero replicas and the removal of the instance VirtualService. If omitted, the value is false |
@@ -197,7 +197,7 @@ termination. The chart allows zero or one replica and limits any enabled HPA to
 | `defaultSandboxRef` | Listed creation default. Necessary for a policy-enabled Team. It is not a later implicit reselection |
 | `memberContext.role` | Role rendered into runtime-specific team context |
 | `memberContext.description` | Context lines, at most 20 |
-| `skills` | Default identifiers, at most 20 |
+| `skills` | Default identifiers, at most 100. With the Skill Marketplace, each entry without the `npm:` prefix is the name of a marketplace skill. See [Skill Marketplace](../../operations/skill-marketplace/) |
 | `skillStorage.resourceGroup` | Necessary when `skillStorage` is present. A storage resource group that exists |
 | `skillStorage.storageAccount` | Necessary when `skillStorage` is present. A Blob account that exists |
 | `skillStorage.containerName` | Necessary when `skillStorage` is present. A skills container that exists |
@@ -255,11 +255,30 @@ Skill entries in `skills` and `skillOverrides` follow this schema pattern:
 ^(npm:)?(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.+-]+)?$
 ```
 
-The `npm:` prefix selects the npm installer. Other accepted identifiers are
-only passed to the reserved `skills.clawHub` list. They are not installed.
-Shared storage uses chart-level protocol and mount options. Those options are
-not fields on `skillStorage`. See
+The `npm:` prefix selects the npm installer. Without the Skill Marketplace,
+other accepted identifiers are only passed to the reserved `skills.clawHub`
+list. They are not installed. Shared storage uses chart-level protocol and
+mount options. Those options are not fields on `skillStorage`. See
 [configuration and skills](../../concepts/configuration/).
+
+When the operator's `skillMarketplace.enabled` is on, every entry without the
+`npm:` prefix is the name of a Skill Marketplace skill. Such a name has
+lowercase letters and digits in words that single hyphens join, and at most
+64 characters. These rules apply:
+
+- The operator does not pass the name to `skills.clawHub`.
+- For a Team with an Agent Policy, the Skill Marketplace publishes the
+  selected skills. Its common-executor Sandbox Agents copy them when they
+  start. OpenClaw and Hermes read them in `$HOME/.aks/skills`, and Custom in
+  `$HOME/.agents/skills`.
+- An Agent cannot add or remove such a name in `skillOverrides`. The operator
+  sets the Agent to `Failed`, with `AgentConfigInvalid` and this message:
+  `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
+  This also applies to Agents without a policy.
+- A change of the Team's selection restarts the Team's running Sandbox Agents
+  one time, as each Team change does.
+
+See [Skill Marketplace](../../operations/skill-marketplace/).
 
 ### Team and Sandbox administration
 
@@ -338,6 +357,48 @@ coordination client. This includes conditional writes, uncertain outcomes that
 are kept, and background deletion. Admission is still responsible for platform
 compatibility and current consumer checks. The editor shows Kubernetes
 validation and admission rejections, but transport failures stay in logs.
+
+### Skill Marketplace administration
+
+The Portal chart's `skillMarketplace.enabled` turns on these Portal API
+behaviors. Keep it equal to the operator's `skillMarketplace.enabled`.
+
+- `GET /api/features` returns `skillMarketplaceEnabled`.
+- `GET /api/v1/admin/skill-marketplace` is for administrators only. It returns
+  `enabled`, `known`, and `catalog`, with `Cache-Control: no-store`. `enabled`
+  is `false` when the Portal setting is off. `known` is `false` until the
+  Skill Marketplace writes its catalog, and `catalog` is then `null`.
+- The catalog is the `catalog.json` document of the ConfigMap
+  `cetirun-skill-marketplace` in the operator namespace. The Portal accepts
+  only the document version `v1`, without duplicate fields, and at most 1 MiB.
+  If it cannot read or decode the document, the response is
+  `503 Service Unavailable` with the code `skill_marketplace_unavailable`.
+- Team creation and update examine `skills`. Each entry without the `npm:`
+  prefix must be a valid marketplace skill name. Otherwise, the response is
+  `422` with the code `invalid_team`. Each entry must be in the Policy's
+  `skills.allowed` (`400`, `invalid_team_binding`).
+- Each marketplace skill that the stored Team does not select yet must be in
+  the catalog (`422`, `invalid_team`). When the Skill Marketplace rejected the
+  repository's copy, the message gives the reason. Before the catalog exists,
+  the response is `422` with `invalid_team`. If the Portal cannot read the
+  catalog, the response is `503` with `skill_marketplace_unavailable`. A skill
+  that the Team already selects can stay after it leaves the repository.
+- A Policy update cannot remove a marketplace skill from `skills.allowed`
+  while a Team of the Policy selects it. The response is `422` with the code
+  `invalid_policy`, and the message names the Team.
+- `GET /api/v1/instances/{name}` returns `teamSkills` for an Agent whose Team
+  has an Agent Policy and selects marketplace skills. Each entry has `name`,
+  `description`, `version`, and `state`. The state is `published`, `pending`,
+  `retained`, or `missing`. Without a catalog, each skill is `pending`. The
+  field is absent when the Portal cannot read the Team or the catalog.
+- The same response has `teamSkillsRestartNeeded: true` when the newest Pod
+  of the Agent copied an earlier Team release. Both releases are of the current
+  Team selection. The Portal reads the copied release ID from the termination
+  message of the `init-home-data` container. Without that ID, the field is
+  absent.
+
+See [Skill Marketplace](../../operations/skill-marketplace/) for the catalog
+fields and the states.
 
 ## Sandbox and AgentPolicy
 
@@ -421,6 +482,21 @@ Gateway-qualified image are also necessary. Policy permission alone does not
 qualify an image or backend. Agent Identity cannot complete aggregate
 `PolicyApplied` until a typed credential-service executor supplies read-back
 evidence that matches.
+
+`skills.allowed` lists the exact entries that the Team's `skills` and an
+Agent's `skillOverrides.add` can contain, `npm:` packages included. If a Team
+or an Agent requests a skill that the list does not contain, the operator
+denies the Agent. Its `PolicyResolved` condition is `False`, with reason
+`PolicyDenied` and the message `skill "<name>" is not allowed by policy`. The
+operator then revokes the Agent's Gateway key and stops the Agent.
+
+The skill allowlist is not an execution input of Sandbox Agents. A change
+that only adds or removes allowed skills does not restart running native
+Agents. A Policy with an empty or absent allowlist keeps the execution digest
+that earlier operators recorded. For a Policy that allows skills, the digest
+that earlier operators recorded includes the allowlist. After the operator
+upgrade, the first reconciliation sees that Policy as changed, as after an edit
+of its execution settings.
 
 ### AgentPolicy model access
 
@@ -539,7 +615,9 @@ The admin Portal shows the complete cluster-scoped `AgentPolicy` configuration.
 Administrators can edit allowed Harnesses and skills, Copilot and shared model
 access, monthly USD budgets, and per-Agent rate limits. They can also edit
 multiple-Sandbox selection, read-only root filesystem, network CIDR and port
-rules, ingress mode, Agent Identity, and Entra workload identity.
+rules, ingress mode, Agent Identity, and Entra workload identity. With the Skill
+Marketplace, the editor also lists the skills of its catalog, so that
+administrators can select the allowed skills.
 
 The **Identity** section has two independent controls. **Agent Identity**
 selects `Disabled`, `Optional`, or `Required` for an independent Microsoft Entra

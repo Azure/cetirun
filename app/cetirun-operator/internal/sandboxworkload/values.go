@@ -244,6 +244,13 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	if b.input.GatewayKey != nil {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
 	}
+	if marketplace := b.input.SkillMarketplace; marketplace != nil {
+		// The HOME initializer mounts only the Team's subtree of the claim and
+		// waits for the release of the Team's current selection.
+		skills := overlay["skills"].(map[string]any)
+		skills["subPath"] = marketplace.TeamPath
+		skills["marketplace"] = map[string]any{"selectionDigest": marketplace.SelectionDigest}
+	}
 	if custom := b.input.CustomAgent; custom != nil {
 		terminalEnabled := b.input.Terminal != nil
 		if settings, ok := out["ttyd"].(map[string]any); ok {

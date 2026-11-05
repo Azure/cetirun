@@ -244,14 +244,23 @@ type AgentIdentityHelmConfig struct {
 }
 
 func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
-	return buildHelmValuesCore(instance, team, domainSuffix, skillsStorageAccount, cetirunHelmValues, chartRegistry, AgentIdentityHelmConfig{}, defaultModels...)
+	return buildHelmValuesCore(instance, team, domainSuffix, skillsStorageAccount, cetirunHelmValues, chartRegistry, AgentIdentityHelmConfig{}, false, defaultModels...)
 }
 
 func buildHelmValuesWithAgentIdentity(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry, defaultModel string, agentIdentityConfig AgentIdentityHelmConfig) (map[string]interface{}, error) {
-	return buildHelmValuesCore(instance, team, domainSuffix, skillsStorageAccount, cetirunHelmValues, chartRegistry, agentIdentityConfig, defaultModel)
+	return buildHelmValuesCore(instance, team, domainSuffix, skillsStorageAccount, cetirunHelmValues, chartRegistry, agentIdentityConfig, false, defaultModel)
 }
 
-func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, agentIdentityConfig AgentIdentityHelmConfig, defaultModels ...string) (map[string]interface{}, error) {
+// builtinHelmValues builds a built-in Agent's values from the reconciler's
+// deployment configuration, including the Skill Marketplace switch.
+// buildHelmValues and buildHelmValuesWithAgentIdentity build them without the
+// marketplace.
+func (r *AgentReconciler) builtinHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, agentIdentityConfig AgentIdentityHelmConfig) (map[string]interface{}, error) {
+	return buildHelmValuesCore(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry,
+		agentIdentityConfig, r.SkillMarketplace, r.DefaultModel)
+}
+
+func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, agentIdentityConfig AgentIdentityHelmConfig, skillMarketplace bool, defaultModels ...string) (map[string]interface{}, error) {
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		return nil, fmt.Errorf("Custom requires its own platform binding and runtime plan")
 	}
@@ -329,7 +338,7 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		}
 	}
 
-	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, skillsStorageAccount); err != nil {
+	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, skillsStorageAccount, skillMarketplace); err != nil {
 		return nil, err
 	}
 

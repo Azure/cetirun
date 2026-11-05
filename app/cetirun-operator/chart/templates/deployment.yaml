@@ -4,6 +4,7 @@
 {{- end }}
 {{- if ne (empty .Values.connectionsMCP.brokerNamespace) (empty .Values.connectionsMCP.brokerServiceAccount) }}{{ fail "connectionsMCP.brokerNamespace and connectionsMCP.brokerServiceAccount must be set together" }}{{ end }}
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
+{{- $skillMarketplace := include "cetirun-operator.skillMarketplaceConfig" . -}}
 {{- $chat := deepCopy .Values.chatAccess -}}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) -}}
 {{- $_ := set $chat "enabled" true -}}
@@ -94,6 +95,10 @@ spec:
             {{- if $sandboxSources }}
             - name: CETIRUN_SANDBOX_SOURCES
               value: {{ $sandboxSources | quote }}
+            {{- end }}
+            {{- if $skillMarketplace }}
+            - name: CETIRUN_SKILL_MARKETPLACE
+              value: {{ $skillMarketplace | quote }}
             {{- end }}
             - name: AGENT_ID_ENABLED
               value: {{ .Values.agentIdentity.enabled | quote }}

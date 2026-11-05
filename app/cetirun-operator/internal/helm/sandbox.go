@@ -48,6 +48,9 @@ func PrepareSandboxChartWithHarness(chrt *chart.Chart, platform, user map[string
 		return nil, fmt.Errorf("protected runtime values cannot be supplied as Helm inputs")
 	}
 	input := bundle.Identity()
+	if err := checkCustomSkillMarketplace(chrt, input); err != nil {
+		return nil, err
+	}
 	if err := sandboxworkload.ValidateUserValues(user, input.AuthorizedSecrets); err != nil {
 		return nil, err
 	}

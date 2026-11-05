@@ -130,6 +130,17 @@ aiGateway:
   # operator's namespace).
   catalogNamespace: cetirun-system
 
+# -- Skill Marketplace: Team skills from one synchronized Git repository.
+# When enabled, every Team skill without the npm: prefix is a marketplace
+# skill: Team saves check new skills against the marketplace catalog, Policy
+# saves keep skills a Team still selects, and Agent details show the Team's
+# skills. Keep it in step with the operator's skillMarketplace.enabled.
+skillMarketplace:
+  enabled: false
+  # -- Namespace where the marketplace publishes its catalog (the operator's
+  # namespace).
+  catalogNamespace: cetirun-system
+
 # -- Optional UID-pinned authority shared with strict Sandbox admission.
 # Configure all three fields when protected AgentPolicy updates and deletions
 # must use the platform's configuration-change coordination protocol.

@@ -99,6 +99,9 @@ func Build(input Input) (*Bundle, error) {
 		input.Skills.Status.Phase == corev1.ClaimLost || ptr.Deref(input.Skills.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != corev1.PersistentVolumeFilesystem {
 		return nil, fmt.Errorf("a distinct, current filesystem skills PVC is required")
 	}
+	if err := validateSkillMarketplace(input); err != nil {
+		return nil, err
+	}
 	if err := validateControls(input); err != nil {
 		return nil, err
 	}

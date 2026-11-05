@@ -33,6 +33,11 @@ type SandboxSourcesConfig struct {
 	CoordinationConfigMapUID    string                  `json:"coordinationConfigMapUID,omitempty"`
 	AdmissionServiceAccount     string                  `json:"admissionServiceAccount"`
 	Helpers                     sandboxworkload.Helpers `json:"helpers"`
+	// SkillMarketplace is the separate CETIRUN_SKILL_MARKETPLACE switch, never
+	// part of CETIRUN_SANDBOX_SOURCES. While it is on, the Skill Marketplace
+	// creates the skills claims of native Agents, so a missing claim is a short
+	// wait for it rather than a configuration error.
+	SkillMarketplace bool `json:"-"`
 }
 
 func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
@@ -137,7 +142,7 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 			NativeExecution: config.NativeExecution,
 			APIReader:       reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
 			OperatorNamespace: namespace, SkillsCatalogConfigMapName: config.SkillsCatalogConfigMapName,
-			ChartVersion: chartVersion, Helpers: config.Helpers,
+			ChartVersion: chartVersion, Helpers: config.Helpers, SkillMarketplace: config.SkillMarketplace,
 		},
 		Installer: installer, AdmissionServiceAccount: config.AdmissionServiceAccount,
 	}

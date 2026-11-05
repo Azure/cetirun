@@ -448,6 +448,9 @@ For Custom, the composer builds one complete view and mounts it read-only at
 source mount. The main container never mounts the shared PVC over
 `.agents/skills`. A shared `cetirun-memory` directory or another collision with
 canonical skills fails initialization and does not replace a platform skill.
+For a Team of the [Skill Marketplace](../../operations/skill-marketplace/),
+the source mount is the subtree of the Team. Init waits for the release of the
+Team's selection and copies only its skills into `.agents/skills`.
 
 The sources and the PVC's `.agents` files that already exist are preserved.
 This does not change how shared storage is provisioned. For Custom, a
@@ -706,8 +709,10 @@ migrations separately.
 
 `sh`, `cp` and the basic tools that the common initializer uses are necessary
 for the initial BYO contract. These tools include `mkdir`, `mv`, `rm`, `chmod`,
-`mktemp`, `find` and `cmp`. The copy must keep hidden files, executable bits and
-symlinks. It must not follow links outside HOME.
+`mktemp`, `find` and `cmp`. For a Team of the Skill Marketplace, `sleep` is
+also necessary: init waits for the Team's release with it. The copy must keep
+hidden files, executable bits and symlinks. It must not follow links outside
+HOME.
 
 If a necessary tool is not available, initialization fails. The platform does
 not install the tool or elevate privileges. Custom does not have to supply

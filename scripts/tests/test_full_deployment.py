@@ -24,6 +24,15 @@ SPEC = importlib.util.spec_from_file_location("full_deployment", ROOT / "scripts
 DEPLOY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DEPLOY)
 FIXTURE = ROOT / "app/cetirun-platform/ci/deployment-example.yaml"
+# Synthetic Skill Marketplace inputs; the example file only shows them commented out.
+MARKETPLACE = {
+    "repository": {"url": "https://git.example.invalid/example/skills.git", "ref": "main", "path": "skills",
+                   "auth": "token", "existingSecret": "skills-repository", "syncInterval": "10m"},
+    "storage": {"resourceGroup": "example-marketplace-rg", "storageAccount": "examplemarketplace",
+                "containerName": "marketplace", "storageClassName": "example-marketplace"},
+}
+SSH_URL = "git@git.example.invalid:example/skills.git"
+DELETE = object()
 
 
 def operator_custom_runtime_fields():
@@ -569,6 +578,13 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         self.assertTrue(platform["cetirun-operator"]["customRuntime"]["enabled"])
         self.assertFalse(platform["cetirun-operator"]["sandboxSources"]["nativeExecution"])
         self.assertEqual(platform["cetirun-operator"]["connectionsMCP"]["runtimeTypes"], ["hermes", "openclaw"])
+        # The Skill Marketplace is optional and off without its input block.
+        for switch in DEPLOY.SKILL_MARKETPLACE_SWITCHES:
+            self.assertIs(DEPLOY.get_value(platform, switch), False, switch)
+        self.assertNotIn("Skill Marketplace repository access and Team publication", plan["notQualified"])
+        # A new installation waits for the same workloads after its bootstrap.
+        self.assertEqual({doc["metadata"]["name"] for doc in deployment.bootstrap_documents if doc["kind"] in ("Deployment", "StatefulSet")},
+                         set(plan["releases"]["platform"]["workloads"]))
         self.assertFalse(deployment.writes)
         self.assertTrue(all(c[0] == "helm" for c in deployment.commands))
 
@@ -1195,6 +1211,209 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                 self.assertEqual(deployment.writes, [])
         deployment = self.upgrade_fixture(strong, strong, "native-mcp-preserved")
         deployment.execute()
+
+
+class SkillMarketplaceTests(DeploymentFixture, unittest.TestCase):
+    def marketplace_config(self, **repository):
+        config = copy.deepcopy(self.config)
+        operator = config["platform"]["values"]["cetirun-operator"]
+        # The marketplace needs native Sandbox execution, which the example does not enable.
+        operator["sandboxAdmission"]["podsEnabled"] = True
+        operator["sandboxSources"] = {"enabled": True, "nativeExecution": True, "bootstrapOwnedPrerequisites": True,
+                                      "platformConfigMapName": "sandbox-platform"}
+        config["skillMarketplace"] = copy.deepcopy(MARKETPLACE)
+        config["skillMarketplace"]["repository"].update(repository)
+        return config
+
+    def refused(self, config, message):
+        with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+            with self.assertRaisesRegex(ValueError, message) as failure:
+                self.configure(config)
+        return str(failure.exception)
+
+    @staticmethod
+    def environment(documents, name):
+        deployment = next(doc for doc in documents if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name)
+        return {item["name"]: item.get("value") for item in deployment["spec"]["template"]["spec"]["containers"][0].get("env", [])}
+
+    def test_block_sets_the_marketplace_operator_and_portal_values(self):
+        _, values = self.configure(self.marketplace_config())
+        platform = values["platform"]
+        marketplace = platform["cetirun-operator"]["skillMarketplace"]
+        self.assertIs(marketplace["enabled"], True)
+        for section in ("repository", "storage"):
+            self.assertEqual({key: marketplace[section][key] for key in MARKETPLACE[section]}, MARKETPLACE[section])
+        # The worker runs the operator image; there is no other image or chart.
+        self.assertNotIn("image", marketplace)
+        self.assertNotIn("cetirun-skill-marketplace", platform)
+        self.assertEqual(platform["cetirun-portal"]["skillMarketplace"], {"enabled": True, "catalogNamespace": "cetirun-system"})
+
+    def test_optional_fields_take_the_chart_defaults(self):
+        config = self.marketplace_config(auth="none")
+        for field in ("ref", "path", "syncInterval", "existingSecret"):
+            config["skillMarketplace"]["repository"].pop(field)
+        config["platform"]["values"]["cetirun-operator"]["sandboxSources"]["skillsClaimName"] = "team-skills"
+        _, values = self.configure(config)
+        marketplace = values["platform"]["cetirun-operator"]["skillMarketplace"]
+        self.assertEqual({key: marketplace["repository"][key] for key in ("ref", "path", "syncInterval", "auth", "existingSecret")},
+                         {"ref": "", "path": "", "syncInterval": "5m", "auth": "none", "existingSecret": ""})
+        # The Operator names the Agents' claims after its own setting.
+        self.assertEqual(values["platform"]["cetirun-operator"]["sandboxSources"]["skillsClaimName"], "team-skills")
+
+    def test_invalid_inputs_are_refused_before_tools(self):
+        marker = "synthetic-credential-marker"
+        repository, storage = "skillMarketplace.repository", "skillMarketplace.storage"
+        sources = "platform.values.cetirun-operator.sandboxSources"
+        cases = [
+            ({f"{repository}.url": DELETE}, r"skillMarketplace\.repository\.url is required"),
+            ({"skillMarketplace.storage": DELETE}, r"skillMarketplace\.storage is required"),
+            *(({f"{storage}.{field}": DELETE}, rf"skillMarketplace\.storage\.{field} is required") for field in MARKETPLACE["storage"]),
+            ({f"{repository}.url": f"https://user:{marker}@git.example.invalid/skills.git"}, "must not contain credentials"),
+            ({f"{repository}.url": f"https://{marker}@git.example.invalid/skills.git"}, "must not contain credentials"),
+            ({f"{repository}.url": f"https://git.example.invalid/skills.git?private_token={marker}"}, "must not contain credentials"),
+            ({f"{repository}.url": f"ssh://git:{marker}@git.example.invalid/skills.git", f"{repository}.auth": "ssh"},
+             "must not contain credentials"),
+            ({f"{repository}.existingSecret": DELETE}, "auth token needs existingSecret: .* with the key token$"),
+            ({f"{repository}.url": SSH_URL, f"{repository}.auth": "ssh", f"{repository}.existingSecret": ""},
+             "auth ssh needs existingSecret: .* with the keys ssh-privatekey and known_hosts$"),
+            ({f"{repository}.auth": "none"}, "existingSecret is used only with auth token or ssh"),
+            ({f"{repository}.auth": "basic"}, "auth must be none, token or ssh"),
+            ({f"{repository}.auth": DELETE}, "auth must be none, token or ssh"),
+            ({f"{repository}.url": "http://git.example.invalid/skills.git"}, "auth token needs an https:// URL"),
+            ({f"{repository}.url": SSH_URL}, "auth token needs an https:// URL"),
+            ({f"{repository}.auth": "ssh"}, r"auth ssh needs an ssh:// URL or the user@host:path form"),
+            ({f"{repository}.syncInterval": "10s"}, "at least 30s"),
+            ({f"{repository}.syncInterval": "5 minutes"}, "at least 30s"),
+            ({f"{repository}.ref": "main..other"}, "ref must name a branch"),
+            ({f"{repository}.path": "/skills"}, "path must be relative"),
+            ({f"{repository}.tokenUsername": "oauth2"}, r"repository\.tokenUsername is not supported"),
+            ({f"{storage}.storageAccount": "Example-Account"}, "storageAccount must be 3-24"),
+            ({f"{storage}.storageAccount": "exampleskills", f"{storage}.containerName": "published-skills"},
+             "other than the sharedSkills container"),
+            ({f"{sources}.enabled": False, f"{sources}.nativeExecution": False, f"{sources}.bootstrapOwnedPrerequisites": False},
+             "needs native Sandbox execution"),
+            ({f"{sources}.nativeExecution": False}, "needs native Sandbox execution"),
+            ({f"{sources}.skillsCatalogConfigMapName": "published-skills-catalog"}, "replaces the published skills catalog"),
+            ({f"{sources}.skillsClaimName": ""}, "skillsClaimName, a DNS label"),
+            ({"platform.values.cetirun-operator.skillMarketplace.storage.containerName": "other-container"},
+             r"cetirun-operator\.skillMarketplace\.storage\.containerName conflicts with the complete deployment inputs"),
+            ({"platform.values.cetirun-portal.skillMarketplace.catalogNamespace": "other-namespace"},
+             r"cetirun-portal\.skillMarketplace\.catalogNamespace conflicts with the complete deployment inputs"),
+        ]
+        for changes, message in cases:
+            with self.subTest(changes=list(changes), message=message):
+                config = self.marketplace_config()
+                for path, value in changes.items():
+                    if value is DELETE:
+                        parent, key = path.rsplit(".", 1)
+                        DEPLOY.get_value(config, parent).pop(key)
+                    else:
+                        DEPLOY.set_value(config, path, value)
+                self.assertNotIn(marker, self.refused(config, message))
+
+    def test_platform_values_cannot_turn_the_marketplace_on_without_its_block(self):
+        for switch in DEPLOY.SKILL_MARKETPLACE_SWITCHES:
+            with self.subTest(switch=switch):
+                config = copy.deepcopy(self.config)
+                DEPLOY.set_value(config["platform"]["values"], switch, True)
+                self.refused(config, "needs the top-level skillMarketplace block")
+
+    def test_commented_example_block_is_valid(self):
+        lines = FIXTURE.read_text().splitlines()
+        block = []
+        for line in lines[lines.index("# skillMarketplace:"):]:
+            if not line.startswith("#"):
+                break
+            block.append(line[2:])
+        config = self.marketplace_config()
+        config["skillMarketplace"] = yaml.safe_load("\n".join(block))["skillMarketplace"]
+        _, values = self.configure(config)
+        marketplace = values["platform"]["cetirun-operator"]["skillMarketplace"]
+        self.assertEqual(marketplace["repository"]["existingSecret"], "skills-repository")
+        self.assertNotEqual(marketplace["storage"]["containerName"], config["sharedSkills"]["containerName"])
+
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
+    def test_bootstrap_has_no_marketplace_and_the_final_release_waits_for_it(self):
+        deployment = self.deployment(self.marketplace_config(), "marketplace")
+
+        def workloads(documents):
+            return {doc["metadata"]["name"] for doc in documents if doc["kind"] in ("Deployment", "StatefulSet")}
+
+        self.assertIn("cetirun-skill-marketplace", workloads(deployment.documents["platform"]))
+        self.assertEqual(workloads(deployment.bootstrap_documents),
+                         workloads(deployment.documents["platform"]) - {"cetirun-skill-marketplace"})
+        workload = next(doc for doc in deployment.documents["platform"]
+                        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "cetirun-skill-marketplace")
+        self.assertEqual(workload["metadata"]["namespace"], "cetirun-system")
+        container = workload["spec"]["template"]["spec"]["containers"][0]
+        # The worker is the second binary of the operator image.
+        self.assertEqual(container["image"], "registry.example.com/cetirun-operator:0.1.1")
+        self.assertEqual(container["command"], ["/skill-marketplace"])
+        for argument in ("--repository-url=https://git.example.invalid/example/skills.git", "--repository-ref=main",
+                         "--repository-path=skills", "--auth=token", "--sync-interval=10m", "--namespace=cetirun-system"):
+            self.assertIn(argument, container["args"])
+        volume = next(doc for doc in deployment.documents["platform"] if doc["kind"] == "PersistentVolume")
+        self.assertEqual(volume["spec"]["csi"]["volumeAttributes"],
+                         {"resourceGroup": "example-marketplace-rg", "storageAccount": "examplemarketplace",
+                          "containerName": "marketplace", "protocol": "nfs"})
+        self.assertEqual(volume["spec"]["storageClassName"], "example-marketplace")
+        storage = {"resourceGroup": "example-marketplace-rg", "storageAccount": "examplemarketplace",
+                   "containerName": "marketplace", "storageClassName": "example-marketplace"}
+        for documents, enabled in ((deployment.bootstrap_documents, False), (deployment.documents["platform"], True)):
+            operator = self.environment(documents, "cetirun-operator")
+            portal = self.environment(documents, "cetirun-portal")
+            self.assertEqual(json.loads(operator["CETIRUN_SKILL_MARKETPLACE"]) if enabled else operator.get("CETIRUN_SKILL_MARKETPLACE"),
+                             {"enabled": True, "storage": storage} if enabled else None)
+            self.assertEqual(portal.get("SKILL_MARKETPLACE_ENABLED"), "true" if enabled else None)
+            self.assertEqual(portal.get("SKILL_MARKETPLACE_CATALOG_NAMESPACE"), "cetirun-system" if enabled else None)
+        plan = deployment.plan()
+        self.assertIn("cetirun-skill-marketplace", plan["releases"]["platform"]["workloads"])
+        self.assertIn("Skill Marketplace repository access and Team publication", plan["notQualified"])
+
+        deployment.execute()
+        bootstrap, final = [values for name, values, _ in deployment.applied if name == "platform"]
+        for switch in DEPLOY.SKILL_MARKETPLACE_SWITCHES:
+            self.assertIs(DEPLOY.get_value(bootstrap, switch), False, switch)
+            self.assertIs(DEPLOY.get_value(final, switch), True, switch)
+        upgrades = [index for index, command in enumerate(deployment.commands)
+                    if command[:5] == ["helm", "--kube-context", "example-context", "upgrade", "--install"]
+                    and "cetirun-platform" in command]
+        rollouts = [index for index, command in enumerate(deployment.commands)
+                    if "deployment/cetirun-skill-marketplace" in command]
+        self.assertEqual(len(upgrades), 2)
+        self.assertEqual(len(rollouts), 1)
+        self.assertGreater(rollouts[0], upgrades[1])
+        # The bootstrap stage still waits for the workloads it installs.
+        operator_rollouts = [index for index, command in enumerate(deployment.commands)
+                             if "deployment/cetirun-operator" in command]
+        self.assertEqual(len(operator_rollouts), 2)
+        self.assertTrue(upgrades[0] < operator_rollouts[0] < upgrades[1] < operator_rollouts[1])
+
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm for real local chart rendering")
+    def test_preflight_checks_the_repository_secret_keys_and_the_storage_class(self):
+        for auth, url, secret, keys in (("token", MARKETPLACE["repository"]["url"], "skills-repository", ("token",)),
+                                        ("ssh", SSH_URL, "skills-deploy-key", ("ssh-privatekey", "known_hosts")),
+                                        ("none", MARKETPLACE["repository"]["url"], None, ())):
+            deployment = self.deployment(self.marketplace_config(auth=auth, url=url, existingSecret=secret), "preflight-" + auth)
+            references = deployment.references()
+            self.assertIn(("StorageClass", "", "example-marketplace", ""), references)
+            self.assertEqual({key for kind, _, name, key in references if kind == "Secret" and name == secret},
+                             {"", *keys} if secret else set())
+            for missing in (*keys, None):
+                with self.subTest(auth=auth, missing=missing):
+                    if missing:
+                        deployment.keys[("cetirun-system", secret)].discard(missing)
+                        expected = f"Required Secret key is missing: cetirun-system/{secret}:{missing}"
+                    else:
+                        removed = deployment.objects.pop(("storageclass", "", "example-marketplace"))
+                        expected = "Required StorageClass reference is missing: /example-marketplace"
+                    with self.assertRaisesRegex(ValueError, re.escape(expected)):
+                        deployment.execute()
+                    self.assertEqual(deployment.writes, [])
+                    if missing:
+                        deployment.keys[("cetirun-system", secret)].add(missing)
+                    else:
+                        deployment.objects[("storageclass", "", "example-marketplace")] = removed
 
 
 class MeshTargetTests(unittest.TestCase):

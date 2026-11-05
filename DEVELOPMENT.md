@@ -631,6 +631,36 @@ headers. Keep this server local. It is not a production authentication
 configuration. If you start the Go backend or operator, it uses Kubernetes
 configuration. This step is outside the offline validation loop.
 
+### Skill Marketplace
+
+The operator runs the Skill Marketplace, which publishes approved skills from
+one Git repository to the native Sandbox Agents of policy-bound Teams. The
+code has two parts:
+
+- `app/cetirun-operator/internal/skillmarketplace/` runs in the operator. It
+  lists the policy-bound Teams for the worker, and it creates the read-only
+  skills claim of each of their Agents.
+- `app/cetirun-operator/cmd/skill-marketplace/` is the worker. It syncs the
+  repository, publishes the selection of each Team to Blob NFS storage, and
+  writes the catalog. It is a second binary of the operator image. The
+  operator chart runs it in a separate Deployment. The worker reads
+  repository content, holds the repository credentials, and writes to the
+  storage.
+
+`make deploy` enables the Skill Marketplace from the `skillMarketplace` block
+of the environment file. Run its offline checks with these commands:
+
+```bash
+go -C app/cetirun-operator test ./internal/skillmarketplace/... ./cmd/skill-marketplace/ -count=1
+python3 -B -m unittest scripts.tests.test_skill_marketplace_platform \
+  scripts.tests.test_full_deployment.SkillMarketplaceTests -v
+```
+
+These checks do not contact a Git remote, mount Blob NFS storage, or call a
+cluster. Refer to
+[Skill Marketplace](site/content/en/docs/operations/skill-marketplace.md) for
+the repository, storage, and security requirements.
+
 ### Sandbox Entra projection core
 
 The generic `AgentPolicy.spec.entraID` projection is different from Broker

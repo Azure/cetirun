@@ -590,6 +590,9 @@ func (b *Bundle) ValidateReconciledTemplate(template *corev1.PodTemplateSpec, im
 			}
 		}
 	}
+	if err := b.validateSkillMarketplaceTemplate(spec); err != nil {
+		return err
+	}
 	if b.input.CustomAgent != nil {
 		return b.validateCustomReconciledTemplate(&spec, memoryEnabled)
 	}

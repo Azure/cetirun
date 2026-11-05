@@ -14,6 +14,19 @@ SCRIPT = ROOT / "app/cetirun-chart/agents/custom/bootstrap/init-home.sh"
 COMMON = ROOT / "app/cetirun-chart/configs/init-home-common.sh"
 IMAGE = "registry.example.com/agent@sha256:" + "a" * 64
 TOOLS = ("sh", "cp", "mkdir", "mv", "rm", "chmod", "mktemp", "find", "cmp")
+# A Skill Marketplace release ID and the Team selection that it carries.
+RELEASE = "0123456789abcdef0123"
+NEXT_RELEASE = "fedcba9876543210fedc"
+SELECTION = "sha256:" + "ab" * 32
+
+
+def snapshot(root):
+    """Every path below root with its link target or file content."""
+    return {
+        str(path.relative_to(root)): os.readlink(path) if path.is_symlink()
+        else path.read_bytes() if path.is_file() else None
+        for path in root.rglob("*")
+    }
 
 
 class CustomInitializationTests(unittest.TestCase):
@@ -367,6 +380,113 @@ class CustomInitializationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("UnsupportedSkillFile", result.stderr)
         self.assertEqual(list(view.iterdir()), [])
+
+    # Skill Marketplace: the Team's subtree of the claim holds releases, and
+    # CURRENT names the one to copy.
+
+    def release(self, release_id=RELEASE, skills=("team-skill",), selection=SELECTION):
+        """A release of the Team's subtree as the marketplace publishes it."""
+        directory = self.team / "releases" / release_id
+        directory.mkdir(parents=True)
+        for name in skills:
+            (directory / name).mkdir()
+            (directory / name / "SKILL.md").write_text(f"Synthetic {name} instructions.\n")
+        (directory / ".cetirun-selection").write_text(selection + "\n")
+        return directory
+
+    def publish(self, release_id=RELEASE):
+        written = self.root / "CURRENT.new"
+        written.write_text(release_id + "\n")
+        os.replace(written, self.team / "CURRENT")
+
+    def prepare_release_mode(self):
+        """The Team's subtree and the selection, as the chart passes them; waiting needs sleep."""
+        self.team = self.root / "team"
+        view = self.root / "context-view"
+        self.team.mkdir()
+        view.mkdir()
+        (self.tools / "sleep").symlink_to(shutil.which("sleep"))
+        self.env.update(
+            CETIRUN_SHARED_SKILLS_DIR=str(self.team),
+            CETIRUN_CONTEXT_VIEW=str(view),
+            CETIRUN_SKILLS_RELEASE_SELECTION=SELECTION,
+        )
+        return view
+
+    def test_team_release_joins_the_skills_of_the_custom_view(self):
+        view = self.prepare_release_mode()
+        self.release(NEXT_RELEASE, skills=("older-skill",))
+        release = self.release(skills=("team-skill", "second-skill"))
+        (release / "team-skill/run.sh").write_text("#!/bin/sh\n")
+        (release / "team-skill/run.sh").chmod(0o755)
+        (release / "README.md").write_text("Synthetic release notes.\n")
+        self.publish()
+        log = self.root / "termination-log"
+        log.write_text("")
+        self.env["CETIRUN_TERMINATION_LOG"] = str(log)
+        sources = snapshot(self.team)
+        result = self.run_init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # A Custom runtime reads $HOME/.agents/skills: the Team's skills join
+        # the platform's there, without the release's other entries.
+        skills = view / "current/skills"
+        self.assertEqual(sorted(path.name for path in skills.iterdir()), ["cetirun-memory", "second-skill", "team-skill"])
+        self.assertEqual((skills / "team-skill/SKILL.md").read_text(), "Synthetic team-skill instructions.\n")
+        self.assertEqual((skills / "team-skill/run.sh").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((skills / "cetirun-memory/SKILL.md").read_text(), "synthetic memory contract")
+        self.assertFalse((view / "current/team-skills").exists())
+        self.assertEqual((view / "current/.skills-release").read_text(), RELEASE + "\n")
+        self.assertEqual(log.read_text(), f"cetirun.skills.release={RELEASE}\n")
+        self.assertEqual(snapshot(self.team), sources)
+        self.assertFalse((self.target / ".agents/skills").exists())
+
+    def test_team_release_requires_sleep(self):
+        view = self.prepare_release_mode()
+        self.release()
+        self.publish()
+        (self.tools / "sleep").unlink()
+        result = self.run_init()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("InitToolsMissing: sleep", result.stderr)
+        self.assertEqual(list(view.iterdir()), [])
+
+    def test_team_release_cannot_replace_a_platform_skill(self):
+        view = self.prepare_release_mode()
+        self.release(skills=("team-skill", "cetirun-memory"))
+        self.publish()
+        result = self.run_init()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SharedSkillConflictsWithCanonicalContext", result.stderr)
+        self.assertEqual(list(view.iterdir()), [])
+        self.assertEqual((self.context / "skills/cetirun-memory/SKILL.md").read_text(), "synthetic memory contract")
+
+    def test_moving_current_replaces_only_the_team_skills(self):
+        view = self.prepare_release_mode()
+        self.release(skills=("first-skill",))
+        self.release(NEXT_RELEASE, skills=("second-skill",))
+        self.publish()
+        # CURRENT moves on while the first release is copied.
+        moved = self.root / "moved"
+        real = shutil.which("cp")
+        (self.tools / "cp").unlink()
+        (self.tools / "cp").write_text(
+            "#!/bin/sh\n"
+            f'case "$1 $2" in "-RP {self.team}/releases/"*)\n'
+            f'  if [ ! -e "{moved}" ]; then\n'
+            f'    : > "{moved}"\n'
+            f'    printf "%s\\n" {NEXT_RELEASE} > "{self.root}/CURRENT.new"\n'
+            f'    mv "{self.root}/CURRENT.new" "{self.team}/CURRENT"\n'
+            "  fi;;\n"
+            "esac\n"
+            f'exec "{real}" "$@"\n'
+        )
+        (self.tools / "cp").chmod(0o755)
+        result = self.run_init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(moved.exists())
+        skills = view / "current/skills"
+        self.assertEqual(sorted(path.name for path in skills.iterdir()), ["cetirun-memory", "second-skill"])
+        self.assertEqual((view / "current/.skills-release").read_text(), NEXT_RELEASE + "\n")
 
 
 if __name__ == "__main__":

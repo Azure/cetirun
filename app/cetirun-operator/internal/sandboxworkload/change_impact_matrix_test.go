@@ -102,7 +102,9 @@ func impactResources() []impactResource {
 	}
 	policyChanges := []impactChange{
 		{field: "harnesses.allowed", value: []any{"openclaw", "hermes"}},
-		{field: "skills.allowed", value: []any{"other-skill"}},
+		// The skill allowlist only gates which skills Teams and Agents select;
+		// the Team's selection is the execution input.
+		{field: "skills.allowed", value: []any{"other-skill"}, neutral: true},
 		{field: "agentIdentity.allowed", value: false},
 		{field: "agentIdentity.required", value: true},
 		{field: "agentIdentity.credentialServices", value: []any{"azure-resource-manager"}},

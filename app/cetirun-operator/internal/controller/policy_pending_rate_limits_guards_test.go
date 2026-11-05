@@ -162,10 +162,11 @@ func TestReconciledSandboxPendingPolicySourceChangesStillFence(t *testing.T) {
 				f.installer.stages != stages || f.workload(t).UID != workload.UID {
 				t.Fatal("source race lost the original workload or reservation:", reconcileErr, err)
 			}
-			if change.name == "limits only" {
+			if change.name == "limits only" || change.name == "skills" {
+				// Neither Gateway limits nor the skill allowlist are execution inputs.
 				if reconcileErr != nil || current.Reservation.Phase != sandboxcoordination.Reserved ||
 					gateway.blocks != 0 || ptr.Deref(f.workload(t).Spec.Replicas, 0) != 1 {
-					t.Fatal("a limit-only write during bootstrap fenced execution:", reconcileErr)
+					t.Fatalf("a %s write during bootstrap fenced execution: %v", change.name, reconcileErr)
 				}
 				return
 			}

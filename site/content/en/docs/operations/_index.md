@@ -29,6 +29,7 @@ and side effects.
 - [Configuration and skills](../concepts/configuration/) — shared defaults and instance overrides
 - [Configure a team](../guides/teams/) — team context, provider defaults, and skills
 - [Smart routing](smart-routing/) — routers, classifiers, and where requests went
+- [Skill Marketplace](skill-marketplace/) — approved skills from one Git repository for the Agents of policy-bound Teams
 - [Storage](storage/)
 - [Istio authentication and egress](istio/)
 - [Entra Agent Identity setup](entra-agent-identity/) — Blueprint, federation and Azure/Microsoft authorization

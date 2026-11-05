@@ -4,12 +4,14 @@
 package kube
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"text/template"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -144,19 +146,34 @@ func TestPortalNamespaceOwnershipRBAC(t *testing.T) {
 	if !ok {
 		t.Fatal("Portal role has no rules")
 	}
-	var parsed []rbacv1.PolicyRule
-	if err := yaml.Unmarshal([]byte(rules), &parsed); err != nil {
+	// The rules are a template with optional rules; check every variant.
+	rulesTemplate, err := template.New("portal-rbac-rules").Parse(rules)
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, rule := range parsed {
-		if slices.Contains(rule.APIGroups, "") && slices.Contains(rule.Resources, "namespaces") {
-			if !slices.Equal(rule.Verbs, []string{"get", "create", "patch"}) {
-				t.Fatalf("namespace ownership needs get/create/patch, not deletion or update: %v", rule.Verbs)
+	for _, marketplace := range []bool{false, true} {
+		var rendered bytes.Buffer
+		if err := rulesTemplate.Execute(&rendered, map[string]any{"Values": map[string]any{"skillMarketplace": map[string]any{"enabled": marketplace}}}); err != nil {
+			t.Fatal(err)
+		}
+		var parsed []rbacv1.PolicyRule
+		if err := yaml.Unmarshal(rendered.Bytes(), &parsed); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, rule := range parsed {
+			if slices.Contains(rule.APIGroups, "") && slices.Contains(rule.Resources, "namespaces") {
+				if !slices.Equal(rule.Verbs, []string{"get", "create", "patch"}) {
+					t.Fatalf("namespace ownership needs get/create/patch, not deletion or update: %v", rule.Verbs)
+				}
+				found = true
+				break
 			}
-			return
+		}
+		if !found {
+			t.Fatalf("Portal namespace ownership permissions are missing (Skill Marketplace enabled=%v)", marketplace)
 		}
 	}
-	t.Fatal("Portal namespace ownership permissions are missing")
 }
 
 func TestPortalNamespaceBindingRetriesWithoutTakingOverOwnership(t *testing.T) {

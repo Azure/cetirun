@@ -156,6 +156,99 @@ Otherwise: repository:tag
 {{- end }}
 
 {{/*
+CETIRUN_SKILL_MARKETPLACE: {"enabled":true,"storage":{...}} while the Skill
+Marketplace is on, empty otherwise. A release upgraded with --reuse-values from
+a chart without the setting keeps it off. The operator creates the skills
+claims of native Agents, so the marketplace needs native Sandbox execution, a
+skills claim name and no published skills catalog. The same checks cover the
+worker's values.
+*/}}
+{{- define "cetirun-operator.skillMarketplaceConfig" -}}
+{{- $marketplace := .Values.skillMarketplace -}}
+{{- if kindIs "invalid" $marketplace -}}
+{{- $marketplace = dict -}}
+{{- end -}}
+{{- if not (kindIs "map" $marketplace) -}}
+{{- fail "skillMarketplace must be an object" -}}
+{{- end -}}
+{{- range $key, $_ := $marketplace -}}
+{{- if not (has $key (list "enabled" "repository" "storage" "reservedNames" "teamGCGrace" "limits" "worker")) -}}
+{{- fail (printf "unsupported skillMarketplace field %s" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $marketplace "enabled") (not (kindIs "bool" $marketplace.enabled)) -}}
+{{- fail "skillMarketplace.enabled must be a boolean" -}}
+{{- end -}}
+{{- if $marketplace.enabled -}}
+{{- $sources := .Values.sandboxSources -}}
+{{- if or (not $sources.enabled) (not $sources.nativeExecution) $sources.skillsCatalogConfigMapName -}}
+{{- fail "skillMarketplace.enabled requires sandboxSources.enabled and sandboxSources.nativeExecution, and an empty sandboxSources.skillsCatalogConfigMapName: the operator gives native Agents the Team skills claims, and the marketplace replaces the published skills catalog" -}}
+{{- end -}}
+{{- if not $sources.skillsClaimName -}}
+{{- fail "skillMarketplace.enabled requires sandboxSources.skillsClaimName: the operator creates the Team skills claim with that name in each Agent namespace" -}}
+{{- end -}}
+{{- $repository := $marketplace.repository | default dict -}}
+{{- $storage := $marketplace.storage | default dict -}}
+{{- if not $repository.url -}}
+{{- fail "skillMarketplace.repository.url is required" -}}
+{{- end -}}
+{{- if not (has $repository.auth (list "none" "token" "ssh")) -}}
+{{- fail "skillMarketplace.repository.auth must be none, token or ssh" -}}
+{{- end -}}
+{{- if and (ne $repository.auth "none") (not $repository.existingSecret) -}}
+{{- fail "skillMarketplace.repository.existingSecret is required for token and ssh authentication" -}}
+{{- end -}}
+{{- if and (hasPrefix "https://" $repository.url) (contains "@" (trimPrefix "https://" $repository.url | splitList "/" | first)) -}}
+{{- fail "skillMarketplace.repository.url must not contain credentials; use skillMarketplace.repository.existingSecret" -}}
+{{- end -}}
+{{- if and (hasPrefix "http://" $repository.url) (not $repository.allowInsecureHTTP) -}}
+{{- fail "skillMarketplace.repository.url must use https://" -}}
+{{- end -}}
+{{- range $field := list "resourceGroup" "storageAccount" "containerName" "storageClassName" -}}
+{{- if not (get $storage $field) -}}
+{{- fail (printf "skillMarketplace.storage.%s is required" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]{3,24}$" $storage.storageAccount) -}}
+{{- fail "skillMarketplace.storage.storageAccount must be 3-24 lowercase letters and digits" -}}
+{{- end -}}
+{{- if or (not (regexMatch "^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])$" $storage.containerName)) (contains "--" $storage.containerName) -}}
+{{- fail "skillMarketplace.storage.containerName must be a valid Blob container name" -}}
+{{- end -}}
+{{- if or (not (regexMatch "^[a-zA-Z0-9_().-]{1,90}$" $storage.resourceGroup)) (hasSuffix "." $storage.resourceGroup) -}}
+{{- fail "skillMarketplace.storage.resourceGroup must be a resource group name" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $storage.storageClassName) -}}
+{{- fail "skillMarketplace.storage.storageClassName must be a StorageClass name" -}}
+{{- end -}}
+{{- $limits := $marketplace.limits | default dict -}}
+{{- range $field := list "maxRepositoryObjects" "maxSkillFiles" "maxSkillDepth" "maxDescriptionLength" -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,8}$" (toString (get $limits $field))) -}}
+{{- fail (printf "skillMarketplace.limits.%s must be a positive whole number" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- range $field := list "maxRepositorySize" "maxSkillSize" "maxSkillMDSize" -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,11}(Ki|Mi|Gi)?$" (toString (get $limits $field))) -}}
+{{- fail (printf "skillMarketplace.limits.%s must be a size such as 5Mi: a positive whole number, optionally with Ki, Mi or Gi" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- $config := dict "enabled" true "storage" (dict "resourceGroup" $storage.resourceGroup "storageAccount" $storage.storageAccount "containerName" $storage.containerName "storageClassName" $storage.storageClassName) -}}
+{{- toJson $config -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Bytes of a Skill Marketplace size limit such as 256Mi, which the
+configuration check accepted, as a whole number.
+*/}}
+{{- define "cetirun-operator.skillMarketplaceBytes" -}}
+{{- $value := toString . -}}
+{{- $number := regexFind "^[0-9]+" $value -}}
+{{- $scale := get (dict "" 1 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824) (trimPrefix $number $value) -}}
+{{- printf "%.0f" (mulf (float64 $number) $scale) -}}
+{{- end }}
+
+{{/*
 Image of the per-Agent GitHub Copilot proxy: the AI Gateway image, from the
 same registry and release as the rest of CetiRun. Empty when the proxy is off.
 */}}
