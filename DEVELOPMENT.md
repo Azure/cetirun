@@ -836,6 +836,15 @@ REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
 ```
 
 Set the license acceptance only after accepting the VS Code Server terms.
+MCR is a public pull endpoint, not a push destination. Its default is valid
+for local image tags, chart packaging and deployment. Publishing (`make
+publish*`, component chart publishers, `PUSH=true`, or component `docker-push`)
+requires an explicit writable registry and rejects MCR before a push. For
+official MCR publication, use the existing ADO pipeline: it pushes to the
+backing ACR, whose artifacts are automatically synchronized to MCR. Do not
+run `make publish REGISTRY=mcr.microsoft.com/...` or use the backing ACR as
+the deployed chart's public pull address.
+
 Build and publish targets do not edit the source checkout. When the version
 differs, the driver copies tracked and nonignored working-tree source files
 to a temporary directory, preserves their modes, and runs the existing
@@ -878,8 +887,11 @@ Every chart is pulled back and compared with its package. `VERIFY_PULL=false`
 is rejected for the unified release. `build-images` builds locally and does
 not publish. `publish-images` and `publish-charts` select one artifact class.
 
-The MCR pipeline packages charts with public MCR pull coordinates, independently
-of its backing ACR and temporary image staging paths. It uses the same
+The MCR pipeline uses `REGISTRY=mcr.microsoft.com/...` only for local chart
+packaging, so the package contains public pull coordinates. Image staging,
+image promotion and every Helm push still target the backing ACR; MCR
+serves the automatically synchronized artifacts. The public MCR checks are
+reads, not pushes. The pipeline uses the same
 inventory and builders. It keeps staged pushes,
 digest verification, and the promotion of `latest` only after all versioned
 images and charts succeed. It passes the

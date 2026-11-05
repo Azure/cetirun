@@ -23,6 +23,12 @@ build_network="${BUILD_NETWORK:-}"
 
 image_ref="${registry}/${image_name}:${image_tag}"
 base_image_ref="${BASE_IMAGE:-${registry}/cetirun-base:${image_tag}}"
+if [[ "${push}" == true ]]; then
+  "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${registry}"
+  if [[ "${build_base}" == true ]]; then
+    "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${base_image_ref}"
+  fi
+fi
 
 # Package registries remain independently configurable for each build path.
 npm_registry="${NPM_REGISTRY:-https://registry.npmjs.org/}"

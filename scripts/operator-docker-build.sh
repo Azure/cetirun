@@ -34,6 +34,7 @@ build_args=(
 )
 
 if [ "${push}" = "true" ]; then
+  "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${registry}"
   build_args+=(--platform linux/amd64 --push)
   # Attestations (provenance/SBOM) require a non-default buildx driver.
   if docker buildx inspect --bootstrap 2>/dev/null | grep -q 'Driver:.*docker-container'; then

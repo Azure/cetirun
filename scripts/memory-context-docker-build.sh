@@ -25,6 +25,7 @@ args=(buildx build -f "${repo_root}/app/cetirun-memory-context/Dockerfile"
   -t "${REGISTRY}/cetirun-memory-context:${release_version}"
   --build-arg "VERSION=${release_version}" --build-arg "GIT_SHA=${git_sha}")
 if [[ "${PUSH:-false}" == "true" ]]; then
+  "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${REGISTRY}"
   args+=(--platform "${PLATFORMS:-linux/amd64,linux/arm64}" --push)
 else
   args+=(--load)

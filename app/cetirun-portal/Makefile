@@ -54,6 +54,7 @@ docker-build: ## Build Docker image (run from repo root)
 
 .PHONY: docker-push
 docker-push: ## Push Docker image
+	../../scripts/cetirun-release-metadata.sh check-push-registry "$(IMAGE_REPO)"
 	docker push $(IMAGE_REPO):$(IMAGE_TAG)
 
 ##@ Deploy

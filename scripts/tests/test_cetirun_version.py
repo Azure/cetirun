@@ -69,6 +69,14 @@ VERSION_FILES = (
 
 
 class CetiRunVersionTests(unittest.TestCase):
+    def test_mcr_is_only_a_pull_endpoint(self):
+        for registry in (MODULE.DEFAULT_REGISTRY, "mcr.microsoft.com", "mcr.microsoft.com:443/example",
+                         "MCR.MICROSOFT.COM/example", "oci://mcr.microsoft.com/example"):
+            with self.subTest(registry=registry), self.assertRaisesRegex(ValueError, "MCR is a pull endpoint"):
+                MODULE.validate_push_registry(registry)
+        for registry in ("registry.example.com/test", "synthetic.azurecr.io/public/example/staging/42"):
+            MODULE.validate_push_registry(registry)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

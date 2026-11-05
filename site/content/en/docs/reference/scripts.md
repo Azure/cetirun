@@ -122,6 +122,13 @@ agent helper builds for `linux/amd64`. Its inputs include:
 | `OPENCLAW_NPM_REGISTRY` | Separate OpenClaw package registry |
 | `PYPI_INDEX_URL` | Default Python package index supplied to Hermes' locked `uv` install |
 
+The public MCR default is a pull address, not a writable registry. Set an
+explicit writable `REGISTRY` for `PUSH=true`, `docker-push` or chart publication;
+these entry points reject direct pushes to MCR. Official MCR publication uses
+the ADO pipeline to push to the backing ACR, followed by automatic MCR sync.
+The pipeline embeds MCR URLs during local chart packaging but sends all image
+and chart writes to ACR.
+
 `NPM_REGISTRY` and `OPENCLAW_NPM_REGISTRY` default to
 `https://registry.npmjs.org/`. Runtime skill installation separately uses
 `skills.npmRegistry` with the same public default. The Hermes image downloads a

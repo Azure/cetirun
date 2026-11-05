@@ -17,6 +17,7 @@ args=(-f "${repo_root}/app/cetirun-agent-broker/Dockerfile" -t "${image_ref}"
   --label "org.opencontainers.image.version=${image_tag}"
   --label "org.opencontainers.image.revision=${git_sha}")
 if [[ "${PUSH:-false}" == true ]]; then
+  "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${registry}"
   args+=(--platform linux/amd64 --push)
   if docker buildx inspect --bootstrap 2>/dev/null | grep -q 'Driver:.*docker-container'; then
     args+=(--provenance=true --sbom=true)

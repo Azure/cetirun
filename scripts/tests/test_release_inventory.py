@@ -216,8 +216,16 @@ class ReleaseInventoryTests(unittest.TestCase):
             expected_version = version or self.env["VERSION"]
             for chart, script in scripts.items():
                 with self.subTest(chart=chart, registry=registry, version=version):
+                    before = self.commands()
                     result = subprocess.run(["bash", f"scripts/{script}-helm-release.sh"], env=env, cwd=ROOT,
                                             capture_output=True, text=True, timeout=60)
+                    if registry is None:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("MCR is a pull endpoint", result.stderr)
+                        self.assertEqual(self.commands(), before, "default MCR publication contacted external tools")
+                        result = subprocess.run([sys.executable, "-B", str(SCRIPT), "package-charts", "--chart", chart,
+                                                 "--package-dir", str(store)], env=env, cwd=ROOT,
+                                                capture_output=True, text=True, timeout=60)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assert_package(store / f"{chart}-{expected_version}.tgz", expected_registry, expected_version)
 
@@ -261,6 +269,58 @@ class ReleaseInventoryTests(unittest.TestCase):
                     registry = overrides.get("REGISTRY", "mcr.microsoft.com/aks/ai-runtime/cetirun")
                     self.assertIn(f"{registry}/cetirun-{component}:{version}", command)
                     self.assertIn(f"VERSION={version}", command)
+
+    def test_unified_publish_rejects_mcr_before_preflight_even_with_force(self):
+        for registry in (None, "mcr.microsoft.com/aks/ai-runtime/cetirun", "mcr.microsoft.com:443/example"):
+            if registry is None:
+                self.env.pop("REGISTRY", None)
+            else:
+                self.env["REGISTRY"] = registry
+            for command in ("publish", "publish-images", "publish-charts"):
+                for flags in ([], ["--force"]):
+                    with self.subTest(registry=registry, command=command, flags=flags):
+                        result = self.run_release(command, *flags, success=False)
+                        self.assertIn("MCR is a pull endpoint", result.stderr)
+                        self.assertEqual(self.commands(), [])
+        self.env.pop("REGISTRY", None)
+        for target in ("publish", "publish-images", "publish-charts"):
+            result = subprocess.run(["make", target], env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("MCR is a pull endpoint", result.stderr)
+            self.assertEqual(self.commands(), [])
+
+    def test_image_builders_and_component_push_targets_reject_mcr(self):
+        entries = json.loads((ROOT / "scripts/release-artifacts.json").read_text())["images"]
+        for entry in entries:
+            with self.subTest(image=entry["name"]):
+                env = {**self.env, "PUSH": "true", "BUILD_BASE": "false", "BUILD_IMAGE": "false",
+                       "BUILD_HERMES": "false", "BUILD_DESKTOP": "false", **entry.get("env", {})}
+                env.pop("REGISTRY", None)
+                result = subprocess.run(["bash", entry["script"]], env=env, cwd=ROOT,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("MCR is a pull endpoint", result.stderr)
+        for component in ("operator", "portal"):
+            env = {key: value for key, value in self.env.items() if key != "REGISTRY"}
+            result = subprocess.run(["make", "-C", f"app/cetirun-{component}", "docker-push"], env=env, cwd=ROOT,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("MCR is a pull endpoint", result.stderr)
+        self.assertFalse(any(c[:2] == ["buildx", "build"] or c[0] == "push" for c in self.commands()))
+        for component in ("operator", "portal"):
+            result = subprocess.run(["make", "-C", f"app/cetirun-{component}", "docker-push"], env=self.env, cwd=ROOT,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self.commands()[-1], ["push", self.image("cetirun-" + component)])
+
+    def test_base_image_override_cannot_turn_a_pull_reference_into_a_push(self):
+        env = {**self.env, "PUSH": "true", "BUILD_BASE": "true",
+               "BASE_IMAGE": "mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-base:1.2.3"}
+        result = subprocess.run(["bash", "scripts/cetirun-docker-build.sh"], env=env, cwd=ROOT,
+                                capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("MCR is a pull endpoint", result.stderr)
+        self.assertEqual(self.commands(), [])
 
     def test_all_make_release_targets_and_command_line_precedence(self):
         store = self.fake_registry()

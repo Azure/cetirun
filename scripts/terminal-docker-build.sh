@@ -43,6 +43,7 @@ args=(
   --build-arg "GIT_SHA=${git_sha}"
 )
 if [[ "${push}" == "true" ]]; then
+  "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${registry}"
   args+=(--push)
 else
   args+=(--load)

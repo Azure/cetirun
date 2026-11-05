@@ -23,6 +23,15 @@ PENDING_UPDATES = {}
 DEFAULT_REGISTRY = "mcr.microsoft.com/aks/ai-runtime/cetirun"
 
 
+def validate_push_registry(registry):
+    host = registry.removeprefix("oci://").split("/", 1)[0].split(":", 1)[0]
+    if host.rstrip(".").lower() == "mcr.microsoft.com":
+        raise ValueError(
+            "MCR is a pull endpoint, not a push destination. Set REGISTRY to a writable "
+            "registry; for MCR publication use the ADO pipeline's backing ACR and automatic sync."
+        )
+
+
 def replace(path, pattern, replacement, expected=1, limit=0, updates=None):
     updates = PENDING_UPDATES if updates is None else updates
     source = updates.get(path, path.read_text())
@@ -186,6 +195,8 @@ def parse_args():
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("get", help="print the Runtime Chart version")
     subparsers.add_parser("registry", help="print the default public artifact registry prefix")
+    push_parser = subparsers.add_parser("check-push-registry", help="reject the public MCR pull endpoint as a push target")
+    push_parser.add_argument("registry")
     for command in ("set", "check"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("version", help="X.Y.Z[-prerelease], e.g. 0.1.0-dev.1; no +build metadata")
@@ -199,6 +210,9 @@ def main():
         return 0
     if args.command == "registry":
         print(DEFAULT_REGISTRY)
+        return 0
+    if args.command == "check-push-registry":
+        validate_push_registry(args.registry)
         return 0
     validate_version(args.version)
     if args.command == "set":

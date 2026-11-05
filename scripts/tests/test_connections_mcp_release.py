@@ -114,8 +114,8 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             shutil.copyfile(source.parent / "values.yaml", target.parent / "values.yaml")
         (self.root / "scripts").mkdir()
         inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
-        for path in [entry["script"] for entry in inventory["images"]] + ["scripts/release-artifacts.json", "scripts/cetirun-release.py"]:
-            shutil.copyfile(ROOT / path, self.root / path)
+        for path in [entry["script"] for entry in inventory["images"]] + ["scripts/release-artifacts.json", "scripts/cetirun-release.py", "scripts/cetirun-release-metadata.sh"]:
+            shutil.copy2(ROOT / path, self.root / path)
         # Use the real transformation helpers. Full source consistency is
         # exercised separately; this fixture contains only chart metadata.
         (self.root / "scripts/cetirun-version.py").write_text(
@@ -176,6 +176,21 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertIn("mcr.microsoft.com/aks/ai-runtime/cetirun/" + COMPONENT, packaged["values"])
         self.assertNotIn("staging/", packaged["values"])
         self.assertNotIn("synthetic.azurecr.io", packaged["values"])
+        # MCR serves the synchronized public artifacts. Every write remains
+        # on the backing ACR, including all inventory images and chart pushes.
+        built = Path(str(self.log) + ".published").read_text().splitlines()
+        inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
+        self.assertEqual(set(built), {
+            f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/staging/42/{entry['name']}:{VERSION}"
+            for entry in inventory["images"]
+        })
+        pushed_charts = [c for c in commands if c[:2] == ["helm", "push"]]
+        self.assertEqual(len(pushed_charts), len(inventory["charts"]))
+        for command in pushed_charts:
+            self.assertEqual(command[-1], f"oci://synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/helm")
+        for command in commands:
+            if command[:4] == ["docker", "buildx", "imagetools", "create"]:
+                self.assertTrue(command[command.index("--tag") + 1].startswith("synthetic.azurecr.io/"))
         for operation in ("lint", "template", "package"):
             command = next(c for c in commands if c[:2] == ["helm", operation] and any(arg.endswith(CHART) for arg in c))
             if operation == "package":

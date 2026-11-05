@@ -91,6 +91,7 @@ docker-build:
 
 ## Push the Docker image
 docker-push:
+	../../scripts/cetirun-release-metadata.sh check-push-registry "$(IMG)"
 	docker push $(IMG)
 
 ## Explicit tool setup (network access may be required; not an offline check).

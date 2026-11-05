@@ -8,6 +8,7 @@ if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   echo "Usage: [REGISTRY=host/prefix] [VERSION=X.Y.Z] $0 [chart-name]"
   echo "Optional: CHART_VERSION, APP_VERSION, CHART_DIR, VALUES_FILE, FORCE_PUBLISH=true."
   echo "Publishes one chart using the shared packager and verifies its pull."
+  echo "Publication requires a writable REGISTRY; the default MCR pull endpoint cannot receive pushes."
   exit 0
 fi
 chart="${1:-cetirun}"

@@ -43,10 +43,18 @@ unless `--force` is explicit. It distinguishes registry errors from artifacts
 that do not exist, and makes sure that chart pulls work. You can still use each
 component build script independently.
 
+MCR is only a pull endpoint. Local builds and chart packaging may use its
+default coordinates, but publishing requires an explicit writable `REGISTRY`.
+All publish entry points reject a direct MCR push. Official MCR releases use
+the ADO pipeline's backing ACR and automatic synchronization, not `make publish`
+against MCR.
+
 Chart publishers share the same packager, registry preflight and mandatory
 pull comparison. Packages carry the selected image defaults and the Operator's
 downstream Runtime Chart URL/version. MCR publication keeps public pull
-coordinates separate from its backing ACR and staging push destinations.
+coordinates separate from its backing ACR and staging push destinations:
+the pipeline's MCR `REGISTRY` assignment is for `package-charts` only, while
+all image and chart writes go to ACR.
 
 `cetirun-vscode` is currently the only declared optional image. To defer its
 license acceptance, pass `--exclude-image cetirun-vscode` to the release CLI
@@ -74,6 +82,8 @@ publishes the image.
 
 `cetirun-connections-mcp-helm-release.sh` lints and packages the independent
 chart. It pushes the chart under `oci://$REGISTRY/${CHART_NAMESPACE:-helm}`.
+Set `REGISTRY` to an authorized writable registry; the default MCR address
+is valid for packaging, not publication.
 Then it compares the pulled package with the published package. Pull verification
 cannot be disabled with `VERIFY_PULL=false`.
 Neither helper logs in or deploys resources. Image builds can download pinned

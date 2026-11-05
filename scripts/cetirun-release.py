@@ -253,6 +253,8 @@ def main(argv=None):
         args.registry = args.registry.rstrip("/")
         args.git_sha = args.git_sha or run(["git", "rev-parse", "HEAD"], capture=True).strip()
         coordinates(args)
+        if args.command.startswith("publish"):
+            VERSIONS.validate_push_registry(args.registry)
         if args.app_version:
             if not args.chart or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", args.app_version):
                 raise ValueError("--app-version requires --chart and a valid image tag")

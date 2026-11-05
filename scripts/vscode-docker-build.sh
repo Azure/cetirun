@@ -20,5 +20,10 @@ args=(--platform linux/amd64 --tag "${REGISTRY}/cetirun-vscode:${VERSION}"
   --build-arg ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
   --label "org.opencontainers.image.version=${VERSION}"
   --label "org.opencontainers.image.revision=${GIT_SHA:-$(git -C "${repo_root}" rev-parse HEAD)}")
-if [[ "${PUSH:-false}" == true ]]; then args+=(--push); else args+=(--load); fi
+if [[ "${PUSH:-false}" == true ]]; then
+  "${repo_root}/scripts/cetirun-release-metadata.sh" check-push-registry "${REGISTRY}"
+  args+=(--push)
+else
+  args+=(--load)
+fi
 docker buildx build "${args[@]}" "${repo_root}/examples/vscode-server"

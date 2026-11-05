@@ -9,10 +9,11 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 usage() {
   cat <<'EOF'
 Usage: cetirun-release-metadata.sh version|registry
+       cetirun-release-metadata.sh check-push-registry REGISTRY
 
 Print the default CetiRun release version. The Runtime Chart is the source of
 truth for the shared image and Chart version.
-The public MCR repository prefix is the default artifact registry.
+The public MCR repository prefix is the default pull registry, not a push target.
 EOF
 }
 
@@ -22,6 +23,9 @@ case "${1:-}" in
     ;;
   registry)
     value="$(python3 "${script_dir}/cetirun-version.py" registry)"
+    ;;
+  check-push-registry)
+    exec python3 "${script_dir}/cetirun-version.py" check-push-registry "${2:?REGISTRY is required}"
     ;;
   -h|--help)
     usage
