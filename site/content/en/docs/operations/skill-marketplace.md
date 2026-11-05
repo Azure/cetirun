@@ -129,8 +129,12 @@ The worker holds the commit in memory. It checks the repository limits before
 it decodes a commit. It stops the transfer when the pack from the Git server
 exceeds `maxRepositorySize`. Then it reads the object headers of the pack
 before it decodes any object. A commit that exceeds a limit does not reach
-memory. Until the repository has a commit within the limits, the catalog keeps
-the last commit that the worker read.
+memory.
+
+Until the repository has a commit within the limits, the catalog keeps the
+last commit that the worker read. The worker reads a commit that exceeds a
+limit once. It examines the repository again at each check, but it reads that
+commit again only after a restart, for example with other limits.
 
 Git stores a directory once, also when the commit holds it at many paths. When
 the worker reads the tree below `repository.path`, it counts each path. A
@@ -733,7 +737,9 @@ jq '.teams[] | {name, release, selectionDigest, releaseSelectionDigest, retained
 ### The repository is not synchronized
 
 When a check fails, `error` in the catalog gives the reason. The log of the
-worker has the same message:
+worker has the same message when the failure starts or its message changes.
+While the same failure repeats, the log has one short line for each check.
+When the checks succeed again, the log says so:
 
 ```bash
 kubectl logs -n cetirun-system deployment/cetirun-skill-marketplace --tail=50
