@@ -1,0 +1,30 @@
+# Synthetic example. Keep real environment coordinates outside the checkout.
+target:
+  kubeconfig: /absolute/private/kubeconfig
+  context: example-aks-admin
+  cluster: example-aks
+  server: https://example-aks.hcp.swedencentral.azmk8s.io:443
+  clusterUID: 11111111-1111-1111-1111-111111111111
+ingress:
+  namespace: aks-istio-ingress
+  service: aks-istio-ingressgateway-external
+  release: cetirun-public-ingress
+  gatewayName: cetirun-acme-http
+dns:
+  mode: azure-public-ip
+  label: example-cetirun
+azure:
+  subscriptionId: 22222222-2222-2222-2222-222222222222
+  tenantId: 33333333-3333-3333-3333-333333333333
+  resourceGroup: example-rg
+  clusterName: example-aks
+certManager:
+  mode: install
+  namespace: cert-manager
+  release: cert-manager
+  # Download and checksum-verify this immutable archive separately.
+  chartArchive: /absolute/private/cert-manager-v1.21.3.tgz
+acme:
+  email: ""
+stateDirectory: /absolute/private/cetirun-public-ingress
+timeoutSeconds: 600

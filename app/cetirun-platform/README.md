@@ -74,6 +74,14 @@ subscriptions, or change `current-context`. Every cluster operation uses
 `target.context`. Before a write, the helper examines the cluster name, API
 origin, and cluster UID of that context.
 
+For one exact public hostname, prepare DNS and the externally managed ingress
+certificate before this step with [public ingress](../../infra/public-ingress/README.md).
+Its generated deployment-values fragment sets `domain`, `istio.tlsMode: external`,
+`tls.enabled: false`, and disables the wildcard host. Merge that fragment with
+the rest of the environment file; it does not supply Entra, Broker, admission,
+provider, storage, or runtime settings. The existing certificate and Key Vault
+workflow remains supported.
+
 The helper uses the kubeconfig of the shell, from `KUBECONFIG` or the default
 file. Read the `target` values from the context after you make sure that it
 selects the intended cluster. The server must be the same string as in the
@@ -164,7 +172,7 @@ make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 
 The plan validates the inputs and renders local charts in a temporary
 directory. Its JSON lists the target, releases, workloads, the selected images
-and all 8 charts, and `referenceCounts` by resource kind. The JSON does not contain
+and all 9 charts, and `referenceCounts` by resource kind. The JSON does not contain
 reference names, Secret keys, or extra input fields. YAML errors report their
 position but do not show the contents. The plan does not connect to a cluster
 or registry. Python, PyYAML, and Helm must already be installed.

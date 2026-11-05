@@ -51,6 +51,7 @@ VERSION_FILES = (
     "app/cetirun-portal/chart/Chart.yaml",
     "app/cetirun-platform/Chart.yaml",
     "app/cetirun-platform/Chart.lock",
+    "infra/public-ingress/Chart.yaml",
     "infra/istio/Chart.yaml",
     "app/cetirun-ai-gateway/chart/Chart.yaml",
     "app/cetirun-agent-broker/chart/Chart.yaml",
@@ -151,6 +152,10 @@ class CetiRunVersionTests(unittest.TestCase):
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, destination)
+        shutil.copytree(ROOT / "infra/public-ingress", self.root / "infra/public-ingress",
+                        dirs_exist_ok=True, ignore=shutil.ignore_patterns("charts", "__pycache__"))
+        shutil.copytree(ROOT / "infra/istio", self.root / "infra/istio",
+                        dirs_exist_ok=True, ignore=shutil.ignore_patterns("charts", "__pycache__"))
         for relative in (
             "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
             "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
@@ -174,7 +179,8 @@ class CetiRunVersionTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 MODULE.check_version(version)
                 lint = subprocess.run(
-                    ["helm", "lint", "infra/istio"], cwd=self.root,
+                    ["helm", "lint", "infra/public-ingress", "--namespace", "aks-istio-ingress",
+                     "--values", "infra/public-ingress/ci/chart-values.yaml"], cwd=self.root,
                     env=env, text=True, capture_output=True, timeout=30
                 )
                 self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
@@ -237,6 +243,12 @@ class CetiRunVersionTests(unittest.TestCase):
         MODULE.set_version("1.2.3")
         self.assertEqual(MODULE.top_level_yaml(self.istio, "version"), "1.2.3")
         self.assertEqual(MODULE.top_level_yaml(self.istio, "appVersion"), "1.2.3")
+
+    def test_set_synchronizes_public_ingress_app_version(self):
+        MODULE.set_version("1.2.3")
+        chart = self.root / "infra/public-ingress/Chart.yaml"
+        self.assertEqual(MODULE.top_level_yaml(chart, "version"), "1.2.3")
+        self.assertEqual(MODULE.top_level_yaml(chart, "appVersion"), "1.2.3")
 
     def test_check_rejects_stale_istio_app_version(self):
         lines = self.istio.read_text().splitlines()

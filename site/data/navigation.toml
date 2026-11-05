@@ -59,6 +59,7 @@
     pages = [
       "/docs/getting-started/platform",
       "/docs/operations/infrastructure",
+      "/docs/operations/public-ingress",
       "/docs/operations/policy-teams",
       "/docs/operations/agent-identity",
     ]

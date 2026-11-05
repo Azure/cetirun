@@ -1,0 +1,3 @@
+domain: portal.example.invalid
+ingressNamespace: aks-istio-ingress
+ingressServiceHostname: aks-istio-ingressgateway-external.aks-istio-ingress.svc.cluster.local

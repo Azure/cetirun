@@ -44,6 +44,13 @@ model/tier, storage, and owner. Refer to the
 [platform deployment guide](app/cetirun-platform/README.md#deploy-the-platform).
 The old invocation with only `DOMAIN`/`VALUES_FILE` is no longer enough.
 
+For an existing AKS managed Istio ingress, `make ingress-plan`,
+`make ingress-prepare`, and `make ingress-verify` provide the separate public
+DNS and cert-manager HTTP-01 preparation path. See
+`infra/public-ingress/README.md`. These commands are not offline checks except
+for `ingress-plan`, and they do not replace the full platform deployment
+prerequisites.
+
 `scripts/cetirun-dev-deploy.sh` must have an explicit `REGISTRY` and alias
 argument. It no longer inserts a default user team label. To see its modes,
 use `--help`. The other helpers for build, deployment, and Helm publication
@@ -789,7 +796,7 @@ set must have an explicit `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true`.
 
 [`scripts/release-artifacts.json`](scripts/release-artifacts.json) is the
 common inventory for root Make targets and the MCR release pipeline. It
-contains 13 images and 8 charts. These include the Broker, VS Code, and Memory
+contains 13 images and 9 charts. These include the Broker, VS Code, and Memory
 assets. `make artifact-check` examines source paths and chart coverage. The
 driver calls the image builders that already exist, stamps the explicit
 version/source SHA, and builds the base image before its consumers. It never

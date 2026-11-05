@@ -9,12 +9,14 @@ VERIFY_PULL ?= true
 FORCE_PUBLISH ?= false
 ACCEPT_VSCODE_SERVER_LICENSE_TERMS ?= false
 DEPLOY_CONFIG ?=
+INGRESS_CONFIG ?=
 .DEFAULT_GOAL := help
 
 .PHONY: help check test lint docs-check license-check ci-test python-test \
 	python-check go-test go-lint portal-test portal-lint chart-check \
 	bicep-check shell-check workflow-check version-check set-version \
-	build-images publish-images publish-charts publish require-registry artifact-check deploy deploy-plan
+	build-images publish-images publish-charts publish require-registry artifact-check deploy deploy-plan \
+	ingress-plan ingress-prepare ingress-verify
 
 .NOTPARALLEL: publish publish-images publish-charts
 
@@ -32,6 +34,9 @@ help:
 	@echo "Deployment (explicit environment authorization required):"
 	@echo "  make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml  (offline)"
 	@echo "  make deploy DEPLOY_CONFIG=/path/to/environment.yaml"
+	@echo "  make ingress-plan INGRESS_CONFIG=/path/to/ingress.yaml  (offline)"
+	@echo "  make ingress-prepare INGRESS_CONFIG=/path/to/ingress.yaml"
+	@echo "  make ingress-verify INGRESS_CONFIG=/path/to/ingress.yaml  (read-only live)"
 	@echo "Prerequisites: Go from .go-version, Node 24 + npm ci, scripts/ci/requirements.txt,"
 	@echo "  helm, bicep, shellcheck, actionlint, scripts/check-license-headers.py."
 	@echo "Workflow lint covers seven validation workflows; publisher/E2E workflows are excluded."
@@ -73,3 +78,7 @@ build-images publish-images publish-charts publish: require-registry version-che
 deploy-plan deploy:
 	@test -n "$(DEPLOY_CONFIG)" || { echo "DEPLOY_CONFIG is required; see app/cetirun-platform/README.md" >&2; exit 1; }
 	bash scripts/cetirun-platform-deploy.sh --config "$(DEPLOY_CONFIG)" $(if $(filter deploy-plan,$@),--plan,)
+
+ingress-plan ingress-prepare ingress-verify:
+	@test -n "$(INGRESS_CONFIG)" || { echo "INGRESS_CONFIG is required; see infra/public-ingress/README.md" >&2; exit 1; }
+	$(PYTHON) -B scripts/cetirun_public_ingress.py $(patsubst ingress-%,%,$@) --config "$(INGRESS_CONFIG)"

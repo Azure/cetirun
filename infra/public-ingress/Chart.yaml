@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cetirun-public-ingress
+description: Public DNS HTTP-01 certificate preparation for an existing CetiRun Istio ingress
+type: application
+version: 0.1.1
+appVersion: "0.1.1"

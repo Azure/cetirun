@@ -21,6 +21,7 @@ and side effects.
 
 - [Install CetiRun](../getting-started/platform/) — prerequisites and installation order
 - [Infrastructure](infrastructure/) — AKS and Azure Blob NFS
+- [Public DNS and TLS](public-ingress/) — prepare one public hostname and automatic certificate
 - [Policy-bound Teams](policy-teams/) — the cluster, admission and platform registration that Sandbox Agents must have
 - [Agent Identity setup](agent-identity/) — encryption, workload trust, certificates, provider registrations and rollout
 

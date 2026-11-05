@@ -56,6 +56,16 @@ python3 -B -m unittest scripts.tests.test_release_inventory scripts.tests.test_f
 
 The tests use command doubles and local Helm. They do not deploy or publish.
 
+## Public ingress preparation
+
+`cetirun_public_ingress.py` prepares one externally managed HTTPS hostname for
+an existing AKS managed Istio ingress. The root `make ingress-plan`,
+`make ingress-prepare`, and `make ingress-verify` targets pass an absolute
+`INGRESS_CONFIG` file to it. See [public ingress](../infra/public-ingress/README.md)
+for the configuration and the separate connected-operation boundary. This
+helper is not part of `make deploy`: the platform deployer continues to require
+an existing valid `cetirun-tls` certificate.
+
 ## CetiRun Connections MCP artifacts
 
 `cetirun-connections-mcp-docker-build.sh` builds the standalone MCP image from

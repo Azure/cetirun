@@ -55,6 +55,7 @@ POINTERS = {
     "infra/README.md": "operations/infrastructure.md",
     "infra/storage/README.md": "operations/storage.md",
     "infra/istio/README.md": "operations/istio.md",
+    "infra/public-ingress/README.md": "operations/public-ingress.md",
     "scripts/README.md": "reference/scripts.md",
 }
 DOC_ASSETS = {"docs/logo.jpg"}

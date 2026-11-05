@@ -34,7 +34,7 @@ covers smart routing of models and the first call from a client.
 | Enforced Kubernetes NetworkPolicy and necessary admission APIs | Runtime isolation rules and the default exec-denial policy |
 | Accessible images and versioned OCI agent chart | Operator fetches the agent chart, and then nodes pull images |
 | Entra ID app, allowed groups, federated credential | Portal login and group-based admission |
-| Apex DNS and a TLS certificate that matches it. Wildcard names if you use them | Portal, instance routes, and apex `/oauth2/callback` |
+| Apex DNS and a TLS certificate that matches it. Wildcard names if you use them | Portal, instance routes, and apex `/oauth2/callback`. [Public DNS and TLS](../../operations/public-ingress/) can prepare one exact hostname automatically |
 | Python 3 with PyYAML, Helm, kubectl, OpenSSL, Docker Buildx, Azure CLI/Bicep, jq | `make deploy` and the deployment helpers |
 
 The chart does not declare a general minimum Kubernetes version, but its
@@ -77,6 +77,11 @@ The Gateway refers to `cetirun-tls` in its configured namespace
 only chart-managed Secret creation, not TLS. Configure the `oauth2-proxy`
 external authorization provider in the managed Istio shared ConfigMap. A direct
 Helm installation does not do that patch.
+
+For a single exact hostname, run [public DNS and TLS preparation](../../operations/public-ingress/)
+before the platform deployment. Its output uses `istio.tlsMode: external` and
+leaves `cetirun-tls` under cert-manager ownership. The normal environment file
+still needs all identity, Broker, admission, model and runtime configuration.
 
 Do not expose the portal before you make sure that authentication, ownership
 checks, and namespace sidecar injection work. The shared filter calls the
@@ -147,7 +152,7 @@ make publish REGISTRY=registry.example.com VERSION=0.1.1 \
   GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
 ```
 
-The command builds and pushes the 13 images and 8 charts of
+The command builds and pushes the 13 images and 9 charts of
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
 These include the operator, Portal, AI Gateway, Broker, OpenClaw, Hermes, and
 VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)

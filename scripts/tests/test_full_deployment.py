@@ -558,7 +558,7 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         deployment = self.deployment()
         plan = deployment.plan()
         self.assertEqual(len(plan["artifacts"]["images"]), 13)
-        self.assertEqual(len(plan["artifacts"]["charts"]), 8)
+        self.assertEqual(len(plan["artifacts"]["charts"]), 9)
         self.assertEqual(set(plan["releases"]["istio"]["workloads"]), {"oauth2-proxy", "oauth2-proxy-sessions"})
         self.assertEqual(plan["releases"]["broker"]["namespace"], "cetirun-credentials")
         self.assertEqual(set(plan["releases"]["platform"]["workloads"]), {

@@ -1,0 +1,25 @@
+# One exact public hostname. Wildcard certificates and DNS-01 are intentionally
+# outside this HTTP-01 entry point.
+domain: ""
+
+# The existing managed Istio ingress Service. The chart release namespace must
+# be this namespace so Gateway API routes and cert-manager solver routes remain
+# constrained to the existing listener namespace.
+ingressNamespace: aks-istio-ingress
+ingressServiceHostname: aks-istio-ingressgateway-external.aks-istio-ingress.svc.cluster.local
+
+gateway:
+  name: cetirun-acme-http
+
+acme:
+  # Optional ACME account contact. No Certificate is requested until its
+  # corresponding switch is enabled, which allows a staging-first workflow.
+  email: ""
+  stagingIssuerName: cetirun-letsencrypt-staging
+  productionIssuerName: cetirun-letsencrypt-production
+  stagingCertificateEnabled: false
+  stagingCertificateName: cetirun-tls-staging
+  stagingSecretName: cetirun-tls-staging
+  productionCertificateEnabled: false
+  productionCertificateName: cetirun-tls
+  productionSecretName: cetirun-tls

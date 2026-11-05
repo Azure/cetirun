@@ -17,6 +17,7 @@
   ],
   "charts": [
     {"name": "cetirun", "path": "app/cetirun-chart", "lintValues": {"secrets.openclawGatewayToken": "lint-token", "secrets.model": "lint-model", "aiGateway.keySecretName": "lint-model-key", "secrets.apiBase": "http://gateway.example.com/v1", "hermes.env.HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/validation"}},
+    {"name": "cetirun-public-ingress", "path": "infra/public-ingress", "namespace": "aks-istio-ingress", "valuesFile": "infra/public-ingress/ci/chart-values.yaml"},
     {"name": "cetirun-istio", "path": "infra/istio", "lintValues": {"clientId": "11111111-1111-1111-1111-111111111111", "tenantId": "22222222-2222-2222-2222-222222222222", "allowedGroups": "33333333-3333-3333-3333-333333333333"}},
     {"name": "cetirun-operator", "path": "app/cetirun-operator/chart", "lintValues": {"cetiadmin.enabled": "false"}},
     {"name": "cetirun-portal", "path": "app/cetirun-portal/chart", "lintValues": {"istio.host": "portal.example.invalid"}},

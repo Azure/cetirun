@@ -20,6 +20,7 @@ zones, preview features, and API version.
 | [cluster deploy helper]({{< repo "infra/cluster/deploy.sh" >}}) | Azure preflight, deployment, Gateway API, kubeconfig |
 | [storage sources]({{< repo "infra/storage" "tree" >}}) | Shared Blob NFS account and container |
 | [Istio chart]({{< repo "infra/istio" "tree" >}}) | Authentication and egress configuration |
+| [Public ingress]({{< repo "infra/public-ingress" "tree" >}}) | Optional public DNS and cert-manager HTTP-01 preparation |
 
 ## Cluster parameter file
 
@@ -240,6 +241,12 @@ accounts. Complete the [platform checklist](../../getting-started/platform/).
 For Agent connections, follow [Agent Identity setup](../agent-identity/). Use
 it for the encryption identity and Key Vault key, provider applications,
 certificates, and the coordinated Broker/MCP/Portal configuration.
+
+For a single public Portal hostname, use [Public DNS and TLS](../public-ingress/)
+after AKS managed Istio and Gateway API exist. It can configure an Azure Public
+IP DNS label or verify a user-managed A/CNAME record, then issue the externally
+managed Gateway certificate. It does not configure Entra, Broker/MCP or
+admission certificates, and it does not change the cluster template.
 
 By default, the cluster parameters enable Container Insights and Prometheus
 metrics. Examine the workspace and data-collection resources, the retention,

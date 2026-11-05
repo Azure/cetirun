@@ -13,6 +13,12 @@ VirtualServices for each instance.
 For a manual Helm install, a separate configuration for external authorization
 is necessary. The chart and the helper do not issue or renew TLS certificates.
 
+For a single public hostname backed by Azure Public IP DNS or a user-managed
+DNS record, [public ingress](../public-ingress/README.md) can issue and renew
+the externally managed `cetirun-tls` Secret with cert-manager HTTP-01. It owns
+the port-80 ACME listener only. This chart continues to own the HTTPS Gateway
+and must use `tls.enabled: false` for that ownership model.
+
 Before you run the deployment helper, install its pinned Python dependency:
 
 ```bash
