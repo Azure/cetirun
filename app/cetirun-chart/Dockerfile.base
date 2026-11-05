@@ -17,12 +17,19 @@ FROM ${AZURELINUX_BASE} AS node-install
 ARG NODE_VERSION=24.21.0
 ARG NODE_SHA256_X64=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 ARG NODE_SHA256_ARM64=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
-RUN tdnf install -y ca-certificates curl tar xz libgcc-atomic && tdnf clean all
+# Package and release downloads can fail for a minute or more (HTTP 504,
+# refused connections); tdnf's own retries all come within one second. Each
+# download in this file retries with a growing delay.
+RUN for attempt in 1 2 3 4 5; do \
+      tdnf install -y ca-certificates curl tar xz libgcc-atomic && break; \
+      [ "$attempt" -lt 5 ] || exit 1; tdnf clean all; rm -rf /var/cache/tdnf; sleep $((attempt * 15)); \
+    done && \
+    tdnf clean all
 RUN UNAME_M=$(uname -m) && \
     if [ "$UNAME_M" = "x86_64" ]; then NODE_ARCH="x64"; NODE_SHA256="${NODE_SHA256_X64}"; \
     elif [ "$UNAME_M" = "aarch64" ]; then NODE_ARCH="arm64"; NODE_SHA256="${NODE_SHA256_ARM64}"; \
     else echo "Unsupported architecture: $UNAME_M" >&2; exit 1; fi && \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz && \
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz && \
     echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check && \
     tar xf /tmp/node.tar.xz -C /usr/local --strip-components=1 && \
     rm /tmp/node.tar.xz
@@ -32,12 +39,17 @@ RUN UNAME_M=$(uname -m) && \
 FROM ${GO_BUILD_IMAGE} AS tailscale-build
 ARG TAILSCALE_VERSION=1.104.1
 ARG TAILSCALE_SRC_SHA256=bf868b2b1a46b9485d55bcda12c2d7573279ce4474bc6d607f42f1495db36ed8
-RUN curl -fsSL "https://github.com/tailscale/tailscale/archive/v${TAILSCALE_VERSION}.tar.gz" -o /tmp/tailscale.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/tailscale/tailscale/archive/v${TAILSCALE_VERSION}.tar.gz" -o /tmp/tailscale.tar.gz && \
     echo "${TAILSCALE_SRC_SHA256}  /tmp/tailscale.tar.gz" | sha256sum --check && \
     tar xzf /tmp/tailscale.tar.gz -C /tmp && \
     mv /tmp/tailscale-${TAILSCALE_VERSION} /src && \
     rm /tmp/tailscale.tar.gz
 WORKDIR /src
+# Download the modules before building, so that a failed download is retried.
+RUN for attempt in 1 2 3 4 5; do \
+      CGO_ENABLED=0 go list -deps ./cmd/tailscale ./cmd/tailscaled > /dev/null && break; \
+      [ "$attempt" -lt 5 ] || exit 1; sleep $((attempt * 15)); \
+    done
 # Archive builds have no Git metadata; use the upstream distribution stamps.
 RUN GOFLAGS="-trimpath" CGO_ENABLED=0 \
     go build -ldflags "-X tailscale.com/version.longStamp=${TAILSCALE_VERSION} -X tailscale.com/version.shortStamp=${TAILSCALE_VERSION}" \
@@ -51,12 +63,16 @@ FROM ${GO_BUILD_IMAGE} AS gh-build
 ARG GH_VERSION=2.102.0
 ARG GH_RELEASE_DATE=2026-09-30
 ARG GH_SRC_SHA256=08bf0ef8b4409893889175e0f5279d30d6edd96465816042c0d7c72eac598158
-RUN curl -fsSL "https://github.com/cli/cli/archive/refs/tags/v${GH_VERSION}.tar.gz" -o /tmp/gh.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/cli/cli/archive/refs/tags/v${GH_VERSION}.tar.gz" -o /tmp/gh.tar.gz && \
     echo "${GH_SRC_SHA256}  /tmp/gh.tar.gz" | sha256sum --check && \
     tar xzf /tmp/gh.tar.gz -C /tmp && \
     mv /tmp/cli-${GH_VERSION} /src && \
     rm /tmp/gh.tar.gz
 WORKDIR /src
+RUN for attempt in 1 2 3 4 5; do \
+      CGO_ENABLED=0 go list -deps ./cmd/gh > /dev/null && break; \
+      [ "$attempt" -lt 5 ] || exit 1; sleep $((attempt * 15)); \
+    done
 RUN GOFLAGS="-trimpath" CGO_ENABLED=0 \
     go build \
       -ldflags "-s -w -X github.com/cli/cli/v2/internal/build.Version=${GH_VERSION} -X github.com/cli/cli/v2/internal/build.Date=${GH_RELEASE_DATE}" \
@@ -67,7 +83,7 @@ FROM ${GO_BUILD_IMAGE} AS kubectl-build
 ARG KUBECTL_VERSION=1.37.1
 ARG KUBERNETES_SRC_SHA256=89295ac375eb0fdfe68a0696d81be615771d6b27c7ad9bb675dc6ffd0d2ce5f3
 ARG KUBERNETES_GIT_COMMIT=f78e722310e50bcaca9276be22276d9e91d91308
-RUN curl -fsSL "https://github.com/kubernetes/kubernetes/archive/refs/tags/v${KUBECTL_VERSION}.tar.gz" -o /tmp/kubernetes.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/kubernetes/kubernetes/archive/refs/tags/v${KUBECTL_VERSION}.tar.gz" -o /tmp/kubernetes.tar.gz && \
     echo "${KUBERNETES_SRC_SHA256}  /tmp/kubernetes.tar.gz" | sha256sum --check && \
     tar xzf /tmp/kubernetes.tar.gz -C /tmp && \
     mv /tmp/kubernetes-${KUBECTL_VERSION} /src && \
@@ -101,7 +117,7 @@ ENV TZ="$TZ"
 COPY --from=node-install /usr/local/ /usr/local/
 
 # Install system packages (ordered alphabetically for readability)
-RUN tdnf install -y \
+RUN for attempt in 1 2 3 4 5; do tdnf install -y \
   bind-utils \
   ca-certificates \
   curl \
@@ -126,7 +142,9 @@ RUN tdnf install -y \
   vim \
   wget \
   zsh \
-  && tdnf update -y \
+  && tdnf update -y && break; \
+  [ "$attempt" -lt 5 ] || exit 1; tdnf clean all; rm -rf /var/cache/tdnf; sleep $((attempt * 15)); \
+  done \
   && tdnf clean all
 
 RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp; do \
@@ -152,7 +170,10 @@ COPY configs/sync-pip-vendor.py /usr/local/share/cetirun/sync-pip-vendor.py
 
 # Install Azure CLI (available natively in Azure Linux 3.0 repos)
 # Both system pip and Azure CLI's bundled pip need their own vendor updates.
-RUN tdnf install -y azure-cli && \
+RUN for attempt in 1 2 3 4 5; do \
+      tdnf install -y azure-cli && break; \
+      [ "$attempt" -lt 5 ] || exit 1; tdnf clean all; rm -rf /var/cache/tdnf; sleep $((attempt * 15)); \
+    done && \
     AZ_SITE=$(sed -n 's/.*PYTHONPATH="\([^"]*\)".*/\1/p' /usr/bin/az | head -n 1) && \
     AZ_SITE=$(printf '%s\n' "$AZ_SITE" | sed 's#\$bin_dir#/usr/bin#g') && \
     AZ_SITE=$(realpath "$AZ_SITE") && \
@@ -178,7 +199,7 @@ RUN tdnf install -y azure-cli && \
 # Install ripgrep (not in Azure Linux repos — GitHub release binary)
 ARG RIPGREP_VERSION=15.2.0
 ARG RIPGREP_SHA256=33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
-RUN curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/rg.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/rg.tar.gz && \
     echo "${RIPGREP_SHA256}  /tmp/rg.tar.gz" | sha256sum --check && \
     tar xzf /tmp/rg.tar.gz -C /tmp && \
     install -m 755 /tmp/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl/rg /usr/local/bin/rg && \
@@ -193,7 +214,7 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages \
 # Install ttyd (web terminal) - pinned version with checksum verification
 ARG TTYD_VERSION=1.7.7
 ARG TTYD_SHA256=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
-RUN curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64" -o /usr/local/bin/ttyd && \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64" -o /usr/local/bin/ttyd && \
     echo "${TTYD_SHA256}  /usr/local/bin/ttyd" | sha256sum --check && \
     chmod +x /usr/local/bin/ttyd
 
@@ -224,7 +245,7 @@ ENV PATH=$PATH:/usr/local/share/npm-global/bin:/home/vibe/.local/bin
 # Configure zsh with oh-my-zsh (archive download pinned to commit — avoids curl|bash)
 ARG OHMYZSH_COMMIT=60c9a7a839b790cd905d0fd4419435124fd1bdc0
 ARG OHMYZSH_SHA256=b76ccbc18fd732d9d897dd2edbf16519cb48d20f31e509f925d1bf41a8df859f
-RUN curl -fsSL "https://github.com/ohmyzsh/ohmyzsh/archive/${OHMYZSH_COMMIT}.tar.gz" -o /tmp/ohmyzsh.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/ohmyzsh/ohmyzsh/archive/${OHMYZSH_COMMIT}.tar.gz" -o /tmp/ohmyzsh.tar.gz && \
     echo "${OHMYZSH_SHA256}  /tmp/ohmyzsh.tar.gz" | sha256sum --check && \
     mkdir -p /home/vibe/.oh-my-zsh && \
     tar xzf /tmp/ohmyzsh.tar.gz --strip-components=1 -C /home/vibe/.oh-my-zsh && \
@@ -271,7 +292,7 @@ RUN cd /usr/local/share/npm-global/lib && \
 USER root
 ARG UV_VERSION=0.12.23
 ARG UV_SHA256=9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6
-RUN curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/uv.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/uv.tar.gz && \
     echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum --check && \
     tar xzf /tmp/uv.tar.gz -C /tmp && \
     install -m 755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv && \
