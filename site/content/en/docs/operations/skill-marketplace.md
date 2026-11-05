@@ -614,8 +614,10 @@ repository before the next interval, restart it:
 kubectl rollout restart deployment/cetirun-skill-marketplace -n cetirun-system
 ```
 
-Until its first successful check after a start, the catalog can show no
-skills. During that time, the Portal cannot add skills to Teams.
+A restarted worker keeps the catalog of the earlier one until it knows more:
+the synchronized commit with its skills, and each Team publication. On the
+first start of the worker, the catalog shows no skills until the first
+successful check. During that time, the Portal cannot add skills to Teams.
 
 If the worker cannot publish the release of a new selection, the restarted
 Agents do not complete their start. Refer to
@@ -765,6 +767,8 @@ the Team in the catalog:
 - `the skills repository has not been synchronized yet`: the worker has not
   read the repository since it started. It keeps the current release of the
   Team, and it tries again every ten seconds. Correct the error of the check.
+  After a restart, a Team keeps its earlier publication in the catalog. This
+  applies while its selection and its release stay the same.
 - `publication waits for the current release, which could not be read`: the
   Team selects a [retained skill](#retained-and-missing-skills). The worker
   cannot read the current release of the Team or the skill in it. It keeps the

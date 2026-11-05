@@ -55,7 +55,10 @@ func (c *Catalog) now() time.Time {
 	return time.Now()
 }
 
-// Seed restores first-seen times and Team states from the published catalog.
+// Seed restores the catalog that an earlier worker published: the first-seen
+// times, the Teams, and for the same repository the synchronized commit with
+// its skills. Until this worker has synchronized the repository and read the
+// Teams document, its catalog says what the earlier one said, not less.
 func (c *Catalog) Seed(ctx context.Context) error {
 	existing := &corev1.ConfigMap{}
 	err := c.Reader.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: api.SkillMarketplaceCatalogConfigMap}, existing)
@@ -78,8 +81,23 @@ func (c *Catalog) Seed(ctx context.Context) error {
 	}
 	if previous.Repository == c.state.Repository {
 		c.state.Commit, c.state.SyncedAt = previous.Commit, previous.SyncedAt
+		c.state.Skills, c.state.Invalid = previous.Skills, previous.Invalid
+	}
+	// The Teams' releases are on the storage, whatever the repository.
+	for _, team := range previous.Teams {
+		if team.UID != "" {
+			c.teams[team.UID] = team
+		}
 	}
 	return nil
+}
+
+// Team returns the catalog entry of a Team.
+func (c *Catalog) Team(uid string) (api.SkillMarketplaceTeam, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	team, ok := c.teams[uid]
+	return team, ok
 }
 
 // FirstSeen returns, and records, when a skill version first appeared.
