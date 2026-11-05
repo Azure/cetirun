@@ -932,8 +932,20 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, nil)
 		if err != nil {
+			if stderrors.Is(err, errSkillsClaimPending) {
+				// The Skill Marketplace has not created the skills claim yet.
+				// Nothing is installed, held or stopped while waiting for it.
+				return r.waitForSkillsClaim(ctx, instance, err)
+			}
+			if stderrors.Is(err, helm.ErrCustomSkillMarketplaceUnsupported) {
+				// An earlier Agent chart cannot give the Agent its Team's
+				// skills. Refuse the configuration, as for a built-in Agent,
+				// and leave a running workload as it is until an upgrade.
+				return r.rejectAgentConfig(ctx, instance, err)
+			}
 			return r.reconciledSandboxFailure(ctx, instance, err)
 		}
+		endSkillsClaimWait(instance)
 		helmValues = prepared.Values
 	} else {
 		// Rebuild from current bindings without reloading the versioned chart.

@@ -58,8 +58,8 @@ This adds file metadata reads so remote storage updates reach native discovery
 even when the filesystem does not deliver change events.
 
 The Agents of a Skill Marketplace Team read a copy of the Team's release at
-`skills.mountPath` instead. Refer to
-[Protected Sandbox rendering](#protected-sandbox-rendering).
+`skills.mountPath` instead, and Custom Agents in `$HOME/.agents/skills`. Refer
+to [Protected Sandbox rendering](#protected-sandbox-rendering).
 
 Memory no longer mounts a read-only directory over the whole `$HOME/.agents`.
 Personal files and Skills there remain visible and writable. The platform still
@@ -166,11 +166,15 @@ HOME initializer mounts that subtree, read-only.
 The initializer receives the digest as `CETIRUN_SKILLS_RELEASE_SELECTION`,
 waits for the matching Team release, and copies it into the context view. The
 Agent container mounts this copy read-only at `skills.mountPath` instead of
-the claim, so a repository change reaches the Agent at its next start. No
-other container mounts the claim. The render fails unless both values are
-set, `skills.shared` is true, the composed Agent context is enabled, and the
-workload is a reconciled Sandbox. When both values are empty, the render does
-not change.
+the claim, so a repository change reaches the Agent at its next start. A
+Custom Agent reads the copy in `$HOME/.agents/skills`, with the other skills
+of its context view. No other container mounts the claim.
+
+The render fails unless both values are set, `skills.shared` is true, the
+Agent context is composed, and the workload is a reconciled Sandbox. When both
+values are empty, the render does not change. The chart annotation
+`cetirun.microsoft.com/custom-skill-marketplace: v1` tells the operator that
+the chart gives Custom Agents their Team's release.
 
 The initializer writes the copied release ID into its termination message as
 `cetirun.skills.release=<id>`. The Portal compares it with the Team's current

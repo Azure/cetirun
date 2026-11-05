@@ -19,14 +19,10 @@ var errSkillMarketplaceOverride = errors.New("skillOverrides cannot add or remov
 
 // sandboxSkillsMode selects the empty skills source for a native Agent without
 // a published catalog whose effective selection is empty, and the skills claim
-// otherwise. With the Skill Marketplace (marketplace true), a Custom Agent
-// drops marketplace skills (see customRuntimeValues), so they do not select
-// the claim, which holds the subtree of every Team.
-func sandboxSkillsMode(native bool, catalog string, marketplace bool, agent *api.Agent, team *api.Team) sandboxworkload.SkillsMode {
+// otherwise. With the Skill Marketplace, the claim holds the subtree of every
+// Team, and the Agent's HOME initializer copies its Team's release from it.
+func sandboxSkillsMode(native bool, catalog string, agent *api.Agent, team *api.Team) sandboxworkload.SkillsMode {
 	selection := computeEffectiveSkills(team, agent.Spec.SkillOverrides.Add, agent.Spec.SkillOverrides.Remove)
-	if marketplace && agent.Spec.Agent.Type == api.AgentTypeCustom {
-		selection = slices.DeleteFunc(selection, api.IsSkillMarketplaceReference)
-	}
 	if native && catalog == "" && len(selection) == 0 {
 		return sandboxworkload.SkillsModeEmpty
 	}

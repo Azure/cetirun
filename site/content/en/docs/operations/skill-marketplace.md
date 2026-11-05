@@ -6,8 +6,9 @@ weight: 27
 
 The Skill Marketplace delivers approved skills from one Git repository to the
 Agents of policy-bound Teams. An administrator selects the skills of each
-Team. The Agents of the Team receive these skills read-only in
-`$HOME/.aks/skills`.
+Team. The OpenClaw and Hermes Agents of the Team receive these skills
+read-only in `$HOME/.aks/skills`, and its Custom Agents in
+`$HOME/.agents/skills`.
 
 The Skill Marketplace is optional, and it is off by default. The operator runs
 it in two parts:
@@ -194,10 +195,14 @@ PersistentVolume refers to the container read-only.
 When the Agent starts, its HOME initializer mounts only the subtree of the
 Team of the Agent, read-only. The initializer waits until `CURRENT` names a
 release of the current selection of the Team. Then it copies the skills of
-that release into the context view of the Pod. The Agent container receives
-this copy read-only at `$HOME/.aks/skills`. It does not mount the claim. The
-operator refuses an Agent chart that mounts the claim in another container,
-or that mounts more than the subtree of the Team.
+that release into the context view of the Pod. No Agent container mounts the
+claim. The operator refuses an Agent chart that mounts the claim in another
+container, or that mounts more than the subtree of the Team.
+
+An OpenClaw or Hermes Agent container receives the copy read-only at
+`$HOME/.aks/skills`. A Custom Agent container receives the whole context view
+read-only at `$HOME/.agents`. There, the skills of the release are in
+`$HOME/.agents/skills`, next to the platform skills, such as `cetirun-memory`.
 
 The view is an `emptyDir` volume of the Pod. The scratch size of the Sandbox
 of the Agent limits its size. After the start, the Agent reads only its copy.
@@ -205,7 +210,8 @@ A release that the worker publishes later reaches the Agent at its next
 start.
 
 OpenClaw loads `$HOME/.aks/skills` as an extra skill directory, and Hermes
-loads it as an external skill directory. Refer to
+loads it as an external skill directory. A Custom image loads the skills of
+`$HOME/.agents/skills` as the Custom contract requires. Refer to
 [Common initialization and discovery](../../reference/agent-harness/#common-initialization-and-discovery).
 
 ### Skill sources of an Agent
@@ -215,12 +221,11 @@ only one of them:
 
 | Agent | Source of the Team skills |
 | --- | --- |
-| An OpenClaw or Hermes Sandbox Agent of a Team with an Agent Policy | The Skill Marketplace. The Agent receives only the skills that its Team selects, from the release that is current when the Agent starts. |
+| An OpenClaw, Hermes, or Custom Sandbox Agent of a Team with an Agent Policy | The Skill Marketplace. The Agent receives only the skills that its Team selects, from the release that is current when the Agent starts. |
 | An Agent of a Team without an Agent Policy, or an Agent without a Team | The shared skills container: `sharedSkills` of `make deploy`, or the container that the `skillStorage` of the Team names. The Agent receives all the skills in the container. |
 
 A Skill Marketplace Agent does not mount the shared skills container. The
-other Agents do not receive marketplace skills. A Custom Agent of a Team with
-an Agent Policy receives no Team skills. Refer to [Limits](#limits).
+other Agents do not receive marketplace skills.
 
 `make deploy` requires the `sharedSkills` container, but it does not add skills
 to it. If no Agent uses the container, the container stays empty.
@@ -235,6 +240,10 @@ these locations:
   `cetirun-memory`.
 - The skills that are part of OpenClaw or Hermes.
 
+A Custom Agent of the Skill Marketplace finds the Team skills and the
+platform skills together in `$HOME/.agents/skills`, read-only. The image
+decides how it loads them, and where it keeps personal skills.
+
 If two skills have the same name, the runtime selects one of them. Refer to
 [Limits](#limits).
 
@@ -245,10 +254,14 @@ If two skills have the same name, the runtime selects one of them. Refer to
   The Skill Marketplace needs `sandboxSources.enabled` and
   `sandboxSources.nativeExecution`. It replaces the published skills catalog.
   As a result, `sandboxSources.skillsCatalogConfigMapName` must stay empty.
-- **Memory.** The chart composes the skills view together with Memory. Keep
-  `cetirun-operator.memoryContext.enabled`, which `make deploy` sets. Without
-  Memory, the render of the Agent fails with this message:
-  `Skill Marketplace skills require the composed Agent context`.
+- **Memory.** For OpenClaw and Hermes, the chart composes the skills view
+  together with Memory. Keep `cetirun-operator.memoryContext.enabled`, which
+  `make deploy` sets. Without Memory, the render of the Agent fails with this
+  message: `Skill Marketplace skills require the composed Agent context`. A
+  Custom Agent always has its composed context view.
+- **`sleep` in Custom images.** The HOME initializer of a Custom Agent runs in
+  the image of the Agent. It uses `sleep` while it waits for the release.
+  Without `sleep`, it stops with `InitToolsMissing: sleep`.
 - **The Blob CSI driver** and one of its StorageClasses, for example
   `azureblob-nfs-premium`.
 - **A storage account and an empty container**, as [Storage](#storage) shows.
@@ -635,20 +648,24 @@ skill, remove it from the Team. Then you can remove it from the Policy.
 - **Names, not versions.** A Team selects skills by name. Its release has the
   version of the last synchronized commit, or the retained version.
 - **Sandbox Agents of policy-bound Teams only.** The Skill Marketplace
-  delivers skills to OpenClaw and Hermes Agents that the common executor runs.
-  These are the Sandbox Agents that are created after you enable Sandbox
-  execution. These Agents do not receive marketplace skills:
-  - Custom Agents. The operator leaves marketplace skills out of their
-    configuration.
+  delivers skills to OpenClaw, Hermes, and Custom Agents that the common
+  executor runs. These are the Sandbox Agents that are created after you
+  enable Sandbox execution. These Agents do not receive marketplace skills:
   - Agents with a retained version-1 native single-start lifetime.
   - Agents of a Team without an Agent Policy, and Agents without a Team. For
     these Agents, the operator does not install entries without the `npm:`
     prefix.
 - **Agent chart version.** An Agent keeps the Agent chart version that it was
-  created with (`spec.helm.version`). A chart from a release before the Skill
-  Marketplace does not mount only the subtree of the Team. While the Team of
-  such an Agent selects marketplace skills, the render of the Agent fails.
-  Refer to [Pin and update a chart](../../guides/lifecycle/#pin-and-update-a-chart).
+  created with (`spec.helm.version`). These charts cannot give an Agent the
+  skills of its Team:
+  - A chart from a release before the Skill Marketplace.
+  - For a Custom Agent, a chart without the annotation
+    `cetirun.microsoft.com/custom-skill-marketplace: v1`.
+
+  While the Team of such an Agent selects marketplace skills, the operator
+  sets the Agent to `Failed` with `AgentConfigInvalid`. Upgrade its chart, as
+  [Pin and update a chart](../../guides/lifecycle/#pin-and-update-a-chart)
+  shows.
 - **No change for each Agent.** `skillOverrides` cannot add or remove a
   marketplace skill. While the Skill Marketplace is on, the operator refuses
   such an Agent, with or without a policy. The Agent changes to `Failed` with
@@ -656,9 +673,9 @@ skill, remove it from the Team. Then you can remove it from the Policy.
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.
   `npm:` entries in `skillOverrides` stay possible.
 - **Name conflicts with private skills.** CetiRun does not compare marketplace
-  names with the skills in the HOME of an Agent. OpenClaw and Hermes decide
-  which of two skills with the same name they use. A private skill, for
-  example in `$HOME/.agents/skills`, can hide the marketplace skill.
+  names with the skills in the HOME of an Agent. The runtime decides which of
+  two skills with the same name it uses. For OpenClaw and Hermes, a private
+  skill, for example in `$HOME/.agents/skills`, can hide the marketplace skill.
 - **100 entries.** The `skills` of a Team have at most 100 entries, npm
   packages included.
 - **Read-only.** Agents cannot change marketplace skills. Make changes in the
@@ -801,6 +818,7 @@ Add `--previous` to read the attempt before the current one.
 | `UnsupportedSkillFile` | The release contains a symbolic link or a special file. The worker writes only directories and regular files, so another writer changed the container. Remove the write access of that writer |
 | `SharedSkillConflictsWithCanonicalContext` | A skill of the release has the name `cetirun-memory`. Keep this name in `reservedNames` |
 | `SharedSkillsUnavailable` | The initializer cannot read the subtree of the Team. Examine the claim, its PersistentVolume, and the mount events of the Pod |
+| `InitToolsMissing: sleep` | The image of a Custom Agent has no `sleep`. Add `sleep` to the image |
 
 ### The worker does not start
 

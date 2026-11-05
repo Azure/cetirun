@@ -17,11 +17,15 @@ Licensed under the MIT License.
 {{- $marketplaceSubPath := .Values.skills.subPath -}}
 {{- $marketplaceSelection := (.Values.skills.marketplace | default dict).selectionDigest -}}
 {{- if or $marketplaceSubPath $marketplaceSelection -}}
-{{- if not (include "cetirun.context.enabled" .) -}}
+{{- /* A reconciled Custom Sandbox composes its context view in its own
+   template (agents/custom/_sandbox.tpl). */ -}}
+{{- $customSandbox := and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled (eq (include "cetirun.agent.type" .) "custom") -}}
+{{- if not (or (include "cetirun.context.enabled" .) $customSandbox) -}}
 {{- fail "Skill Marketplace skills require the composed Agent context" -}}
 {{- end -}}
 {{- /* The copied release lives in the context view, which only a reconciled
-   Sandbox sizes for it, and only native Agents mount it at skills.mountPath. */ -}}
+   Sandbox sizes for it. Native Agents mount it at skills.mountPath, and
+   Custom Agents read it in .agents/skills. */ -}}
 {{- if not (and .Values.sandboxWorkload .Values.sandboxWorkload.reconciled) -}}
 {{- fail "Skill Marketplace skills require a reconciled Sandbox workload" -}}
 {{- end -}}

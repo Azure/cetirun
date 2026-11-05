@@ -100,7 +100,8 @@ func (r *AgentReconciler) customRuntimeValues(instance *api.Agent, team *api.Tea
 		values[key] = deepMerge(values[key], value)
 	}
 	// With the Skill Marketplace, Team marketplace skills are dropped here, not
-	// passed as ClawHub installs, which Custom refuses below.
+	// passed as ClawHub installs, which Custom refuses below. The HOME
+	// initializer copies them from the Team's release instead.
 	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, r.SkillsStorageAccount, r.SkillMarketplace); err != nil {
 		return nil, err
 	}

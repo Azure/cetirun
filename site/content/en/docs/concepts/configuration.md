@@ -120,8 +120,9 @@ instance with `AgentConfigInvalid`.
 The Skill Marketplace publishes the skills
 that a policy-bound Team selects from one Git repository. When a
 common-executor Sandbox Agent of the Team starts, init copies the Team's
-published skills into the Pod. The Agent reads this copy read-only at
-`$HOME/.aks/skills`. Other Agents do not receive marketplace skills.
+published skills into the Pod. An OpenClaw or Hermes Agent reads this copy
+read-only at `$HOME/.aks/skills`, and a Custom Agent in
+`$HOME/.agents/skills`. Other Agents do not receive marketplace skills.
 
 Npm packages are installed under `/home/vibe/.cetirun/skills/npm/`. The
 templates add those directories to OpenClaw's `skills.load.extraDirs` or

@@ -145,15 +145,16 @@ Policy**. Enter npm packages separately, in **npm skill packages, one per
 line**, each with the `npm:` prefix.
 
 Saving changes to Team skills restarts the Team's running Sandbox Agents one
-time. Their new Pods copy the Team's published skills. The Agents read this
-copy read-only at `$HOME/.aks/skills`. Changes in the skills repository reach
-an instance at its next start.
+time. Their new Pods copy the Team's published skills. OpenClaw and Hermes
+Agents read this copy read-only at `$HOME/.aks/skills`, and Custom Agents in
+`$HOME/.agents/skills`. Changes in the skills repository reach an instance at
+its next start.
 
 In `spec.skills`, each entry without the `npm:` prefix is then the name of a
 marketplace skill. These rules apply:
 
 - The Skill Marketplace delivers skills only to the common-executor Sandbox
-  Agents of a Team with an Agent Policy. Custom Agents do not receive them.
+  Agents of a Team with an Agent Policy: OpenClaw, Hermes, and Custom.
 - An instance cannot add or remove a marketplace skill with `skillOverrides`.
   The operator refuses such an instance with `AgentConfigInvalid`.
 - The Portal adds only skills that the Skill Marketplace catalog has. A Team

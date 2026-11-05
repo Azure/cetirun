@@ -269,7 +269,8 @@ lowercase letters and digits in words that single hyphens join, and at most
 - The operator does not pass the name to `skills.clawHub`.
 - For a Team with an Agent Policy, the Skill Marketplace publishes the
   selected skills. Its common-executor Sandbox Agents copy them when they
-  start, and read them in `$HOME/.aks/skills`.
+  start. OpenClaw and Hermes read them in `$HOME/.aks/skills`, and Custom in
+  `$HOME/.agents/skills`.
 - An Agent cannot add or remove such a name in `skillOverrides`. The operator
   sets the Agent to `Failed`, with `AgentConfigInvalid` and this message:
   `skillOverrides cannot add or remove Skill Marketplace skills; select them on the Team`.

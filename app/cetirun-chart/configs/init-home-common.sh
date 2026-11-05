@@ -317,7 +317,8 @@ report_skills_release() {
 }
 
 # Compose platform context; native Agents mount only its reserved leaves:
-# AGENTS.md and, for a Skill Marketplace Team, the copied Team skills.
+# AGENTS.md and, for a Skill Marketplace Team, the copied Team skills. A Custom
+# Agent mounts the whole view at .agents, so its Team skills join its skills.
 # Sources and the PVC's own .agents contents are never modified.
 prepare_agent_context() (
   set -e
@@ -359,10 +360,15 @@ prepare_agent_context() (
   if [ -n "${CETIRUN_SKILLS_RELEASE_SELECTION:-}" ]; then
     # Skill Marketplace mode: the shared directory is the Team's subtree.
     # Native Agents mount the copy at skills.mountPath, apart from the
-    # personal skills in HOME.
+    # personal skills in HOME. A Custom Agent (CETIRUN_CONTEXT_DIR) finds its
+    # skills in .agents/skills, so the Team's skills go there.
     [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ] || { init_error "SharedSkillsUnavailable"; exit 1; }
-    mkdir "$stage/team-skills"
-    release=$(copy_skills_release "$CETIRUN_SHARED_SKILLS_DIR" "$CETIRUN_SKILLS_RELEASE_SELECTION" "$stage/team-skills")
+    team_skills=$stage/skills
+    if [ -z "${CETIRUN_CONTEXT_DIR:-}" ]; then
+      team_skills=$stage/team-skills
+      mkdir "$team_skills"
+    fi
+    release=$(copy_skills_release "$CETIRUN_SHARED_SKILLS_DIR" "$CETIRUN_SKILLS_RELEASE_SELECTION" "$team_skills")
     printf '%s\n' "$release" > "$stage/.skills-release"
   elif [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ]; then
     copy_shared_skills "$CETIRUN_SHARED_SKILLS_DIR" "$stage/skills"

@@ -32,8 +32,8 @@ var (
 // Team on its skills claim. The claim holds every Team's subtree: TeamPath is
 // the subtree of the bound Team (api.SkillMarketplaceTeamPath), and
 // SelectionDigest is the Team selection digest that the release must carry
-// (api.SkillMarketplaceSelectionDigest). Only a common-executor built-in Agent
-// with a skills claim uses it.
+// (api.SkillMarketplaceSelectionDigest). Only a common-executor Agent with a
+// skills claim uses it.
 type SkillMarketplaceInput struct {
 	TeamPath        string
 	SelectionDigest string
@@ -44,8 +44,8 @@ func validateSkillMarketplace(input Input) error {
 	if marketplace == nil {
 		return nil
 	}
-	if !input.Reconciled || input.AgentType == "custom" || input.SkillsMode == SkillsModeEmpty {
-		return fmt.Errorf("Skill Marketplace skills require a common-executor built-in Agent with a skills claim")
+	if !input.Reconciled || input.SkillsMode == SkillsModeEmpty {
+		return fmt.Errorf("Skill Marketplace skills require a common-executor Agent with a skills claim")
 	}
 	team := string(input.Resolution.Binding.TeamUID)
 	if !skillMarketplaceTeamUID.MatchString(team) || marketplace.TeamPath != api.SkillMarketplaceTeamPath(team) {

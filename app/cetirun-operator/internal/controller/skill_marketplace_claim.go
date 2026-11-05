@@ -18,8 +18,8 @@ import (
 )
 
 // errSkillsClaimPending reports that the skills claim of a common-executor
-// built-in Agent does not exist yet while the Skill Marketplace is enabled.
-// The operator's Skill Marketplace claim controller creates that claim shortly
+// Agent does not exist yet while the Skill Marketplace is enabled. The
+// operator's Skill Marketplace claim controller creates that claim shortly
 // after the operator bootstraps the Agent's protected namespace, so this is a
 // short wait, not a configuration error or an unavailable dependency.
 var errSkillsClaimPending = errors.New("the Skill Marketplace has not provided the Team skills claim yet")
@@ -31,11 +31,11 @@ const (
 )
 
 // skillsClaimPending reports whether a failed read of the skills claim is the
-// wait for the Skill Marketplace: the claim of a common-executor built-in
-// Agent is absent. A terminating or foreign claim, any other read failure,
-// Custom Agents and the held native paths keep their existing errors.
-func (p *KubernetesSandboxPrerequisites) skillsClaimPending(err error, agent *api.Agent, reconciled bool) bool {
-	return p.SkillMarketplace && reconciled && agent.Spec.Agent.Type != api.AgentTypeCustom && apierrors.IsNotFound(err)
+// wait for the Skill Marketplace: the claim of a common-executor Agent, built-in
+// or Custom, is absent. A terminating or foreign claim, any other read failure
+// and the held native paths keep their existing errors.
+func (p *KubernetesSandboxPrerequisites) skillsClaimPending(err error, reconciled bool) bool {
+	return p.SkillMarketplace && reconciled && apierrors.IsNotFound(err)
 }
 
 // waitForSkillsClaim handles errSkillsClaimPending. It only records the wait

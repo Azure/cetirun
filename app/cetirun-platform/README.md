@@ -664,8 +664,9 @@ them.
 
 The Operator runs the optional Skill Marketplace. A worker syncs one Git
 repository of skills, and publishes the skills that each policy-bound Team
-selects to a Blob NFS container. The Operator gives each native Sandbox Agent
-of these Teams a read-only claim of the container. The marketplace is off by
+selects to a Blob NFS container. The Operator gives each Sandbox Agent of
+these Teams that the common executor runs, built-in or Custom, a read-only
+claim of the container. The marketplace is off by
 default. To enable it, set `cetirun-operator.skillMarketplace` and enable
 `cetirun-portal.skillMarketplace.enabled`. The Operator chart accepts the
 marketplace only with `sandboxSources.enabled` and `nativeExecution`, with a

@@ -197,6 +197,104 @@ func TestSkillMarketplaceClaimWaitKeepsARunningAgent(t *testing.T) {
 	}
 }
 
+// reconcileUntilSkillsClaimWait reconciles a new Agent until a pass waits for
+// its skills claim. A new Custom Agent first waits for its Gateway binding.
+func reconcileUntilSkillsClaimWait(t *testing.T, f *nativeSandboxFixture) {
+	t.Helper()
+	var result ctrl.Result
+	var err error
+	for pass := 0; pass < 6; pass++ {
+		result, err = f.reconcile()
+		if condition := apimeta.FindStatusCondition(f.current(t).Status.Conditions, builtInPrerequisitesReady); condition != nil &&
+			condition.Reason == skillsClaimPendingReason {
+			break
+		}
+	}
+	assertSkillsClaimWait(t, f, result, err)
+}
+
+// A new Custom Agent of a marketplace Team waits for its skills claim like a
+// built-in Agent, instead of being held. Then its HOME initializer alone reads
+// its Team's subtree, with the selection of the release to copy.
+func TestSkillMarketplaceCustomWaitsForTheTeamSkillsClaim(t *testing.T) {
+	ctx := context.Background()
+	f, input := newUnreconciledSandboxRuntimeFixture(t, true, []string{"example-skill"}, true, "custom", true, false,
+		withCommonCustom(t, "headless"), withSkillMarketplace)
+	reconcileUntilSkillsClaimWait(t, f)
+	result, err := f.reconcile()
+	assertSkillsClaimWait(t, f, result, err)
+	if f.installer.stages != 0 {
+		t.Fatal("the Custom Agent was installed before its skills claim existed")
+	}
+
+	createMarketplaceSkillsClaim(t, f, input)
+	for pass := 0; pass < 3 && f.installer.stages == 0; pass++ {
+		f.reconcileOK(t)
+	}
+	if f.installer.stages != 1 {
+		t.Fatalf("the Custom Agent did not proceed once its skills claim existed: %d applies", f.installer.stages)
+	}
+	agent := f.current(t)
+	if condition := apimeta.FindStatusCondition(agent.Status.Conditions, builtInPrerequisitesReady); condition != nil &&
+		condition.Reason == skillsClaimPendingReason {
+		t.Fatalf("prerequisite readiness still reports the finished wait: %+v", condition)
+	}
+	team := &api.Team{}
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: input.Team.Name}, team); err != nil {
+		t.Fatal(err)
+	}
+	expected := reconciledExpectationForTest(t, f)
+	index := slices.IndexFunc(expected.Workloads, func(workload w.RenderedWorkload) bool { return workload.Kind == "StatefulSet" })
+	if index < 0 {
+		t.Fatal("the expectation has no Agent workload")
+	}
+	spec := expected.Workloads[index].Template.Spec
+	mount := corev1.VolumeMount{Name: "shared-skills", MountPath: w.SkillMarketplaceMountPath,
+		SubPath: api.SkillMarketplaceTeamPath(string(team.UID)), ReadOnly: true}
+	selection := corev1.EnvVar{Name: w.SkillMarketplaceSelectionEnv, Value: api.SkillMarketplaceSelectionDigest(team.Spec.Skills)}
+	initializer := slices.IndexFunc(spec.InitContainers, func(container corev1.Container) bool { return container.Name == "init-home-data" })
+	if initializer < 0 || !slices.ContainsFunc(spec.InitContainers[initializer].VolumeMounts, func(actual corev1.VolumeMount) bool {
+		return reflect.DeepEqual(actual, mount)
+	}) || !slices.Contains(spec.InitContainers[initializer].Env, selection) {
+		t.Fatal("the Custom HOME initializer does not read the Team's subtree and selection")
+	}
+	for _, container := range append(slices.Clone(spec.Containers), spec.InitContainers...) {
+		if container.Name != "init-home-data" && slices.ContainsFunc(container.VolumeMounts, func(mount corev1.VolumeMount) bool {
+			return mount.Name == "shared-skills"
+		}) {
+			t.Fatalf("container %s mounts the skills claim", container.Name)
+		}
+	}
+}
+
+// A Custom Agent pinned to an earlier Agent chart, which cannot give it its
+// Team's skills, gets a configuration error, as a built-in Agent does. It is
+// neither installed nor held, and its key stays usable.
+func TestSkillMarketplaceCustomRefusesAnEarlierAgentChart(t *testing.T) {
+	f, input := newUnreconciledSandboxRuntimeFixture(t, true, []string{"example-skill"}, true, "custom", true, false,
+		withCommonCustom(t, "headless"), withSkillMarketplace)
+	delete(f.installer.chart.Metadata.Annotations, "cetirun.microsoft.com/custom-skill-marketplace")
+	reconcileUntilSkillsClaimWait(t, f)
+	createMarketplaceSkillsClaim(t, f, input)
+	if _, err := f.reconcile(); err == nil || !strings.Contains(err.Error(), "does not deliver Skill Marketplace skills to Custom Agents") {
+		t.Fatal("an earlier Agent chart was not refused:", err)
+	}
+	agent := f.current(t)
+	condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionAgentConfigReady)
+	if agent.Status.Phase != api.PhaseFailed || condition == nil || condition.Reason != "AgentConfigInvalid" ||
+		!strings.Contains(condition.Message, "upgrade the Agent") {
+		t.Fatalf("phase %q, AgentConfigReady %+v; want a configuration error that asks for an upgrade", agent.Status.Phase, condition)
+	}
+	if slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || f.installer.stages != 0 {
+		t.Fatal("the refused Custom Agent was held or installed")
+	}
+	for _, key := range f.gateway.keys {
+		if key.Blocked {
+			t.Fatal("the refusal blocked the Agent's key")
+		}
+	}
+}
+
 // Without the marketplace a missing skills claim stays a configuration error.
 func TestMissingSkillsClaimWithoutMarketplaceFailsTheAgent(t *testing.T) {
 	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, []string{"example-skill"}, true, "openclaw", true, false)
@@ -214,31 +312,27 @@ func TestMissingSkillsClaimWithoutMarketplaceFailsTheAgent(t *testing.T) {
 	}
 }
 
-func TestSkillsClaimPendingOnlyForMarketplaceBuiltinClaims(t *testing.T) {
+func TestSkillsClaimPendingOnlyForMarketplaceClaims(t *testing.T) {
 	missing := fmt.Errorf("read Sandbox prerequisite cetirun-example/skills-example: %w",
 		apierrors.NewNotFound(corev1.Resource("persistentvolumeclaims"), "skills-example"))
-	builtin := &api.Agent{Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeHermes}}}
-	custom := &api.Agent{Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeCustom}}}
 	enabled := &KubernetesSandboxPrerequisites{SkillMarketplace: true}
-	if !enabled.skillsClaimPending(missing, builtin, true) {
+	if !enabled.skillsClaimPending(missing, true) {
 		t.Fatal("a missing marketplace claim is not a wait")
 	}
 	for name, test := range map[string]struct {
 		source     *KubernetesSandboxPrerequisites
 		err        error
-		agent      *api.Agent
 		reconciled bool
 	}{
-		"marketplace disabled": {&KubernetesSandboxPrerequisites{}, missing, builtin, true},
-		"held native lifetime": {enabled, missing, builtin, false},
-		"Custom":               {enabled, missing, custom, true},
+		"marketplace disabled": {&KubernetesSandboxPrerequisites{}, missing, true},
+		"held native lifetime": {enabled, missing, false},
 		"read failure": {enabled, fmt.Errorf("read Sandbox prerequisite cetirun-example/skills-example: %w",
-			apierrors.NewServiceUnavailable("synthetic outage")), builtin, true},
+			apierrors.NewServiceUnavailable("synthetic outage")), true},
 		"terminating claim": {enabled, fmt.Errorf("%w: Sandbox prerequisite cetirun-example/skills-example is not the persisted, non-terminating object",
-			errSandboxSourceChanged), builtin, true},
+			errSandboxSourceChanged), true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if test.source.skillsClaimPending(test.err, test.agent, test.reconciled) {
+			if test.source.skillsClaimPending(test.err, test.reconciled) {
 				t.Fatal("the existing skills claim error became a wait")
 			}
 		})
@@ -249,29 +343,28 @@ func TestSkillsClaimPendingOnlyForMarketplaceBuiltinClaims(t *testing.T) {
 	}
 }
 
-// With the marketplace, Custom drops marketplace skills, so they do not select
-// the skills claim, which holds the subtree of every Team.
-func TestSkillMarketplaceSkillsDoNotSelectAClaimForCustom(t *testing.T) {
-	team := &api.Team{Spec: api.TeamSpec{Skills: []string{"example-skill"}}}
+// Marketplace skills select the skills claim for built-in and Custom Agents
+// alike: the claim holds the subtree of every Team, and the HOME initializer
+// copies only the release of the bound Team from it.
+func TestSkillMarketplaceSkillsSelectTheSkillsClaim(t *testing.T) {
+	team := &api.Team{}
 	agent := func(kind api.AgentType) *api.Agent {
 		return &api.Agent{Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: kind}}}
 	}
 	for _, test := range []struct {
-		name        string
-		kind        api.AgentType
-		marketplace bool
-		skills      []string
-		want        w.SkillsMode
+		name   string
+		kind   api.AgentType
+		skills []string
+		want   w.SkillsMode
 	}{
-		{"Custom", api.AgentTypeCustom, true, []string{"example-skill"}, w.SkillsModeEmpty},
-		{"Custom without the marketplace", api.AgentTypeCustom, false, []string{"example-skill"}, ""},
-		{"Custom npm package", api.AgentTypeCustom, true, []string{"example-skill", "npm:@example/package"}, ""},
-		{"built-in", api.AgentTypeOpenClaw, true, []string{"example-skill"}, ""},
-		{"no selection", api.AgentTypeHermes, true, nil, w.SkillsModeEmpty},
+		{"Custom", api.AgentTypeCustom, []string{"example-skill"}, ""},
+		{"built-in", api.AgentTypeOpenClaw, []string{"example-skill"}, ""},
+		{"Custom without a selection", api.AgentTypeCustom, nil, w.SkillsModeEmpty},
+		{"built-in without a selection", api.AgentTypeHermes, nil, w.SkillsModeEmpty},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			team.Spec.Skills = test.skills
-			if got := sandboxSkillsMode(true, "", test.marketplace, agent(test.kind), team); got != test.want {
+			if got := sandboxSkillsMode(true, "", agent(test.kind), team); got != test.want {
 				t.Fatalf("skills mode = %q, want %q", got, test.want)
 			}
 		})

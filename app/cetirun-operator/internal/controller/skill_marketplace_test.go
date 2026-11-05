@@ -317,9 +317,10 @@ func TestSkillMarketplaceOverrideFailsNativeAgentConfiguration(t *testing.T) {
 	}
 }
 
-// Custom keeps consuming only published skills. With the marketplace, Team
-// marketplace skills are dropped instead of becoming ClawHub installs, npm
-// packages still wait for materialization, and overrides are refused.
+// Custom values never request skill installs. With the marketplace, Team
+// marketplace skills are dropped instead of becoming ClawHub installs (the
+// HOME initializer copies them from the Team's release), npm packages still
+// wait for materialization, and overrides are refused.
 func TestSkillMarketplaceCustomSkills(t *testing.T) {
 	instance := &api.Agent{Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeCustom}}}
 	team := &api.Team{Spec: api.TeamSpec{Skills: []string{"pdf-tools"}}}

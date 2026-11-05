@@ -250,8 +250,15 @@ func (b *Bundle) validateCustomReconciledTemplate(spec *corev1.PodSpec, memoryEn
 		{Name: "CETIRUN_CONTEXT_VIEW", Value: "/etc/cetirun-context-view"},
 	}
 	if b.input.SkillsMode != SkillsModeEmpty {
-		initMounts = append(initMounts, corev1.VolumeMount{Name: "shared-skills", MountPath: "/etc/cetirun-shared-skills", ReadOnly: true})
-		initEnv = append(initEnv, corev1.EnvVar{Name: "CETIRUN_SHARED_SKILLS_DIR", Value: "/etc/cetirun-shared-skills"})
+		skills := corev1.VolumeMount{Name: "shared-skills", MountPath: SkillMarketplaceMountPath, ReadOnly: true}
+		initEnv = append(initEnv, corev1.EnvVar{Name: "CETIRUN_SHARED_SKILLS_DIR", Value: SkillMarketplaceMountPath})
+		// Skill Marketplace: only the Team's subtree, and the selection of
+		// the release that the initializer copies.
+		if marketplace := b.input.SkillMarketplace; marketplace != nil {
+			skills.SubPath = marketplace.TeamPath
+			initEnv = append(initEnv, corev1.EnvVar{Name: SkillMarketplaceSelectionEnv, Value: marketplace.SelectionDigest})
+		}
+		initMounts = append(initMounts, skills)
 	}
 	if memoryEnabled {
 		initMounts = append(initMounts, runtimebindings.MemoryMounts()...)
