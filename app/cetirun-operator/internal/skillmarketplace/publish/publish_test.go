@@ -163,19 +163,26 @@ func TestGCKeepsEveryReleaseWhileCURRENTCannotBeRead(t *testing.T) {
 		_ = os.Chtimes(filepath.Join(root, "teams", uid, "releases", release.ID), old, old)
 	}
 	current := filepath.Join(root, "teams", uid, "CURRENT")
-	for name, damage := range map[string]func() error{
-		"invalid":   func() error { return os.WriteFile(current, []byte("not a release\n"), 0o644) },
-		"directory": func() error { _ = os.Remove(current); return os.Mkdir(current, 0o755) },
+	// Each case replaces CURRENT, so that no case depends on the one before.
+	for _, damage := range []struct {
+		name  string
+		apply func() error
+	}{
+		{"invalid", func() error { return os.WriteFile(current, []byte("not a release\n"), 0o644) }},
+		{"directory", func() error { return os.Mkdir(current, 0o755) }},
 	} {
-		if err := damage(); err != nil {
+		if err := os.RemoveAll(current); err != nil {
+			t.Fatal(err)
+		}
+		if err := damage.apply(); err != nil {
 			t.Fatal(err)
 		}
 		if err := p.GC(uid, 2, 10*time.Minute); err == nil {
-			t.Fatalf("%s: GC must fail while CURRENT cannot be read", name)
+			t.Fatalf("%s: GC must fail while CURRENT cannot be read", damage.name)
 		}
 		for i, id := range ids {
 			if _, err := os.Stat(filepath.Join(root, "teams", uid, "releases", id)); err != nil {
-				t.Fatalf("%s: release %d must stay: %v", name, i, err)
+				t.Fatalf("%s: release %d must stay: %v", damage.name, i, err)
 			}
 		}
 	}
