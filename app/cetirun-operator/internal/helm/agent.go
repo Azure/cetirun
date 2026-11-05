@@ -336,6 +336,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		NativeOptions:     map[string]any{"acpx": native["acpx"], "plugins": native["plugins"], "portalSignIn": native["portalSignIn"]},
 		NativeSandbox:     values[sandboxworkload.ValuesKey] != nil,
 		ReconciledSandbox: object(values[sandboxworkload.ValuesKey])["reconciled"] == true,
+		IngressMTLS:       object(values[sandboxworkload.ValuesKey])["ingressMTLS"] == true,
 		ConnectionsMCP:    agents.ConnectionsMCPBinding{Enabled: object(values["connectionsMCP"])["enabled"] == true, URL: text(object(values["connectionsMCP"])["url"])},
 		Model: agents.ModelBinding{
 			Provider:            provider,

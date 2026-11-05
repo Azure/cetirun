@@ -131,6 +131,79 @@ func TestReconciledSandboxIngressMTLS(t *testing.T) {
 	testReconciledSandboxIngressMTLS(t, api.SandboxKata)
 }
 
+func TestReconciledSandboxIngressMTLSPortalSignIn(t *testing.T) {
+	for _, runtimeType := range []api.SandboxType{api.SandboxKata, api.SandboxContainer} {
+		t.Run(string(runtimeType), func(t *testing.T) {
+			ctx := context.Background()
+			setup := []func(*AgentReconciler, client.Client){}
+			if runtimeType == api.SandboxContainer {
+				setup = append(setup, withContainerRuntime(t))
+			}
+			setup = append(setup, withIngressMTLS(t, "openclaw"), func(_ *AgentReconciler, kube client.Client) {
+				agent := &api.Agent{}
+				if err := kube.Get(ctx, client.ObjectKey{Name: testfixture.New("openclaw").Agent.Name}, agent); err != nil {
+					t.Fatal(err)
+				}
+				agent.Spec.Helm.Values["openclaw"] = runtime.RawExtension{Raw: []byte(`{"portalSignIn":{"enabled":true}}`)}
+				if err := kube.Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+			})
+			f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, "openclaw", true, false, setup...)
+			f.reconcileOK(t)
+			expected := reconciledExpectationForTest(t, f)
+			workload := f.workload(t)
+			config := &corev1.ConfigMap{}
+			if err := f.kube.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: workload.Name + "-config"}, config); err != nil {
+				t.Fatal(err)
+			}
+			var native struct {
+				Gateway struct {
+					Bind           string
+					TrustedProxies []string
+					Auth           struct{ Mode string }
+				}
+			}
+			if err := json.Unmarshal([]byte(config.Data["openclaw.json"]), &native); err != nil ||
+				native.Gateway.Bind != "loopback" || !slices.Equal(native.Gateway.TrustedProxies, []string{"127.0.0.1"}) ||
+				native.Gateway.Auth.Mode != "trusted-proxy" {
+				t.Fatal("reconciled mTLS Portal sign-in lost its loopback authentication contract:", err)
+			}
+			main := workload.Spec.Template.Spec.Containers[0]
+			if !slices.ContainsFunc(main.Env, func(env corev1.EnvVar) bool {
+				return env.Name == "OPENCLAW_GATEWAY_PASSWORD" && env.ValueFrom != nil &&
+					env.ValueFrom.SecretKeyRef != nil && env.ValueFrom.SecretKeyRef.Key == "OPENCLAW_GATEWAY_TOKEN"
+			}) {
+				t.Fatal("reconciled sign-in omitted the CLI loopback password")
+			}
+			handler, err := admissionhandler.NewPodHandler(f.kube, admissionhandler.PodConfig{StateNamespace: f.r.OperatorNamespace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pod := reconciledPodForTest(t, f, expected.Workloads[0])
+			if response := handler.Validate(ctx, reconciledPodRequest(t, pod)); !response.Allowed {
+				t.Fatal("mTLS Portal sign-in Pod was not admitted:", response.Result)
+			}
+			modified := pod.DeepCopy()
+			for index := range modified.Spec.Containers[0].Env {
+				if modified.Spec.Containers[0].Env[index].Name == "OPENCLAW_GATEWAY_PASSWORD" {
+					modified.Spec.Containers[0].Env[index].Name = "OPENCLAW_GATEWAY_TOKEN"
+				}
+			}
+			if response := handler.Validate(ctx, reconciledPodRequest(t, modified)); response.Allowed {
+				t.Fatal("admission accepted an authentication environment change")
+			}
+			config.Data["openclaw.json"] = strings.Replace(config.Data["openclaw.json"], "x-auth-request-email", "x-example-user", 1)
+			if err := f.kube.Update(ctx, config); err != nil {
+				t.Fatal(err)
+			}
+			if response := handler.Validate(ctx, reconciledPodRequest(t, pod)); response.Allowed {
+				t.Fatal("admission accepted drift in the managed authentication configuration")
+			}
+		})
+	}
+}
+
 func testReconciledSandboxIngressMTLS(t *testing.T, runtimeType api.SandboxType) {
 	for _, kind := range []string{"openclaw", "hermes"} {
 		for _, home := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {
