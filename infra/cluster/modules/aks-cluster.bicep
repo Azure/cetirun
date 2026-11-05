@@ -23,8 +23,10 @@ param nodeResourceGroup string = '${resourceGroupName}-nodes'
 @allowed([
   'Standard_D4s_v5'
   'Standard_D4as_v5'
+  'Standard_D4ds_v6'
   'Standard_D8s_v5'
   'Standard_D8as_v5'
+  'Standard_D8ds_v6'
   'Standard_D8s_v6'
 ])
 @description('VM size for system node pool')
@@ -45,8 +47,10 @@ param systemNodePoolAvailabilityZones array
 @allowed([
   'Standard_D4s_v5'
   'Standard_D4as_v5'
+  'Standard_D4ds_v6'
   'Standard_D8s_v5'
   'Standard_D8as_v5'
+  'Standard_D8ds_v6'
   'Standard_D16s_v5'
   'Standard_D16as_v5'
   'Standard_D16s_v6'
@@ -64,8 +68,10 @@ param agentNodePoolAvailabilityZones array
 @allowed([
   'Standard_D4s_v5'
   'Standard_D4as_v5'
+  'Standard_D4ds_v6'
   'Standard_D8s_v5'
   'Standard_D8as_v5'
+  'Standard_D8ds_v6'
   'Standard_D32s_v5'
   'Standard_D32as_v5'
   'Standard_D32s_v6'
@@ -90,6 +96,9 @@ param istioIngressGatewayEnabled bool
 
 @allowed(['External', 'Internal'])
 param istioIngressGatewayType string
+
+@description('Optional managed Istio revision. Leave empty to let AKS select its default revision.')
+param istioRevision string = ''
 
 // --- Monitoring parameters ---
 
@@ -244,7 +253,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
     }
 
     serviceMeshProfile: {
-      istio: {
+      istio: union({
         components: {
           ingressGateways: [
             {
@@ -259,7 +268,9 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
           // depend on the service default.
           proxyRedirectionMechanism: 'InitContainers'
         }
-      }
+      }, empty(istioRevision) ? {} : {
+        revisions: [istioRevision]
+      })
       mode: 'Istio'
     }
 
