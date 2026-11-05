@@ -40,6 +40,17 @@ unless `--force` is explicit. It distinguishes registry errors from artifacts
 that do not exist, and makes sure that chart pulls work. You can still use each
 component build script independently.
 
+The unified release driver and `cetirun-helm-release.sh` normally package the
+source Runtime Chart unchanged.
+For a new immutable private chart prefix, set both `OPENCLAW_IMAGE_DIGEST` and
+`HERMES_IMAGE_DIGEST` to `sha256:` digests. The helper copies the chart to a
+temporary staging directory, pins only its built-in native image defaults, and
+adds exact `REGISTRY/<runtime>-gateway@digest` entries to the matching runtime
+profiles before packaging. The source chart and `VALUES_FILE` behavior remain
+unchanged; the values file is used only for linting. Partial, invalid, or
+replacement digest inputs fail before publication. The unified publisher also
+rejects `--force` when runtime image locking is enabled.
+
 `cetirun-vscode` is currently the only declared optional image. To defer its
 license acceptance, pass `--exclude-image cetirun-vscode` to the release CLI
 for every selected build or publication command, and set the matching

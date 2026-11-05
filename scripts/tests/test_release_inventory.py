@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -130,6 +131,21 @@ class ReleaseInventoryTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
                 self.assertEqual(self.commands(), [])
 
+    def test_partial_runtime_chart_lock_fails_before_packaging_or_registry_access(self):
+        output = self.root / "packages"
+        self.env["OPENCLAW_IMAGE_DIGEST"] = "sha256:" + "a" * 64
+        result = self.run_release("package-charts", "--package-dir", str(output), success=False)
+        self.assertIn("must be supplied together", result.stderr)
+        self.assertFalse(output.exists())
+        self.assertEqual(self.commands(), [])
+
+    def test_locked_runtime_chart_rejects_forced_publication_before_registry_access(self):
+        self.env.update(OPENCLAW_IMAGE_DIGEST="sha256:" + "a" * 64,
+                        HERMES_IMAGE_DIGEST="sha256:" + "b" * 64)
+        result = self.run_release("publish-charts", "--force", success=False)
+        self.assertIn("new immutable registry prefix", result.stderr)
+        self.assertEqual(self.commands(), [])
+
     def test_existing_broker_or_vscode_or_chart_stops_before_any_build(self):
         for artifact in ("cetirun-agent-broker", "cetirun-vscode", "helm/cetirun-agent-broker"):
             with self.subTest(artifact=artifact):
@@ -172,6 +188,23 @@ class ReleaseInventoryTests(unittest.TestCase):
         output = self.root / "packages"
         self.run_release("package-charts", "--package-dir", str(output))
         self.assertEqual({path.name for path in output.glob("*.tgz")}, {f"{name}-{self.env['VERSION']}.tgz" for name in CHARTS})
+        self.assertEqual(self.commands(), [])
+
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
+    def test_unified_chart_package_locks_a_private_runtime_chart_copy(self):
+        openclaw = "sha256:" + "a" * 64
+        hermes = "sha256:" + "b" * 64
+        self.env.update(OPENCLAW_IMAGE_DIGEST=openclaw, HERMES_IMAGE_DIGEST=hermes)
+        output = self.root / "locked-packages"
+        self.run_release("package-charts", "--package-dir", str(output))
+        with tarfile.open(output / f"cetirun-{self.env['VERSION']}.tgz") as archive:
+            values = archive.extractfile("cetirun/values.yaml").read().decode()
+            openclaw_profile = archive.extractfile("cetirun/agents/openclaw/profile.yaml").read().decode()
+            hermes_profile = archive.extractfile("cetirun/agents/hermes/profile.yaml").read().decode()
+        self.assertIn(f"digest: {openclaw}", values)
+        self.assertIn(f"digest: {hermes}", values)
+        self.assertIn(f"- {self.env['REGISTRY']}/openclaw-gateway@{openclaw}", openclaw_profile)
+        self.assertIn(f"- {self.env['REGISTRY']}/hermes-gateway@{hermes}", hermes_profile)
         self.assertEqual(self.commands(), [])
 
 

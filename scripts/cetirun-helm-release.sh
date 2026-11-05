@@ -12,6 +12,15 @@ registry="${REGISTRY:-cetirun.azurecr.io}"
 chart_namespace="${CHART_NAMESPACE:-helm}"
 values_file="${VALUES_FILE:-${chart_dir}/values.yaml}"
 verify_pull="${VERIFY_PULL:-false}"
+openclaw_image_digest="${OPENCLAW_IMAGE_DIGEST:-}"
+hermes_image_digest="${HERMES_IMAGE_DIGEST:-}"
+
+if [ -n "${openclaw_image_digest}" ] || [ -n "${hermes_image_digest}" ]; then
+  if [ -z "${openclaw_image_digest}" ] || [ -z "${hermes_image_digest}" ]; then
+    echo "ERROR: OPENCLAW_IMAGE_DIGEST and HERMES_IMAGE_DIGEST must be supplied together" >&2
+    exit 1
+  fi
+fi
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "ERROR: Missing required command: helm" >&2
@@ -45,6 +54,7 @@ trap cleanup EXIT
 
 chart_ref="oci://${registry}/${chart_namespace}"
 chart_archive="${package_dir}/${chart_name}-${chart_version}.tgz"
+package_chart_dir="${chart_dir}"
 
 if [ -f "${values_file}" ]; then
   echo "==> Linting Helm chart with ${values_file}"
@@ -58,8 +68,18 @@ else
     --set aiGateway.keySecretName=lint-model-key --set-string secrets.apiBase=http://gateway.example.com/v1
 fi
 
+if [ -n "${openclaw_image_digest}" ] || [ -n "${hermes_image_digest}" ]; then
+  package_chart_dir="${package_dir}/runtime-chart"
+  echo "==> Locking runtime chart defaults to paired image digests"
+  python3 "${script_dir}/cetirun-runtime-chart-lock.py" \
+    --source-chart "${chart_dir}" --output-chart "${package_chart_dir}" \
+    --registry "${registry}" --version "${app_version}" \
+    --openclaw-image-digest "${openclaw_image_digest}" \
+    --hermes-image-digest "${hermes_image_digest}"
+fi
+
 echo "==> Packaging Helm chart (${chart_name} v${chart_version})"
-PACKAGE_ARGS=("${chart_dir}" --destination "${package_dir}" --version "${chart_version}" --app-version "${app_version}")
+PACKAGE_ARGS=("${package_chart_dir}" --destination "${package_dir}" --version "${chart_version}" --app-version "${app_version}")
 helm package "${PACKAGE_ARGS[@]}"
 
 if [ ! -f "${chart_archive}" ]; then

@@ -16,6 +16,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "scripts/release-artifacts.json"
+RUNTIME_CHART_LOCK = ROOT / "scripts/cetirun-runtime-chart-lock.py"
+IMAGE_DIGEST = re.compile(r"sha256:[a-f0-9]{64}\Z")
 
 
 def inventory():
@@ -72,6 +74,19 @@ def coordinates(args):
         raise ValueError("Invalid chart namespace")
 
 
+def runtime_chart_lock_inputs():
+    openclaw = os.environ.get("OPENCLAW_IMAGE_DIGEST", "")
+    hermes = os.environ.get("HERMES_IMAGE_DIGEST", "")
+    if bool(openclaw) != bool(hermes):
+        raise ValueError("OPENCLAW_IMAGE_DIGEST and HERMES_IMAGE_DIGEST must be supplied together")
+    if not openclaw:
+        return None
+    for runtime, digest in (("openclaw", openclaw), ("hermes", hermes)):
+        if not IMAGE_DIGEST.fullmatch(digest):
+            raise ValueError(f"{runtime} image digest must be sha256 followed by 64 lowercase hexadecimal characters")
+    return {"openclaw": openclaw, "hermes": hermes}
+
+
 def require_license(images):
     if any(entry["name"] == "cetirun-vscode" for entry in images) and os.environ.get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS") != "true":
         raise ValueError("Set ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true after accepting the VS Code Server license; no images were built")
@@ -120,13 +135,21 @@ def build_images(args, data, push):
             run(["docker", "buildx", "prune", "--all", "--force"])
 
 
-def package_charts(args, data, destination):
+def package_charts(args, data, destination, runtime_lock):
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="cetirun-release-charts-") as temporary:
         source_root = Path(temporary)
         for entry in data["charts"]:
-            shutil.copytree(ROOT / entry["path"], source_root / entry["path"],
-                            ignore=shutil.ignore_patterns("charts", "__pycache__"))
+            source = ROOT / entry["path"]
+            target = source_root / entry["path"]
+            if entry["name"] == "cetirun" and runtime_lock is not None:
+                run([sys.executable, "-B", str(RUNTIME_CHART_LOCK),
+                     "--source-chart", str(source), "--output-chart", str(target),
+                     "--registry", args.registry, "--version", args.version,
+                     "--openclaw-image-digest", runtime_lock["openclaw"],
+                     "--hermes-image-digest", runtime_lock["hermes"]])
+            else:
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns("charts", "__pycache__"))
         for entry in data["charts"]:
             chart = source_root / entry["path"]
             if entry["name"] == "cetirun-platform":
@@ -191,6 +214,9 @@ def main(argv=None):
             print(f"Artifact inventory: {len(data['images'])} images, {len(data['charts'])} charts")
             return 0
         coordinates(args)
+        runtime_lock = runtime_chart_lock_inputs()
+        if runtime_lock is not None and args.force and args.command in ("publish-charts", "publish"):
+            raise ValueError("Runtime Chart image locking requires a new immutable registry prefix; --force is not supported")
         if args.command == "plan":
             print(json.dumps({"registry": args.registry, "version": args.version,
                               "gitSha": args.git_sha, **data}, indent=2))
@@ -205,11 +231,11 @@ def main(argv=None):
         if args.command == "package-charts":
             if args.package_dir is None:
                 raise ValueError("package-charts requires --package-dir")
-            package_charts(args, data, args.package_dir.resolve())
+            package_charts(args, data, args.package_dir.resolve(), runtime_lock)
         elif args.command in ("publish-charts", "publish"):
             with tempfile.TemporaryDirectory(prefix="cetirun-publish-") as temporary:
                 directory = Path(temporary)
-                package_charts(args, data, directory)
+                package_charts(args, data, directory, runtime_lock)
                 if image_work:
                     build_images(args, data, push=True)
                 publish_charts(args, data, directory)
