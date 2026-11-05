@@ -397,6 +397,7 @@ def configuration(path):
         required(config, field)
     RELEASE.coordinates(argparse.Namespace(registry=config["release"]["registry"], version=config["release"]["version"],
                                            git_sha=config["release"]["gitSHA"], chart_namespace="helm"))
+    release_inventory(config)
     if not re.fullmatch(r"https://[^\s/?#@]+", config["target"]["server"]):
         raise ValueError("target.server must be an HTTPS Kubernetes API origin without embedded credentials")
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.[a-z0-9-]+", config["domain"]):
@@ -576,7 +577,29 @@ def configuration(path):
         if "api_key" in params and not re.fullmatch(r"os\.environ/[A-Za-z_][A-Za-z0-9_]*", str(params["api_key"])):
             raise ValueError("Model api_key must reference a provider Secret environment variable")
     validate_cetiadmin(config, operator)
+    validate_excluded_images(config)
     return config, values
+
+
+def release_inventory(config):
+    return RELEASE.selected_inventory(RELEASE.inventory(), config["release"].get("excludeImages", []))
+
+
+def image_references(value, name):
+    if isinstance(value, dict):
+        return any(image_references(item, name) for item in value.values())
+    if isinstance(value, list):
+        return any(image_references(item, name) for item in value)
+    return isinstance(value, str) and re.search(r"(?:^|/)" + re.escape(name) + r"(?:[:@]|$)", value) is not None
+
+
+def validate_excluded_images(config):
+    excluded = set(config["release"].get("excludeImages", []))
+    references = copy.deepcopy(config)
+    references["release"].pop("excludeImages", None)
+    for name in excluded:
+        if image_references(references, name):
+            raise ValueError(f"release.excludeImages excludes image still referenced by the deployment: {name}")
 
 
 class Deployment:
@@ -799,7 +822,7 @@ class Deployment:
             raise ValueError("Preserve existing Portal coordination and native MCP identity before Operator removal")
 
     def render(self):
-        for entry in RELEASE.inventory()["charts"]:
+        for entry in release_inventory(self.config)["charts"]:
             source = ROOT / entry["path"]
             shutil.copytree(source, self.scratch / entry["path"], ignore=shutil.ignore_patterns("charts", "__pycache__"))
         offline = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.devnull}
@@ -982,6 +1005,21 @@ class Deployment:
                 if team_policy[team]:
                     continue
             raise ValueError(f"Agent {name}: MCP would replace its ServiceAccount/API token settings; only an exact stopped CetiAdmin migration source can be exempted")
+
+    def check_excluded_agent_images(self):
+        excluded = self.config["release"].get("excludeImages", [])
+        if not excluded or not self.resource("CustomResourceDefinition", "agents.cetirun.microsoft.com"):
+            return
+        fields = ("metadata.name", "spec.agent.type", "spec.agent.image")
+        output = self.kubectl("get", "agents.cetirun.microsoft.com", "-o",
+                              'jsonpath={range .items[*]}' + '{"\\t"}'.join("{." + field + "}" for field in fields) + '{"\\n"}{end}')
+        for row in output.splitlines():
+            columns = row.split("\t")
+            if len(columns) != len(fields):
+                raise ValueError("Cannot inspect existing Agent image settings safely")
+            name, runtime, image = columns
+            if runtime == "custom" and any(image_references(image, excluded_name) for excluded_name in excluded):
+                raise ValueError(f"Existing Custom Agent {name} still references an excluded image; migrate or remove it before deployment")
 
     def current_control(self, name, container, environment):
         namespace = self.config["platform"]["namespace"]
@@ -1233,6 +1271,7 @@ class Deployment:
         self.check_existing_controls()
         self.check_cetiadmin_migration()
         self.check_agent_mcp_conflicts()
+        self.check_excluded_agent_images()
         for kind, namespace, name, key in self.references():
             metadata = self.resource(kind, name, namespace)
             if not metadata:
@@ -1273,14 +1312,14 @@ class Deployment:
         if self.resource("PersistentVolumeClaim", f"data-{database}-0", c["platform"]["namespace"]) and not self.resource("Secret", database, c["platform"]["namespace"]):
             raise ValueError("Retained PostgreSQL data has no password Secret; refusing to generate a replacement")
         self.check_tls()
-        for entry in RELEASE.inventory()["images"]:
+        for entry in release_inventory(c)["images"]:
             self.run(["docker", "buildx", "imagetools", "inspect", f"{c['release']['registry']}/{entry['name']}:{c['release']['version']}"])
         for image in self.values["platform"]["cetirun-operator"]["customRuntime"]["approvedImages"]:
             self.run(["docker", "buildx", "imagetools", "inspect", image])
         admin = self.values["platform"]["cetirun-operator"]["cetiadmin"]
         if admin["enabled"] and admin["runtime"].get("image"):
             self.run(["docker", "buildx", "imagetools", "inspect", admin["runtime"]["image"]])
-        for entry in RELEASE.inventory()["charts"]:
+        for entry in release_inventory(c)["charts"]:
             self.run(["helm", "show", "chart", f"oci://{c['release']['registry']}/helm/{entry['name']}", "--version", c["release"]["version"]])
 
     def oauth_service(self):
@@ -1371,7 +1410,7 @@ class Deployment:
                 "releases": {name: {"namespace": self.config[name]["namespace"], "release": self.config[name]["release"],
                                      "workloads": [doc["metadata"]["name"] for doc in docs if doc["kind"] in ("Deployment", "StatefulSet")]}
                              for name, docs in self.documents.items()},
-                "artifacts": {kind: [entry["name"] for entry in entries] for kind, entries in RELEASE.inventory().items() if kind in ("images", "charts")},
+                "artifacts": {kind: [entry["name"] for entry in entries] for kind, entries in release_inventory(self.config).items() if kind in ("images", "charts")},
                 "referenceCounts": dict(Counter(kind for kind, _, _ in references)),
                 "cetiadmin": {"enabled": self.values["platform"]["cetirun-operator"]["cetiadmin"]["enabled"],
                               "operatorRemovalRequested": not self.values["platform"]["cetirun-operator"]["enabled"],

@@ -123,9 +123,11 @@ class SyntheticCluster(DEPLOY.Deployment):
         if args[:2] == ["get", "pods"]:
             return "controller broker auth-sdk connections-mcp portal istio-proxy\n"
         if args[:2] == ["get", "agents.cetirun.microsoft.com"]:
-            fields = ("metadata.name", "spec.agent.type", "spec.team", "spec.sandboxRef",
-                      "spec.helm.values.serviceAccount.name", "spec.helm.values.serviceAccount.role",
-                      "spec.helm.values.serviceAccount.automountToken")
+            output = args[args.index("-o") + 1]
+            fields = (("metadata.name", "spec.agent.type", "spec.agent.image") if "spec.agent.image" in output else
+                      ("metadata.name", "spec.agent.type", "spec.team", "spec.sandboxRef",
+                       "spec.helm.values.serviceAccount.name", "spec.helm.values.serviceAccount.role",
+                       "spec.helm.values.serviceAccount.automountToken"))
             rows = []
             for (kind, _, _), agent in self.objects.items():
                 if kind != "agent":
@@ -235,6 +237,31 @@ class DeploymentFixture:
 
 
 class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
+    def test_optional_image_exclusion_selects_artifacts(self):
+        config = copy.deepcopy(self.config)
+        config["release"]["excludeImages"] = ["cetirun-vscode"]
+        approved = config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"]
+        config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"] = [
+            image for image in approved if "/cetirun-vscode@" not in image
+        ]
+        deployment = self.deployment(config, "optional-image")
+        artifacts = deployment.plan()["artifacts"]
+        self.assertEqual(len(artifacts["images"]), 12)
+        self.assertNotIn("cetirun-vscode", artifacts["images"])
+        deployment.preflight()
+        inspected = [command[-1] for command in deployment.commands if command[:4] == ["docker", "buildx", "imagetools", "inspect"]]
+        excluded = f"{config['release']['registry']}/cetirun-vscode:{config['release']['version']}"
+        self.assertNotIn(excluded, inspected)
+        self.assertEqual(sum(reference.endswith(":" + config["release"]["version"]) for reference in inspected), 12)
+        self.assertFalse(any(command[4:6] == ["get", "agents.cetirun.microsoft.com"] for command in deployment.commands))
+
+    def test_optional_image_exclusion_rejects_referenced_image_before_tools(self):
+        config = copy.deepcopy(self.config)
+        config["release"]["excludeImages"] = ["cetirun-vscode"]
+        with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+            with self.assertRaisesRegex(ValueError, "excludes image still referenced.*cetirun-vscode"):
+                self.configure(config)
+
     def test_current_custom_config_does_not_require_retired_model_fields(self):
         config = copy.deepcopy(self.config)
         custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
@@ -799,12 +826,12 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "runtimeTypes"):
                         self.configure(config)
 
-    def add_agent(self, deployment, *, account=None, runtime="openclaw", sandbox_ref=""):
+    def add_agent(self, deployment, *, account=None, image="", runtime="openclaw", sandbox_ref=""):
         deployment.objects[("customresourcedefinition", "", "agents.cetirun.microsoft.com")] = {
             "annotations": {"meta.helm.sh/release-name": "cetirun-platform", "meta.helm.sh/release-namespace": "cetirun-system"}}
         deployment.objects[("agent", "", "operations-fixture")] = {
             "metadata": {"name": "operations-fixture"},
-            "spec": {"agent": {"type": runtime}, "sandboxRef": sandbox_ref,
+            "spec": {"agent": {"type": runtime, "image": image}, "sandboxRef": sandbox_ref,
                      "user": {"email": "must-not-read@example.invalid"},
                      "helm": {"values": {"serviceAccount": account or {}, "secret": "must-not-read"}}}}
 
@@ -820,6 +847,19 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                          and command[4:6] == ["get", "agents.cetirun.microsoft.com"]]
                 self.assertEqual(len(reads), 1)
                 self.assertFalse(any(".spec.user" in part or part == "json" for command in reads for part in command))
+
+    def test_retained_custom_agent_cannot_reference_an_excluded_image(self):
+        candidate = copy.deepcopy(self.config)
+        candidate["release"]["excludeImages"] = ["cetirun-vscode"]
+        approved = candidate["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"]
+        candidate["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"] = [
+            image for image in approved if "/cetirun-vscode@" not in image
+        ]
+        deployment = self.upgrade_fixture(self.config, candidate, "excluded-vscode")
+        self.add_agent(deployment, runtime="custom", image="registry.example.com/cetirun-vscode@sha256:" + "a" * 64)
+        with self.assertRaisesRegex(ValueError, "Existing Custom Agent operations-fixture still references an excluded image"):
+            deployment.execute()
+        self.assertEqual(deployment.writes, [])
 
     def test_consistent_hermes_only_preserves_openclaw_account(self):
         self.config["broker"]["values"]["toolService"] = {"runtimeTypes": ["hermes"]}

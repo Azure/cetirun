@@ -158,15 +158,44 @@ charts. Then the command pulls each chart back to examine it. Refer to the
 Server license. Without it, the command builds no image. The command stops if
 a tag already exists.
 
+If you do not accept that license yet, publish the remaining artifacts with the
+release CLI and exclude the declared optional VS Code image explicitly:
+
+```bash
+python3 -B scripts/cetirun-release.py publish \
+  --registry registry.example.com --version 0.1.1 \
+  --git-sha "$(git rev-parse HEAD)" \
+  --exclude-image cetirun-vscode
+```
+
+This selection publishes 12 images and all 8 charts. The normal `make publish`
+path deliberately keeps the complete inventory and still requires the license
+acceptance. Use the same selection in the environment file:
+
+```yaml
+release:
+  excludeImages:
+    - cetirun-vscode
+```
+
+The deployment helper rejects unknown, duplicate, or required image exclusions.
+It also rejects any configuration that still references an excluded image,
+including a Custom runtime `approvedImages` digest. Remove that reference and
+do not create or retain a VS Code Server Agent for this deployment. When the
+Agent CRD exists, the helper also stops before a Helm write if a retained Custom
+Agent still references that image. This does not bypass the VS Code builder's
+own license check.
+
 `VERSION` must be the same as the version in the source. To publish a
 different version, for example a test build of a branch, first run
 `make set-version VERSION=<version>`. This command changes the version in the
 charts and in the other source files. Commit the change, so that `GIT_SHA`
 names the source of the build.
 
-Use the same registry, version, and Git SHA in the `release` section of the
-environment file for `make deploy`. Before it writes, `make deploy` makes sure
-that every image and chart of this version is in the registry. It sets the
+Use the same registry, version, Git SHA, and optional image selection in the
+`release` section of the environment file for `make deploy`. Before it writes,
+`make deploy` makes sure that every selected image and every chart of this
+version is in the registry. It sets the
 registry and the version of the platform images and of the Agent chart. As a
 result, image tags are not necessary in the environment file.
 

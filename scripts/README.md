@@ -28,11 +28,18 @@ necessary.
 `cetirun-release.py` drives the root build and publish targets and the MCR
 pipeline from `release-artifacts.json`. Its `list`, `check`, and `plan`
 commands do not connect to a registry. Image builds must have an explicit
-registry, version, and source SHA, and VS Code license acceptance. Publication
-refuses a tag that already exists unless `--force` is explicit. It
-distinguishes registry errors from artifacts that do not exist, and makes sure
-that chart pulls work. You can still use each component build script
-independently.
+registry, version, and source SHA; selections containing VS Code require an
+explicit license acceptance. Publication refuses a tag that already exists
+unless `--force` is explicit. It distinguishes registry errors from artifacts
+that do not exist, and makes sure that chart pulls work. You can still use each
+component build script independently.
+
+`cetirun-vscode` is currently the only declared optional image. To defer its
+license acceptance, pass `--exclude-image cetirun-vscode` to the release CLI
+for every selected build or publication command, and set the matching
+`release.excludeImages` list in the deployment configuration. Exclusions of
+required, unknown, duplicate, or still-referenced images fail before a build
+or deployment preflight.
 
 ```bash
 python3 -B scripts/cetirun-release.py list images

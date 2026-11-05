@@ -55,7 +55,7 @@ The file contains these inputs:
 | Input | Meaning |
 | --- | --- |
 | `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
-| `release` | Registry with any repository prefix, release version, and full source Git SHA |
+| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images |
 | `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
 | `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
@@ -82,6 +82,13 @@ kubectl config view --minify --context <context> \
   -o jsonpath='{.contexts[0].context.cluster}{"\n"}{.clusters[0].cluster.server}{"\n"}'
 kubectl get namespace kube-system --context <context> -o jsonpath='{.metadata.uid}{"\n"}'
 ```
+
+`release.excludeImages` can omit a declared optional artifact, currently only
+`cetirun-vscode`. It must be the same selection used during publication. Remove
+every reference to an excluded image, including a Custom runtime
+`approvedImages` digest; the helper rejects a configuration that still
+references it. When the Agent CRD already exists, it also stops before a Helm
+write if a retained Custom Agent still uses that image.
 
 If the Operator must have registry credentials to pull the runtime chart, set
 `platform.values.cetirun-operator.acrDockerSecret` to a
@@ -136,8 +143,8 @@ make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 ```
 
 The plan validates the inputs and renders local charts in a temporary
-directory. Its JSON lists the target, releases, workloads, all 13 images and 8
-charts, and `referenceCounts` by resource kind. The JSON does not contain
+directory. Its JSON lists the target, releases, workloads, the selected images
+and all 8 charts, and `referenceCounts` by resource kind. The JSON does not contain
 reference names, Secret keys, or extra input fields. YAML errors report their
 position but do not show the contents. The plan does not connect to a cluster
 or registry. Python, PyYAML, and Helm must already be installed.
