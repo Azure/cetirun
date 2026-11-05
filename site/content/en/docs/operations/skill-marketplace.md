@@ -129,8 +129,12 @@ The worker holds the commit in memory. It checks the repository limits before
 it decodes a commit. It stops the transfer when the pack from the Git server
 exceeds `maxRepositorySize`. Then it reads the object headers of the pack
 before it decodes any object. A commit that exceeds a limit does not reach
-memory. Until the repository has a commit within the limits, the catalog keeps
-the last commit that the worker read.
+memory.
+
+Until the repository has a commit within the limits, the catalog keeps the
+last commit that the worker read. The worker reads a commit that exceeds a
+limit once. It examines the repository again at each check, but it reads that
+commit again only after a restart, for example with other limits.
 
 Git stores a directory once, also when the commit holds it at many paths. When
 the worker reads the tree below `repository.path`, it counts each path. A
@@ -610,8 +614,10 @@ repository before the next interval, restart it:
 kubectl rollout restart deployment/cetirun-skill-marketplace -n cetirun-system
 ```
 
-Until its first successful check after a start, the catalog can show no
-skills. During that time, the Portal cannot add skills to Teams.
+A restarted worker keeps the catalog of the earlier one until it knows more:
+the synchronized commit with its skills, and each Team publication. On the
+first start of the worker, the catalog shows no skills until the first
+successful check. During that time, the Portal cannot add skills to Teams.
 
 If the worker cannot publish the release of a new selection, the restarted
 Agents do not complete their start. Refer to
@@ -733,7 +739,9 @@ jq '.teams[] | {name, release, selectionDigest, releaseSelectionDigest, retained
 ### The repository is not synchronized
 
 When a check fails, `error` in the catalog gives the reason. The log of the
-worker has the same message:
+worker has the same message when the failure starts or its message changes.
+While the same failure repeats, the log has one short line for each check.
+When the checks succeed again, the log says so:
 
 ```bash
 kubectl logs -n cetirun-system deployment/cetirun-skill-marketplace --tail=50
@@ -759,6 +767,8 @@ the Team in the catalog:
 - `the skills repository has not been synchronized yet`: the worker has not
   read the repository since it started. It keeps the current release of the
   Team, and it tries again every ten seconds. Correct the error of the check.
+  After a restart, a Team keeps its earlier publication in the catalog. This
+  applies while its selection and its release stay the same.
 - `publication waits for the current release, which could not be read`: the
   Team selects a [retained skill](#retained-and-missing-skills). The worker
   cannot read the current release of the Team or the skill in it. It keeps the

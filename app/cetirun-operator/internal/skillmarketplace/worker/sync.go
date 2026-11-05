@@ -5,6 +5,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/gitsync"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/publish"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/skills"
+	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -53,6 +55,12 @@ type Syncer struct {
 	Catalog *Catalog
 	// Changed receives one signal after each new commit, to publish again.
 	Changed chan<- struct{}
+
+	// refused is the last commit that could not be loaded because of its own
+	// content, and refusal is its error. Such a commit stays refused, so
+	// later checks report the error without reading the commit again.
+	refused string
+	refusal error
 }
 
 // NeedLeaderElection reports that the synchronizer runs once per worker.
@@ -63,20 +71,54 @@ func (s *Syncer) Start(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithName("sync")
 	timer := time.NewTimer(0)
 	defer timer.Stop()
+	var failures failureLog
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-timer.C:
 		}
-		if err := s.SyncOnce(ctx); err != nil {
-			logger.Error(err, "synchronize the skills repository", "repository", gitsync.Redacted(s.Source.URL))
+		err := s.SyncOnce(ctx)
+		if ctx.Err() != nil {
+			// The worker stops; the check did not fail.
+			return nil
+		}
+		failures.report(logger, err, gitsync.Redacted(s.Source.URL))
+		if err != nil {
 			s.Catalog.SetError(err.Error())
 			timer.Reset(minDuration(s.Interval, time.Minute))
 			continue
 		}
 		timer.Reset(s.Interval)
 	}
+}
+
+// failureLog logs a failed check as an error when the failure starts or its
+// error changes. While the same error repeats, it logs one short line for
+// each check instead of the error and its stack trace. It logs once when the
+// checks succeed again.
+type failureLog struct {
+	// message is the error of the last failed check.
+	message string
+	// failed counts the consecutive failed checks.
+	failed int
+}
+
+func (f *failureLog) report(logger logr.Logger, err error, repository string) {
+	if err == nil {
+		if f.failed > 0 {
+			logger.Info("the skills repository check succeeds again", "repository", repository, "failedChecks", f.failed)
+		}
+		*f = failureLog{}
+		return
+	}
+	f.failed++
+	if message := err.Error(); message != f.message {
+		f.message = message
+		logger.Error(err, "synchronize the skills repository", "repository", repository)
+		return
+	}
+	logger.Info("the skills repository check failed again with the same error", "repository", repository, "failedChecks", f.failed)
 }
 
 func minDuration(a, b time.Duration) time.Duration {
@@ -86,7 +128,9 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-// SyncOnce checks the remote and loads a new commit.
+// SyncOnce checks the remote and loads a new commit. A commit that cannot be
+// loaded because of its own content, such as a commit over the limits, is
+// read once: while the remote names it, a check reports its error again.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -99,12 +143,22 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		s.Catalog.SetChecked()
 		return nil
 	}
+	if hash.String() == s.refused {
+		return s.refusal
+	}
 	snapshot, err := s.Source.Fetch(ctx, ref, s.Fetch)
 	if err != nil {
+		// A limit belongs to the commit. Another error, such as a failed
+		// connection, can pass, so the next check reads the commit again.
+		if errors.Is(err, gitsync.ErrLimit) {
+			s.refused, s.refusal = hash.String(), err
+		}
 		return err
 	}
 	valid, problems, err := skills.Discover(snapshot, s.Path, s.Limits, s.Reserved)
 	if err != nil {
+		// Discover reads only the commit, so its result does not change.
+		s.refused, s.refusal = snapshot.Commit, err
 		return err
 	}
 	entries := make([]api.SkillMarketplaceSkill, 0, len(valid))

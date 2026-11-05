@@ -939,8 +939,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			}
 			if stderrors.Is(err, helm.ErrCustomSkillMarketplaceUnsupported) {
 				// An earlier Agent chart cannot give the Agent its Team's
-				// skills. Refuse the configuration, as for a built-in Agent,
-				// and leave a running workload as it is until an upgrade.
+				// skills. Refuse the configuration with this reason, as for a
+				// built-in Agent, instead of a hold that blocks its key. The
+				// refusal itself changes no workload.
 				return r.rejectAgentConfig(ctx, instance, err)
 			}
 			return r.reconciledSandboxFailure(ctx, instance, err)

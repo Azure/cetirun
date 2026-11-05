@@ -143,6 +143,140 @@ func TestTeamWaitsForTheFirstSync(t *testing.T) {
 	}
 }
 
+// catalogDocument returns the catalog document that the worker would write.
+func catalogDocument(t *testing.T, catalog *Catalog) api.SkillMarketplaceCatalog {
+	t.Helper()
+	raw, err := catalog.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document api.SkillMarketplaceCatalog
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	return document
+}
+
+// A restarted worker keeps the catalog of the earlier one: the Teams, and for
+// the same repository the commit with its skills. Before its first
+// synchronization, a Team with the same selection and release keeps its
+// entry. A Team with another selection, a Team whose release changed after
+// the earlier worker wrote the catalog, and a new Team wait for the
+// synchronization; a Team that left the Teams document leaves the catalog.
+func TestARestartedWorkerKeepsThePublishedCatalog(t *testing.T) {
+	const (
+		researchUID = "00000000-0000-4000-8000-000000000001"
+		supportUID  = "00000000-0000-4000-8000-000000000002"
+		retiredUID  = "00000000-0000-4000-8000-000000000003"
+		writingUID  = "00000000-0000-4000-8000-000000000004"
+		movedUID    = "00000000-0000-4000-8000-000000000005"
+	)
+	f := newFixture(t, selection("research", researchUID, "pdf-tools"), selection("support", supportUID, "pdf-tools"),
+		selection("retired", retiredUID, "zh-notes"), selection("moved", movedUID, "zh-notes"))
+	f.store.set("c1", []skills.Skill{repoSkill("pdf-tools", "aaaaaaaaaaa1", "pdf"), repoSkill("zh-notes", "bbbbbbbbbbb1", "zh")})
+	f.catalog.SetSync("c1", []api.SkillMarketplaceSkill{
+		{Name: "pdf-tools", Description: "PDF", Version: "aaaaaaaaaaa1", Path: "skills/pdf-tools", UpdatedAt: "2026-11-01T00:00:00Z"},
+		{Name: "zh-notes", Description: "Notes", Version: "bbbbbbbbbbb1", Path: "skills/zh-notes", UpdatedAt: "2026-11-02T00:00:00Z"},
+	}, []api.SkillMarketplaceProblem{{Path: "skills/broken", Name: "broken", Reason: "SKILL.md has no description"}})
+	f.publish(t)
+	raw, err := f.catalog.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := catalogDocument(t, f.catalog)
+	previousTeams := map[string]api.SkillMarketplaceTeam{}
+	for _, team := range previous.Teams {
+		previousTeams[team.Name] = team
+	}
+	if len(previousTeams) != 4 || previous.Commit != "c1" || len(previous.Skills) != 2 || len(previous.Invalid) != 1 {
+		t.Fatalf("test setup: catalog %+v", previous)
+	}
+	// The earlier worker publishes a new zh-notes, and stops before it
+	// writes the catalog: the storage has releases that the catalog lacks.
+	f.store.set("c2", []skills.Skill{repoSkill("pdf-tools", "aaaaaaaaaaa1", "pdf"), repoSkill("zh-notes", "bbbbbbbbbbb2", "zh2")})
+	f.publish(t)
+	current := func(uid string) string {
+		t.Helper()
+		id, _, err := f.publisher.ReadCurrent(uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	if current(movedUID) == previousTeams["moved"].Release || current(researchUID) != previousTeams["research"].Release ||
+		current(supportUID) != previousTeams["support"].Release {
+		t.Fatalf("test setup: releases moved %q, research %q, support %q", current(movedUID), current(researchUID), current(supportUID))
+	}
+
+	// The worker restarts. The storage and the catalog ConfigMap stay.
+	restart := func(repository api.SkillMarketplaceRepository) (*Catalog, *TeamsSource, *TeamPublisher) {
+		t.Helper()
+		kube := newClient(t, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: api.SkillMarketplaceCatalogConfigMap},
+			Data:       map[string]string{api.SkillMarketplaceCatalogKey: string(raw)},
+		})
+		catalog := NewCatalog(kube, kube, namespace, repository)
+		if err := catalog.Seed(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		teams := &TeamsSource{}
+		return catalog, teams, &TeamPublisher{Publisher: f.publisher, Store: &Store{}, Catalog: catalog, Teams: teams, GCGrace: time.Hour}
+	}
+	catalog, teams, restarted := restart(previous.Repository)
+	keeps := func(stage string) {
+		t.Helper()
+		got := catalogDocument(t, catalog)
+		if got.Commit != previous.Commit || got.SyncedAt != previous.SyncedAt || !reflect.DeepEqual(got.Skills, previous.Skills) ||
+			!reflect.DeepEqual(got.Invalid, previous.Invalid) || !reflect.DeepEqual(got.Teams, previous.Teams) {
+			t.Fatalf("%s: catalog %+v, want the earlier %+v", stage, got, previous)
+		}
+	}
+	keeps("after the restart")
+	if retry := restarted.PublishAll(context.Background()); !retry {
+		t.Fatal("must retry until a Teams document is read")
+	}
+	keeps("before the Teams document")
+
+	// research and moved keep their selections, support selects one skill
+	// more with the same release, writing is new, and retired left the
+	// document.
+	teams.Set(skillmarketplace.TeamsDocument{Version: skillmarketplace.TeamsVersion, Teams: []skillmarketplace.TeamSelection{
+		selection("research", researchUID, "pdf-tools"), selection("support", supportUID, "pdf-tools", "zh-notes"),
+		selection("writing", writingUID, "pdf-tools"), selection("moved", movedUID, "zh-notes"),
+	}})
+	if retry := restarted.PublishAll(context.Background()); !retry {
+		t.Fatal("must retry until the first synchronization")
+	}
+	got := map[string]api.SkillMarketplaceTeam{}
+	for _, team := range catalogDocument(t, catalog).Teams {
+		got[team.Name] = team
+	}
+	if !reflect.DeepEqual(got["research"], previousTeams["research"]) {
+		t.Fatalf("an unchanged Team must keep its entry before the first synchronization: %+v, want %+v",
+			got["research"], previousTeams["research"])
+	}
+	if support := got["support"]; support.Error != errNotSynced.Error() ||
+		support.SelectionDigest != api.SkillMarketplaceSelectionDigest([]string{"pdf-tools", "zh-notes"}) || support.Release != current(supportUID) {
+		t.Fatalf("a Team with another selection must wait with its current release: %+v", support)
+	}
+	if moved := got["moved"]; moved.Error != errNotSynced.Error() || moved.Release != current(movedUID) {
+		t.Fatalf("a Team whose release changed must wait with the release on the storage: %+v", moved)
+	}
+	if writing := got["writing"]; writing.Error != errNotSynced.Error() || writing.Release != "" {
+		t.Fatalf("a new Team must wait for the first synchronization: %+v", writing)
+	}
+	if _, ok := got["retired"]; ok || len(got) != 4 {
+		t.Fatalf("a Team that left the Teams document must leave the catalog: %+v", got)
+	}
+
+	// With another repository, the commit and its skills go; the Teams stay.
+	other, _, _ := restart(api.SkillMarketplaceRepository{URL: "https://git.example.invalid/other.git"})
+	if document := catalogDocument(t, other); document.Commit != "" || len(document.Skills) != 0 || len(document.Invalid) != 0 ||
+		!reflect.DeepEqual(document.Teams, previous.Teams) {
+		t.Fatalf("catalog for another repository %+v", document)
+	}
+}
+
 // Before the worker read a Teams document, it knows no Team: it publishes
 // nothing and removes nothing.
 func TestNothingChangesBeforeTheFirstTeamsDocument(t *testing.T) {

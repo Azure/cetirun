@@ -214,7 +214,13 @@ func (p *TeamPublisher) publishTeam(ctx context.Context, team skillmarketplace.T
 	commit, available := p.Store.Snapshot()
 	if available == nil && len(selection) > 0 {
 		state.Error = errNotSynced.Error()
-		p.Catalog.SetTeam(p.withCurrent(state))
+		state = p.withCurrent(state)
+		// A restarted worker keeps the entry of the earlier one while it
+		// is for the Team's current selection and current release: it
+		// still says what the Team's Agents copy.
+		if previous, ok := p.Catalog.Team(team.UID); !ok || previous.SelectionDigest != digest || previous.Release != state.Release {
+			p.Catalog.SetTeam(state)
+		}
 		return true, nil
 	}
 	// A selected skill that the repository no longer offers keeps the version
