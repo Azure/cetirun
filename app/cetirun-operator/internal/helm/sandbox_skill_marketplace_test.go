@@ -136,7 +136,7 @@ func TestReconciledSkillMarketplaceRejectsUnsafeTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bundle.ValidateReconciledTemplate(template.DeepCopy(), prepared.Agent.Image, true); err != nil {
+	if err := bundle.ValidateReconciledTemplate(template.DeepCopy(), prepared.Agent.Image, true, prepared.Agent.Port); err != nil {
 		t.Fatal("the rendered template was refused:", err)
 	}
 	initializer := func(spec *corev1.PodSpec) *corev1.Container {
@@ -199,7 +199,7 @@ func TestReconciledSkillMarketplaceRejectsUnsafeTemplates(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			changed := template.DeepCopy()
 			mutate(&changed.Spec)
-			if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, true); err == nil ||
+			if err := bundle.ValidateReconciledTemplate(changed, prepared.Agent.Image, true, prepared.Agent.Port); err == nil ||
 				!strings.Contains(err.Error(), "Skill Marketplace") {
 				t.Fatal("an unsafe Skill Marketplace template was accepted or misclassified:", err)
 			}

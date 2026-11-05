@@ -57,7 +57,7 @@ def reconciled_values(agent_type):
         "requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "1Gi"},
         "limits": {"cpu": "1", "memory": "1Gi", "ephemeral-storage": "2Gi"},
     }
-    return {
+    values = {
         "agentType": agent_type,
         "replicaCount": 1,
         "runtimeClassName": "example-kata",
@@ -115,6 +115,10 @@ def reconciled_values(agent_type):
             "apiBase": "http://gateway.example-platform.svc.cluster.local:4000/v1",
         },
     }
+    if agent_type == "hermes":
+        # The chart requires the Hermes Webapp's public URL; the operator sets it from the platform domain.
+        values["hermes"] = {"env": {"HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/example-agent"}}
+    return values
 
 
 def marketplace_values(agent_type, sub_path=TEAM_PATH, selection=SELECTION):
