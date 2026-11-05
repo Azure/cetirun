@@ -503,6 +503,10 @@ def configuration(path):
             set_value(values[name], field, value)
 
     operator, portal, ai, mcp = (platform[f"cetirun-{name}"] for name in ("operator", "portal", "ai-gateway", "connections-mcp"))
+    runtime_values = mapping(operator["cetirun"]["helmValues"], "cetirun.helmValues")
+    for section in (runtime_values, runtime_values.get("hermes", {}), runtime_values.get("openclaw", {})):
+        if isinstance(section, dict) and "image" in section:
+            raise ValueError("Remove primary image overrides from cetirun.helmValues; publish trusted runtime chart image pins and use spec.agent.image or cetiadmin.runtime.image")
     for valueset, standard in ((values["broker"], "cetirun-agent-broker"), (ai, "cetirun-ai-gateway"), (mcp, "cetirun-connections-mcp")):
         if valueset.get("fullnameOverride") not in (None, "", standard):
             raise ValueError(f"The complete deployment requires the {standard} Service name")
