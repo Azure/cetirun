@@ -200,6 +200,12 @@ hook schema download still stops deployment. Resolve schema access or populate
 the client's genuine discovery cache before retrying; do not skip the
 CetiAdmin hooks. The option never suppresses their installation checks.
 
+Hook Jobs explicitly declare Helm release ownership because Helm does not add
+it automatically for hooks. A failed hook retained from an older chart may
+need a metadata-only ownership repair before retrying. Verify its UID and spec
+against a trusted prior receipt and use UID/resourceVersion preconditions for
+that repair. If its provenance cannot be established, stop for investigation.
+
 Primary runtime images are governed by the published runtime chart's defaults
 and qualified image list. Do not put `image`, `hermes.image`, or
 `openclaw.image` in `cetirun.helmValues`; the Operator rejects those overrides.

@@ -101,9 +101,19 @@ class SyntheticCluster(DEPLOY.Deployment):
                         continue
                     ns = "" if doc["kind"] in DEPLOY.CLUSTER_KINDS else doc["metadata"].get("namespace", namespace)
                     resource_name = doc["metadata"]["name"]
+                    annotations = doc["metadata"].get("annotations", {})
+                    # Helm records hook manifests separately. A failed hook Job
+                    # remains in the cluster and only carries release ownership
+                    # when the chart explicitly renders it, so do not give hooks
+                    # the synthetic ownership annotations used for regular
+                    # release resources.
+                    owner_annotations = (copy.deepcopy(annotations) if "helm.sh/hook" in annotations else {
+                        "meta.helm.sh/release-name": release,
+                        "meta.helm.sh/release-namespace": namespace,
+                    })
                     self.objects[(doc["kind"].lower(), ns, resource_name)] = {
                         "name": resource_name, "uid": f"uid-{resource_name}",
-                        "annotations": {"meta.helm.sh/release-name": release, "meta.helm.sh/release-namespace": namespace},
+                        "annotations": owner_annotations,
                     }
                     self.live[(doc["kind"].lower(), ns, resource_name)] = copy.deepcopy(doc)
                     if doc["kind"] == "Secret":
@@ -642,6 +652,42 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Refusing to adopt"):
             deployment.execute()
         self.assertEqual(deployment.writes, [])
+
+    def cetiadmin_hook(self, deployment, mode="check"):
+        name = "cetirun-cetiadmin-" + mode
+        return next(doc for doc in deployment.documents["platform"]
+                    if doc["kind"] == "Job" and doc["metadata"]["name"] == name)
+
+    def test_retained_failed_cetiadmin_hook_with_exact_chart_ownership_retries(self):
+        deployment = self.deployment()
+        job = self.cetiadmin_hook(deployment)
+        namespace, name = job["metadata"]["namespace"], job["metadata"]["name"]
+        deployment.objects[("job", namespace, name)] = {
+            "name": name,
+            "uid": "retained-cetiadmin-check-uid",
+            "annotations": copy.deepcopy(job["metadata"]["annotations"]),
+            "status": {"failed": 1},
+        }
+        deployment.execute()
+        self.assertTrue(any(release == "platform" for release, _, _ in deployment.applied))
+        current = deployment.objects[("job", namespace, name)]
+        self.assertEqual(current["annotations"], job["metadata"]["annotations"])
+
+    def test_retained_cetiadmin_hook_from_another_release_or_namespace_stops_before_writes(self):
+        for field, value in (("meta.helm.sh/release-name", "another-release"),
+                             ("meta.helm.sh/release-namespace", "another-namespace")):
+            with self.subTest(field=field):
+                deployment = self.deployment(name=field.rsplit("/", 1)[-1])
+                job = self.cetiadmin_hook(deployment)
+                namespace, name = job["metadata"]["namespace"], job["metadata"]["name"]
+                annotations = copy.deepcopy(job["metadata"]["annotations"])
+                annotations[field] = value
+                deployment.objects[("job", namespace, name)] = {
+                    "name": name, "uid": "foreign-cetiadmin-check-uid", "annotations": annotations,
+                }
+                with self.assertRaisesRegex(ValueError, "Refusing to adopt Job"):
+                    deployment.execute()
+                self.assertEqual(deployment.writes, [])
 
     def test_failed_rollout_stops_later_releases(self):
         deployment = self.deployment()

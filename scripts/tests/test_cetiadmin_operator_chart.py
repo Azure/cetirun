@@ -204,7 +204,12 @@ class CetiAdminOperatorChartTests(unittest.TestCase):
         for mode, event in (("check", "post-install,post-upgrade"), ("stop", "pre-delete")):
             name = "cetirun-cetiadmin-" + mode
             job = objects[("Job", name)]
+            self.assertEqual(job["metadata"]["labels"]["app.kubernetes.io/managed-by"], "Helm")
+            self.assertEqual(job["metadata"]["annotations"]["meta.helm.sh/release-name"], "platform")
+            self.assertEqual(job["metadata"]["annotations"]["meta.helm.sh/release-namespace"], NAMESPACE)
             self.assertEqual(job["metadata"]["annotations"]["helm.sh/hook"], event)
+            self.assertEqual(job["metadata"]["annotations"]["helm.sh/hook-weight"], "10")
+            self.assertEqual(job["metadata"]["annotations"]["helm.sh/hook-delete-policy"], "before-hook-creation,hook-succeeded")
             self.assertEqual(job["spec"]["backoffLimit"], 0)
             self.assertEqual(job["spec"]["activeDeadlineSeconds"], 630)
             pod = job["spec"]["template"]["spec"]
