@@ -72,6 +72,19 @@ python3 -B -m unittest scripts.tests.test_release_inventory scripts.tests.test_f
 
 The tests use command doubles and local Helm. They do not deploy or publish.
 
+## Public DNS and TLS preparation
+
+`cetirun_platform_deploy.py` handles optional public DNS and HTTP-01 TLS as a
+phase of the normal deployment. Set `publicTLS.enabled: true` in the same
+absolute `DEPLOY_CONFIG` file used by `make deploy`. `make deploy-plan` renders
+the certificate-only umbrella values without external calls, `make deploy`
+prepares DNS/cert-manager/certificates before the normal releases, and
+`make deploy-verify` reads the finished public endpoint. The upstream
+cert-manager controller remains a separately managed Helm release; its pinned
+support assets are in [cert-manager](../infra/cert-manager/). See
+[public DNS and TLS](../site/content/en/docs/operations/public-ingress.md) for
+the configuration and connected-operation boundary.
+
 ## CetiRun Connections MCP artifacts
 
 `cetirun-connections-mcp-docker-build.sh` builds the standalone MCP image from

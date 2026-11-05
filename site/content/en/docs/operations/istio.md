@@ -32,9 +32,14 @@ headers, and mesh-wide egress resources.
    `api://AzureADTokenExchange`.
 5. Configure the apex to refer to the ingress address. Add wildcard DNS only
    for subdomain services that you configure. The portal, instance UI, and
-   OAuth routes use the apex.
+   OAuth routes use the apex. For one exact hostname, use
+   [Public DNS and TLS](../public-ingress/) and configure `publicTLS` to
+   prepare Azure Public IP DNS or verify a user-managed record during
+   deployment.
 6. Supply a certificate that covers the actual names. These names include the
-   apex.
+   apex. Optional `publicTLS` in the normal platform deployment can issue and
+   renew the external Gateway certificate with HTTP-01; existing certificate
+   workflows remain supported.
 
 The [OAuth2 Proxy deployment]({{< repo "infra/istio/templates/ingress/oauth2-proxy-deployment.yaml" >}})
 sets the apex callback. Its
@@ -206,15 +211,23 @@ The Gateway reads its certificate from the `cetirun-tls` Secret in the gateway
 namespace, `aks-istio-ingress` by default. The Secret has the keys `tls.crt`
 and `tls.key`.
 
+For a single exact public hostname on AKS managed Istio, prefer
+[Public DNS and TLS](../public-ingress/). Set `publicTLS.enabled: true` in the
+normal environment file. The platform deployment creates a separate port-80
+Gateway API listener for cert-manager HTTP-01 while this chart keeps the
+port-443 Gateway. It sets this chart's `tls.enabled: false` and platform
+`istio.tlsMode: external`; cert-manager then owns `cetirun-tls`. This mode does
+not support wildcard certificates, DNS-01, certificate ownership migration, or
+an arbitrary proxy/CDN in front of the ingress.
+
 The CetiRun Gateway listens only on HTTPS port 443. As a result, an ACME
 HTTP-01 challenge through this Gateway fails. For a domain whose DNS you
-control, use DNS-01 validation, or a certificate from the CA of your
-organization.
+control outside the `publicTLS` path, use DNS-01 validation, or a certificate
+from the CA of your organization.
 
-You cannot add DNS-01 records to `cloudapp.azure.com`. For a test environment
-with such a name, use a certificate from a private CA or a self-signed
-certificate. Browsers show a warning for these certificates until you trust
-their CA. This example creates a self-signed certificate:
+If you do not use the `publicTLS` path, provide a certificate yourself.
+This example creates a self-signed certificate; browsers show a warning until
+they trust its CA:
 
 ```bash
 umask 077
@@ -235,7 +248,8 @@ kubectl create secret tls cetirun-tls --namespace aks-istio-ingress \
 ```
 
 Before it writes, `make deploy` makes sure that the certificate is valid now
-and that it covers `domain`. It does not examine if browsers trust the
+and that it covers `domain`. With `publicTLS`, it issues that certificate before
+the normal platform preflight. It does not examine if browsers trust the
 certificate.
 
 ## Deploy helper inputs

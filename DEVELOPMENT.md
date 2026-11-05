@@ -44,6 +44,13 @@ model/tier, storage, and owner. Refer to the
 [platform deployment guide](app/cetirun-platform/README.md#deploy-the-platform).
 The old invocation with only `DOMAIN`/`VALUES_FILE` is no longer enough.
 
+For an existing AKS managed Istio ingress, configure `publicTLS` in the
+environment file used by `make deploy`. `make deploy-plan` renders its
+certificate-only umbrella values offline, `make deploy` prepares public DNS,
+cert-manager HTTP-01 resources, and the full platform, and `make deploy-verify`
+performs the read-only public endpoint check. See `infra/cert-manager/README.md`.
+These operations do not replace the full platform deployment prerequisites.
+
 `scripts/cetirun-dev-deploy.sh` must have an explicit `REGISTRY` and alias
 argument. It no longer inserts a default user team label. To see its modes,
 use `--help`. The other helpers for build, deployment, and Helm publication

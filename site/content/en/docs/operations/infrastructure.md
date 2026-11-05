@@ -20,6 +20,7 @@ zones, preview features, and API version.
 | [cluster deploy helper]({{< repo "infra/cluster/deploy.sh" >}}) | Azure preflight, deployment, Gateway API, kubeconfig |
 | [storage sources]({{< repo "infra/storage" "tree" >}}) | Shared Blob NFS account and container |
 | [Istio chart]({{< repo "infra/istio" "tree" >}}) | Authentication and egress configuration |
+| [cert-manager support]({{< repo "infra/cert-manager" "tree" >}}) | Pinned upstream controller support for optional public DNS and cert-manager HTTP-01 TLS |
 
 ## Cluster parameter file
 
@@ -214,10 +215,10 @@ receives. Use these values for the admission administrators of `make deploy`.
 admin credentials instead. Use them only in an explicitly authorized bootstrap
 environment, not as a fallback for an Azure RBAC failure.
 
-`make deploy` uses the kubeconfig of the shell, so export `KUBECONFIG` before
-you run it. It selects `target.context` and stops if that context leads to
-another cluster. Read the `target` values of the environment file from the
-current context:
+When `publicTLS` is enabled, `make deploy` uses the required
+`target.kubeconfig` and `target.context`; it does not use the shell
+`KUBECONFIG`. Other deployments use the kubeconfig of the shell. In either
+case, read the `target` values from the intended context:
 
 ```bash
 kubectl config view --minify \
@@ -240,6 +241,13 @@ accounts. Complete the [platform checklist](../../getting-started/platform/).
 For Agent connections, follow [Agent Identity setup](../agent-identity/). Use
 it for the encryption identity and Key Vault key, provider applications,
 certificates, and the coordinated Broker/MCP/Portal configuration.
+
+For a single public Portal hostname, configure `publicTLS` in the environment
+file after AKS managed Istio and Gateway API exist. The normal `make deploy`
+path can configure an Azure Public IP DNS label or verify a user-managed A/CNAME
+record, then issue the externally managed Gateway certificate. It does not
+configure Entra, Broker/MCP or admission certificates, and it does not change
+the cluster template.
 
 By default, the cluster parameters enable Container Insights and Prometheus
 metrics. Examine the workspace and data-collection resources, the retention,
