@@ -289,7 +289,7 @@ func connectionsMCPBrokerRecoveryAgent(phase string) *api.Agent {
 		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{
-				Type: api.AgentTypeHermes, Image: ptr.To("cetirun.azurecr.io/hermes-gateway:0.1.1"), Port: ptr.To[int32](8642),
+				Type: api.AgentTypeHermes, Image: ptr.To("mcr.microsoft.com/aks/ai-runtime/cetirun/hermes-gateway:0.1.1"), Port: ptr.To[int32](8642),
 			},
 			User:                  api.UserSpec{Alias: "broker-recovery", DisplayName: "Broker Recovery"},
 			GatewayTokenSecretRef: "gateway-token",

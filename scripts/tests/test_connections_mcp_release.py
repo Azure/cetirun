@@ -188,9 +188,12 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertEqual(len(pushed_charts), len(inventory["charts"]))
         for command in pushed_charts:
             self.assertEqual(command[-1], f"oci://synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/helm")
-        for command in commands:
-            if command[:4] == ["docker", "buildx", "imagetools", "create"]:
-                self.assertTrue(command[command.index("--tag") + 1].startswith("synthetic.azurecr.io/"))
+        promoted_targets = [command[command.index("--tag") + 1] for command in commands
+                            if command[:4] == ["docker", "buildx", "imagetools", "create"]]
+        self.assertCountEqual(promoted_targets, [
+            f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/{entry['name']}:{tag}"
+            for entry in inventory["images"] for tag in (VERSION, "latest")
+        ])
         for operation in ("lint", "template", "package"):
             command = next(c for c in commands if c[:2] == ["helm", operation] and any(arg.endswith(CHART) for arg in c))
             if operation == "package":
