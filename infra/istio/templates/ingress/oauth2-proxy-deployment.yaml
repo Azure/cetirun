@@ -1,8 +1,18 @@
 {{- $mode := .Values.oauth2Proxy.mode -}}
-{{- if not (has $mode (list "entra-id" "local-oidc")) -}}
-{{- fail "oauth2Proxy.mode must be entra-id or local-oidc" -}}
+{{- if not (has $mode (list "entra-id" "oidc" "local-oidc")) -}}
+{{- fail "oauth2Proxy.mode must be entra-id, oidc or local-oidc" -}}
 {{- end -}}
 {{- $isLocalOIDC := eq $mode "local-oidc" -}}
+{{- $isOIDC := has $mode (list "oidc" "local-oidc") -}}
+{{- $cloud := "AzureCloud" -}}
+{{- if hasKey .Values "cloud" -}}{{- $cloud = .Values.cloud -}}{{- end -}}
+{{- if not (has $cloud (list "AzureCloud" "AzureChinaCloud")) -}}
+{{- fail "cloud must be AzureCloud or AzureChinaCloud" -}}
+{{- end -}}
+{{- if and (eq $mode "entra-id") (ne $cloud "AzureCloud") -}}
+{{- fail "AzureChinaCloud requires oauth2Proxy.mode=oidc: the bundled entra-id provider only accepts global Entra issuers" -}}
+{{- end -}}
+{{- $authority := get (dict "AzureCloud" "login.microsoftonline.com" "AzureChinaCloud" "login.partner.microsoftonline.cn") $cloud -}}
 {{- $ingressSettings := include "cetirun-istio.ingressSettings" . | fromJson -}}
 {{- $localOIDC := .Values.oauth2Proxy.localOIDC -}}
 {{- if not (kindIs "map" $localOIDC) -}}
@@ -16,49 +26,86 @@
 {{- if not (kindIs "bool" $localOIDC.allowHTTP) -}}
 {{- fail "oauth2Proxy.localOIDC.allowHTTP must be a boolean" -}}
 {{- end -}}
-{{- $clientId := "" -}}
+{{- if and (not $isLocalOIDC) (or $localOIDC.issuerURL $localOIDC.clientID $localOIDC.existingSecret $localOIDC.allowHTTP (ne $localOIDC.clientSecretKey "client-secret")) -}}
+{{- fail "oauth2Proxy.localOIDC settings require oauth2Proxy.mode=local-oidc" -}}
+{{- end -}}
+{{- $remoteOIDC := dict -}}
+{{- if hasKey .Values.oauth2Proxy "oidc" -}}{{- $remoteOIDC = .Values.oauth2Proxy.oidc -}}{{- end -}}
+{{- if not (kindIs "map" $remoteOIDC) -}}
+{{- fail "oauth2Proxy.oidc must be an object" -}}
+{{- end -}}
+{{- range $key, $_ := $remoteOIDC -}}
+{{- if not (has $key (list "issuerURL" "clientID" "existingSecret" "clientSecretKey")) -}}
+{{- fail (printf "oauth2Proxy.oidc.%s is not supported; client credentials must reference an existing Secret" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (ne $mode "oidc") (or $remoteOIDC.issuerURL $remoteOIDC.clientID $remoteOIDC.existingSecret (and $remoteOIDC.clientSecretKey (ne $remoteOIDC.clientSecretKey "client-secret"))) -}}
+{{- fail "oauth2Proxy.oidc settings require oauth2Proxy.mode=oidc" -}}
+{{- end -}}
+{{- $provider := "entra-id" -}}
+{{- $issuerArg := "" -}}
+{{- $clientIdArg := "" -}}
 {{- $tenantId := "" -}}
 {{- $allowedGroups := "" -}}
-{{- if $isLocalOIDC -}}
+{{- $oidc := $localOIDC -}}
+{{- $oidcPath := "oauth2Proxy.localOIDC" -}}
+{{- if eq $mode "oidc" -}}
+{{- $oidc = deepCopy $remoteOIDC -}}
+{{- $oidcPath = "oauth2Proxy.oidc" -}}
+{{- $_ := set $oidc "allowHTTP" false -}}
+{{- if not (kindIs "string" $oidc.issuerURL) -}}
+{{- fail "oauth2Proxy.oidc.issuerURL must be a string" -}}
+{{- end -}}
+{{- if eq $oidc.issuerURL "" -}}
+{{- $tenantId = required "tenantId is required when oauth2Proxy.oidc.issuerURL is empty" .Values.tenantId -}}
+{{- $_ := set $oidc "issuerURL" (printf "https://%s/%s/v2.0" $authority $tenantId) -}}
+{{- end -}}
+{{- $allowedGroups = required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
+{{- if or (not (kindIs "string" $allowedGroups)) (not (regexMatch `[^,[:space:]]` $allowedGroups)) -}}
+{{- fail "allowedGroups must contain at least one group for oidc mode" -}}
+{{- end -}}
+{{- end -}}
+{{- if $isOIDC -}}
 {{- range $key := list "issuerURL" "clientID" "existingSecret" "clientSecretKey" -}}
-{{- $value := get $localOIDC $key -}}
+{{- $value := get $oidc $key -}}
 {{- if or (not (kindIs "string" $value)) (eq (trim $value) "") -}}
-{{- fail (printf "oauth2Proxy.localOIDC.%s must be a non-empty string" $key) -}}
+{{- fail (printf "%s.%s must be a non-empty string" $oidcPath $key) -}}
 {{- end -}}
 {{- if regexMatch `[[:space:][:cntrl:]]` $value -}}
-{{- fail (printf "oauth2Proxy.localOIDC.%s must not contain whitespace or control characters" $key) -}}
+{{- fail (printf "%s.%s must not contain whitespace or control characters" $oidcPath $key) -}}
 {{- end -}}
 {{- end -}}
-{{- if not (regexMatch `^https?://[^/?#@]+(/[^?#]*)?$` $localOIDC.issuerURL) -}}
-{{- fail "oauth2Proxy.localOIDC.issuerURL must be an absolute HTTPS URL without userinfo, query or fragment; local HTTP also requires allowHTTP" -}}
+{{- if not (regexMatch `^https?://[^/?#@]+(/[^?#]*)?$` $oidc.issuerURL) -}}
+{{- fail (printf "%s.issuerURL must be an absolute HTTPS URL without userinfo, query or fragment; local HTTP also requires allowHTTP" $oidcPath) -}}
 {{- end -}}
-{{- $issuer := urlParse $localOIDC.issuerURL -}}
+{{- $issuer := urlParse $oidc.issuerURL -}}
 {{- $port := trimPrefix ":" (regexFind `:[0-9]+$` $issuer.host) -}}
 {{- if or (not $issuer.hostname) (hasSuffix ":" $issuer.host) (and $port (or (lt (atoi $port) 1) (gt (atoi $port) 65535))) -}}
-{{- fail "oauth2Proxy.localOIDC.issuerURL must have a hostname and a valid port" -}}
+{{- fail (printf "%s.issuerURL must have a hostname and a valid port" $oidcPath) -}}
 {{- end -}}
 {{- if eq $issuer.scheme "http" -}}
-{{- if not $localOIDC.allowHTTP -}}
-{{- fail "oauth2Proxy.localOIDC.issuerURL requires HTTPS unless oauth2Proxy.localOIDC.allowHTTP is true" -}}
+{{- if not $oidc.allowHTTP -}}
+{{- fail (printf "%s.issuerURL requires HTTPS; only oauth2Proxy.localOIDC.allowHTTP permits local HTTP" $oidcPath) -}}
 {{- end -}}
 {{- if not (regexMatch `^(([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)*localhost|127(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|\[::1\])(:[0-9]+)?$` (lower $issuer.host)) -}}
 {{- fail "oauth2Proxy.localOIDC.issuerURL with HTTP must use a loopback address, localhost or a .localhost hostname" -}}
 {{- end -}}
 {{- end -}}
-{{- if or (gt (len $localOIDC.existingSecret) 253) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` $localOIDC.existingSecret)) -}}
-{{- fail "oauth2Proxy.localOIDC.existingSecret must be a valid Secret name" -}}
+{{- if or (gt (len $oidc.existingSecret) 253) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` $oidc.existingSecret)) -}}
+{{- fail (printf "%s.existingSecret must be a valid Secret name" $oidcPath) -}}
 {{- end -}}
-{{- if or (gt (len $localOIDC.clientSecretKey) 253) (not (regexMatch `^[-._a-zA-Z0-9]+$` $localOIDC.clientSecretKey)) (eq $localOIDC.clientSecretKey ".") (hasPrefix ".." $localOIDC.clientSecretKey) -}}
-{{- fail "oauth2Proxy.localOIDC.clientSecretKey must be a valid Secret key" -}}
+{{- if or (gt (len $oidc.clientSecretKey) 253) (not (regexMatch `^[-._a-zA-Z0-9]+$` $oidc.clientSecretKey)) (eq $oidc.clientSecretKey ".") (hasPrefix ".." $oidc.clientSecretKey) -}}
+{{- fail (printf "%s.clientSecretKey must be a valid Secret key" $oidcPath) -}}
 {{- end -}}
-{{- $clientId = $localOIDC.clientID -}}
+{{- $provider = "oidc" -}}
+{{- $issuerArg = printf "--oidc-issuer-url=%s" $oidc.issuerURL | quote -}}
+{{- $clientIdArg = printf "--client-id=%s" $oidc.clientID | quote -}}
 {{- else -}}
-{{- if or $localOIDC.issuerURL $localOIDC.clientID $localOIDC.existingSecret $localOIDC.allowHTTP (not (has $localOIDC.clientSecretKey (list "client-secret"))) -}}
-{{- fail "oauth2Proxy.localOIDC settings require oauth2Proxy.mode=local-oidc" -}}
-{{- end -}}
-{{- $clientId = required "clientId is required for OAuth2 Proxy OIDC configuration" .Values.clientId -}}
+{{- $clientId := required "clientId is required for OAuth2 Proxy OIDC configuration" .Values.clientId -}}
 {{- $tenantId = required "tenantId is required for OAuth2 Proxy OIDC configuration" .Values.tenantId -}}
 {{- $allowedGroups = required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
+{{- $issuerArg = printf "--oidc-issuer-url=https://login.microsoftonline.com/%v/v2.0" $tenantId -}}
+{{- $clientIdArg = printf "--client-id=%v" $clientId -}}
 {{- end -}}
 {{- $session := include "cetirun-istio.sessionSettings" . | fromJson -}}
 {{- $cookieSettings := default (dict) (get .Values.oauth2Proxy "cookie") -}}
@@ -109,7 +156,7 @@ spec:
       {{- end }}
       labels:
         app: oauth2-proxy
-        {{- if not $isLocalOIDC }}
+        {{- if not $isOIDC }}
         azure.workload.identity/use: "true"
         {{- end }}
     spec:
@@ -134,12 +181,12 @@ spec:
                 secretKeyRef:
                   name: oauth2-proxy-credentials
                   key: cookie-secret
-            {{- if $isLocalOIDC }}
+            {{- if $isOIDC }}
             - name: OAUTH2_PROXY_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ $localOIDC.existingSecret | quote }}
-                  key: {{ $localOIDC.clientSecretKey | quote }}
+                  name: {{ $oidc.existingSecret | quote }}
+                  key: {{ $oidc.clientSecretKey | quote }}
             {{- end }}
             {{- if eq $sessionStoreType "redis" }}
             - name: OAUTH2_PROXY_REDIS_PASSWORD
@@ -150,21 +197,12 @@ spec:
             {{- end }}
           args:
             - --http-address=0.0.0.0:4180
-            {{- if $isLocalOIDC }}
-            - --provider=oidc
-            - {{ printf "--oidc-issuer-url=%s" $localOIDC.issuerURL | quote }}
-            {{- else }}
-            - --provider=entra-id
-            - --oidc-issuer-url=https://login.microsoftonline.com/{{ $tenantId }}/v2.0
-            {{- end }}
+            - --provider={{ $provider }}
+            - {{ $issuerArg }}
             - --oidc-email-claim={{ $oidcEmailClaim }}
-            {{- if $isLocalOIDC }}
-            - {{ printf "--client-id=%s" $clientId | quote }}
-            {{- else }}
-            - --client-id={{ $clientId }}
-            {{- end }}
+            - {{ $clientIdArg }}
             - --redirect-url=https://{{ .Values.domain }}/oauth2/callback
-            {{- if not $isLocalOIDC }}
+            {{- if not $isOIDC }}
             - --entra-id-federated-token-auth
             {{- end }}
             - --cookie-secret=$(COOKIE_SECRET)
