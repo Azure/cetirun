@@ -7,6 +7,7 @@ import copy
 import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -359,7 +360,6 @@ class PublicIngressTests(unittest.TestCase):
             payload = ("name: cert-manager\nversion: " + ingress.lock["chart"]["version"] + "\n").encode()
             entry = tarfile.TarInfo("cert-manager/Chart.yaml")
             entry.size = len(payload)
-            import io
             output.addfile(entry, io.BytesIO(payload))
         ingress.lock["chart"]["archiveSHA256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
         return archive
@@ -382,6 +382,42 @@ class PublicIngressTests(unittest.TestCase):
         ingress.api_groups = set(INGRESS.CERT_CRDS)
         ingress.service = INGRESS.service_identity(ingress.get("service", value["ingress"]["service"], value["ingress"]["namespace"]))
         return ingress
+
+    def test_certificate_discovery_requires_the_exact_crd_name(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            ingress = SyntheticAPIIngress(self.normalized(), scratch)
+            document = {"apiVersion": "cert-manager.io/v1", "kind": "Certificate",
+                        "metadata": {"name": "cetirun-tls"}}
+            for crd, available in (("prefix.certificates.cert-manager.io", False),
+                                   ("certificates.cert-manager.io.example.invalid", False),
+                                   ("certificates.cert-manager.io", True)):
+                with self.subTest(crd=crd), patch.object(ingress, "get", return_value=None) as get:
+                    ingress.api_groups = {crd}
+                    ingress.resource_check(document, "cetirun-platform", "cetirun-system")
+                    self.assertEqual(get.called, available)
+                    ingress.api_calls.clear()
+                    ingress.ingress_ownership_check()
+                    certificate_lists = [call for call in ingress.api_calls if call[0] == "kubectl"
+                                         and call[1][:2] == ("get", "certificates.cert-manager.io")]
+                    self.assertEqual(bool(certificate_lists), available)
+
+    def test_public_https_clients_require_tls12_and_keep_certificate_validation(self):
+        def check_context(context):
+            self.assertGreaterEqual(context.minimum_version, INGRESS.ssl.TLSVersion.TLSv1_2)
+            self.assertEqual(context.verify_mode, INGRESS.ssl.CERT_REQUIRED)
+            self.assertTrue(context.check_hostname)
+
+        check_context(INGRESS.tls_context())
+        with tempfile.TemporaryDirectory() as scratch:
+            ingress = INGRESS.Ingress(self.normalized(), scratch)
+            with patch.object(INGRESS.http.client, "HTTPSConnection") as connect:
+                ingress.http("/readyz")
+                check_context(connect.call_args.kwargs["context"])
+                connect.return_value.close.assert_called_once()
+        with patch.object(INGRESS, "urlopen") as open_url:
+            open_url.return_value.__enter__.return_value = io.StringIO('{"Status": 0, "Answer": []}')
+            INGRESS.query_dns(INGRESS.PROVIDERS[0], "portal.example.invalid", "A")
+            check_context(open_url.call_args.kwargs["context"])
 
     def test_normalize_is_decision_complete_and_rejects_cross_mode_inputs(self):
         custom = self.normalized()
@@ -671,7 +707,6 @@ class PublicIngressTests(unittest.TestCase):
             payload = b"name: cert-manager\nversion: v1.21.3\n"
             entry = tarfile.TarInfo("cert-manager/Chart.yaml")
             entry.size = len(payload)
-            import io
             output.addfile(entry, io.BytesIO(payload))
         value = self.normalized(cert_manager="install")
         with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
@@ -947,6 +982,7 @@ class PublicIngressTests(unittest.TestCase):
                  patch.object(INGRESS.socket, "create_connection", return_value=raw), \
                  patch.object(INGRESS.ssl, "create_default_context", return_value=context):
                 verified = ingress.verify()
+                self.assertEqual(context.minimum_version, INGRESS.ssl.TLSVersion.TLSv1_2)
 
         self.assertEqual(verified["portalReadiness"], "verified")
         self.assertEqual(len(ingress.helm_values), writes_before)

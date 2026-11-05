@@ -203,9 +203,15 @@ def option(args, name):
     return matches[0] if matches else None
 
 
+def tls_context():
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def query_dns(provider, domain, record_type):
     req = Request(provider + "?" + urlencode({"name": domain, "type": record_type}), headers={"Accept": "application/dns-json"})
-    with urlopen(req, timeout=15) as response:
+    with urlopen(req, timeout=15, context=tls_context()) as response:
         result = json.load(response)
     require(result.get("Status") == 0, "Public DNS lookup did not succeed")
     kind = {"A": 1, "AAAA": 28}[record_type]
@@ -457,7 +463,7 @@ class Ingress:
 
     def resource_check(self, doc, release, namespace):
         group = doc["apiVersion"].split("/")[0] if "/" in doc["apiVersion"] else ""
-        if group in ("cert-manager.io", "acme.cert-manager.io") and "certificates.cert-manager.io" not in self.api_groups:
+        if group in ("cert-manager.io", "acme.cert-manager.io") and not self.api_groups.issuperset({"certificates.cert-manager.io"}):
             return None
         kind = doc["kind"].lower() + ("." + group if group else "")
         ns = None if doc["kind"] in CLUSTER_KINDS else doc["metadata"].get("namespace", namespace)
@@ -642,7 +648,7 @@ class Ingress:
                 require(not self.get("secret", doc["spec"]["secretName"], i["namespace"], metadata_only=True), "TLS Secret already exists without the managed Certificate")
         # Another Certificate must not write either output Secret, even if this
         # release's Certificate has not yet been created.
-        if "certificates.cert-manager.io" in self.api_groups:
+        if self.api_groups.issuperset({"certificates.cert-manager.io"}):
             certificates = json.loads(self.kube("get", "certificates.cert-manager.io", "--namespace", i["namespace"], "-o", "json"))["items"]
             for cert in certificates:
                 if cert["spec"].get("secretName") in CERTIFICATES.values():
@@ -855,7 +861,8 @@ class Ingress:
                 "brokerCallback": f"https://{self.domain}/api/v1/connections/callback"}
 
     def http(self, path, secure=True):
-        connection = (http.client.HTTPSConnection if secure else http.client.HTTPConnection)(self.domain, timeout=15)
+        connection = (http.client.HTTPSConnection(self.domain, timeout=15, context=tls_context())
+                      if secure else http.client.HTTPConnection(self.domain, timeout=15))
         try:
             connection.request("GET", path)
             response = connection.getresponse()
@@ -877,7 +884,7 @@ class Ingress:
             require(self.issuer_ready(stage), "ACME Issuer is not Ready: " + stage)
         expected = self.public_certificate()
         with socket.create_connection((self.service["ip"], 443), timeout=15) as raw:
-            with ssl.create_default_context().wrap_socket(raw, server_hostname=self.domain) as tls:
+            with tls_context().wrap_socket(raw, server_hostname=self.domain) as tls:
                 require(hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest() == expected, "Ingress is not serving the current cert-manager certificate")
         status, location, _ = self.http("/", secure=False)
         require(status == 301 and location == f"https://{self.domain}/", "Ordinary HTTP must redirect to HTTPS")

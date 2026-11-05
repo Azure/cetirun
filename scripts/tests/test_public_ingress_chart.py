@@ -8,12 +8,20 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 import yaml
 
 
-CHART = Path(__file__).resolve().parents[2] / "app/cetirun-platform"
+ROOT = Path(__file__).resolve().parents[2]
+CHART = ROOT / "app/cetirun-platform"
+DEPENDENCIES = (
+    "cetirun-connections-mcp/chart",
+    "cetirun-operator/chart",
+    "cetirun-portal/chart",
+    "cetirun-ai-gateway/chart",
+)
 RELEASE_NAMESPACE = "cetirun-system"
 INGRESS_NAMESPACE = "aks-istio-ingress"
 DOMAIN = "portal.example.invalid"
@@ -54,6 +62,21 @@ OFFLINE = {
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class PublicIngressChartTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temporary = tempfile.TemporaryDirectory(prefix="cetirun-public-tls-chart-")
+        cls.addClassCleanup(cls.temporary.cleanup)
+        base = Path(cls.temporary.name) / "app"
+        shutil.copytree(CHART, base / "cetirun-platform", ignore=shutil.ignore_patterns("charts", "__pycache__"))
+        for relative in DEPENDENCIES:
+            shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts", "__pycache__"))
+        cls.chart = base / "cetirun-platform"
+        subprocess.run(
+            ["helm", "dependency", "build", "--skip-refresh", str(cls.chart)],
+            env=OFFLINE, text=True, capture_output=True, check=True, timeout=30,
+        )
+
     def render(self, values=None, *, platform_values=None, error=None):
         configured = {
             **BOOTSTRAP_DISABLED,
@@ -61,7 +84,7 @@ class PublicIngressChartTests(unittest.TestCase):
             "publicTLS": {**PUBLIC_TLS, **(values or {})},
         }
         command = [
-            "helm", "template", "platform", str(CHART), "--namespace", RELEASE_NAMESPACE,
+            "helm", "template", "platform", str(self.chart), "--namespace", RELEASE_NAMESPACE,
             "--values", "-",
         ]
         result = subprocess.run(
