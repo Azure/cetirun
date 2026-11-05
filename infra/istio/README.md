@@ -95,11 +95,27 @@ China issuers, so the chart rejects that combination before installation.
 
 Derived issuers are `https://login.microsoftonline.com/<tenantId>/v2.0` for
 `AzureCloud` and `https://login.partner.microsoftonline.cn/<tenantId>/v2.0` for
-`AzureChinaCloud`. An explicit issuer takes precedence and does not require
+`AzureChinaCloud`; `tenantId` is the directory's GUID, not its domain name.
+An explicit issuer takes precedence and does not require
 `tenantId`. Use the exact issuer advertised by the identity provider's discovery
 document. This mode does not allow HTTP or skip TLS, signature, issuer, or nonce
 verification. PKCE, secure cookies, session storage and Portal ownership checks
 remain enabled. Bearer-token session bypass remains disabled in OIDC modes.
+
+Use only a provider whose administrators control the login claims. With Agent
+Identity and Tools disabled, Portal API ownership and administrator checks use
+the lowercased local part of `preferred_username`, falling back to the email
+header if it is absent. The ingress ownership check uses the email header, which
+comes from `oauth2Proxy.emailClaim` (`preferred_username` by default).
+
+The provider must assign these claims, prevent users from changing them, and
+keep their local parts unique across all users allowed into this installation,
+including users from different email domains. If `emailClaim: email` is selected,
+the email and preferred username must identify the same owner. Do not configure
+a provider that lets users choose another user's alias. A valid signature and
+group membership establish who issued the claims and who may sign in; they do
+not establish that an alias is administrator-controlled. This mode does not add
+the Portal's separate Entra tenant/object-ID verification.
 
 `allowedGroups` must name at least one group, and the identity provider must put
 the applicable memberships in the `groups` claim. Generic OIDC does not fetch
@@ -138,10 +154,13 @@ with `--set`. Rotate it before expiry and restart OAuth2 Proxy after updating
 the Secret, because the process reads it from its environment.
 
 Use the [component platform chart](../../app/cetirun-platform/README.md#use-the-component-chart-directly)
-with Portal `features.agentIdentityEnabled=false`, `features.agentToolsEnabled=false`,
-Operator `agentIdentity.enabled=false`, and Connections MCP disabled. Do not
-install the Broker. The full `make deploy` and the legacy `infra/istio/deploy.sh`
-helper still expect the Entra federated-token configuration; they do not select
+with `cetirun-portal.features.agentIdentityEnabled=false`,
+`cetirun-portal.features.agentToolsEnabled=false`,
+`cetirun-operator.agentIdentity.enabled=false`, and
+`cetirun-connections-mcp.enabled=false`. These are umbrella values; all four
+already default to false. Do not install the Broker. The full `make deploy` and
+the legacy `infra/istio/deploy.sh` helper still expect the Entra federated-token
+configuration; they do not select
 this OIDC path. These settings do not establish live China login, image access,
 or runtime qualification.
 

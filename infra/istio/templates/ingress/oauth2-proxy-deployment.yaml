@@ -52,6 +52,11 @@
 {{- if eq $mode "oidc" -}}
 {{- $oidc = deepCopy $remoteOIDC -}}
 {{- $oidcPath = "oauth2Proxy.oidc" -}}
+{{- range $key, $value := dict "issuerURL" "" "clientSecretKey" "client-secret" -}}
+{{- if not (hasKey $oidc $key) -}}
+{{- $_ := set $oidc $key $value -}}
+{{- end -}}
+{{- end -}}
 {{- $_ := set $oidc "allowHTTP" false -}}
 {{- if not (kindIs "string" $oidc.issuerURL) -}}
 {{- fail "oauth2Proxy.oidc.issuerURL must be a string" -}}
@@ -61,9 +66,6 @@
 {{- $_ := set $oidc "issuerURL" (printf "https://%s/%s/v2.0" $authority $tenantId) -}}
 {{- end -}}
 {{- $allowedGroups = required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
-{{- if or (not (kindIs "string" $allowedGroups)) (not (regexMatch `[^,[:space:]]` $allowedGroups)) -}}
-{{- fail "allowedGroups must contain at least one group for oidc mode" -}}
-{{- end -}}
 {{- end -}}
 {{- if $isOIDC -}}
 {{- range $key := list "issuerURL" "clientID" "existingSecret" "clientSecretKey" -}}
@@ -106,6 +108,9 @@
 {{- $allowedGroups = required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
 {{- $issuerArg = printf "--oidc-issuer-url=https://login.microsoftonline.com/%v/v2.0" $tenantId -}}
 {{- $clientIdArg = printf "--client-id=%v" $clientId -}}
+{{- end -}}
+{{- if and (not $isLocalOIDC) (or (not (kindIs "string" $allowedGroups)) (not (regexMatch `[^,[:space:]]` $allowedGroups))) -}}
+{{- fail (printf "allowedGroups must contain at least one group for %s mode" $mode) -}}
 {{- end -}}
 {{- $session := include "cetirun-istio.sessionSettings" . | fromJson -}}
 {{- $cookieSettings := default (dict) (get .Values.oauth2Proxy "cookie") -}}
@@ -241,7 +246,7 @@ spec:
             - --api-route=^/[^/]+/cetirun-auth/
             {{- range (splitList "," $allowedGroups) }}
             {{- if ne (. | trim) "" }}
-            - --allowed-group={{ . | trim }}
+            - {{ printf "--allowed-group=%s" (. | trim) | quote }}
             {{- end }}
             {{- end }}
             {{- if eq $sessionStoreType "redis" }}

@@ -427,9 +427,16 @@ By default, OAuth2 Proxy uses Entra's `preferred_username` as its email claim.
 It is not certain that local tenant users receive an `email` claim. But the
 tenant-facing UPN stays available for Portal identity headers. Set
 `oauth2Proxy.emailClaim: email` only when you know that every allowed user in
-the tenant receives that claim. This selection is a login identifier. Instance
-ownership and Agent authorization continue to use the verified tenant and
-object IDs from the signed ID token.
+the tenant receives that claim. Without Agent Identity and Tools, Portal ownership
+and administrator checks use the alias derived from these trusted identity
+headers, and the ingress ownership endpoint accepts the owner's alias or email.
+Providers must assign the claims, keep their local parts unique among allowed
+users, and prevent users from changing them. For custom issuers and the supported
+OIDC configuration, see [cloud and OIDC parameters]({{< repo "infra/istio/README.md" >}}#cloud-and-oidc-parameters).
+
+Agent Identity and Tools require additional Entra ID-token verification and use
+verified tenant and object IDs for Agent authorization. Generic OIDC does not
+enable that verification.
 
 When the Portal ID token includes Entra's optional `login_hint` claim, the
 Portal passes that opaque value to the separate Agent authorization client.

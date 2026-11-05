@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -135,10 +136,10 @@ def client_secret_env(key="client-secret", *, name="cetirun-local-oidc"):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class IstioLocalOIDCTests(unittest.TestCase):
-    def render(self, values, *, error=None, args=()):
+    def render(self, values, *, error=None, args=(), chart=CHART):
         result = subprocess.run(
             [
-                "helm", "template", "cetirun-istio", str(CHART),
+                "helm", "template", "cetirun-istio", str(chart),
                 "--namespace", "cetirun-istio", "--values", "-",
                 *args,
             ],
@@ -228,6 +229,53 @@ class IstioLocalOIDCTests(unittest.TestCase):
         self.assertIn("--session-store-type=redis", container["args"])
         self.assertIn(client_secret_env("secret-key", name="custom-secret"), container["env"])
         self.assertNotIn(("Secret", "custom-secret"), objects)
+
+    def test_oidc_upgrade_supplies_defaults_missing_from_retained_values(self):
+        # Helm --reuse-values uses the old chart defaults with the new templates.
+        with tempfile.TemporaryDirectory(prefix="cetirun-oidc-upgrade-") as temporary:
+            chart = Path(temporary) / "chart"
+            shutil.copytree(CHART, chart)
+            defaults_path = chart / "values.yaml"
+            defaults = yaml.safe_load(defaults_path.read_text())
+            defaults.pop("cloud")
+            defaults["oauth2Proxy"].pop("oidc")
+            defaults_path.write_text(yaml.safe_dump(defaults))
+            for cloud in (None, "AzureChinaCloud"):
+                for overrides in ({}, {"issuerURL": "https://identity.example.com/tenant"}, {"clientSecretKey": "oidc-secret"}):
+                    with self.subTest(cloud=cloud, overrides=overrides):
+                        values = oidc_values()
+                        if cloud is None:
+                            values.pop("cloud")
+                        values["oauth2Proxy"]["oidc"].update(overrides)
+                        self.assertEqual(
+                            self.render(values, chart=chart, args=["--is-upgrade"]),
+                            self.render(values, args=["--is-upgrade"]),
+                        )
+            for field in ("issuerURL", "clientSecretKey"):
+                values = oidc_values()
+                values["oauth2Proxy"]["oidc"][field] = False
+                self.render(values, chart=chart, error=f"oauth2Proxy.oidc.{field}")
+            values = oidc_values()
+            values["oauth2Proxy"]["oidc"]["clientSecretKey"] = ""
+            self.render(values, chart=chart, error="oauth2Proxy.oidc.clientSecretKey")
+
+    def test_group_names_remain_complete_string_arguments(self):
+        for values in (copy.deepcopy(ENTRA_VALUES), oidc_values()):
+            with self.subTest(mode=values["oauth2Proxy"].get("mode", "entra-id")):
+                values["allowedGroups"] = 'cetirun-admins #ops, eng: admins, team "quoted"'
+                objects = self.render(values)
+                args = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]["containers"][0]["args"]
+                self.assertTrue(all(isinstance(arg, str) for arg in args))
+                self.assertEqual([arg for arg in args if arg.startswith("--allowed-group=")], [
+                    "--allowed-group=cetirun-admins #ops",
+                    "--allowed-group=eng: admins",
+                    '--allowed-group=team "quoted"',
+                ])
+
+    def test_entra_rejects_empty_group_lists(self):
+        for groups in (",", " , ", " ", False, 123, [], {}):
+            with self.subTest(groups=groups):
+                self.render({**ENTRA_VALUES, "allowedGroups": groups}, error="allowedGroups")
 
     def test_oidc_requires_groups_and_does_not_allow_bearer_auth(self):
         for groups in ("", " , ", False, 123, [], {}):
