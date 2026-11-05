@@ -314,7 +314,7 @@ persistence:
 openclaw:
   # -- OpenClaw gateway image configuration
   image:
-    repository: cetirun.azurecr.io/openclaw-gateway
+    repository: mcr.microsoft.com/aks/ai-runtime/cetirun/openclaw-gateway
     pullPolicy: Always
     tag: ""
     digest: ""
@@ -406,7 +406,7 @@ openclaw:
 hermes:
   # -- Hermes gateway image configuration
   image:
-    repository: cetirun.azurecr.io/hermes-gateway
+    repository: mcr.microsoft.com/aks/ai-runtime/cetirun/hermes-gateway
     pullPolicy: Always
     tag: ""
     digest: ""
@@ -530,7 +530,7 @@ ttyd:
   basePath: /term
   # -- Custom Agents use an isolated terminal workload and this dedicated image.
   image:
-    repository: cetirun.azurecr.io/cetirun-terminal
+    repository: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-terminal
     tag: ""
     digest: ""
     pullPolicy: IfNotPresent
@@ -586,7 +586,7 @@ desktop:
   # -- Desktop sidecar image configuration
   image:
     # -- Image repository
-    repository: cetirun.azurecr.io/cetirun-desktop
+    repository: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-desktop
     # -- Image pull policy
     pullPolicy: Always
     # -- Image tag (defaults to chart appVersion if not set)

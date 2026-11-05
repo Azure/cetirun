@@ -1055,32 +1055,34 @@ func TestOperatorConfigHash_IncludesCetiRunHelmValues(t *testing.T) {
 // TestBuildHelmValues_ImageRepositoryFromChartRegistry verifies that when chartRegistry
 // is set, agent image repositories are overridden to pull from the correct ACR.
 func TestBuildHelmValues_ImageRepositoryFromChartRegistry(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
-	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "registry.example.com")
-	if err != nil {
-		t.Fatalf("buildHelmValues error: %v", err)
-	}
-	openclaw, ok := values["openclaw"].(map[string]interface{})
-	if !ok {
-		t.Fatal("values[\"openclaw\"] missing or wrong type")
-	}
-	image, ok := openclaw["image"].(map[string]interface{})
-	if !ok {
-		t.Fatal("values[\"openclaw\"].image missing or wrong type")
-	}
-	if got := image["repository"]; got != "registry.example.com/openclaw-gateway" {
-		t.Errorf("openclaw.image.repository = %q, want %q", got, "registry.example.com/openclaw-gateway")
-	}
-	hermes, ok := values["hermes"].(map[string]interface{})
-	if !ok {
-		t.Fatal("values[\"hermes\"] missing or wrong type")
-	}
-	hermesImage, ok := hermes["image"].(map[string]interface{})
-	if !ok {
-		t.Fatal("values[\"hermes\"].image missing or wrong type")
-	}
-	if got := hermesImage["repository"]; got != "registry.example.com/hermes-gateway" {
-		t.Errorf("hermes.image.repository = %q, want %q", got, "registry.example.com/hermes-gateway")
+	for _, registry := range []string{"registry.example.com", "registry.example.com:5000/team/test", "mcr.microsoft.com/aks/ai-runtime/cetirun"} {
+		instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
+		values, err := buildHelmValues(instance, nil, "example.com", "", nil, registry)
+		if err != nil {
+			t.Fatalf("buildHelmValues error: %v", err)
+		}
+		openclaw, ok := values["openclaw"].(map[string]interface{})
+		if !ok {
+			t.Fatal("values[\"openclaw\"] missing or wrong type")
+		}
+		image, ok := openclaw["image"].(map[string]interface{})
+		if !ok {
+			t.Fatal("values[\"openclaw\"].image missing or wrong type")
+		}
+		if got := image["repository"]; got != registry+"/openclaw-gateway" {
+			t.Errorf("openclaw.image.repository = %q, want %q", got, registry+"/openclaw-gateway")
+		}
+		hermes, ok := values["hermes"].(map[string]interface{})
+		if !ok {
+			t.Fatal("values[\"hermes\"] missing or wrong type")
+		}
+		hermesImage, ok := hermes["image"].(map[string]interface{})
+		if !ok {
+			t.Fatal("values[\"hermes\"].image missing or wrong type")
+		}
+		if got := hermesImage["repository"]; got != registry+"/hermes-gateway" {
+			t.Errorf("hermes.image.repository = %q, want %q", got, registry+"/hermes-gateway")
+		}
 	}
 }
 

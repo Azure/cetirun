@@ -16,7 +16,7 @@ fi
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 
-registry="${REGISTRY:-cetirun.azurecr.io}"
+registry="${REGISTRY:-$("${script_dir}/cetirun-release-metadata.sh" registry)}"
 image_name="${IMAGE_NAME:-cetirun-portal}"
 release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
 image_tag="${IMAGE_TAG:-${release_version}}"
@@ -36,6 +36,7 @@ build_args=(
 build_args+=(--build-arg "NPM_REGISTRY=${npm_registry}")
 
 if [ "${push}" = "true" ]; then
+  "${script_dir}/cetirun-release-metadata.sh" check-push-registry "${registry}"
   build_args+=(--platform linux/amd64 --push)
   # Attestations (provenance/SBOM) require a non-default buildx driver.
   if docker buildx inspect --bootstrap 2>/dev/null | grep -q 'Driver:.*docker-container'; then

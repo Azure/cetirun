@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:latest
+ARG BASE_IMAGE=mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-base:latest
 ARG HERMES_VERSION=0.22.7
 ARG HERMES_RELEASE=0.22.7
 ARG HERMES_GIT_SHA=b200f5bc60e31588ba2cb60e288029c4a54ba5fa

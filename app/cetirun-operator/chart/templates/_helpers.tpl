@@ -257,7 +257,7 @@ same registry and release as the rest of CetiRun. Empty when the proxy is off.
 {{- if $proxy.enabled -}}
 {{- $image := $proxy.image | default dict -}}
 {{- $registry := include "cetirun-operator.registry" . -}}
-{{- $repo := $image.repository | default "cetirun.azurecr.io/cetirun-ai-gateway" -}}
+{{- $repo := $image.repository | default "mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-ai-gateway" -}}
 {{- if $registry }}{{- $repo = printf "%s/cetirun-ai-gateway" $registry -}}{{- end -}}
 {{- $tag := include "cetirun-operator.version" . | default $image.tag | default .Chart.AppVersion -}}
 {{ $repo }}:{{ $tag }}{{ if $image.digest }}@{{ $image.digest }}{{ end }}

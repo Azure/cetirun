@@ -7,6 +7,7 @@ import base64
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -249,6 +250,84 @@ class DeploymentFixture:
         path = self.root / "configuration.json"
         path.write_text(json.dumps(config))
         return DEPLOY.configuration(path)
+
+
+@unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
+class ReleaseCoordinateTests(DeploymentFixture, unittest.TestCase):
+    def test_missing_coordinates_use_defaults_and_invalid_release_is_rejected(self):
+        self.config["release"].pop("registry")
+        self.config["release"].pop("version")
+        config, _ = self.configure(self.config)
+        self.assertEqual(config["release"]["registry"], "mcr.microsoft.com/aks/ai-runtime/cetirun")
+        self.assertEqual(config["release"]["version"], DEPLOY.RELEASE.VERSIONS.top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version"))
+        self.assertEqual(config["_releaseOrigins"], {"registry": "source default", "version": "source default"})
+        for invalid in (None, [], "invalid"):
+            self.config["release"] = invalid
+            with self.assertRaisesRegex(ValueError, "release must be an object"):
+                self.configure(self.config)
+
+    def test_explicit_coordinates_render_without_rewriting_environment(self):
+        path = self.root / "environment.json"
+        path.write_text(json.dumps(self.config))
+        before = path.read_bytes()
+        registry, version = "registry.example.com:5000/team/test", "1.2.3-dev.1"
+        config, values = DEPLOY.configuration(path, registry=registry, version=version)
+        self.assertEqual(config["release"]["registry"], registry)
+        self.assertEqual(config["release"]["version"], version)
+        deployment = SyntheticCluster(config, values, self.root / "render")
+        deployment.render()
+        self.assertFalse(deployment.writes)
+        self.assertEqual(values["platform"]["global"]["registry"], registry)
+        self.assertEqual(values["platform"]["global"]["version"], version)
+        for name, chart in deployment.charts.items():
+            metadata = yaml.safe_load((chart / "Chart.yaml").read_text())
+            self.assertEqual(metadata["version"], version, name)
+            self.assertEqual(metadata["appVersion"], version, name)
+        self.assertEqual(values["broker"]["image"]["repository"], registry + "/cetirun-agent-broker")
+        self.assertEqual(values["broker"]["image"]["tag"], version)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_coordinate_override_does_not_clear_conflicting_pins(self):
+        self.config["platform"]["values"]["global"] = {"version": "0.1.0"}
+        path = self.root / "environment.json"
+        path.write_text(json.dumps(self.config))
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            DEPLOY.configuration(path, version="1.2.3-dev.1")
+
+    def test_make_and_cli_override_precedence(self):
+        path = self.root / "environment.json"
+        path.write_text(json.dumps(self.config))
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("VERSION", "REGISTRY", "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL")}
+        env.update(KUBECONFIG=os.devnull, HELM_REGISTRY_CONFIG=os.devnull, HELM_REPOSITORY_CONFIG=os.devnull)
+        cases = (([], {}, self.config["release"]["registry"], self.config["release"]["version"]),
+                 ([], {"VERSION": "1.2.3-dev.1", "REGISTRY": "registry.example.com/env/path"}, "registry.example.com/env/path", "1.2.3-dev.1"),
+                 (["VERSION=2.3.4-dev.2", "REGISTRY=registry.example.com/cli/path"],
+                  {"VERSION": "1.2.3-dev.1", "REGISTRY": "registry.example.com/env/path"}, "registry.example.com/cli/path", "2.3.4-dev.2"))
+        for extra, overrides, registry, version in cases:
+            with self.subTest(extra=extra, overrides=overrides):
+                result = subprocess.run(["make", "--silent", "deploy-plan", f"DEPLOY_CONFIG={path}", *extra],
+                                        cwd=ROOT, env={**env, **overrides}, capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                plan = json.loads(result.stdout)
+                self.assertEqual(plan["release"]["registry"], registry)
+                self.assertEqual(plan["release"]["version"], version)
+                for key in ("registry", "version"):
+                    origin = f"--{key}" if extra else f"environment {key.upper()}" if overrides else "environment file"
+                    self.assertEqual(plan["releaseOrigins"][key], origin)
+
+    def test_execute_reports_coordinates_before_any_external_operation(self):
+        deployment = self.deployment()
+        original = deployment.execute_platform
+        with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            def execute_platform():
+                for key in ("registry", "version"):
+                    self.assertIn(f"Deployment {key}: {deployment.config['release'][key]} (from environment file)", stdout.getvalue())
+                self.assertFalse(deployment.writes)
+                original()
+            with patch.object(deployment, "execute_platform", side_effect=execute_platform):
+                deployment.execute()
+        self.assertTrue(deployment.writes)
 
 
 class DeploymentInputTests(DeploymentFixture, unittest.TestCase):

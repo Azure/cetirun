@@ -62,7 +62,7 @@ class PublicTLSDeploymentTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
-    def deployment(self, *, mode="custom"):
+    def deployment(self, *, mode="custom", registry=None, version=None):
         source = yaml.safe_load(full.FIXTURE.read_text())
         source["platform"]["values"]["cetirun-operator"]["cetiadmin"] = {"enabled": False}
         kubeconfig = self.root / "admin.kubeconfig"
@@ -78,7 +78,7 @@ class PublicTLSDeploymentTests(unittest.TestCase):
             tls["azure"] = {"subscriptionId": ingress_tests.SUBSCRIPTION, "tenantId": ingress_tests.TENANT,
                             "resourceGroup": "example-rg", "clusterName": "example-aks"}
         source["publicTLS"] = tls
-        config, values = full.DEPLOY.configuration(copy.deepcopy(source))
+        config, values = full.DEPLOY.configuration(copy.deepcopy(source), registry=registry, version=version)
         cluster = full.SyntheticCluster(config, values, self.root / "charts")
         cluster.public_tls_release = {"values": {}, "manifest": "", "state": "absent"}
         cluster_run = cluster.run
@@ -152,6 +152,27 @@ class PublicTLSDeploymentTests(unittest.TestCase):
         platform = [values for name, values, _ in cluster.applied if name == "platform"][-1]
         self.assertEqual(cluster.config["domain"], "portal-ingress.example.cloudapp.azure.com")
         self.assertEqual(platform["publicTLS"]["domain"], "portal-ingress.example.cloudapp.azure.com")
+
+    def test_domain_resolution_preserves_release_coordinate_overrides(self):
+        registry, version = "registry.example.com:5000/team/test", "1.2.3-dev.1"
+        cluster, ingress, _ = self.deployment(mode="azure", registry=registry, version=version)
+        with patch.object(ingress_tests.INGRESS, "check_dns"):
+            cluster.execute()
+        self.assertEqual(cluster.config["domain"], "portal-ingress.example.cloudapp.azure.com")
+        self.assertEqual(cluster.config["release"]["registry"], registry)
+        self.assertEqual(cluster.config["release"]["version"], version)
+        self.assertEqual(cluster.config["_releaseOrigins"], {"registry": "explicit override", "version": "explicit override"})
+        for component, values, _ in cluster.applied:
+            if component == "platform":
+                self.assertEqual(values["global"]["registry"], registry)
+                self.assertEqual(values["global"]["version"], version)
+            elif component == "broker":
+                self.assertEqual(values["image"]["repository"], registry + "/cetirun-agent-broker")
+                self.assertEqual(values["image"]["tag"], version)
+        for chart in cluster.charts.values():
+            metadata = yaml.safe_load((chart / "Chart.yaml").read_text())
+            self.assertEqual(metadata["version"], version)
+            self.assertEqual(metadata["appVersion"], version)
 
     def test_full_or_failed_full_retry_preserves_the_tls_resources_without_a_minimal_upgrade(self):
         cluster, ingress, _ = self.deployment()

@@ -92,7 +92,7 @@ type AgentReconciler struct {
 	MemoryImage                 string
 	MemoryEnabled               bool
 	MemoryRegistry              string
-	ChartRegistry               string // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
+	ChartRegistry               string // Registry host and repository prefix, derived from the runtime chart URL.
 	DefaultModel                string // Default model when spec.model is empty
 	CustomBindings              CustomBindingProvider
 	ChatAccess                  chataccess.Config

@@ -20,18 +20,29 @@ VERSION_PATTERN = re.compile(
     rf"(?:-{PRERELEASE_IDENTIFIER}(?:\.{PRERELEASE_IDENTIFIER})*)?"
 )
 PENDING_UPDATES = {}
+DEFAULT_REGISTRY = "mcr.microsoft.com/aks/ai-runtime/cetirun"
 
 
-def replace(path, pattern, replacement, expected=1, limit=0):
-    source = PENDING_UPDATES.get(path, path.read_text())
+def validate_push_registry(registry):
+    host = registry.removeprefix("oci://").split("/", 1)[0].split(":", 1)[0]
+    if host.rstrip(".").lower() == "mcr.microsoft.com":
+        raise ValueError(
+            "MCR is a pull endpoint, not a push destination. Set REGISTRY to a writable "
+            "registry; for MCR publication use the ADO pipeline's backing ACR and automatic sync."
+        )
+
+
+def replace(path, pattern, replacement, expected=1, limit=0, updates=None):
+    updates = PENDING_UPDATES if updates is None else updates
+    source = updates.get(path, path.read_text())
     updated, count = re.subn(
         pattern, replacement, source, count=limit, flags=re.MULTILINE
     )
     if count != expected:
         raise ValueError(
-            f"{path.relative_to(ROOT)}: expected {expected} version field(s), found {count}"
+            f"{path}: expected {expected} version field(s), found {count}"
         )
-    PENDING_UPDATES[path] = updated
+    updates[path] = updated
 
 
 def top_level_yaml(path, field):
@@ -45,35 +56,45 @@ def top_level_yaml(path, field):
     return match.group(1)
 
 
-# Subcharts of the platform chart: Operator, Portal, AI Gateway and optional MCP.
-PLATFORM_DEPENDENCIES = 4
+def validate_version(version):
+    if len(version) > 128 or not VERSION_PATTERN.fullmatch(version):
+        raise ValueError(
+            f"{version!r} must be X.Y.Z or X.Y.Z-prerelease "
+            "(at most 128 characters, without build metadata)"
+        )
+
+
+def chart_paths():
+    return [entry["path"] for entry in json.loads(
+        (ROOT / "scripts/release-artifacts.json").read_text()
+    )["charts"]]
+
+
+def chart_updates(root, paths, version, app_version=None):
+    """Prepare first-party chart metadata without changing the source checkout."""
+    updates = {}
+    names = {top_level_yaml(root / relative / "Chart.yaml", "name") for relative in paths}
+    for relative in paths:
+        path = root / relative / "Chart.yaml"
+        replace(path, r"^version:\s*.*$", f"version: {version}", updates=updates)
+        replace(path, r"^appVersion:\s*.*$", f'appVersion: "{app_version or version}"', updates=updates)
+        source = updates[path]
+        for name in names:
+            source = re.sub(
+                rf"(^  - name: {re.escape(name)}\n    version: )[^\n]+(\n    repository: file://)",
+                rf"\g<1>{version}\g<2>", source, flags=re.MULTILINE,
+            )
+        updates[path] = source
+    if "app/cetirun-operator/chart" in paths:
+        replace(root / "app/cetirun-operator/chart/values.yaml",
+                r'(^  chart:\n(?:    [^\n]*\n)*?    version:\s*")[^"]*(")',
+                rf'\g<1>{version}\g<2>', updates=updates)
+    return updates
 
 
 def set_version(version):
     PENDING_UPDATES.clear()
-    charts = (
-        ("app/cetirun-chart/Chart.yaml", True, False),
-        ("app/cetirun-operator/chart/Chart.yaml", True, False),
-        ("app/cetirun-portal/chart/Chart.yaml", True, False),
-        ("app/cetirun-platform/Chart.yaml", True, True),
-        ("infra/istio/Chart.yaml", True, False),
-        ("app/cetirun-ai-gateway/chart/Chart.yaml", True, False),
-        ("app/cetirun-agent-broker/chart/Chart.yaml", True, False),
-        ("app/cetirun-connections-mcp/chart/Chart.yaml", True, False),
-    )
-    for relative, has_app_version, has_dependencies in charts:
-        path = ROOT / relative
-        replace(path, r"^version:\s*.*$", f"version: {version}")
-        if has_app_version:
-            replace(path, r"^appVersion:\s*.*$", f'appVersion: "{version}"')
-        if has_dependencies:
-            replace(path, r"^    version:\s*.*$", f"    version: {version}", PLATFORM_DEPENDENCIES)
-
-    replace(
-        ROOT / "app/cetirun-operator/chart/values.yaml",
-        r'(^  chart:\n(?:    [^\n]*\n)*?    version:\s*")[^"]*(")',
-        rf'\g<1>{version}\g<2>',
-    )
+    PENDING_UPDATES.update(chart_updates(ROOT, chart_paths(), version))
     replace(
         ROOT / "app/cetirun-operator/cmd/main.go",
         r'(flag\.StringVar\(&chartVersion, "chart-version", ")[^"]+(")',
@@ -85,8 +106,8 @@ def set_version(version):
     ):
         replace(
             ROOT / relative,
-            r'^CHART_VERSION="\$\{CHART_VERSION:-[^}]+\}"$',
-            f'CHART_VERSION="${{CHART_VERSION:-{version}}}"',
+            r'^CHART_VERSION="\$\{CHART_VERSION:-\$\{VERSION:-[^}]+\}\}"$',
+            f'CHART_VERSION="${{CHART_VERSION:-${{VERSION:-{version}}}}}"',
         )
 
     for relative in ("app/internal/go.mod", "app/cetirun-portal/go.mod"):
@@ -121,21 +142,12 @@ def set_version(version):
 def check_version(version):
     errors = []
 
-    charts = (
-        ("app/cetirun-chart/Chart.yaml", True),
-        ("app/cetirun-operator/chart/Chart.yaml", True),
-        ("app/cetirun-portal/chart/Chart.yaml", True),
-        ("app/cetirun-platform/Chart.yaml", True),
-        ("infra/istio/Chart.yaml", True),
-        ("app/cetirun-ai-gateway/chart/Chart.yaml", True),
-        ("app/cetirun-agent-broker/chart/Chart.yaml", True),
-        ("app/cetirun-connections-mcp/chart/Chart.yaml", True),
-    )
-    for relative, has_app_version in charts:
+    for directory in chart_paths():
+        relative = directory + "/Chart.yaml"
         path = ROOT / relative
         if top_level_yaml(path, "version") != version:
             errors.append(f"{relative}: version is not {version}")
-        if has_app_version and top_level_yaml(path, "appVersion") != version:
+        if top_level_yaml(path, "appVersion") != version:
             errors.append(f"{relative}: appVersion is not {version}")
 
     platform_chart = (ROOT / "app/cetirun-platform/Chart.yaml").read_text()
@@ -146,17 +158,17 @@ def check_version(version):
     lock_versions = re.findall(
         r"^  version:\s*[\"']?([^\"'\s#]+)", platform_lock, re.MULTILINE
     )
-    if dependency_versions != [version] * PLATFORM_DEPENDENCIES:
+    if not dependency_versions or any(value != version for value in dependency_versions):
         errors.append("app/cetirun-platform/Chart.yaml: dependency versions differ")
-    if lock_versions != [version] * PLATFORM_DEPENDENCIES:
+    if lock_versions != dependency_versions:
         errors.append("app/cetirun-platform/Chart.lock: dependency versions differ")
 
     expected_text = {
         "app/cetirun-memory-context/assets/adapters/openclaw/package.json": f'"version": "{version}"',
         "app/cetirun-operator/chart/values.yaml": f'version: "{version}"',
         "app/cetirun-operator/cmd/main.go": f'"chart-version", "{version}"',
-        "app/cetirun-operator/deploy/deploy.sh": f"CHART_VERSION:-{version}",
-        "app/cetirun-portal/deploy/deploy.sh": f"CHART_VERSION:-{version}",
+        "app/cetirun-operator/deploy/deploy.sh": f"VERSION:-{version}",
+        "app/cetirun-portal/deploy/deploy.sh": f"VERSION:-{version}",
         "app/cetirun-portal/go.mod": f"cetirun-operator v{version}",
         "app/internal/go.mod": f"cetirun-operator v{version}",
     }
@@ -182,6 +194,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("get", help="print the Runtime Chart version")
+    subparsers.add_parser("registry", help="print the default public artifact registry prefix")
+    push_parser = subparsers.add_parser("check-push-registry", help="reject the public MCR pull endpoint as a push target")
+    push_parser.add_argument("registry")
     for command in ("set", "check"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("version", help="X.Y.Z[-prerelease], e.g. 0.1.0-dev.1; no +build metadata")
@@ -193,11 +208,13 @@ def main():
     if args.command == "get":
         print(top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version"))
         return 0
-    if len(args.version) > 128 or not VERSION_PATTERN.fullmatch(args.version):
-        raise ValueError(
-            f"{args.version!r} must be X.Y.Z or X.Y.Z-prerelease "
-            "(at most 128 characters, without build metadata)"
-        )
+    if args.command == "registry":
+        print(DEFAULT_REGISTRY)
+        return 0
+    if args.command == "check-push-registry":
+        validate_push_registry(args.registry)
+        return 0
+    validate_version(args.version)
     if args.command == "set":
         set_version(args.version)
     else:

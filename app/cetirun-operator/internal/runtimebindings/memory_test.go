@@ -10,7 +10,7 @@ import (
 
 func TestDefaultMemoryImage(t *testing.T) {
 	for _, test := range []struct{ registry, version, want string }{
-		{"", "0.1.1", "cetirun.azurecr.io/cetirun-memory-context:0.1.1"},
+		{"", "0.1.1", "mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-memory-context:0.1.1"},
 		{"registry.example.com/team/", "2.3.4-dev.2", "registry.example.com/team/cetirun-memory-context:2.3.4-dev.2"},
 	} {
 		image := DefaultMemoryImage(test.registry, test.version)

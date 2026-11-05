@@ -539,8 +539,23 @@ def public_tls_config(config):
     return PUBLIC_TLS.normalize(result)
 
 
-def configuration(path, *, domain=None):
+def configuration(path, *, domain=None, registry=None, version=None, coordinate_origins=None):
     config = copy.deepcopy(path) if isinstance(path, dict) else yaml_file(path)
+    release = config.setdefault("release", {})
+    if not isinstance(release, dict):
+        raise ValueError("release must be an object")
+    origins = config.setdefault("_releaseOrigins", {})
+    for key, override in (("registry", registry), ("version", version)):
+        if override is not None:
+            origins[key] = (coordinate_origins or {}).get(key, "explicit override")
+        else:
+            origins.setdefault(key, "environment file" if key in release else "source default")
+    if registry is not None:
+        release["registry"] = registry.rstrip("/")
+    if version is not None:
+        release["version"] = version
+    release.setdefault("registry", RELEASE.VERSIONS.DEFAULT_REGISTRY)
+    release.setdefault("version", RELEASE.VERSIONS.top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version"))
     source = copy.deepcopy(config)
     tls_config = public_tls_config(config)
     if tls_config:
@@ -1019,7 +1034,11 @@ class Deployment:
             for entry in release_inventory(self.config)["charts"]:
                 source = ROOT / entry["path"]
                 shutil.copytree(source, self.scratch / entry["path"], ignore=shutil.ignore_patterns("charts", "__pycache__"))
-            self.run(["helm", "dependency", "build", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
+            updates = RELEASE.VERSIONS.chart_updates(self.scratch,
+                [entry["path"] for entry in release_inventory(self.config)["charts"]], self.config["release"]["version"])
+            for path, content in updates.items():
+                path.write_text(content)
+            self.run(["helm", "dependency", "update", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
         for name, relative in CHARTS.items():
             self.charts[name] = self.scratch / relative
             self.files[name] = self.scratch / f"{name}-values.json"
@@ -1609,6 +1628,9 @@ class Deployment:
         self.preflight()
 
     def execute(self):
+        for key in ("registry", "version"):
+            print(f"Deployment {key}: {self.config['release'][key]} "
+                  f"(from {self.config['_releaseOrigins'][key]})", flush=True)
         if self.ingress:
             self.ingress.load_state()
             self.ingress.preflight()
@@ -1676,6 +1698,7 @@ class Deployment:
             not_qualified.append("Skill Marketplace repository access and Team publication")
         return {"target": {key: self.config["target"][key] for key in ("context", "cluster", "server", "clusterUID")},
                 "release": {key: self.config["release"][key] for key in ("registry", "version", "gitSHA")},
+                "releaseOrigins": self.config["_releaseOrigins"],
                 "publicTLS": self.ingress.render() if self.ingress else {"enabled": False},
                 "domain": self.config["domain"],
                 "domainIsPlaceholder": bool(self.ingress and not self.ingress.domain and not self.config["_source"].get("domain")),
@@ -1703,12 +1726,18 @@ class Deployment:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path, help="explicit environment YAML; never sourced as shell code")
+    parser.add_argument("--registry", help="override release.registry (or REGISTRY) without editing the environment file")
+    parser.add_argument("--version", help="override release.version (or VERSION) without editing the environment file")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--verify", action="store_true", help="read-only public DNS, TLS and Portal verification")
     mode.add_argument("--plan", action="store_true", help="validate inputs and render locally without cluster/registry calls")
     args = parser.parse_args(argv)
     try:
-        config, values = configuration(args.config)
+        overrides = {key: getattr(args, key) if getattr(args, key) is not None else os.environ.get(key.upper())
+                     for key in ("registry", "version")}
+        origins = {key: f"--{key}" if getattr(args, key) is not None else f"environment {key.upper()}"
+                   for key in overrides}
+        config, values = configuration(args.config, **overrides, coordinate_origins=origins)
         with tempfile.TemporaryDirectory(prefix="cetirun-platform-") as temporary:
             deployment = Deployment(config, values, Path(temporary))
             deployment.render()

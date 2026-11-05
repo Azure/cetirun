@@ -25,7 +25,7 @@ chat:
 
 # -- Portal container image.
 image:
-  repository: ghcr.io/azure/cetirun-portal
+  repository: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-portal
   pullPolicy: IfNotPresent
   tag: "" # Defaults to .Chart.AppVersion
   # -- Image digest for pinning (e.g. sha256:abc123...). When set, pins the image; the tag is kept for readability.

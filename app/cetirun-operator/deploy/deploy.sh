@@ -13,7 +13,8 @@
 #           with pull access to the ACR registry.
 #
 # Environment variables:
-#   REGISTRY            — OCI registry          (default: cetirun.azurecr.io)
+#   REGISTRY            — OCI registry prefix  (default: public CetiRun MCR prefix)
+#   VERSION             — Shared chart/image version (default: source release)
 #   CHART_VERSION       — Chart version          (default: see below)
 #   NAMESPACE           — Target namespace       (default: cetirun-system)
 #   RELEASE_NAME        — Helm release name      (default: cetirun-operator)
@@ -42,14 +43,14 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # OCI chart / deploy defaults (override via environment variables)
-REGISTRY="${REGISTRY:-cetirun.azurecr.io}"
+REGISTRY="${REGISTRY:-$("${SCRIPT_DIR}/../../../scripts/cetirun-release-metadata.sh" registry)}"
 CHART_REF="oci://${REGISTRY}/helm/cetirun-operator"
-CHART_VERSION="${CHART_VERSION:-0.1.1}"
+CHART_VERSION="${CHART_VERSION:-${VERSION:-0.1.1}}"
 NAMESPACE="${NAMESPACE:-cetirun-system}"
 RELEASE_NAME="${RELEASE_NAME:-cetirun-operator}"
 IMAGE_REPO="${IMAGE_REPO:-${REGISTRY}/cetirun-operator}"
 CETIRUN_REPO_URL="${CETIRUN_REPO_URL:-oci://${REGISTRY}/helm/cetirun}"
-CETIRUN_CHART_VERSION="${CETIRUN_CHART_VERSION:-}"
+CETIRUN_CHART_VERSION="${CETIRUN_CHART_VERSION:-${CHART_VERSION}}"
 ISTIO_GATEWAY="${ISTIO_GATEWAY:-aks-istio-ingress/cetirun-gateway}"
 ISTIO_GATEWAY_NAMESPACE="${ISTIO_GATEWAY%%/*}"
 ISTIO_GATEWAY_NAME="${ISTIO_GATEWAY#*/}"
@@ -119,7 +120,7 @@ HELM_ARGS+=(--set-string "istioGateway=${ISTIO_GATEWAY}")
 HELM_ARGS+=(--set-string "cetirun.helmValues.networkPolicy.istioIngressNamespace=${ISTIO_INGRESS_NAMESPACE}")
 HELM_ARGS+=(--set "cetirun.chart.repoURL=${CETIRUN_REPO_URL}")
 [ -n "${CETIRUN_CHART_VERSION}" ] && HELM_ARGS+=(--set-string "cetirun.chart.version=${CETIRUN_CHART_VERSION}")
-[ -n "${IMAGE_TAG:-}" ]      && HELM_ARGS+=(--set "image.tag=${IMAGE_TAG}")
+HELM_ARGS+=(--set-string "image.tag=${IMAGE_TAG:-${VERSION:-${CHART_VERSION}}}")
 [ -n "${IMAGE_DIGEST:-}" ]   && HELM_ARGS+=(--set "image.digest=${IMAGE_DIGEST}")
 [ -n "${DOMAIN:-}" ]         && HELM_ARGS+=(--set "domainSuffix=${DOMAIN}")
 for kv in ${HELM_SET_ARGS:-}; do

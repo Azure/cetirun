@@ -59,6 +59,8 @@ elif tool == "helm" and args[0] == "package":
                 if line.startswith("name:"))
     destination = pathlib.Path(args[args.index("--destination") + 1])
     destination.mkdir(parents=True, exist_ok=True)
+    with open(os.environ["MCP_RELEASE_LOG"] + ".packages", "a") as output:
+        output.write(json.dumps({"name": name, "values": (pathlib.Path(args[1]) / "values.yaml").read_text()}) + "\n")
     if not (name == component and os.environ.get("MCP_SKIP_PACKAGE")):
         (destination / f"{name}-{version}.tgz").touch()
 elif tool == "helm" and args[0] == "pull":
@@ -93,7 +95,7 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             "AGENT_TEMPDIRECTORY": str(self.root / "temporary"), "HELM_BIN": str(self.bin),
             "GIT_SHA": "a" * 40, "ACCEPT_VSCODE_SERVER_LICENSE_TERMS": "true",
         }
-        for name in ("awk", "dirname", "grep", "mkdir", "rm", "tr", "cmp"):
+        for name in ("awk", "dirname", "grep", "mkdir", "rm", "tr", "cmp", "git"):
             executable = shutil.which(name)
             self.assertIsNotNone(executable, f"requires {name}")
             (self.bin / name).symlink_to(executable)
@@ -109,11 +111,17 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             name = yaml.safe_load(source.read_text())["name"]
             target.write_text(f'name: {name}\nversion: {VERSION}\nappVersion: "{VERSION}"\n')
+            shutil.copyfile(source.parent / "values.yaml", target.parent / "values.yaml")
         (self.root / "scripts").mkdir()
         inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
-        for path in [entry["script"] for entry in inventory["images"]] + ["scripts/release-artifacts.json", "scripts/cetirun-release.py"]:
-            shutil.copyfile(ROOT / path, self.root / path)
-        (self.root / "scripts/cetirun-version.py").write_text("# Version consistency is exercised separately.\n")
+        for path in [entry["script"] for entry in inventory["images"]] + ["scripts/release-artifacts.json", "scripts/cetirun-release.py", "scripts/cetirun-release-metadata.sh"]:
+            shutil.copy2(ROOT / path, self.root / path)
+        # Use the real transformation helpers. Full source consistency is
+        # exercised separately; this fixture contains only chart metadata.
+        (self.root / "scripts/cetirun-version.py").write_text(
+            (ROOT / "scripts/cetirun-version.py").read_text().partition('if __name__ == "__main__":')[0])
+        subprocess.run([shutil.which("git"), "-c", "init.defaultBranch=main", "init", "--quiet"], cwd=self.root, check=True)
+        subprocess.run([shutil.which("git"), "add", "app", "infra", "scripts"], cwd=self.root, check=True)
         pipeline = yaml.safe_load((ROOT / ".pipelines/release-mcr.yml").read_text())
         self.pipeline = pipeline
         self.steps = {step["displayName"]: step for step in pipeline["jobs"][0]["steps"]
@@ -165,6 +173,29 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             self.run_step(name)
         commands = self.commands()
         self.assertTrue(self.archive.is_file(), "MCP chart was not packaged")
+        packages = [json.loads(line) for line in Path(str(self.log) + ".packages").read_text().splitlines()]
+        packaged = next(item for item in packages if item["name"] == COMPONENT)
+        self.assertIn("mcr.microsoft.com/aks/ai-runtime/cetirun/" + COMPONENT, packaged["values"])
+        self.assertNotIn("staging/", packaged["values"])
+        self.assertNotIn("synthetic.azurecr.io", packaged["values"])
+        # MCR serves the synchronized public artifacts. Every write remains
+        # on the backing ACR, including all inventory images and chart pushes.
+        built = Path(str(self.log) + ".published").read_text().splitlines()
+        inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
+        self.assertEqual(set(built), {
+            f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/staging/42/{entry['name']}:{VERSION}"
+            for entry in inventory["images"]
+        })
+        pushed_charts = [c for c in commands if c[:2] == ["helm", "push"]]
+        self.assertEqual(len(pushed_charts), len(inventory["charts"]))
+        for command in pushed_charts:
+            self.assertEqual(command[-1], f"oci://synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/helm")
+        promoted_targets = [command[command.index("--tag") + 1] for command in commands
+                            if command[:4] == ["docker", "buildx", "imagetools", "create"]]
+        self.assertCountEqual(promoted_targets, [
+            f"synthetic.azurecr.io/{self.env['REPOSITORY_PREFIX']}/{entry['name']}:{tag}"
+            for entry in inventory["images"] for tag in (VERSION, "latest")
+        ])
         for operation in ("lint", "template", "package"):
             command = next(c for c in commands if c[:2] == ["helm", operation] and any(arg.endswith(CHART) for arg in c))
             if operation == "package":
@@ -180,7 +211,9 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
         self.assertNotIn("--load", build)
         self.assertEqual(build[build.index("--platform") + 1], "linux/amd64")
         self.assertIn(f"VERSION={VERSION}", build)
-        self.assertIn(str(self.root / "app/cetirun-connections-mcp/Dockerfile"), build)
+        build_root = Path(build[-1])
+        self.assertNotEqual(build_root, self.root, "image builds must use the filtered source snapshot")
+        self.assertIn(str(build_root / "app/cetirun-connections-mcp/Dockerfile"), build)
         self.assertIn(["docker", "buildx", "imagetools", "inspect", self.staged], commands)
         promoted = ["docker", "buildx", "imagetools", "create", "--tag", self.image, self.staged]
         self.assertIn(promoted, commands)
