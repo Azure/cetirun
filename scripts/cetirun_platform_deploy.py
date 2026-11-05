@@ -397,6 +397,8 @@ def configuration(path):
         required(config, field)
     RELEASE.coordinates(argparse.Namespace(registry=config["release"]["registry"], version=config["release"]["version"],
                                            git_sha=config["release"]["gitSHA"], chart_namespace="helm"))
+    if type(config["release"].get("clientOpenAPIValidation", True)) is not bool:
+        raise ValueError("release.clientOpenAPIValidation must be a boolean")
     release_inventory(config)
     if not re.fullmatch(r"https://[^\s/?#@]+", config["target"]["server"]):
         raise ValueError("target.server must be an HTTPS Kubernetes API origin without embedded credentials")
@@ -512,7 +514,7 @@ def configuration(path):
         raise ValueError("Operator, MCP and Broker workload token audiences must match")
     runtime_lists = (operator["connectionsMCP"]["runtimeTypes"], portal["agentTools"]["runtimeTypes"], values["broker"]["toolService"]["runtimeTypes"])
     for runtimes in runtime_lists:
-        if not isinstance(runtimes, list) or not runtimes or any(runtime not in ("hermes", "openclaw") for runtime in runtimes) or len(runtimes) != len(set(runtimes)):
+        if not isinstance(runtimes, list) or not runtimes or any(runtime not in ("hermes", "openclaw", "custom") for runtime in runtimes) or len(runtimes) != len(set(runtimes)):
             raise ValueError("MCP runtimeTypes must be nonempty lists of distinct supported runtimes")
     if any(set(runtimes) != set(runtime_lists[0]) for runtimes in runtime_lists[1:]):
         raise ValueError("Operator connectionsMCP.runtimeTypes, Portal agentTools.runtimeTypes and Broker toolService.runtimeTypes must match")
@@ -1000,7 +1002,7 @@ class Deployment:
             if len(columns) != len(AGENT_ACCOUNT_FIELDS):
                 raise ValueError("Cannot inspect existing Agent ServiceAccount settings safely")
             name, runtime, team, sandbox, account, role, token = columns
-            if (runtime or "openclaw") not in operator["connectionsMCP"]["runtimeTypes"] or sandbox:
+            if runtime == "custom" or (runtime or "openclaw") not in operator["connectionsMCP"]["runtimeTypes"] or sandbox:
                 continue
             account, role = account or defaults.get("name", ""), role or defaults.get("role", "")
             token_required = token.lower() == "true" if token else defaults.get("automountToken") is True
@@ -1356,6 +1358,8 @@ class Deployment:
                 "--values", str(self.files[values or name]), "--timeout", timeout]
         if name == "istio" and section.get("tlsMode") == "retain":
             args.append("--reuse-values")
+        if not self.config["release"].get("clientOpenAPIValidation", True):
+            args.append("--disable-openapi-validation")
         self.helm(*args)
 
     def ready(self, name):
@@ -1410,7 +1414,11 @@ class Deployment:
         self.ready("platform")
         probe = {"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Team",
                  "metadata": {"name": "cetirun-admission-deployment-check"}, "spec": {}}
-        self.kubectl("create", "--dry-run=server", "-f", "-", input_text=json.dumps(probe))
+        if c["release"].get("clientOpenAPIValidation", True):
+            self.kubectl("create", "--dry-run=server", "-f", "-", input_text=json.dumps(probe))
+        else:
+            self.kubectl("create", "--raw", "/apis/cetirun.microsoft.com/v1alpha1/teams?dryRun=All&fieldValidation=Strict",
+                         "-f", "-", input_text=json.dumps(probe))
         print("Platform releases and their Helm checks are ready, and the admission dry-run succeeded. CetiAdmin lifecycle is owned by the Operator.")
         print("Not qualified by this check: live model/OAuth calls, native Sandbox execution/physical fencing, or end-to-end CetiAdmin operations.")
 
@@ -1430,6 +1438,7 @@ class Deployment:
                 "artifacts": {kind: [entry["name"] for entry in entries] for kind, entries in release_inventory(self.config).items() if kind in ("images", "charts")},
                 "referenceCounts": dict(Counter(kind for kind, _, _ in references)),
                 "modelRouting": {"mode": self.config.get("modelRouting", {}).get("mode", "auto")},
+                "clientOpenAPIValidation": self.config["release"].get("clientOpenAPIValidation", True),
                 "cetiadmin": {"enabled": self.values["platform"]["cetirun-operator"]["cetiadmin"]["enabled"],
                               "operatorRemovalRequested": not self.values["platform"]["cetirun-operator"]["enabled"],
                               "stopConfirmed": False},

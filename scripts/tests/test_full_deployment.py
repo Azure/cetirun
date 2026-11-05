@@ -890,6 +890,45 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "runtimeTypes"):
                         self.configure(config)
 
+    def test_explicit_custom_mcp_runtime_renders_for_all_components(self):
+        config = copy.deepcopy(self.config)
+        runtime_lists = (
+            (config["broker"]["values"], "toolService.runtimeTypes", ["custom", "hermes", "openclaw"]),
+            (config["platform"]["values"].setdefault("cetirun-operator", {}), "connectionsMCP.runtimeTypes", ["openclaw", "custom", "hermes"]),
+            (config["platform"]["values"].setdefault("cetirun-portal", {}), "agentTools.runtimeTypes", ["hermes", "openclaw", "custom"]),
+        )
+        for values, field, runtimes in runtime_lists:
+            DEPLOY.set_value(values, field, runtimes)
+        deployment = self.deployment(config, "custom-mcp")
+        expected = {
+            ("broker", "cetirun-agent-broker", "broker"): "custom,hermes,openclaw",
+            ("platform", "cetirun-operator", "manager"): "openclaw,custom,hermes",
+            ("platform", "cetirun-portal", "portal"): "hermes,openclaw,custom",
+        }
+        for (release, name, container), value in expected.items():
+            document = next(doc for doc in deployment.documents[release]
+                            if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name)
+            actual = next(item["value"] for item in next(item for item in document["spec"]["template"]["spec"]["containers"]
+                                                            if item["name"] == container)["env"]
+                          if item["name"] == "CONNECTIONS_MCP_RUNTIME_TYPES")
+            self.assertEqual(actual, value)
+
+    def test_custom_mcp_runtime_lists_require_matching_supported_unique_values(self):
+        cases = (
+            ("mismatch", "broker", "toolService.runtimeTypes", ["custom"]),
+            ("unknown", "cetirun-operator", "connectionsMCP.runtimeTypes", ["hermes", "unknown"]),
+            ("empty", "cetirun-portal", "agentTools.runtimeTypes", []),
+            ("duplicate", "broker", "toolService.runtimeTypes", ["hermes", "custom", "custom"]),
+        )
+        for name, component, field, runtimes in cases:
+            with self.subTest(name=name):
+                config = copy.deepcopy(self.config)
+                values = config["broker"]["values"] if component == "broker" else config["platform"]["values"].setdefault(component, {})
+                DEPLOY.set_value(values, field, runtimes)
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                    with self.assertRaisesRegex(ValueError, "runtimeTypes"):
+                        self.configure(config)
+
     def add_agent(self, deployment, *, account=None, image="", runtime="openclaw", sandbox_ref=""):
         deployment.objects[("customresourcedefinition", "", "agents.cetirun.microsoft.com")] = {
             "annotations": {"meta.helm.sh/release-name": "cetirun-platform", "meta.helm.sh/release-namespace": "cetirun-system"}}
@@ -911,6 +950,20 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                          and command[4:6] == ["get", "agents.cetirun.microsoft.com"]]
                 self.assertEqual(len(reads), 1)
                 self.assertFalse(any(".spec.user" in part or part == "json" for command in reads for part in command))
+
+    def test_existing_ordinary_custom_agent_is_not_an_mcp_conflict(self):
+        config = copy.deepcopy(self.config)
+        for values, field in ((config["broker"]["values"], "toolService.runtimeTypes"),
+                              (config["platform"]["values"].setdefault("cetirun-operator", {}), "connectionsMCP.runtimeTypes"),
+                              (config["platform"]["values"].setdefault("cetirun-portal", {}), "agentTools.runtimeTypes")):
+            DEPLOY.set_value(values, field, ["custom"])
+        deployment = self.deployment(config, "ordinary-custom")
+        self.assertEqual(deployment.values["broker"]["toolService"]["runtimeTypes"], ["custom"])
+        self.assertEqual(deployment.values["platform"]["cetirun-operator"]["connectionsMCP"]["runtimeTypes"], ["custom"])
+        self.assertEqual(deployment.values["platform"]["cetirun-portal"]["agentTools"]["runtimeTypes"], ["custom"])
+        self.add_agent(deployment, runtime="custom", account={"name": "custom-account", "automountToken": True})
+        deployment.preflight()
+        self.assertFalse(any(command[4:6] == ["get", "agent"] for command in deployment.commands if command[0] == "kubectl"))
 
     def test_retained_custom_agent_cannot_reference_an_excluded_image(self):
         candidate = copy.deepcopy(self.config)

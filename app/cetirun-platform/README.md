@@ -182,6 +182,19 @@ release ownership, the necessary Secret key names, storage references, and
 image/chart availability. It refuses to adopt unmanaged objects or resources
 from another Helm release.
 
+Helm's client OpenAPI validation is enabled by default. If a diagnosed schema
+download failure prevents deployment, explicitly set
+`release.clientOpenAPIValidation: false` to pass Helm's
+`--disable-openapi-validation` option. This skips only the client schema check;
+the API server still validates resources and runs admission. It does not make
+Helm's requests use strict unknown-field validation. Review the exact rendered
+manifests before choosing this mode. All other preflight, ownership, TLS,
+artifact, rollout, and admission checks remain active. The final Team probe
+uses the fixed API collection with `dryRun=All&fieldValidation=Strict`, so it
+still checks strict server validation and admission without a schema download.
+The offline plan reports this choice. There is no automatic fallback after a
+validation error.
+
 Before a write, the command also examines these items:
 
 - The configured admission CA and service DNS name
@@ -242,14 +255,20 @@ approved procedure. The helper does not migrate arbitrary stored Helm values.
 The Operator's `connectionsMCP.runtimeTypes`, the Portal's
 `agentTools.runtimeTypes`, and the Broker's `toolService.runtimeTypes` must name
 the same runtimes. A consistent explicit `[hermes]` selection is still
-supported.
+supported. `custom` is an explicit opt-in and requires the native Connections
+prerequisites: native execution and Pod admission, an approved Custom image,
+the matching Policy and model access, and a registered protected Connections
+MCP peer. Adding `custom` does not enable native Connections by itself.
 
-For Agents that already exist in a selected runtime, the helper extracts the
+For existing Hermes and OpenClaw Agents in a selected runtime, the helper extracts the
 name, the runtime, the Team/Sandbox markers, and the necessary ServiceAccount
 settings. It does not output owner details, unrelated Helm values, or
 conversation data. The helper rejects an ordinary Agent if it depends on a
 custom ServiceAccount, an API role, or an API token. The rejection occurs
 before the MCP enablement can override those settings.
+
+Ordinary Custom Agents do not activate Connections MCP. Their ServiceAccount,
+API role, and token settings are not treated as an MCP migration conflict.
 
 An explicitly pinned CetiAdmin migration source is exempt only after the helper
 confirms four conditions. The conditions are its retained suspension, blocked
