@@ -165,7 +165,7 @@ func (b *Bundle) applyIngressMTLS(values map[string]any) error {
 			native["env"] = env
 		}
 		env["API_SERVER_HOST"] = "127.0.0.1"
-		env["API_SERVER_PORT"] = plan.Port
+		env["API_SERVER_PORT"] = strconv.Itoa(int(plan.Port))
 		env["API_SERVER_ENABLED"] = "true"
 	}
 	return nil
@@ -261,7 +261,7 @@ func (b *Bundle) validateIngressTemplate(spec corev1.PodSpec) error {
 	}) {
 		return fmt.Errorf("mTLS OpenClaw arguments must keep the application on loopback")
 	}
-	if b.input.AgentType != "custom" && (main.ReadinessProbe == nil || main.ReadinessProbe.Exec == nil ||
+	if b.input.AgentType == "openclaw" && (main.ReadinessProbe == nil || main.ReadinessProbe.Exec == nil ||
 		len(main.ReadinessProbe.Exec.Command) != 5 ||
 		!slices.Equal(main.ReadinessProbe.Exec.Command[:2], []string{"node", "/etc/cetirun/health-probe.cjs"})) {
 		return fmt.Errorf("mTLS requires the certificate-aware native readiness probe")
@@ -275,8 +275,8 @@ func (b *Bundle) validateIngressTemplate(spec corev1.PodSpec) error {
 	if b.input.AgentType == "hermes" {
 		bindings["API_SERVER_HOST"], bindings["API_SERVER_PORT"] = "127.0.0.1", strconv.Itoa(int(b.input.Controls.IngressMTLS.Port))
 		bindings["API_SERVER_ENABLED"] = "true"
-		bindings["HERMES_DASHBOARD_HOST"], bindings["HERMES_DASHBOARD_PORT"] = "127.0.0.1", "9119"
-		bindings["HERMES_DASHBOARD_ENABLED"] = "true"
+		bindings["HERMES_WEBAPP_HOST"], bindings["HERMES_WEBAPP_PORT"] = "127.0.0.1", "9120"
+		bindings["HERMES_WEBAPP_ENABLED"] = "true"
 		bindings["TTYD_ENABLED"] = strconv.FormatBool(b.input.Controls.IngressMTLS.Terminal)
 		if b.input.Controls.IngressMTLS.Terminal {
 			bindings["TTYD_PORT"] = "7681"

@@ -31,6 +31,8 @@ class ConnectionsMCPChartTests(unittest.TestCase):
             "secrets.apiBase=http://gateway.example.svc.cluster.local:4000/v1",
             "--set-string",
             "aiGateway.keySecretName=lint-model-key",
+            "--set-string",
+            "hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://agents.example.com/ui/cetirun",
             "--set-json",
             'aiGateway.models=[{"id":"lint-model","name":"Lint model"}]',
             "--set",

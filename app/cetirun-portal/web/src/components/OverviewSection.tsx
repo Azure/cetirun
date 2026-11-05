@@ -82,7 +82,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   }, []);
 
   const agentCredential = instance.agent.type === "custom" ? undefined : instance.agent.type === "hermes" ? instance.apiServerKey : instance.gatewayToken;
-  const agentCredentialLabel = instance.agent.type === "hermes" ? "Hermes API / Dashboard Key (user: cetirun)" : "Gateway Token";
+  const agentCredentialLabel = instance.agent.type === "hermes" ? "Hermes API / Webapp Key (user: cetirun)" : "Gateway Token";
   const nativeIntegrations = instance.agent.type !== "custom";
   const portLabel = instance.agent.webUI ? "Web UI port" : "HTTP port";
   const portValue = instance.agent.port ?? (nativeIntegrations ? "Platform default" : "Headless");

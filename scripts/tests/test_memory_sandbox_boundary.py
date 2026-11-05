@@ -19,6 +19,7 @@ class MemorySandboxBoundaryTests(unittest.TestCase):
         for agent_type in ("openclaw", "hermes"):
             values = {
                 "agentType": agent_type,
+                "hermes": {"env": {"HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/validation"}},
                 "memoryContext": {"image": "registry.example.com/memory:1.2.3"},
                 "desktop": {"enabled": False},
                 "aiGateway": {"enabled": True, "keySecretName": "synthetic-model-key"},
@@ -123,6 +124,7 @@ class MemorySandboxBoundaryTests(unittest.TestCase):
             with self.subTest(agent_type=agent_type):
                 values = {
                     "agentType": agent_type,
+                    "hermes": {"env": {"HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/validation"}},
                     "memoryContext": {"image": "registry.example.com/memory:1.2.3"},
                     "desktop": {"enabled": False},
                     "openclaw": {"config": {"browser": {"enabled": False}}},

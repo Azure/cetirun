@@ -2,33 +2,27 @@
 # Licensed under the MIT License.
 
 ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:latest
-ARG HERMES_VERSION=0.21.5
-ARG HERMES_RELEASE=2026.9.24
-ARG HERMES_GIT_SHA=f97608f178d1ffeca59860195ab7da295f7c8e5f
-ARG HERMES_SOURCE_SHA256=15b15ce4e6ec8ea424a081823709d1e17f0943e7b42b59597d24ebb94cbd1742
-ARG HERMES_UV_IMAGE=ghcr.io/astral-sh/uv:0.11.6@sha256:43cb71695fcad1516c2fbe0f56e500184c42d8bce838d9f64593b8aff2c16298
-ARG HERMES_NODE_IMAGE=node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73
+ARG HERMES_VERSION=0.22.7
+ARG HERMES_RELEASE=0.22.7
+ARG HERMES_GIT_SHA=b200f5bc60e31588ba2cb60e288029c4a54ba5fa
+ARG HERMES_SOURCE_SHA256=1f7d43fa1a515283929a739c42e10bf8d48910e523eccec74b2a2bece858d2b5
+ARG HERMES_CPYTHON_SHA256=e02d9ac21cebda6e46435369744a92c65cc7cd8669697694122cf97ffacd1e53
 ARG HERMES_SQLITE_VERSION=3530400
 ARG HERMES_SQLITE_SHA256=0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
 
 FROM ${BASE_IMAGE} AS hermes-source
-ARG HERMES_VERSION
-ARG HERMES_RELEASE
+ARG HERMES_GIT_SHA
 ARG HERMES_SOURCE_SHA256
 
 USER vibe
 WORKDIR /usr/local/lib/hermes-agent
-# Let the pinned archive finish on slow runners instead of repeatedly restarting it.
 RUN curl -fsSL --retry 3 --retry-all-errors --retry-delay 15 --retry-max-time 1800 \
       --connect-timeout 15 --max-time 1800 \
-      "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/v${HERMES_RELEASE}" \
+      "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_GIT_SHA}" \
       -o /tmp/hermes-agent.tar.gz && \
     echo "${HERMES_SOURCE_SHA256}  /tmp/hermes-agent.tar.gz" | sha256sum --check && \
     tar xzf /tmp/hermes-agent.tar.gz --strip-components=1 -C /usr/local/lib/hermes-agent && \
-    rm /tmp/hermes-agent.tar.gz && \
-    test "$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')" = "${HERMES_VERSION}"
-
-FROM ${HERMES_UV_IMAGE} AS hermes-uv
+    rm /tmp/hermes-agent.tar.gz
 
 FROM ${BASE_IMAGE} AS hermes-sqlite-build
 ARG HERMES_SQLITE_VERSION
@@ -67,59 +61,66 @@ RUN (curl -fsSL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 60 
     make -j"$(nproc)" && \
     make install
 
-FROM --platform=$BUILDPLATFORM ${HERMES_NODE_IMAGE} AS hermes-ui-build
-ARG NPM_REGISTRY=https://registry.npmjs.org/
-
-WORKDIR /opt/hermes
-COPY --from=hermes-source /usr/local/lib/hermes-agent/ /opt/hermes/
-
-RUN npm_config_registry="${NPM_REGISTRY}" \
-      npm install --workspace ui-tui --workspace web --include-workspace-root \
-        --include=dev --silent --no-fund --no-audit && \
-    npm --prefix web run build -- --base=./ && \
-    npm --prefix ui-tui run build
-
-FROM ${BASE_IMAGE} AS hermes-build
+FROM ${BASE_IMAGE} AS hermes-toolchain
 ARG HERMES_VERSION
 ARG HERMES_GIT_SHA
+ARG NPM_REGISTRY=https://registry.npmjs.org/
 ARG PYPI_INDEX_URL=https://pypi.org/simple/
 
-COPY --from=hermes-uv /uv /usr/local/bin/uv
-COPY --from=hermes-uv /uvx /usr/local/bin/uvx
-
-ENV HERMES_HOME=/home/vibe/.hermes
-ENV HERMES_INSTALL_DIR=/usr/local/lib/hermes-agent
-ENV HERMES_PYTHON=/usr/local/lib/hermes-agent/venv/bin/python
-ENV UV_PROJECT_ENVIRONMENT=/usr/local/lib/hermes-agent/venv
-ENV PATH=/usr/local/lib/hermes-agent/venv/bin:$PATH
-
+USER root
 WORKDIR /usr/local/lib/hermes-agent
+COPY --from=hermes-source /usr/local/lib/hermes-agent/ /usr/local/lib/hermes-agent/
+COPY agents/hermes/pm/build.py /usr/local/lib/hermes-agent/cetirun_pm/build.py
+ENV HERMES_HOME=/tmp/cetirun-hermes-build-home
+ENV HERMES_INSTALL_DIR=/usr/local/lib/hermes-agent
+ENV HERMES_RUNTIME_DIR=/usr/local/lib/hermes-agent/tools
+ENV npm_config_registry=${NPM_REGISTRY}
+ENV UV_DEFAULT_INDEX=${PYPI_INDEX_URL}
+RUN python3 cetirun_pm/build.py --source . --phase tools \
+      --version "${HERMES_VERSION}" --commit "${HERMES_GIT_SHA}"
+ENV PATH=/usr/local/lib/hermes-agent/bin:$PATH
+ENV HERMES_PYTHON=/usr/local/lib/hermes-agent/bin/python3
 
-# Follow Hermes' official source-install contract: install the immutable release
-# checkout with its checked-in uv.lock instead of reconstructing dependencies
-# from a PyPI wheel. Browser binaries are omitted because CetiRun supplies a
-# separate Chrome/CDP desktop sidecar.
-COPY --from=hermes-source --chown=vibe:vibe \
-  /usr/local/lib/hermes-agent/ /usr/local/lib/hermes-agent/
+FROM hermes-toolchain AS hermes-ui-build
+ENV npm_config_install_links=false
+RUN node apps/desktop/scripts/build-webapp.mjs --deps-only && \
+    node scripts/build/node-deps.mjs --source . --workspace ui-tui && \
+    node scripts/build/tui.mjs --source . --out /tmp/hermes-tui-product
+COPY agents/hermes/compat/apply_webapp_storage.py agents/hermes/compat/webapp_storage.ts /tmp/cetirun-webapp-storage/
+RUN python3 /tmp/cetirun-webapp-storage/apply_webapp_storage.py --root /usr/local/lib/hermes-agent && \
+    node apps/desktop/scripts/build-webapp.mjs --no-install && \
+    rm -rf /tmp/cetirun-webapp-storage
 
-RUN UV_DEFAULT_INDEX="${PYPI_INDEX_URL}" \
-      uv sync --python /usr/bin/python3 --frozen --extra all \
-        --extra anthropic --extra azure-identity && \
-    printf '%s\n' docker > .install_method && \
-    printf '%s\n' "${HERMES_GIT_SHA}" > .hermes_build_sha
-
-COPY --from=hermes-ui-build --chown=vibe:vibe \
-  /opt/hermes/hermes_cli/web_dist/ /usr/local/lib/hermes-agent/hermes_cli/web_dist/
-COPY --from=hermes-ui-build --chown=vibe:vibe \
-  /opt/hermes/ui-tui/dist/ /usr/local/lib/hermes-agent/ui-tui/dist/
-
-COPY --chown=vibe:vibe agents/hermes/compat/workload_mcp.py /usr/local/lib/hermes-agent/cetirun_compat/workload_mcp.py
-COPY --chown=vibe:vibe agents/hermes/compat/apply_workload_mcp.py /tmp/apply-workload-mcp.py
-RUN python3 /tmp/apply-workload-mcp.py --root /usr/local/lib/hermes-agent && rm /tmp/apply-workload-mcp.py
-
-RUN test -x "${HERMES_PYTHON}" && \
-    "${HERMES_PYTHON}" -c \
-      'import importlib.metadata, pathlib; assert importlib.metadata.version("hermes-agent") == "0.21.5"; assert pathlib.Path("hermes_cli/web_dist/index.html").is_file(); assert pathlib.Path("ui-tui/dist/entry.js").is_file()'
+FROM hermes-toolchain AS hermes-build
+ARG HERMES_CPYTHON_SHA256
+ENV CC=gcc CXX=g++
+COPY agents/hermes/pm/build_sqlite.py /usr/local/lib/hermes-agent/cetirun_pm/build_sqlite.py
+RUN tdnf install -y binutils gcc gcc-c++ make glibc-devel kernel-headers && tdnf clean all
+COPY --from=hermes-sqlite-build /opt/sqlite-fixed/ /opt/sqlite-fixed/
+RUN hermes_python_version="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" && \
+    curl -fsSL --retry 3 --connect-timeout 15 --max-time 180 \
+      "https://www.python.org/ftp/python/${hermes_python_version}/Python-${hermes_python_version}.tar.xz" \
+      -o /tmp/cpython.tar.xz && \
+    echo "${HERMES_CPYTHON_SHA256}  /tmp/cpython.tar.xz" | sha256sum --check && \
+    tar xf /tmp/cpython.tar.xz -C /tmp && \
+    python3 cetirun_pm/build_sqlite.py --python-source "/tmp/Python-${hermes_python_version}" \
+      --sqlite /opt/sqlite-fixed --out /usr/local/lib/hermes-agent/sqlite && \
+    rm -rf /tmp/cpython.tar.xz "/tmp/Python-${hermes_python_version}"
+RUN python3 cetirun_pm/build.py --source . --phase dependencies
+COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/apps/desktop/dist-webapp/ /usr/local/lib/hermes-agent/apps/desktop/dist-webapp/
+COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/apps/desktop/src/entry.ts /usr/local/lib/hermes-agent/apps/desktop/src/entry.ts
+COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/apps/desktop/src/lib/cetirun-webapp-storage.ts /usr/local/lib/hermes-agent/apps/desktop/src/lib/cetirun-webapp-storage.ts
+COPY --from=hermes-ui-build /usr/local/lib/hermes-agent/hermes_cli/web_routers/webapp.py /usr/local/lib/hermes-agent/hermes_cli/web_routers/webapp.py
+COPY --from=hermes-ui-build /tmp/hermes-tui-product/ /usr/local/lib/hermes-agent/tui-product/
+COPY agents/hermes/pm/ /usr/local/lib/hermes-agent/cetirun_pm/
+COPY agents/hermes/compat/workload_mcp.py /usr/local/lib/hermes-agent/cetirun_compat/workload_mcp.py
+COPY agents/hermes/compat/apply_workload_mcp.py /tmp/apply-workload-mcp.py
+COPY configs/apply-memory-skills.py /tmp/apply-memory-skills.py
+RUN .venv/bin/python /tmp/apply-workload-mcp.py --root /usr/local/lib/hermes-agent && \
+    .venv/bin/python /tmp/apply-memory-skills.py --runtime hermes --root /usr/local/lib/hermes-agent && \
+    rm /tmp/apply-workload-mcp.py /tmp/apply-memory-skills.py && \
+    .venv/bin/python cetirun_pm/apply_generation.py --root /usr/local/lib/hermes-agent && \
+    .venv/bin/python cetirun_pm/build.py --source . --phase assemble
 
 FROM ${BASE_IMAGE}
 ARG VERSION=dev
@@ -127,47 +128,45 @@ ARG GIT_SHA=unknown
 ARG HERMES_VERSION
 ARG HERMES_GIT_SHA
 
-COPY --from=hermes-build --chown=vibe:vibe /usr/local/lib/hermes-agent/ /usr/local/lib/hermes-agent/
-COPY --from=hermes-sqlite-build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/local/lib/
-COPY --chown=vibe:vibe agents/hermes/compat/ /usr/local/lib/hermes-agent/cetirun_compat/
-COPY --chown=vibe:vibe agents/hermes/plugins/cetirun-memory-context/ /usr/local/lib/hermes-agent/plugins/cetirun-memory-context/
-RUN python3 /usr/local/lib/hermes-agent/cetirun_compat/apply.py --root /usr/local/lib/hermes-agent
-COPY --chown=vibe:vibe configs/apply-memory-skills.py /tmp/apply-memory-skills.py
-RUN python3 /tmp/apply-memory-skills.py --runtime hermes --root /usr/local/lib/hermes-agent && rm /tmp/apply-memory-skills.py
-
 USER root
+COPY --from=hermes-build /usr/local/lib/hermes-agent/ /usr/local/lib/hermes-agent/
+COPY --from=hermes-sqlite-build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/local/lib/hermes-agent/sqlite/
+COPY agents/hermes/plugins/cetirun-memory-context/ /usr/local/lib/hermes-agent/plugins/cetirun-memory-context/
+COPY agents/hermes/pm/hermes-python agents/hermes/pm/hermes-prepare-dependencies /usr/local/bin/
+ENV LD_LIBRARY_PATH=/usr/local/lib/hermes-agent/sqlite
 RUN tdnf install -y tzdata && tdnf clean all && \
-    /usr/local/lib/hermes-agent/venv/bin/python -c \
-      'from zoneinfo import ZoneInfo; [ZoneInfo(zone) for zone in ("UTC", "Asia/Singapore", "America/New_York")]' && \
-    ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 && \
-    ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so && \
-    printf '/usr/local/lib\n' > /etc/ld.so.conf.d/000-sqlite-fixed.conf && \
-    ldconfig && \
-    python3 -c 'import sqlite3; assert sqlite3.sqlite_version_info >= (3, 51, 3)' && \
+    ln -s libsqlite3.so.3.53.4 /usr/local/lib/hermes-agent/sqlite/libsqlite3.so.0 && \
+    ln -s libsqlite3.so.3.53.4 /usr/local/lib/hermes-agent/sqlite/libsqlite3.so && \
+    ln -sf /usr/local/lib/hermes-agent/libexec/hermes /usr/local/bin/hermes && \
+    chmod 755 /usr/local/bin/hermes-python /usr/local/bin/hermes-prepare-dependencies && \
     mkdir -p /etc/hermes && \
-    printf '{"deployment_kind":"image","image":"cetirun/hermes-gateway","manager":"docker","revision":"%s","schema":1,"version":"%s"}\n' \
-      "${HERMES_GIT_SHA}" "${HERMES_VERSION}" > /etc/hermes/image-provenance.json && \
+    cp /usr/local/lib/hermes-agent/cetirun-image.json /etc/hermes/image-provenance.json && \
+    find /usr/local/lib/hermes-agent ! -type l \
+      \( ! -perm -a+r -o -perm /022 -o \( -type d ! -perm -a+x \) \) \
+      -exec chmod a+rX,go-w {} + && \
     chmod 0444 /etc/hermes/image-provenance.json
-USER vibe
 
+ENV HERMES_HOME=/home/vibe/.hermes
+ENV HERMES_INSTALL_DIR=/usr/local/lib/hermes-agent
+ENV HERMES_RUNTIME_DIR=/usr/local/lib/hermes-agent/tools
+ENV HERMES_PYTHON=/usr/local/bin/hermes-python
+ENV HERMES_WEBAPP_DIST=/usr/local/lib/hermes-agent/apps/desktop/dist-webapp
+ENV HERMES_TUI_DIR=/usr/local/lib/hermes-agent/tui-product
+ENV HERMES_DISABLE_LAZY_INSTALLS=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PATH=/usr/local/lib/hermes-agent/libexec:/usr/local/lib/hermes-agent/.venv/bin:$PATH
+
+USER vibe
 WORKDIR /home/vibe
+RUN /usr/local/bin/hermes-python /usr/local/lib/hermes-agent/cetirun_pm/verify.py
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun"
-LABEL org.opencontainers.image.description="CetiRun Hermes gateway image"
+LABEL org.opencontainers.image.description="CetiRun Hermes gateway and Webapp image"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL io.cetirun.hermes.version="${HERMES_VERSION}"
 LABEL io.cetirun.hermes.revision="${HERMES_GIT_SHA}"
-
-ENV HERMES_HOME=/home/vibe/.hermes
-ENV HERMES_INSTALL_DIR=/usr/local/lib/hermes-agent
-ENV HERMES_PYTHON=/usr/local/lib/hermes-agent/venv/bin/python
-ENV HERMES_WEB_DIST=/usr/local/lib/hermes-agent/hermes_cli/web_dist
-ENV HERMES_TUI_DIR=/usr/local/lib/hermes-agent/ui-tui
-ENV HERMES_LAZY_INSTALL_TARGET=/home/vibe/.hermes/lazy-packages
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PATH=/usr/local/lib/hermes-agent/venv/bin:$PATH
 
 COPY --chown=vibe:vibe configs/builtin-skill-sync.sh /usr/local/share/cetirun/builtin-skill-sync.sh
 COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-entrypoint.sh /usr/local/bin/hermes-entrypoint.sh
@@ -175,6 +174,6 @@ COPY --chown=vibe:vibe skills/connected-services/ /home/vibe/.hermes/skills/conn
 RUN chmod 755 /usr/local/bin/hermes-entrypoint.sh \
     /usr/local/share/cetirun/builtin-skill-sync.sh
 
-EXPOSE 8642 7681 9119
+EXPOSE 8642 7681 9120
 
 ENTRYPOINT ["/usr/local/bin/hermes-entrypoint.sh"]

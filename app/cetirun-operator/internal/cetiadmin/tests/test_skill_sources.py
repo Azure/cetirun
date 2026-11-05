@@ -22,7 +22,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "assets/scripts/check_skill_sources.py"
 CHECKSUMS = ROOT / "assets/scripts/legacy_skill_checksums.py"
-HERMES_SHA = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+HERMES_SHA = "b200f5bc60e31588ba2cb60e288029c4a54ba5fa"
 NATIVE_INSTALL = os.environ.get("CETIADMIN_TEST_HERMES_INSTALL_DIR", "")
 NATIVE_PYTHON = os.environ.get("CETIADMIN_TEST_HERMES_PYTHON", sys.executable)
 PRIVATE = "sk-dummy-private-content"
@@ -83,7 +83,7 @@ class SkillSourceBoundaryTests(unittest.TestCase):
     def test_wrong_native_pin_fails_before_import(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / ".hermes_build_sha").write_text("wrong-" + PRIVATE)
+            (root / "install-stamp.json").write_text("wrong-" + PRIVATE)
             result = self.run_cli(env={"HOME": directory, "HERMES_HOME": directory,
                                        "HERMES_INSTALL_DIR": directory})
         self.assertNotEqual(result.returncode, 0)
@@ -93,7 +93,7 @@ class SkillSourceBoundaryTests(unittest.TestCase):
     def test_correct_marker_with_wrong_loader_bytes_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / ".hermes_build_sha").write_text(HERMES_SHA)
+            (root / "install-stamp.json").write_text(json.dumps({"commit": HERMES_SHA, "baseVersion": "0.22.7", "updateMechanism": "external", "distribution": "docker"}))
             (root / "agent").mkdir()
             (root / "agent/skill_utils.py").write_text("raise RuntimeError('" + PRIVATE + "')")
             result = self.run_cli(env={"HOME": directory, "HERMES_HOME": directory,
@@ -176,9 +176,9 @@ runpy.run_path(sys.argv[0], run_name="__main__")
         result = self.run_python('''
 sys.path.insert(0, os.environ["HERMES_INSTALL_DIR"])
 from tools import skills_tool
-projects, roots, _ = skills_tool._skill_search_dirs()
-error, directory, document = skills_tool._locate_skill(sys.argv[1], None, projects, roots)
-candidates = skills_tool._collect_skill_candidates(sys.argv[1], None, roots)
+roots, _ = skills_tool.skill_search_dirs()
+error, directory, document = skills_tool.locate_skill(sys.argv[1], None, roots)
+candidates = skills_tool._collect_skill_candidates(sys.argv[1], None, [d for _, d in roots])
 view = json.loads(skills_tool.skill_view(sys.argv[1], preprocess=False))
 readable_references = []
 if view.get("success"):
@@ -190,7 +190,7 @@ print(json.dumps({
     "error": bool(error), "document": str(document.resolve()) if document else None,
     "candidateCount": len(candidates),
     "viewSuccess": view.get("success"), "readableReferences": sorted(readable_references),
-    "names": sorted(item["name"] for item in skills_tool._find_all_skills()),
+    "names": sorted(item["name"] for item in skills_tool.find_all_skills()),
     "linked": skills_tool._skill_linked_files(directory) if directory else {},
 }))
 ''', name, env={
@@ -220,6 +220,23 @@ print(json.dumps({
         self.script.with_name(CHECKSUMS.name).write_text(
             "MANIFEST = " + repr({"schemaVersion": 1, "packages": [package]}) + "\n")
         return document.parent
+
+    def test_packaged_loader_drift_is_rejected_before_import(self):
+        install = self.root / "changed-install"
+        install.mkdir()
+        shutil.copy2(Path(NATIVE_INSTALL) / "install-stamp.json", install / "install-stamp.json")
+        loaders = ("agent/safe_worker_policy.py", "agent/skill_utils.py", "tools/skills_tool.py", "hermes_constants.py")
+        for name in loaders:
+            target = install / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(NATIVE_INSTALL) / name, target)
+        for name in loaders:
+            with self.subTest(loader=name):
+                target = install / name
+                original = target.read_bytes()
+                target.write_bytes(original + b"\n# unexpected source change\n")
+                self.check("native_version_mismatch", env={"HERMES_INSTALL_DIR": str(install)})
+                target.write_bytes(original)
 
     def test_builtin_is_unique_with_shared_skills_off_and_on(self):
         for shared in (False, True):

@@ -56,6 +56,34 @@ func TestBootstrapKeepsExactTrustAndBoundedConnections(t *testing.T) {
 	}
 }
 
+func TestBindingPreservesHarnessPrimaryPorts(t *testing.T) {
+	for _, tt := range []struct {
+		harness string
+		port    int32
+		valid   bool
+	}{
+		{"openclaw", 9120, true},
+		{"custom", 9120, true},
+		{"openclaw", 9119, false},
+		{"custom", 9119, false},
+		{"hermes", 8642, true},
+		{"hermes", 8080, true},
+		{"hermes", 9119, false},
+		{"hermes", 9120, false},
+	} {
+		binding := Binding{
+			AgentUID: "agent-uid", Namespace: "agent-space", Harness: tt.harness, Port: tt.port,
+			ServerSecret: Reference{Namespace: "agent-space", Name: "agent-tls", UID: "server-uid", ResourceVersion: "1"},
+			ClientSecret: Reference{Namespace: "gateway-space", Name: "client-tls", UID: "client-uid", ResourceVersion: "1"},
+			Gateway:      Reference{Namespace: "gateway-space", Name: "gateway", UID: "gateway-uid", ResourceVersion: "1"},
+			ClientURI:    "spiffe://example.com/gateway/agent-uid",
+		}
+		if err := binding.Validate(); (err == nil) != tt.valid {
+			t.Errorf("%s primary port %d: Validate() = %v, want valid=%t", tt.harness, tt.port, err, tt.valid)
+		}
+	}
+}
+
 func TestDesktopRegistrationPreservesDesktopDisabledApprovals(t *testing.T) {
 	binding := Binding{
 		AgentUID: "agent-uid", Namespace: "agent-space", Harness: "hermes", Port: 8642, Terminal: true,

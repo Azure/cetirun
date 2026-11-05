@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -34,6 +35,12 @@ import (
 // The sealed zero-replica result can only be applied by guarded StageSandbox;
 // InstallOrUpgrade explicitly refuses it, and staging never grants execution.
 func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundle *sandboxworkload.Bundle) (*PreparedRelease, error) {
+	return PrepareSandboxChartWithHarness(chrt, platform, user, bundle, nil)
+}
+
+// PrepareSandboxChartWithHarness uses the supplied harness with the same
+// schema, protected bundle, render and seal validation. Nil selects the built-in registry.
+func PrepareSandboxChartWithHarness(chrt *chart.Chart, platform, user map[string]any, bundle *sandboxworkload.Bundle, harness agents.Harness) (*PreparedRelease, error) {
 	if bundle == nil || chrt == nil || chrt.Metadata == nil || chrt.Metadata.Name != "cetirun" || len(chrt.CRDObjects()) != 0 {
 		return nil, fmt.Errorf("Sandbox requires a native chart and a resolved protected bundle")
 	}
@@ -77,7 +84,7 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 	if options, present := platform["memoryOptions"]; present {
 		merged["memoryOptions"] = options
 	}
-	prepared, err := prepareRuntimeChart(chrt, merged, false)
+	prepared, err := prepareRuntimeChart(chrt, merged, false, harness)
 	if err != nil {
 		return nil, configurationError(err)
 	}

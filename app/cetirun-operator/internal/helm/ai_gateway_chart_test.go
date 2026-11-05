@@ -257,7 +257,7 @@ func TestAIGatewayChartRejectsUnsupportedWiring(t *testing.T) {
 			in["agentType"] = "hermes"
 			in["agentRequest"] = map[string]any{"type": "hermes"}
 			in["extraEnv"] = []any{map[string]any{"name": "CETIRUN_GATEWAY_API_KEY", "value": "example"}}
-		}, "reserved"},
+		}, "runtime inputs"},
 		"no Sidecar scoping": {func(in map[string]any) { in["sidecarScope"] = map[string]any{"enabled": false} }, "sidecarScope.enabled"},
 	}
 	for name, tc := range cases {

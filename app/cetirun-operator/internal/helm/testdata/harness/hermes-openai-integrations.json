@@ -18,7 +18,20 @@
       },
       "model": {
         "default": "test-model",
-        "provider": "openai"
+        "provider": "cetirun-gateway"
+      },
+      "providers": {
+        "cetirun-gateway": {
+          "api": "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1",
+          "default_model": "test-model",
+          "discover_models": false,
+          "key_env": "CETIRUN_GATEWAY_API_KEY",
+          "models": {
+            "test-model": {}
+          },
+          "name": "CetiRun AI Gateway",
+          "transport": "chat_completions"
+        }
       },
       "security": {
         "redact_secrets": true
@@ -36,13 +49,13 @@
     }
   },
   "manifestHashes": {
-    "configmap.yaml": "d558d87a2511b4602dbca768288b1f25683d93d21dcaf80dd138361955d2c7ba",
+    "configmap.yaml": "0b1656be50cd0c325454042e400ec3cd9da770fffb560f995647b1d3da7f7859",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
-    "networkpolicy.yaml": "587fc15149d71dbad452024d351b82a3c6e0851a2381b57e105cd0b3dd7e78cb",
+    "networkpolicy.yaml": "af8744e3a2c41de2387500c84832546cd1c71cb6431b9a2d10c626bf75ea96b2",
     "pre-upgrade-hook.yaml": "c70e9f82a181759993f2ea33f7d02cc5add4f5d90622134d0b881222fc0f63ee",
-    "service.yaml": "2c46a85b6298b43a6f088229526deb02862d931d21b81a601f61113e8a341269",
+    "service.yaml": "52e4408419d03e5bdfe7d821f93607c1693d8a7059927a160bf56ccbe0c0a6b2",
     "shared-skills-pv.yaml": "38c08b871f0dfe5237fff4c92fd6622e54c9b81edec9bcb10c79f68075035e77",
     "shared-skills-pvc.yaml": "d5af7044cd33fb9d6ddacb1d23aa2fbcc17d0ddcbfa42f9e10f2a7103ab75d7d",
-    "statefulset.yaml": "056df41173a1ea7d379404e1df01b521b1084e14d117c42d1a631774b0549cb1"
+    "statefulset.yaml": "0f80824f2b2042a5cb782adf25fd72ade82bf8f2cbe0b0a017b45b21f22e14c0"
   }
 }

@@ -45,7 +45,8 @@ CHARTS = (
         ),
     ),
     ("app/cetirun-chart", ("agentType=hermes", "secrets.model=lint-model",
-        "aiGateway.keySecretName=lint-model-key", "secrets.apiBase=http://gateway.example.com/v1")),
+        "aiGateway.keySecretName=lint-model-key", "secrets.apiBase=http://gateway.example.com/v1",
+        "hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://agents.example.com/ui/validation")),
     ("app/cetirun-operator/chart", ("cetiadmin.enabled=false",)),
     ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",)),
     (
@@ -300,12 +301,12 @@ def workflow_gate(root):
 
 def python_tests(root):
     require_file(root / "scripts/ci/python_safety.py")
-    # Fail missing packages rather than replacing the real HTTP and YAML libraries.
+    # Check the actual HTTP and configuration parsers before running the suites.
     run(
         [
             sys.executable,
             "-c",
-            "import pytest, aiohttp, yaml",
+            "import pytest, aiohttp, yaml; from dotenv.parser import parse_stream",
         ],
         root,
         env=offline_env(),

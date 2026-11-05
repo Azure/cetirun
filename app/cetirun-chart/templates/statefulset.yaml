@@ -210,6 +210,11 @@ spec:
             - name: config
               mountPath: /etc/cetirun
               readOnly: true
+            {{- if eq (include "cetirun.agent.type" .) "hermes" }}
+            - name: hermes-managed
+              mountPath: /etc/cetirun/hermes-managed
+              readOnly: true
+            {{- end }}
             {{- if $emptySkills }}
             - name: empty-skills
               mountPath: /home/vibe/.aks/skills
@@ -307,6 +312,15 @@ spec:
               {{- end }}
               {{- end }}
             {{- end }}
+        {{- if eq (include "cetirun.agent.type" .) "hermes" }}
+        - name: hermes-managed
+          configMap:
+            name: {{ include "cetirun.configMapName" . }}
+            defaultMode: 0444
+            items:
+              - key: hermes-managed.yaml
+                path: config.yaml
+        {{- end }}
         - name: secrets
           secret:
             secretName: {{ include "cetirun.secretName" . }}

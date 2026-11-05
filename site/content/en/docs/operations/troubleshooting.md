@@ -116,16 +116,16 @@ exemptions, refer to [Istio operations](../istio/).
 | Interface | Default |
 | --- | --- |
 | OpenClaw gateway | `18789` |
-| Hermes API / native dashboard | `8642` / `9119` |
+| Hermes API / native Webapp | `8642` / `9120` |
 | Desktop noVNC / Chrome debugging | `6080` / `18800` |
 | ttyd terminal | `7681` |
 
 By default, the chart enables the desktop, ttyd, and session logging. Keep the
 debug and terminal endpoints behind the intended authenticated path.
 
-OpenClaw startup probes use `/health`. OpenClaw liveness and readiness probes
-both use `/healthz` on the gateway port. Hermes uses `/health` for all three
-probes on the API port, not on its dashboard. Examine the actual StatefulSet,
+OpenClaw uses `/startupz`, `/healthz`, and `/readyz` for startup, liveness, and
+readiness on its gateway port. Hermes checks `/health` on its API port; startup
+and readiness also check Webapp health and built assets. Examine the actual StatefulSet,
 because overrides and the way that sidecars handle probes can affect the
 effective pod configuration.
 Sources: [OpenClaw probes]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}})

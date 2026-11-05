@@ -222,7 +222,7 @@ also refused.
                     "podSelector": {"istio": "aks-istio-ingressgateway-external"}},
            "trustedProxyCIDRs": ["10.244.0.0/16"],
            "ports": [{"port": 18789, "protocol": "TCP"}, {"port": 7681, "protocol": "TCP"},
-                     {"port": 8642, "protocol": "TCP"}, {"port": 9119, "protocol": "TCP"}]}
+                     {"port": 8642, "protocol": "TCP"}, {"port": 9120, "protocol": "TCP"}]}
         ],
         "podCIDRs": ["10.244.0.0/16"],
         "serviceCIDRs": ["172.16.0.0/16"],
@@ -268,7 +268,7 @@ they describe.
 The ingress entry selects the Pods of the AKS-managed ingress gateway by their
 own label. As a result, you do not have to change this entry after a gateway
 rollout. The ports are OpenClaw's UI (`18789`), the terminal (`7681`), and
-Hermes' API and Dashboard (`8642`, `9119`). For its conditions, see
+Hermes' API and Webapp (`8642`, `9120`). For its conditions, see
 [rollout-stable managed ingress]({{< repo "examples/native-sandbox/README.md" >}}#rollout-stable-managed-ingress).
 For every field, see the
 [capability registration]({{< repo "app/cetirun-operator/README.md" >}}#retained-single-start-profile-and-capability-registration).

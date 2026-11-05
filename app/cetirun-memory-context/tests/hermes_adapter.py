@@ -21,9 +21,26 @@ session_context = types.ModuleType("gateway.session_context")
 session_context.get_session_env = lambda name: "hermes-fixture" if name == "HERMES_SESSION_ID" else ""
 sys.modules["gateway"] = types.ModuleType("gateway")
 sys.modules["gateway.session_context"] = session_context
+session_policy = types.ModuleType("gateway.session_policy")
+session_policy.active_policy = lambda: types.SimpleNamespace(source="gui", platform="desktop")
+sys.modules["gateway.session_policy"] = session_policy
+owner_identity = types.ModuleType("gateway.owner_identity")
+owner_identity.host_owner_subject = lambda: "uid:1024"
+owner_identity.same_owner = lambda stored, subject: stored == subject
+sys.modules["gateway.owner_identity"] = owner_identity
 spec = importlib.util.spec_from_file_location("memory_plugin", root / "adapters/hermes/__init__.py")
 plugin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plugin)
+
+assert plugin.owner_private_session("desktop", "", "uid:1024")
+assert not plugin.owner_private_session("desktop", "parent", "uid:1024")
+assert not plugin.owner_private_session("desktop", "", "uid:9999")
+assert not plugin.owner_private_session("desktop", "", "")
+assert not plugin.owner_private_session("discord", "", "uid:1024")
+session_policy.active_policy = lambda: None
+assert not plugin.owner_private_session("desktop", "", "uid:1024")
+session_policy.active_policy = lambda: types.SimpleNamespace(source="discord", platform="desktop")
+assert not plugin.owner_private_session("desktop", "", "uid:1024")
 
 
 class Host:

@@ -34,7 +34,7 @@ def workload_auth(httpx, endpoint, existing=None):
     if not target or endpoint != target:
         return existing
     parsed = urlsplit(target)
-    if parsed.scheme != "https" or parsed.path != "/mcp" or parsed.username or parsed.password or parsed.query or parsed.fragment:
+    if parsed.scheme != "https" or not parsed.hostname or parsed.path != "/mcp" or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("Invalid platform MCP endpoint")
 
     class WorkloadAuth(httpx.Auth):

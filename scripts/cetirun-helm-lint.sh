@@ -32,6 +32,7 @@ for values_file in "${values_files[@]}"; do
       --set agentType=hermes \
       --set aiGateway.keySecretName=lint-model-key \
       --set-string secrets.apiBase=http://gateway.example.com/v1 \
+      --set-string hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://agents.example.com/ui/cetirun \
       --set-string secrets.model=lint-model
   fi
 done

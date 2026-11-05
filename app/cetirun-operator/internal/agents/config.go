@@ -166,8 +166,8 @@ func Build(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) (Contr
 		return Contribution{}, err
 	}
 	ports := []PortBinding{{Name: descriptor.PortName, Number: *agent.Port}}
-	if descriptor.DashboardPort != 0 {
-		ports = append(ports, PortBinding{Name: "dashboard", Number: descriptor.DashboardPort})
+	if descriptor.WebappPort != 0 {
+		ports = append(ports, PortBinding{Name: "webapp", Number: descriptor.WebappPort})
 	}
 	// The in-agent model sign-in helper serves the Portal's Copilot login in
 	// charts that still carry it.

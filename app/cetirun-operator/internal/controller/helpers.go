@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,8 +36,8 @@ const (
 	// hermesAPIPort is the port the Hermes OpenAI-compatible API listens on.
 	hermesAPIPort = 8642
 
-	// hermesDashboardPort is the port the native Hermes Dashboard listens on.
-	hermesDashboardPort = 9119
+	// hermesWebappPort is the port the native Hermes Webapp listens on.
+	hermesWebappPort = 9120
 
 	// ttydPort is the port ttyd web terminal listens on.
 	ttydPort = 7681
@@ -124,6 +125,12 @@ const agentIdentityRuntimeRevision = "native-mcp-v1"
 
 func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, gwSecretHash, teamRV string) string {
 	config := []string{}
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeHermes {
+		harness, _ := builtin.NewRegistry().Lookup("hermes")
+		profile := harness.Describe()
+		config = append(config, "hermes-webapp/v1", profile.NativeVersion, profile.NativeCommit,
+			strconv.Itoa(int(profile.DefaultPort)), strconv.Itoa(int(profile.WebappPort)))
+	}
 	if enabled, err := r.connectionsMCPEnabledFor(instance); err != nil {
 		config = append(config, "invalid-connections-mcp-runtime-types", strings.Join(r.ConnectionsMCPRuntimeTypes, ","))
 	} else if enabled {
@@ -414,7 +421,8 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	if agentType == cetirunv1alpha1.AgentTypeHermes && domainSuffix != "" {
 		values["hermes"] = deepMerge(values["hermes"], map[string]interface{}{
 			"env": map[string]interface{}{
-				"HERMES_DASHBOARD_PUBLIC_URL": fmt.Sprintf("https://%s/ui/%s", domainSuffix, instance.Name),
+				"HERMES_WEBAPP_PUBLIC_URL": fmt.Sprintf("https://%s/ui/%s", domainSuffix, instance.Name),
+				"API_SERVER_CORS_ORIGINS":  hermesCORSOrigins(domainSuffix),
 			},
 		})
 	}
@@ -775,7 +783,7 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		if instance.Spec.Agent.WebUI && instance.Spec.Agent.Port != nil {
 			routes = append(routes, makeRedirect(uiPrefix), makeRoute(uiPrefix+"/", uiPrefix+"/", primaryPort, 0))
 		}
-	} else if descriptor.DashboardPort != 0 {
+	} else if descriptor.WebappPort != 0 {
 		routes = append(routes,
 			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
 			makeRoute(uiPrefix+descriptor.HealthPath, descriptor.HealthPath, primaryPort, 0),
@@ -784,13 +792,13 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),
 		)
-		dashboardRoute := makeRoute(uiPrefix+"/", "/", uint32(descriptor.DashboardPort), 0)
-		dashboardRoute.Headers = &istioapiv1beta1.Headers{
+		webappRoute := makeRoute(uiPrefix+"/", "/", uint32(descriptor.WebappPort), 0)
+		webappRoute.Headers = &istioapiv1beta1.Headers{
 			Request: &istioapiv1beta1.Headers_HeaderOperations{
-				Add: map[string]string{"x-forwarded-prefix": uiPrefix},
+				Set: map[string]string{"x-forwarded-prefix": uiPrefix},
 			},
 		}
-		routes = append(routes, dashboardRoute)
+		routes = append(routes, webappRoute)
 	} else {
 		// OpenClaw's Control UI normalizes controlUi.basePath by removing the
 		// trailing slash before constructing its WebSocket URL. Preserve the

@@ -155,11 +155,11 @@ access. This does not automatically replace a key that was already revoked or
 lost.
 
 When Memory Context is enabled, reconciled OpenClaw and Hermes lifetimes
-compose the common instructions and Memory skills into the read-only
-`$HOME/.agents` view during HOME initialization. With a shared publication,
-the shared skills alias exposes that same composed view. No separate PVC mount
-hides that view. The temporary context volume keeps the Sandbox scratch size
-bound. If you disable Memory, the shared skills mount is direct, as before.
+mount the common instructions read-only at `$HOME/.agents/AGENTS.md` and load
+the platform Memory skill from `/opt/cetirun-memory/skills`. Personal files
+elsewhere in `$HOME/.agents` remain writable. Shared skills use a direct
+read-only PVC mount, so published updates remain visible during the Pod's
+lifetime. The temporary context volume keeps the Sandbox scratch size bound.
 Legacy single-start lifetimes do not enable this context path.
 
 In the Operator values, explicitly select:
@@ -684,7 +684,7 @@ Replace the synthetic UID, namespace, labels, Pod CIDRs, and workload ports
 with the approved target inventory. Use a stable gateway identity, for example
 its Deployment UID, not a Pod UID. The registration declares that identity. It
 does not discover or independently examine the Deployment. For native Hermes,
-register its API port (`8642`) and Dashboard port (`9119`) instead of the
+register its API port (`8642`) and Webapp port (`9120`) instead of the
 OpenClaw port above. Refer to
 [Create, connect and use](#create-connect-and-use).
 
@@ -796,8 +796,8 @@ before you continue. Do not retry creation or delete by name.
    destinations must accept only the approved ingress peers.
 
    For a native Hermes Agent, the destinations must include its API port,
-   `8642`, and its Dashboard port, `9119`. The Portal routes `/ui/<agent>/` to
-   this Dashboard port. Without these ports, the Hermes UI times out at the
+   `8642`, and its Webapp port, `9120`. The Portal routes `/ui/<agent>/` to
+   this Webapp port. Without these ports, the Hermes UI times out at the
    ingress.
 
    This is an explicit owner approval, not Kubernetes Pod exec or disabled

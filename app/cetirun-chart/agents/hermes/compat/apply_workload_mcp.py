@@ -8,8 +8,26 @@ import hashlib
 from pathlib import Path
 
 
-EXPECTED_SHA256 = "915023c572f5cb56d0a99e7709a9d358be3a3c00cbd9f02fe7327815ffa7a8a0"
+EXPECTED_SHA256 = "4d2fc8bb580e9a292ee9314da9cc13a7b929b583f83f751dfd97e543688426cb"
 REPLACEMENTS = (
+    (
+        '        probe_transport = _httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))\n',
+        '        from cetirun_compat.workload_mcp import workload_auth, workload_tls\n'
+        '        platform_auth = workload_auth(_httpx, url)\n'
+        '        ssl_verify = workload_tls(url, ssl_verify)\n'
+        '        probe_transport = _httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))\n',
+    ),
+    (
+        '                    follow_redirects=True, timeout=_httpx.Timeout(timeout), transport=probe_transport,\n',
+        '                    follow_redirects=not getattr(platform_auth, "is_cetirun_workload", False),\n'
+        '                    auth=platform_auth, timeout=_httpx.Timeout(timeout), transport=probe_transport,\n',
+    ),
+    (
+        '        if strict_cfg_headers:  # fail closed: SSE cannot enforce the redirect boundary\n',
+        '        if getattr(oauth_auth, "is_cetirun_workload", False):\n'
+        '            raise ValueError("Platform MCP requires Streamable HTTP")\n'
+        '        if strict_cfg_headers:  # fail closed: SSE cannot enforce the redirect boundary\n',
+    ),
     (
         '        if not _core._MCP_NEW_HTTP:\n',
         '        if not _core._MCP_NEW_HTTP and getattr(oauth_auth, "is_cetirun_workload", False):\n'
@@ -28,7 +46,7 @@ REPLACEMENTS = (
         '        if getattr(platform_auth, "is_cetirun_workload", False) and (config.get("ssl_verify", True) is not True or config.get("transport") == "sse"):\n'
         '            raise ValueError("Platform MCP requires verified TLS and Streamable HTTP")\n'
         '        common = (url, headers, connect_timeout, workload_tls(url, config.get("ssl_verify", True)), _resolve_client_cert(self.name, config),\n'
-        '                  platform_auth, bool(config.get("strict_redirect_headers")))\n',
+        '                  platform_auth, bool(config.get("strict_redirect_headers")) or getattr(platform_auth, "is_cetirun_workload", False))\n',
     ),
 )
 

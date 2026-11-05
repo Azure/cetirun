@@ -33,7 +33,7 @@ func configureRolloutStableIngress(t *testing.T, kind string) func(*AgentReconci
 		ingress.Peer.PodSelector = map[string]string{"istio": "aks-istio-ingressgateway-external"}
 		ingress.TrustedProxyCIDRs = []string{"10.244.0.0/16"}
 		if kind == "hermes" {
-			ingress.Ports = []api.AgentPolicyPort{{Port: 8642, Protocol: corev1.ProtocolTCP}, {Port: 9119, Protocol: corev1.ProtocolTCP}}
+			ingress.Ports = []api.AgentPolicyPort{{Port: 8642, Protocol: corev1.ProtocolTCP}, {Port: 9120, Protocol: corev1.ProtocolTCP}}
 		}
 		document.Platforms[api.SandboxKata] = platform
 		raw, err := json.Marshal(document)

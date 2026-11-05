@@ -98,11 +98,11 @@ separate Tailscale sidecar.
 | Runtime | Default Serve target | Access boundary |
 | --- | --- | --- |
 | OpenClaw | `http://localhost:18789` | Gateway. Its configured `/ui/<instance>` base path still applies. |
-| Hermes | `http://localhost:8642` | API server that uses `API_SERVER_KEY`, not the Dashboard on 9119 |
+| Hermes | `http://localhost:8642` | API server that uses `API_SERVER_KEY`, not the Webapp on 9120 |
 
 As a result, the tailnet URL is not another copy of the portal, the browser
-terminal, or the desktop. Do not expose the Hermes Dashboard directly.
-Hermes 0.21.5 rejects an unauthenticated non-loopback Dashboard. CetiRun
+terminal, or the desktop. Do not expose the Hermes Webapp directly.
+Hermes 0.22.7 rejects an unauthenticated non-loopback Webapp. CetiRun
 configures the Hermes built-in password provider in addition to the platform
 access path.
 

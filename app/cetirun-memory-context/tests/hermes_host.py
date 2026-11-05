@@ -3,7 +3,7 @@
 
 """Exercise the pinned native host APIs with synthetic files and a loopback model.
 
-Requires separately provisioned Hermes v2026.9.24 sources and dependencies;
+Requires separately provisioned Hermes v0.22.7 PM sources and dependencies;
 never installs packages or reads an existing profile.
 """
 
@@ -14,16 +14,24 @@ import os
 from pathlib import Path
 import sys
 import threading
-import tomllib
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 source = Path(os.environ["MEMORY_HERMES_SOURCE"])
-assert tomllib.loads((source / "pyproject.toml").read_text())["project"]["version"] == "0.21.5"
+assert sys.version_info[:2] == (3, 14), "Hermes qualification requires its PM Python 3.14"
 sys.path.insert(0, str(source))
 root = Path(os.environ["MEMORY_TEST_ASSETS"])
 workspace = os.environ["MEMORY_TEST_WORKSPACE"]
 Path(os.environ["HERMES_HOME"]).mkdir()
+
+from hermes_cli.version_info import get_version_info
+
+identity = get_version_info()
+assert identity.base_version == "0.22.7" and identity.distance == 0
+assert identity.commit == "b200f5bc60e31588ba2cb60e288029c4a54ba5fa"
+assert identity.source == "docker" and identity.distribution == "docker"
+assert json.loads((source / "install-stamp.json").read_text())["updateMechanism"] == "external"
 
 from hermes_cli import plugins
 from hermes_cli.middleware import apply_llm_request_middleware
@@ -42,6 +50,36 @@ assert registry.get_entry("cetirun_memory", scope=manager.scope_key) is not None
 assert registry.get_definitions({"cetirun_memory"})[0]["function"]["name"] == "cetirun_memory"
 
 with patch.object(plugins, "get_plugin_manager", return_value=manager):
+    from agent.turn_context import _collect_pre_llm_call_context
+    from gateway.owner_identity import host_owner_subject
+    from gateway.session_policy import build_policy, policy_scope
+
+    policy = build_policy({"source": "gui", "cwd": workspace, "model": "fixture"}, {})
+    for name, platform, parent, sender, private in (
+        ("webapp-owner", "desktop", "", host_owner_subject(), True),
+        ("webapp-channel", "discord", "", "synthetic-channel-user", False),
+        ("webapp-child", "desktop", "webapp-owner", host_owner_subject(), False),
+        ("webapp-other-owner", "desktop", "", "uid:987654", False),
+        ("api-owner", "api_server", "", "", True),
+    ):
+        agent = SimpleNamespace(session_id=name, platform=platform, _parent_session_id=parent,
+                                _user_id=sender, model="fixture")
+        with policy_scope(policy if platform == "desktop" else None):
+            _collect_pre_llm_call_context(agent, effective_task_id=name, turn_id=name + "-turn",
+                original_user_message="Synthetic owner question", messages=[], conversation_history=[])
+        original = {"messages": [{"role": "user", "content": "Synthetic request"}]}
+        result = apply_llm_request_middleware(original, session_id=name, provider="openai", model="fixture",
+                                              api_mode="chat_completions")
+        assert result.changed is private, name
+        assert len(original["messages"]) == 1
+        if private and platform == "desktop":
+            with policy_scope(policy):
+                _collect_pre_llm_call_context(agent, effective_task_id=name, turn_id=name + "-off",
+                    original_user_message="/memory off", messages=[], conversation_history=[])
+            disabled = apply_llm_request_middleware(original, session_id=name, provider="openai", model="fixture",
+                                                     api_mode="chat_completions")
+            assert adapter.MEMORY_OFF in json.dumps(disabled.payload)
+
     manager.invoke_hook("pre_llm_call", session_id="native-hermes", platform="cli", turn_id="owner-pref",
                         model="fixture", user_message="Remember my preference: use synthetic concise examples")
     request = {"messages": [{"role": "user", "content": "Native history stays unchanged"}]}

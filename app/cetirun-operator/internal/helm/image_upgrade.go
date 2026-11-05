@@ -40,20 +40,21 @@ func resolveImageUpgrade(previous *release.Release, version, kind, image, regist
 		previous.Chart.Metadata.Version == version || kind != "openclaw" && kind != "hermes" {
 		return image, nil
 	}
-	harness, err := builtin.NewRegistry().Lookup(kind)
-	if err != nil {
-		return "", err
-	}
-	oldProfile, err := loadRuntimeProfile(previous.Chart, harness.Describe(), registry)
-	if err != nil {
-		return "", err
-	}
-	if image != oldProfile.Image {
-		return image, nil
-	}
 	deployed := object(object(previous.Config["runtime"])["agent"])
 	if text(deployed["type"]) != kind || text(deployed["image"]) != image {
 		return image, nil
+	}
+	// Historical default images do not require today's native runtime profile.
+	oldImage, err := defaultRuntimeImage(previous.Chart, kind, registry)
+	if err != nil {
+		return "", err
+	}
+	if image != oldImage {
+		return image, nil
+	}
+	harness, err := builtin.NewRegistry().Lookup(kind)
+	if err != nil {
+		return "", err
 	}
 	target, err := loadTarget()
 	if err != nil {

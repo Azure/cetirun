@@ -117,17 +117,17 @@ actual bound resources, selectors, owner references, and UIDs before acting.
 | Runtime endpoint | Current native port | Meaning |
 | --- | --- | --- |
 | Hermes API | 8642 | Native API; health path `/health` |
-| Hermes Dashboard | 9119 | Native browser UI; not a public unauthenticated endpoint |
+| Hermes Webapp | 9120 | Native browser UI; not a public unauthenticated endpoint |
 | OpenClaw Gateway | 18789 | Ordinary OpenClaw only; `/healthz`, `/readyz`, `/startupz` |
 | ttyd | 7681 | Optional native web terminal |
 | noVNC | 6080 | Optional desktop browser endpoint |
 | x11vnc | 5900 | Desktop-internal VNC listener, not a public route |
 | Chrome CDP | 18800 | Desktop browser control, not a public route |
-| Managed ingress mTLS | 15443 / 15444 / 15445 / 15446 | API / Dashboard / terminal / desktop proxy listeners when that target has the approved mTLS binding |
+| Managed ingress mTLS | 15443 / 15444 / 15445 / 15446 | API / Webapp / terminal / desktop proxy listeners when that target has the approved mTLS binding |
 
 Use the selected profile's resolved port and the actual Service/route. Do not
 replace a bound TLS destination with the table's plaintext backend, or route
-every runtime to 18789. Current profiles are Hermes 0.21.5 and OpenClaw 2026.9.6;
+every runtime to 18789. Current profiles are Hermes 0.22.7 and OpenClaw 2026.9.6;
 the paired image/Chart qualification determines their use in an installed
 release. Custom ports and endpoint modes come from that target's explicit spec.
 

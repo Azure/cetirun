@@ -161,7 +161,7 @@ func testReconciledSandboxIngressMTLS(t *testing.T, runtimeType api.SandboxType)
 					}
 				}
 				if kind == "hermes" {
-					for _, name := range []string{"API_SERVER_HOST", "HERMES_DASHBOARD_HOST"} {
+					for _, name := range []string{"API_SERVER_HOST", "HERMES_WEBAPP_HOST"} {
 						if !slices.ContainsFunc(main.Env, func(env corev1.EnvVar) bool {
 							return env.Name == name && env.Value == "127.0.0.1"
 						}) {
@@ -177,7 +177,7 @@ func testReconciledSandboxIngressMTLS(t *testing.T, runtimeType api.SandboxType)
 					if err := f.kube.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: workload.Name + "-config"}, config); err != nil {
 						t.Fatal(err)
 					}
-					if !strings.Contains(config.Data["hermes-mtls-gateway.sh"], "--ingress-mtls --listeners-only") {
+					if !strings.Contains(config.Data["hermes-gateway.sh"], "hermes-runtime.py check") || !strings.Contains(config.Data["hermes-managed.yaml"], "port: 9120") {
 						t.Fatal("Hermes supervised restarts omitted the current HOME authority helper")
 					}
 				} else {
@@ -213,7 +213,7 @@ func testReconciledSandboxIngressMTLS(t *testing.T, runtimeType api.SandboxType)
 					t.Fatal("admission accepted removal of the TLS endpoint")
 				}
 				if kind == "hermes" {
-					for _, name := range []string{"API_SERVER_HOST", "API_SERVER_PORT", "HERMES_DASHBOARD_HOST", "HERMES_DASHBOARD_PORT", "TTYD_PORT"} {
+					for _, name := range []string{"API_SERVER_HOST", "API_SERVER_PORT", "API_SERVER_CORS_ORIGINS", "HERMES_WEBAPP_HOST", "HERMES_WEBAPP_PORT", "HERMES_WEBAPP_PUBLIC_URL", "HERMES_MANAGED_DIR", "TTYD_PORT"} {
 						modified := pod.DeepCopy()
 						for index := range modified.Spec.Containers[0].Env {
 							if modified.Spec.Containers[0].Env[index].Name == name {

@@ -20,6 +20,7 @@ fi
 helm_template() {
   helm template --set aiGateway.keySecretName=lint-model-key \
     --set-string secrets.apiBase=http://gateway.example.com/v1 \
+    --set-string hermes.env.HERMES_WEBAPP_PUBLIC_URL=https://agents.example.com/ui/cetirun \
     "$@" --set-string secrets.model=lint-model
 }
 
@@ -282,6 +283,9 @@ for agent_type in openclaw hermes; do
     --set secrets.existingSecret=lint-secret --set ttyd.enabled=true --set ttyd.port=5900 >/dev/null 2>&1; then
     echo "FAIL: ttyd port 5900 should conflict with desktop VNC" >&2; exit 1
   fi
+  helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
+    --set secrets.existingSecret=lint-secret --set ttyd.enabled=true --set ttyd.port=5900 \
+    --set desktop.enabled=false >/dev/null
 done
 
 # Test variant: desktop enabled (default)
