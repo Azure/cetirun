@@ -200,6 +200,13 @@ hook schema download still stops deployment. Resolve schema access or populate
 the client's genuine discovery cache before retrying; do not skip the
 CetiAdmin hooks. The option never suppresses their installation checks.
 
+Primary runtime images are governed by the published runtime chart's defaults
+and qualified image list. Do not put `image`, `hermes.image`, or
+`openclaw.image` in `cetirun.helmValues`; the Operator rejects those overrides.
+Publish trusted runtime image pins in the chart, then select an exact approved
+reference with `spec.agent.image` or `cetiadmin.runtime.image`. Helper image
+pins such as `desktop.image.digest` remain separate settings.
+
 Before a write, the command also examines these items:
 
 - The configured admission CA and service DNS name

@@ -351,6 +351,24 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         chart = yaml.safe_load((ROOT / "app/cetirun-operator/chart/values.yaml").read_text())["customRuntime"]
         self.assertLessEqual(set(chart), operator_custom_runtime_fields())
 
+    def test_primary_runtime_image_overrides_fail_before_external_commands(self):
+        for field in ("image", "hermes.image", "openclaw.image"):
+            for value in ({}, {"digest": "sha256:" + "a" * 64}):
+                with self.subTest(field=field, value=value):
+                    config = copy.deepcopy(self.config)
+                    DEPLOY.set_value(config["platform"]["values"]["cetirun-operator"], "cetirun.helmValues." + field, value)
+                    with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                        with self.assertRaisesRegex(ValueError, "Remove primary image overrides"):
+                            self.configure(config)
+
+    def test_helper_image_pins_remain_valid(self):
+        config = copy.deepcopy(self.config)
+        for field in ("desktop.image.digest", "ttyd.image.digest"):
+            DEPLOY.set_value(config["platform"]["values"]["cetirun-operator"], "cetirun.helmValues." + field, "sha256:" + "a" * 64)
+        _, values = self.configure(config)
+        for field in ("desktop.image.digest", "ttyd.image.digest"):
+            self.assertEqual(DEPLOY.get_value(values["platform"]["cetirun-operator"]["cetirun"]["helmValues"], field), "sha256:" + "a" * 64)
+
     def test_failed_command_names_the_step_without_output_files_or_context(self):
         config, values = self.configure(self.config)
         deployment = DEPLOY.Deployment(config, values, self.root)

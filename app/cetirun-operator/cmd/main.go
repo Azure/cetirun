@@ -172,11 +172,12 @@ func main() {
 		RepoURL: chartRepoURL,
 		Version: chartVersion,
 	}
-	// Extract the registry hostname from the chart repo URL (e.g.
-	// "oci://registry.example.com/helm/cetirun" → "registry.example.com").
-	// This is passed to the reconciler to override the chart's default
-	// image.repository so that all clusters pull images from the correct ACR.
-	chartRegistry := extractRegistryHost(chartRepoURL)
+	// Derive the image registry from the chart repo URL (e.g.
+	// "oci://registry.example.com/staging/helm/cetirun" →
+	// "registry.example.com/staging"). This is passed to the reconciler to
+	// override the chart's default image.repository so that all clusters pull
+	// images from the same publication prefix as their selected chart.
+	chartRegistry := imageRegistryFromChartRepoURL(chartRepoURL)
 	if !memoryEnabled {
 		memoryImage = ""
 	}
@@ -187,7 +188,7 @@ func main() {
 			"hermes", chartRegistry+"/hermes-gateway",
 			"desktop", chartRegistry+"/cetirun-desktop")
 	} else {
-		setupLog.Info("Could not extract registry host from chart repo URL, using chart default image.repository")
+		setupLog.Info("Could not derive image registry from chart repo URL, using chart default image.repository")
 	}
 
 	if err := chartRef.Validate(); err != nil {
@@ -313,7 +314,7 @@ func main() {
 		CetiRunHelmValues:                  cetirunHelmValues,
 		MemoryImage:                        memoryImage,
 		MemoryEnabled:                      memoryEnabled,
-		MemoryRegistry:                     memoryRegistry(chartRepoURL),
+		MemoryRegistry:                     chartRegistry,
 		ChartRegistry:                      chartRegistry,
 		DefaultModel:                       defaultModel,
 		RegistryCredentialNamespace:        getEnvOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", registryauth.DefaultNamespace),
@@ -423,8 +424,14 @@ func getEnvOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
-func memoryRegistry(repoURL string) string {
+// imageRegistryFromChartRepoURL returns the image registry and optional
+// publication prefix for the standard CetiRun chart repository layout. For
+// other paths, it preserves the historical hostname-only fallback.
+func imageRegistryFromChartRepoURL(repoURL string) string {
 	registry := extractRegistryHost(repoURL)
+	if registry == "" {
+		return ""
+	}
 	// Published charts and images share the registry prefix, including staging
 	// paths. The hostname alone would select a different image repository.
 	if prefix, ok := strings.CutSuffix(strings.TrimPrefix(repoURL, "oci://"), "/helm/cetirun"); ok {
