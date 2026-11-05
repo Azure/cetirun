@@ -27,8 +27,10 @@ provision the cluster or qualify a Sandbox. Do not interpret its workload waits
 as an end-to-end Agent or model-readiness check.
 
 The full `make deploy` path must have the published artifact inventory, identity
-inputs, shared model tiers, and the `auto`/`decision-1` configuration described
-below. Before you start that path, make sure that you have these prerequisites.
+inputs, and callable shared models. Its default routing mode also requires
+shared model tiers and the `auto`/`decision-1` configuration described below.
+Explicit `modelRouting.mode: direct` omits that classifier dependency. Before
+you start, make sure that you have the prerequisites for the selected mode.
 A provider quota or account restriction is not a slow Pod startup.
 
 A Copilot-only installation instead uses the
@@ -55,7 +57,7 @@ The file contains these inputs:
 | Input | Meaning |
 | --- | --- |
 | `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
-| `release` | Registry with any repository prefix, release version, and full source Git SHA |
+| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images |
 | `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
 | `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
@@ -83,6 +85,13 @@ kubectl config view --minify --context <context> \
 kubectl get namespace kube-system --context <context> -o jsonpath='{.metadata.uid}{"\n"}'
 ```
 
+`release.excludeImages` can omit a declared optional artifact, currently only
+`cetirun-vscode`. It must be the same selection used during publication. Remove
+every reference to an excluded image, including a Custom runtime
+`approvedImages` digest; the helper rejects a configuration that still
+references it. When the Agent CRD already exists, it also stops before a Helm
+write if a retained Custom Agent still uses that image.
+
 If the Operator must have registry credentials to pull the runtime chart, set
 `platform.values.cetirun-operator.acrDockerSecret` to a
 `kubernetes.io/dockerconfigjson` Secret in the platform namespace. The helper
@@ -109,7 +118,7 @@ and does not convert their values. Before you remove them from an older
 environment file, confirm the intended model access against the running Operator
 configuration.
 
-Configure the logical model `auto` with `auto_router/complexity_router`,
+By default, `modelRouting.mode` is `auto`. Configure the logical model `auto` with `auto_router/complexity_router`,
 `classifier_type: jev`, and `jev_classifier_config.deployment_name: decision-1`.
 The separate `decision-1` entry refers to the real `azure_ai/<deployment>` and
 uses `model_info.base_model: azure_ai/Microsoft-Decision-1` with
@@ -129,6 +138,24 @@ The router's price fields are necessary guard metadata, not an average of route
 prices. Use the highest real tier rates. Billing stays on the selected backend
 and classifier. Do not copy the synthetic fixture prices into service.
 
+For an environment without Decision-1 quota, explicitly set:
+
+```yaml
+modelRouting:
+  mode: direct
+```
+
+Keep at least one callable shared model in
+`platform.values.cetirun-ai-gateway.models`. The model mode must be omitted,
+empty, `chat`, `completion`, or `responses`; embedding and evaluation models
+cannot serve Agent conversations. Omit `auto`, `decision-1`, and
+classifier or `auto_router/` entries. If CetiAdmin is enabled, set
+`platform.values.cetirun-operator.cetiadmin.model.default` to one of these
+configured model names. Direct mode does not provide automatic model routing.
+All identity, certificate, Secret, artifact, storage, admission, and pricing
+checks still apply. After quota is available, provision and qualify Decision-1,
+restore the router entries, and select `mode: auto`.
+
 Run the offline plan first:
 
 ```bash
@@ -136,8 +163,8 @@ make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 ```
 
 The plan validates the inputs and renders local charts in a temporary
-directory. Its JSON lists the target, releases, workloads, all 13 images and 8
-charts, and `referenceCounts` by resource kind. The JSON does not contain
+directory. Its JSON lists the target, releases, workloads, the selected images
+and all 8 charts, and `referenceCounts` by resource kind. The JSON does not contain
 reference names, Secret keys, or extra input fields. YAML errors report their
 position but do not show the contents. The plan does not connect to a cluster
 or registry. Python, PyYAML, and Helm must already be installed.
@@ -154,6 +181,24 @@ run the command. Before its first persistent write, the command examines
 release ownership, the necessary Secret key names, storage references, and
 image/chart availability. It refuses to adopt unmanaged objects or resources
 from another Helm release.
+
+Helm's client OpenAPI validation is enabled by default. If a diagnosed schema
+download failure prevents deployment, explicitly set
+`release.clientOpenAPIValidation: false` to pass Helm's
+`--disable-openapi-validation` option. This skips only the client schema check;
+the API server still validates resources and runs admission. It does not make
+Helm's requests use strict unknown-field validation. Review the exact rendered
+manifests before choosing this mode. All other preflight, ownership, TLS,
+artifact, rollout, and admission checks remain active. The final Team probe
+uses the fixed API collection with `dryRun=All&fieldValidation=Strict`, so it
+still checks strict server validation and admission without a schema download.
+The offline plan reports this choice. There is no automatic fallback after a
+validation error.
+
+Helm 3 validates hook manifests independently, even with this option. A failed
+hook schema download still stops deployment. Resolve schema access or populate
+the client's genuine discovery cache before retrying; do not skip the
+CetiAdmin hooks. The option never suppresses their installation checks.
 
 Before a write, the command also examines these items:
 
@@ -215,14 +260,20 @@ approved procedure. The helper does not migrate arbitrary stored Helm values.
 The Operator's `connectionsMCP.runtimeTypes`, the Portal's
 `agentTools.runtimeTypes`, and the Broker's `toolService.runtimeTypes` must name
 the same runtimes. A consistent explicit `[hermes]` selection is still
-supported.
+supported. `custom` is an explicit opt-in and requires the native Connections
+prerequisites: native execution and Pod admission, an approved Custom image,
+the matching Policy and model access, and a registered protected Connections
+MCP peer. Adding `custom` does not enable native Connections by itself.
 
-For Agents that already exist in a selected runtime, the helper extracts the
+For existing Hermes and OpenClaw Agents in a selected runtime, the helper extracts the
 name, the runtime, the Team/Sandbox markers, and the necessary ServiceAccount
 settings. It does not output owner details, unrelated Helm values, or
 conversation data. The helper rejects an ordinary Agent if it depends on a
 custom ServiceAccount, an API role, or an API token. The rejection occurs
 before the MCP enablement can override those settings.
+
+Ordinary Custom Agents do not activate Connections MCP. Their ServiceAccount,
+API role, and token settings are not treated as an MCP migration conflict.
 
 An explicitly pinned CetiAdmin migration source is exempt only after the helper
 confirms four conditions. The conditions are its retained suspension, blocked
@@ -684,8 +735,9 @@ also have a price.
 In this example, the provider key is in a Secret that you create in the release
 namespace. With `make deploy`, put the same entries under
 `platform.values.cetirun-ai-gateway` in the environment file. `make deploy`
-also must have the `auto` and `decision-1` entries that
-[Deploy the platform](#deploy-the-platform) describes:
+also requires the `auto` and `decision-1` entries in its default routing mode.
+With explicit `modelRouting.mode: direct`, supply callable models without
+those entries. Refer to [Deploy the platform](#deploy-the-platform):
 
 ```yaml
 cetirun-ai-gateway:
@@ -715,7 +767,8 @@ keep the configuration that they started with until they are replaced. The
 operator applies a changed model list after the rollout ends.
 
 Shared models are optional for a direct install of this chart. `make deploy`
-must have them, because it must have `auto`. Without shared models, OpenClaw
+must have them. Its default routing mode requires `auto`; explicit
+`modelRouting.mode: direct` requires callable shared models without a classifier. Without shared models, OpenClaw
 Agents use their owners' GitHub Copilot. With
 `cetirun-operator.aiGateway.copilotProxy.enabled` disabled, the Portal creates
 no OpenClaw Agent until a shared model is offered.

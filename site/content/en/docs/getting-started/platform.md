@@ -158,15 +158,44 @@ charts. Then the command pulls each chart back to examine it. Refer to the
 Server license. Without it, the command builds no image. The command stops if
 a tag already exists.
 
+If you do not accept that license yet, publish the remaining artifacts with the
+release CLI and exclude the declared optional VS Code image explicitly:
+
+```bash
+python3 -B scripts/cetirun-release.py publish \
+  --registry registry.example.com --version 0.1.1 \
+  --git-sha "$(git rev-parse HEAD)" \
+  --exclude-image cetirun-vscode
+```
+
+This selection publishes 12 images and all 8 charts. The normal `make publish`
+path deliberately keeps the complete inventory and still requires the license
+acceptance. Use the same selection in the environment file:
+
+```yaml
+release:
+  excludeImages:
+    - cetirun-vscode
+```
+
+The deployment helper rejects unknown, duplicate, or required image exclusions.
+It also rejects any configuration that still references an excluded image,
+including a Custom runtime `approvedImages` digest. Remove that reference and
+do not create or retain a VS Code Server Agent for this deployment. When the
+Agent CRD exists, the helper also stops before a Helm write if a retained Custom
+Agent still references that image. This does not bypass the VS Code builder's
+own license check.
+
 `VERSION` must be the same as the version in the source. To publish a
 different version, for example a test build of a branch, first run
 `make set-version VERSION=<version>`. This command changes the version in the
 charts and in the other source files. Commit the change, so that `GIT_SHA`
 names the source of the build.
 
-Use the same registry, version, and Git SHA in the `release` section of the
-environment file for `make deploy`. Before it writes, `make deploy` makes sure
-that every image and chart of this version is in the registry. It sets the
+Use the same registry, version, Git SHA, and optional image selection in the
+`release` section of the environment file for `make deploy`. Before it writes,
+`make deploy` makes sure that every selected image and every chart of this
+version is in the registry. It sets the
 registry and the version of the platform images and of the Agent chart. As a
 result, image tags are not necessary in the environment file.
 
@@ -365,12 +394,18 @@ Before the first run, make sure that these items exist:
   request more quota. To see if a region offers the model, use
   `az cognitiveservices model list --location <region>`.
 
-  With `make deploy`, the `decision-1` entry is necessary, but `make deploy`
+  With the default `modelRouting.mode: auto`, the `decision-1` entry is
+  necessary, but `make deploy`
   does not call the deployment. If the deployment does not work, `auto` sends
   each request to its default model. Each request to `auto` can cause a
   classifier call of up to 32,768 tokens. Size the capacity of the deployment
   for this traffic. Refer to
   [Choose a classifier](../../operations/smart-routing/#choose-a-classifier).
+  To deploy before classifier quota is available, set `modelRouting.mode: direct`
+  in the environment file. Configure callable shared models without `auto`,
+  `decision-1`, or other classifier/router entries. Set enabled CetiAdmin's
+  `model.default` to one of the configured models. This explicit mode preserves
+  the other deployment checks and leaves automatic model routing unavailable.
 - The digests of the Custom images that you approve. Examples are the Pi and
   VS Code Server images that `make publish` pushed. To read a digest, use
   `docker buildx imagetools inspect <image>:<version>`. After each
@@ -484,7 +519,8 @@ Make a decision about these inputs before the first run:
   `ownerAlias`. The default model of CetiAdmin is `auto`. Refer to
   [Configure CetiAdmin]({{< repo "app/cetirun-platform/README.md" >}}#configure-cetiadmin).
 - `platform.values.cetirun-ai-gateway.models` holds the shared models. It must
-  contain the smart-routing model `auto`, which uses the decision model
+  contain callable models. The default `modelRouting.mode: auto` also requires
+  the smart-routing model `auto`, which uses the decision model
   `decision-1` as its classifier. The `base_model` of `decision-1` must be
   `azure_ai/Microsoft-Decision-1`. Refer to
   [Smart routing](../../operations/smart-routing/).
@@ -657,8 +693,11 @@ kubectl rollout status deployment/cetirun-ai-gateway -n cetirun-system --timeout
 ```
 
 `make deploy` sends no request to a model. Send one to the AI Gateway with its
-master key: list the models, and ask `auto` a question. These commands use the
-default namespace and do not print the key:
+master key: list the models, and ask a configured model a question. The plan
+reports the selected mode in `modelRouting.mode`. For `auto` mode, use the
+request below. For `direct` mode, replace `"model": "auto"` with a configured
+model name, such as `"model": "gpt-main"`. These commands use the default
+namespace and do not print the key:
 
 ```bash
 kubectl port-forward -n cetirun-system svc/cetirun-ai-gateway 4000:4000 &
@@ -670,15 +709,19 @@ curl -si http://localhost:4000/v1/chat/completions \
   -d '{"model": "auto", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
 ```
 
-The list contains the names of `models`. Agents do not see `decision-1`,
-because the Gateway lists it only for keys that the operator did not issue. The
-answer from `auto` has the header `x-litellm-complexity-router-tier`, and
+The list contains the names of `models`. In direct mode, verify that the
+selected model returns a normal response; there is no classifier or routing
+header to verify. Stop the port-forward after the test.
+
+In auto mode, Agents do not see `decision-1`, because the Gateway lists it only
+for keys that the operator did not issue. The answer from `auto` has the header `x-litellm-complexity-router-tier`, and
 `x-litellm-complexity-router-cause` is `jev_classifier`. Any other cause shows
 that the classifier did not decide. Then examine the `decision-1` entry, its
 key, and the Gateway's log. Stop the port-forward after the test.
 
 A Team is optional for a new agent. An agent without a Team can use every
-shared model, which includes the smart-routing model `auto`. An administrator
+shared conversational model, including `auto` when automatic routing is
+configured. An administrator
 creates Teams in the portal's administration pages, with an Agent Policy and a
 Sandbox. The agents of such a Team run in its Sandbox, after you configure
 [Policy-bound Teams](../../operations/policy-teams/). A Team can also give its

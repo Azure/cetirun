@@ -123,9 +123,11 @@ class SyntheticCluster(DEPLOY.Deployment):
         if args[:2] == ["get", "pods"]:
             return "controller broker auth-sdk connections-mcp portal istio-proxy\n"
         if args[:2] == ["get", "agents.cetirun.microsoft.com"]:
-            fields = ("metadata.name", "spec.agent.type", "spec.team", "spec.sandboxRef",
-                      "spec.helm.values.serviceAccount.name", "spec.helm.values.serviceAccount.role",
-                      "spec.helm.values.serviceAccount.automountToken")
+            output = args[args.index("-o") + 1]
+            fields = (("metadata.name", "spec.agent.type", "spec.agent.image") if "spec.agent.image" in output else
+                      ("metadata.name", "spec.agent.type", "spec.team", "spec.sandboxRef",
+                       "spec.helm.values.serviceAccount.name", "spec.helm.values.serviceAccount.role",
+                       "spec.helm.values.serviceAccount.automountToken"))
             rows = []
             for (kind, _, _), agent in self.objects.items():
                 if kind != "agent":
@@ -235,6 +237,31 @@ class DeploymentFixture:
 
 
 class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
+    def test_optional_image_exclusion_selects_artifacts(self):
+        config = copy.deepcopy(self.config)
+        config["release"]["excludeImages"] = ["cetirun-vscode"]
+        approved = config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"]
+        config["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"] = [
+            image for image in approved if "/cetirun-vscode@" not in image
+        ]
+        deployment = self.deployment(config, "optional-image")
+        artifacts = deployment.plan()["artifacts"]
+        self.assertEqual(len(artifacts["images"]), 12)
+        self.assertNotIn("cetirun-vscode", artifacts["images"])
+        deployment.preflight()
+        inspected = [command[-1] for command in deployment.commands if command[:4] == ["docker", "buildx", "imagetools", "inspect"]]
+        excluded = f"{config['release']['registry']}/cetirun-vscode:{config['release']['version']}"
+        self.assertNotIn(excluded, inspected)
+        self.assertEqual(sum(reference.endswith(":" + config["release"]["version"]) for reference in inspected), 12)
+        self.assertFalse(any(command[4:6] == ["get", "agents.cetirun.microsoft.com"] for command in deployment.commands))
+
+    def test_optional_image_exclusion_rejects_referenced_image_before_tools(self):
+        config = copy.deepcopy(self.config)
+        config["release"]["excludeImages"] = ["cetirun-vscode"]
+        with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+            with self.assertRaisesRegex(ValueError, "excludes image still referenced.*cetirun-vscode"):
+                self.configure(config)
+
     def test_current_custom_config_does_not_require_retired_model_fields(self):
         config = copy.deepcopy(self.config)
         custom = config["platform"]["values"]["cetirun-operator"]["customRuntime"]
@@ -763,6 +790,70 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "conflicts with the complete deployment"):
                         self.configure(config)
 
+    def direct_config(self):
+        config = copy.deepcopy(self.config)
+        config["modelRouting"] = {"mode": "direct"}
+        config["platform"]["values"]["cetirun-ai-gateway"]["models"] = config["platform"]["values"]["cetirun-ai-gateway"]["models"][:2]
+        return config
+
+    def test_direct_models_render_without_classifier_and_keep_platform_controls(self):
+        deployment = self.deployment(self.direct_config(), "direct-models")
+        values = deployment.values["platform"]
+        self.assertEqual(deployment.plan()["modelRouting"], {"mode": "direct"})
+        self.assertEqual([model["model_name"] for model in values["cetirun-ai-gateway"]["models"]], ["gpt-mini", "gpt-main"])
+        self.assertTrue(values["cetirun-operator"]["sandboxAdmission"]["enforce"])
+        self.assertTrue(values["cetirun-operator"]["agentIdentity"]["enabled"])
+        self.assertTrue(values["cetirun-ai-gateway"]["blockUnpricedModels"])
+        self.assertTrue(values["global"]["portalChat"]["enabled"])
+        deployment.preflight()
+        self.assertFalse(deployment.writes)
+
+    def test_direct_models_require_explicit_mode(self):
+        config = self.direct_config()
+        del config["modelRouting"]
+        with self.assertRaisesRegex(ValueError, "models must configure auto"):
+            self.configure(config)
+
+    def test_direct_models_reject_missing_models_classifiers_and_routers(self):
+        configs = []
+        empty = self.direct_config()
+        empty["platform"]["values"]["cetirun-ai-gateway"]["models"] = []
+        configs.append(empty)
+        for field, value in (("model_name", "auto"), ("model_name", "decision-1"),
+                             ("litellm_params.model", "auto_router/complexity_router"),
+                             ("litellm_params.model", ""), ("model_info.mode", "evaluation"),
+                             ("model_info.mode", "embedding"), ("model_info.mode", "rerank")):
+            config = self.direct_config()
+            DEPLOY.set_value(config["platform"]["values"]["cetirun-ai-gateway"]["models"][0], field, value)
+            configs.append(config)
+        for config in configs:
+            with self.subTest(config=config), patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("Tool before validation")):
+                with self.assertRaisesRegex(ValueError, "Direct model routing"):
+                    self.configure(config)
+
+    def test_model_routing_rejects_unknown_modes_and_fields(self):
+        for routing in ({"mode": "heuristic"}, {"mode": False}, {"mode": "direct", "skipChecks": True}, "direct"):
+            with self.subTest(routing=routing):
+                config = self.direct_config()
+                config["modelRouting"] = routing
+                with self.assertRaisesRegex(ValueError, "modelRouting"):
+                    self.configure(config)
+
+    def test_direct_cetiadmin_requires_a_configured_default_model(self):
+        config = self.direct_config()
+        admin = yaml.safe_load(FIXTURE.read_text())["platform"]["values"]["cetirun-operator"]["cetiadmin"]
+        config["platform"]["values"]["cetirun-operator"]["cetiadmin"] = admin
+        with self.assertRaisesRegex(ValueError, "cetiadmin.model.default"):
+            self.configure(config)
+        admin["model"]["default"] = "gpt-main"
+        models = config["platform"]["values"]["cetirun-ai-gateway"]["models"]
+        models[1]["model_info"]["mode"] = "embedding"
+        with self.assertRaisesRegex(ValueError, "Direct model routing requires callable models"):
+            self.configure(config)
+        models[1]["model_info"]["mode"] = "responses"
+        _, values = self.configure(config)
+        self.assertTrue(values["platform"]["cetirun-operator"]["cetiadmin"]["enabled"])
+
     def test_decision_accepts_the_priced_base_model_and_optional_api_version(self):
         for api_version in (None, "2024-05-01-preview"):
             with self.subTest(api_version=api_version):
@@ -799,12 +890,51 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "runtimeTypes"):
                         self.configure(config)
 
-    def add_agent(self, deployment, *, account=None, runtime="openclaw", sandbox_ref=""):
+    def test_explicit_custom_mcp_runtime_renders_for_all_components(self):
+        config = copy.deepcopy(self.config)
+        runtime_lists = (
+            (config["broker"]["values"], "toolService.runtimeTypes", ["custom", "hermes", "openclaw"]),
+            (config["platform"]["values"].setdefault("cetirun-operator", {}), "connectionsMCP.runtimeTypes", ["openclaw", "custom", "hermes"]),
+            (config["platform"]["values"].setdefault("cetirun-portal", {}), "agentTools.runtimeTypes", ["hermes", "openclaw", "custom"]),
+        )
+        for values, field, runtimes in runtime_lists:
+            DEPLOY.set_value(values, field, runtimes)
+        deployment = self.deployment(config, "custom-mcp")
+        expected = {
+            ("broker", "cetirun-agent-broker", "broker"): "custom,hermes,openclaw",
+            ("platform", "cetirun-operator", "manager"): "openclaw,custom,hermes",
+            ("platform", "cetirun-portal", "portal"): "hermes,openclaw,custom",
+        }
+        for (release, name, container), value in expected.items():
+            document = next(doc for doc in deployment.documents[release]
+                            if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name)
+            actual = next(item["value"] for item in next(item for item in document["spec"]["template"]["spec"]["containers"]
+                                                            if item["name"] == container)["env"]
+                          if item["name"] == "CONNECTIONS_MCP_RUNTIME_TYPES")
+            self.assertEqual(actual, value)
+
+    def test_custom_mcp_runtime_lists_require_matching_supported_unique_values(self):
+        cases = (
+            ("mismatch", "broker", "toolService.runtimeTypes", ["custom"]),
+            ("unknown", "cetirun-operator", "connectionsMCP.runtimeTypes", ["hermes", "unknown"]),
+            ("empty", "cetirun-portal", "agentTools.runtimeTypes", []),
+            ("duplicate", "broker", "toolService.runtimeTypes", ["hermes", "custom", "custom"]),
+        )
+        for name, component, field, runtimes in cases:
+            with self.subTest(name=name):
+                config = copy.deepcopy(self.config)
+                values = config["broker"]["values"] if component == "broker" else config["platform"]["values"].setdefault(component, {})
+                DEPLOY.set_value(values, field, runtimes)
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                    with self.assertRaisesRegex(ValueError, "runtimeTypes"):
+                        self.configure(config)
+
+    def add_agent(self, deployment, *, account=None, image="", runtime="openclaw", sandbox_ref=""):
         deployment.objects[("customresourcedefinition", "", "agents.cetirun.microsoft.com")] = {
             "annotations": {"meta.helm.sh/release-name": "cetirun-platform", "meta.helm.sh/release-namespace": "cetirun-system"}}
         deployment.objects[("agent", "", "operations-fixture")] = {
             "metadata": {"name": "operations-fixture"},
-            "spec": {"agent": {"type": runtime}, "sandboxRef": sandbox_ref,
+            "spec": {"agent": {"type": runtime, "image": image}, "sandboxRef": sandbox_ref,
                      "user": {"email": "must-not-read@example.invalid"},
                      "helm": {"values": {"serviceAccount": account or {}, "secret": "must-not-read"}}}}
 
@@ -820,6 +950,33 @@ class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
                          and command[4:6] == ["get", "agents.cetirun.microsoft.com"]]
                 self.assertEqual(len(reads), 1)
                 self.assertFalse(any(".spec.user" in part or part == "json" for command in reads for part in command))
+
+    def test_existing_ordinary_custom_agent_is_not_an_mcp_conflict(self):
+        config = copy.deepcopy(self.config)
+        for values, field in ((config["broker"]["values"], "toolService.runtimeTypes"),
+                              (config["platform"]["values"].setdefault("cetirun-operator", {}), "connectionsMCP.runtimeTypes"),
+                              (config["platform"]["values"].setdefault("cetirun-portal", {}), "agentTools.runtimeTypes")):
+            DEPLOY.set_value(values, field, ["custom"])
+        deployment = self.deployment(config, "ordinary-custom")
+        self.assertEqual(deployment.values["broker"]["toolService"]["runtimeTypes"], ["custom"])
+        self.assertEqual(deployment.values["platform"]["cetirun-operator"]["connectionsMCP"]["runtimeTypes"], ["custom"])
+        self.assertEqual(deployment.values["platform"]["cetirun-portal"]["agentTools"]["runtimeTypes"], ["custom"])
+        self.add_agent(deployment, runtime="custom", account={"name": "custom-account", "automountToken": True})
+        deployment.preflight()
+        self.assertFalse(any(command[4:6] == ["get", "agent"] for command in deployment.commands if command[0] == "kubectl"))
+
+    def test_retained_custom_agent_cannot_reference_an_excluded_image(self):
+        candidate = copy.deepcopy(self.config)
+        candidate["release"]["excludeImages"] = ["cetirun-vscode"]
+        approved = candidate["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"]
+        candidate["platform"]["values"]["cetirun-operator"]["customRuntime"]["approvedImages"] = [
+            image for image in approved if "/cetirun-vscode@" not in image
+        ]
+        deployment = self.upgrade_fixture(self.config, candidate, "excluded-vscode")
+        self.add_agent(deployment, runtime="custom", image="registry.example.com/cetirun-vscode@sha256:" + "a" * 64)
+        with self.assertRaisesRegex(ValueError, "Existing Custom Agent operations-fixture still references an excluded image"):
+            deployment.execute()
+        self.assertEqual(deployment.writes, [])
 
     def test_consistent_hermes_only_preserves_openclaw_account(self):
         self.config["broker"]["values"]["toolService"] = {"runtimeTypes": ["hermes"]}

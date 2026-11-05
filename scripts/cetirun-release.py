@@ -27,10 +27,30 @@ def inventory():
         if not names or len(names) != len(set(names)):
             raise ValueError(f"Empty or duplicate {kind} inventory")
         for entry in data[kind]:
+            if kind == "images" and "optional" in entry and type(entry["optional"]) is not bool:
+                raise ValueError(f"Image {entry['name']} optional must be a boolean")
+            if kind == "charts" and "optional" in entry:
+                raise ValueError(f"Chart {entry['name']} cannot be optional")
             path = ROOT / (entry["script"] if kind == "images" else entry["path"] + "/Chart.yaml")
             if not path.is_file():
                 raise ValueError(f"Missing artifact source: {path}")
     return data
+
+
+def selected_inventory(data, excluded_images):
+    if not isinstance(excluded_images, list) or any(not isinstance(name, str) or not name for name in excluded_images):
+        raise ValueError("excludeImages must be a list of nonempty image names")
+    if len(excluded_images) != len(set(excluded_images)):
+        raise ValueError("excludeImages must not contain duplicate image names")
+    images = {entry["name"]: entry for entry in data["images"]}
+    for name in excluded_images:
+        entry = images.get(name)
+        if entry is None:
+            raise ValueError(f"excludeImages names an unknown image: {name}")
+        if not entry.get("optional", False):
+            raise ValueError(f"excludeImages can only exclude optional images: {name}")
+    excluded = set(excluded_images)
+    return {**data, "images": [entry for entry in data["images"] if entry["name"] not in excluded]}
 
 
 def run(command, *, env=None, capture=False):
@@ -52,8 +72,8 @@ def coordinates(args):
         raise ValueError("Invalid chart namespace")
 
 
-def require_license():
-    if os.environ.get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS") != "true":
+def require_license(images):
+    if any(entry["name"] == "cetirun-vscode" for entry in images) and os.environ.get("ACCEPT_VSCODE_SERVER_LICENSE_TERMS") != "true":
         raise ValueError("Set ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true after accepting the VS Code Server license; no images were built")
 
 
@@ -151,9 +171,11 @@ def main(argv=None):
     parser.add_argument("--force", action="store_true", help="explicitly permit replacing existing version tags")
     parser.add_argument("--prune", action="store_true", help="prune build cache after each image on a disposable CI agent")
     parser.add_argument("--package-dir", type=Path)
+    parser.add_argument("--exclude-image", action="append", default=[], dest="excluded_images",
+                        help="exclude an optional image by name; repeat for each image")
     args = parser.parse_args(argv)
     try:
-        data = inventory()
+        data = selected_inventory(inventory(), args.excluded_images)
         if args.command == "list":
             if not args.kind:
                 raise ValueError("list requires images, charts, or chart-paths")
@@ -175,7 +197,7 @@ def main(argv=None):
             return 0
         image_work = args.command in ("build-images", "publish-images", "publish")
         if image_work:
-            require_license()
+            require_license(data["images"])
         run([sys.executable, "-B", "scripts/cetirun-version.py", "check", args.version])
         if args.command.startswith("publish"):
             kinds = ("images", "charts") if args.command == "publish" else (args.command.removeprefix("publish-"),)

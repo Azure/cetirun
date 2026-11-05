@@ -39,6 +39,7 @@ value.
 | System pool | `Standard_D8s_v6`, 2–10 nodes, Ubuntu |
 | Agent pool | `Standard_D16s_v6`, 15–150 nodes, AzureLinux |
 | Agent2 pool | `Standard_D32s_v6`, 3–10 nodes, AzureLinux |
+| Managed Istio revision | Empty; AKS selects its default revision |
 | Availability zones | `1`, `2`, `3` on all three pools |
 | Networking | Azure CNI overlay, Cilium, load-balancer outbound |
 | Pod / Service / DNS ranges | `10.244.0.0/16`, `172.16.0.0/16`, `172.16.0.10` |
@@ -52,10 +53,12 @@ because Sandbox admission must have this version. In your parameter file, set
 region, run
 `az aks get-versions --location your-approved-region --output table`.
 
-The template does not select a managed Istio revision, so AKS installs its
-default revision. Kubernetes 1.37 must have a revision that AKS lists as
-compatible with 1.37: `asm-1-30` or later. Before you deploy, list the
-revisions of the region and their compatible Kubernetes versions:
+Leave `istioRevision` empty to let AKS select its default managed Istio
+revision. To pin a revision, set it only after confirming that the region lists
+it as compatible with the selected Kubernetes version. Kubernetes 1.37 needs a
+revision that AKS lists as compatible with 1.37, such as `asm-1-30` or later.
+Before you deploy, list the revisions of the region and their compatible
+Kubernetes versions:
 
 ```bash
 az aks mesh get-revisions --location your-approved-region --output table
@@ -95,6 +98,10 @@ param clusterName = 'example-cluster'
 param dnsPrefix = 'example-cluster'
 param nodeResourceGroup = 'example-rg-nodes'
 param kubernetesVersion = '1.37'
+param istioRevision = 'asm-example'
+param systemNodePoolVmSize = 'Standard_D4ds_v6'
+param agentNodePoolVmSize = 'Standard_D8ds_v6'
+param agent2NodePoolVmSize = 'Standard_D8ds_v6'
 param systemNodePoolMinCount = 2
 param agentNodePoolMinCount = 1
 param agent2NodePoolMinCount = 0

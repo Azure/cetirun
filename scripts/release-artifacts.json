@@ -12,7 +12,7 @@
     {"name": "cetirun-terminal", "script": "scripts/terminal-docker-build.sh"},
     {"name": "cetirun-memory-context", "script": "scripts/memory-context-docker-build.sh"},
     {"name": "cetirun-portal", "script": "scripts/portal-docker-build.sh"},
-    {"name": "cetirun-vscode", "script": "scripts/vscode-docker-build.sh"},
+    {"name": "cetirun-vscode", "script": "scripts/vscode-docker-build.sh", "optional": true},
     {"name": "cetirun-pi-agent", "script": "scripts/pi-agent-docker-build.sh"}
   ],
   "charts": [

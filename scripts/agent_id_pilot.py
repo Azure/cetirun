@@ -942,7 +942,7 @@ def provision_deployment(args: argparse.Namespace) -> None:
         save_state(state_path, state)
     if not key_vault.get("keyUrl") and not key_vault.get("bootstrapRoleAssignmentId"):
         assignment = _az_json(
-            "role", "assignment", "create",
+            "role", "assignment", "create", "--subscription", args.subscription_id,
             "--assignee-object-id", owner_id,
             "--assignee-principal-type", "User",
             "--role", "Key Vault Crypto Officer",
@@ -958,7 +958,8 @@ def provision_deployment(args: argparse.Namespace) -> None:
         for attempt in range(12):
             try:
                 key = _az_json(
-                    "keyvault", "key", "create", "--vault-name", args.key_vault_name,
+                    "keyvault", "key", "create", "--subscription", args.subscription_id,
+                    "--vault-name", args.key_vault_name,
                     "--name", "authorization-cache", "--kty", "RSA", "--size", "3072",
                     "--ops", "wrapKey", "unwrapKey",
                 )
@@ -978,7 +979,7 @@ def provision_deployment(args: argparse.Namespace) -> None:
     if key_vault.get("bootstrapRoleAssignmentId"):
         _run_no_output(
             [
-                "az", "role", "assignment", "delete", "--ids",
+                "az", "role", "assignment", "delete", "--subscription", args.subscription_id, "--ids",
                 str(key_vault["bootstrapRoleAssignmentId"]),
             ]
         )
@@ -986,7 +987,7 @@ def provision_deployment(args: argparse.Namespace) -> None:
         save_state(state_path, state)
     if not key_vault.get("roleAssignmentId"):
         assignment = _az_json(
-            "role", "assignment", "create",
+            "role", "assignment", "create", "--subscription", args.subscription_id,
             "--assignee-object-id", str(encryption["principalId"]),
             "--assignee-principal-type", "ServicePrincipal",
             "--role", "Key Vault Crypto Service Encryption User",
@@ -1039,7 +1040,8 @@ def cleanup_deployment(args: argparse.Namespace) -> None:
         if key_vault.get("bootstrapRoleAssignmentId"):
             _run_no_output(
                 [
-                    "az", "role", "assignment", "delete", "--ids",
+                    "az", "role", "assignment", "delete",
+                    "--subscription", str(deployment["subscriptionId"]), "--ids",
                     str(key_vault["bootstrapRoleAssignmentId"]),
                 ]
             )
@@ -1057,7 +1059,8 @@ def cleanup_deployment(args: argparse.Namespace) -> None:
     if isinstance(encryption, dict) and encryption.get("resourceId"):
         _run_no_output(
             [
-                "az", "identity", "delete", "--ids", str(encryption["resourceId"]),
+                "az", "identity", "delete", "--subscription", str(deployment["subscriptionId"]),
+                "--ids", str(encryption["resourceId"]),
             ]
         )
         deployment.pop("encryptionIdentity", None)

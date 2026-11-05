@@ -158,7 +158,28 @@ class Kubernetes:
             raise QualificationError("Cluster UID mismatch; no test resources may be changed")
 
     def create(self, document):
-        raw = self.run(["create", "-f", "-", "-o", "json"], document)
+        # Use the exact APIs already checked by preflight. Client-side discovery
+        # can download the cluster-wide OpenAPI schema before a small create and
+        # exceed the command deadline. The API server still validates strictly.
+        collections = {
+            ("v1", "Namespace"): ("/api/v1", "namespaces", False),
+            ("v1", "Pod"): ("/api/v1", "pods", True),
+            ("networking.k8s.io/v1", "NetworkPolicy"): ("/apis/networking.k8s.io/v1", "networkpolicies", True),
+            ("cilium.io/v2", "CiliumNetworkPolicy"): ("/apis/cilium.io/v2", "ciliumnetworkpolicies", True),
+        }
+        if not isinstance(document, dict):
+            raise QualificationError("Unsupported synthetic resource")
+        api, kind = document.get("apiVersion"), document.get("kind")
+        if not isinstance(api, str) or not isinstance(kind, str) or (api, kind) not in collections:
+            raise QualificationError("Unsupported synthetic resource")
+        prefix, collection, namespaced = collections[(api, kind)]
+        if namespaced:
+            metadata = document.get("metadata")
+            namespace = metadata.get("namespace") if isinstance(metadata, dict) else None
+            if not resource_name(namespace, 63) or "." in namespace:
+                raise QualificationError("An exact synthetic namespace is required")
+            prefix += "/namespaces/" + namespace
+        raw = self.run(["create", "--raw", prefix + "/" + collection + "?fieldValidation=Strict", "-f", "-"], document)
         try:
             result = json.loads(raw)
         except json.JSONDecodeError as error:

@@ -25,14 +25,27 @@ for the input shape, the certificate ownership modes, and staged admission.
 This guide also shows which identity and runtime qualification is still
 necessary.
 
+The default model routing mode requires the JEV `auto` router and a real
+Decision-1 deployment. Set `modelRouting.mode: direct` to deploy callable
+shared models while classifier quota is unavailable. Omit router/classifier
+entries and give enabled CetiAdmin a configured direct model as its default;
+all other deployment checks remain in effect.
+
 `cetirun-release.py` drives the root build and publish targets and the MCR
 pipeline from `release-artifacts.json`. Its `list`, `check`, and `plan`
 commands do not connect to a registry. Image builds must have an explicit
-registry, version, and source SHA, and VS Code license acceptance. Publication
-refuses a tag that already exists unless `--force` is explicit. It
-distinguishes registry errors from artifacts that do not exist, and makes sure
-that chart pulls work. You can still use each component build script
-independently.
+registry, version, and source SHA; selections containing VS Code require an
+explicit license acceptance. Publication refuses a tag that already exists
+unless `--force` is explicit. It distinguishes registry errors from artifacts
+that do not exist, and makes sure that chart pulls work. You can still use each
+component build script independently.
+
+`cetirun-vscode` is currently the only declared optional image. To defer its
+license acceptance, pass `--exclude-image cetirun-vscode` to the release CLI
+for every selected build or publication command, and set the matching
+`release.excludeImages` list in the deployment configuration. Exclusions of
+required, unknown, duplicate, or still-referenced images fail before a build
+or deployment preflight.
 
 ```bash
 python3 -B scripts/cetirun-release.py list images
@@ -716,6 +729,11 @@ make python-check license-check
 ```
 
 ## Protocol-specific network smoke
+
+Synthetic resource creation uses the versioned API collections with strict
+server-side field validation. It does not download the cluster-wide OpenAPI
+schema before each create. Target checks, command deadlines, returned UID
+checks, and cleanup preconditions still apply.
 
 The `network-smoke` mode that already exists uses TCP by default. On a
 separately authorized disposable target, select `--network-protocol UDP`. This

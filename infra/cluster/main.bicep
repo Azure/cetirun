@@ -29,8 +29,10 @@ param tags object = {
 @allowed([
   'Standard_D4s_v5'
   'Standard_D4as_v5'
+  'Standard_D4ds_v6'
   'Standard_D8s_v5'
   'Standard_D8as_v5'
+  'Standard_D8ds_v6'
   'Standard_D8s_v6'
 ])
 @description('VM size for system node pool')
@@ -51,8 +53,10 @@ param systemNodePoolAvailabilityZones array = ['1', '2', '3']
 @allowed([
   'Standard_D4s_v5'
   'Standard_D4as_v5'
+  'Standard_D4ds_v6'
   'Standard_D8s_v5'
   'Standard_D8as_v5'
+  'Standard_D8ds_v6'
   'Standard_D16s_v5'
   'Standard_D16as_v5'
   'Standard_D16s_v6'
@@ -70,8 +74,10 @@ param agentNodePoolAvailabilityZones array = ['1', '2', '3']
 @allowed([
   'Standard_D4s_v5'
   'Standard_D4as_v5'
+  'Standard_D4ds_v6'
   'Standard_D8s_v5'
   'Standard_D8as_v5'
+  'Standard_D8ds_v6'
   'Standard_D32s_v5'
   'Standard_D32as_v5'
   'Standard_D32s_v6'
@@ -96,6 +102,9 @@ param istioIngressGatewayEnabled bool = true
 
 @allowed(['External', 'Internal'])
 param istioIngressGatewayType string = 'External'
+
+@description('Optional managed Istio revision. Leave empty to let AKS select its default revision.')
+param istioRevision string = ''
 
 // --- Monitoring parameters ---
 
@@ -138,6 +147,7 @@ module cluster 'modules/aks-cluster.bicep' = {
     dnsServiceIP: dnsServiceIP
     istioIngressGatewayEnabled: istioIngressGatewayEnabled
     istioIngressGatewayType: istioIngressGatewayType
+    istioRevision: istioRevision
     enableContainerInsights: enableContainerInsights
     enablePrometheusMetrics: enablePrometheusMetrics
     logAnalyticsWorkspaceId: logAnalyticsWorkspaceId

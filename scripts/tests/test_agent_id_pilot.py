@@ -340,7 +340,8 @@ class AgentIDPilotTests(unittest.TestCase):
                 with mock.patch.object(pilot, "_run_no_output") as run_no_output:
                     pilot.cleanup_deployment(argparse.Namespace(state_file=path))
             run_no_output.assert_called_once_with(
-                ["az", "identity", "delete", "--ids", resource_id]
+                ["az", "identity", "delete", "--subscription",
+                 "00000000-0000-4000-8000-000000000001", "--ids", resource_id]
             )
 
     def test_provisioning_rejects_preexisting_unowned_identity(self):
@@ -380,7 +381,7 @@ class AgentIDPilotTests(unittest.TestCase):
             operator_graph.assert_not_called()
             self.assertNotIn("deployment", pilot.load_state(path))
 
-    def test_encryption_federated_credential_uses_requested_subscription(self):
+    def test_deployment_arm_commands_use_requested_subscription(self):
         for operation, previously_created in (("create", False), ("update", True)):
             with self.subTest(operation=operation):
                 with tempfile.TemporaryDirectory() as directory:
@@ -433,6 +434,10 @@ class AgentIDPilotTests(unittest.TestCase):
                         },
                     }
                     pilot.save_state(path, {"schema": 1, "deployment": deployment})
+                    vault_id = (
+                        f"/subscriptions/{args.subscription_id}/resourceGroups/{args.resource_group}"
+                        f"/providers/Microsoft.KeyVault/vaults/{args.key_vault_name}"
+                    )
 
                     def az_json(*arguments):
                         if arguments[:3] == (
@@ -441,15 +446,18 @@ class AgentIDPilotTests(unittest.TestCase):
                             operation,
                         ):
                             return {}
-                        raise pilot.PilotError("stop after federated credential")
+                        if arguments[:2] == ("keyvault", "create"):
+                            return {"id": vault_id}
+                        if arguments[:3] == ("role", "assignment", "create"):
+                            return {"id": vault_id + "/providers/Microsoft.Authorization/roleAssignments/synthetic"}
+                        if arguments[:3] == ("keyvault", "key", "create"):
+                            return {"key": {"kid": "https://vault.example.test/keys/authorization-cache/version"}}
+                        self.fail(f"Unexpected Azure operation: {arguments[:3]}")
 
                     with mock.patch.object(
                         pilot, "_az_json", side_effect=az_json
-                    ) as az_json_mock:
-                        with self.assertRaisesRegex(
-                            pilot.PilotError, "stop after federated credential"
-                        ):
-                            pilot.provision_deployment(args)
+                    ) as az_json_mock, mock.patch.object(pilot, "_run_no_output") as run_no_output:
+                        pilot.provision_deployment(args)
 
                     federated_call = az_json_mock.call_args_list[0].args
                     self.assertEqual(
@@ -462,6 +470,15 @@ class AgentIDPilotTests(unittest.TestCase):
                             args.subscription_id,
                         ),
                     )
+                    for call in az_json_mock.call_args_list:
+                        arguments = call.args
+                        self.assertIn("--subscription", arguments)
+                        self.assertEqual(arguments[arguments.index("--subscription") + 1], args.subscription_id)
+                    run_no_output.assert_called_once()
+                    cleanup = run_no_output.call_args.args[0]
+                    self.assertEqual(cleanup[1:4], ["role", "assignment", "delete"])
+                    self.assertEqual(cleanup[cleanup.index("--subscription") + 1], args.subscription_id)
+                    self.assertTrue(pilot.load_state(path)["deployment"]["provisioningComplete"])
 
     def test_graph_permission_catalog_encodes_odata_query(self):
         graph = mock.Mock()

@@ -111,6 +111,25 @@ class ReleaseInventoryTests(unittest.TestCase):
                 self.assertEqual(self.commands(), [])
                 self.env[key] = previous
 
+    def test_optional_vscode_exclusion_skips_license_gate_and_image(self):
+        self.env.pop("ACCEPT_VSCODE_SERVER_LICENSE_TERMS")
+        plan = json.loads(self.run_release("plan", "--exclude-image", "cetirun-vscode").stdout)
+        self.assertNotIn("cetirun-vscode", {entry["name"] for entry in plan["images"]})
+        self.run_release("build-images", "--exclude-image", "cetirun-vscode")
+        builds = [command for command in self.commands() if command[:2] == ["buildx", "build"]]
+        self.assertEqual(len(builds), 12)
+        self.assertFalse(any(self.image("cetirun-vscode") in command for command in builds))
+
+    def test_invalid_image_exclusions_fail_before_docker(self):
+        cases = (("unknown", ["not-in-inventory"], "unknown image"),
+                 ("required", ["cetirun-portal"], "only exclude optional"),
+                 ("duplicate", ["cetirun-vscode", "cetirun-vscode"], "duplicate"))
+        for name, excluded, message in cases:
+            with self.subTest(name=name):
+                result = self.run_release("publish-images", *(item for image in excluded for item in ("--exclude-image", image)), success=False)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(self.commands(), [])
+
     def test_existing_broker_or_vscode_or_chart_stops_before_any_build(self):
         for artifact in ("cetirun-agent-broker", "cetirun-vscode", "helm/cetirun-agent-broker"):
             with self.subTest(artifact=artifact):
