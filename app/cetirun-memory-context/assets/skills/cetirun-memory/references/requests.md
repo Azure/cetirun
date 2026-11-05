@@ -238,7 +238,7 @@ fixture set retain attempted cases and exposure, so expiration does not retry an
 make an already exposed case independent again.
 
 The installed executors qualify OpenClaw 2026.9.6's configured direct chat-completions route, Hermes
-0.21.5's task-local OpenAI-compatible route and Pi 0.87.1's native chat-completions route. Other
+0.22.7's task-local OpenAI-compatible route and Pi 0.87.1's native chat-completions route. Other
 transports support basic memory where the adapter can bind a private request, but not this evaluator. The
 stdio adapter reports `modelEvaluationSupported: false` and does not expose `evaluate`. Changing the model
 or route configuration invalidates earlier fixture qualifications. The adapter hashes only the selected

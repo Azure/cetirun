@@ -13,13 +13,15 @@ type Harness interface {
 
 type Descriptor struct {
 	Type             string
+	NativeVersion    string
+	NativeCommit     string
 	ConfigFile       string
 	PortName         string
 	DefaultPort      int32
 	HealthPath       string
 	ReadinessPath    string
 	StartupPath      string
-	DashboardPort    int32
+	WebappPort       int32
 	PreserveUIPrefix bool
 	NativeSecretKey  string
 	EnvironmentFile  string
@@ -59,6 +61,7 @@ type Bindings struct {
 	NativeOptions     map[string]any
 	NativeSandbox     bool
 	ReconciledSandbox bool
+	IngressMTLS       bool     `json:",omitempty"`
 	TrustedProxyIPs   []string `json:",omitempty"`
 	Model             ModelBinding
 	Skills            SkillsBinding

@@ -243,9 +243,9 @@ describe("OverviewSection", () => {
     expect(screen.queryByText(/will restart the gateway/)).toBeNull();
   });
 
-  it("shows the Hermes API and dashboard key instead of the OpenClaw token", () => {
+  it("shows the Hermes API and Webapp key instead of the OpenClaw token", () => {
     renderInRouter(<OverviewSection instance={{ ...baseInstance, agent: { type: "hermes" }, apiServerKey: "hermes-key" }} />);
-    expect(screen.getByText(/Hermes API \/ Dashboard Key/i)).toBeInTheDocument();
+    expect(screen.getByText(/Hermes API \/ Webapp Key/i)).toBeInTheDocument();
   });
 
   it("does not show terminal/desktop action cards", () => {

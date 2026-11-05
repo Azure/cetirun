@@ -88,8 +88,8 @@ func Validate(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) err
 	}
 	ports := append([]PortBinding{{Name: descriptor.PortName, Number: *agent.Port}}, bindings.ReservedPorts...)
 	ports = append(ports, PortBinding{Name: "cetirun-auth", Number: 18790})
-	if descriptor.DashboardPort != 0 {
-		ports = append(ports, PortBinding{Name: "dashboard", Number: descriptor.DashboardPort})
+	if descriptor.WebappPort != 0 {
+		ports = append(ports, PortBinding{Name: "webapp", Number: descriptor.WebappPort})
 	}
 	seen := map[int32]string{}
 	for _, port := range ports {

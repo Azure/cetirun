@@ -15,7 +15,7 @@ import time
 import uuid
 
 ADAPTER = "memory-adapter/v1"
-NATIVE_VERSION = "0.21.5"
+NATIVE_VERSION = "0.22.7"
 COMMANDS = ("status", "query", "capture", "prepare", "commit", "propose", "check", "advance",
             "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source", "evaluate")
 MEMORY_OFF = "CetiRun Memory is off for this conversation. Do not read or save private memory, or claim to have done so."
@@ -34,6 +34,20 @@ def reminder(text):
 
 def model_revision(provider, model, base_url, api_mode):
     return "sha256:" + hashlib.sha256(json.dumps([provider, model, base_url or "", api_mode], separators=(",", ":")).encode()).hexdigest()
+
+
+def owner_private_session(platform, parent_session_id, sender_id):
+    if parent_session_id:
+        return False
+    if platform in ("cli", "tui", "api_server"):
+        return True
+    if platform != "desktop":
+        return False
+    from gateway.owner_identity import host_owner_subject, same_owner
+    from gateway.session_policy import active_policy
+    policy = active_policy()
+    return bool(policy and policy.source == "gui" and policy.platform == "desktop"
+                and sender_id and same_owner(sender_id, host_owner_subject()))
 
 
 def load_assets(root):
@@ -263,9 +277,9 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
         with guard:
             return sessions.get(session_id)
 
-    def start(session_id="", platform="", parent_session_id="", user_message="", turn_id="", model="", conversation_history=None, **kwargs):
+    def start(session_id="", platform="", parent_session_id="", sender_id="", user_message="", turn_id="", model="", conversation_history=None, **kwargs):
         from agent.runtime_cwd import resolve_agent_cwd
-        private = platform in ("cli", "tui", "api_server") and not parent_session_id
+        private = owner_private_session(platform, parent_session_id, sender_id)
         if not session_id:
             return
         with guard:

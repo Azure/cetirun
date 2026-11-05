@@ -160,10 +160,10 @@ func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) 
 	if input["cetiadmin"] != nil {
 		return nil, fmt.Errorf("cetiadmin is reserved for the platform")
 	}
-	return prepareRuntimeChart(chrt, input, validateRender)
+	return prepareRuntimeChart(chrt, input, validateRender, nil)
 }
 
-func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender bool) (*PreparedRelease, error) {
+func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender bool, harness agents.Harness) (*PreparedRelease, error) {
 	var request AgentRequest
 	requestJSON, err := json.Marshal(input["agentRequest"])
 	if err != nil {
@@ -200,11 +200,16 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	if request.PullSecretName != "" && chrt.Metadata.Annotations["cetirun.microsoft.com/registry-credentials"] != "v1" {
 		return nil, fmt.Errorf("the selected chart does not support managed registry credentials; upgrade the pinned chart first")
 	}
-	harness, err := builtin.NewRegistry().Lookup(request.Type)
-	if err != nil {
-		return nil, err
+	if harness == nil {
+		harness, err = builtin.NewRegistry().Lookup(request.Type)
+		if err != nil {
+			return nil, err
+		}
 	}
 	descriptor := harness.Describe()
+	if descriptor.Type != request.Type {
+		return nil, fmt.Errorf("harness does not match the runtime request")
+	}
 	if descriptor.Type == "custom" && input[sandboxworkload.ValuesKey] == nil {
 		return prepareCustomChart(chrt, input, request, validateRender)
 	}
@@ -331,6 +336,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		NativeOptions:     map[string]any{"acpx": native["acpx"], "plugins": native["plugins"], "portalSignIn": native["portalSignIn"]},
 		NativeSandbox:     values[sandboxworkload.ValuesKey] != nil,
 		ReconciledSandbox: object(values[sandboxworkload.ValuesKey])["reconciled"] == true,
+		IngressMTLS:       object(values[sandboxworkload.ValuesKey])["ingressMTLS"] == true,
 		ConnectionsMCP:    agents.ConnectionsMCPBinding{Enabled: object(values["connectionsMCP"])["enabled"] == true, URL: text(object(values["connectionsMCP"])["url"])},
 		Model: agents.ModelBinding{
 			Provider:            provider,
@@ -413,29 +419,20 @@ func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registr
 	var definition struct {
 		ContractVersion string   `json:"contractVersion"`
 		NativeVersion   string   `json:"nativeVersion"`
+		NativeCommit    string   `json:"nativeCommit"`
+		WebappPort      int32    `json:"webappPort"`
 		Port            int32    `json:"port"`
 		QualifiedImages []string `json:"qualifiedImages"`
 	}
 	if err := yaml.UnmarshalStrict(asset(chrt, profilePath), &definition); err != nil ||
-		definition.ContractVersion != "v1" || definition.NativeVersion == "" || definition.Port != descriptor.DefaultPort {
+		definition.ContractVersion != "v1" || definition.NativeVersion == "" || definition.Port != descriptor.DefaultPort ||
+		(descriptor.NativeVersion != "" && (definition.NativeVersion != descriptor.NativeVersion || definition.NativeCommit != descriptor.NativeCommit || definition.WebappPort != descriptor.WebappPort)) {
 		return agents.Profile{}, fmt.Errorf("chart lacks a supported %s runtime profile", descriptor.Type)
 	}
 
-	baseImage := object(object(chrt.Values[descriptor.Type])["image"])
-	repository := text(baseImage["repository"])
-	if registry != "" {
-		repository = registry + "/" + descriptor.Type + "-gateway"
-	}
-	tag := text(baseImage["tag"])
-	if tag == "" {
-		tag = chrt.Metadata.AppVersion
-	}
-	if repository == "" || tag == "" || tag == "latest" {
-		return agents.Profile{}, fmt.Errorf("built-in profile requires a versioned default image")
-	}
-	image := repository + ":" + tag
-	if digest := text(baseImage["digest"]); digest != "" {
-		image += "@" + digest
+	image, err := defaultRuntimeImage(chrt, descriptor.Type, registry)
+	if err != nil {
+		return agents.Profile{}, err
 	}
 	return agents.Profile{
 		ID:              chrt.Metadata.Version + "/" + descriptor.Type + "/" + definition.NativeVersion,
@@ -443,6 +440,26 @@ func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registr
 		Port:            definition.Port,
 		QualifiedImages: definition.QualifiedImages,
 	}, nil
+}
+
+func defaultRuntimeImage(chrt *chart.Chart, kind, registry string) (string, error) {
+	baseImage := object(object(chrt.Values[kind])["image"])
+	repository := text(baseImage["repository"])
+	if registry != "" {
+		repository = registry + "/" + kind + "-gateway"
+	}
+	tag := text(baseImage["tag"])
+	if tag == "" {
+		tag = chrt.Metadata.AppVersion
+	}
+	if repository == "" || tag == "" || tag == "latest" {
+		return "", fmt.Errorf("built-in profile requires a versioned default image")
+	}
+	image := repository + ":" + tag
+	if digest := text(baseImage["digest"]); digest != "" {
+		image += "@" + digest
+	}
+	return image, nil
 }
 
 func prepareRuntimeValues(chrt *chart.Chart, input map[string]any) (map[string]any, error) {

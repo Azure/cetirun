@@ -21,7 +21,7 @@ HERMES_FILTER = '''def cetirun_memory_skill_allowed(skill_file: Path) -> bool:
     try:
         frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeError):
-        return True  # Leave unrelated unreadable skills to the native loader.
+        return True
     return frontmatter.get("name") != "cetirun-memory"
 
 
@@ -29,19 +29,27 @@ HERMES_FILTER = '''def cetirun_memory_skill_allowed(skill_file: Path) -> bool:
 
 PATCHES = {
     "hermes": (
-        ("agent/skill_utils.py", "be192879ed2df6ef165c26e51293dddab131f24dc52bf85ce98714fea704c6ce", (
+        ("agent/skill_utils.py", "9b643866caf9b0db3b568045e2b49bf2903f89197497c815a492afec89b33722", (
             ("def iter_skill_index_files(skills_dir: Path, filename: str):\n",
              HERMES_FILTER + "def iter_skill_index_files(skills_dir: Path, filename: str):\n"),
             ("    yield from map(Path, sorted(matches))\n",
-             "    yield from (p for p in map(Path, sorted(matches))\n"
-             '                if filename != "SKILL.md" or cetirun_memory_skill_allowed(p))\n'),
+             "    yield from (path for path in map(Path, sorted(matches))\n"
+             '                if filename != "SKILL.md" or cetirun_memory_skill_allowed(path))\n'),
         )),
-        ("tools/skills_tool.py", "0d47bda41ed9d1ec84856df3d336a42bb94161e89bd9a8b857e76ec76be9f7b7", (
+        ("tools/skills_tool.py", "0b6fbd304a6fff74c3e1afee3e959985b2205dc1926c7474ca5cc7a8bd8ea107", (
             ("    def _record(sd: Optional[Path], smd: Path) -> None:\n",
              "    def _record(sd: Optional[Path], smd: Path) -> None:\n"
              "        from agent.skill_utils import cetirun_memory_skill_allowed\n"
              "        if not cetirun_memory_skill_allowed(smd):\n"
              "            return\n"),
+        )),
+        ("agent/prompt_builder.py", "92794560ec7e3e0396e9f33bc505c7d2e13aed1275f199b39ed934f3c54a9fcb", (
+            ("    snapshot = _load_skills_snapshot(skills_dir, manifest)\n",
+             '    snapshot = None if os.environ.get("CETIRUN_MEMORY_ASSETS") else _load_skills_snapshot(skills_dir, manifest)\n'),
+            ("        if cached is not None and not app_gated:\n",
+             '        if cached is not None and not app_gated and not os.environ.get("CETIRUN_MEMORY_ASSETS"):\n'),
+            ("    if snapshot is None:  # persist for fast cold-start reuse (best-effort)\n",
+             '    if snapshot is None and not os.environ.get("CETIRUN_MEMORY_ASSETS"):\n'),
         )),
     ),
     "openclaw": (

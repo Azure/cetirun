@@ -354,12 +354,11 @@ OpenClaw secret data (agent-specific only)
 
 {{/*
 Whether OpenClaw signs the owner in from their Portal sign-in: asked for, and
-reached only through the Istio sidecar. A native Sandbox workload has no
-sidecar, and Tailscale Serve is another way in that does not carry the
-Portal sign-in, so both keep the gateway token.
+reached through the Istio sidecar or the managed in-Pod mTLS endpoint.
+Plain Sandbox ingress and Tailscale Serve keep the gateway token.
 */}}
 {{- define "cetirun.agent.openclaw.portalSignIn" -}}
-{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (not .Values.sandboxWorkload) (ne (include "cetirun.tailscaleEnabled" .) "true") -}}
+{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (or (not .Values.sandboxWorkload) (dig "ingressMTLS" false (.Values.sandboxWorkload | default dict))) (ne (include "cetirun.tailscaleEnabled" .) "true") -}}
 true
 {{- else -}}
 false

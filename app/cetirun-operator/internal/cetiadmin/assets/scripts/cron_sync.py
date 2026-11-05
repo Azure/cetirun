@@ -25,7 +25,7 @@ import tempfile
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
-HERMES_SHA = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+HERMES_SHA = "b200f5bc60e31588ba2cb60e288029c4a54ba5fa"
 JOB_NAME = "cetiadmin-monitor"
 JOB_ID = re.compile(r"[0-9a-f]{12}")
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
@@ -208,14 +208,20 @@ def native_call(function, *args, error="native_error", **kwargs):
 
 def load_native(install, timezone):
     try:
-        pin = (install / ".hermes_build_sha").read_text(encoding="ascii").strip()
-    except (OSError, UnicodeError):
+        stamp = json.loads((install / "install-stamp.json").read_text(encoding="utf-8"))
+        if (stamp.get("commit") != HERMES_SHA or stamp.get("baseVersion") != "0.22.7"
+                or stamp.get("updateMechanism") != "external" or stamp.get("distribution") != "docker"):
+            raise ValueError()
+    except (OSError, UnicodeError, ValueError):
         raise SyncError("native_version_mismatch") from None
-    if pin != HERMES_SHA:
-        raise SyncError("native_version_mismatch")
     os.environ["HERMES_TIMEZONE"] = timezone
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(install))
+    identity = native_call(importlib.import_module, "hermes_cli.version_info")
+    version = native_call(identity.get_version_info)
+    if (not Path(identity.__file__).resolve().is_relative_to(install)
+            or version.base_version != "0.22.7" or version.commit != HERMES_SHA or version.source != "docker"):
+        raise SyncError("native_version_mismatch")
     jobs = native_call(importlib.import_module, "cron.jobs")
     clock = native_call(importlib.import_module, "hermes_time")
     if any(not Path(module.__file__).resolve().is_relative_to(install) for module in (jobs, clock)):

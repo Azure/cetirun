@@ -20,6 +20,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	sandboxadmission "github.com/Azure/CetiRun/app/cetirun-operator/internal/admission"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -95,6 +96,9 @@ func (i *preparationInstaller) PrepareSandbox(_ string, platform, user map[strin
 	i.renders++
 	if version != i.chart.Metadata.Version {
 		return nil, fmt.Errorf("test chart version differs")
+	}
+	if bundle.Identity().AgentType == "hermes" {
+		return helm.PrepareSandboxChartWithHarness(i.chart, platform, user, bundle, legacyHeldHermesHarness{})
 	}
 	return helm.PrepareSandboxChart(i.chart, platform, user, bundle)
 }
@@ -182,6 +186,34 @@ type preparationFixture struct {
 }
 
 const legacyHeldChartSHA256 = "b4916f6e804d0d56cc137799934fce17eebc6b70b87ef0d38680a319f39a79e2"
+
+// legacyHeldHermesHarness matches the harness at the archived chart's cfdf7c55 revision.
+type legacyHeldHermesHarness struct{}
+
+func (legacyHeldHermesHarness) Describe() agents.Descriptor {
+	return agents.Descriptor{
+		Type: "hermes", NativeVersion: "0.21.5", ConfigFile: "hermes-config.yaml", PortName: "api",
+		DefaultPort: 8642, HealthPath: "/health", ReadinessPath: "/health", StartupPath: "/health",
+		NativeSecretKey: "API_SERVER_KEY", EnvironmentFile: "hermes.env",
+	}
+}
+
+func (h legacyHeldHermesHarness) Validate(agent agents.ResolvedAgent, bindings agents.Bindings) error {
+	bindings.ReservedPorts = append(slices.Clone(bindings.ReservedPorts), agents.PortBinding{Name: "dashboard", Number: 9119})
+	return agents.Validate(agent, bindings, h.Describe())
+}
+
+func (h legacyHeldHermesHarness) Build(agent agents.ResolvedAgent, bindings agents.Bindings) (agents.Contribution, error) {
+	if err := h.Validate(agent, bindings); err != nil {
+		return agents.Contribution{}, err
+	}
+	contribution, err := agents.Build(agent, bindings, h.Describe())
+	if err != nil {
+		return agents.Contribution{}, err
+	}
+	contribution.Ports = slices.Insert(contribution.Ports, 1, agents.PortBinding{Name: "dashboard", Number: 9119})
+	return contribution, nil
+}
 
 // legacyHeldChart is used only by the deprecated held-runtime preparation
 // suite. Reconciled and common-executor fixtures continue to load the working

@@ -109,7 +109,7 @@ func TestCustomSandboxRenderPreservesHarnessAndGatewayContract(t *testing.T) {
 			} {
 				bad := template.DeepCopy()
 				mutate(bad)
-				if err := bundle.ValidateReconciledTemplate(bad, prepared.Agent.Image, false); err == nil {
+				if err := bundle.ValidateReconciledTemplate(bad, prepared.Agent.Image, false, prepared.Agent.Port); err == nil {
 					t.Fatal("Custom render validation accepted a changed runtime contract")
 				}
 			}

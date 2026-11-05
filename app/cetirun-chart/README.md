@@ -88,6 +88,14 @@ applies the complete protected bundle last. `sandboxWorkload` is an internal
 chart contract. It is not a tenant override or a way to enable Sandbox
 execution.
 
+For a common-executor OpenClaw Sandbox with registered ingress mTLS,
+`openclaw.portalSignIn.enabled: true` lets the owner open the Control UI from
+the Portal without a gateway-token paste or device approval. OpenClaw trusts
+only the managed loopback proxy. Plain Sandbox ingress and retained
+single-start lifetimes keep token authentication. See the
+[mTLS Portal sign-in contract](../../site/content/en/docs/guides/agent-ingress-mtls.md#openclaw-control-ui-portal-sign-in)
+for prerequisites, CLI credentials, and upgrade behavior.
+
 Common reconciliation supports OpenClaw, Hermes, and Gateway-qualified Custom.
 The retained preparation-only path still renders zero replicas and does not
 authorize execution. Custom must use the common executor. It never uses an

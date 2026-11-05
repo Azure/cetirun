@@ -27,6 +27,10 @@ func RenderConfig(agent ResolvedAgent, bindings Bindings) (string, error) {
 		(!bindings.NativeSandbox || !bindings.Model.Gateway || (agent.Type != "openclaw" && !bindings.ReconciledSandbox) || bindings.Integrations.Tailscale) {
 		return "", fmt.Errorf("compiler proxy trust requires native OpenClaw Gateway inputs without Tailscale")
 	}
+	if bindings.IngressMTLS && (!bindings.NativeSandbox || !bindings.ReconciledSandbox || !bindings.Model.Gateway ||
+		bindings.Integrations.Tailscale || !slices.Equal(bindings.TrustedProxyIPs, []string{"127.0.0.1"})) {
+		return "", fmt.Errorf("managed ingress mTLS requires common Sandbox Gateway inputs and exact loopback proxy trust without Tailscale")
+	}
 	renderer, err := template.New("native-config").Funcs(nativeTemplateFunctions()).Parse(bindings.ConfigTemplate)
 	if err != nil {
 		return "", fmt.Errorf("invalid native config asset")
@@ -129,6 +133,9 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 		if bindings.ReconciledSandbox {
 			values["sandboxWorkload"].(map[string]any)["reconciled"] = true
 		}
+		if bindings.IngressMTLS {
+			values["sandboxWorkload"].(map[string]any)["ingressMTLS"] = true
+		}
 		if len(bindings.TrustedProxyIPs) != 0 {
 			values["sandboxWorkload"].(map[string]any)["trustedProxyIPs"] = slices.Clone(bindings.TrustedProxyIPs)
 		}
@@ -166,8 +173,8 @@ func Build(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) (Contr
 		return Contribution{}, err
 	}
 	ports := []PortBinding{{Name: descriptor.PortName, Number: *agent.Port}}
-	if descriptor.DashboardPort != 0 {
-		ports = append(ports, PortBinding{Name: "dashboard", Number: descriptor.DashboardPort})
+	if descriptor.WebappPort != 0 {
+		ports = append(ports, PortBinding{Name: "webapp", Number: descriptor.WebappPort})
 	}
 	// The in-agent model sign-in helper serves the Portal's Copilot login in
 	// charts that still carry it.

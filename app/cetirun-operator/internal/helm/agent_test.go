@@ -52,6 +52,9 @@ func sampleInput(typ, provider string, integrations bool) map[string]any {
 		},
 		"networkPolicy": map[string]any{"gatewayNamespace": "cetirun-system", "gatewayPort": 4000},
 	}
+	if typ == "hermes" {
+		v["hermes"] = map[string]any{"env": map[string]any{"HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/example"}}
+	}
 	if integrations {
 		v["skills"] = map[string]any{
 			"shared": true, "resourceGroup": "test", "storageAccount": "test",
@@ -307,7 +310,7 @@ func TestNativeRenderBaseline(t *testing.T) {
 					// Pin the original StorageClass input; defaults are tested separately.
 					input["persistence"] = map[string]any{"storageClass": ""}
 					path := filepath.Join("testdata", "harness", name+".json")
-					if baselineChart != "" {
+					if baselineChart != "" || os.Getenv("HARNESS_UPDATE_FIXTURES") == "true" {
 						snapshot := renderSnapshot(t, chrt, input)
 						raw, err := json.MarshalIndent(snapshot, "", "  ")
 						if err != nil {
@@ -640,7 +643,7 @@ func TestMissingProfileAndQualifiedImage(t *testing.T) {
 	override := "registry.example.com/hermes:qualified"
 	for _, file := range chrt.Files {
 		if file.Name == "agents/hermes/profile.yaml" {
-			file.Data = []byte("contractVersion: v1\nnativeVersion: \"0.21.5\"\nport: 8642\nqualifiedImages:\n- " + override + "\n")
+			file.Data = []byte("contractVersion: v1\nnativeVersion: \"0.22.7\"\nnativeCommit: b200f5bc60e31588ba2cb60e288029c4a54ba5fa\nwebappPort: 9120\nport: 8642\nqualifiedImages:\n- " + override + "\n")
 		}
 	}
 	input["agentRequest"].(map[string]any)["image"] = override

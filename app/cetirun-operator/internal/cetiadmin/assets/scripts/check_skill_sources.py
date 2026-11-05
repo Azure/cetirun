@@ -25,12 +25,13 @@ import stat
 import sys
 
 
-HERMES_SHA = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
-# Private native APIs below are qualified against this immutable source.
+HERMES_SHA = "b200f5bc60e31588ba2cb60e288029c4a54ba5fa"
+# Private native APIs include the image's reserved Memory skill patch.
 LOADER_HASHES = {
-    "agent/skill_utils.py": "be192879ed2df6ef165c26e51293dddab131f24dc52bf85ce98714fea704c6ce",
-    "tools/skills_tool.py": "0d47bda41ed9d1ec84856df3d336a42bb94161e89bd9a8b857e76ec76be9f7b7",
-    "hermes_constants.py": "3dd95a77b1a4956280f146e3b065789ca5d82921f69e6e2cae06d49a13f82405",
+    "agent/safe_worker_policy.py": "f0759f0868f402d5aff6007303ad503e3d3d92999ed01693037bc8f07b4a2738",
+    "agent/skill_utils.py": "ee78772f1773bfaf039caa2e02f246ab9f570ab1d85779d2c34a1e0790d80bf0",
+    "tools/skills_tool.py": "cd530969317f1ff4c80b06fc24973cd68c9bba9b5f95bfdd67356048702f7ac3",
+    "hermes_constants.py": "74d849629c176703d48f9aa43a245fd8819545ac908c805e347db7d691976510",
 }
 ASSETS = Path(__file__).resolve().parents[1]
 RESERVED = ("cetiadmin", "adminclaw")
@@ -75,7 +76,9 @@ def runtime_directory(name):
 
 def load_native(install):
     try:
-        if (install / ".hermes_build_sha").read_text(encoding="ascii").strip() != HERMES_SHA:
+        stamp = json.loads((install / "install-stamp.json").read_text(encoding="utf-8"))
+        if (stamp.get("commit") != HERMES_SHA or stamp.get("baseVersion") != "0.22.7"
+                or stamp.get("updateMechanism") != "external" or stamp.get("distribution") != "docker"):
             raise ValueError()
         for name, digest in LOADER_HASHES.items():
             if hashlib.sha256((install / name).read_bytes()).hexdigest() != digest:
@@ -84,6 +87,9 @@ def load_native(install):
         raise SourceError("native_version_mismatch") from None
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(install))
+    identity = importlib.import_module("hermes_cli.version_info").get_version_info()
+    if identity.base_version != "0.22.7" or identity.commit != HERMES_SHA or identity.source != "docker":
+        raise SourceError("native_version_mismatch")
     utils = importlib.import_module("agent.skill_utils")
     if not Path(utils.__file__).resolve().is_relative_to(install):
         raise SourceError("native_version_mismatch")
@@ -224,6 +230,16 @@ def private_directory(path, home):
 
 def check_sources(home, install):
     utils = load_native(install)
+    try:
+        config = utils.yaml_load((home / "config.yaml").read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError()
+    except (OSError, UnicodeError, ValueError):
+        raise SourceError("invalid_config") from None
+    # This short-lived preflight uses the same skill resolver over a frozen,
+    # credential-free config snapshot; config-backend bootstrap must not read .env.
+    from agent.safe_worker_policy import _bind_worker_config
+    _bind_worker_config(config)
     bundle = (ASSETS / "skills").resolve()
     builtin = bundle / "cetiadmin/SKILL.md"
     if not builtin.is_file():

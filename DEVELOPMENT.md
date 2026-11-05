@@ -498,8 +498,8 @@ listeners, processes, and files.
 
 To also test the real native API/Control UI and ttyd, set
 `CETIRUN_OPENCLAW_IMAGE` to an explicitly approved cached OpenClaw 2026.9.6
-image. To test the Hermes API/dashboard and ttyd, set `CETIRUN_HERMES_IMAGE` to
-an explicitly approved cached Hermes 0.21.5 image. This test uses a fresh HOME,
+image. To test the Hermes API/Webapp and ttyd, set `CETIRUN_HERMES_IMAGE` to
+an explicitly approved cached Hermes 0.22.7 image. This test uses a fresh HOME,
 retained bind overrides, and a supervised restart after the overrides are
 added again. The tests use the candidate configuration assets and the HOME
 authority helper. No model request is sent.
@@ -721,9 +721,10 @@ The Hermes image build allows up to 30 minutes for each source transfer. It
 uses at most three retries, a 15-second retry delay, and a 30-minute
 retry-start window. With this configuration, the build does not discard a
 download that makes progress on slow runners, and the retries stay bounded. The
-pinned source checksum is verified before extraction, and the extracted project
-version must be the same as the selected release. Download, checksum, and
-version failures still cause the image build to fail. The job timeout of the
+pinned source checksum is verified before extraction. The install stamp must
+match the selected release and commit, with external image updates; the package
+metadata version is not the release identity. Download, checksum, and identity
+failures still cause the image build to fail. The job timeout of the
 workflow stays the same.
 
 The [Memory Context workflow](.github/workflows/memory-context-ci.yml) downloads
@@ -750,6 +751,33 @@ This Linux-only check creates and removes disposable synthetic stores inside
 the selected existing directory. It does not use the Agent's active Memory
 store or call a model. A canary run requires separate cluster authorization and
 does not replace native conversation or retained-restart acceptance.
+
+Hermes adapter tests use the same PM-locked Python 3.14 environment as the
+image. Prepare its tools and dependencies separately with
+`agents/hermes/pm/build.py` under the runtime chart, using a synthetic
+`HERMES_HOME` and the checksum-verified source. Select that source and its
+`.venv/bin/python` through `MEMORY_HERMES_SOURCE` and `MEMORY_HERMES_PYTHON`
+when running `node --test app/cetirun-memory-context/tests/native.test.mjs`.
+The host check validates the install stamp, native hook and middleware calls,
+Webapp owner/source isolation, and bounded model requests to loopback.
+Run the same interpreter with
+`-B scripts/tests/hermes_mcp_host.py --source /path/to/pinned/hermes` to test
+the native MCP SDK over loopback TLS. This includes workload token rotation,
+CA verification, and rejection of redirects and SSE fallback. Both checks use
+synthetic HOME directories and do not access an existing Agent.
+
+The focused browser storage test uses a prepared Playwright 1.64.0 and Chromium:
+
+```bash
+PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
+CHROMIUM_EXECUTABLE=/path/to/chrome \
+node scripts/tests/hermes_webapp_storage.cjs
+```
+
+This checks storage, storage events and BroadcastChannel isolation between
+instance prefixes on loopback pages. It needs no Hermes image, upstream source
+checkout or model endpoint. It does not exercise public login or a deployed
+cluster.
 
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests must have the pinned PyYAML dependency in

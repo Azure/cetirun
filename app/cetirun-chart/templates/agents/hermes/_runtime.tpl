@@ -3,7 +3,14 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 */}}
 
-{{- define "cetirun.agent.hermes.validateSecrets" -}}{{- end }}
+{{- define "cetirun.agent.hermes.validateSecrets" -}}
+{{- $_ := required "hermes.env.HERMES_WEBAPP_PUBLIC_URL is required for Hermes" .Values.hermes.env.HERMES_WEBAPP_PUBLIC_URL -}}
+{{- $source := dig "secrets" "onepassword" (dict) .Values.hermes.config -}}
+{{- $keyEnv := dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" .Values.aiGateway -}}
+{{- if or (hasKey (get $source "env" | default dict) $keyEnv) (eq (get $source "service_account_token_env" | default "OP_SERVICE_ACCOUNT_TOKEN") $keyEnv) -}}
+{{- fail "Hermes secret sources must not replace the AI Gateway key" -}}
+{{- end -}}
+{{- end }}
 {{- define "cetirun.agent.hermes.validateDesktopBrowserConfig" -}}{{- end }}
 
 {{- define "cetirun.agent.hermes.validatePorts" -}}
@@ -11,8 +18,8 @@ Licensed under the MIT License.
 {{- if and .Values.desktop.enabled (eq $apiPort 5900) -}}
 {{- fail "hermes API port must not collide with desktop VNC port (5900)" }}
 {{- end -}}
-{{- if eq $apiPort 9119 -}}
-{{- fail "hermes API port must not collide with dashboard port (9119)" }}
+{{- if eq $apiPort 9120 -}}
+{{- fail "hermes API port must not collide with Webapp port (9120)" }}
 {{- end -}}
 {{- if and .Values.desktop.enabled (eq $apiPort 6080) -}}
 {{- fail "hermes API port must not collide with noVNC port (6080)" }}
@@ -26,8 +33,8 @@ Licensed under the MIT License.
 {{- if and .Values.desktop.enabled (eq $ttydPort 5900) -}}
 {{- fail "ttyd.port must not collide with desktop VNC port (5900)" }}
 {{- end -}}
-{{- if eq $ttydPort 9119 -}}
-{{- fail "ttyd.port (9119) must not collide with Hermes dashboard port (9119)" }}
+{{- if eq $ttydPort 9120 -}}
+{{- fail "ttyd.port (9120) must not collide with Hermes Webapp port (9120)" }}
 {{- end -}}
 {{- if eq $ttydPort $apiPort -}}
 {{- fail (printf "ttyd.port (%d) must not collide with hermes API port (%d)" $ttydPort $apiPort) }}
@@ -125,8 +132,8 @@ Hermes container ports (agent-specific only)
 - name: api
   containerPort: {{ .Values.hermes.env.API_SERVER_PORT }}
   protocol: TCP
-- name: dashboard
-  containerPort: 9119
+- name: webapp
+  containerPort: 9120
   protocol: TCP
 {{- end }}
 
@@ -136,20 +143,24 @@ Hermes container env vars (agent-specific only)
 {{- define "cetirun.agent.hermes.envVars" -}}
 - name: HERMES_HOME
   value: "/home/vibe/.hermes"
-- name: HERMES_DASHBOARD_ENABLED
+- name: HERMES_MANAGED_DIR
+  value: "/etc/cetirun/hermes-managed"
+- name: HERMES_PYTHON
+  value: "/usr/local/bin/hermes-python"
+- name: HERMES_WEBAPP_ENABLED
   value: "true"
-- name: HERMES_DASHBOARD_HOST
+- name: HERMES_WEBAPP_HOST
   {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
   value: "127.0.0.1"
   {{- else }}
   value: "0.0.0.0"
   {{- end }}
-- name: HERMES_DASHBOARD_PORT
-  value: "9119"
-{{- with .Values.hermes.env.HERMES_DASHBOARD_PUBLIC_URL }}
-- name: HERMES_DASHBOARD_PUBLIC_URL
-  value: {{ . | quote }}
-{{- end }}
+- name: HERMES_WEBAPP_PORT
+  value: "9120"
+- name: HERMES_WEBAPP_PUBLIC_URL
+  value: {{ .Values.hermes.env.HERMES_WEBAPP_PUBLIC_URL | quote }}
+- name: CETIRUN_GATEWAY_KEY_ENV
+  value: {{ dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" .Values.aiGateway | quote }}
 - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
   value: "cetirun"
 - name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
@@ -168,6 +179,8 @@ Hermes container env vars (agent-specific only)
   value: {{ .Values.hermes.env.API_SERVER_HOST | quote }}
 - name: API_SERVER_PORT
   value: {{ .Values.hermes.env.API_SERVER_PORT | quote }}
+- name: API_SERVER_CORS_ORIGINS
+  value: {{ .Values.hermes.env.API_SERVER_CORS_ORIGINS | quote }}
 - name: API_SERVER_KEY
   valueFrom:
     secretKeyRef:
@@ -239,10 +252,10 @@ Hermes service ports (agent-specific only)
   targetPort: api
   protocol: TCP
   name: api
-- port: 9119
-  targetPort: dashboard
+- port: 9120
+  targetPort: webapp
   protocol: TCP
-  name: dashboard
+  name: webapp
 {{- end }}
 
 {{/*
@@ -252,21 +265,32 @@ Hermes networkpolicy ingress ports (agent-specific only)
 - protocol: TCP
   port: {{ .Values.hermes.env.API_SERVER_PORT }}
 - protocol: TCP
-  port: 9119
+  port: 9120
 {{- end }}
 
 {{/*
 Hermes configmap data
 */}}
 {{- define "cetirun.agent.hermes.configmapData" }}
-  {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
-  hermes-mtls-gateway.sh: |
-{{ .Files.Get "agents/hermes/bootstrap/hermes-mtls-gateway.sh" | indent 4 }}
-  {{- end }}
-  {{- if (.Values.sandboxWorkload | default dict).reconciled }}
-  health-probe.cjs: |
-{{ .Files.Get "agents/openclaw/bootstrap/health-probe.cjs" | indent 4 }}
-  {{- end }}
+  hermes-gateway.sh: |
+{{ .Files.Get "agents/hermes/bootstrap/hermes-gateway.sh" | indent 4 }}
+  hermes-runtime.py: |
+{{ .Files.Get "agents/hermes/bootstrap/hermes-runtime.py" | indent 4 }}
+  hermes-managed.yaml: |
+    webapp:
+      enabled: true
+      {{- if (.Values.sandboxWorkload | default dict).ingressMTLS }}
+      host: 127.0.0.1
+      {{- else }}
+      host: 0.0.0.0
+      {{- end }}
+      port: 9120
+      public_url: {{ .Values.hermes.env.HERMES_WEBAPP_PUBLIC_URL | quote }}
+    {{- if not (.Values.sandboxWorkload | default dict).ingressMTLS }}
+    dashboard:
+      trusted_proxies:
+        - 127.0.0.6
+    {{- end }}
   hermes-config.yaml: |
     {{- if .Values.runtime }}
 {{ index .Values.runtime.configFiles "hermes-config.yaml" | indent 4 }}

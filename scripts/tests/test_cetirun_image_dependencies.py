@@ -43,11 +43,11 @@ class ImageDependencyTests(unittest.TestCase):
         self.assertIn("--retry-all-errors", arguments)
 
     def test_hermes_source_download_preserves_integrity_gates(self):
-        for failure in ("none", "http", "checksum", "version"):
+        for failure in ("none", "http", "checksum"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 archive = root / "source.tar.gz"
-                project = b'[project]\nversion = "0.21.5"\n'
+                project = b'[project]\nversion = "0.0.0"\n'
                 with tarfile.open(archive, "w:gz") as stream:
                     entry = tarfile.TarInfo("hermes-source/pyproject.toml")
                     entry.size = len(project)
@@ -78,8 +78,7 @@ class ImageDependencyTests(unittest.TestCase):
                         "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}",
                         "SOURCE_ARCHIVE": str(archive),
                         "DOWNLOAD_RESULT": "22" if failure == "http" else "0",
-                        "HERMES_RELEASE": "2026.9.24",
-                        "HERMES_VERSION": "0.0.0" if failure == "version" else "0.21.5",
+                        "HERMES_GIT_SHA": "b200f5bc60e31588ba2cb60e288029c4a54ba5fa",
                         "HERMES_SOURCE_SHA256": "0" * 64 if failure == "checksum" else hashlib.sha256(archive.read_bytes()).hexdigest(),
                     },
                 )
@@ -91,8 +90,7 @@ class ImageDependencyTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     if failure == "http":
                         self.assertEqual(result.returncode, 22)
-                    if failure != "version":
-                        self.assertFalse((checkout / "pyproject.toml").exists())
+                    self.assertFalse((checkout / "pyproject.toml").exists())
 
     def _docker_build_arguments(self, **overrides):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -156,7 +154,7 @@ class ImageDependencyTests(unittest.TestCase):
                 "CLAWHUB_UNDICI_VERSION": "7.29.1",
             },
             "agents/hermes/Dockerfile": {
-                "HERMES_VERSION": "0.21.5",
+                "HERMES_VERSION": "0.22.7",
             },
         }
         for filename, arguments in minimums.items():
@@ -215,71 +213,39 @@ class ImageDependencyTests(unittest.TestCase):
 
     def test_hermes_uses_official_locked_source_install(self):
         content = (CHART / "agents/hermes/Dockerfile").read_text()
+        builder = (CHART / "agents/hermes/pm/build.py").read_text()
         expected = {
-            "HERMES_RELEASE": "2026.9.24",
-            "HERMES_GIT_SHA": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
-            "HERMES_SOURCE_SHA256": (
-                "15b15ce4e6ec8ea424a081823709d1e17"
-                "f0943e7b42b59597d24ebb94cbd1742"
-            ),
-            "HERMES_UV_IMAGE": (
-                "ghcr.io/astral-sh/uv:0.11.6@sha256:"
-                "43cb71695fcad1516c2fbe0f56e500184c42d8bce838d9f64593b8aff2c16298"
-            ),
-            "HERMES_NODE_IMAGE": (
-                "node:26-bookworm-slim@sha256:"
-                "9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73"
-            ),
+            "HERMES_RELEASE": "0.22.7",
+            "HERMES_GIT_SHA": "b200f5bc60e31588ba2cb60e288029c4a54ba5fa",
+            "HERMES_SOURCE_SHA256": "1f7d43fa1a515283929a739c42e10bf8d48910e523eccec74b2a2bece858d2b5",
+            "HERMES_CPYTHON_SHA256": "e02d9ac21cebda6e46435369744a92c65cc7cd8669697694122cf97ffacd1e53",
             "HERMES_SQLITE_VERSION": "3530400",
-            "HERMES_SQLITE_SHA256": (
-                "0e9483900e92cd5de8fd48d16bf9200145a61f7fd"
-                "5be542a5ac81d8a9516eb9c"
-            ),
+            "HERMES_SQLITE_SHA256": "0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c",
         }
         for argument, value in expected.items():
             with self.subTest(argument=argument):
                 self.assertIn(f"ARG {argument}={value}\n", content)
-
-        self.assertIn(
-            "codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/"
-            "v${HERMES_RELEASE}",
-            content,
-        )
-        self.assertIn(
-            'echo "${HERMES_SOURCE_SHA256}  /tmp/hermes-agent.tar.gz" '
-            "| sha256sum --check",
-            content,
-        )
-        self.assertIn(
-            "uv sync --python /usr/bin/python3 --frozen --extra all", content
-        )
-        self.assertIn("--extra anthropic", content)
-        self.assertIn("--extra azure-identity", content)
-        self.assertIn(
-            "COPY --from=hermes-uv /uv /usr/local/bin/uv",
-            content,
-        )
-        self.assertIn("FROM --platform=$BUILDPLATFORM ${HERMES_NODE_IMAGE}", content)
-        self.assertIn(
-            "COPY --from=hermes-ui-build --chown=vibe:vibe", content
-        )
-        self.assertIn(
-            "COPY --from=hermes-sqlite-build "
-            "/opt/sqlite-fixed/lib/libsqlite3.so.3.53.4",
-            content,
-        )
-        self.assertIn("npm --prefix web run build", content)
-        self.assertIn("npm --prefix ui-tui run build", content)
-        self.assertIn("printf '%s\\n' docker > .install_method", content)
-        self.assertIn("/etc/hermes/image-provenance.json", content)
-        self.assertNotIn("HERMES_WHEEL_SHA256", content)
-        self.assertNotIn('"hermes-agent[all]==${HERMES_VERSION}"', content)
-        self.assertNotIn("PLUGINS_DIR=", content)
+        self.assertIn("codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_GIT_SHA}", content)
+        self.assertIn("sha256sum --check", content)
+        self.assertIn('pm.ensure(name, explicit=True)', builder)
+        self.assertIn('pm.stage_manager_runtime(', builder)
+        self.assertIn('"--sealed", "--record-selection"', builder)
+        self.assertIn('("all", "messaging", "anthropic", "azure-identity")', builder)
+        self.assertIn('"--distribution", "docker", "--source", "docker", "--update-mechanism", "external"', builder)
+        self.assertIn('node apps/desktop/scripts/build-webapp.mjs --deps-only', content)
+        self.assertIn('node apps/desktop/scripts/build-webapp.mjs --no-install', content)
+        self.assertIn('node scripts/build/tui.mjs', content)
+        self.assertIn('ENV HERMES_PYTHON=/usr/local/bin/hermes-python', content)
+        self.assertIn('ENV HERMES_DISABLE_LAZY_INSTALLS=1', content)
+        self.assertIn('/usr/local/bin/hermes-python /usr/local/lib/hermes-agent/cetirun_pm/verify.py', content)
+        for retired in ('HERMES_UV_IMAGE', 'HERMES_NODE_IMAGE', 'HERMES_WEB_DIST=', 'npm --prefix web run build', 'venv/bin/python -c', 'compat/apply.py', 'EXPOSE 8642 7681 9119'):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, content)
 
     def test_hermes_sqlite_build_has_kernel_headers(self):
         content = (CHART / "agents/hermes/Dockerfile").read_text()
         sqlite_build = content.split("AS hermes-sqlite-build", 1)[1].split(
-            "FROM --platform=", 1
+            "FROM ${BASE_IMAGE} AS hermes-toolchain", 1
         )[0]
         self.assertRegex(sqlite_build, r"tdnf install -y [^\n]*\bkernel-headers\b")
         self.assertIn("-DSQLITE_ENABLE_FTS5", sqlite_build)

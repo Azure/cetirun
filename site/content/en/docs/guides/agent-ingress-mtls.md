@@ -7,7 +7,7 @@ weight: 45
 `AgentPolicy.spec.network.ingress.requireMTLS: true` enables an explicitly
 registered Envoy endpoint **inside the Agent Pod**. The managed Istio Gateway
 authenticates that endpoint and presents its approved client certificate.
-OpenClaw API/Control UI, Hermes API/dashboard, the optional ttyd terminal and
+OpenClaw API/Control UI, Hermes API/Webapp, the optional ttyd terminal and
 registered noVNC desktop then receive traffic over loopback only. No plaintext
 network hop follows an external Team gateway.
 
@@ -49,11 +49,11 @@ owned, private Copilot companion Service keeps its own selector and port.
 - Keep ingress mode `authenticated`. `disabled` plus `requireMTLS: true` is
   invalid. `requireMTLS: false` keeps the ordinary render and routing path.
 
-The endpoint listens on TCP 15443 (primary API/UI), 15444 (Hermes dashboard),
+The endpoint listens on TCP 15443 (primary API/UI), 15444 (Hermes Webapp),
 15445 (enabled terminal), and 15446 (registered noVNC desktop). Its admin
 interface is loopback-only on 15440 and is never a Service or Cilium ingress
-grant. The application primary port is the approved Agent port. The dashboard
-stays on loopback 9119, and the terminal stays on loopback 7681. The
+grant. The application primary port is the approved Agent port. The Webapp
+stays on loopback 9120, and the terminal stays on loopback 7681. The
 managed desktop fixes noVNC to loopback port 6080, VNC to loopback port 5900
 and Chrome CDP to loopback port 18800. Only noVNC gets an external TLS route.
 
@@ -72,6 +72,49 @@ unprivileged identity, dropped capabilities, and a read-only root filesystem.
 Its resources are counted with the other resources of the Pod. It receives
 neither HOME nor application/model credentials. Istio injection stays
 disabled.
+
+## OpenClaw Control UI Portal sign-in
+
+With the registered mTLS endpoint above, a common-executor OpenClaw Sandbox
+can opt in to Portal sign-in:
+
+```yaml
+spec:
+  helm:
+    values:
+      openclaw:
+        portalSignIn:
+          enabled: true
+```
+
+The owner opens the Control UI from the Portal without pasting the gateway
+token or running `openclaw devices approve`. The shared ingress still strips
+client-supplied identity headers before sign-in and checks ownership before
+forwarding `x-auth-request-email`. The in-Pod Envoy verifies the approved
+per-Agent Gateway client certificate. OpenClaw listens on loopback and trusts
+exactly `127.0.0.1`, not the registered Pod network.
+
+The Operator validates the rendered proxy list, authentication settings, and
+gateway credential environment. The doctor initializer still receives no
+gateway credentials. The existing gateway Secret key is unchanged. The Terminal CLI
+receives it as `OPENCLAW_GATEWAY_PASSWORD` instead of `OPENCLAW_GATEWAY_TOKEN`;
+OpenClaw does not accept a token in trusted-proxy mode. HOME initialization
+replaces saved gateway authentication on every start. With Portal sign-in,
+rendering and HOME initialization remove both `gateway.auth.token` and
+`gateway.remote.token`. OpenClaw can use the remote token even when
+`gateway.mode` is `local`. Other remote settings are kept.
+Turning the opt-in off restores the token environment and removes the managed
+trusted-proxy configuration on the next start.
+
+This setting defaults to false. Upgrade the Operator and runtime chart
+together before enabling it. An older chart that cannot render the requested
+mTLS sign-in contract is rejected rather than silently leaving token mode.
+Ordinary Sandbox ingress, whether registered by exact Pod IPs or by a Pod
+selector and trusted CIDRs, does not enable Portal sign-in. Retained
+single-start Sandbox lifetimes also keep token authentication and device
+approval. Native `gateway.auth` preferences cannot bypass this mTLS gate.
+Tailscale remains unsupported for the mTLS Sandbox. Legacy Agents retain
+their existing Istio-sidecar opt-in and token behavior with Tailscale.
 
 ## Custom HTTP and terminal
 
@@ -242,25 +285,19 @@ these approvals, not certificate or key contents. The key is mounted only by
 Envoy. The application receives only the public certificate and trust bundle
 for readiness checks.
 
-Hermes reserves API listener authority during HOME initialization and before
-every start of a supervised Gateway process. In mTLS mode only, it removes
-these items that compete for that authority:
+Hermes validates API and Webapp listener authority before every supervised
+gateway start, in both ordinary and mTLS modes. Platform values supply the API
+binding and the read-only `HERMES_MANAGED_DIR` overlay supplies Webapp's
+`enabled`, `host`, `port` and full HTTPS `public_url`. In mTLS mode both
+listeners bind only to loopback. The launcher uses the upstream effective
+configuration loaders to reject competing profile or configuration sources.
 
-- The `API_SERVER_ENABLED`, `API_SERVER_HOST` and `API_SERVER_PORT` HOME
-  environment assignments
-- The enabled/host/port overrides of the API platform
-- Both flat and `extra` host/port spellings
-
-This removal covers `platforms.api_server`, `gateway.platforms.api_server`,
-`gateway.api_server`, and the legacy `gateway.json` base layer that already
-exists. An invalid legacy file fails closed. It does not enable a fallback
-listener again.
-
-The validated Pod environment then supplies the listener settings. Unrelated
-HOME configuration and environment data are kept. No loopback defaults are
-left in HOME for a later non-mTLS start. Dashboard and ttyd use explicit,
-protected command-line bind settings. Their preferences that are kept cannot
-override those arguments.
+Platform-reserved assignments in the HOME environment and API listener aliases
+are removed while unrelated configuration is retained. An invalid overlay,
+missing independent signing key, wrong runtime identity or missing Webapp
+bundle stops startup. The gateway does not select a backup port or an older UI.
+The Webapp is served by the same persistent gateway process as the API;
+there is no separate Dashboard process.
 
 The execution expectation, source-read grants, coordinated source reservation,
 and final-Pod admission already exist. They cover the helper, Secret
@@ -341,7 +378,7 @@ CA/SAN, plaintext, certificate loss/readiness, replacement and old-authority
 retirement.
 
 Optional network-disabled, read-only cached image tests exercise OpenClaw's
-native API/Control UI and ttyd, and Hermes' API/dashboard and ttyd behind the
+native API/Control UI and ttyd, and Hermes' API/Webapp and ttyd behind the
 generated endpoint. The Hermes test covers fresh HOME, stale listener overrides
 in a HOME that is kept, and reintroduced overrides before a supervised process
 restart. The cached desktop test exercises actual websockify/noVNC HTTP and

@@ -27,6 +27,7 @@ OFFLINE = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.de
 
 def ordinary_values():
     return {"agentType": "hermes", "runtimeClassName": "",
+            "hermes": {"env": {"HERMES_WEBAPP_PUBLIC_URL": "https://agents.example.com/ui/cetiadmin"}},
             "secrets": {"existingSecret": "native-auth", "model": "fixture-model",
                         "apiBase": "http://gateway.example.svc.cluster.local:4000/v1"},
             "aiGateway": {"keySecretName": "model-key"}}
@@ -52,7 +53,7 @@ def prepared_values():
             "contractVersion": "v1",
             "agent": {"type": "hermes", "image": "registry.example.com/hermes-gateway:0.1.1",
                       "username": "vibe", "home": "/home/vibe", "port": 8642},
-            "ports": [{"name": "api", "number": 8642}, {"name": "dashboard", "number": 9119}],
+            "ports": [{"name": "api", "number": 8642}, {"name": "webapp", "number": 9120}],
             "http": {"portName": "api", "healthPath": "/health", "readinessPath": "/health", "startupPath": "/health"},
             "configFiles": {"hermes-config.yaml": yaml.safe_dump({
                 "model": {"default": "fixture-model"},

@@ -47,7 +47,10 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 			return fmt.Errorf("reconciled Sandbox must use the owned Agent workload and existing HOME")
 		}
 		memory, _ := p.Values["memoryContext"].(map[string]any)
-		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image, memory["enabled"] == true); err != nil {
+		if err := p.sandboxBundle.ValidateReconciledTemplate(&stateful.Spec.Template, p.Agent.Image, memory["enabled"] == true, p.Agent.Port); err != nil {
+			return err
+		}
+		if err := p.validateSandboxOpenClawEnvironment(stateful.Spec.Template.Spec); err != nil {
 			return err
 		}
 		if request := input.PlannedMigration; request != nil {
@@ -150,7 +153,17 @@ func (p *PreparedRelease) validateReconciledObject(object unstructured.Unstructu
 		if err := p.validateTerminalRoleBinding(object); err != nil {
 			return err
 		}
-	case "v1/ConfigMap", "v1/ServiceAccount", "networking.k8s.io/v1/NetworkPolicy",
+	case "v1/ConfigMap":
+		if object.GetName() == input.WorkloadName+"-config" {
+			var config corev1.ConfigMap
+			if err := decodeObject(object.Object, &config); err != nil {
+				return err
+			}
+			if err := p.validateSandboxOpenClawConfig(config); err != nil {
+				return err
+			}
+		}
+	case "v1/ServiceAccount", "networking.k8s.io/v1/NetworkPolicy",
 		"networking.istio.io/v1beta1/Sidecar", "security.istio.io/v1beta1/AuthorizationPolicy",
 		"security.istio.io/v1beta1/PeerAuthentication":
 	default:

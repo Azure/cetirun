@@ -245,7 +245,7 @@ describe("WorkspacePage", () => {
     );
   });
 
-  it("links Hermes instances to their native dashboard", () => {
+  it("links Hermes instances to their native Webapp", () => {
     mockInstance.agent.type = "hermes";
     renderAt("/instances/testuser/overview");
     expect(screen.getByRole("link", { name: "Agent UI" })).toHaveAttribute(

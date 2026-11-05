@@ -91,6 +91,46 @@ func TestNativeProxyBindingReachesTemplateWithoutChangingLegacyInputs(t *testing
 	}
 }
 
+func TestIngressMTLSBindingRequiresCommonLoopbackProxy(t *testing.T) {
+	bindings := Bindings{
+		NativeSandbox: true, ReconciledSandbox: true, IngressMTLS: true,
+		Model:           ModelBinding{Gateway: true},
+		TrustedProxyIPs: []string{"127.0.0.1"},
+		ConfigTemplate:  `{{ dig "ingressMTLS" false (.Values.sandboxWorkload | default dict) }}`,
+	}
+	for _, harness := range []string{"openclaw", "hermes"} {
+		t.Run(harness, func(t *testing.T) {
+			agent := ResolvedAgent{Type: harness}
+			rendered, err := RenderConfig(agent, bindings)
+			if err != nil || strings.TrimSpace(rendered) != "true" {
+				t.Fatal("managed mTLS binding did not reach the native template:", err)
+			}
+			for name, mutate := range map[string]func(*Bindings){
+				"legacy":       func(b *Bindings) { b.NativeSandbox = false },
+				"single-start": func(b *Bindings) { b.ReconciledSandbox = false },
+				"no Gateway":   func(b *Bindings) { b.Model.Gateway = false },
+				"Tailscale":    func(b *Bindings) { b.Integrations.Tailscale = true },
+				"missing":      func(b *Bindings) { b.TrustedProxyIPs = nil },
+				"sidecar":      func(b *Bindings) { b.TrustedProxyIPs = []string{"127.0.0.6"} },
+				"CIDR":         func(b *Bindings) { b.TrustedProxyIPs = []string{"127.0.0.0/8"} },
+				"extra proxy":  func(b *Bindings) { b.TrustedProxyIPs = []string{"127.0.0.1", "192.0.2.10"} },
+			} {
+				t.Run(name, func(t *testing.T) {
+					changed := bindings
+					mutate(&changed)
+					if _, err := RenderConfig(agent, changed); err == nil {
+						t.Fatal("inconsistent managed mTLS binding was accepted")
+					}
+				})
+			}
+		})
+	}
+	raw, err := json.Marshal(Bindings{})
+	if err != nil || strings.Contains(string(raw), `"IngressMTLS"`) {
+		t.Fatal("default binding serialized shape changed:", err)
+	}
+}
+
 func TestNativeConfigAssetsUseRegisteredFunctions(t *testing.T) {
 	for _, harness := range []string{"openclaw", "hermes"} {
 		t.Run(harness, func(t *testing.T) {

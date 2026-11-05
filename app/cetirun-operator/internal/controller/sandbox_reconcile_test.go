@@ -1487,43 +1487,45 @@ func TestReconciledSandboxSubmissionOutcomeControlsCancellation(t *testing.T) {
 }
 
 func TestReconciledSandboxPublicationPrecedesSourceReservation(t *testing.T) {
-	for _, written := range []bool{false, true} {
-		t.Run(fmt.Sprintf("write-ack-lost-%t", written), func(t *testing.T) {
-			ctx := context.Background()
-			f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, "openclaw", true, false,
-				withReconciledCoordination(t))
-			attempted := false
-			f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
-				Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
-					if state, ok := object.(*corev1.ConfigMap); ok && state.Data[w.PodExpectationKey] != "" {
-						attempted = true
-						if written {
-							if err := c.Create(ctx, object, opts...); err != nil {
-								return err
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, written := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/write-ack-lost-%t", kind, written), func(t *testing.T) {
+				ctx := context.Background()
+				f, _ := newUnreconciledSandboxRuntimeFixture(t, true, nil, true, kind, true, false,
+					withReconciledCoordination(t))
+				attempted := false
+				f.r.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+					Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+						if state, ok := object.(*corev1.ConfigMap); ok && state.Data[w.PodExpectationKey] != "" {
+							attempted = true
+							if written {
+								if err := c.Create(ctx, object, opts...); err != nil {
+									return err
+								}
 							}
+							return errors.New("synthetic publication failure")
 						}
-						return errors.New("synthetic publication failure")
-					}
-					return c.Create(ctx, object, opts...)
-				},
+						return c.Create(ctx, object, opts...)
+					},
+				})
+				if _, err := f.reconcile(); err == nil || !attempted || f.installer.stages != 0 {
+					t.Fatal("fixture did not fail at expectation publication:", err)
+				}
+				if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, f.agent.UID); err != nil || found {
+					t.Fatal("failed publication acquired a reservation without confirmed cleanup state:", err)
+				}
+				f.r.Client = f.kube
+				if err := f.kube.Delete(ctx, f.current(t)); err != nil {
+					t.Fatal(err)
+				}
+				for range 3 {
+					f.reconcileOK(t)
+				}
+				if err := f.kube.Get(ctx, client.ObjectKeyFromObject(f.agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+					t.Fatal("failed publication blocked ordinary deletion:", err)
+				}
 			})
-			if _, err := f.reconcile(); err == nil || !attempted || f.installer.stages != 0 {
-				t.Fatal("fixture did not fail at expectation publication:", err)
-			}
-			if _, found, err := f.r.SandboxNativeCoordination.ReadNative(ctx, f.agent.UID); err != nil || found {
-				t.Fatal("failed publication acquired a reservation without confirmed cleanup state:", err)
-			}
-			f.r.Client = f.kube
-			if err := f.kube.Delete(ctx, f.current(t)); err != nil {
-				t.Fatal(err)
-			}
-			for range 3 {
-				f.reconcileOK(t)
-			}
-			if err := f.kube.Get(ctx, client.ObjectKeyFromObject(f.agent), &api.Agent{}); !apierrors.IsNotFound(err) {
-				t.Fatal("failed publication blocked ordinary deletion:", err)
-			}
-		})
+		}
 	}
 }
 
@@ -1849,7 +1851,15 @@ func TestReconciledSandboxCommonModelCombinations(t *testing.T) {
 							if probe == nil || probe.Exec == nil || probe.HTTPGet != nil {
 								t.Fatal("protected readiness must not require forbidden host-to-Pod ingress")
 							}
-							if len(probe.Exec.Command) != 5 || probe.Exec.Command[2] != fmt.Sprint(*f.current(t).Spec.Agent.Port) {
+							if kind == "hermes" {
+								mode := "liveness"
+								if probe == container.ReadinessProbe {
+									mode = "readiness"
+								}
+								if len(probe.Exec.Command) != 5 || !slices.Equal(probe.Exec.Command[:4], []string{"/usr/local/bin/hermes-python", "/etc/cetirun/hermes-runtime.py", mode, "--timeout"}) {
+									t.Fatal("protected Hermes probe did not use the managed API/Webapp health check")
+								}
+							} else if len(probe.Exec.Command) != 5 || probe.Exec.Command[2] != fmt.Sprint(*f.current(t).Spec.Agent.Port) {
 								t.Fatal("protected readiness did not use the actual resolved runtime port")
 							}
 						}

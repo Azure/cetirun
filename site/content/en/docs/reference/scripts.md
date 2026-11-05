@@ -125,8 +125,11 @@ agent helper builds for `linux/amd64`. Its inputs include:
 `NPM_REGISTRY` and `OPENCLAW_NPM_REGISTRY` default to
 `https://registry.npmjs.org/`. Runtime skill installation separately uses
 `skills.npmRegistry` with the same public default. The Hermes image downloads a
-checksum-pinned upstream source tag, installs its checked-in `uv.lock`, and
-builds the upstream Dashboard and TUI assets. `PYPI_INDEX_URL` defaults to
+checksum-pinned upstream commit and uses its PM locks for a private Python 3.14
+and Node 26 toolchain. It installs the locked application environment with
+`all`, `messaging`, `anthropic` and `azure-identity`, and builds the upstream
+Webapp and TUI assets. Runtime startup uses those prebuilt assets without
+installing dependencies or Electron. `PYPI_INDEX_URL` defaults to
 `https://pypi.org/simple/`. An alternate index must contain the exact locked
 artifacts.
 

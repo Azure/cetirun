@@ -324,9 +324,10 @@ openclaw:
   # -- Sign the owner in to the Control UI with their Portal sign-in, and approve
   # their browsers without `openclaw devices approve`. OpenClaw's trusted-proxy
   # mode: the ingress passes only the owner, with the email of their sign-in,
-  # through the Istio sidecar. The gateway token is then accepted only as the
-  # password of clients on loopback, such as the CLI in the Terminal. Not applied
-  # to native Sandbox workloads or with Tailscale, which keep the token.
+  # through the Istio sidecar or the registered in-Pod mTLS endpoint for a
+  # common-executor Sandbox with AgentPolicy ingress.requireMTLS. The gateway
+  # token is then the password of loopback clients, such as the Terminal CLI.
+  # Plain Sandbox ingress and Tailscale keep token authentication.
   portalSignIn:
     enabled: false
   # -- OpenClaw gateway configuration (openclaw.json content)
@@ -431,15 +432,15 @@ hermes:
       external_dirs:
         - /home/vibe/.aks/skills
   # -- Environment variables written into ~/.hermes/.env (API server config only).
-  # Model auth is handled by `hermes model` (OAuth device flow), not env vars.
+  # Model auth is injected by the CetiRun AI Gateway.
   env:
     API_SERVER_ENABLED: "true"
     API_SERVER_HOST: "0.0.0.0"
     API_SERVER_PORT: "8642"
     API_SERVER_KEY: ""
     API_SERVER_CORS_ORIGINS: ""
-    # -- Operator-owned external Dashboard URL, including its /ui/<instance> prefix.
-    HERMES_DASHBOARD_PUBLIC_URL: ""
+    # -- Operator-owned external Webapp URL, including its /ui/<instance> prefix.
+    HERMES_WEBAPP_PUBLIC_URL: ""
   gateway:
     enabled: true
 

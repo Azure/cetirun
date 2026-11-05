@@ -13,8 +13,7 @@ CETIRUN_CONFIG_DIR=${CETIRUN_CONFIG_DIR:-/etc/cetirun}
 CETIRUN_SECRET_DIR=${CETIRUN_SECRET_DIR:-/etc/cetirun-secrets}
 CETIRUN_BUILTIN_SKILL_SYNC=${CETIRUN_BUILTIN_SKILL_SYNC:-/usr/local/share/cetirun/builtin-skill-sync.sh}
 LEGACY_HOME_MARKER=.hermes/.initialized
-PYTHON_BIN=${HERMES_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}
-if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi
+PYTHON_BIN=${HERMES_PYTHON:-/usr/local/bin/hermes-python}
 # Every managed Harness uses the platform AI Gateway.
 if [ "${CETIRUN_AI_GATEWAY:-}" != true ]; then
   echo "AI Gateway is required" >&2
@@ -24,7 +23,7 @@ fi
 
 agent_check_requirements() {
   command -v "$PYTHON_BIN" >/dev/null 2>&1 &&
-    "$PYTHON_BIN" -c 'import yaml' >/dev/null 2>&1 || {
+    "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" --help >/dev/null 2>&1 || {
       init_error "HermesPythonUnavailable"
       return 1
     }
@@ -43,6 +42,14 @@ agent_prepare_home() {
   for directory in .hermes .hermes/lazy-packages .hermes/memories .hermes/skills .hermes/sessions .hermes/logs .hermes/cron .local/bin; do
     home_ensure_dir "$directory"
   done
+  if [ -n "${CETIRUN_CONTEXT_VIEW:-}" ]; then
+    home_ensure_dir .agents/skills
+    instructions=$(home_path .agents/AGENTS.md)
+    [ ! -e "$instructions" ] || [ -f "$instructions" ] || {
+      init_error "HermesInstructionsNotFile"
+      return 1
+    }
+  fi
   marker=$(home_path "$LEGACY_HOME_MARKER")
   if [ ! -f "$marker" ]; then
     soul=$(home_path .hermes/SOUL.md)

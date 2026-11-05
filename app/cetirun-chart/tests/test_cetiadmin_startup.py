@@ -43,7 +43,10 @@ class CetiAdminStartupTests(unittest.TestCase):
         self.startup = self.root / "entrypoint.sh"
         # Relocate scratch and the binary fixture; run the whole shipped startup script.
         self.startup.write_text(ENTRYPOINT.read_text().replace("/tmp/", str(self.scratch) + "/")
-                                .replace("/opt/cetirun/cetiadmin/bin", str(self.assets_bin)))
+                                .replace("/opt/cetirun/cetiadmin/bin", str(self.assets_bin))
+                                .replace("/usr/local/bin/hermes-prepare-dependencies",
+                                         str(self.root / "bin/hermes-python") + " --prepare")
+                                .replace("/usr/local/bin/hermes-python", str(self.root / "bin/hermes-python")))
         self.bin = self.root / "bin"
         self.bin.mkdir()
         for directory, version in ((self.assets_bin, "exported-helm"), (self.bin, "unrelated-helm")):
@@ -58,7 +61,18 @@ class CetiAdminStartupTests(unittest.TestCase):
             import sys
 
             args = sys.argv[1:]
-            if args == [{SKILLS!r}]:
+            if args == ["--prepare"]:
+                if os.environ.get("FIXTURE_PREPARE_FAIL"):
+                    sys.exit(8)
+                Path(os.environ["HERMES_HOME"], "dependencies-ready").touch()
+            elif args == ["/etc/cetirun/hermes-runtime.py", "check"]:
+                assert Path(os.environ["HERMES_HOME"], "dependencies-ready").is_file()
+                with open(os.environ["FIXTURE_EVENTS"], "a") as out:
+                    out.write(json.dumps({{"event": "runtime", "host": os.environ.get("API_SERVER_HOST"),
+                        "port": os.environ.get("API_SERVER_PORT")}}) + "\\n")
+                if os.environ.get("FIXTURE_RUNTIME_FAIL"):
+                    sys.exit(9)
+            elif args == [{SKILLS!r}]:
                 assert not Path(os.environ["FIXTURE_SCRATCH"], "supervisord.conf").exists()
                 with open(os.environ["FIXTURE_EVENTS"], "a") as out:
                     out.write(json.dumps({{"event": "skills", "args": args,
@@ -106,9 +120,9 @@ class CetiAdminStartupTests(unittest.TestCase):
             "HOME": str(self.root),
             "HERMES_HOME": str(self.home), "HERMES_INSTALL_DIR": str(self.root),
             "HERMES_PYTHON": str(self.python), "CETIRUN_AI_GATEWAY": "true",
-            "HERMES_DASHBOARD_ENABLED": "false", "TTYD_ENABLED": "false", "TAILSCALE_ENABLED": "false",
+            "TTYD_ENABLED": "false", "TAILSCALE_ENABLED": "false",
             "CETIRUN_CETIADMIN_ENABLED": "true", "CETIRUN_CETIADMIN_CONFIG": str(self.config),
-            "HERMES_TIMEZONE": "Etc/GMT+7", "API_SERVER_PORT": "19000",
+            "HERMES_TIMEZONE": "Etc/GMT+7", "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": "19000",
             "FIXTURE_EVENTS": str(self.events), "FIXTURE_SCRATCH": str(self.scratch),
             "FIXTURE_SYNC_RESPONSE": json.dumps({"status": "created", "timezone": "Asia/Singapore"}),
         }
@@ -122,37 +136,37 @@ class CetiAdminStartupTests(unittest.TestCase):
     def recorded(self):
         return [json.loads(line) for line in self.events.read_text().splitlines()] if self.events.exists() else []
 
-    def test_skills_and_sync_follow_native_env_load_and_precede_supervisor(self):
+    def test_skills_and_sync_follow_runtime_check_and_precede_supervisor(self):
         result = self.run_startup()
         self.assertEqual(result.returncode, 0, result.stderr)
         events = self.recorded()
-        self.assertEqual([item["event"] for item in events], ["skills", "sync", "supervisor"])
-        self.assertEqual(events[0]["args"], [SKILLS])
-        self.assertEqual(events[1]["args"], [SYNC, "--config", str(self.config)])
+        self.assertEqual([item["event"] for item in events], ["runtime", "skills", "sync", "supervisor"])
+        self.assertEqual(events[1]["args"], [SKILLS])
+        self.assertEqual(events[2]["args"], [SYNC, "--config", str(self.config)])
         for event in events:
             self.assertEqual(event["host"], "127.0.0.1")
             self.assertEqual(event["port"], "19000")
-        self.assertEqual(events[2]["timezone"], "Asia/Singapore")
-        self.assertEqual(events[2]["helm"], "exported-helm")
+        self.assertEqual(events[3]["timezone"], "Asia/Singapore")
+        self.assertEqual(events[3]["helm"], "exported-helm")
         self.assertIn("HERMES_TIMEZONE=invalid-retained-timezone", (self.home / ".env").read_text())
 
     def test_disabled_ordinary_startup_does_not_check_skills_or_sync(self):
         result = self.run_startup(CETIRUN_CETIADMIN_ENABLED="false", FIXTURE_SKILLS_FAIL="true")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([item["event"] for item in self.recorded()], ["supervisor"])
-        self.assertEqual(self.recorded()[0]["timezone"], "Etc/GMT+7")
-        self.assertEqual(self.recorded()[0]["helm"], "unrelated-helm")
+        self.assertEqual([item["event"] for item in self.recorded()], ["runtime", "supervisor"])
+        self.assertEqual(self.recorded()[1]["timezone"], "Etc/GMT+7")
+        self.assertEqual(self.recorded()[1]["helm"], "unrelated-helm")
 
     def test_native_sync_failure_stops_startup_without_exposing_output(self):
         result = self.run_startup(FIXTURE_SYNC_FAIL="true")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual([item["event"] for item in self.recorded()], ["skills", "sync"])
+        self.assertEqual([item["event"] for item in self.recorded()], ["runtime", "skills", "sync"])
         self.assertFalse((self.scratch / "supervisord.conf").exists())
 
     def test_skill_conflict_stops_before_cron_without_exposing_output(self):
         result = self.run_startup(FIXTURE_SKILLS_FAIL="true")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual([item["event"] for item in self.recorded()], ["skills"])
+        self.assertEqual([item["event"] for item in self.recorded()], ["runtime", "skills"])
         self.assertFalse((self.scratch / "supervisord.conf").exists())
 
     def test_invalid_or_mismatched_response_never_starts_scheduler(self):
@@ -166,12 +180,28 @@ class CetiAdminStartupTests(unittest.TestCase):
                 self.assertNotIn("supervisor", [item["event"] for item in self.recorded()])
 
     def test_native_python_and_generated_config_are_required(self):
-        for changes in ({"HERMES_PYTHON": ""}, {"HERMES_PYTHON": "/missing/native-python"},
-                        {"CETIRUN_CETIADMIN_CONFIG": ""}, {"CETIRUN_CETIADMIN_CONFIG": "/missing/monitor.json"}):
+        self.python.chmod(0o600)
+        self.assertNotEqual(self.run_startup().returncode, 0)
+        self.python.chmod(0o755)
+        for changes in ({"CETIRUN_CETIADMIN_CONFIG": ""}, {"CETIRUN_CETIADMIN_CONFIG": "/missing/monitor.json"}):
             with self.subTest(changes=changes):
                 result = self.run_startup(**changes)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("supervisor", [item["event"] for item in self.recorded()])
+
+    def test_runtime_failure_precedes_cetiadmin_work(self):
+        result = self.run_startup(FIXTURE_RUNTIME_FAIL="true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual([item["event"] for item in self.recorded()], ["runtime"])
+        self.assertFalse((self.scratch / "supervisord.conf").exists())
+
+    def test_dependency_preparation_failure_stops_before_runtime_check(self):
+        for enabled in ("true", "false"):
+            with self.subTest(cetiadmin=enabled):
+                result = self.run_startup(FIXTURE_PREPARE_FAIL="true", CETIRUN_CETIADMIN_ENABLED=enabled)
+                self.assertEqual(result.returncode, 8, result.stderr)
+                self.assertEqual(self.recorded(), [])
+                self.assertFalse((self.scratch / "supervisord.conf").exists())
 
     def test_disabled_monitor_still_propagates_validated_timezone(self):
         config = json.loads(self.config.read_text())

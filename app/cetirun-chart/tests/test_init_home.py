@@ -97,6 +97,58 @@ def native_marker(agent):
     return agent["target"] / f'.{agent["kind"]}/.initialized'
 
 
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_context_preserves_personal_home_files(agent, tmp_path):
+    view = tmp_path / "context-view"
+    view.mkdir()
+    agent["env"]["CETIRUN_CONTEXT_VIEW"] = str(view)
+    personal = agent["source"] / ".agents/skills/personal"
+    personal.mkdir(parents=True)
+    (personal / "SKILL.md").write_text("personal skill")
+    (agent["source"] / ".agents/AGENTS.md").write_text("personal instructions")
+
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    home_skill = agent["target"] / ".agents/skills/personal/SKILL.md"
+    instructions = agent["target"] / ".agents/AGENTS.md"
+    assert home_skill.read_text() == "personal skill"
+    assert instructions.read_text() == "personal instructions"
+    home_skill.write_text("updated personal skill")
+    instructions.write_text("updated personal instructions")
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert home_skill.read_text() == "updated personal skill"
+    assert instructions.read_text() == "updated personal instructions"
+    assert not (view / "current/skills/personal").exists()
+
+
+@pytest.mark.parametrize("unsafe", ["instructions-link", "instructions-directory", "skills-link", "skills-file"])
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_context_rejects_unsafe_home_mount_targets(agent, tmp_path, unsafe):
+    assert run(agent).returncode == 0
+    view = tmp_path / "context-view"
+    view.mkdir()
+    agent["env"]["CETIRUN_CONTEXT_VIEW"] = str(view)
+    personal = agent["target"] / ".agents"
+    personal.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("retained")
+    target = personal / ("AGENTS.md" if unsafe.startswith("instructions") else "skills")
+    if unsafe.endswith("link"):
+        target.symlink_to(sentinel if unsafe.startswith("instructions") else outside)
+    elif unsafe.endswith("directory"):
+        target.mkdir()
+    else:
+        target.write_text("retained")
+
+    result = run(agent)
+    assert result.returncode != 0
+    assert sentinel.read_text() == "retained"
+    assert not (view / "current").exists()
+
+
 def test_native_first_start_and_repeat_preserve_user_files(agent):
     first = run(agent)
     assert first.returncode == 0, first.stderr
@@ -481,6 +533,19 @@ def test_openclaw_replace_failure_preserves_original(agent):
     assert agent["config_file"].read_bytes() == original
 
 
+@pytest.mark.parametrize("helper", ["hermes-apply-config", "hermes-runtime"])
+def test_hermes_yaml_round_trip_preserves_owner_values(helper):
+    spec = importlib.util.spec_from_file_location(helper, CHART / f"agents/hermes/bootstrap/{helper}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    owner = {"mode": "off", "answer": "yes", "flag": "on", "quiet_from": "22:00"}
+    original = yaml.safe_dump(owner, sort_keys=False)
+    rewritten = module.yaml.safe_dump(module.yaml.safe_load(original), sort_keys=False)
+    actual = yaml.safe_load(rewritten)
+    assert actual == owner
+    assert list(actual) == list(owner)
+
+
 def test_hermes_atomic_replace_failure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("hermes_apply", CHART / "agents/hermes/bootstrap/hermes-apply-config.py")
     module = importlib.util.module_from_spec(spec)
@@ -749,21 +814,67 @@ PORTAL_SIGN_IN = {
 
 
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
-def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth(agent):
-    # A HOME that saved a token: OpenClaw refuses a token in trusted-proxy mode.
-    assert run(agent).returncode == 0
+@pytest.mark.parametrize("remote_token_source", ["source", "home"])
+def test_native_openclaw_portal_sign_in_replaces_retained_auth_and_can_be_disabled(agent, remote_token_source):
+    source = native_openclaw_source(agent)
     saved = read_config(agent)
-    saved["gateway"] = {"port": 18789, "auth": {"mode": "token", "token": "saved-test-token"}}
+    saved["gateway"] = {
+        "auth": {"mode": "token", "token": "saved-test-token"},
+        "trustedProxies": ["10.244.0.0/16"], "bind": "lan",
+        "remote": {"token": "sk-dummy-saved-remote"},
+    }
+    saved["user_preference"] = "preserved"
     agent["config_file"].write_text(json.dumps(saved))
+    source["gateway"].update({
+        "bind": "loopback", "trustedProxies": ["127.0.0.1"], "auth": PORTAL_SIGN_IN,
+        "mode": "local", "remote": {"url": "wss://gateway.example.com"},
+    })
+    if remote_token_source == "source":
+        source["gateway"]["remote"]["token"] = "sk-dummy-source-remote"
+    expected_gateway = {**source["gateway"], "remote": {"url": "wss://gateway.example.com"}}
     source_file = agent["config"] / "openclaw.json"
-    source = json.loads(source_file.read_text())
-    source["gateway"] = {"trustedProxies": ["127.0.0.6"], "auth": PORTAL_SIGN_IN}
+    source_file.write_text(json.dumps(source))
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        current = read_config(agent)
+        assert current["gateway"] == expected_gateway
+        assert current["user_preference"] == "preserved"
+    del source["gateway"]["auth"]
     source_file.write_text(json.dumps(source))
     result = run(agent)
     assert result.returncode == 0, result.stderr
-    config = read_config(agent)
-    assert config["gateway"]["auth"] == PORTAL_SIGN_IN
-    assert config["gateway"]["port"] == 18789
+    assert read_config(agent)["gateway"] == source["gateway"]
+    assert "auth" not in read_config(agent)["gateway"]
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+@pytest.mark.parametrize("remote_token_source", ["source", "home"])
+def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth(agent, remote_token_source):
+    # A HOME that saved a token: OpenClaw refuses a token in trusted-proxy mode.
+    assert run(agent).returncode == 0
+    saved = read_config(agent)
+    saved["gateway"] = {
+        "port": 18789, "auth": {"mode": "token", "token": "saved-test-token"},
+        "remote": {"token": "sk-dummy-saved-remote"},
+    }
+    agent["config_file"].write_text(json.dumps(saved))
+    source_file = agent["config"] / "openclaw.json"
+    source = json.loads(source_file.read_text())
+    remote = {"url": "wss://gateway.example.com", "password": "sk-dummy-password"}
+    source["gateway"] = {
+        "trustedProxies": ["127.0.0.6"], "auth": PORTAL_SIGN_IN, "mode": "local", "remote": dict(remote),
+    }
+    if remote_token_source == "source":
+        source["gateway"]["remote"]["token"] = "sk-dummy-source-remote"
+    source_file.write_text(json.dumps(source))
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        config = read_config(agent)
+        assert config["gateway"]["auth"] == PORTAL_SIGN_IN
+        assert config["gateway"]["port"] == 18789
+        assert config["gateway"]["remote"] == remote
     # Turned off again: the chart's mode goes, and OpenClaw falls back to the
     # token from its environment.
     del source["gateway"]["auth"]
@@ -773,6 +884,7 @@ def test_openclaw_portal_sign_in_replaces_and_then_leaves_the_saved_gateway_auth
     config = read_config(agent)
     assert "auth" not in config["gateway"]
     assert config["gateway"]["trustedProxies"] == ["127.0.0.6"]
+    assert config["gateway"]["remote"] == source["gateway"]["remote"]
     # An owner's own non-proxy auth settings are not the chart's to remove.
     config["gateway"]["auth"] = {"mode": "password"}
     agent["config_file"].write_text(json.dumps(config))

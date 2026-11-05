@@ -17,6 +17,9 @@ func TestResolveImageUpgrade(t *testing.T) {
 		for _, scenario := range []string{"default", "same chart", "owner image", "target default", "custom", "no release", "different deployed image", "different deployed type", "download failure", "invalid target profile", "qualified old default", "explicit tag and digest"} {
 			t.Run(kind+"/"+scenario, func(t *testing.T) {
 				old, target := testChart(t), testChart(t)
+				if kind == "hermes" {
+					useHistoricalHermesProfile(old)
+				}
 				old.Metadata.Version, old.Metadata.AppVersion = "1.0.0", "1.0.0"
 				target.Metadata.Version, target.Metadata.AppVersion = "2.0.0", "2.0.0"
 				registry := "registry.example.com"
@@ -91,6 +94,19 @@ func TestResolveImageUpgrade(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+func useHistoricalHermesProfile(chrt *chart.Chart) {
+	for _, file := range chrt.Files {
+		if file.Name == "agents/hermes/profile.yaml" {
+			file.Data = []byte(`contractVersion: v1
+nativeVersion: "0.21.5"
+port: 8642
+# Additional exact image references validated with this profile.
+qualifiedImages: []
+`)
 		}
 	}
 }

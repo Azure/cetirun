@@ -28,14 +28,24 @@ var laterAdditions = map[string][]string{
 {{- end -}}
 `},
 	"agents/openclaw/config/native.tpl": {`{{- /* Portal sign-in: the ingress lets only the Agent's owner through, after
-   their Portal sign-in, and passes their email from that sign-in; the Istio
-   sidecar is the Agent's only proxy. OpenClaw then takes the owner from that
-   header and approves their browsers without "openclaw devices approve". The
+   their Portal sign-in, and passes their email from that sign-in. The only
+   trusted proxy is the Istio sidecar or the managed in-Pod mTLS endpoint.
+   OpenClaw takes the owner from that header and approves their browsers. The
    gateway token becomes a password for clients on loopback, such as the CLI
    in the Terminal, as OpenClaw refuses a token in this mode. */}}
-{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (not .Values.sandboxWorkload) (not .TailscaleEnabled) }}
+{{- if and (dig "portalSignIn" "enabled" false .Values.openclaw) (or (not .Values.sandboxWorkload) (dig "ingressMTLS" false (.Values.sandboxWorkload | default dict))) (not .TailscaleEnabled) }}
 {{- $gateway := dig "gateway" (dict) $config }}
-{{- if not (has "127.0.0.6" (dig "trustedProxies" (list) $gateway)) }}
+{{- /* OpenClaw falls back to the remote token even when gateway.mode is local. */}}
+{{- $_ := unset (dig "remote" (dict) $gateway | default dict) "token" }}
+{{- $trustedProxies := dig "trustedProxies" (list) $gateway }}
+{{- if .Values.sandboxWorkload }}
+{{- if not (and (eq (len $trustedProxies) 1) (has "127.0.0.1" $trustedProxies)) }}
+{{- $_ := required "Sandbox openclaw.portalSignIn needs exactly 127.0.0.1, the managed ingress mTLS proxy, in sandboxWorkload.trustedProxyIPs" "" }}
+{{- end }}
+{{- if ne (dig "bind" "" $gateway) "loopback" }}
+{{- $_ := required "Sandbox openclaw.portalSignIn needs gateway.bind=loopback behind managed ingress mTLS" "" }}
+{{- end }}
+{{- else if not (has "127.0.0.6" $trustedProxies) }}
 {{- $_ := required "openclaw.portalSignIn needs 127.0.0.6, the Istio sidecar, in openclaw.config.gateway.trustedProxies" "" }}
 {{- end }}
 {{- $_ := set $gateway "auth" (dict
@@ -107,6 +117,10 @@ var laterAdditions = map[string][]string{
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
 	var err error
+	chrt.Schema, err = restoreHermesWebappSchema(chrt.Schema)
+	if err != nil {
+		return err
+	}
 	chrt.Schema, err = stripCetiAdminSchema(chrt.Schema)
 	if err != nil {
 		return err
@@ -684,4 +698,90 @@ func restoreRemovedTeamsAssets(assets map[string]*[]byte) error {
 		return err
 	}
 	return nil
+}
+
+func restoreHermesWebappSchema(schema []byte) ([]byte, error) {
+	for _, change := range [][2]string{
+		{`                    "description": "Hermes native config.yaml content",
+                    "properties": {
+                        "webapp": false,
+                        "api_server": false,
+                        "platforms": {"properties": {"api_server": false}},
+                        "gateway": {"properties": {
+                            "api_server": false,
+                            "platforms": {"properties": {"api_server": false}}
+                        }},
+                        "dashboard": {"properties": {"basic_auth": false}},
+                        "secrets": {
+                            "type": "object",
+                            "properties": {
+                                "sources": {"type": "array", "items": {"type": "string"}},
+                                "preserve_existing": {"type": "array", "items": {"type": "string"}},
+                                "profile_alias": {"type": "boolean"},
+                                "onepassword": {
+                                    "type": "object",
+                                    "properties": {
+                                        "enabled": {"type": "boolean"},
+                                        "env": {"type": "object", "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "not": {"pattern": "^(API_SERVER_|HERMES_WEBAPP_|HERMES_DASHBOARD_|CETIRUN_|HERMES_(HOME$|PROFILE|CONFIG|ENV|MANAGED|PYTHON$|INSTALL_|RUNTIME_DIR$|IGNORE_USER_CONFIG$|GATEWAY_CONFIG$)|HOME$|PATH$|PYTHONPATH$|PYTHONHOME$|NODE_PATH$|NODE_OPTIONS$)"}}},
+                                        "service_account_token_env": {"type": "string", "not": {"pattern": "^(API_SERVER_|HERMES_WEBAPP_|HERMES_DASHBOARD_|CETIRUN_|HERMES_(HOME$|PROFILE|CONFIG|ENV|MANAGED|PYTHON$|INSTALL_|RUNTIME_DIR$|IGNORE_USER_CONFIG$|GATEWAY_CONFIG$)|HOME$|PATH$|PYTHONPATH$|PYTHONHOME$|NODE_PATH$|NODE_OPTIONS$)"}}
+                                    }
+                                }
+                            },
+                            "additionalProperties": {"type": "object", "properties": {"enabled": {"const": false}}}
+                        }
+                    },
+`, `                    "description": "Hermes native config.yaml content",
+`},
+		{`                    "description": "Environment variables written into ~/.hermes/.env",
+                    "additionalProperties": false,
+`, `                    "description": "Environment variables written into ~/.hermes/.env",
+`},
+		{`                        "API_SERVER_ENABLED": {
+                            "type": "string",
+                            "const": "true",
+                            "default": "true"
+                        },
+`, `                        "API_SERVER_ENABLED": {
+                            "type": "string",
+                            "default": "true"
+                        },
+`},
+		{`                        "API_SERVER_HOST": {
+                            "type": "string",
+                            "enum": ["0.0.0.0", "127.0.0.1"],
+                            "default": "0.0.0.0"
+                        },
+`, `                        "API_SERVER_HOST": {
+                            "type": "string",
+                            "default": "0.0.0.0"
+                        },
+`},
+
+		{`                        "HERMES_WEBAPP_PUBLIC_URL": {
+                            "type": "string",
+                            "description": "Operator-owned external Webapp URL including its instance prefix",
+                            "pattern": "^$|^https://[A-Za-z0-9.-]+(?::[0-9]+)?/ui/[a-z0-9][a-z0-9-]*$",
+                            "default": ""
+                        }
+`, `                        "HERMES_DASHBOARD_PUBLIC_URL": {
+                            "type": "string",
+                            "description": "Operator-owned external Dashboard URL including its instance prefix",
+                            "default": ""
+                        }
+`},
+		{`        {
+            "if": {"properties": {"agentType": {"const": "hermes"}}},
+            "then": {"properties": {
+                "extraEnv": {"items": {"properties": {"name": {"not": {"pattern": "^(API_SERVER_|HERMES_WEBAPP_|HERMES_DASHBOARD_|CETIRUN_(AI_GATEWAY$|AUTH_KEY$|GATEWAY_.*|INGRESS_.*)|HERMES_(HOME|PROFILE.*|CONFIG.*|ENV.*|MANAGED.*|PYTHON|INSTALL_.*|RUNTIME_DIR|IGNORE_USER_CONFIG|GATEWAY_CONFIG)$|HOME$|PATH$|PYTHONPATH$|PYTHONHOME$)"}}}}},
+                "extraEnvFrom": {"maxItems": 0}
+            }}
+        },
+`, ``},
+	} {
+		if bytes.Count(schema, []byte(change[0])) != 1 {
+			return nil, fmt.Errorf("pre-proxy fixture requires the exact Hermes Webapp schema")
+		}
+		schema = bytes.Replace(schema, []byte(change[0]), []byte(change[1]), 1)
+	}
+	return schema, nil
 }

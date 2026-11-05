@@ -362,22 +362,59 @@ func TestBuildHelmValues_HermesDoesNotSetOpenClawControlUIBasePath(t *testing.T)
 	}
 }
 
-func TestBuildHelmValues_HermesDashboardPublicURL(t *testing.T) {
+func TestBuildHelmValues_HermesWebappPublicURL(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Name = "alice-work"
 	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.Model = "synthetic-model"
 	instance.Spec.Helm.Values["hermes"] = runtime.RawExtension{
-		Raw: []byte(`{"env":{"HERMES_DASHBOARD_PUBLIC_URL":"https://other.example.com/wrong"}}`),
+		Raw: []byte(`{"env":{"HERMES_WEBAPP_PUBLIC_URL":"https://other.example.com/wrong"}}`),
 	}
+	if _, err := buildHelmValues(instance, nil, "example.com", "", nil, ""); err == nil || !strings.Contains(err.Error(), "platform-owned") {
+		t.Fatalf("conflicting Webapp public URL should be rejected as platform-owned: %v", err)
+	}
+	delete(instance.Spec.Helm.Values, "hermes")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	hermes := values["hermes"].(map[string]interface{})
 	env := hermes["env"].(map[string]interface{})
-	if got := env["HERMES_DASHBOARD_PUBLIC_URL"]; got != "https://example.com/ui/alice-work" {
-		t.Fatalf("Dashboard public URL = %v", got)
+	if got := env["HERMES_WEBAPP_PUBLIC_URL"]; got != "https://example.com/ui/alice-work" {
+		t.Fatalf("Webapp public URL = %v", got)
 	}
+	applyGatewayValuesForRender(t, instance, values)
+	chrt, err := loader.Load("../../../cetirun-chart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := helm.PrepareChart(chrt, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderValues, err := chartutil.ToRenderValues(chrt, prepared.Values, chartutil.ReleaseOptions{
+		Name: instance.Name, Namespace: instanceNamespace(instance.Name), IsInstall: true,
+	}, chartutil.DefaultCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := engine.Render(chrt, renderValues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workload appsv1.StatefulSet
+	if err := yaml.Unmarshal([]byte(rendered[chrt.Name()+"/templates/statefulset.yaml"]), &workload); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range workload.Spec.Template.Spec.Containers[0].Env {
+		if entry.Name == "API_SERVER_CORS_ORIGINS" {
+			if entry.Value != "https://example.com" || entry.ValueFrom != nil {
+				t.Fatalf("rendered API CORS origin = %+v", entry)
+			}
+			return
+		}
+	}
+	t.Fatal("rendered Hermes API omitted the platform browser origin")
 }
 
 // TestBuildHelmValues_NoApiKeyOrBase verifies that apiKey and apiBase are not set
@@ -737,7 +774,7 @@ func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
 	// 3 redirects (root, desktop, term) + 5 proxy routes (v1, health,
-	// desktop, term, catch-all dashboard).
+	// desktop, term, catch-all webapp).
 	if len(vs.Spec.Http) != 8 {
 		t.Fatalf("expected 8 HTTP routes, got %d", len(vs.Spec.Http))
 	}
@@ -767,7 +804,7 @@ func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 	if port := vs.Spec.Http[6].Route[0].Destination.Port.Number; port != ttydPort {
 		t.Errorf("term route port = %d, want %d", port, ttydPort)
 	}
-	// catch-all → native Dashboard.
+	// catch-all → native Webapp.
 	catchAll := vs.Spec.Http[7]
 	if prefix := catchAll.Match[0].GetUri().GetPrefix(); prefix != "/ui/alice/" {
 		t.Errorf("catch-all prefix = %q, want /ui/alice/", prefix)
@@ -775,10 +812,10 @@ func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 	if rewrite := catchAll.Rewrite.GetUri(); rewrite != "/" {
 		t.Errorf("catch-all rewrite = %q, want /", rewrite)
 	}
-	if port := catchAll.Route[0].Destination.Port.Number; port != hermesDashboardPort {
-		t.Errorf("catch-all (dashboard) port = %d, want %d", port, hermesDashboardPort)
+	if port := catchAll.Route[0].Destination.Port.Number; port != hermesWebappPort {
+		t.Errorf("catch-all (webapp) port = %d, want %d", port, hermesWebappPort)
 	}
-	if got := catchAll.Headers.GetRequest().GetAdd()["x-forwarded-prefix"]; got != "/ui/alice" {
+	if got := catchAll.Headers.GetRequest().GetSet()["x-forwarded-prefix"]; got != "/ui/alice" {
 		t.Errorf("catch-all x-forwarded-prefix = %q, want /ui/alice", got)
 	}
 }

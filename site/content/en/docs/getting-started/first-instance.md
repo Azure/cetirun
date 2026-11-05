@@ -174,9 +174,16 @@ Open the URL in `status.accessUrl`. `Ready` reports workload readiness
 independently of ingress. `IngressReady=True` confirms VirtualService
 reconciliation. Examine TLS, sign-in, and model-provider access separately.
 
-For Hermes, sign in to the native Dashboard with the username `cetirun` and the
-Hermes API / Dashboard key. The instance Overview page shows this key. For
-OpenClaw, enter the gateway token. Then approve the request to pair the browser
+For Hermes, sign in to the native Webapp with the username `cetirun` and the
+Hermes API / Webapp key. The instance Overview page shows this key. The
+key remains unchanged across normal restarts and suspend/resume. Webapp runs
+inside the persistent Hermes gateway. Opening an existing Discord session
+continues that session, so replies can still be delivered to its original
+channel. Closing the browser leaves the gateway running. Gateway restarts
+end Webapp terminal shells; persistent files, sessions and cron data stay in
+HOME.
+
+For OpenClaw, enter the gateway token. Then approve the request to pair the browser
 from the instance's Terminal, as in the portal steps above.
 
 ## Keep your workspace

@@ -25,12 +25,16 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import hermes_yaml as yaml
+except ImportError:
+    # Repository helper tests also run with the shared initializer's PyYAML dependency.
+    import yaml
 
 # The provider the chart renders for the platform AI Gateway.
 GATEWAY_PROVIDER = "cetirun-gateway"
 RESERVED_ENV = ("CETIRUN_AI_GATEWAY",)
-INGRESS_ENV = ("API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT", "HERMES_DASHBOARD_PUBLIC_URL")
+INGRESS_ENV = ("API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT", "HERMES_WEBAPP_PUBLIC_URL")
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 
 
@@ -129,7 +133,7 @@ def apply_gateway(config: dict[str, Any], desired: dict[str, Any]) -> dict[str, 
 def reserve_ingress_listeners(config: dict[str, Any], env: dict[str, str]) -> None:
     """Keep only the Pod's listener settings authoritative, not HOME overrides."""
     # The native loader merges all three YAML spellings over gateway.json.
-    for path in (("platforms", "api_server"), ("gateway", "platforms", "api_server"), ("gateway", "api_server")):
+    for path in (("api_server",), ("platforms", "api_server"), ("gateway", "platforms", "api_server"), ("gateway", "api_server")):
         api = config
         for name in path:
             if not isinstance(api, dict):
@@ -149,7 +153,7 @@ def reserve_ingress_listeners(config: dict[str, Any], env: dict[str, str]) -> No
                 raise ValueError("invalid API platform configuration")
             # Hermes promotes flat adapter settings into extra, with extra
             # taking precedence; both spellings must yield to the Pod binding.
-            for name in ("enabled", "host", "port"):
+            for name in ("enabled", "host", "port", "key"):
                 api.pop(name, None)
             extra = api.get("extra")
             if extra is not None:
@@ -157,7 +161,7 @@ def reserve_ingress_listeners(config: dict[str, Any], env: dict[str, str]) -> No
                     raise ValueError("invalid API adapter configuration")
                 extra = extra.copy()
                 api["extra"] = extra
-                for name in ("host", "port", "_enabled_explicit"):
+                for name in ("host", "port", "key", "_enabled_explicit"):
                     extra.pop(name, None)
     for name in INGRESS_ENV:
         env.pop(name, None)
@@ -171,7 +175,7 @@ def validate_ingress_environment() -> None:
         or os.environ.get("API_SERVER_HOST") != "127.0.0.1"
         or not re.fullmatch(r"[0-9]+", port)
         or not 1024 <= int(port) <= 65535
-        or int(port) in (7681, 9119, 15440, 15443, 15444, 15445)
+        or int(port) in (7681, 9120, 15440, 15443, 15444, 15445)
     ):
         raise ValueError("authoritative ingress binding is unavailable")
 
