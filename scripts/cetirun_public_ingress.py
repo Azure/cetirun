@@ -203,6 +203,19 @@ def option(args, name):
     return matches[0] if matches else None
 
 
+def gateway_api_enabled(document):
+    """Match cert-manager v1.21.3's current setting and deprecated fallback."""
+    if not isinstance(document, dict):
+        return False
+    gateway = document.get("gatewayAPI")
+    if gateway is not None and not isinstance(gateway, dict):
+        return False
+    enabled = gateway.get("enabled") if isinstance(gateway, dict) else None
+    if enabled is None:
+        enabled = document.get("enableGatewayAPI")
+    return enabled is True
+
+
 def tls_context():
     context = ssl.create_default_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -542,7 +555,7 @@ class Ingress:
                                     config = self.get("configmap", source["name"], cm["namespace"])
                                     require(config and key in config.get("data", {}), "cert-manager controller config was not resolved")
                                     document = yaml.load(config["data"][key], Loader=YAML.UniqueKeyLoader)
-                                    enabled = isinstance(document, dict) and document.get("enableGatewayAPI") is True
+                                    enabled = gateway_api_enabled(document)
                             override = option(args, "--enable-gateway-api")
                             if override is not None:
                                 enabled = override == "true"

@@ -149,7 +149,8 @@ class SyntheticAPIIngress(INGRESS.Ingress):
             "dnsSettings": {},
         }
         self.fail_patch_response = False
-        self.controller_gateway_api_enabled = True
+        self.controller_config = yaml.safe_load((INGRESS.SUPPORT / "cert-manager-values.yaml").read_text())["config"]
+        self.controller_extra_args = []
         self.controller_solver_image = self.lock["acmesolver"]["image"]
         self.cert_manager_status = "deployed"
         self.account_secret_name = None
@@ -219,7 +220,7 @@ class SyntheticAPIIngress(INGRESS.Ingress):
                 container.update(args=[
                     "--acme-http01-solver-image=" + self.controller_solver_image,
                     "--config=/etc/cert-manager/config.yaml",
-                ], volumeMounts=[{"name": "controller-config", "mountPath": "/etc/cert-manager"}])
+                ] + self.controller_extra_args, volumeMounts=[{"name": "controller-config", "mountPath": "/etc/cert-manager"}])
             spec = {"replicas": 1, "template": {"spec": {"containers": [container]}}}
             if role == "controller":
                 spec["template"]["spec"]["volumes"] = [{"name": "controller-config", "configMap": {
@@ -247,7 +248,7 @@ class SyntheticAPIIngress(INGRESS.Ingress):
                 "type": "Accepted", "status": "True",
             }]}}
         elif kind == "configmap" and name == "controller-config":
-            result = {"data": {"config.yaml": yaml.safe_dump({"enableGatewayAPI": self.controller_gateway_api_enabled})}}
+            result = {"data": {"config.yaml": yaml.safe_dump(self.controller_config)}}
         elif kind == "secret" and name == self.account_secret_name:
             result = {"metadata": {"name": name}}
         elif kind == "secret" and name in INGRESS.CERTIFICATES.values():
@@ -804,9 +805,58 @@ class PublicIngressTests(unittest.TestCase):
             with self.assertRaisesRegex(INGRESS.IngressError, "solver"):
                 ingress.check_controller()
             ingress.controller_solver_image = ingress.lock["acmesolver"]["image"]
-            ingress.controller_gateway_api_enabled = False
+            ingress.controller_config = {"gatewayAPI": {"enabled": False}}
             with self.assertRaisesRegex(INGRESS.IngressError, "Gateway API"):
                 ingress.check_controller()
+
+    def test_existing_cert_manager_gateway_api_config_compatibility(self):
+        cases = (
+            ({"gatewayAPI": {"enabled": True}}, True),
+            ({"enableGatewayAPI": True}, True),
+            ({"gatewayAPI": {"enabled": True}, "enableGatewayAPI": False}, True),
+            ({"gatewayAPI": {"enabled": False}, "enableGatewayAPI": True}, False),
+            ({"gatewayAPI": {}, "enableGatewayAPI": True}, True),
+            ({"gatewayAPI": None, "enableGatewayAPI": True}, True),
+            ({"gatewayAPI": {"enabled": None}, "enableGatewayAPI": True}, True),
+            ({"gatewayAPI": {"enabled": False}}, False),
+            ({"enableGatewayAPI": False}, False),
+            ({"gatewayAPI": {"enabled": "true"}, "enableGatewayAPI": True}, False),
+            ({"gatewayAPI": {"enabled": 1}}, False),
+            ({"enableGatewayAPI": "true"}, False),
+            ({"gatewayAPI": True, "enableGatewayAPI": True}, False),
+            ({"gatewayAPI": {}}, False),
+            ({}, False),
+            (None, False),
+        )
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress = SyntheticAPIIngress(self.normalized(), scratch)
+            ingress.api_groups = set(INGRESS.CERT_CRDS)
+            for document, enabled in cases:
+                with self.subTest(config=document):
+                    ingress.controller_config = document
+                    if enabled:
+                        ingress.cert_manager_check()
+                        self.assertFalse(ingress.cm_needs_install)
+                    else:
+                        with self.assertRaisesRegex(INGRESS.IngressError, "Gateway API"):
+                            ingress.cert_manager_check()
+
+    def test_existing_cert_manager_gateway_api_cli_overrides_config(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress = SyntheticAPIIngress(self.normalized(), scratch)
+            ingress.api_groups = set(INGRESS.CERT_CRDS)
+            for document in ({"gatewayAPI": {"enabled": True}}, {"enableGatewayAPI": True}, {}):
+                for args, enabled in ((["--enable-gateway-api=true"], True),
+                                      (["--enable-gateway-api"], True),
+                                      (["--enable-gateway-api=false"], False)):
+                    with self.subTest(config=document, args=args):
+                        ingress.controller_config = document
+                        ingress.controller_extra_args = args
+                        if enabled:
+                            ingress.cert_manager_check()
+                        else:
+                            with self.assertRaisesRegex(INGRESS.IngressError, "Gateway API"):
+                                ingress.cert_manager_check()
 
     def test_preflight_refuses_unmanaged_acme_account_secret(self):
         value = self.normalized()
