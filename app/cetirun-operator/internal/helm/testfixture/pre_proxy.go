@@ -116,6 +116,13 @@ var laterAdditions = map[string][]string{
 // RestorePreProxyContract reconstructs the three chart assets changed by the
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
+	// Restore only the later publication defaults before checking the
+	// immutable historical schema checksum below.
+	for _, image := range []string{"openclaw-gateway", "hermes-gateway", "cetirun-desktop"} {
+		chrt.Schema = bytes.ReplaceAll(chrt.Schema,
+			[]byte(`"default": "mcr.microsoft.com/aks/ai-runtime/cetirun/`+image+`"`),
+			[]byte(`"default": "cetirun.azurecr.io/`+image+`"`))
+	}
 	var err error
 	chrt.Schema, err = restoreHermesWebappSchema(chrt.Schema)
 	if err != nil {

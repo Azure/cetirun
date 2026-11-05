@@ -74,6 +74,8 @@ class CetiRunVersionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.addCleanup(MODULE.PENDING_UPDATES.clear)
         self.root = Path(temporary.name)
+        (self.root / "scripts").mkdir()
+        shutil.copyfile(ROOT / "scripts/release-artifacts.json", self.root / "scripts/release-artifacts.json")
         for relative in VERSION_FILES:
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)

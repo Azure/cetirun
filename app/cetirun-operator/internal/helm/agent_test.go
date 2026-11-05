@@ -250,7 +250,7 @@ func TestInitRuntimeWiring(t *testing.T) {
 			c := object(item)
 			names = append(names, text(c["name"]))
 			if c["name"] == "memory-assets" {
-				if c["image"] != "cetirun.azurecr.io/cetirun-memory-context:"+chrt.Metadata.AppVersion {
+				if c["image"] != "mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-memory-context:"+chrt.Metadata.AppVersion {
 					t.Fatal("Memory init does not use the release image")
 				}
 				continue
@@ -304,6 +304,10 @@ func TestNativeRenderBaseline(t *testing.T) {
 				}
 				t.Run(name, func(t *testing.T) {
 					input := sampleInput(typ, provider, enabled)
+					// Keep historical render inputs fixed; current MCR/private
+					// coordinates are covered by TestNativeReleaseVersionWiring.
+					input["global"] = map[string]any{"registry": "cetirun.azurecr.io"}
+					input["agentRequest"].(map[string]any)["registry"] = "cetirun.azurecr.io"
 					// The original snapshots predate Memory; its default-on delivery
 					// has dedicated tests and must not rewrite these baselines.
 					input["memoryContext"] = map[string]any{"enabled": false}
@@ -375,7 +379,7 @@ func TestRuntimeProfileValidation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if prepared.Agent.Image != "cetirun.azurecr.io/"+typ+"-gateway:"+chrt.Metadata.AppVersion || prepared.Agent.Username != "vibe" {
+			if prepared.Agent.Image != "mcr.microsoft.com/aks/ai-runtime/cetirun/"+typ+"-gateway:"+chrt.Metadata.AppVersion || prepared.Agent.Username != "vibe" {
 				t.Fatalf("wrong profile defaults: %+v", prepared.Agent)
 			}
 			request := input["agentRequest"].(map[string]any)
@@ -421,63 +425,88 @@ func TestRuntimeProfileValidation(t *testing.T) {
 func TestNativeReleaseVersionWiring(t *testing.T) {
 	currentVersion := testChart(t).Metadata.Version
 	for _, typ := range []string{"hermes", "openclaw"} {
-		for _, version := range []string{currentVersion, "9.8.7"} {
-			t.Run(typ+"/"+version, func(t *testing.T) {
-				chrt := testChart(t)
-				chrt.Metadata.Version = version
-				chrt.Metadata.AppVersion = version
-				input := sampleInput(typ, "openai", true)
-				prepared, err := PrepareChart(chrt, input)
-				if err != nil {
-					t.Fatal(err)
-				}
-				wantImage := "cetirun.azurecr.io/" + typ + "-gateway:" + version
-				if prepared.ChartVersion != version || prepared.Agent.Image != wantImage {
-					t.Fatal("prepared runtime does not use the release version")
-				}
-				for mode, input := range map[string]map[string]any{"prepared": prepared.Values, "standalone": input} {
-					values, err := chartutil.ToRenderValues(chrt, input,
-						chartutil.ReleaseOptions{Name: "example", Namespace: "example", IsInstall: true}, chartutil.DefaultCapabilities)
+		for _, version := range []string{currentVersion, "9.8.7-dev.1"} {
+			for _, registry := range []string{"", "registry.example.com", "registry.example.com:5000/team/test"} {
+				t.Run(typ+"/"+version+"/"+registry, func(t *testing.T) {
+					chrt := testChart(t)
+					chrt.Metadata.Version = version
+					chrt.Metadata.AppVersion = version
+					input := sampleInput(typ, "openai", true)
+					input["agentRequest"].(map[string]any)["registry"] = registry
+					input["global"] = map[string]any{"registry": registry}
+					prepared, err := PrepareChart(chrt, input)
 					if err != nil {
 						t.Fatal(err)
 					}
-					rendered, err := engine.Render(chrt, values)
-					if err != nil {
-						t.Fatal(err)
+					prefix := registry
+					if prefix == "" {
+						prefix = "mcr.microsoft.com/aks/ai-runtime/cetirun"
 					}
-					var stateful map[string]any
-					if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/statefulset.yaml"]), &stateful); err != nil {
-						t.Fatal(err)
+					wantImage := prefix + "/" + typ + "-gateway:" + version
+					if prepared.ChartVersion != version || prepared.Agent.Image != wantImage {
+						t.Fatal("prepared runtime does not use the release version")
 					}
-					labels := object(object(stateful["metadata"])["labels"])
-					if labels["helm.sh/chart"] != "cetirun-"+version || labels["app.kubernetes.io/version"] != version {
-						t.Errorf("%s release labels do not use %s", mode, version)
-					}
-					pod := object(object(object(stateful["spec"])["template"])["spec"])
-					images := map[string]string{}
-					for _, item := range array(pod["containers"]) {
-						container := object(item)
-						images[text(container["name"])] = text(container["image"])
-					}
-					for name, want := range map[string]string{
-						"cetirun": wantImage,
-						"desktop": "cetirun.azurecr.io/cetirun-desktop:" + version,
-					} {
-						if images[name] != want {
-							t.Errorf("%s %s image: got %q, want %q", mode, name, images[name], want)
+					for mode, input := range map[string]map[string]any{"prepared": prepared.Values, "standalone": input} {
+						values, err := chartutil.ToRenderValues(chrt, input,
+							chartutil.ReleaseOptions{Name: "example", Namespace: "example", IsInstall: true}, chartutil.DefaultCapabilities)
+						if err != nil {
+							t.Fatal(err)
+						}
+						rendered, err := engine.Render(chrt, values)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var stateful map[string]any
+						if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/statefulset.yaml"]), &stateful); err != nil {
+							t.Fatal(err)
+						}
+						labels := object(object(stateful["metadata"])["labels"])
+						if labels["helm.sh/chart"] != "cetirun-"+version || labels["app.kubernetes.io/version"] != version {
+							t.Errorf("%s release labels do not use %s", mode, version)
+						}
+						pod := object(object(object(stateful["spec"])["template"])["spec"])
+						images := map[string]string{}
+						for _, item := range array(pod["containers"]) {
+							container := object(item)
+							images[text(container["name"])] = text(container["image"])
+						}
+						for name, want := range map[string]string{
+							"cetirun": wantImage,
+							"desktop": prefix + "/cetirun-desktop:" + version,
+						} {
+							if images[name] != want {
+								t.Errorf("%s %s image: got %q, want %q", mode, name, images[name], want)
+							}
+						}
+						for _, item := range array(pod["initContainers"]) {
+							expected := wantImage
+							if object(item)["name"] == "memory-assets" {
+								expected = prefix + "/cetirun-memory-context:" + version
+							}
+							if object(item)["image"] != expected {
+								t.Errorf("%s init image does not use %s", mode, version)
+							}
 						}
 					}
-					for _, item := range array(pod["initContainers"]) {
-						expected := wantImage
-						if object(item)["name"] == "memory-assets" {
-							expected = "cetirun.azurecr.io/cetirun-memory-context:" + version
-						}
-						if object(item)["image"] != expected {
-							t.Errorf("%s init image does not use %s", mode, version)
-						}
-					}
-				}
-			})
+				})
+			}
+		}
+	}
+}
+
+func TestCustomReleaseCoordinates(t *testing.T) {
+	for _, registry := range []string{"mcr.microsoft.com/aks/ai-runtime/cetirun", "registry.example.com:5000/team/test"} {
+		input := customInput(8080)
+		input["global"] = map[string]any{"registry": registry, "version": "1.2.3-dev.1"}
+		prepared, err := PrepareChart(testChart(t), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := prepared.terminalImage(); got != registry+"/cetirun-terminal:1.2.3-dev.1" {
+			t.Fatalf("terminal image: %s", got)
+		}
+		if got := prepared.desktopContainer().Image; got != registry+"/cetirun-desktop:1.2.3-dev.1" {
+			t.Fatalf("desktop image: %s", got)
 		}
 	}
 }

@@ -89,7 +89,7 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.StringVar(&chartRepoURL, "chart-repo-url", "oci://cetirun.azurecr.io/helm/cetirun",
+	flag.StringVar(&chartRepoURL, "chart-repo-url", "oci://mcr.microsoft.com/aks/ai-runtime/cetirun/helm/cetirun",
 		"OCI registry URL for the CetiRun Helm chart.")
 	flag.StringVar(&chartVersion, "chart-version", "0.1.1",
 		"Version of the CetiRun Helm chart to deploy.")
@@ -173,11 +173,8 @@ func main() {
 		RepoURL: chartRepoURL,
 		Version: chartVersion,
 	}
-	// Extract the registry hostname from the chart repo URL (e.g.
-	// "oci://registry.example.com/helm/cetirun" → "registry.example.com").
-	// This is passed to the reconciler to override the chart's default
-	// image.repository so that all clusters pull images from the correct ACR.
-	chartRegistry := extractRegistryHost(chartRepoURL)
+	// Runtime images share the chart's registry prefix, not just its hostname.
+	chartRegistry := runtimeRegistry(chartRepoURL)
 	if !memoryEnabled {
 		memoryImage = ""
 	}
@@ -330,7 +327,7 @@ func main() {
 		CetiRunHelmValues:                  cetirunHelmValues,
 		MemoryImage:                        memoryImage,
 		MemoryEnabled:                      memoryEnabled,
-		MemoryRegistry:                     memoryRegistry(chartRepoURL),
+		MemoryRegistry:                     chartRegistry,
 		ChartRegistry:                      chartRegistry,
 		DefaultModel:                       defaultModel,
 		RegistryCredentialNamespace:        getEnvOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", registryauth.DefaultNamespace),
@@ -463,7 +460,7 @@ func setupSkillMarketplace(mgr ctrl.Manager, config controller.SkillMarketplaceC
 	return mgr.Add(&skillmarketplace.VolumeCollector{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: 5 * time.Minute})
 }
 
-func memoryRegistry(repoURL string) string {
+func runtimeRegistry(repoURL string) string {
 	registry := extractRegistryHost(repoURL)
 	// Published charts and images share the registry prefix, including staging
 	// paths. The hostname alone would select a different image repository.

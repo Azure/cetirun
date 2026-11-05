@@ -825,6 +825,42 @@ driver calls the image builders that already exist, stamps the explicit
 version/source SHA, and builds the base image before its consumers. It never
 logs in or installs tools.
 
+`REGISTRY` defaults to `mcr.microsoft.com/aks/ai-runtime/cetirun`, including
+the repository prefix. `VERSION` defaults to the Runtime Chart version.
+Both accept environment variables or Make command-line assignments; an
+assignment on the command line takes precedence. For a local test build:
+
+```bash
+REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
+  make build-images ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
+```
+
+Set the license acceptance only after accepting the VS Code Server terms.
+Build and publish targets do not edit the source checkout. When the version
+differs, the driver copies tracked and nonignored working-tree source files
+to a temporary directory, preserves their modes, and runs the existing
+version setter there. Ignored dependencies, local configuration and Git
+metadata are not copied. The build therefore includes uncommitted source
+changes; `GIT_SHA` identifies the base commit, not a clean-tree guarantee.
+Only `make set-version VERSION=X.Y.Z` changes the checked-in release version.
+`make version-check` still checks source consistency, not a proposed build.
+
+Chart packages contain the selected registry and version defaults, including
+the Operator's Runtime Chart URL/version, embedded subcharts and first-party
+runtime images. A registry prefix such as `registry.example.com/team/test`
+is retained when the Operator resolves OpenClaw, Hermes, Desktop, Terminal
+and Memory images. Third-party images and explicit Custom image/digest pins
+keep their own coordinates. Existing Agents keep their pinned Runtime Chart
+and image until an explicit upgrade.
+
+The component `*-helm-release.sh` entry points use the same packager and
+publish only their selected chart. `CHART_VERSION` and `APP_VERSION` can
+still override `VERSION` separately. `CHART_DIR` selects a source override;
+`VALUES_FILE` supplies additional lint/render values, not packaged secrets.
+These publishers now use the shared registry preflight and mandatory chart
+pull comparison, so they require Python, Helm and Docker buildx. They do not
+log in. `VERIFY_PULL=false` does not disable their pull comparison.
+
 After registry authentication and publication authorization:
 
 ```bash
@@ -842,7 +878,9 @@ Every chart is pulled back and compared with its package. `VERIFY_PULL=false`
 is rejected for the unified release. `build-images` builds locally and does
 not publish. `publish-images` and `publish-charts` select one artifact class.
 
-The MCR pipeline uses the same inventory and builders. It keeps staged pushes,
+The MCR pipeline packages charts with public MCR pull coordinates, independently
+of its backing ACR and temporary image staging paths. It uses the same
+inventory and builders. It keeps staged pushes,
 digest verification, and the promotion of `latest` only after all versioned
 images and charts succeed. It passes the
 `ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true` value, which is already configured in

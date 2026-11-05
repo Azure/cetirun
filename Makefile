@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 PYTHON ?= python3
-REGISTRY ?=
+REGISTRY ?= $(shell scripts/cetirun-release-metadata.sh registry)
 VERSION ?= $(shell scripts/cetirun-release-metadata.sh version)
 GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 VERIFY_PULL ?= true
@@ -28,6 +28,8 @@ help:
 	@echo "  make set-version VERSION=<version>  (e.g. 0.1.0-dev.1)"
 	@echo "  make build-images REGISTRY=<registry> [VERSION=X.Y.Z]"
 	@echo "  make publish REGISTRY=<registry> [VERSION=X.Y.Z]"
+	@echo "  REGISTRY defaults to the public MCR prefix; VERSION defaults to the Runtime Chart."
+	@echo "  Build/publish overrides use temporary copies; only set-version edits source."
 	@echo "  Image builds require ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true"
 	@echo "Deployment (explicit environment authorization required):"
 	@echo "  make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml  (offline)"
@@ -65,11 +67,11 @@ set-version:
 artifact-check:
 	$(PYTHON) -B scripts/cetirun-release.py check
 
-build-images publish-images publish-charts publish: require-registry version-check artifact-check
+build-images publish-images publish-charts publish: require-registry artifact-check
 	@test "$(FORCE_PUBLISH)" = false -o "$(FORCE_PUBLISH)" = true || { echo "FORCE_PUBLISH must be true or false" >&2; exit 1; }
 	@test "$(VERIFY_PULL)" = true || { echo "Unified releases require Chart pull verification" >&2; exit 1; }
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS="$(ACCEPT_VSCODE_SERVER_LICENSE_TERMS)" $(PYTHON) -B scripts/cetirun-release.py $@ $(if $(filter true,$(FORCE_PUBLISH)),--force,)
 
 deploy-plan deploy:
 	@test -n "$(DEPLOY_CONFIG)" || { echo "DEPLOY_CONFIG is required; see app/cetirun-platform/README.md" >&2; exit 1; }
-	bash scripts/cetirun-platform-deploy.sh --config "$(DEPLOY_CONFIG)" $(if $(filter deploy-plan,$@),--plan,)
+	bash scripts/cetirun-platform-deploy.sh --config "$(DEPLOY_CONFIG)" $(if $(filter deploy-plan,$@),--plan,) $(if $(filter environment command line,$(origin VERSION)),--version "$(VERSION)",) $(if $(filter environment command line,$(origin REGISTRY)),--registry "$(REGISTRY)",)

@@ -69,7 +69,7 @@ for resource, name in (("validatingwebhookconfigurations", "cetirun-sandbox-pods
 ' <<<"${output}"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"
-grep -Fq "image: \"ghcr.io/azure/cetirun-agent-broker:${app_version}\"" <<<"${output}"
+grep -Fq "image: \"mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-agent-broker:${app_version}\"" <<<"${output}"
 grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:1.1.2-azurelinux3.0-distroless@sha256:73a8763100c93c3da1a3ed1ba3af2c6122c0517687354dceded30537a1aee97f"' <<<"${output}"
 grep -Fq 'name: AzureAd__ClientCredentials__0__SignedAssertionFileDiskPath' <<<"${output}"
 grep -Fq 'value: /var/run/secrets/azure/tokens/azure-identity-token' <<<"${output}"
@@ -128,7 +128,7 @@ if grep -Fq ':latest' <<<"${output}"; then
 fi
 
 digest_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string image.tag=test --set-string image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111 --set-string authSDK.tag=test --set-string authSDK.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222)"
-grep -Fq 'image: "ghcr.io/azure/cetirun-agent-broker:test@sha256:1111111111111111111111111111111111111111111111111111111111111111"' <<<"${digest_output}"
+grep -Fq 'image: "mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-agent-broker:test@sha256:1111111111111111111111111111111111111111111111111111111111111111"' <<<"${digest_output}"
 grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:test@sha256:2222222222222222222222222222222222222222222222222222222222222222"' <<<"${digest_output}"
 
 # Only the Broker receives the short-lived Kubernetes API credential. The

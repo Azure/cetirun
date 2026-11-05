@@ -7,7 +7,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 
-registry="${REGISTRY:-cetirun.azurecr.io}"
+registry="${REGISTRY:-$("${script_dir}/cetirun-release-metadata.sh" registry)}"
 image_name="${IMAGE_NAME:-openclaw-gateway}"
 release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
 image_tag="${IMAGE_TAG:-${release_version}}"

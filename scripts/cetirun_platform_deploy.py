@@ -511,8 +511,17 @@ def validate_cetiadmin_writers(kind, rows):
             raise ValueError("CetiAdmin writers have not stopped: " + kind)
 
 
-def configuration(path):
+def configuration(path, *, registry=None, version=None):
     config = yaml_file(path)
+    release = config.setdefault("release", {})
+    if not isinstance(release, dict):
+        raise ValueError("release must be an object")
+    if registry is not None:
+        release["registry"] = registry.rstrip("/")
+    if version is not None:
+        release["version"] = version
+    release.setdefault("registry", RELEASE.VERSIONS.DEFAULT_REGISTRY)
+    release.setdefault("version", RELEASE.VERSIONS.top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version"))
     for field in ("target.context", "target.cluster", "target.server", "target.clusterUID",
                   "release.registry", "release.version", "release.gitSHA", "domain", "identityRealm", "ownerAlias",
                   "istio.namespace", "istio.release", "istio.revision", "istio.controlPlaneNamespace",
@@ -971,8 +980,12 @@ class Deployment:
         for entry in release_inventory(self.config)["charts"]:
             source = ROOT / entry["path"]
             shutil.copytree(source, self.scratch / entry["path"], ignore=shutil.ignore_patterns("charts", "__pycache__"))
+        updates = RELEASE.VERSIONS.chart_updates(self.scratch,
+            [entry["path"] for entry in release_inventory(self.config)["charts"]], self.config["release"]["version"])
+        for path, content in updates.items():
+            path.write_text(content)
         offline = {**os.environ, "KUBECONFIG": os.devnull, "HELM_REGISTRY_CONFIG": os.devnull}
-        self.run(["helm", "dependency", "build", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
+        self.run(["helm", "dependency", "update", "--skip-refresh", str(self.scratch / CHARTS["platform"])], env=offline)
         for name, relative in CHARTS.items():
             self.charts[name] = self.scratch / relative
             self.files[name] = self.scratch / f"{name}-values.json"
@@ -1596,9 +1609,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path, help="explicit environment YAML; never sourced as shell code")
     parser.add_argument("--plan", action="store_true", help="validate inputs and render locally without cluster/registry calls")
+    parser.add_argument("--registry", default=os.environ.get("REGISTRY"), help="override release.registry without editing the environment file")
+    parser.add_argument("--version", default=os.environ.get("VERSION"), help="override release.version without editing the environment file")
     args = parser.parse_args(argv)
     try:
-        config, values = configuration(args.config)
+        config, values = configuration(args.config, registry=args.registry, version=args.version)
         with tempfile.TemporaryDirectory(prefix="cetirun-platform-") as temporary:
             deployment = Deployment(config, values, Path(temporary))
             deployment.render()

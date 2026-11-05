@@ -3,7 +3,7 @@
 
 ARG VERSION=dev
 ARG GIT_SHA=unknown
-ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:latest
+ARG BASE_IMAGE=mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-base:latest
 ARG OPENCLAW_VERSION=2026.9.6
 
 # Resolve and fetch OpenClaw from npm in a base-derived stage so registry

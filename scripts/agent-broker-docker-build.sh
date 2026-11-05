@@ -8,7 +8,7 @@ docker buildx version >/dev/null 2>&1 || { echo "ERROR: docker buildx is require
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-registry="${REGISTRY:-cetirun.azurecr.io}"
+registry="${REGISTRY:-$("${script_dir}/cetirun-release-metadata.sh" registry)}"
 release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
 image_tag="${IMAGE_TAG:-${release_version}}"
 image_ref="${registry}/cetirun-agent-broker:${image_tag}"

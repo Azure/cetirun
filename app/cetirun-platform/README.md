@@ -55,10 +55,23 @@ credentials or qualification.
 
 The file contains these inputs:
 
+For a test release, `REGISTRY` and `VERSION` environment variables or Make
+command-line assignments override only the release coordinates in memory.
+They do not rewrite the environment file. Without explicit overrides, the
+file's coordinates take precedence over defaults. The Python entry point also
+accepts `--registry` and `--version`. Use the same values for `deploy-plan`
+and the separately authorized `deploy` invocation. Existing explicit image
+and digest pins are not cleared; conflicting coordinated values fail validation.
+
+```bash
+REGISTRY=registry.example.com/team/test VERSION=0.1.1-dev.1 \
+  make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
+```
+
 | Input | Meaning |
 | --- | --- |
 | `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
-| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images |
+| `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images. Omitted registry/version use the public MCR prefix and source Runtime Chart version |
 | `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
 | `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |

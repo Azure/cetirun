@@ -59,6 +59,8 @@ elif tool == "helm" and args[0] == "package":
                 if line.startswith("name:"))
     destination = pathlib.Path(args[args.index("--destination") + 1])
     destination.mkdir(parents=True, exist_ok=True)
+    with open(os.environ["MCP_RELEASE_LOG"] + ".packages", "a") as output:
+        output.write(json.dumps({"name": name, "values": (pathlib.Path(args[1]) / "values.yaml").read_text()}) + "\n")
     if not (name == component and os.environ.get("MCP_SKIP_PACKAGE")):
         (destination / f"{name}-{version}.tgz").touch()
 elif tool == "helm" and args[0] == "pull":
@@ -109,11 +111,15 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             name = yaml.safe_load(source.read_text())["name"]
             target.write_text(f'name: {name}\nversion: {VERSION}\nappVersion: "{VERSION}"\n')
+            shutil.copyfile(source.parent / "values.yaml", target.parent / "values.yaml")
         (self.root / "scripts").mkdir()
         inventory = json.loads((ROOT / "scripts/release-artifacts.json").read_text())
         for path in [entry["script"] for entry in inventory["images"]] + ["scripts/release-artifacts.json", "scripts/cetirun-release.py"]:
             shutil.copyfile(ROOT / path, self.root / path)
-        (self.root / "scripts/cetirun-version.py").write_text("# Version consistency is exercised separately.\n")
+        # Use the real transformation helpers. Full source consistency is
+        # exercised separately; this fixture contains only chart metadata.
+        (self.root / "scripts/cetirun-version.py").write_text(
+            (ROOT / "scripts/cetirun-version.py").read_text().partition('if __name__ == "__main__":')[0])
         pipeline = yaml.safe_load((ROOT / ".pipelines/release-mcr.yml").read_text())
         self.pipeline = pipeline
         self.steps = {step["displayName"]: step for step in pipeline["jobs"][0]["steps"]
@@ -165,6 +171,11 @@ class ConnectionsMCPReleaseTests(unittest.TestCase):
             self.run_step(name)
         commands = self.commands()
         self.assertTrue(self.archive.is_file(), "MCP chart was not packaged")
+        packages = [json.loads(line) for line in Path(str(self.log) + ".packages").read_text().splitlines()]
+        packaged = next(item for item in packages if item["name"] == COMPONENT)
+        self.assertIn("mcr.microsoft.com/aks/ai-runtime/cetirun/" + COMPONENT, packaged["values"])
+        self.assertNotIn("staging/", packaged["values"])
+        self.assertNotIn("synthetic.azurecr.io", packaged["values"])
         for operation in ("lint", "template", "package"):
             command = next(c for c in commands if c[:2] == ["helm", operation] and any(arg.endswith(CHART) for arg in c))
             if operation == "package":

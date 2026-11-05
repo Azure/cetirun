@@ -41,7 +41,7 @@
                 "repository": {
                     "type": "string",
                     "description": "Image repository. global.registry, when set, replaces the registry host.",
-                    "default": "cetirun.azurecr.io/cetirun-ai-gateway"
+                    "default": "mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-ai-gateway"
                 },
                 "pullPolicy": {
                     "type": "string",

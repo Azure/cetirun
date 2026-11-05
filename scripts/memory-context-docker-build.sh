@@ -8,10 +8,11 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 [[ $# -eq 0 ]] || { echo "Use --help" >&2; exit 2; }
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+REGISTRY="${REGISTRY:-$("${script_dir}/cetirun-release-metadata.sh" registry)}"
 [[ -n "${REGISTRY:-}" && "${REGISTRY}" != *://* && "${REGISTRY}" =~ ^[a-zA-Z0-9][a-zA-Z0-9.:/-]*$ ]] || { echo "REGISTRY is required" >&2; exit 2; }
 [[ "${PUSH:-false}" == "true" || "${PUSH:-false}" == "false" ]] || { echo "PUSH must be true or false" >&2; exit 2; }
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }
-script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
 [[ "${release_version}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "VERSION must be a valid image tag" >&2; exit 2; }

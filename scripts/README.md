@@ -33,12 +33,20 @@ all other deployment checks remain in effect.
 
 `cetirun-release.py` drives the root build and publish targets and the MCR
 pipeline from `release-artifacts.json`. Its `list`, `check`, and `plan`
-commands do not connect to a registry. Image builds must have an explicit
-registry, version, and source SHA; selections containing VS Code require an
+commands do not connect to a registry. `REGISTRY` defaults to the public
+`mcr.microsoft.com/aks/ai-runtime/cetirun` prefix; `VERSION` defaults to the
+Runtime Chart version, and the source SHA defaults to HEAD. Environment or
+CLI overrides affect temporary build/package inputs, not the source checkout.
+Selections containing VS Code require an
 explicit license acceptance. Publication refuses a tag that already exists
 unless `--force` is explicit. It distinguishes registry errors from artifacts
 that do not exist, and makes sure that chart pulls work. You can still use each
 component build script independently.
+
+Chart publishers share the same packager, registry preflight and mandatory
+pull comparison. Packages carry the selected image defaults and the Operator's
+downstream Runtime Chart URL/version. MCR publication keeps public pull
+coordinates separate from its backing ACR and staging push destinations.
 
 `cetirun-vscode` is currently the only declared optional image. To defer its
 license acceptance, pass `--exclude-image cetirun-vscode` to the release CLI
@@ -59,13 +67,15 @@ The tests use command doubles and local Helm. They do not deploy or publish.
 ## CetiRun Connections MCP artifacts
 
 `cetirun-connections-mcp-docker-build.sh` builds the standalone MCP image from
-the repository root. Set `REGISTRY`. The default value of `VERSION` comes from
+the repository root. Override `REGISTRY` to use a test registry or repository
+prefix instead of public MCR. The default value of `VERSION` comes from
 the central release metadata. `PUSH=false` loads a local image, and `PUSH=true`
 publishes the image.
 
 `cetirun-connections-mcp-helm-release.sh` lints and packages the independent
 chart. It pushes the chart under `oci://$REGISTRY/${CHART_NAMESPACE:-helm}`.
-Then it makes sure that the chart pull works, unless `VERIFY_PULL=false`.
+Then it compares the pulled package with the published package. Pull verification
+cannot be disabled with `VERIFY_PULL=false`.
 Neither helper logs in or deploys resources. Image builds can download pinned
 dependencies and base images. For publication, explicit authorization and
 registry authentication are necessary.

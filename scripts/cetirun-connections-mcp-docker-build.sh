@@ -4,7 +4,7 @@
 
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-registry="${REGISTRY:?REGISTRY is required}"
+registry="${REGISTRY:-$("${repo_root}/scripts/cetirun-release-metadata.sh" registry)}"
 version="${VERSION:-$("${repo_root}/scripts/cetirun-release-metadata.sh" version)}"
 git_sha="${GIT_SHA:-$(git -C "${repo_root}" rev-parse HEAD)}"
 arguments=(-f "${repo_root}/app/cetirun-connections-mcp/Dockerfile" -t "${registry}/cetirun-connections-mcp:${version}" --build-arg "VERSION=${version}"
