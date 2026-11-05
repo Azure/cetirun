@@ -338,9 +338,18 @@ func (h *CetiAdminHandler) protectInstallation(request admission.Request, snapsh
 	}
 	if request.Resource.Group == api.GroupVersion.Group && request.Resource.Resource == "agents" && request.Operation == admissionv1.Update && request.SubResource == "" &&
 		snapshot.state != nil && snapshot.state.Bootstrapped && !snapshot.state.BootstrapReleasePending &&
-		request.UserInfo.Username != serviceAccountUsername(snapshot.state.ServiceAccount) &&
-		rawChangesOnly(request, []string{"suspended", "restartRequestID"}, []string{"managedFields", "generation"}) {
-		return admission.Allowed("retain owner suspension and restart controls without changing the installation"), true
+		request.UserInfo.Username != serviceAccountUsername(snapshot.state.ServiceAccount) {
+		if rawChangesOnly(request, []string{"suspended", "restartRequestID"}, []string{"managedFields", "generation"}) {
+			return admission.Allowed("retain owner suspension and restart controls without changing the installation"), true
+		}
+		installed := snapshot.state.Agent
+		if h.config.administrator(request.UserInfo) && installed.UID != "" &&
+			request.Name == installed.Name && request.Namespace == installed.Namespace &&
+			next.UID == installed.UID && old.UID == installed.UID &&
+			rawChangesOnly(request, nil, []string{"managedFields", "generation"},
+				api.AnnotationCopilotModels, api.AnnotationCopilotSignInGeneration, api.AnnotationCopilotSignedInAt) {
+			return admission.Allowed("Portal authoring may record Copilot sign-in metadata on the installed Agent"), true
+		}
 	}
 	return admission.Denied("CetiAdmin installation objects and source markers are Operator-owned"), true
 }

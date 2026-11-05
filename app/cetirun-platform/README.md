@@ -336,6 +336,19 @@ regardless of their Team. There is no Agent or Team allowlist. The optional
 select managed Agents and is not passed to the runtime. If you do not want
 diagnostics for other platform namespaces, omit it or use `[]`.
 
+Native Custom Sandbox namespaces use their exact Agent owner reference and
+Agent UID/name protection markers. They do not require a legacy Custom
+ownership receipt. Legacy Custom namespaces still require their immutable
+receipt. Both paths reject foreign ownership, and native Sandbox namespace
+access does not grant a CetiAdmin exec exception.
+
+When Copilot is enabled, the configured Portal authoring identity can record
+the owner's Copilot model list, sign-in generation, and sign-in timestamp on
+the installed CetiAdmin Agent. This exception changes only those annotations.
+The installation configuration, owner bindings, other metadata, and the
+Agent specification remain protected. CetiAdmin cannot write its own sign-in
+metadata through this exception.
+
 New installation inputs and the deployment helper reject the removed `scope`
 field. A disabled installation that already exists has a separate, bounded
 upgrade path described below.
