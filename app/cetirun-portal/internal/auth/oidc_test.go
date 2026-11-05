@@ -11,10 +11,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -213,6 +215,180 @@ func TestOIDCVerifierRefreshesUnknownKeyOnlyOnce(t *testing.T) {
 
 	if _, err := verifier.key(context.Background(), "unknown-key"); err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("key() error = %v, want unknown signing key", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("JWKS requests = %d, want 1", got)
+	}
+}
+
+func TestOIDCVerifierCoalescesConcurrentRefreshes(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"kid": "test-key",
+		"kty": "RSA",
+		"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, setup := range []struct {
+		name  string
+		setup func(*OIDCVerifier)
+	}{
+		{name: "cold cache", setup: func(*OIDCVerifier) {}},
+		{name: "stale cache", setup: func(verifier *OIDCVerifier) {
+			verifier.keys["old-key"] = &key.PublicKey
+			verifier.fetched = time.Now().Add(-time.Hour)
+		}},
+		{name: "unknown key", setup: func(verifier *OIDCVerifier) {
+			verifier.keys["old-key"] = &key.PublicKey
+			verifier.fetched = time.Now()
+		}},
+	} {
+		t.Run(setup.name, func(t *testing.T) {
+			verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+			if err != nil {
+				t.Fatal(err)
+			}
+			setup.setup(verifier)
+			var requests atomic.Int32
+			started := make(chan struct{})
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if requests.Add(1) == 1 {
+					close(started)
+				}
+				<-release
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(document)
+			}))
+			defer server.Close()
+			verifier.jwksURL = server.URL
+			verifier.client = server.Client()
+
+			const callers = 24
+			start := make(chan struct{})
+			errs := make(chan error, callers)
+			var callersWG sync.WaitGroup
+			for range callers {
+				callersWG.Add(1)
+				go func() {
+					defer callersWG.Done()
+					<-start
+					_, err := verifier.key(context.Background(), "test-key")
+					errs <- err
+				}()
+			}
+			close(start)
+			<-started
+			close(release)
+			callersWG.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					t.Fatalf("key() error = %v", err)
+				}
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("JWKS requests = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestOIDCVerifierRefreshWaiterHonorsContextDeadline(t *testing.T) {
+	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	verifier.jwksURL = server.URL
+	verifier.client = server.Client()
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := verifier.key(context.Background(), "test-key")
+		leaderDone <- err
+	}()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := verifier.key(ctx, "test-key"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiting key() error = %v, want context deadline exceeded", err)
+	}
+	close(release)
+	if err := <-leaderDone; err == nil {
+		t.Fatal("leader key() unexpectedly succeeded")
+	}
+}
+
+func TestOIDCVerifierRefreshSurvivesLeaderCancellation(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"kid": "test-key",
+		"kty": "RSA",
+		"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	verifier, err := NewOIDCVerifier("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(document)
+	}))
+	defer server.Close()
+	verifier.jwksURL = server.URL
+	verifier.client = server.Client()
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := verifier.key(leaderCtx, "test-key")
+		leaderDone <- err
+	}()
+	<-started
+
+	healthyDone := make(chan error, 1)
+	go func() {
+		_, err := verifier.key(context.Background(), "test-key")
+		healthyDone <- err
+	}()
+	cancelLeader()
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled leader error = %v, want context canceled", err)
+	}
+	close(release)
+	if err := <-healthyDone; err != nil {
+		t.Fatalf("healthy waiter error = %v", err)
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("JWKS requests = %d, want 1", got)

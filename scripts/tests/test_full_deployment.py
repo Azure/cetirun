@@ -833,6 +833,30 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
 class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
+    def test_internal_owner_auth_uses_actual_portal_mesh_identity(self):
+        config = copy.deepcopy(self.config)
+        config["platform"]["namespace"] = "dedicated-platform"
+        config["platform"]["values"].setdefault("cetirun-portal", {})["serviceAccount"] = {"name": "dedicated-portal"}
+        _, values = self.configure(config)
+        self.assertTrue(values["platform"]["cetirun-portal"]["istio"]["internalAuthMTLS"])
+        self.assertEqual(values["istio"]["portalAuth"]["mtls"], {
+            "enabled": True,
+            "serverIdentity": "spiffe://cluster.local/ns/dedicated-platform/sa/dedicated-portal",
+        })
+
+    def test_conflicting_internal_owner_transport_fails_before_tools(self):
+        for section, field, value in (
+            ("istio", "portalAuth.mtls.enabled", False),
+            ("istio", "portalAuth.mtls.serverIdentity", "spiffe://cluster.local/ns/other/sa/other"),
+            ("platform", "cetirun-portal.istio.internalAuthMTLS", False),
+        ):
+            with self.subTest(field=field):
+                config = copy.deepcopy(self.config)
+                DEPLOY.set_value(config[section]["values"], field, value)
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                    with self.assertRaisesRegex(ValueError, "conflicts with the complete deployment"):
+                        self.configure(config)
+
     def test_default_mcp_broker_storage_identity_matches_actual_release(self):
         for explicit_name in ("dedicated-broker", ""):
             with self.subTest(account=explicit_name):

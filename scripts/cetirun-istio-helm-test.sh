@@ -61,6 +61,14 @@ assert_sign_in_flags() {
 echo "==> helm template cetirun-istio (standalone portal default)"
 output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}")
 assert_ownership_target "${output}" "cetirun-portal.cetirun-portal.svc.cluster.local"
+grep -Fq 'local PORTAL_AUTH_MTLS_ENABLED = false' <<< "${output}" || {
+  echo "FAIL: plaintext ownership mode was not the default" >&2
+  exit 1
+}
+if grep -Fq 'name: portal_auth_mtls_cluster' <<< "${output}"; then
+  echo "FAIL: plaintext ownership mode rendered the token transport cluster" >&2
+  exit 1
+fi
 grep -Fq 'local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico", "/connections", "/connections/"}' <<< "${output}" || {
   echo "FAIL: health and readiness exemptions must be exact paths" >&2
   exit 1
@@ -245,6 +253,31 @@ output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   --set-string portalAuth.clusterHost=cetirun-portal.cetirun-system.svc.cluster.local)
 assert_ownership_target "${output}" "cetirun-portal.cetirun-system.svc.cluster.local"
 
+echo "==> helm template cetirun-istio (mTLS Portal ownership)"
+mtls_output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
+  --set portalAuth.mtls.enabled=true \
+  --set-string portalAuth.mtls.serverIdentity=spiffe://cluster.local/ns/synthetic/sa/portal)
+grep -Fq 'name: portal_auth_mtls_cluster' <<< "${mtls_output}" || {
+  echo "FAIL: mTLS ownership mode did not add its distinct cluster" >&2
+  exit 1
+}
+grep -Fq 'local PORTAL_AUTH_CLUSTER = "portal_auth_mtls_cluster"' <<< "${mtls_output}" || {
+  echo "FAIL: mTLS ownership mode did not select its distinct cluster" >&2
+  exit 1
+}
+grep -Fq 'type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext' <<< "${mtls_output}" || {
+  echo "FAIL: mTLS ownership cluster did not render an upstream TLS context" >&2
+  exit 1
+}
+grep -Fq 'exact: "spiffe://cluster.local/ns/synthetic/sa/portal"' <<< "${mtls_output}" || {
+  echo "FAIL: mTLS ownership cluster did not pin the configured SPIFFE URI" >&2
+  exit 1
+}
+if grep -Fq 'name: portal_auth_mtls_cluster' <<< "${mtls_output}" && grep -A70 'name: portal_auth_mtls_cluster' <<< "${mtls_output}" | grep -Fq 'raw_buffer'; then
+  echo "FAIL: mTLS ownership cluster rendered a plaintext fallback" >&2
+  exit 1
+fi
+
 echo "==> reject incomplete and invalid Redis session configuration"
 if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   --set-string oauth2Proxy.sessionStore.type=redis \
@@ -260,6 +293,17 @@ fi
 if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   --set-string oauth2Proxy.emailClaim=unsupported >/dev/null 2>&1; then
   echo "FAIL: invalid OIDC email claim rendered successfully" >&2
+  exit 1
+fi
+if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
+  --set portalAuth.mtls.enabled=true >/dev/null 2>&1; then
+  echo "FAIL: mTLS ownership rendered without a server SPIFFE URI" >&2
+  exit 1
+fi
+if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
+  --set portalAuth.mtls.enabled=true \
+  --set-string portalAuth.mtls.serverIdentity=spiffe://cluster.local/not-an-identity >/dev/null 2>&1; then
+  echo "FAIL: mTLS ownership rendered with a malformed server SPIFFE URI" >&2
   exit 1
 fi
 for limit in 0 -1 1.5 many; do

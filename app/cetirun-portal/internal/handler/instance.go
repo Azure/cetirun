@@ -188,6 +188,11 @@ type PodStatus struct {
 type InstanceHandler struct {
 	Kube   *kube.Client
 	Config config.Config
+	// VerifyInternalIdentity verifies the Portal-only ID token that the
+	// gateway forwards to the internal ownership endpoint. It is intentionally
+	// a function, rather than an interface containing a typed nil pointer, so
+	// an unset verifier reliably fails closed for bound Agents.
+	VerifyInternalIdentity func(context.Context, string) (auth.VerifiedIdentity, error)
 	// Copilot runs the GitHub Copilot sign-in; nil uses the public GitHub.
 	Copilot *copilot.Client
 	// Now overrides the clock in tests.
@@ -419,22 +424,45 @@ func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http
 
 // InternalAuth handles GET /internal/auth
 // Called by the Istio EnvoyFilter Lua script to verify instance ownership.
-// Returns 200 OK if alias owns the instance, 403 Forbidden otherwise.
-// Not behind auth middleware — instance and alias come from the Lua filter via headers.
-// Using headers (not query params) prevents URL-injection attacks.
+// Returns 200 OK if the caller owns the instance, 403 Forbidden otherwise.
+// Not behind auth middleware: the gateway forwards the verified OAuth2 Proxy
+// ID token only to this internal endpoint. Older unbound Agents retain the
+// alias/email comparison used before owner identity annotations existed.
 func (h *InstanceHandler) InternalAuth(w http.ResponseWriter, r *http.Request) {
 	instanceName := r.Header.Get("X-Internal-Instance")
 	alias := r.Header.Get("X-Internal-Alias")
 	email := r.Header.Get("X-Internal-Email")
-	if instanceName == "" || (alias == "" && email == "") {
-		http.Error(w, "missing instance or identity", http.StatusBadRequest)
+	if instanceName == "" {
+		http.Error(w, "missing instance", http.StatusBadRequest)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 400*time.Millisecond)
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
 	instance, err := h.Kube.GetInstanceByName(ctx, instanceName)
 	if err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	ownerTenant := instance.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID]
+	ownerObject := instance.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID]
+	if ownerTenant != "" || ownerObject != "" {
+		const portalIdentityTokenHeader = "X-CetiRun-Portal-ID-Token"
+		const bearerPrefix = "Bearer "
+		authorization := r.Header.Get(portalIdentityTokenHeader)
+		if h.VerifyInternalIdentity == nil || !strings.HasPrefix(authorization, bearerPrefix) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		identity, err := h.VerifyInternalIdentity(ctx, strings.TrimPrefix(authorization, bearerPrefix))
+		if err != nil || !ownsInstance(instance, auth.Claims{TenantID: identity.TenantID, ObjectID: identity.ObjectID}) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if alias == "" && email == "" {
+		http.Error(w, "missing identity", http.StatusBadRequest)
 		return
 	}
 	ownerAlias := instance.Spec.User.Alias
