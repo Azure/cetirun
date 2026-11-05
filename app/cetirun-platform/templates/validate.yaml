@@ -1,3 +1,39 @@
+{{- $publicTLS := .Values.publicTLS | default dict }}
+{{- if not (kindIs "map" $publicTLS) }}
+{{- fail "publicTLS must be an object" }}
+{{- end }}
+{{- $publicTLSEnabled := default false $publicTLS.enabled }}
+{{- if not (kindIs "bool" $publicTLSEnabled) }}
+{{- fail "publicTLS.enabled must be a boolean" }}
+{{- end }}
+{{- $bootstrapOnly := default false $publicTLS.bootstrapOnly }}
+{{- if not (kindIs "bool" $bootstrapOnly) }}
+{{- fail "publicTLS.bootstrapOnly must be a boolean" }}
+{{- end }}
+{{- $portal := index .Values "cetirun-portal" }}
+{{- $operator := index .Values "cetirun-operator" }}
+{{- $tools := index .Values "cetirun-connections-mcp" }}
+{{- $gateway := index .Values "cetirun-ai-gateway" }}
+{{- if $publicTLSEnabled }}
+{{- include "cetirun-platform.publicTLS.validate" . }}
+{{- end }}
+{{- if $bootstrapOnly }}
+{{- if or (le (int $publicTLS.bootstrapRevision) 0) (ne (toString $publicTLS.bootstrapRevision) (toString .Release.Revision)) }}
+{{- fail "publicTLS.bootstrapRevision does not match the next Helm revision; recheck the release before certificate preparation" }}
+{{- end }}
+{{- if not $publicTLSEnabled }}
+{{- fail "publicTLS.bootstrapOnly requires publicTLS.enabled=true" }}
+{{- end }}
+{{- if or $tools.enabled $operator.enabled $portal.enabled $gateway.enabled }}
+{{- fail "publicTLS.bootstrapOnly requires cetirun-connections-mcp, cetirun-operator, cetirun-portal, and cetirun-ai-gateway to be disabled" }}
+{{- end }}
+{{- if default false ((.Values.global.portalChat | default dict).enabled) }}
+{{- fail "publicTLS.bootstrapOnly requires global.portalChat.enabled=false" }}
+{{- end }}
+{{- else }}
+{{- if and $publicTLSEnabled (not (and $publicTLS.acme.stagingCertificateEnabled $publicTLS.acme.productionCertificateEnabled)) }}
+{{- fail "full publicTLS deployments require both staging and production Certificates" }}
+{{- end }}
 {{- if not .Values.istio.enabled }}
 {{- fail "istio.enabled must be true: install and verify the separate cetirun-istio release first" }}
 {{- end }}
@@ -7,9 +43,6 @@
 {{- if not .Values.istio.oauth2Proxy.namespace }}
 {{- fail "istio.oauth2Proxy.namespace is required" }}
 {{- end }}
-{{- $portal := index .Values "cetirun-portal" }}
-{{- $operator := index .Values "cetirun-operator" }}
-{{- $tools := index .Values "cetirun-connections-mcp" }}
 {{- $broker := index .Values "cetirun-agent-broker" }}
 {{- if $broker.enabled }}
 {{- fail "Install the Agent Broker separately in its private credential namespace; do not colocate it with CetiRun Connections MCP in this umbrella release" }}
@@ -61,7 +94,6 @@
 {{- if and $portal.enabled (not $portal.istio.gatewayServiceAccount) }}
 {{- fail "cetirun-portal.istio.gatewayServiceAccount is required when cetirun-portal is enabled" }}
 {{- end }}
-{{- $gateway := index .Values "cetirun-ai-gateway" }}
 {{- if and $operator.enabled (not (($operator.aiGateway | default dict).enabled)) }}
 {{- fail "cetirun-operator.aiGateway.enabled must be true: all Agent types take their models from the AI Gateway" }}
 {{- end }}
@@ -117,5 +149,6 @@
 {{- end }}
 {{- else if $portalServiceAccount }}
 {{- fail "clear cetirun-operator.sandboxAdmission.portalServiceAccount when the bundled Portal is disabled; list a separately installed Portal's ServiceAccount in cetirun-operator.sandboxAdmission.adminUsers" }}
+{{- end }}
 {{- end }}
 {{- end }}

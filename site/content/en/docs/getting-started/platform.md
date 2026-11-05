@@ -34,7 +34,7 @@ covers smart routing of models and the first call from a client.
 | Enforced Kubernetes NetworkPolicy and necessary admission APIs | Runtime isolation rules and the default exec-denial policy |
 | Accessible images and versioned OCI agent chart | Operator fetches the agent chart, and then nodes pull images |
 | Entra ID app, allowed groups, federated credential | Portal login and group-based admission |
-| Apex DNS and a TLS certificate that matches it. Wildcard names if you use them | Portal, instance routes, and apex `/oauth2/callback`. [Public DNS and TLS](../../operations/public-ingress/) can prepare one exact hostname automatically |
+| Apex DNS and a TLS certificate that matches it. Wildcard names if you use them | Portal, instance routes, and apex `/oauth2/callback`. Optional `publicTLS` in [Public DNS and TLS](../../operations/public-ingress/) can prepare one exact hostname during `make deploy` |
 | Python 3 with PyYAML, Helm, kubectl, OpenSSL, Docker Buildx, Azure CLI/Bicep, jq | `make deploy` and the deployment helpers |
 
 The chart does not declare a general minimum Kubernetes version, but its
@@ -78,9 +78,10 @@ only chart-managed Secret creation, not TLS. Configure the `oauth2-proxy`
 external authorization provider in the managed Istio shared ConfigMap. A direct
 Helm installation does not do that patch.
 
-For a single exact hostname, run [public DNS and TLS preparation](../../operations/public-ingress/)
-before the platform deployment. Its output uses `istio.tlsMode: external` and
-leaves `cetirun-tls` under cert-manager ownership. The normal environment file
+For a single exact hostname, configure `publicTLS` in the same environment file
+before deployment. `make deploy` can configure Azure Public IP DNS or validate
+a user-managed record, then issue the Gateway certificate with cert-manager
+HTTP-01 before it deploys the complete platform. The normal environment file
 still needs all identity, Broker, admission, model and runtime configuration.
 
 Do not expose the portal before you make sure that authentication, ownership
@@ -152,7 +153,7 @@ make publish REGISTRY=registry.example.com VERSION=0.1.1 \
   GIT_SHA="$(git rev-parse HEAD)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true
 ```
 
-The command builds and pushes the 13 images and 9 charts of
+The command builds and pushes the 13 images and 8 charts of
 [`scripts/release-artifacts.json`]({{< repo "scripts/release-artifacts.json" >}}).
 These include the operator, Portal, AI Gateway, Broker, OpenClaw, Hermes, and
 VS Code Server images, and the platform, Istio, and Agent (`helm/cetirun`)
@@ -370,8 +371,9 @@ The README also describes each input of the environment file, in
 
 Before the first run, make sure that these items exist:
 
-- Managed Istio, its external ingress gateway, and the `cetirun-tls` Secret
-  for your domain. Refer to [Istio authentication](../../operations/istio/).
+- Managed Istio and its external ingress gateway. Supply the `cetirun-tls`
+  Secret for your domain, or configure `publicTLS` to issue it during
+  deployment. Refer to [Istio authentication](../../operations/istio/).
 - The Agent Identity resources: the Entra registrations, the Key Vault key, and
   the Broker and MCP certificates. Refer to
   [Agent Identity setup](../../operations/agent-identity/).
@@ -559,8 +561,10 @@ plan stops and shows the message of the chart. An example is a router tier that
 is not in `models`.
 
 Before it writes, `make deploy` examines the target cluster, the references,
-the certificates, and the published artifacts. Then it installs the three
-releases and waits for their workloads. On a new installation, it starts the
+the certificates, and the published artifacts. With `publicTLS`, it first
+prepares DNS/cert-manager/certificates through a restricted umbrella-chart
+revision, then reruns the full preflight. It installs the three normal releases
+and waits for their workloads. On a new installation, it starts the
 admission server before it enforces admission. At the end, it does a
 server-side dry run of a Team. It does not create Agents or send a request to a
 model.
@@ -593,8 +597,9 @@ release. Configure that release to reach the portal: use
 
 The Operator subchart creates the Registry source namespace, which is kept on
 uninstall. Portal and Operator manage its per-Agent credentials at runtime.
-`make deploy` does not install managed Istio, certificates, external
-credentials, Agents, or Agent data that is kept. To install the platform chart
+`make deploy` does not install managed Istio, external credentials, Agents, or
+Agent data that is kept. When `publicTLS` is enabled it can install the pinned
+cert-manager controller and issue the one configured public certificate. To install the platform chart
 directly with Helm instead, refer to
 [Use the component chart directly]({{< repo "app/cetirun-platform/README.md" >}}#use-the-component-chart-directly)
 and to the [platform values](../../reference/helm/#platform-chart).

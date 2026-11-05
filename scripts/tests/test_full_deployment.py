@@ -88,6 +88,10 @@ class SyntheticCluster(DEPLOY.Deployment):
             if args[0] == "list":
                 release = args[args.index("--filter") + 1].strip("^$")
                 return json.dumps([{"name": release, "status": "deployed"}] if release in self.installed else [])
+            if args[:2] == ["get", "values"]:
+                name = next(name for name in DEPLOY.CHARTS if self.config[name]["release"] == args[2])
+                previous = next((values for component, values, _ in reversed(self.applied) if component == name), {})
+                return json.dumps(previous)
             if args[:2] == ["upgrade", "--install"]:
                 self.writes.append(command)
                 release = args[2]
@@ -137,6 +141,8 @@ class SyntheticCluster(DEPLOY.Deployment):
             return "\n".join(rows)
         if args[0] == "get":
             kind, name = args[1].lower(), args[2]
+            if kind == "gateways.networking.istio.io":
+                kind = "gateway"
             output = args[args.index("-o") + 1]
             if kind == "deployment" and "containers[" in output:
                 document = self.live.get((kind, namespace, name), {})
@@ -558,7 +564,7 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
         deployment = self.deployment()
         plan = deployment.plan()
         self.assertEqual(len(plan["artifacts"]["images"]), 13)
-        self.assertEqual(len(plan["artifacts"]["charts"]), 9)
+        self.assertEqual(len(plan["artifacts"]["charts"]), 8)
         self.assertEqual(set(plan["releases"]["istio"]["workloads"]), {"oauth2-proxy", "oauth2-proxy-sessions"})
         self.assertEqual(plan["releases"]["broker"]["namespace"], "cetirun-credentials")
         self.assertEqual(set(plan["releases"]["platform"]["workloads"]), {

@@ -59,6 +59,7 @@ The file contains these inputs:
 | `target` | Explicit kubeconfig context, its cluster name and HTTPS API server exactly as in the kubeconfig, and the `kube-system` namespace UID that you get independently |
 | `release` | Registry with any repository prefix, release version, full source Git SHA, and optionally `excludeImages` for declared optional images |
 | `domain`, `identityRealm`, `ownerAlias` | Public hostname, Portal Chat identity realm, and the Portal administrator alias of the real platform owner |
+| `publicTLS` | Optional Azure Public IP DNS or custom-DNS HTTP-01 certificate configuration. It derives the Helm release from `platform`, and the ingress namespace from `istio` |
 | `identity` | Entra tenant, Portal, blueprint, authorization, and encryption client IDs, and the Key Vault key URL. Use the URL without a key version, for example `https://<vault>.vault.azure.net/keys/<key>`, so that new records use a rotated version |
 | `istio` | Separate release/namespace, the managed control plane and ingress identities that exist, mesh ConfigMap, and Istio Chart values |
 | `broker` | Separate credential namespace/release and Broker Chart values, for example, references to TLS Secrets that exist and references to provider credential Secrets. The helper stops if a provider Secret that the file names does not exist. Remove the providers that you do not register |
@@ -68,22 +69,27 @@ The file contains these inputs:
 
 The managed Istio control plane, ingress workload, DNS, cloud identity
 federation/permissions, storage classes, and referenced Secrets are
-prerequisites that must already exist. Provision them through the environment's
-approved workflow. The helper does not call `az`, get Key Vault secrets, change
-subscriptions, or change `current-context`. Every cluster operation uses
-`target.context`. Before a write, the helper examines the cluster name, API
-origin, and cluster UID of that context.
+prerequisites unless the optional public DNS/TLS preparation below supplies
+the public hostname and certificate. Provision the other requirements through
+the environment's approved workflow. Azure DNS mode uses `az` with the configured
+subscription; the helper does not get Key Vault secrets or change
+`current-context`. Every cluster operation uses `target.context`. Before a
+write, the helper examines the cluster name, API origin, and cluster UID.
 
-For one exact public hostname, prepare DNS and the externally managed ingress
-certificate before this step with [public ingress](../../infra/public-ingress/README.md).
-Its generated deployment-values fragment sets `domain`, `istio.tlsMode: external`,
-`tls.enabled: false`, and disables the wildcard host. Merge that fragment with
-the rest of the environment file; it does not supply Entra, Broker, admission,
-provider, storage, or runtime settings. The existing certificate and Key Vault
-workflow remains supported.
+For one exact public hostname, add `publicTLS` to this same environment file.
+`make deploy` then configures the Azure Public IP DNS label or verifies custom
+DNS, installs or checks the separately managed cert-manager controller, and
+uses the platform chart's certificate-only mode to issue staging and production
+HTTP-01 certificates before it installs the normal CetiRun releases. See
+[Public DNS and TLS](../../site/content/en/docs/operations/public-ingress.md).
+The normal full platform upgrade retains the same public TLS resources. A full
+release is never replaced with certificate-only values. Existing externally
+supplied certificates and Key Vault workflows remain supported when
+`publicTLS` is absent.
 
-The helper uses the kubeconfig of the shell, from `KUBECONFIG` or the default
-file. Read the `target` values from the context after you make sure that it
+When `publicTLS` is enabled, `target.kubeconfig` is required and every command
+uses that file with `target.context`; the shell `KUBECONFIG` is ignored. For
+other deployments, read the target values from the context after making sure it
 selects the intended cluster. The server must be the same string as in the
 kubeconfig, with its port if it has one:
 
@@ -172,7 +178,7 @@ make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml
 
 The plan validates the inputs and renders local charts in a temporary
 directory. Its JSON lists the target, releases, workloads, the selected images
-and all 9 charts, and `referenceCounts` by resource kind. The JSON does not contain
+and all 8 charts, and `referenceCounts` by resource kind. The JSON does not contain
 reference names, Secret keys, or extra input fields. YAML errors report their
 position but do not show the contents. The plan does not connect to a cluster
 or registry. Python, PyYAML, and Helm must already be installed.
@@ -182,6 +188,10 @@ After the target deployment is authorized, run:
 ```bash
 make deploy DEPLOY_CONFIG=/path/to/environment.yaml
 ```
+
+After the Portal is available, `make deploy-verify` performs the read-only
+public DNS, Gateway, certificate, redirect, Portal readiness, and OAuth redirect
+checks when `publicTLS` is enabled. It does not complete an interactive sign-in.
 
 This command must also have kubectl, OpenSSL, and Docker buildx for read-only
 artifact inspection. Their normal authentication must be configured before you

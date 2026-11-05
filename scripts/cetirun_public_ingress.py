@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""Prepare a single-host AKS Istio public ingress, independently of the platform."""
+"""DNS and cert-manager phases used by the CetiRun platform deployment."""
 
-import argparse
 import base64
 import copy
 from datetime import datetime, timezone
@@ -20,7 +19,6 @@ import shutil
 import socket
 import ssl
 import subprocess
-import sys
 import tarfile
 import tempfile
 import time
@@ -31,7 +29,8 @@ from uuid import UUID
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-CHART = ROOT / "infra/public-ingress"
+CHART = ROOT / "app/cetirun-platform"
+SUPPORT = ROOT / "infra/cert-manager"
 SPEC = importlib.util.spec_from_file_location("ingress_yaml", ROOT / "scripts/ensure-oauth2-proxy-id-token-header.py")
 YAML = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(YAML)
@@ -100,9 +99,9 @@ def normalize(data):
             and not server.query and not server.fragment and server.path in ("", "/"), "target.server must be an HTTPS API origin")
     require(bool(re.fullmatch(r"[A-Za-z0-9-]+", target["clusterUID"])), "target.clusterUID is invalid")
     ingress = c.setdefault("ingress", {})
-    keys(ingress, {"namespace", "service", "release", "gatewayName"}, "ingress")
+    keys(ingress, {"namespace", "service", "release", "releaseNamespace", "gatewayName"}, "ingress")
     for key, default in {"namespace": "aks-istio-ingress", "service": "aks-istio-ingressgateway-external",
-                         "release": "cetirun-public-ingress", "gatewayName": "cetirun-acme-http"}.items():
+                         "release": "cetirun-platform", "releaseNamespace": "cetirun-system", "gatewayName": "cetirun-acme-http"}.items():
         ingress.setdefault(key, default)
         require(label(ingress[key]), "ingress." + key + " must be a DNS label")
     require(len(ingress["release"]) <= 53, "ingress.release exceeds Helm's name limit")
@@ -136,7 +135,7 @@ def normalize(data):
     cm.setdefault("release", "cert-manager")
     require(cm["mode"] in ("install", "existing"), "certManager.mode must be install or existing")
     require(label(cm["namespace"]) and label(cm["release"]) and len(cm["release"]) <= 53, "certManager namespace/release must be valid names")
-    require(cm["namespace"] != ingress["namespace"], "cert-manager must use a separate namespace")
+    require(cm["namespace"] not in (ingress["namespace"], ingress["releaseNamespace"]), "cert-manager must use a separate namespace")
     if cm["mode"] == "install":
         absolute_path(cm.get("chartArchive"), "certManager.chartArchive")
     else:
@@ -153,18 +152,20 @@ def normalize(data):
     return c
 
 
-def chart_values(c, domain, production=False):
+def chart_values(c, domain, production=False, bootstrap=True):
     i = c["ingress"]
-    return {"domain": domain, "ingressNamespace": i["namespace"],
-            "ingressServiceHostname": f"{i['service']}.{i['namespace']}.svc.cluster.local",
-            "gateway": {"name": i["gatewayName"]},
-            "acme": {"email": c["acme"]["email"], "stagingCertificateEnabled": True,
-                     "productionCertificateEnabled": production}}
-
-
-def deployment_values(domain):
-    return {"domain": domain, "istio": {"tlsMode": "external", "values": {
-        "tls": {"enabled": False}, "gateway": {"includeWildcardHost": False}}}}
+    values = {"publicTLS": {"enabled": True, "bootstrapOnly": bootstrap,
+              "domain": domain, "ingressNamespace": i["namespace"],
+              "ingressServiceHostname": f"{i['service']}.{i['namespace']}.svc.cluster.local",
+              "gateway": {"name": i["gatewayName"]},
+              "acme": {"email": c["acme"]["email"], "stagingCertificateEnabled": True,
+                       "productionCertificateEnabled": production}}}
+    if bootstrap:
+        values.update({name: {"enabled": False} for name in
+                       ("cetirun-operator", "cetirun-portal", "cetirun-ai-gateway", "cetirun-connections-mcp")})
+        values["istio"] = {"enabled": False}
+        values["global"] = {"portalChat": {"enabled": False}}
+    return values
 
 
 def metadata_owned(obj, release, namespace):
@@ -235,17 +236,28 @@ class Ingress:
     def __init__(self, config, scratch):
         self.config, self.scratch = config, Path(scratch)
         self.state_dir = Path(config["stateDirectory"])
-        self.chart = Path(tempfile.mkdtemp(prefix="chart-", dir=self.scratch))
-        shutil.copytree(CHART, self.chart, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.tgz"))
+        source = Path(tempfile.mkdtemp(prefix="chart-", dir=self.scratch))
+        self.chart = source / "app/cetirun-platform"
+        shutil.copytree(CHART, self.chart, ignore=shutil.ignore_patterns("charts", "__pycache__"))
+        for dependency in load_yaml(CHART / "Chart.yaml")["dependencies"]:
+            relative = dependency["repository"].removeprefix("file://")
+            origin = (CHART / relative).resolve()
+            require(ROOT in origin.parents, "Platform dependencies must be local repository charts")
+            shutil.copytree(origin, self.chart / relative, ignore=shutil.ignore_patterns("charts", "__pycache__"))
+        self.dependencies_built = False
+        self.support = source / "infra/cert-manager"
+        self.support.mkdir(parents=True)
+        for filename in ("images.lock.json", "cert-manager-values.yaml"):
+            shutil.copyfile(SUPPORT / filename, self.support / filename)
         digest = hashlib.sha256()
-        for path in sorted(self.chart.rglob("*")):
+        for path in sorted([*self.chart.rglob("*"), *self.support.rglob("*")]):
             if path.is_file():
                 content = path.read_bytes()
-                digest.update(str(path.relative_to(self.chart)).encode() + b"\0")
+                digest.update(str(path.relative_to(source)).encode() + b"\0")
                 digest.update(len(content).to_bytes(8, "big") + content)
         self.chart_sha256 = digest.hexdigest()
         self.cm_archive = None
-        self.lock = json.loads((self.chart / "images.lock.json").read_text())
+        self.lock = json.loads((self.support / "images.lock.json").read_text())
         self.state = {}
         self.domain = config["dns"].get("domain")
         self.service = None
@@ -260,7 +272,7 @@ class Ingress:
 
     def run(self, command, *, offline=False, input_text=None, timeout=60):
         env = {**os.environ, "KUBECONFIG": os.devnull if offline else self.config["target"]["kubeconfig"],
-               "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no", "GODEBUG": "http2client=0"}
+               "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no", "GODEBUG": "http2client=0", "HELM_DRIVER": "secret"}
         if offline:
             env.update(HELM_REGISTRY_CONFIG=os.devnull, HELM_REPOSITORY_CONFIG=os.devnull)
         try:
@@ -366,23 +378,26 @@ class Ingress:
 
     def render(self, domain=None):
         self.archive_check()
+        if not self.dependencies_built:
+            self.run(["helm", "dependency", "build", "--skip-refresh", str(self.chart)], offline=True)
+            self.dependencies_built = True
         domain = domain or self.domain or "ingress.example.invalid"
         c = self.config
         values = self.scratch / "ingress-values.yaml"
         values.write_text(yaml.safe_dump(chart_values(c, domain, production=True)))
-        raw = self.run(["helm", "template", c["ingress"]["release"], str(self.chart), "--namespace", c["ingress"]["namespace"],
+        raw = self.run(["helm", "template", c["ingress"]["release"], str(self.chart), "--namespace", c["ingress"]["releaseNamespace"],
                         "--values", str(values)], offline=True)
         self.documents = [d for d in yaml.safe_load_all(raw) if d]
-        require(all(d["kind"] in ("Gateway", "HTTPRoute", "Issuer", "Certificate") for d in self.documents), "Unexpected public ingress chart resources")
+        self.check_bootstrap_manifest(self.documents, production=True)
         if c["certManager"]["mode"] == "install":
             cm = c["certManager"]
             raw = self.run(["helm", "template", cm["release"], str(self.cm_archive), "--namespace", cm["namespace"],
-                            "--include-crds", "--values", str(self.chart / "cert-manager-values.yaml")], offline=True)
+                            "--include-crds", "--values", str(self.support / "cert-manager-values.yaml")], offline=True)
             self.cm_documents = [d for d in yaml.safe_load_all(raw) if d]
         return {"dnsMode": c["dns"]["mode"], "domain": self.domain,
                 "domainResolution": "configured" if self.domain else "Azure-returned FQDN after label assignment",
                 "certificateManager": c["certManager"]["mode"], "certificateManagerVersion": self.lock["chart"]["version"],
-                "stages": ["target-and-ownership-preflight", "dns", "cert-manager", "staging", "production", "deployment-fragment"],
+                "stages": ["target-and-ownership-preflight", "dns", "cert-manager", "staging", "production", "full-platform"],
                 "resources": [{"kind": d["kind"], "name": d["metadata"]["name"]} for d in self.documents]}
 
     def release_status(self, release, namespace):
@@ -544,15 +559,64 @@ class Ingress:
             for owner in metadata.get("ownerReferences", []):
                 require(owner.get("kind") == "Certificate" and owner.get("uid") == certificate["metadata"]["uid"], "TLS Secret owner reference differs from the Certificate")
 
+    def check_bootstrap_manifest(self, documents, production=False):
+        i = self.config["ingress"]
+        expected = {
+            ("gateway.networking.k8s.io/v1", "Gateway", i["gatewayName"]),
+            ("gateway.networking.k8s.io/v1", "HTTPRoute", "cetirun-http-redirect"),
+            ("cert-manager.io/v1", "Issuer", "cetirun-letsencrypt-staging"),
+            ("cert-manager.io/v1", "Issuer", "cetirun-letsencrypt-production"),
+            ("cert-manager.io/v1", "Certificate", "cetirun-tls-staging"),
+        }
+        actual = []
+        for doc in documents:
+            metadata = doc.get("metadata", {})
+            require(metadata.get("namespace") == i["namespace"]
+                    and not metadata.get("annotations", {}).get("helm.sh/hook"),
+                    "Certificate bootstrap contains unexpected namespaces or hooks")
+            actual.append((doc.get("apiVersion"), doc.get("kind"), metadata.get("name")))
+        prod = ("cert-manager.io/v1", "Certificate", "cetirun-tls")
+        allowed = (expected | {prod},) if production else (expected, expected | {prod})
+        require(len(actual) == len(set(actual)) and set(actual) in allowed,
+                "Certificate bootstrap contains application or unexpected resources; refusing downgrade")
+
+    def platform_release_state(self):
+        """The latest Helm revision, never a local receipt, authorizes bootstrap."""
+        i = self.config["ingress"]
+        release = self.release_status(i["release"], i["releaseNamespace"])
+        if not release:
+            self.platform_revision = 0
+            return "absent"
+        require(re.fullmatch(r"cetirun-platform-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+                             str(release.get("chart", ""))),
+                "Platform release uses another chart; migration is not automatic")
+        revision = str(release.get("revision", ""))
+        require(revision.isdigit() and int(revision) > 0, "Cannot establish the latest platform revision")
+        self.platform_revision = int(revision)
+        args = (i["release"], "--namespace", i["releaseNamespace"], "--revision", revision)
+        values = json.loads(self.helm("get", "values", *args, "-o", "json")) or {}
+        tls = values.get("publicTLS", {})
+        if tls.get("bootstrapOnly") is not True:
+            require(tls.get("enabled") is True,
+                    "Existing full platform does not manage publicTLS; migrate it separately")
+            return "full"
+        require(tls.get("enabled") is True, "Certificate bootstrap requires publicTLS.enabled=true")
+        require(release["chart"] == "cetirun-platform-" + load_yaml(self.chart / "Chart.yaml")["version"],
+                "Certificate bootstrap chart version changed; inspect before recovery")
+        raw = self.helm("get", "manifest", *args)
+        self.check_bootstrap_manifest([doc for doc in yaml.safe_load_all(raw) if doc])
+        hooks = self.helm("get", "hooks", *args)
+        require(not any(doc for doc in yaml.safe_load_all(hooks)), "Certificate bootstrap has unexpected Helm hooks")
+        return "bootstrap"
+
     def ingress_ownership_check(self):
         self.production_exists = False
         i = self.config["ingress"]
-        release = self.release_status(i["release"], i["namespace"])
-        expected_chart = "cetirun-public-ingress-" + load_yaml(self.chart / "Chart.yaml")["version"]
-        require(not release or release.get("chart") == expected_chart,
-                "Ingress release is not the expected chart/version; automatic replacement is not supported")
+        self.platform_state = self.platform_release_state()
         for doc in self.documents:
-            existing = self.resource_check(doc, i["release"], i["namespace"])
+            existing = self.resource_check(doc, i["release"], i["releaseNamespace"])
+            require(existing or self.platform_state != "full",
+                    "Full platform is missing managed publicTLS resources; certificate-only recovery is forbidden")
             if existing:
                 if doc["kind"] in ("Gateway", "HTTPRoute"):
                     require(contains(doc["spec"], existing["spec"]), "Existing ACME Gateway/HTTPRoute configuration differs; migration is not automatic")
@@ -583,7 +647,7 @@ class Ingress:
             for cert in certificates:
                 if cert["spec"].get("secretName") in CERTIFICATES.values():
                     require(cert["metadata"]["name"] in CERTIFICATES.values()
-                            and metadata_owned(cert, i["release"], i["namespace"]), "Another Certificate already writes the target TLS Secret")
+                            and metadata_owned(cert, i["release"], i["releaseNamespace"]), "Another Certificate already writes the target TLS Secret")
 
     def preflight(self):
         self.api_groups = set()
@@ -646,18 +710,29 @@ class Ingress:
         self.archive_check()
         self.state["certManagerArchiveSHA256"] = self.lock["chart"]["archiveSHA256"]
         self.mutate("cert-manager-install", lambda: self.helm("upgrade", "--install", cm["release"], str(self.cm_archive),
-                    "--namespace", cm["namespace"], "--create-namespace", "--values", str(self.chart / "cert-manager-values.yaml"),
+                    "--namespace", cm["namespace"], "--create-namespace", "--values", str(self.support / "cert-manager-values.yaml"),
                     "--wait", "--timeout", str(self.config["timeoutSeconds"]) + "s", timeout=self.config["timeoutSeconds"] + 60))
         self.api_groups = {name for name in CERT_CRDS if self.get("customresourcedefinition", name)}
         self.check_controller()
 
     def apply_stage(self, production):
         c, i = self.config, self.config["ingress"]
-        path = self.scratch / "apply-values.yaml"
-        path.write_text(yaml.safe_dump(chart_values(c, self.domain, production)))
-        self.mutate("production-resources" if production else "staging-resources", lambda: self.helm(
-            "upgrade", "--install", i["release"], str(self.chart), "--namespace", i["namespace"], "--values", str(path),
-            "--wait", "--timeout", str(c["timeoutSeconds"]) + "s", timeout=c["timeoutSeconds"] + 60))
+        # Re-read the latest revision immediately before every minimal upgrade.
+        # A failed full upgrade is still full: never delete its workloads on retry.
+        self.ingress_ownership_check()
+        if self.platform_state != "full":
+            path = self.scratch / "apply-values.yaml"
+            values = chart_values(c, self.domain, production)
+            # Helm allocates its next revision before rendering, then atomically
+            # creates that revision before applying resources. The chart checks
+            # this expectation so a competing full upgrade cannot slip between
+            # our classification and a certificate-only Helm invocation.
+            values["publicTLS"]["bootstrapRevision"] = self.platform_revision + 1
+            path.write_text(yaml.safe_dump(values))
+            self.mutate("production-resources" if production else "staging-resources", lambda: self.helm(
+                "upgrade", "--install", i["release"], str(self.chart), "--namespace", i["releaseNamespace"],
+                "--create-namespace", "--reset-values", "--values", str(path),
+                "--wait", "--timeout", str(c["timeoutSeconds"]) + "s", timeout=c["timeoutSeconds"] + 60))
         self.until(lambda: condition(self.get("gateway.gateway.networking.k8s.io", i["gatewayName"], i["namespace"]) or {}, "Programmed"), "Manual ACME Gateway did not become Programmed")
         self.until(self.route_ready, "HTTP redirect route did not become Accepted with ResolvedRefs")
         for stage in ("staging", "production"):
@@ -727,7 +802,7 @@ class Ingress:
         self.run([*command, str(leaf)])
         return hashlib.sha256(ssl.PEM_cert_to_DER_cert(chain[0])).hexdigest()
 
-    def prepare(self):
+    def prepare(self, resolved=None, complete=None):
         self.load_state(write=True)
         # Only one local writer may use these receipts. Never remove the lock
         # inode: another process may already hold an open descriptor to it.
@@ -739,15 +814,15 @@ class Ingress:
                 raise IngressError("Another ingress preparation is using this stateDirectory") from None
             self.state = {}
             self.load_state()
-            return self.prepare_locked()
+            return self.prepare_locked(resolved=resolved, complete=complete)
         finally:
             os.close(descriptor)
 
-    def prepare_locked(self):
+    def prepare_locked(self, resolved=None, complete=None):
         self.preflight()
         # Recheck the stored target before writing a new receipt.
         prior_chart = self.state.get("ingressChartSHA256")
-        require(not prior_chart or prior_chart == self.chart_sha256,
+        require(getattr(self, "platform_state", "absent") == "full" or not prior_chart or prior_chart == self.chart_sha256,
                 "Ingress chart source changed since preparation; review the prior receipt before using a new state directory")
         self.state["ingressChartSHA256"] = self.chart_sha256
         self.state["ingressChartVersion"] = load_yaml(self.chart / "Chart.yaml")["version"]
@@ -759,6 +834,8 @@ class Ingress:
         self.state["domain"] = self.domain
         self.save()
         self.render(self.domain)
+        if resolved:
+            resolved(self.domain)
         self.preserve_service()
         self.cert_manager_check()
         self.ingress_ownership_check()
@@ -769,13 +846,13 @@ class Ingress:
         self.until(lambda: self.certificate_ready("production"), "Production certificate did not become Ready; inspect Certificate/Order/Challenge status")
         fingerprint = self.public_certificate()
         self.preserve_service()
-        self.private_write("deployment-values.yaml", yaml.safe_dump(deployment_values(self.domain), sort_keys=False))
         self.state.update(domain=self.domain, certificateSHA256=fingerprint, prepared=True)
         self.save()
-        return {"domain": self.domain, "certificateReady": True, "deploymentValues": str(self.state_dir / "deployment-values.yaml"),
+        if complete:
+            self.mutate("full-platform-upgrade", complete)
+        return {"domain": self.domain, "certificateReady": True,
                 "oauthCallback": f"https://{self.domain}/oauth2/callback",
-                "brokerCallback": f"https://{self.domain}/api/v1/connections/callback",
-                "next": "Merge the deployment values, register the exact identity callbacks, then use the existing platform deployment workflow."}
+                "brokerCallback": f"https://{self.domain}/api/v1/connections/callback"}
 
     def http(self, path, secure=True):
         connection = (http.client.HTTPSConnection if secure else http.client.HTTPConnection)(self.domain, timeout=15)
@@ -820,27 +897,3 @@ class Ingress:
         self.preserve_service()
         return {"domain": self.domain, "dns": "verified", "tls": "verified", "certificateSHA256": expected,
                 "portalReadiness": "verified", "signInRedirect": "verified", "interactiveLoginTested": False}
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plan", "prepare", "verify"))
-    parser.add_argument("--config", required=True, type=Path)
-    args = parser.parse_args(argv)
-    try:
-        config = normalize(load_yaml(args.config))
-        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-") as temporary:
-            os.chmod(temporary, 0o700)
-            ingress = Ingress(config, temporary)
-            result = ingress.render() if args.action == "plan" else getattr(ingress, args.action)()
-            print(json.dumps(result, indent=2))
-        return 0
-    except (IngressError, OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as error:
-        # Unrecognized tool/network/parser failures may contain private URLs or
-        # response bodies. Only deliberately authored messages reach stderr.
-        print("ERROR: " + (str(error) if isinstance(error, IngressError) else "Ingress operation failed; inspect the configured target and private state"), file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

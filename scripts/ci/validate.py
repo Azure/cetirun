@@ -75,14 +75,6 @@ CHARTS = (
         ),
     ),
     (
-        "infra/public-ingress",
-        (
-            "domain=portal.example.invalid",
-            "ingressNamespace=default",
-            "ingressServiceHostname=aks-istio-ingressgateway-external.default.svc.cluster.local",
-        ),
-    ),
-    (
         "infra/istio",
         (
             "clientId=lint-client",

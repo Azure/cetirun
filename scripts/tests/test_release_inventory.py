@@ -19,7 +19,7 @@ SCRIPT = ROOT / "scripts/cetirun-release.py"
 IMAGES = {"cetirun-base", "openclaw-gateway", "hermes-gateway", "cetirun-desktop", "cetirun-operator",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp", "cetirun-terminal",
           "cetirun-portal", "cetirun-vscode", "cetirun-pi-agent", "cetirun-memory-context"}
-CHARTS = {"cetirun", "cetirun-public-ingress", "cetirun-istio", "cetirun-operator", "cetirun-portal", "cetirun-platform",
+CHARTS = {"cetirun", "cetirun-istio", "cetirun-operator", "cetirun-portal", "cetirun-platform",
           "cetirun-ai-gateway", "cetirun-agent-broker", "cetirun-connections-mcp"}
 DOCKER = r'''
 import json, os, pathlib, sys
@@ -168,7 +168,7 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertEqual(commands.count(inspect), 2, "expected one absence check and one post-push inspection")
 
     @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
-    def test_all_nine_charts_package_with_real_local_helm(self):
+    def test_all_eight_charts_package_with_real_local_helm(self):
         output = self.root / "packages"
         self.run_release("package-charts", "--package-dir", str(output))
         self.assertEqual({path.name for path in output.glob("*.tgz")}, {f"{name}-{self.env['VERSION']}.tgz" for name in CHARTS})

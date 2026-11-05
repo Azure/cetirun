@@ -40,7 +40,8 @@ def config(directory, *, mode="custom", cert_manager="existing"):
         "ingress": {
             "namespace": "aks-istio-ingress",
             "service": "aks-istio-ingressgateway-external",
-            "release": "cetirun-public-ingress",
+            "release": "cetirun-platform",
+            "releaseNamespace": "cetirun-system",
             "gatewayName": "cetirun-acme-http",
         },
         "dns": {"mode": mode},
@@ -63,15 +64,15 @@ def config(directory, *, mode="custom", cert_manager="existing"):
     return result
 
 
-def owned(name, namespace, *, uid="object-uid"):
+def owned(name, namespace, *, uid="object-uid", release="cetirun-platform", release_namespace="cetirun-system"):
     return {
         "metadata": {
             "name": name,
             "namespace": namespace,
             "uid": uid,
             "annotations": {
-                "meta.helm.sh/release-name": "cetirun-public-ingress",
-                "meta.helm.sh/release-namespace": namespace,
+                "meta.helm.sh/release-name": release,
+                "meta.helm.sh/release-namespace": release_namespace,
             },
             "labels": {"app.kubernetes.io/managed-by": "Helm"},
         },
@@ -152,6 +153,10 @@ class SyntheticAPIIngress(INGRESS.Ingress):
         self.cert_manager_status = "deployed"
         self.account_secret_name = None
         self.http_calls = []
+        self.platform_release = "absent"
+        self.platform_values = {}
+        self.platform_manifest = ""
+        self.platform_hooks = ""
 
     def _key(self, kind, name, namespace):
         return kind, name, namespace
@@ -166,7 +171,7 @@ class SyntheticAPIIngress(INGRESS.Ingress):
         metadata["generation"] = 1
         metadata.setdefault("annotations", {}).update({
             "meta.helm.sh/release-name": self.config["ingress"]["release"],
-            "meta.helm.sh/release-namespace": self.config["ingress"]["namespace"],
+            "meta.helm.sh/release-namespace": self.config["ingress"]["releaseNamespace"],
         })
         metadata.setdefault("labels", {})["app.kubernetes.io/managed-by"] = "Helm"
         if result["kind"] == "Gateway":
@@ -201,6 +206,9 @@ class SyntheticAPIIngress(INGRESS.Ingress):
             kind = document["kind"].lower() + "." + group
             live = self._live_document(document)
             self.live[self._key(kind, live["metadata"]["name"], live["metadata"]["namespace"])] = live
+        self.platform_release = "bootstrap"
+        self.platform_values = {"publicTLS": {"enabled": True, "bootstrapOnly": True}}
+        self.platform_manifest = yaml.safe_dump_all(self.documents)
 
     def _controller_deployments(self):
         deployments = []
@@ -271,16 +279,24 @@ class SyntheticAPIIngress(INGRESS.Ingress):
             release = args[args.index("--filter") + 1].strip("^").rstrip("$").replace("\\", "")
             if release == self.config["certManager"]["release"]:
                 return json.dumps([{"status": self.cert_manager_status, "chart": "cert-manager-" + self.lock["chart"]["version"]}])
-            if release == self.config["ingress"]["release"] and self.live:
-                return json.dumps([{"status": "deployed", "chart": "cetirun-public-ingress-" + yaml.safe_load((self.chart / "Chart.yaml").read_text())["version"]}])
+            if release == self.config["ingress"]["release"] and self.platform_release != "absent":
+                status = {"failed-full": "failed", "pending": "pending-install"}.get(self.platform_release, "deployed")
+                return json.dumps([{"status": status,
+                                    "revision": "1", "chart": "cetirun-platform-" + yaml.safe_load((self.chart / "Chart.yaml").read_text())["version"]}])
             return json.dumps([])
+        if args[:2] == ("get", "values"):
+            return json.dumps(self.platform_values)
+        if args[:2] == ("get", "manifest"):
+            return self.platform_manifest
+        if args[:2] == ("get", "hooks"):
+            return self.platform_hooks
         if args[:2] == ("upgrade", "--install"):
             release = args[2]
             if release == self.config["ingress"]["release"]:
                 values_path = Path(args[args.index("--values") + 1])
                 values = yaml.safe_load(values_path.read_text())
                 self.helm_values.append(values)
-                self._deploy_ingress(values["acme"]["productionCertificateEnabled"])
+                self._deploy_ingress(values["publicTLS"]["acme"]["productionCertificateEnabled"])
             return ""
         raise AssertionError("unexpected Helm invocation: " + repr(args))
 
@@ -358,9 +374,19 @@ class PublicIngressTests(unittest.TestCase):
         ingress.cert_manager_status = "failed"
         return ingress, archive
 
+    def bootstrap_platform(self, scratch):
+        value = self.normalized()
+        ingress = SyntheticAPIIngress(value, scratch)
+        ingress.render(value["dns"]["domain"])
+        ingress._deploy_ingress(True)
+        ingress.api_groups = set(INGRESS.CERT_CRDS)
+        ingress.service = INGRESS.service_identity(ingress.get("service", value["ingress"]["service"], value["ingress"]["namespace"]))
+        return ingress
+
     def test_normalize_is_decision_complete_and_rejects_cross_mode_inputs(self):
         custom = self.normalized()
-        self.assertEqual(custom["ingress"]["release"], "cetirun-public-ingress")
+        self.assertEqual(custom["ingress"]["release"], "cetirun-platform")
+        self.assertEqual(custom["ingress"]["releaseNamespace"], "cetirun-system")
         self.assertEqual(custom["certManager"]["namespace"], "cert-manager")
         self.assertEqual(custom["acme"]["email"], "")
 
@@ -396,13 +422,83 @@ class PublicIngressTests(unittest.TestCase):
         with self.assertRaisesRegex(INGRESS.IngressError, "Azure DNS"):
             INGRESS.normalize(invalid)
 
-    def test_output_fragment_is_safe_for_existing_platform_workflow(self):
-        self.assertEqual(INGRESS.deployment_values("portal.example.invalid"), {
-            "domain": "portal.example.invalid",
-            "istio": {"tlsMode": "external", "values": {
-                "tls": {"enabled": False}, "gateway": {"includeWildcardHost": False},
-            }},
-        })
+    def test_bootstrap_values_disable_every_platform_workload(self):
+        values = INGRESS.chart_values(self.normalized(), "portal.example.invalid")
+        self.assertEqual(values["publicTLS"]["domain"], "portal.example.invalid")
+        self.assertTrue(values["publicTLS"]["bootstrapOnly"])
+        self.assertFalse(values["cetirun-operator"]["enabled"])
+        self.assertFalse(values["cetirun-portal"]["enabled"])
+        self.assertFalse(values["istio"]["enabled"])
+        self.assertFalse(values["global"]["portalChat"]["enabled"])
+
+    def test_full_and_failed_full_platform_releases_are_never_downgraded(self):
+        for release_state in ("full", "failed-full"):
+            with self.subTest(release_state=release_state), tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+                ingress = self.bootstrap_platform(scratch)
+                ingress.platform_release = release_state
+                ingress.platform_values = {"publicTLS": {"enabled": True, "bootstrapOnly": False}}
+                writes_before = len(ingress.helm_values)
+                ingress.apply_stage(True)
+                self.assertEqual(ingress.platform_state, "full")
+                self.assertEqual(len(ingress.helm_values), writes_before)
+
+    def test_competing_full_revision_cannot_receive_stale_bootstrap_values(self):
+        for window in ("before-render", "before-storage-create"):
+            with self.subTest(window=window), tempfile.TemporaryDirectory() as scratch:
+                ingress = self.bootstrap_platform(scratch)
+                ingress.load_state(write=True)
+                original = ingress.helm
+                writes = len(ingress.helm_values)
+                attempted = []
+
+                def race(*args, **kwargs):
+                    if args[:2] != ("upgrade", "--install"):
+                        return original(*args, **kwargs)
+                    values = yaml.safe_load(Path(args[args.index("--values") + 1]).read_text())
+                    expected = values["publicTLS"]["bootstrapRevision"]
+                    self.assertEqual(expected, 2)  # latest classified revision was 1
+                    attempted.append(expected)
+                    ingress.platform_release = "full"
+                    ingress.platform_values = {"publicTLS": {"enabled": True, "bootstrapOnly": False}}
+                    # Model Helm's documented ordering: allocate/render, then
+                    # atomically create the unique revision before any resource
+                    # mutation. The actual chart's equality guard is rendered
+                    # with Helm in test_public_ingress_chart.
+                    if window == "before-render":
+                        allocated = 3  # competing full deployment committed revision 2
+                        if allocated != expected:
+                            raise INGRESS.IngressError("bootstrapRevision does not match the next Helm revision")
+                    raise INGRESS.IngressError("Helm revision storage already exists")
+
+                ingress.helm = race
+                with self.assertRaisesRegex(INGRESS.IngressError, "revision"):
+                    ingress.apply_stage(True)
+                self.assertEqual(attempted, [2])
+                self.assertEqual(len(ingress.helm_values), writes)
+                self.assertEqual(ingress.platform_release, "full")
+
+    def test_missing_or_false_bootstrap_marker_is_conservatively_full(self):
+        for marker in (None, False):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+                ingress = self.bootstrap_platform(scratch)
+                ingress.platform_values = {"publicTLS": {"enabled": True}}
+                if marker is not None:
+                    ingress.platform_values["publicTLS"]["bootstrapOnly"] = marker
+                self.assertEqual(ingress.platform_release_state(), "full")
+
+    def test_bootstrap_marker_cannot_authorize_application_resources_or_pending_release(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress = self.bootstrap_platform(scratch)
+            application = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {
+                "name": "portal", "namespace": ingress.config["ingress"]["namespace"]}}
+            ingress.platform_manifest += "---\n" + yaml.safe_dump(application)
+            with self.assertRaisesRegex(INGRESS.IngressError, "application or unexpected"):
+                ingress.platform_release_state()
+
+            ingress.platform_manifest = yaml.safe_dump_all(ingress.documents)
+            ingress.platform_release = "pending"
+            with self.assertRaisesRegex(INGRESS.IngressError, "active or unsupported"):
+                ingress.platform_release_state()
 
     def test_service_identity_requires_existing_dual_listener_and_selector(self):
         service = {"metadata": {"uid": "service-uid"}, "spec": {
@@ -415,7 +511,7 @@ class PublicIngressTests(unittest.TestCase):
         with self.assertRaisesRegex(INGRESS.IngressError, "80 and 443"):
             INGRESS.service_identity(service)
 
-    def test_staged_preparation_writes_private_fragment_after_staging_then_production(self):
+    def test_staged_preparation_records_private_state_after_staging_then_production(self):
         value = self.normalized()
         with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
             ingress = StagedIngress(value, scratch)
@@ -425,12 +521,9 @@ class PublicIngressTests(unittest.TestCase):
         self.assertIn("certificate", ingress.calls)
         self.assertTrue(result["certificateReady"])
         self.assertEqual(result["oauthCallback"], "https://portal.example.invalid/oauth2/callback")
-        fragment = yaml.safe_load((self.directory / "state" / "deployment-values.yaml").read_text())
-        self.assertEqual(fragment, INGRESS.deployment_values("portal.example.invalid"))
         state = json.loads((self.directory / "state" / "state.json").read_text())
         self.assertTrue(state["prepared"])
         self.assertEqual((self.directory / "state").stat().st_mode & 0o077, 0)
-        self.assertEqual((self.directory / "state" / "deployment-values.yaml").stat().st_mode & 0o077, 0)
 
     def test_partial_mutation_records_uncertain_step_and_is_not_silently_replayed(self):
         value = self.normalized()
@@ -453,7 +546,7 @@ class PublicIngressTests(unittest.TestCase):
                    "metadata": {"name": "cetirun-acme-http", "namespace": value["ingress"]["namespace"]}}
             ingress.get = lambda *args, **kwargs: {"metadata": {"annotations": {}, "labels": {}}}
             with self.assertRaisesRegex(INGRESS.IngressError, "ownership conflict"):
-                ingress.resource_check(doc, value["ingress"]["release"], value["ingress"]["namespace"])
+                ingress.resource_check(doc, value["ingress"]["release"], value["ingress"]["releaseNamespace"])
 
             certificate = owned("cetirun-tls", value["ingress"]["namespace"])
             certificate["spec"] = {"secretName": "cetirun-tls"}
@@ -470,16 +563,27 @@ class PublicIngressTests(unittest.TestCase):
             ingress = INGRESS.Ingress(value, scratch)
             recorded = []
 
+            resources = []
+            for kind, name, api_version in (
+                ("Gateway", "cetirun-acme-http", "gateway.networking.k8s.io/v1"),
+                ("HTTPRoute", "cetirun-http-redirect", "gateway.networking.k8s.io/v1"),
+                ("Issuer", "cetirun-letsencrypt-staging", "cert-manager.io/v1"),
+                ("Issuer", "cetirun-letsencrypt-production", "cert-manager.io/v1"),
+                ("Certificate", "cetirun-tls-staging", "cert-manager.io/v1"),
+                ("Certificate", "cetirun-tls", "cert-manager.io/v1"),
+            ):
+                resources.append({"apiVersion": api_version, "kind": kind,
+                                  "metadata": {"name": name, "namespace": value["ingress"]["namespace"]}})
+
             def fake_run(command, **kwargs):
                 recorded.append((command, kwargs))
-                self.assertEqual(command[:2], ["helm", "template"])
                 self.assertTrue(kwargs["offline"])
-                return "apiVersion: v1\nkind: Gateway\nmetadata:\n  name: synthetic\n"
+                return "" if command[1:3] == ["dependency", "build"] else yaml.safe_dump_all(resources)
 
             ingress.run = fake_run
             ingress.archive_check = lambda: None
             ingress.render()
-        self.assertEqual(len(recorded), 1)
+        self.assertEqual([command[1:3] for command, _ in recorded], [["dependency", "build"], ["template", value["ingress"]["release"]]])
 
     def test_dns_check_requires_exact_ipv4_and_no_ipv6(self):
         values = {
@@ -620,7 +724,7 @@ class PublicIngressTests(unittest.TestCase):
             with patch.object(INGRESS, "check_dns"):
                 result = ingress.prepare()
             self.assertEqual(result["domain"], "portal.example.invalid")
-            self.assertEqual([item["acme"]["productionCertificateEnabled"] for item in ingress.helm_values], [False, True])
+            self.assertEqual([item["publicTLS"]["acme"]["productionCertificateEnabled"] for item in ingress.helm_values], [False, True])
             production_key = ingress._key("certificate.cert-manager.io", INGRESS.CERTIFICATES["production"], value["ingress"]["namespace"])
             production_before = copy.deepcopy(ingress.live[production_key])
 
@@ -630,7 +734,7 @@ class PublicIngressTests(unittest.TestCase):
 
         self.assertTrue(rerun["certificateReady"])
         self.assertTrue(ingress.helm_values)
-        self.assertTrue(all(item["acme"]["productionCertificateEnabled"] for item in ingress.helm_values))
+        self.assertTrue(all(item["publicTLS"]["acme"]["productionCertificateEnabled"] for item in ingress.helm_values))
         self.assertEqual(ingress.live[production_key], production_before)
         self.assertFalse(any(call[0] == "az" for call in ingress.api_calls))
 
