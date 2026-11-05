@@ -101,6 +101,15 @@ helm pull oci://quay.io/jetstack/charts/cert-manager \
 The expected archive and image digests are recorded in
 [`infra/cert-manager/images.lock.json`]({{< repo "infra/cert-manager/images.lock.json" >}}).
 
+If the first controller installation fails before its startup hooks run, the
+installer can recover only its own recorded attempt with the same pinned
+archive, values, and rendered resources. It verifies retained resource ownership
+and contents before using `helm install --replace`, which reruns the original
+post-install checks. A successful recovery requires the stored Helm hook results
+and retained resource identities to match. An uncertain replacement is inspected
+without submitting another replacement; other failed releases require separate
+recovery.
+
 ## Deploy and verify
 
 Render the full configuration offline first:
