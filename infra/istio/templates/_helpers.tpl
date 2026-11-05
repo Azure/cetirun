@@ -23,7 +23,7 @@ Lua-safe domain pattern (dots escaped as %.).
 
 {{/* New ingress options retain their defaults when upgrading older values. */}}
 {{- define "cetirun-istio.ingressSettings" -}}
-{{- $settings := dict "includeWildcardHost" true "cookieSecretLegacyNamespace" "istio-system" "skipJwtBearerTokens" (ne .Values.oauth2Proxy.mode "local-oidc") -}}
+{{- $settings := dict "includeWildcardHost" true "cookieSecretLegacyNamespace" "istio-system" "skipJwtBearerTokens" (eq .Values.oauth2Proxy.mode "entra-id") -}}
 {{- if hasKey .Values.gateway "includeWildcardHost" -}}
 {{- $value := .Values.gateway.includeWildcardHost -}}
 {{- if not (kindIs "bool" $value) -}}
@@ -46,8 +46,8 @@ Lua-safe domain pattern (dots escaped as %.).
 {{- if not (kindIs "bool" $bearer) -}}
 {{- fail "oauth2Proxy.skipJwtBearerTokens must be a boolean or null for the mode default" -}}
 {{- end -}}
-{{- if and (eq .Values.oauth2Proxy.mode "local-oidc") $bearer -}}
-{{- fail "oauth2Proxy.skipJwtBearerTokens=true is not supported in local-oidc mode" -}}
+{{- if and (has .Values.oauth2Proxy.mode (list "oidc" "local-oidc")) $bearer -}}
+{{- fail (printf "oauth2Proxy.skipJwtBearerTokens=true is not supported in %s mode" .Values.oauth2Proxy.mode) -}}
 {{- end -}}
 {{- $_ := set $settings "skipJwtBearerTokens" $bearer -}}
 {{- end -}}

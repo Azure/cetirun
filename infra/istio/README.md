@@ -45,7 +45,7 @@ not create that listener or its challenge route.
 | Value | Default | Behavior |
 | --- | --- | --- |
 | `gateway.includeWildcardHost` | `true` | Includes both `domain` and `*.domain` in the Gateway. `false` includes only the exact `domain`. |
-| `oauth2Proxy.skipJwtBearerTokens` | `null` | Keeps the default of the mode: validated JWT authentication is on for `entra-id` and off for `local-oidc`. With `false`, a session cookie is necessary. `true` is rejected in `local-oidc` mode. |
+| `oauth2Proxy.skipJwtBearerTokens` | `null` | Keeps the default of the mode: validated JWT authentication is on for `entra-id` and off for `oidc` and `local-oidc`. With `false`, a session cookie is necessary. `true` is rejected in both OIDC modes. |
 | `oauth2Proxy.logging.request` | `true` | Enables OAuth2 Proxy request logs. |
 | `oauth2Proxy.logging.auth` | `true` | Enables OAuth2 Proxy authentication logs. |
 | `oauth2Proxy.logging.standard` | `true` | Enables OAuth2 Proxy standard logs. These logs also contain diagnostic errors. |
@@ -83,6 +83,94 @@ configured limit, and the 401 behavior of API and Agent asset requests stay
 enabled. TLS verification for OIDC is not disabled. The ingress filters
 continue to remove Portal identity tokens and session cookies before the
 requests get to Agent workloads.
+
+## Cloud and OIDC parameters
+
+The existing `entra-id` mode keeps its Azure global cloud and federated-token
+authentication defaults. For Azure China, select `oauth2Proxy.mode=oidc`
+explicitly. This uses OAuth2 Proxy's generic OIDC provider with a client secret
+from a Secret in the release namespace. The bundled `entra-id` provider rejects
+China issuers, so the chart rejects that combination before installation.
+
+| Parameter | Default | Use |
+| --- | --- | --- |
+| `cloud` | `AzureCloud` | `AzureCloud` or `AzureChinaCloud`; selects the authority for a derived issuer, not the Azure CLI cloud. |
+| `oauth2Proxy.mode` | `entra-id` | Select `oidc` for HTTPS OIDC with a client secret. `local-oidc` remains the separate local-development mode. |
+| `oauth2Proxy.oidc.issuerURL` | Empty | Explicit HTTPS issuer. If empty, derive it from `cloud` and `tenantId`. |
+| `oauth2Proxy.oidc.clientID` | Empty | Client ID of the Portal login application. |
+| `oauth2Proxy.oidc.existingSecret` | Empty | Existing Secret containing that application's client secret. |
+| `oauth2Proxy.oidc.clientSecretKey` | `client-secret` | Key in the referenced Secret. |
+
+Derived issuers are `https://login.microsoftonline.com/<tenantId>/v2.0` for
+`AzureCloud` and `https://login.partner.microsoftonline.cn/<tenantId>/v2.0` for
+`AzureChinaCloud`; `tenantId` is the directory's GUID, not its domain name.
+An explicit issuer takes precedence and does not require
+`tenantId`. Use the exact issuer advertised by the identity provider's discovery
+document. This mode does not allow HTTP or skip TLS, signature, issuer, or nonce
+verification. PKCE, secure cookies, session storage and Portal ownership checks
+remain enabled. Bearer-token session bypass remains disabled in OIDC modes.
+
+Use only a provider whose administrators control the login claims. With Agent
+Identity and Tools disabled, Portal API ownership and administrator checks use
+the lowercased local part of `preferred_username`, falling back to the email
+header if it is absent. The ingress ownership check uses the email header, which
+comes from `oauth2Proxy.emailClaim` (`preferred_username` by default).
+
+The provider must assign these claims, prevent users from changing them, and
+keep their local parts unique across all users allowed into this installation,
+including users from different email domains. If `emailClaim: email` is selected,
+the email and preferred username must identify the same owner. Do not configure
+a provider that lets users choose another user's alias. A valid signature and
+group membership establish who issued the claims and who may sign in; they do
+not establish that an alias is administrator-controlled. This mode does not add
+the Portal's separate Entra tenant/object-ID verification.
+
+`allowedGroups` must name at least one group, and the identity provider must put
+the applicable memberships in the `groups` claim. Generic OIDC does not fetch
+Entra group-overage memberships from Microsoft Graph. A user whose token omits
+the allowed membership cannot sign in; do not remove the group restriction to
+work around an overage.
+
+All customizations can be supplied on the Helm command line without editing
+`values.yaml`. This synthetic example renders locally and uses no credentials:
+
+```bash
+helm template cetirun-istio ./infra/istio --namespace cetirun-istio \
+  --set-string cloud=AzureChinaCloud \
+  --set-string oauth2Proxy.mode=oidc \
+  --set-string tenantId=11111111-1111-1111-1111-111111111111 \
+  --set-string oauth2Proxy.oidc.clientID=22222222-2222-2222-2222-222222222222 \
+  --set-string oauth2Proxy.oidc.existingSecret=portal-oidc \
+  --set-string oauth2Proxy.oidc.clientSecretKey=client-secret \
+  --set-string allowedGroups=33333333-3333-3333-3333-333333333333 \
+  --set-string domain=portal.example.com \
+  --set-string portalAuth.clusterHost=cetirun-portal.cetirun-system.svc.cluster.local \
+  --set-json 'egress.externalServices=["login.partner.microsoftonline.cn"]' \
+  >/dev/null
+```
+
+To override the issuer, also pass
+`--set-string oauth2Proxy.oidc.issuerURL=https://identity.example.com/tenant`.
+`egress.externalServices` remains an independent SNI logging configuration, not
+an allowlist. Supply the complete list of hosts needed by your environment; the
+example replaces it with just the login host. No cloud changes its default list.
+
+For deployment, replace the synthetic coordinates and use the reviewed flags
+with `helm upgrade --install`, an explicit `--kube-context`, and prepared TLS,
+mesh authorization and Secret resources. Do not pass the client secret itself
+with `--set`. Rotate it before expiry and restart OAuth2 Proxy after updating
+the Secret, because the process reads it from its environment.
+
+Use the [component platform chart](../../app/cetirun-platform/README.md#use-the-component-chart-directly)
+with `cetirun-portal.features.agentIdentityEnabled=false`,
+`cetirun-portal.features.agentToolsEnabled=false`,
+`cetirun-operator.agentIdentity.enabled=false`, and
+`cetirun-connections-mcp.enabled=false`. These are umbrella values; all four
+already default to false. Do not install the Broker. The full `make deploy` and
+the legacy `infra/istio/deploy.sh` helper still expect the Entra federated-token
+configuration; they do not select
+this OIDC path. These settings do not establish live China login, image access,
+or runtime qualification.
 
 ## Preserve sessions and TLS during upgrades
 

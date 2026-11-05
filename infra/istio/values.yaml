@@ -1,4 +1,8 @@
-# Required for the default Entra ID mode; unused in local-oidc mode.
+# Cloud used to derive the Entra issuer. Does not select the Azure CLI cloud.
+cloud: AzureCloud
+
+# Required for entra-id. In oidc mode, tenantId is needed only when issuerURL
+# is empty; the client ID comes from oauth2Proxy.oidc.clientID.
 clientId: ""
 tenantId: ""
 # Comma-separated Entra ID group object IDs allowed to access CetiRun.
@@ -78,12 +82,13 @@ portalAuth:
 
 # OAuth2 Proxy configuration.
 oauth2Proxy:
-  # Keep entra-id for normal deployments. local-oidc is opt-in local development
-  # only, with AgentIdentity disabled; Portal ownership checks still apply.
+  # entra-id keeps federated-token login in AzureCloud. oidc uses a client
+  # secret, including for AzureChinaCloud. local-oidc is local development only.
+  # Both OIDC modes require Agent Identity/Tools disabled in the Portal.
   mode: entra-id
-  # null preserves the mode default: true for entra-id, false for local-oidc.
+  # null preserves the mode default: true for entra-id, false for OIDC modes.
   # false requires a browser session instead of accepting a validated OIDC JWT
-  # as authentication. true is not supported in local-oidc mode.
+  # as authentication. true is not supported in OIDC modes.
   skipJwtBearerTokens: null
   # These match OAuth2 Proxy's logging defaults. Disable explicitly where the
   # deployment's log collection policy requires it; standard logs aid diagnosis.
@@ -91,6 +96,14 @@ oauth2Proxy:
     request: true
     auth: true
     standard: true
+  oidc:
+    # Empty derives https://<cloud authority>/<tenantId>/v2.0.
+    # An explicit issuer must use HTTPS; discovery and issuer checks stay on.
+    issuerURL: ""
+    clientID: ""
+    # Pre-create in the release namespace; do not pass the client secret itself.
+    existingSecret: ""
+    clientSecretKey: client-secret
   localOIDC:
     # Required in local-oidc mode. Register the existing HTTPS /oauth2/callback.
     issuerURL: ""
