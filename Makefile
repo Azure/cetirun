@@ -14,7 +14,7 @@ DEPLOY_CONFIG ?=
 .PHONY: help check test lint docs-check license-check ci-test python-test \
 	python-check go-test go-lint portal-test portal-lint chart-check \
 	bicep-check shell-check workflow-check version-check set-version \
-	build-images publish-images publish-charts publish require-registry artifact-check deploy deploy-plan
+	build-images publish-images publish-charts publish require-registry artifact-check deploy deploy-plan deploy-verify
 
 .NOTPARALLEL: publish publish-images publish-charts
 
@@ -32,6 +32,7 @@ help:
 	@echo "Deployment (explicit environment authorization required):"
 	@echo "  make deploy-plan DEPLOY_CONFIG=/path/to/environment.yaml  (offline)"
 	@echo "  make deploy DEPLOY_CONFIG=/path/to/environment.yaml"
+	@echo "  make deploy-verify DEPLOY_CONFIG=/path/to/environment.yaml  (read-only live)"
 	@echo "Prerequisites: Go from .go-version, Node 24 + npm ci, scripts/ci/requirements.txt,"
 	@echo "  helm, bicep, shellcheck, actionlint, scripts/check-license-headers.py."
 	@echo "Workflow lint covers seven validation workflows; publisher/E2E workflows are excluded."
@@ -70,6 +71,6 @@ build-images publish-images publish-charts publish: require-registry version-che
 	@test "$(VERIFY_PULL)" = true || { echo "Unified releases require Chart pull verification" >&2; exit 1; }
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" ACCEPT_VSCODE_SERVER_LICENSE_TERMS="$(ACCEPT_VSCODE_SERVER_LICENSE_TERMS)" $(PYTHON) -B scripts/cetirun-release.py $@ $(if $(filter true,$(FORCE_PUBLISH)),--force,)
 
-deploy-plan deploy:
+deploy-plan deploy deploy-verify:
 	@test -n "$(DEPLOY_CONFIG)" || { echo "DEPLOY_CONFIG is required; see app/cetirun-platform/README.md" >&2; exit 1; }
-	bash scripts/cetirun-platform-deploy.sh --config "$(DEPLOY_CONFIG)" $(if $(filter deploy-plan,$@),--plan,)
+	bash scripts/cetirun-platform-deploy.sh --config "$(DEPLOY_CONFIG)" $(if $(filter deploy-plan,$@),--plan,) $(if $(filter deploy-verify,$@),--verify,)

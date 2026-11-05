@@ -151,6 +151,8 @@ class CetiRunVersionTests(unittest.TestCase):
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, destination)
+        shutil.copytree(ROOT / "infra/istio", self.root / "infra/istio",
+                        dirs_exist_ok=True, ignore=shutil.ignore_patterns("charts", "__pycache__"))
         for relative in (
             "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
             "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
@@ -174,7 +176,11 @@ class CetiRunVersionTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 MODULE.check_version(version)
                 lint = subprocess.run(
-                    ["helm", "lint", "infra/istio"], cwd=self.root,
+                    ["helm", "lint", "app/cetirun-platform", "--namespace", "cetirun-system",
+                     "--set", "istio.enabled=true",
+                     "--set", "cetirun-operator.domainSuffix=platform.example.invalid",
+                     "--set", "cetirun-operator.cetiadmin.enabled=false",
+                     "--set", "cetirun-portal.istio.host=portal.example.invalid"], cwd=self.root,
                     env=env, text=True, capture_output=True, timeout=30
                 )
                 self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
