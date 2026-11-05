@@ -128,6 +128,10 @@ type InstanceResponse struct {
 	// TeamSkillsRestartNeeded reports that the Agent runs an earlier release
 	// of its Team's skills than the current one. A restart copies it.
 	TeamSkillsRestartNeeded bool `json:"teamSkillsRestartNeeded,omitempty"`
+	// TeamSkillsPublicationFailed reports that the catalog has a publication
+	// error for the Agent's Team: the Skill Marketplace could not publish the
+	// Team's skills. Administrators see the error on the Skills page.
+	TeamSkillsPublicationFailed bool `json:"teamSkillsPublicationFailed,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -263,7 +267,7 @@ func (h *InstanceHandler) GetInstanceByName(w http.ResponseWriter, r *http.Reque
 	if resp.AIGateway != nil {
 		resp.AIGateway.RateLimits = h.policyRateLimits(r.Context(), instance)
 	}
-	resp.TeamSkills, resp.TeamSkillsRestartNeeded = h.teamSkills(r.Context(), instance)
+	resp.TeamSkills, resp.TeamSkillsRestartNeeded, resp.TeamSkillsPublicationFailed = h.teamSkills(r.Context(), instance)
 	w.Header().Set("ETag", kube.RegistryETag(instance))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)

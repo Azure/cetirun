@@ -20,15 +20,31 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { ArrowSync20Regular } from "@fluentui/react-icons";
-import type { SkillMarketplaceCatalog, SkillMarketplaceTeamPublication } from "../../api/skillMarketplace";
+import type { SkillMarketplaceCatalog, SkillMarketplaceSkill, SkillMarketplaceTeamPublication } from "../../api/skillMarketplace";
 import { useSkillMarketplace } from "../../hooks/useSkillMarketplace";
 import { formatSkillSize, formatSkillTime } from "../../utils/skillMarketplace";
 
 const monospace = { fontFamily: tokens.fontFamilyMonospace, overflowWrap: "anywhere" } as const;
 
-/** A Team's release is up to date once it was published for the Team's current selection. */
-export function publicationUpToDate(team: SkillMarketplaceTeamPublication): boolean {
-  return team.releaseSelectionDigest === team.selectionDigest;
+export type PublicationState = "upToDate" | "updating" | "pending";
+
+const PUBLICATION_STATES: Record<PublicationState, { label: string; color: "success" | "informative" | "warning" }> = {
+  upToDate: { label: "Up to date", color: "success" },
+  updating: { label: "Update pending", color: "informative" },
+  pending: { label: "Pending", color: "warning" },
+};
+
+/**
+ * A Team's publication is pending until a release was published for the Team's current selection. It is updating
+ * while that release lacks the repository's version of one of its skills, or a missing skill that the repository has
+ * since gained. Otherwise it is up to date. skills are the valid skills of the repository.
+ */
+export function publicationState(team: SkillMarketplaceTeamPublication, skills: SkillMarketplaceSkill[]): PublicationState {
+  if (team.releaseSelectionDigest !== team.selectionDigest) return "pending";
+  const repository = new Map(skills.map((skill) => [skill.name, skill.version]));
+  const behind = (team.skills ?? []).some((skill) => repository.has(skill.name) && repository.get(skill.name) !== skill.version)
+    || (team.missing ?? []).some((name) => repository.has(name));
+  return behind ? "updating" : "upToDate";
 }
 
 function Heading({ children }: { children: ReactNode }) {
@@ -149,14 +165,14 @@ function CatalogView({ catalog }: { catalog: SkillMarketplaceCatalog }) {
         </TableHeader>
         <TableBody>
           {teams.map((team) => {
-            const upToDate = publicationUpToDate(team);
+            const state = PUBLICATION_STATES[publicationState(team, skills)];
             return <TableRow key={team.uid || team.name}>
               <TableCell>{team.name}</TableCell>
               <TableCell>{team.release ? <span style={monospace}>{team.release}</span> : "—"}</TableCell>
               <TableCell>{formatSkillTime(team.publishedAt)}</TableCell>
               <TableCell>{team.skills?.length ?? 0}</TableCell>
               <TableCell>
-                <Badge appearance="filled" color={upToDate ? "success" : "warning"}>{upToDate ? "Up to date" : "Pending"}</Badge>
+                <Badge appearance="filled" color={state.color}>{state.label}</Badge>
               </TableCell>
               <TableCell><PublicationDetails team={team} /></TableCell>
             </TableRow>;

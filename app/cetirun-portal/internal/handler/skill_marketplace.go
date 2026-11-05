@@ -162,8 +162,13 @@ func (h *AdminPolicyHandler) allowSkillRemoval(w http.ResponseWriter, r *http.Re
 
 // Team skill states in the owner's view of an Agent.
 const (
-	// teamSkillPublished: the Team's current release has the skill.
+	// teamSkillPublished: the release of the Team's current selection has
+	// the skill, at the repository's version.
 	teamSkillPublished = "published"
+	// teamSkillUpdating: that release has the skill at another version than
+	// the repository. The marketplace has not published the repository's
+	// version for the Team yet, or could not.
+	teamSkillUpdating = "updating"
 	// teamSkillRetained: the repository's copy is no longer valid, and the
 	// Team's release keeps the last published version.
 	teamSkillRetained = "retained"
@@ -177,11 +182,17 @@ const (
 // TeamSkill is one Skill Marketplace skill that the Agent's Team selects.
 type TeamSkill struct {
 	Name string `json:"name"`
-	// Description and Version come from the marketplace catalog; without a
-	// catalog entry, Version is the one the Team's release keeps, if any.
+	// Description comes from the marketplace catalog.
 	Description string `json:"description"`
-	Version     string `json:"version"`
-	// State is published, retained, missing or pending.
+	// Version is the skill's version in the Team's release, which the Agent
+	// copies at its start: the release of the Team's current selection, or
+	// for a retained skill the release that keeps it. It is empty when that
+	// release does not have the skill.
+	Version string `json:"version"`
+	// RepositoryVersion is the skill's version in the repository when it
+	// differs from Version: the Team's release does not have it yet.
+	RepositoryVersion string `json:"repositoryVersion,omitempty"`
+	// State is published, updating, retained, missing or pending.
 	State string `json:"state"`
 }
 
@@ -189,25 +200,28 @@ type TeamSkill struct {
 // nil when the marketplace is disabled, the Team has no policy or selects no
 // marketplace skill, or the Team or the catalog cannot be read. restart
 // reports that the Agent runs an earlier release of the Team's current
-// selection. It never fails the Agent's response.
-func (h *InstanceHandler) teamSkills(ctx context.Context, instance *cetirunv1alpha1.Agent) (skills []TeamSkill, restart bool) {
+// selection. failed reports that the catalog has a publication error for the
+// Team; administrators see it on the Skills page. It never fails the Agent's
+// response.
+func (h *InstanceHandler) teamSkills(ctx context.Context, instance *cetirunv1alpha1.Agent) (skills []TeamSkill, restart, failed bool) {
 	if !h.Config.SkillMarketplaceEnabled || instance.Spec.Team == "" {
-		return nil, false
+		return nil, false, false
 	}
 	team, err := h.Kube.GetTeam(ctx, instance.Spec.Team)
 	if err != nil {
 		slog.Debug("Team skills unavailable: Team not readable", "team", instance.Spec.Team, "error", err)
-		return nil, false
+		return nil, false, false
 	}
 	if team.Spec.AgentPolicyRef == "" || len(cetirunv1alpha1.SkillMarketplaceSelection(team.Spec.Skills)) == 0 {
-		return nil, false
+		return nil, false, false
 	}
 	catalog, _, err := h.Kube.GetSkillMarketplaceCatalog(ctx, h.Config.SkillMarketplaceCatalogNamespace)
 	if err != nil {
 		slog.Warn("Team skills unavailable: the Skill Marketplace catalog is not readable", "team", team.Name, "error", err)
-		return nil, false
+		return nil, false, false
 	}
-	return teamSkillStates(team, catalog), h.teamSkillsRestartNeeded(ctx, instance, team, catalog)
+	entry := catalogTeam(catalog, team)
+	return teamSkillStates(team, catalog), h.teamSkillsRestartNeeded(ctx, instance, team, catalog), entry != nil && entry.Error != ""
 }
 
 // catalogTeam returns the catalog's entry for the Team. It matches the UID,
@@ -223,7 +237,9 @@ func catalogTeam(catalog cetirunv1alpha1.SkillMarketplaceCatalog, team *cetirunv
 }
 
 // teamSkillStates reports the Team's marketplace skills in name order.
-// Without a catalog entry for the Team, every skill is pending.
+// Without a catalog entry for the Team, every skill is pending. The version
+// of a skill is the one that the Team's release has: a failed or unfinished
+// publication keeps the earlier release, also after the repository changed.
 func teamSkillStates(team *cetirunv1alpha1.Team, catalog cetirunv1alpha1.SkillMarketplaceCatalog) []TeamSkill {
 	entry := catalogTeam(catalog, team)
 	current := entry != nil && entry.ReleaseSelectionDigest == cetirunv1alpha1.SkillMarketplaceSelectionDigest(team.Spec.Skills)
@@ -231,9 +247,12 @@ func teamSkillStates(team *cetirunv1alpha1.Team, catalog cetirunv1alpha1.SkillMa
 	skills := make([]TeamSkill, 0, len(selection))
 	for _, name := range selection {
 		skill := TeamSkill{Name: name, State: teamSkillPending}
-		released := -1
+		repository := ""
+		if i := slices.IndexFunc(catalog.Skills, func(skill cetirunv1alpha1.SkillMarketplaceSkill) bool { return skill.Name == name }); i >= 0 {
+			skill.Description, repository = catalog.Skills[i].Description, catalog.Skills[i].Version
+		}
 		if entry != nil {
-			released = slices.IndexFunc(entry.Skills, func(skill cetirunv1alpha1.SkillMarketplaceReleaseSkill) bool { return skill.Name == name })
+			released := slices.IndexFunc(entry.Skills, func(skill cetirunv1alpha1.SkillMarketplaceReleaseSkill) bool { return skill.Name == name })
 			switch {
 			// A retained skill is in the release too; retained says that it
 			// no longer follows the repository.
@@ -241,14 +260,20 @@ func teamSkillStates(team *cetirunv1alpha1.Team, catalog cetirunv1alpha1.SkillMa
 				skill.State = teamSkillRetained
 			case current && released >= 0:
 				skill.State = teamSkillPublished
+				if repository != "" && repository != entry.Skills[released].Version {
+					skill.State = teamSkillUpdating
+				}
 			case slices.Contains(entry.Missing, name):
 				skill.State = teamSkillMissing
 			}
+			// An Agent starts only with the release of the current selection,
+			// so an earlier selection's release does not give the version.
+			if released >= 0 && (current || skill.State == teamSkillRetained) {
+				skill.Version = entry.Skills[released].Version
+			}
 		}
-		if i := slices.IndexFunc(catalog.Skills, func(skill cetirunv1alpha1.SkillMarketplaceSkill) bool { return skill.Name == name }); i >= 0 {
-			skill.Description, skill.Version = catalog.Skills[i].Description, catalog.Skills[i].Version
-		} else if released >= 0 {
-			skill.Version = entry.Skills[released].Version
+		if repository != skill.Version {
+			skill.RepositoryVersion = repository
 		}
 		skills = append(skills, skill)
 	}

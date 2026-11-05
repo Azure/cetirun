@@ -471,17 +471,35 @@ sections:
   of files, and the size.
 - **Invalid skills**: each rejected directory, with the reason.
 - **Team publications**: each policy-bound Team, with its release, the time of
-  publication, and the number of skills. **Up to date** means that the release
-  serves the current selection of the Team. **Pending** means that the worker
-  has not published it yet. **Details** lists retained and missing skills and
-  a publication error.
+  publication, and the number of skills. **Details** lists retained and
+  missing skills and a publication error. The state of the release is one of
+  these:
+  - **Up to date**: the release serves the current selection of the Team, with
+    the repository's version of each skill.
+  - **Update pending**: the release serves the current selection, but not the
+    current repository. The repository has another version of one of its
+    skills, or it added a missing skill.
+  - **Pending**: the worker has not published a release of the current
+    selection yet.
 
 **Refresh** reads the catalog again. It does not make the worker read the
 repository.
 
 On the page of an Agent, its owner sees the marketplace skills of the Team
-under **Team skills**. Each skill has one of these states: **Published**,
-**Pending**, **Retained**, or **Missing**. When the Team has a newer release
+under **Team skills**. The version of a skill is the version in the release
+of the Team. The Agent copies that release when it starts. Each skill has one
+of these states:
+
+- **Published**: the release has the repository's version of the skill.
+- **Update pending**: the repository has another version, which the release
+  does not have yet. The section shows it as the repository version.
+- **Pending**: the worker has not published a release of the current
+  selection of the Team yet. The next start of the Agent waits for it.
+- **Retained** or **Missing**: refer to
+  [Retained and missing skills](#retained-and-missing-skills).
+
+When the worker could not publish the skills of the Team, the section says
+so. The **Skills** page shows the error. When the Team has a newer release
 than the Agent copied, the section says that the Agent uses the earlier
 versions until it restarts. Refer to
 [When changes take effect](#when-changes-take-effect).
@@ -716,8 +734,10 @@ kubectl logs -n cetirun-system deployment/cetirun-skill-marketplace --tail=50
 
 ### A Team release is pending
 
-The Portal shows **Pending** for the Team, or `releaseSelectionDigest` is not
-equal to `selectionDigest`. Examine the `error` of the Team in the catalog:
+The Portal shows **Pending** or **Update pending** for the Team, or
+`releaseSelectionDigest` is not equal to `selectionDigest`. Both states are
+normal for a short time after a change. If one stays, examine the `error` of
+the Team in the catalog:
 
 - `the skills repository has not been synchronized yet`: the worker has not
   read the repository since it started. It keeps the current release of the

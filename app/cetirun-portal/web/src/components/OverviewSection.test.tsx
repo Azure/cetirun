@@ -262,7 +262,7 @@ describe("OverviewSection", () => {
   it("lists the Team's skills with their publication state", () => {
     renderInRouter(<OverviewSection instance={{ ...baseInstance, teamSkills: [
       { name: "pdf-tools", description: "Reads and fills PDF forms.", version: "bbbbbbbbbbbb", state: "published" },
-      { name: "web-search", description: "Searches the web.", version: "cccccccccccc", state: "pending" },
+      { name: "web-search", description: "Searches the web.", version: "", repositoryVersion: "cccccccccccc", state: "pending" },
       { name: "old-skill", description: "", version: "dddddddddddd", state: "retained" },
       { name: "unknown-skill", description: "", version: "", state: "missing" },
     ] }} />);
@@ -273,10 +273,30 @@ describe("OverviewSection", () => {
     expect(within(items[0]).getByText("pdf-tools")).toBeInTheDocument();
     expect(within(items[0]).getByText("Reads and fills PDF forms.")).toBeInTheDocument();
     expect(within(items[0]).getByText("Version bbbbbbb")).toBeInTheDocument();
-    expect(within(items[1]).getByText(/gets it at its next start/)).toBeInTheDocument();
+    expect(within(items[0]).queryByText(/^Repository version/)).toBeNull();
+    expect(within(items[1]).getByText(/next start waits for it/)).toBeInTheDocument();
+    expect(within(items[1]).getByText("Repository version ccccccc")).toBeInTheDocument();
+    expect(within(items[1]).queryByText(/^Version/)).toBeNull();
     expect(within(items[2]).getByText(/keeps the last published version/)).toBeInTheDocument();
     expect(within(items[3]).getByText(/does not have it/)).toBeInTheDocument();
     expect(within(items[3]).queryByText(/^Version/)).toBeNull();
+  });
+
+  it("tells a repository change that the Team's release lacks, and a failed publication, from what the Team published", () => {
+    const teamSkills: Instance["teamSkills"] = [
+      { name: "pdf-tools", description: "Reads and fills PDF forms.", version: "aaaaaaaaaaaa", repositoryVersion: "bbbbbbbbbbbb", state: "updating" },
+    ];
+    const block = () => within(screen.getByRole("region", { name: "Team skills" }));
+    const view = renderInRouter(<OverviewSection instance={{ ...baseInstance, teamSkills }} />);
+    const [item] = block().getAllByRole("listitem");
+    expect(within(item).getByText("Update pending")).toBeInTheDocument();
+    expect(within(item).getByText("Version aaaaaaa")).toBeInTheDocument();
+    expect(within(item).getByText("Repository version bbbbbbb")).toBeInTheDocument();
+    expect(within(item).getByText(/does not have the change yet, so the Agent gets the version shown/)).toBeInTheDocument();
+    expect(block().queryByText(/could not publish/)).toBeNull();
+
+    view.rerender(<OverviewSection instance={{ ...baseInstance, teamSkills, teamSkillsPublicationFailed: true }} />);
+    expect(block().getByText(/could not publish the Team's current skills/)).toBeInTheDocument();
   });
 
   it("shows no Team skills block without Team skills", () => {

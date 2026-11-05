@@ -76,21 +76,28 @@ export interface Instance extends InstanceVersion {
   teamSkills?: TeamSkill[];
   /** The Agent runs an earlier release of its Team's skills; a restart copies the current one. */
   teamSkillsRestartNeeded?: boolean;
+  /** The Skill Marketplace could not publish the Team's skills; administrators see the error on the Skills page. */
+  teamSkillsPublicationFailed?: boolean;
 }
 
 /**
- * published: the Team's current release has the skill. pending: the release
- * for the Team's current selection is not published yet. missing: the skill
- * was never published. retained: the repository's copy is no longer valid,
- * and the release keeps the last published version.
+ * published: the release of the Team's current selection has the skill, at
+ * the repository's version. updating: that release has another version than
+ * the repository, which is not published for the Team yet. pending: the
+ * release for the Team's current selection is not published yet. missing:
+ * the skill was never published. retained: the repository's copy is no
+ * longer valid, and the release keeps the last published version.
  */
-export type TeamSkillState = "published" | "pending" | "missing" | "retained";
+export type TeamSkillState = "published" | "updating" | "pending" | "missing" | "retained";
 
 /** One Skill Marketplace skill of the Agent's Team. */
 export interface TeamSkill {
   name: string;
   description?: string;
+  /** The version in the Team's release, which the Agent copies at its start. */
   version?: string;
+  /** The repository's version, when the Team's release does not have it. */
+  repositoryVersion?: string;
   state: TeamSkillState;
 }
 

@@ -350,29 +350,64 @@ func TestAgentDetailsShowTeamSkills(t *testing.T) {
 		catalog.Teams = teams
 		return marketplaceCatalogConfigMap(catalog)
 	}
+	// behind is the release of the current selection from before the
+	// repository changed pdf-tools, with the error of the publication after it.
+	behind := func(failure string) api.SkillMarketplaceTeam {
+		entry := release("team-uid", selected)
+		for i := range entry.Skills {
+			if entry.Skills[i].Name == "pdf-tools" {
+				entry.Skills[i].Version = "aaaaaaaaaaaa"
+			}
+		}
+		entry.Error = failure
+		return entry
+	}
 	pdf := TeamSkill{Name: "pdf-tools", Description: "Read and write PDF files", Version: "0123456789ab", State: "published"}
 	notes := TeamSkill{Name: "release-notes", Description: "Draft release notes", Version: "ba9876543210", State: "published"}
 	retained := TeamSkill{Name: "retired-skill", Version: "1111aaaa2222", State: "retained"}
 	missing := TeamSkill{Name: "unpublished-skill", State: "missing"}
+	updating := TeamSkill{Name: "pdf-tools", Description: "Read and write PDF files", Version: "aaaaaaaaaaaa", RepositoryVersion: "0123456789ab", State: "updating"}
+	// Before the release of the current selection, the Agent's next start
+	// waits for it, so only the repository's version is known.
 	pending := func(skill TeamSkill) TeamSkill {
 		skill.State = "pending"
-		if skill.Description == "" {
-			skill.Version = ""
+		if skill.Description != "" {
+			skill.RepositoryVersion = skill.Version
 		}
+		skill.Version = ""
 		return skill
 	}
+	// The repository has unpublished-skill since the Team's last publication.
+	gained := exampleMarketplaceCatalog()
+	gained.Skills = append(gained.Skills, api.SkillMarketplaceSkill{Name: "unpublished-skill", Description: "Added later", Version: "eeeeeeeeeeee", Path: "skills/unpublished-skill"})
+	gained.Teams = []api.SkillMarketplaceTeam{release("team-uid", selected)}
 	for _, tc := range []struct {
 		name    string
 		cfg     config.Config
 		team    *api.Team
 		catalog *corev1.ConfigMap
 		want    []TeamSkill
+		failed  bool
 	}{
 		{name: "current release", cfg: marketplaceConfig(), team: newTeam("marketplace-policy", selected...),
 			catalog: catalogWith(release("team-uid", selected)), want: []TeamSkill{pdf, notes, retained, missing}},
+		{name: "a newer repository version not published yet", cfg: marketplaceConfig(), team: newTeam("marketplace-policy", selected...),
+			catalog: catalogWith(behind("")), want: []TeamSkill{updating, notes, retained, missing}},
+		{name: "the publication of a newer repository version failed", cfg: marketplaceConfig(), team: newTeam("marketplace-policy", selected...),
+			catalog: catalogWith(behind("publication failed: synthetic storage error")), want: []TeamSkill{updating, notes, retained, missing}, failed: true},
+		{name: "a missing skill that the repository has now", cfg: marketplaceConfig(), team: newTeam("marketplace-policy", selected...),
+			catalog: marketplaceCatalogConfigMap(gained),
+			want:    []TeamSkill{pdf, notes, retained, {Name: "unpublished-skill", Description: "Added later", RepositoryVersion: "eeeeeeeeeeee", State: "missing"}}},
 		{name: "selection not published yet", cfg: marketplaceConfig(), team: newTeam("marketplace-policy", selected...),
 			catalog: catalogWith(release("team-uid", []string{"pdf-tools", "retired-skill", "unpublished-skill"})),
 			want:    []TeamSkill{pending(pdf), pending(notes), retained, missing}},
+		{name: "the publication of the selection failed", cfg: marketplaceConfig(), team: newTeam("marketplace-policy", selected...),
+			catalog: catalogWith(func() api.SkillMarketplaceTeam {
+				entry := release("team-uid", []string{"pdf-tools", "retired-skill", "unpublished-skill"})
+				entry.Error = "publication failed: synthetic storage error"
+				return entry
+			}()),
+			want: []TeamSkill{pending(pdf), pending(notes), retained, missing}, failed: true},
 		{name: "release of an earlier Team with the same name", cfg: marketplaceConfig(), team: newTeam("marketplace-policy", selected...),
 			catalog: catalogWith(release("earlier-team-uid", selected)), want: []TeamSkill{pending(pdf), pending(notes), pending(retained), pending(missing)}},
 		{name: "catalog not published yet", cfg: marketplaceConfig(), team: newTeam("marketplace-policy", selected...),
@@ -408,21 +443,33 @@ func TestAgentDetailsShowTeamSkills(t *testing.T) {
 			if tc.want == nil && strings.Contains(w.Body.String(), "teamSkills") {
 				t.Fatalf("response has teamSkills: %s", w.Body.String())
 			}
+			if response.TeamSkillsPublicationFailed != tc.failed || strings.Contains(w.Body.String(), "teamSkillsPublicationFailed") != tc.failed {
+				t.Fatalf("teamSkillsPublicationFailed = %t, want %t: %s", response.TeamSkillsPublicationFailed, tc.failed, w.Body.String())
+			}
 		})
 	}
 
-	// The JSON names every field, also the empty ones.
+	// The JSON names every field, also the empty ones, except the repository
+	// version and the publication failure, which are there only when set.
 	instance := customManagementInstance()
 	instance.Spec.Team = "research"
-	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(instance, newTeam("marketplace-policy", selected...), catalogWith(release("team-uid", selected)))), Config: marketplaceConfig()}
-	w := httptest.NewRecorder()
-	h.GetInstanceByName(w, managementRequest(http.MethodGet, ""))
-	for _, want := range []string{
-		`"teamSkills":[{"name":"pdf-tools","description":"Read and write PDF files","version":"0123456789ab","state":"published"},`,
-		`{"name":"unpublished-skill","description":"","version":"","state":"missing"}]`,
+	for catalog, wants := range map[*corev1.ConfigMap][]string{
+		catalogWith(release("team-uid", selected)): {
+			`"teamSkills":[{"name":"pdf-tools","description":"Read and write PDF files","version":"0123456789ab","state":"published"},`,
+			`{"name":"unpublished-skill","description":"","version":"","state":"missing"}]`,
+		},
+		catalogWith(behind("publication failed: synthetic storage error")): {
+			`"teamSkills":[{"name":"pdf-tools","description":"Read and write PDF files","version":"aaaaaaaaaaaa","repositoryVersion":"0123456789ab","state":"updating"},`,
+			`"teamSkillsPublicationFailed":true`,
+		},
 	} {
-		if !strings.Contains(w.Body.String(), want) {
-			t.Errorf("response %s does not contain %s", w.Body.String(), want)
+		h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(instance.DeepCopy(), newTeam("marketplace-policy", selected...), catalog)), Config: marketplaceConfig()}
+		w := httptest.NewRecorder()
+		h.GetInstanceByName(w, managementRequest(http.MethodGet, ""))
+		for _, want := range wants {
+			if !strings.Contains(w.Body.String(), want) {
+				t.Errorf("response %s does not contain %s", w.Body.String(), want)
+			}
 		}
 	}
 }

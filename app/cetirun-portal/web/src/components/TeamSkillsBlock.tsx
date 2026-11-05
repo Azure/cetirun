@@ -8,7 +8,12 @@ import { RestartAgentButton } from "./RestartAgentButton";
 
 const STATES: Record<TeamSkillState, { label: string; color: "success" | "informative" | "warning" | "danger"; hint?: string }> = {
   published: { label: "Published", color: "success" },
-  pending: { label: "Pending", color: "informative", hint: "Being published for the Team's current selection. The Agent gets it at its next start." },
+  updating: {
+    label: "Update pending",
+    color: "informative",
+    hint: "The skills repository has changed this skill. The Team's release does not have the change yet, so the Agent gets the version shown.",
+  },
+  pending: { label: "Pending", color: "informative", hint: "Not published yet for the Team's current selection. The Agent's next start waits for it." },
   retained: { label: "Retained", color: "warning", hint: "No longer valid in the skills repository. The Agent keeps the last published version." },
   missing: { label: "Missing", color: "danger", hint: "Not published from the skills repository, so the Agent does not have it." },
 };
@@ -35,6 +40,13 @@ export function TeamSkillsBlock({ instance }: { instance: Instance }) {
       <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
         Chosen by your Team's administrator from the Skill Marketplace. Changes take effect when the Agent next starts.
       </Text>
+      {instance.teamSkillsPublicationFailed && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            The Skill Marketplace could not publish the Team's current skills. An administrator can see why on the Skills page.
+          </MessageBarBody>
+        </MessageBar>
+      )}
       {instance.teamSkillsRestartNeeded && (
         <>
           <MessageBar intent="warning">
@@ -59,6 +71,9 @@ export function TeamSkillsBlock({ instance }: { instance: Instance }) {
                 <Badge appearance="tint" color={state.color}>{state.label}</Badge>
                 {skill.version && (
                   <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>Version {shortSkillVersion(skill.version)}</Text>
+                )}
+                {skill.repositoryVersion && (
+                  <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>Repository version {shortSkillVersion(skill.repositoryVersion)}</Text>
                 )}
               </div>
               {skill.description && <Text size={200}>{skill.description}</Text>}
