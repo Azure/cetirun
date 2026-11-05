@@ -103,6 +103,43 @@ class SandboxPlatformQualificationTests(unittest.TestCase):
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["env"]["KUBECTL_KUBERC"], "false")
 
+    def test_create_uses_fixed_collection_and_strict_server_validation(self):
+        client = qualify.Kubernetes("/example/test-config", "test-context", "expected")
+        cases = [
+            ("v1", "Namespace", "/api/v1/namespaces"),
+            ("v1", "Pod", "/api/v1/namespaces/probe/pods"),
+            ("networking.k8s.io/v1", "NetworkPolicy", "/apis/networking.k8s.io/v1/namespaces/probe/networkpolicies"),
+            ("cilium.io/v2", "CiliumNetworkPolicy", "/apis/cilium.io/v2/namespaces/probe/ciliumnetworkpolicies"),
+        ]
+        for api, kind, path in cases:
+            with self.subTest(kind=kind):
+                document = {"apiVersion": api, "kind": kind, "metadata": {"name": "probe", "namespace": "probe"}}
+                response = {**document, "metadata": {**document["metadata"], "uid": "created-uid"}}
+                with patch.object(client, "run", return_value=json.dumps(response)) as run:
+                    self.assertEqual(client.create(document), response)
+                run.assert_called_once_with(["create", "--raw", path + "?fieldValidation=Strict", "-f", "-"], document)
+
+    def test_create_rejects_unknown_resources_and_namespace_path_injection(self):
+        client = qualify.Kubernetes("/example/test-config", "test-context", "expected")
+        documents = [None, [], {"apiVersion": "v1", "kind": "Secret"},
+                     {"apiVersion": "https://example.invalid", "kind": "Namespace"},
+                     {"apiVersion": [], "kind": "Pod"}]
+        for namespace in (None, "", "../other", "probe?dryRun=All", "probe/other", "with.dot", [], "x" * 64):
+            documents.append({"apiVersion": "v1", "kind": "Pod", "metadata": {"namespace": namespace}})
+        for document in documents:
+            with self.subTest(document=document), patch.object(client, "run") as run:
+                with self.assertRaises(qualify.QualificationError):
+                    client.create(document)
+                run.assert_not_called()
+
+    def test_create_does_not_accept_invalid_server_receipts(self):
+        client = qualify.Kubernetes("/example/test-config", "test-context", "expected")
+        document = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "probe"}}
+        for response in ("not-json", "[]"):
+            with self.subTest(response=response), patch.object(client, "run", return_value=response):
+                with self.assertRaises(qualify.QualificationError):
+                    client.create(document)
+
     def test_wrong_cluster_denies_before_other_reads(self):
         client = qualify.Kubernetes("/example/test-config", "test-context", "expected-uid")
         with patch.object(client, "get", return_value={"metadata": {"uid": "different"}}):

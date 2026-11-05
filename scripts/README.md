@@ -730,6 +730,11 @@ make python-check license-check
 
 ## Protocol-specific network smoke
 
+Synthetic resource creation uses the versioned API collections with strict
+server-side field validation. It does not download the cluster-wide OpenAPI
+schema before each create. Target checks, command deadlines, returned UID
+checks, and cleanup preconditions still apply.
+
 The `network-smoke` mode that already exists uses TCP by default. On a
 separately authorized disposable target, select `--network-protocol UDP`. This
 runs the same destination port-denial and overlapping-allow sequence with UDP
