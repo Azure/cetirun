@@ -10,7 +10,7 @@ volumes for shared skills.
 ## Two storage purposes
 
 An instance’s `/home/vibe` contains private workspace state. By default, the
-operator, the standalone runtime chart, and the opt-in Custom provider all use
+operator, the standalone runtime chart, and the Custom provider all use
 a `100Gi` `ReadWriteOnce` home claim with the StorageClass named `default`. On
 AKS, this class uses Azure Disk. If `persistence.storageClass` is empty,
 Kubernetes selects the cluster's default class instead. That class can have a

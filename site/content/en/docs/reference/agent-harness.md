@@ -82,6 +82,11 @@ and resource names keep the same roles.
 
 ## Custom runtime
 
+The Portal and Operator charts enable Custom support by default. The Operator's
+`customRuntime.approvedImages` list starts empty: the provider can start, but it
+rejects every image until an administrator approves its immutable digest and
+configures its numeric UID/GID. No image is approved by default.
+
 Custom uses its own Go adapter and chart branch. For Custom, a built-in profile,
 native provider, configuration template or preferred model name is not
 necessary. The main container keeps the image's ENTRYPOINT/CMD. Gateway-backed
@@ -98,8 +103,8 @@ Sandbox, platform inventory and coordination authority that managed Agents use.
 
 Allow `custom` in `AgentPolicy.spec.harnesses.allowed`. Select that policy and
 an allowed Sandbox through the Team. Portal's policy editor supports Custom
-explicitly. For Portal creation, you must also enable the `custom` entry that
-already exists in `features.allowedAgentTypes`.
+explicitly. Portal creation also requires `custom` in
+`features.allowedAgentTypes`, which includes it by default.
 
 The Operator's `customRuntime.enabled` and `approvedImages` settings control
 image approval. The selected digest must be approved, and every Custom image
@@ -918,15 +923,18 @@ an empty string.
 
 ### Enabling Custom self-service
 
-Custom is absent from the default Portal type list. An administrator enables
-it in the [Portal chart](../helm/#portal-chart):
+Custom is included in the default Portal type list. To disable Custom
+self-service, remove it from the [Portal chart](../helm/#portal-chart) list:
 
 ```yaml
 features:
-  allowedAgentTypes: [hermes, openclaw, custom]
+  allowedAgentTypes: [hermes, openclaw]
 ```
 
 Custom uses the Portal login and instance-ownership checks that already exist.
+Set `customRuntime.enabled: false` in the Operator chart to disable its Custom
+provider separately. Update the Operator image and chart together; older
+Operator images reject an enabled provider with an empty approval list.
 Enablement of the type does not enable Agent Identity or make a separate Portal
 admission grant necessary. The backend still examines the type flag, instance
 limits and request fields. This includes immutable fields and concurrent-update

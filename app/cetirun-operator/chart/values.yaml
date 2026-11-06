@@ -466,11 +466,12 @@ aiGateway:
 # Deprecated: use cetirun.helmValues.skills.storageAccount instead.
 skillsStorageAccount: ""
 
-# -- Opt-in provisioning for approved Custom images. Qualify each image's
+# -- Provisioning for approved Custom images. Qualify each image's
 # UID/GID against this HOME storage. Every approved image must consume the
 # platform AI Gateway binding (OPENAI_BASE_URL and OPENAI_API_KEY).
 customRuntime:
-  enabled: false
+  enabled: true
+  # -- Empty denies all Custom images until the administrator approves them.
   approvedImages: []
   # -- Numeric image identities required for approved Custom FQDN capture.
   # Map each immutable approved image to {uid: N, gid: N}; UID 1337 is reserved.

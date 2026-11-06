@@ -122,7 +122,7 @@ and [exec policy]({{< repo "app/cetirun-chart/templates/deny-exec-policy.yaml" >
 
 With persistence enabled, the runtime mounts its home volume at `/home/vibe`
 for files, agent configuration, and credentials. The operator, standalone
-chart, and opt-in Custom provider use these defaults: `100Gi`,
+chart, and Custom provider use these defaults: `100Gi`,
 `ReadWriteOnce`, and the StorageClass named `default` (Azure Disk on AKS).
 Shared skills can be mounted separately and read-only. Pod restarts can keep
 that home. Namespace deletion removes PVC objects. Recoverability depends on
