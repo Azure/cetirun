@@ -73,8 +73,11 @@ export function SandboxEditPage() {
     <form onSubmit={submit} style={{ maxWidth: 720, display: "flex", flexDirection: "column", gap: 16 }}>
       <Title2>{isCreate ? "New Sandbox" : `Sandbox: ${name}`}</Title2>
       <Text>A Sandbox defines reusable runtime, resource and storage settings. The selected runtime requires an explicitly registered RuntimeClass and verified handler; the StorageClass must also be approved.</Text>
-      <Field label="Name" required><Input value={form.name || ""} disabled={!isCreate} onChange={(_, data) => setForm({ ...form, name: data.value })} placeholder="e.g. standard" required /></Field>
-      <Field label="Runtime" required><Select value={form.type} onChange={event => setForm({ ...form, type: event.target.value as SandboxSpec["type"] })}>
+      <Field label="Name" required><Input value={form.name || ""} disabled={!isCreate} onChange={(_, data) => setForm(current => ({ ...current, name: data.value }))} placeholder="e.g. standard" required /></Field>
+      <Field label="Runtime" required><Select value={form.type} onChange={event => {
+        const type = event.target.value as SandboxSpec["type"];
+        setForm(current => ({ ...current, type }));
+      }}>
         <option value="kata">Kata</option><option value="gvisor">gVisor</option><option value="container">Container (runc, shared node kernel)</option>
       </Select></Field>
       {form.type === "container" && <MessageBar intent="warning">Ordinary containers share the node kernel and do not provide Kata VM isolation. AgentPolicy, HOME ownership and lifecycle controls still apply. Resource limits are per container; no VM overhead is added automatically.</MessageBar>}
@@ -85,7 +88,7 @@ export function SandboxEditPage() {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {(["cpu", "memory", "ephemeral-storage"] as const).flatMap(resource => (["requests", "limits"] as const).map(bound => <Field key={`${resource}-${bound}`}
             label={`${container === "agent" ? "Agent" : "Helper"} ${resource} ${bound === "requests" ? "request" : "limit"}`} required>
-            <Input value={form.resources[container][bound][resource]} required onChange={(_, data) => setForm({ ...form, resources: { ...form.resources, [container]: { ...form.resources[container], [bound]: { ...form.resources[container][bound], [resource]: data.value } } } })} />
+            <Input value={form.resources[container][bound][resource]} required onChange={(_, data) => setForm(current => ({ ...current, resources: { ...current.resources, [container]: { ...current.resources[container], [bound]: { ...current.resources[container][bound], [resource]: data.value } } } }))} />
           </Field>))}
         </div>
         <Text size={300}>Use Kubernetes quantities such as 500m for CPU and 1Gi for memory or storage. Requests must not exceed limits.</Text>
@@ -95,7 +98,10 @@ export function SandboxEditPage() {
       <Text weight="semibold">Agent HOME</Text>
       <Field label="HOME StorageClass" required hint="Choose an approved StorageClass for Agent HOME.">
         <Select value={form.storage.home.storageClassName} required disabled={storageOptions.isFetching || storageOptions.isError || classes.length === 0}
-          onChange={event => setForm({ ...form, storage: { ...form.storage, home: { ...form.storage.home, storageClassName: event.target.value } } })}>
+          onChange={event => {
+            const storageClassName = event.target.value;
+            setForm(current => ({ ...current, storage: { ...current.storage, home: { ...current.storage.home, storageClassName } } }));
+          }}>
           <option value="" disabled>Choose an approved StorageClass</option>
           {!selectedStorageClassIsApproved && form.storage.home.storageClassName && <option value={form.storage.home.storageClassName}>{form.storage.home.storageClassName}{storageOptions.data && !storageOptions.isError ? " (unavailable)" : ""}</option>}
           {classes.map((storageClass) => <option key={storageClass.name} value={storageClass.name}>{storageClass.name} ({storageClass.provisioner}{storageClass.allowVolumeExpansion ? ", expansion supported" : ""})</option>)}
@@ -106,13 +112,16 @@ export function SandboxEditPage() {
       {!storageOptions.isPending && !storageOptions.isError && classes.length === 0 && <MessageBar intent="warning">No approved StorageClasses are available. Configure one before creating a Sandbox.</MessageBar>}
       {!storageOptions.isPending && !storageOptions.isError && form.storage.home.storageClassName && !selectedStorageClassIsApproved && <MessageBar intent="warning">The selected StorageClass is no longer available or approved. Choose another StorageClass before saving.</MessageBar>}
       <Button type="button" appearance="subtle" style={{ alignSelf: "flex-start" }} disabled={storageOptions.isFetching} onClick={() => { void storageOptions.refetch(); }}>{storageOptions.isError ? "Retry StorageClasses" : "Refresh StorageClasses"}</Button>
-      <Field label="HOME size" required><Input value={form.storage.home.size} required onChange={(_, data) => setForm({ ...form, storage: { ...form.storage, home: { ...form.storage.home, size: data.value } } })} /></Field>
-      <Field label="HOME access mode" required hint="The selected runtime determines the supported access modes."><Select value={form.storage.home.accessMode} disabled={storageOptions.isFetching || storageOptions.isError || homeAccessModes.length === 0} onChange={event => setForm({ ...form, storage: { ...form.storage, home: { ...form.storage.home, accessMode: event.target.value as SandboxHomeAccessMode } } })}>
+      <Field label="HOME size" required><Input value={form.storage.home.size} required onChange={(_, data) => setForm(current => ({ ...current, storage: { ...current.storage, home: { ...current.storage.home, size: data.value } } }))} /></Field>
+      <Field label="HOME access mode" required hint="The selected runtime determines the supported access modes."><Select value={form.storage.home.accessMode} disabled={storageOptions.isFetching || storageOptions.isError || homeAccessModes.length === 0} onChange={event => {
+        const accessMode = event.target.value as SandboxHomeAccessMode;
+        setForm(current => ({ ...current, storage: { ...current.storage, home: { ...current.storage.home, accessMode } } }));
+      }}>
         {!selectedAccessModeIsSupported && <option value={form.storage.home.accessMode}>{form.storage.home.accessMode}{storageOptions.data && !storageOptions.isError ? " (not supported by this runtime)" : ""}</option>}
         {homeAccessModes.map((accessMode) => <option key={accessMode} value={accessMode}>{accessMode}</option>)}
       </Select></Field>
       {!storageOptions.isPending && !storageOptions.isError && !selectedAccessModeIsSupported && <MessageBar intent="warning">The selected HOME access mode is not supported by the {form.type} runtime. Choose a supported mode before saving.</MessageBar>}
-      <Field label="Scratch size limit" required><Input value={form.storage.scratch.sizeLimit} required onChange={(_, data) => setForm({ ...form, storage: { ...form.storage, scratch: { sizeLimit: data.value } } })} /></Field>
+      <Field label="Scratch size limit" required><Input value={form.storage.scratch.sizeLimit} required onChange={(_, data) => setForm(current => ({ ...current, storage: { ...current.storage, scratch: { sizeLimit: data.value } } }))} /></Field>
       {submitError && <AdminConfigurationErrorMessage error={submitError} />}
       <div style={{ display: "flex", gap: 8 }}>
         <Button appearance="primary" type="submit" disabled={mutation.isPending || !!existing?.deleting || storageOptions.isFetching || storageOptions.isError || !selectedStorageClassIsApproved || !selectedAccessModeIsSupported}>{mutation.isPending ? "Saving..." : isCreate ? "Create" : "Save"}</Button>
