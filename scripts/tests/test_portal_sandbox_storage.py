@@ -4,6 +4,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +15,12 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+OFFLINE_ENV = {
+    **os.environ,
+    "KUBECONFIG": os.devnull,
+    "HELM_REGISTRY_CONFIG": os.devnull,
+    "HELM_REPOSITORY_CONFIG": os.devnull,
+}
 CHART = ROOT / "app/cetirun-portal/chart"
 FIXTURE = ROOT / "app/cetirun-platform/ci/deployment-example.yaml"
 SPEC = importlib.util.spec_from_file_location("cetirun_platform_deploy", ROOT / "scripts/cetirun_platform_deploy.py")
@@ -28,7 +35,7 @@ class PortalSandboxStorageChartTests(unittest.TestCase):
                    "--set-string", "istio.host=portal.example.invalid"]
         for value in values or []:
             command.extend(["--set-string", value])
-        output = subprocess.run(command, check=True, text=True, capture_output=True).stdout
+        output = subprocess.run(command, env=OFFLINE_ENV, check=True, text=True, capture_output=True).stdout
         return [item for item in yaml.safe_load_all(output) if item]
 
     def test_selected_source_gets_only_narrow_read_permissions(self):
@@ -73,7 +80,7 @@ class PortalSandboxStorageChartTests(unittest.TestCase):
                 command = ["helm", "template", "portal", str(CHART), "--set-string", "istio.host=portal.example.invalid"]
                 for value in values:
                     command.extend(["--set-string", value])
-                result = subprocess.run(command,
+                result = subprocess.run(command, env=OFFLINE_ENV,
                                         text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(expected, result.stderr)
@@ -119,6 +126,7 @@ class DeploymentWiringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires enabled cetirun-operator.sandboxSources"):
             self.configure(configuration)
 
+    @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
     def test_direct_umbrella_source_must_match_operator(self):
         configuration = self.configuration()
         configuration["platform"]["values"]["cetirun-operator"]["sandboxSources"] = {
@@ -127,25 +135,33 @@ class DeploymentWiringTests(unittest.TestCase):
         }
         configuration["platform"]["values"]["cetirun-operator"]["sandboxAdmission"]["podsEnabled"] = True
         _, values = self.configure(configuration)
-        chart = ROOT / "app/cetirun-platform"
         with tempfile.TemporaryDirectory(prefix="cetirun-storage-platform-") as temporary:
-            value_file = Path(temporary) / "values.json"
+            base = Path(temporary)
+            for relative in (
+                "cetirun-platform", "cetirun-operator/chart", "cetirun-portal/chart",
+                "cetirun-ai-gateway/chart", "cetirun-connections-mcp/chart",
+            ):
+                shutil.copytree(ROOT / "app" / relative, base / relative, ignore=shutil.ignore_patterns("charts"))
+            chart = base / "cetirun-platform"
+            subprocess.run(["helm", "dependency", "build", "--skip-refresh", str(chart)],
+                           env=OFFLINE_ENV, check=True, text=True, capture_output=True, timeout=60)
+            value_file = base / "values.json"
             value_file.write_text(json.dumps(values["platform"]))
             success = subprocess.run(["helm", "template", "platform", str(chart), "--namespace", "cetirun-system",
-                                      "--values", str(value_file)], text=True, capture_output=True)
+                                      "--values", str(value_file)], env=OFFLINE_ENV, text=True, capture_output=True)
             self.assertEqual(success.returncode, 0, success.stderr)
             values["platform"]["cetirun-portal"]["sandboxStorage"] = {
                 "platformNamespace": "", "platformConfigMapName": "", "defaultStorageClassName": ""}
             value_file.write_text(json.dumps(values["platform"]))
             omitted = subprocess.run(["helm", "template", "platform", str(chart), "--namespace", "cetirun-system",
-                                      "--values", str(value_file)], text=True, capture_output=True)
+                                      "--values", str(value_file)], env=OFFLINE_ENV, text=True, capture_output=True)
             self.assertNotEqual(omitted.returncode, 0)
             self.assertIn("sandboxStorage must exactly match", omitted.stderr)
             values["platform"]["cetirun-portal"]["sandboxStorage"]["platformConfigMapName"] = "sandbox-platform"
             values["platform"]["cetirun-portal"]["sandboxStorage"]["platformNamespace"] = "other-system"
             value_file.write_text(json.dumps(values["platform"]))
             failed = subprocess.run(["helm", "template", "platform", str(chart), "--namespace", "cetirun-system",
-                                     "--values", str(value_file)], text=True, capture_output=True)
+                                     "--values", str(value_file)], env=OFFLINE_ENV, text=True, capture_output=True)
             self.assertNotEqual(failed.returncode, 0)
             self.assertIn("sandboxStorage must exactly match", failed.stderr)
 
