@@ -232,9 +232,14 @@ func (s Source) Resolve(ctx context.Context) (plumbing.ReferenceName, plumbing.H
 
 // Snapshot is one commit's tree, held in memory.
 type Snapshot struct {
+	// Commit is the hash of the commit.
 	Commit string
-	tree   *object.Tree
-	store  *memory.Storage
+	// Ref is the hash that the ref named when the fetch read it: the commit,
+	// or the tag object of an annotated tag. The ref can move between Resolve
+	// and Fetch, so only this hash names what the fetch read.
+	Ref   string
+	tree  *object.Tree
+	store *memory.Storage
 }
 
 // Limits bound the memory that one fetch may use. The service checks them
@@ -294,7 +299,7 @@ func (s Source) Fetch(ctx context.Context, ref plumbing.ReferenceName, limits Li
 	if err != nil {
 		return nil, err
 	}
-	return &Snapshot{Commit: commit.Hash.String(), tree: tree, store: storage.Storage}, nil
+	return &Snapshot{Commit: commit.Hash.String(), Ref: head.Hash().String(), tree: tree, store: storage.Storage}, nil
 }
 
 // boundedStorage keeps the objects of one fetch in memory. go-git hands the

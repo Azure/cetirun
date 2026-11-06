@@ -78,6 +78,12 @@ func gitServer(t *testing.T, root string) (url string, fetches *atomic.Int32, fa
 
 // gitServerWith is gitServer, with refs changing the ref advertisement.
 func gitServerWith(t *testing.T, root string, refs func([]byte) []byte) (url string, fetches *atomic.Int32, failFetch *atomic.Bool) {
+	return gitServerHooked(t, root, refs, nil)
+}
+
+// gitServerHooked is gitServerWith, with infoRefs called before the server
+// answers each request for the ref advertisement.
+func gitServerHooked(t *testing.T, root string, refs func([]byte) []byte, infoRefs func()) (url string, fetches *atomic.Int32, failFetch *atomic.Bool) {
 	t.Helper()
 	out, err := exec.Command("git", "--exec-path").Output()
 	if err != nil {
@@ -96,6 +102,9 @@ func gitServerWith(t *testing.T, root string, refs func([]byte) []byte) (url str
 				http.Error(w, "synthetic outage", http.StatusServiceUnavailable)
 				return
 			}
+		}
+		if infoRefs != nil && strings.HasSuffix(r.URL.Path, "/info/refs") {
+			infoRefs()
 		}
 		if refs != nil && strings.HasSuffix(r.URL.Path, "/info/refs") {
 			recorder := httptest.NewRecorder()
@@ -260,6 +269,88 @@ func TestACommitThatCannotBeLoadedIsReadOnce(t *testing.T) {
 				t.Fatalf("the commit after a failed fetch was read %d times, want once", read)
 			}
 			loaded(second)
+		})
+	}
+}
+
+// The ref can move between Resolve and Fetch: here the first check resolves
+// the first commit, and its fetch reads the next one. The worker records what
+// the fetch read, so a check after the ref returns to the first commit reads
+// that commit, whether the fetch loaded the next commit or refused it.
+func TestARefThatMovedDuringACheckIsReadWhenItReturns(t *testing.T) {
+	skill := "---\nname: pdf-tools\ndescription: PDF\n---\n"
+	notes := map[string]string{}
+	for i := range 5 {
+		notes[fmt.Sprintf("skills/pdf-tools/notes-%d.md", i)] = fmt.Sprintf("synthetic note %d\n", i)
+	}
+	for _, tc := range []struct {
+		name    string
+		fetch   gitsync.Limits
+		limits  func(*skills.Limits)
+		refused bool
+	}{
+		{"the next commit loaded", gitsync.Limits{MaxBytes: 1 << 20, MaxObjects: 100}, func(*skills.Limits) {}, false},
+		// With the notes, the next commit has 10 objects.
+		{"the next commit refused by the fetch", gitsync.Limits{MaxBytes: 1 << 20, MaxObjects: 8}, func(*skills.Limits) {}, true},
+		// With the notes, the repository path holds 7 files and directories.
+		{"the next commit refused by the tree", gitsync.Limits{MaxBytes: 1 << 20, MaxObjects: 100},
+			func(l *skills.Limits) { l.MaxTreeEntries = 4 }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "skills")
+			first := commitFiles(t, dir, map[string]string{"skills/pdf-tools/SKILL.md": skill})
+			next := commitFiles(t, dir, notes)
+			repo, err := git.PlainOpen(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			head, err := repo.Head()
+			if err != nil {
+				t.Fatal(err)
+			}
+			setBranch := func(commit string) {
+				t.Helper()
+				if err := repo.Storer.SetReference(plumbing.NewHashReference(head.Name(), plumbing.NewHash(commit))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setBranch(first)
+			// The first request for the refs is the first check's Resolve;
+			// the second is its fetch's.
+			var requests atomic.Int32
+			url, fetches, _ := gitServerHooked(t, root, nil, func() {
+				if requests.Add(1) == 2 {
+					setBranch(next)
+				}
+			})
+			limits := skills.DefaultLimits
+			tc.limits(&limits)
+			fetch := tc.fetch
+			fetch.TempDir = t.TempDir()
+			kube := newClient(t)
+			s := &Syncer{
+				Source: gitsync.Source{URL: url + "/skills", Auth: gitsync.AuthNone, AllowInsecureHTTP: true},
+				Path:   "skills", Limits: limits, Fetch: fetch, Store: &Store{},
+				Catalog: NewCatalog(kube, kube, namespace, api.SkillMarketplaceRepository{URL: url + "/skills"}),
+			}
+			ctx := context.Background()
+			err = s.SyncOnce(ctx)
+			if tc.refused != errors.Is(err, gitsync.ErrLimit) || (!tc.refused && err != nil) {
+				t.Fatalf("the check of the moved ref returned %v, refused %v", err, tc.refused)
+			}
+			if commit, _ := s.Store.Snapshot(); !tc.refused && commit != next {
+				t.Fatalf("loaded %q, want the commit that the fetch read, %q", commit, next)
+			}
+
+			setBranch(first)
+			before := fetches.Load()
+			if err := s.SyncOnce(ctx); err != nil {
+				t.Fatalf("the ref returned to a commit that the worker never read: %v", err)
+			}
+			if commit, _ := s.Store.Snapshot(); commit != first || fetches.Load()-before != 1 {
+				t.Fatalf("loaded %q after %d fetches, want %q after one", commit, fetches.Load()-before, first)
+			}
 		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -56,13 +57,14 @@ type Syncer struct {
 	// Changed receives one signal after each new commit, to publish again.
 	Changed chan<- struct{}
 
-	// refused is the hash, as Resolve returned it, of the last commit that
-	// could not be loaded because of its own content, and refusal is its
-	// error. Such a commit stays refused, so later checks report the error
-	// without reading the commit again.
-	refused string
+	// refused holds the hashes, as Resolve can return them, of the last
+	// commit that could not be loaded because of its own content, and
+	// refusal is its error. Such a commit stays refused, so later checks
+	// report the error without reading the commit again.
+	refused []string
 	refusal error
-	// loaded is the hash, as Resolve returned it, of the commit in Store.
+	// loaded is the hash that the ref named when the fetch read the commit in
+	// Store: the commit, or the tag object of an annotated tag.
 	loaded string
 }
 
@@ -138,7 +140,9 @@ func minDuration(a, b time.Duration) time.Duration {
 // The remote names a commit by the hash that Resolve returns. For an annotated
 // tag, a remote that does not advertise the tag's commit gives the hash of the
 // tag object, which differs from the loaded commit: the hash that loaded the
-// commit counts as that commit too.
+// commit counts as that commit too. The ref can move between Resolve and
+// Fetch, so the worker records the hashes that the fetch read, not the hash
+// that Resolve returned before it.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -152,22 +156,27 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		s.Catalog.SetChecked()
 		return nil
 	}
-	if resolved == s.refused {
+	if slices.Contains(s.refused, resolved) {
 		return s.refusal
 	}
 	snapshot, err := s.Source.Fetch(ctx, ref, s.Fetch)
 	if err != nil {
 		// A limit belongs to the commit. Another error, such as a failed
 		// connection, can pass, so the next check reads the commit again.
+		// A fetch that a limit stopped leaves no ref that names the commit
+		// it read: the refusal counts for the resolved hash only while the
+		// ref still names it after the fetch.
 		if errors.Is(err, gitsync.ErrLimit) {
-			s.refused, s.refusal = resolved, err
+			if _, again, resolveErr := s.Source.Resolve(ctx); resolveErr == nil && again.String() == resolved {
+				s.refused, s.refusal = []string{resolved}, err
+			}
 		}
 		return err
 	}
 	valid, problems, err := skills.Discover(snapshot, s.Path, s.Limits, s.Reserved)
 	if err != nil {
 		// Discover reads only the commit, so its result does not change.
-		s.refused, s.refusal = resolved, err
+		s.refused, s.refusal = []string{snapshot.Ref, snapshot.Commit}, err
 		return err
 	}
 	entries := make([]api.SkillMarketplaceSkill, 0, len(valid))
@@ -178,7 +187,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		})
 	}
 	s.Store.set(snapshot.Commit, valid)
-	s.loaded = resolved
+	s.loaded = snapshot.Ref
 	s.Catalog.SetSync(snapshot.Commit, entries, problems)
 	log.FromContext(ctx).Info("synchronized the skills repository", "commit", snapshot.Commit, "skills", len(valid), "rejected", len(problems))
 	signal(s.Changed)
