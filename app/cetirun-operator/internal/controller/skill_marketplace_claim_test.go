@@ -295,7 +295,9 @@ func TestSkillMarketplaceCustomRefusesAnEarlierAgentChart(t *testing.T) {
 	}
 }
 
-// Without the marketplace a missing skills claim stays a configuration error.
+// Without the marketplace, nothing delivers the skills that a policy-bound
+// Team selects: the Agent gets a configuration error that says so, and it is
+// not installed.
 func TestMissingSkillsClaimWithoutMarketplaceFailsTheAgent(t *testing.T) {
 	f, _ := newUnreconciledSandboxRuntimeFixture(t, true, []string{"example-skill"}, true, "openclaw", true, false)
 	if _, err := f.reconcile(); err == nil {
@@ -304,8 +306,8 @@ func TestMissingSkillsClaimWithoutMarketplaceFailsTheAgent(t *testing.T) {
 	agent := f.current(t)
 	condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionAgentConfigReady)
 	if agent.Status.Phase != api.PhaseFailed || condition == nil || condition.Reason != "AgentConfigInvalid" ||
-		!strings.HasPrefix(condition.Message, "Sandbox skills require the configured skills PVC or validated publication") {
-		t.Fatalf("phase %q, AgentConfigReady %+v; want the existing configuration error", agent.Status.Phase, condition)
+		!strings.Contains(condition.Message, "selects the skills example-skill, which Sandbox Agents receive only from the Skill Marketplace, and the Skill Marketplace is off") {
+		t.Fatalf("phase %q, AgentConfigReady %+v; want a configuration error about the Skill Marketplace", agent.Status.Phase, condition)
 	}
 	if f.installer.stages != 0 {
 		t.Fatal("an Agent without its skills claim was installed")

@@ -256,6 +256,9 @@ func buildHelmValuesWithAgentIdentity(instance *cetirunv1alpha1.Agent, team *cet
 // buildHelmValues and buildHelmValuesWithAgentIdentity build them without the
 // marketplace.
 func (r *AgentReconciler) builtinHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, agentIdentityConfig AgentIdentityHelmConfig) (map[string]interface{}, error) {
+	if err := skillsWithoutMarketplace(team, instance.Spec.SkillOverrides, r.SkillMarketplace); err != nil {
+		return nil, err
+	}
 	return buildHelmValuesCore(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry,
 		agentIdentityConfig, r.SkillMarketplace, r.DefaultModel)
 }

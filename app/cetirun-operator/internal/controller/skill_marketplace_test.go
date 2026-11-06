@@ -14,6 +14,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -113,6 +114,40 @@ func TestSkillMarketplaceKeepsTeamSkillsOutOfClawHub(t *testing.T) {
 	team = &api.Team{Spec: api.TeamSpec{Skills: []string{"pdf-tools"}}}
 	if err := applySkillValues(values, team, api.SkillOverrideSpec{}, "", true); err != nil || values["skills"] != nil {
 		t.Fatalf("a marketplace-only selection rendered skill values: %#v, %v", values["skills"], err)
+	}
+}
+
+// A Sandbox Agent cannot install skills at its start. Without the
+// marketplace, the selection of a policy-bound Team names skills that nothing
+// delivers: the error says which, and what to do. It keeps the reason of
+// skills that are not materialized. Agents of a Team without a policy keep
+// their ClawHub installs, and npm entries are left to the existing checks.
+func TestSkillsOfAPolicyBoundTeamNeedTheMarketplace(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "research"},
+		Spec: api.TeamSpec{AgentPolicyRef: "policy", Skills: []string{"npm:@openclaw/matrix", "pdf-tools", "zh-notes"}}}
+	err := skillsWithoutMarketplace(team, api.SkillOverrideSpec{}, false)
+	if !errors.Is(err, errSkillMarketplaceOff) || !errors.Is(err, runtimebindings.ErrSkillsMaterializationPending) ||
+		err.Error() != "SkillsMaterializationPending: the Team research selects the skills pdf-tools, zh-notes, which Sandbox Agents "+
+			"receive only from the Skill Marketplace, and the Skill Marketplace is off: turn it on, or remove the skills from the Team" {
+		t.Fatalf("error %v", err)
+	}
+	if err := skillsWithoutMarketplace(team, api.SkillOverrideSpec{}, true); err != nil {
+		t.Fatalf("with the marketplace: %v", err)
+	}
+	if err := skillsWithoutMarketplace(team, api.SkillOverrideSpec{Remove: []string{"pdf-tools", "zh-notes"}}, false); err != nil {
+		t.Fatalf("npm entries: %v", err)
+	}
+	if err := skillsWithoutMarketplace(&api.Team{Spec: api.TeamSpec{Skills: []string{"pdf-tools"}}}, api.SkillOverrideSpec{}, false); err != nil {
+		t.Fatalf("a Team without a policy keeps ClawHub installs: %v", err)
+	}
+	// Both values paths refuse the selection before anything else.
+	agent := newTestInstance("alice", "Alice", "research", "gateway-token")
+	if _, err := (&AgentReconciler{DomainSuffix: "example.com"}).builtinHelmValues(agent, team, AgentIdentityHelmConfig{}); !errors.Is(err, errSkillMarketplaceOff) {
+		t.Fatalf("built-in values: %v", err)
+	}
+	agent.Spec.Agent.Type, agent.Spec.GatewayTokenSecretRef = api.AgentTypeCustom, ""
+	if _, err := (&AgentReconciler{}).customRuntimeValues(agent, team); !errors.Is(err, errSkillMarketplaceOff) {
+		t.Fatalf("Custom values: %v", err)
 	}
 }
 

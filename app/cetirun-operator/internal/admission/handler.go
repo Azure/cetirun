@@ -106,6 +106,15 @@ func (h *Handler) validate(ctx context.Context, request admission.Request) admis
 	if team, ok := object.(*api.Team); ok && request.Operation == admissionv1.Update {
 		previous := old.(*api.Team)
 		if sameTeamPolicy(team.Spec, previous.Spec) {
+			if sandbox.TeamPolicyConfigured(team) && !slices.Equal(team.Spec.Skills, previous.Spec.Skills) {
+				policy := &api.AgentPolicy{}
+				if err := h.reader.Get(ctx, client.ObjectKey{Name: team.Spec.AgentPolicyRef}, policy); err != nil {
+					return dependencyError(ctx, err)
+				}
+				if err := teamSkillsAllowed(team, policy); err != nil {
+					return admission.Denied(err.Error())
+				}
+			}
 			return admission.Allowed("Team policy is unchanged")
 		}
 	}
@@ -141,6 +150,9 @@ func (h *Handler) validate(ctx context.Context, request admission.Request) admis
 		}
 		if err := h.checkTeamExecutionProfiles(ctx, candidate.Spec, resources, registrations); err != nil {
 			return compatibilityDenied(err.Error(), h.executionCompatibilityReport(ctx, candidate, resources, registrations))
+		}
+		if err := teamSkillsAllowed(candidate, resources.AgentPolicies[candidate.Spec.AgentPolicyRef]); err != nil {
+			return admission.Denied(err.Error())
 		}
 		return h.checkTeamConsumers(ctx, candidate, false)
 	case *api.Sandbox:
@@ -412,9 +424,35 @@ func (h *Handler) checkReferencingTeams(ctx context.Context, candidate client.Ob
 			if err := h.checkTeamExecutionProfiles(ctx, team.Spec, resources, registrations); err != nil {
 				return compatibilityDenied(err.Error(), h.executionCompatibilityReport(ctx, team, resources, registrations))
 			}
+			if _, ok := candidate.(*api.AgentPolicy); ok {
+				if err := teamSkillsAllowed(team, resources.AgentPolicies[team.Spec.AgentPolicyRef]); err != nil {
+					return admission.Denied(fmt.Sprintf("configuration %q would invalidate referencing Team %q: %v", candidate.GetName(), team.Name, err))
+				}
+			}
 		}
 		return admission.Allowed("configuration is valid for its referencing Teams")
 	})
+}
+
+// teamSkillsAllowed refuses a Team that selects a skill that its AgentPolicy
+// does not allow. The operator denies the Agents of such a Team, which stops
+// them and revokes their virtual keys, so the configuration is refused before
+// it is stored, for a Team change and for a Policy change alike.
+func teamSkillsAllowed(team *api.Team, policy *api.AgentPolicy) error {
+	if policy == nil {
+		return nil
+	}
+	var refused []string
+	for _, skill := range team.Spec.Skills {
+		if !slices.Contains(policy.Spec.Skills.Allowed, skill) {
+			refused = append(refused, skill)
+		}
+	}
+	if len(refused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("Team %q selects skills that AgentPolicy %q does not allow in skills.allowed: %s; allow them in the Policy, or remove them from the Team",
+		team.Name, policy.Name, strings.Join(refused, ", "))
 }
 
 func (h *Handler) validateDeletion(ctx context.Context, object client.Object) admission.Response {
