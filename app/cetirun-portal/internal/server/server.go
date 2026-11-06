@@ -102,7 +102,8 @@ func New(
 	// applied to the entire /api/ subtree). Mounted on a child mux so
 	// requireAdmin only wraps these routes.
 	adminMux := http.NewServeMux()
-	adminSandboxHandler := &handler.AdminSandboxHandler{Kube: adminTeamHandler.Kube}
+	adminSandboxHandler := &handler.AdminSandboxHandler{Kube: adminTeamHandler.Kube, Config: adminTeamHandler.Config}
+	adminMux.HandleFunc("GET /api/v1/admin/sandbox-storage-options", adminSandboxHandler.GetStorageOptions)
 	adminMux.HandleFunc("GET /api/v1/admin/sandboxes", adminSandboxHandler.ListSandboxes)
 	adminMux.HandleFunc("POST /api/v1/admin/sandboxes", adminSandboxHandler.CreateSandbox)
 	adminMux.HandleFunc("GET /api/v1/admin/sandboxes/{name}", adminSandboxHandler.GetSandbox)

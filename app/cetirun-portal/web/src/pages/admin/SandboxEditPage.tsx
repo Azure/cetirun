@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Divider, Field, Input, MessageBar, Select, Spinner, Text, Title2 } from "@fluentui/react-components";
-import { createSandbox, getSandbox, updateSandbox, type SandboxSpec, type SandboxUpsertRequest } from "../../api/adminSandbox";
+import { createSandbox, getSandbox, getSandboxStorageOptions, updateSandbox, type SandboxHomeAccessMode, type SandboxSpec, type SandboxUpsertRequest } from "../../api/adminSandbox";
 import { AdminConfigurationErrorMessage } from "../../components/AdminConfigurationErrorMessage";
 
 type SandboxForm = SandboxUpsertRequest & SandboxSpec;
@@ -27,9 +27,27 @@ export function SandboxEditPage() {
   const [form, setForm] = useState<SandboxForm>(emptyForm);
   const [submitError, setSubmitError] = useState<Error | null>(null);
   const { data: existing, isLoading, error } = useQuery({ queryKey: ["admin", "sandbox", name], queryFn: () => getSandbox(name!), enabled: !isCreate });
+  const storageOptions = useQuery({ queryKey: ["admin", "sandbox-storage-options"], queryFn: getSandboxStorageOptions, retry: false });
+  const classes = storageOptions.data?.storageClasses ?? [];
+  const homeAccessModes = storageOptions.data?.homeAccessModes[form.type] ?? [];
+  const selectedStorageClassIsApproved = classes.some((item) => item.name === form.storage.home.storageClassName);
+  const selectedAccessModeIsSupported = homeAccessModes.includes(form.storage.home.accessMode);
   useEffect(() => {
     if (existing) setForm({ name: existing.name, uid: existing.uid, resourceVersion: existing.resourceVersion, type: existing.type, resources: existing.resources, storage: existing.storage });
   }, [existing]);
+  useEffect(() => {
+    if (!isCreate || !storageOptions.data || form.storage.home.storageClassName) return;
+    const configuredDefault = storageOptions.data.defaultStorageClassName;
+    const configuredClassExists = storageOptions.data.storageClasses.some((item) => item.name === configuredDefault);
+    const selected = configuredClassExists ? configuredDefault : storageOptions.data.storageClasses.length === 1 ? storageOptions.data.storageClasses[0].name : "";
+    if (selected) setForm((current) => ({ ...current, storage: { ...current.storage, home: { ...current.storage.home, storageClassName: selected } } }));
+  }, [isCreate, storageOptions.data, form.storage.home.storageClassName]);
+  useEffect(() => {
+    if (!isCreate || !storageOptions.data) return;
+    const supportedModes = storageOptions.data.homeAccessModes[form.type] ?? [];
+    if (supportedModes.includes(form.storage.home.accessMode) || supportedModes.length === 0) return;
+    setForm((current) => ({ ...current, storage: { ...current.storage, home: { ...current.storage.home, accessMode: supportedModes[0] } } }));
+  }, [isCreate, storageOptions.data, form.storage.home.accessMode, form.type]);
   const success = () => {
     queryClient.invalidateQueries({ queryKey: ["admin", "sandboxes"] });
     if (name) queryClient.invalidateQueries({ queryKey: ["admin", "sandbox", name] });
@@ -43,7 +61,10 @@ export function SandboxEditPage() {
     if (isCreate && !/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(form.name?.trim() || "")) {
       setSubmitError(new Error("Name must be a DNS-1123 label: lowercase, start with a letter, max 63 chars.")); return;
     }
-    if (!form.storage.home.storageClassName.trim()) { setSubmitError(new Error("Choose the StorageClass used for Agent HOME.")); return; }
+    if (storageOptions.isFetching) { setSubmitError(new Error("Approved StorageClasses are still loading.")); return; }
+    if (storageOptions.isError) { setSubmitError(new Error("Approved StorageClasses could not be loaded. Retry before saving.")); return; }
+    if (!selectedStorageClassIsApproved) { setSubmitError(new Error("Choose an approved StorageClass used for Agent HOME.")); return; }
+    if (!selectedAccessModeIsSupported) { setSubmitError(new Error(`Choose a HOME access mode supported by the ${form.type} runtime.`)); return; }
     mutation.mutate({ ...form, name: form.name?.trim(), storage: { ...form.storage, home: { ...form.storage.home, storageClassName: form.storage.home.storageClassName.trim() } } });
   };
   if (!isCreate && isLoading) return <Spinner label="Loading Sandbox..." />;
@@ -72,15 +93,29 @@ export function SandboxEditPage() {
       </div>)}
       <Divider />
       <Text weight="semibold">Agent HOME</Text>
-      <Field label="HOME StorageClass" required hint="The name of an existing StorageClass, for example managed-csi."><Input value={form.storage.home.storageClassName} required onChange={(_, data) => setForm({ ...form, storage: { ...form.storage, home: { ...form.storage.home, storageClassName: data.value } } })} /></Field>
+      <Field label="HOME StorageClass" required hint="Choose an approved StorageClass for Agent HOME.">
+        <Select value={form.storage.home.storageClassName} required disabled={storageOptions.isFetching || storageOptions.isError || classes.length === 0}
+          onChange={event => setForm({ ...form, storage: { ...form.storage, home: { ...form.storage.home, storageClassName: event.target.value } } })}>
+          <option value="" disabled>Choose an approved StorageClass</option>
+          {!selectedStorageClassIsApproved && form.storage.home.storageClassName && <option value={form.storage.home.storageClassName}>{form.storage.home.storageClassName}{storageOptions.data && !storageOptions.isError ? " (unavailable)" : ""}</option>}
+          {classes.map((storageClass) => <option key={storageClass.name} value={storageClass.name}>{storageClass.name} ({storageClass.provisioner}{storageClass.allowVolumeExpansion ? ", expansion supported" : ""})</option>)}
+        </Select>
+      </Field>
+      {storageOptions.isPending && <Spinner size="tiny" label="Loading approved StorageClasses..." />}
+      {storageOptions.isError && <MessageBar intent="warning">Failed to load approved StorageClasses: {storageOptions.error.message}</MessageBar>}
+      {!storageOptions.isPending && !storageOptions.isError && classes.length === 0 && <MessageBar intent="warning">No approved StorageClasses are available. Configure one before creating a Sandbox.</MessageBar>}
+      {!storageOptions.isPending && !storageOptions.isError && form.storage.home.storageClassName && !selectedStorageClassIsApproved && <MessageBar intent="warning">The selected StorageClass is no longer available or approved. Choose another StorageClass before saving.</MessageBar>}
+      <Button type="button" appearance="subtle" style={{ alignSelf: "flex-start" }} disabled={storageOptions.isFetching} onClick={() => { void storageOptions.refetch(); }}>{storageOptions.isError ? "Retry StorageClasses" : "Refresh StorageClasses"}</Button>
       <Field label="HOME size" required><Input value={form.storage.home.size} required onChange={(_, data) => setForm({ ...form, storage: { ...form.storage, home: { ...form.storage.home, size: data.value } } })} /></Field>
-      <Field label="HOME access mode" required><Select value={form.storage.home.accessMode} onChange={event => setForm({ ...form, storage: { ...form.storage, home: { ...form.storage.home, accessMode: event.target.value as SandboxSpec["storage"]["home"]["accessMode"] } } })}>
-        <option value="ReadWriteOncePod">ReadWriteOncePod</option><option value="ReadWriteOnce">ReadWriteOnce</option>
+      <Field label="HOME access mode" required hint="The selected runtime determines the supported access modes."><Select value={form.storage.home.accessMode} disabled={storageOptions.isFetching || storageOptions.isError || homeAccessModes.length === 0} onChange={event => setForm({ ...form, storage: { ...form.storage, home: { ...form.storage.home, accessMode: event.target.value as SandboxHomeAccessMode } } })}>
+        {!selectedAccessModeIsSupported && <option value={form.storage.home.accessMode}>{form.storage.home.accessMode}{storageOptions.data && !storageOptions.isError ? " (not supported by this runtime)" : ""}</option>}
+        {homeAccessModes.map((accessMode) => <option key={accessMode} value={accessMode}>{accessMode}</option>)}
       </Select></Field>
+      {!storageOptions.isPending && !storageOptions.isError && !selectedAccessModeIsSupported && <MessageBar intent="warning">The selected HOME access mode is not supported by the {form.type} runtime. Choose a supported mode before saving.</MessageBar>}
       <Field label="Scratch size limit" required><Input value={form.storage.scratch.sizeLimit} required onChange={(_, data) => setForm({ ...form, storage: { ...form.storage, scratch: { sizeLimit: data.value } } })} /></Field>
       {submitError && <AdminConfigurationErrorMessage error={submitError} />}
       <div style={{ display: "flex", gap: 8 }}>
-        <Button appearance="primary" type="submit" disabled={mutation.isPending || !!existing?.deleting}>{mutation.isPending ? "Saving..." : isCreate ? "Create" : "Save"}</Button>
+        <Button appearance="primary" type="submit" disabled={mutation.isPending || !!existing?.deleting || storageOptions.isFetching || storageOptions.isError || !selectedStorageClassIsApproved || !selectedAccessModeIsSupported}>{mutation.isPending ? "Saving..." : isCreate ? "Create" : "Save"}</Button>
         <Button type="button" onClick={() => navigate("/admin/sandboxes")}>Cancel</Button>
       </div>
     </form>

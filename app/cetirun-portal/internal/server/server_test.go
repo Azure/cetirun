@@ -289,3 +289,43 @@ func TestSkillMarketplaceRouteRequiresAuthenticatedAdministrator(t *testing.T) {
 		})
 	}
 }
+
+func TestSandboxStorageRouteRequiresAuthenticatedAdministrator(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "sandbox-platform", Namespace: "operator-system", UID: "platform-uid"},
+		Data:       map[string]string{"platform.json": `{"version":"v1","registrations":{},"platforms":{},"runtimeClasses":{},"storageClasses":{}}`},
+	}
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	kubeClient := kube.NewClient(fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build())
+	for _, configured := range []bool{false, true} {
+		cfg := config.Config{}
+		if configured {
+			cfg.SandboxStoragePlatformNamespace = cm.Namespace
+			cfg.SandboxStoragePlatformConfigMapName = cm.Name
+		}
+		mux := New(fstest.MapFS{}, &handler.InstanceHandler{}, &handler.HealthHandler{},
+			&handler.FeaturesHandler{}, &handler.ConfigHandler{}, &handler.MeHandler{},
+			&handler.AdminTeamHandler{Kube: kubeClient, Config: cfg}, &handler.AdminInstanceHandler{}, &handler.AdminPolicyHandler{},
+			auth.Middleware(auth.NewAdminSet([]string{"administrator"})), auth.RequireAdmin())
+		for _, caller := range []struct {
+			email  string
+			status int
+		}{{"", http.StatusUnauthorized}, {"owner@example.com", http.StatusForbidden}, {"administrator@example.com", http.StatusOK}} {
+			want := caller.status
+			if caller.email == "administrator@example.com" && !configured {
+				want = http.StatusServiceUnavailable
+			}
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/admin/sandbox-storage-options", nil)
+			r.Header.Set("X-Auth-Request-Email", caller.email)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			if w.Code != want {
+				t.Fatalf("configured=%v caller=%q status=%d body=%s", configured, caller.email, w.Code, w.Body.String())
+			}
+			if want == http.StatusOK && strings.TrimSpace(w.Body.String()) != `{"storageClasses":[],"homeAccessModes":{},"defaultStorageClassName":""}` {
+				t.Fatalf("wrong options route or configuration: %s", w.Body.String())
+			}
+		}
+	}
+}

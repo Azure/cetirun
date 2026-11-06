@@ -64,6 +64,18 @@
 {{- fail "cetirun-portal.sandboxRuntimeDefaultsFromController requires an enabled Operator with sandboxSources.enabled and nativeExecution" }}
 {{- end }}
 {{- end }}
+{{- $portalStorage := $portal.sandboxStorage | default dict }}
+{{- $operatorSources := $operator.sandboxSources | default dict }}
+{{- if and $portal.enabled $operator.enabled $operatorSources.enabled }}
+{{- if not $operatorSources.platformConfigMapName }}
+{{- fail "enabled cetirun-operator.sandboxSources requires platformConfigMapName" }}
+{{- end }}
+{{- if or (ne $portalStorage.platformNamespace $operator.namespace) (ne $portalStorage.platformConfigMapName $operatorSources.platformConfigMapName) }}
+{{- fail "cetirun-portal.sandboxStorage must exactly match the Operator namespace and sandboxSources platform ConfigMap" }}
+{{- end }}
+{{- else if and $portal.enabled (or $portalStorage.platformNamespace $portalStorage.platformConfigMapName) }}
+{{- fail "cetirun-portal.sandboxStorage requires an enabled Operator with sandboxSources.platformConfigMapName" }}
+{{- end }}
 {{- /* The Operator runs the Skill Marketplace: it lists the policy-bound Teams
        for its worker, creates the Agents' skills claims, and its worker writes
        the catalog in the operator namespace, where the Portal reads it. The

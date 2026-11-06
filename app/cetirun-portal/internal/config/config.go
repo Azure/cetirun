@@ -71,6 +71,11 @@ type Config struct {
 	// Skill Marketplace publishes its catalog.
 	SkillMarketplaceCatalogNamespace string
 	SandboxStateNamespace            string
+	// SandboxStorage selects the same trusted platform configuration as the
+	// Operator. The default class is a preference, never an additional approval.
+	SandboxStoragePlatformNamespace     string
+	SandboxStoragePlatformConfigMapName string
+	SandboxStorageDefaultClassName      string
 	// ConfigurationCoordination pins the authority shared with strict Sandbox
 	// admission for protected Team, Sandbox and AgentPolicy mutations.
 	ConfigurationCoordinationNamespace string
@@ -117,6 +122,10 @@ func Load() Config {
 		ConfigurationCoordinationNamespace: envOrDefault("CONFIGURATION_COORDINATION_NAMESPACE", ""),
 		ConfigurationCoordinationName:      envOrDefault("CONFIGURATION_COORDINATION_NAME", ""),
 		ConfigurationCoordinationUID:       envOrDefault("CONFIGURATION_COORDINATION_UID", ""),
+
+		SandboxStoragePlatformNamespace:     os.Getenv("SANDBOX_STORAGE_PLATFORM_NAMESPACE"),
+		SandboxStoragePlatformConfigMapName: os.Getenv("SANDBOX_STORAGE_PLATFORM_CONFIG_MAP_NAME"),
+		SandboxStorageDefaultClassName:      os.Getenv("SANDBOX_STORAGE_DEFAULT_CLASS_NAME"),
 	}
 }
 

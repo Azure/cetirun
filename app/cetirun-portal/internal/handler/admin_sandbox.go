@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,7 +24,10 @@ import (
 
 // AdminSandboxHandler manages reusable Sandbox configuration, not runtime installation.
 // Its routes require the same administrator middleware as Team and Policy routes.
-type AdminSandboxHandler struct{ Kube *kube.Client }
+type AdminSandboxHandler struct {
+	Kube   *kube.Client
+	Config config.Config
+}
 
 type SandboxDTO struct {
 	Generation         int64              `json:"generation"`

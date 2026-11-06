@@ -74,6 +74,16 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestSandboxStorageConfiguration(t *testing.T) {
+	t.Setenv("SANDBOX_STORAGE_PLATFORM_NAMESPACE", "operator-system")
+	t.Setenv("SANDBOX_STORAGE_PLATFORM_CONFIG_MAP_NAME", "sandbox-platform")
+	t.Setenv("SANDBOX_STORAGE_DEFAULT_CLASS_NAME", "example-csi")
+	cfg := Load()
+	if cfg.SandboxStoragePlatformNamespace != "operator-system" || cfg.SandboxStoragePlatformConfigMapName != "sandbox-platform" || cfg.SandboxStorageDefaultClassName != "example-csi" {
+		t.Fatal("Sandbox storage configuration did not load")
+	}
+}
+
 func TestLoad_Defaults(t *testing.T) {
 	os.Unsetenv("LISTEN_ADDR")
 	t.Setenv("ALLOWED_AGENT_TYPES", "")
