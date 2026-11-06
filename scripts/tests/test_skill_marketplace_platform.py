@@ -58,6 +58,7 @@ VALUES = {
     },
     "cetirun-portal": {
         "istio": {"host": "portal.example.invalid"}, "aiGateway": {"catalogNamespace": NAMESPACE},
+        "sandboxStorage": {"platformNamespace": NAMESPACE, "platformConfigMapName": "sandbox-platform"},
         "skillMarketplace": {"enabled": True, "catalogNamespace": NAMESPACE},
     },
 }

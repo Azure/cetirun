@@ -126,6 +126,16 @@ sandboxRuntimeDefaultsFromController: false
 # creation before any Kubernetes write. Explicit requests remain unchanged.
 sandboxRuntimeProfiles: {}
 
+# -- Read-only source for approved Sandbox HOME StorageClasses. The Portal
+# offers only the currently verified classes pinned by this platform ConfigMap.
+# Configure platformNamespace and platformConfigMapName together; leave both
+# empty for an unconfigured standalone Portal. defaultStorageClassName is only
+# a UI preference and does not approve a StorageClass.
+sandboxStorage:
+  platformNamespace: ""
+  platformConfigMapName: ""
+  defaultStorageClassName: ""
+
 aiGateway:
   # -- Namespace where the operator publishes the shared-model catalog (the
   # operator's namespace).

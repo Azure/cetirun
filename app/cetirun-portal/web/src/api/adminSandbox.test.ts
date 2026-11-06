@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createSandbox, updateSandbox, type SandboxUpsertRequest } from "./adminSandbox";
+import { createSandbox, getSandboxStorageOptions, updateSandbox, type SandboxUpsertRequest } from "./adminSandbox";
 
 const request: SandboxUpsertRequest = {
   name: "example",
@@ -54,5 +54,20 @@ describe("admin Sandbox defaults", () => {
     }), { status: 400, headers: { "content-type": "application/json" } }));
     await expect(createSandbox(request)).rejects.toThrow("type must be kata, gvisor or container");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads approved StorageClasses and runtime-specific HOME access modes", async () => {
+    const options = {
+      storageClasses: [{ name: "managed-csi", provisioner: "disk.csi.azure.com", allowVolumeExpansion: true }],
+      defaultStorageClassName: "managed-csi",
+      homeAccessModes: { kata: ["ReadWriteOncePod"] as const },
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(options), {
+      status: 200, headers: { "content-type": "application/json" },
+    }));
+    await expect(getSandboxStorageOptions()).resolves.toEqual(options);
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/sandbox-storage-options", expect.objectContaining({
+      headers: { "Content-Type": "application/json" },
+    }));
   });
 });
