@@ -8,9 +8,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -46,6 +48,11 @@ type StorageSource struct {
 // ClaimReconciler gives each Agent of a policy-bound Team a read-only claim of
 // the release storage, in the Agent's protected namespace. The Agent mounts
 // only its Team's subtree. The prerequisites of the Agent wait for the claim.
+//
+// It replaces a volume that an earlier claim of the Agent left, and the claim
+// and volume of an Agent whose volume names other storage than the configured
+// one. While the Agent runs, its claim stays until the operator stops the
+// Agent, which then starts again with the new claim.
 type ClaimReconciler struct {
 	// Client reads Agents and Teams from the cache and creates the objects.
 	Client client.Client
@@ -55,12 +62,26 @@ type ClaimReconciler struct {
 	Storage StorageSource
 	// ClaimName is the operator's sandboxSources.skillsClaimName.
 	ClaimName string
+
+	// logged holds the messages that are logged once for each claim.
+	logged sync.Map
 }
+
+// claimRetry is how soon the reconciler examines a claim again that is not
+// bound yet, or whose earlier claim or volume is going away.
+const claimRetry = 10 * time.Second
 
 // VolumeName is the cluster-scoped PersistentVolume of one Agent.
 func VolumeName(agentUID types.UID) string {
 	sum := sha256.Sum256([]byte(agentUID))
 	return "skills-mp-" + hex.EncodeToString(sum[:])[:20]
+}
+
+// logOnce logs a message about a claim once for each operator process.
+func (r *ClaimReconciler) logOnce(logger logr.Logger, claim *corev1.PersistentVolumeClaim, message string, keysAndValues ...any) {
+	if _, seen := r.logged.LoadOrStore(string(claim.UID)+"\x00"+message, true); !seen {
+		logger.Info(message, keysAndValues...)
+	}
 }
 
 // Reconcile ensures the claim of one Agent.
@@ -93,35 +114,89 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 		namespace.Annotations[agentUIDAnnotation] != string(agent.UID) {
 		return reconcile.Result{}, nil
 	}
+	volume := &corev1.PersistentVolume{}
+	err := r.Reader.Get(ctx, client.ObjectKey{Name: VolumeName(agent.UID)}, volume)
+	if apierrors.IsNotFound(err) {
+		volume = nil
+	} else if err != nil {
+		return reconcile.Result{}, err
+	}
 	claim := &corev1.PersistentVolumeClaim{}
-	err := r.Reader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: r.ClaimName}, claim)
+	err = r.Reader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: r.ClaimName}, claim)
 	switch {
 	case apierrors.IsNotFound(err):
+		claim = nil
+	case err != nil:
+		return reconcile.Result{}, err
+	case claim.Labels[api.SkillMarketplaceManagedLabel] != "true":
+		r.logOnce(logger, claim, "the namespace already has a skills claim that the Skill Marketplace did not create; leaving it", "namespace", namespace.Name)
+		return reconcile.Result{}, nil
+	case !claim.DeletionTimestamp.IsZero():
+		// A running Agent keeps its claim until the operator stops it.
+		return reconcile.Result{RequeueAfter: claimRetry}, nil
+	}
+	if volume != nil && volume.DeletionTimestamp.IsZero() && claim != nil && r.ownVolume(volume, claim) && !r.currentStorage(volume) {
+		// The storage changed. The Agent moves to it with a new claim; the
+		// earlier volume goes once the claim is gone.
+		if err := r.Client.Delete(ctx, claim, client.Preconditions{UID: &claim.UID, ResourceVersion: &claim.ResourceVersion}); client.IgnoreNotFound(err) != nil {
+			return reconcile.Result{}, fmt.Errorf("replace the skills claim of earlier storage: %w", err)
+		}
+		logger.Info("replacing the Team skills claim, whose volume uses earlier storage; the Agent restarts once with the configured storage",
+			"namespace", namespace.Name, "volume", volume.Name)
+		return reconcile.Result{RequeueAfter: claimRetry}, nil
+	}
+	if claim == nil {
 		claim = r.desiredClaim(agent, team, namespace.Name)
 		if err := r.Client.Create(ctx, claim); err != nil {
 			return reconcile.Result{}, fmt.Errorf("create the skills claim: %w", err)
 		}
 		logger.Info("created the Team skills claim", "namespace", namespace.Name, "team", team.Name)
-	case err != nil:
-		return reconcile.Result{}, err
-	case claim.Labels[api.SkillMarketplaceManagedLabel] != "true":
-		logger.Info("the namespace already has a skills claim that the Skill Marketplace did not create; leaving it", "namespace", namespace.Name)
-		return reconcile.Result{}, nil
 	}
 	if claim.Annotations[api.SkillMarketplaceTeamUIDAnnotation] != string(team.UID) {
-		logger.Info("the Agent's Team changed after its skills claim was created; the Agent needs recreation", "namespace", namespace.Name)
+		r.logOnce(logger, claim, "the Agent's Team changed after its skills claim was created; the Agent needs recreation", "namespace", namespace.Name)
 	}
-	volume := &corev1.PersistentVolume{}
-	err = r.Reader.Get(ctx, client.ObjectKey{Name: VolumeName(agent.UID)}, volume)
-	if apierrors.IsNotFound(err) {
+	if volume != nil && !r.ownVolume(volume, claim) {
+		// A volume of an earlier claim of the Agent. It can never bind the
+		// current claim, and no Pod uses it: the namespace has no other
+		// claim of that name. The container data stays.
+		if volume.DeletionTimestamp.IsZero() {
+			if err := r.Client.Delete(ctx, volume, client.Preconditions{UID: &volume.UID, ResourceVersion: &volume.ResourceVersion}); client.IgnoreNotFound(err) != nil {
+				return reconcile.Result{}, fmt.Errorf("remove the skills volume of an earlier claim: %w", err)
+			}
+			logger.Info("removed the Team skills volume of an earlier claim", "volume", volume.Name)
+		}
+		return reconcile.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	if volume == nil {
 		volume = r.desiredVolume(agent, claim)
 		if err := r.Client.Create(ctx, volume); err != nil {
 			return reconcile.Result{}, fmt.Errorf("create the skills volume: %w", err)
 		}
 		logger.Info("created the Team skills volume", "volume", volume.Name)
-		return reconcile.Result{}, nil
 	}
-	return reconcile.Result{}, err
+	if claim.Status.Phase != corev1.ClaimBound {
+		// Kubernetes binds the claim to its volume; nothing else reconciles
+		// the Agent soon if the binding needs another pass.
+		return reconcile.Result{RequeueAfter: claimRetry}, nil
+	}
+	return reconcile.Result{}, nil
+}
+
+// ownVolume reports whether the volume was created for the claim.
+func (r *ClaimReconciler) ownVolume(volume *corev1.PersistentVolume, claim *corev1.PersistentVolumeClaim) bool {
+	ref := volume.Spec.ClaimRef
+	return ref != nil && ref.Namespace == claim.Namespace && ref.Name == claim.Name && ref.UID == claim.UID
+}
+
+// currentStorage reports whether the volume names the configured storage.
+func (r *ClaimReconciler) currentStorage(volume *corev1.PersistentVolume) bool {
+	csi := volume.Spec.CSI
+	if csi == nil || volume.Spec.StorageClassName != r.Storage.StorageClassName {
+		return false
+	}
+	attributes := csi.VolumeAttributes
+	return attributes["resourceGroup"] == r.Storage.ResourceGroup && attributes["storageAccount"] == r.Storage.StorageAccount &&
+		attributes["containerName"] == r.Storage.ContainerName
 }
 
 func labels() map[string]string {

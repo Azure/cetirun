@@ -322,14 +322,16 @@ skillMarketplace:
     storageAccount: ""
     containerName: ""
     storageClassName: azureblob-nfs-premium
-    # -- Capacity of the worker's read-write volume and claim. Helm keeps both
-    # when the marketplace is turned off.
+    # -- Capacity of the worker's read-write volume and claim. The storage is
+    # part of their names: a change of these values gives the worker a new
+    # volume and claim, and the operator moves the Agents' claims.
     size: 100Gi
   # -- Skill names that the platform or images supply.
   reservedNames:
     - cetirun-memory
     - connected-services
-  # -- How long the releases of a deleted Team stay after the Team's last publication.
+  # -- How long the releases of a Team that left the policy-bound Teams stay
+  # after the worker found it gone.
   teamGCGrace: 1h
   # -- Limits of the repository and of each skill. The worker does not publish
   # a skill that exceeds a limit, and the Skills page shows the reason. Agents
@@ -341,7 +343,7 @@ skillMarketplace:
     # of the files and directories below repository.path together. The worker
     # checks the pack and the objects before it decodes the commit, and the
     # paths while it reads the tree. Keep worker.resources.limits.memory at
-    # least twice this size plus 256Mi.
+    # least three times this size plus 256Mi.
     maxRepositorySize: 256Mi
     # -- Most objects in the repository commit: its files, its directories and
     # the commit itself. Below repository.path, the worker also counts each
