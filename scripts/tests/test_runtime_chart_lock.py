@@ -135,6 +135,18 @@ class RuntimeChartLockTests(unittest.TestCase):
         self.assertEqual(tree_digest(self.source), changed_digest)
         self.assertFalse((self.work / "replaced").exists())
 
+    def test_rejects_output_inside_source_without_changing_source(self):
+        source_alias = self.work / "source-alias"
+        source_alias.symlink_to(self.source, target_is_directory=True)
+        for output in (self.source / "locked", self.source / "agents/locked",
+                       source_alias / "agents/locked"):
+            with self.subTest(output=output):
+                result = self.lock(output)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("outside the source chart", result.stderr)
+                self.assertFalse(output.exists())
+                self.assertEqual(tree_digest(self.source), self.source_digest)
+
     def test_rejects_a_missing_runtime_image_without_reading_the_next_runtime(self):
         values = self.source / "values.yaml"
         before, marker, openclaw = values.read_text().partition("openclaw:\n")

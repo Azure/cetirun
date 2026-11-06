@@ -148,8 +148,9 @@ def lock_chart(source: Path, output: Path, registry: str, version: str,
         fail(f"{source}: expected a Helm chart directory")
     if output.exists():
         fail(f"{output}: output chart path must not already exist")
-    if source.resolve() == output.resolve():
-        fail("source and output chart paths must differ")
+    source_path, output_path = source.resolve(), output.resolve()
+    if source_path == output_path or source_path in output_path.parents:
+        fail("output chart path must be outside the source chart")
     if not valid_registry(registry):
         fail("registry must be a lowercase OCI registry hostname with an optional repository prefix")
     if not TAG.fullmatch(version) or version == "latest":
