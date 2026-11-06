@@ -344,7 +344,9 @@ test("pinned Pi SDK tightens steering and follow-up inputs and propagates cancel
 test("Hermes adapter uses the same helper through request middleware and native tools", async t => {
   const f = await fixture(t);
   const output = execFileSync("python3", ["-B", path.join(moduleDir, "tests/hermes_adapter.py")], {
-    env: { ...f.env, MEMORY_TEST_ASSETS: f.assets, MEMORY_TEST_WORKSPACE: f.workspace, PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8",
+    env: { ...f.env, MEMORY_TEST_ASSETS: f.assets, MEMORY_TEST_WORKSPACE: f.workspace,
+      MEMORY_TEST_PLUGIN: path.join(moduleDir, "../cetirun-chart/agents/hermes/plugins/cetirun-memory-context/__init__.py"),
+      PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8",
   });
   assert.match(output, /Hermes native adapter checks passed/);
 });

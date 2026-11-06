@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,6 +27,88 @@ func TestHelpWorksWithoutBindingsAndDocumentsPayloads(t *testing.T) {
 				t.Fatalf("help missing %s", word)
 			}
 		}
+	}
+}
+
+func TestCLIAndMCPUseConfiguredMemoryRoots(t *testing.T) {
+	for _, relativeRoot := range []string{".cetirun/memory", ".hermes/memories/memory", "custom-store", "../external-store"} {
+		t.Run(relativeRoot, func(t *testing.T) {
+			home := t.TempDir()
+			root := filepath.Join(home, relativeRoot)
+			t.Setenv("HOME", home)
+			t.Setenv("CETIRUN_MEMORY_ROOT", root)
+			t.Setenv("CETIRUN_MEMORY_NO_MEMORY", "")
+			zero := int64(0)
+			request := memory.Request{ContractVersion: memory.ContractVersion, RequestID: "initialize", ExpectedGeneration: &zero, RequestContext: memory.RequestContext{Audience: "owner-private", Destination: memory.Destination{Kind: "owner-private"}, OpportunityID: "fixture-task", Scope: memory.Scope{"project": "fixture"}}, Payload: json.RawMessage(`{}`)}
+			data, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			if code := run(context.Background(), []string{"init"}, bytes.NewReader(data), &out, &errOut); code != 0 {
+				t.Fatalf("init: %d, %s, %s", code, out.String(), errOut.String())
+			}
+			if _, err := os.Stat(filepath.Join(root, "meta.json")); err != nil {
+				t.Fatal("store was not created at configured root", err)
+			}
+			out.Reset()
+			if code := run(context.Background(), []string{"status"}, bytes.NewReader(data), &out, &errOut); code != 0 || !strings.Contains(out.String(), `"initialized":true`) {
+				t.Fatalf("status: %d, %s, %s", code, out.String(), errOut.String())
+			}
+			out.Reset()
+			input := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"fixture"}}}` + "\n" +
+				`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cetirun_memory","arguments":{"command":"status","payload":{}}}}` + "\n"
+			if code := run(context.Background(), []string{"mcp", "--stdio", "--owner-private"}, strings.NewReader(input), &out, &errOut); code != 0 {
+				t.Fatalf("mcp: %d, %s", code, out.String())
+			}
+			var reply struct {
+				Result struct {
+					IsError bool `json:"isError"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result"`
+			}
+			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+			if len(lines) != 2 || json.Unmarshal([]byte(lines[1]), &reply) != nil || reply.Result.IsError || len(reply.Result.Content) != 1 || !strings.Contains(reply.Result.Content[0].Text, `"initialized":true`) {
+				t.Fatalf("MCP did not use configured store: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestCLIAndMCPRejectInvalidRootBindings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, root := range []string{"", "relative/memory", "/", home + "/memory/../other", home + "/memory/"} {
+		t.Run(root, func(t *testing.T) {
+			t.Setenv("CETIRUN_MEMORY_ROOT", root)
+			for _, args := range [][]string{{"status"}, {"mcp", "--stdio", "--owner-private"}} {
+				var out, errOut bytes.Buffer
+				if code := run(context.Background(), args, strings.NewReader(`{}`), &out, &errOut); code != 4 {
+					t.Errorf("%v accepted invalid binding %q: %d, %s, %s", args, root, code, out.String(), errOut.String())
+				}
+			}
+		})
+	}
+}
+
+func TestCustomMemoryRootRejectsSymlink(t *testing.T) {
+	home := t.TempDir()
+	target := t.TempDir()
+	root := filepath.Join(home, "memory")
+	if err := os.Symlink(target, root); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CETIRUN_MEMORY_ROOT", root)
+	var out, errOut bytes.Buffer
+	input := fmt.Sprintf(`{"contractVersion":%q,"requestId":"initialize","expectedGeneration":0,"requestContext":{"audience":"owner-private","destination":{"kind":"owner-private"},"opportunityId":"fixture-task","scope":{"project":"fixture"}},"payload":{}}`, memory.ContractVersion)
+	if code := run(context.Background(), []string{"init"}, strings.NewReader(input), &out, &errOut); code != 8 || !strings.Contains(out.String(), `"reason":"StorageError"`) {
+		t.Fatalf("symlink root: code %d, %s, %s", code, out.String(), errOut.String())
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("symlink target was changed", err)
 	}
 }
 

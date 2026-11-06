@@ -22,9 +22,13 @@ import (
 var version = "dev"
 var commit = "unknown"
 
+func validMemoryRoot(root string) bool {
+	return filepath.IsAbs(root) && filepath.Clean(root) == root && root != "/"
+}
+
 func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
 	if slices.Contains(args, "--help") || len(args) == 0 {
-		fmt.Fprintln(out, "Usage: cetirun-memory COMMAND < request.json\nCommands: status init query capture revise prepare commit propose check advance select retire record-source-check record-use trace lint repair-index forget plan|apply import plan|apply\nAsset installer: install-assets DIRECTORY\nNative adapter: native-event (memory-adapter/v1)\nOwner-private MCP: mcp --stdio --owner-private\nLegacy context adapter: native-context hermes|pi\nBinding: CETIRUN_MEMORY_ROOT.")
+		fmt.Fprintln(out, "Usage: cetirun-memory COMMAND < request.json\nCommands: status init query capture revise prepare commit propose check advance select retire record-source-check record-use trace lint repair-index forget plan|apply import plan|apply\nAsset installer: install-assets DIRECTORY\nNative adapter: native-event (memory-adapter/v1)\nOwner-private MCP: mcp --stdio --owner-private\nLegacy context adapter: native-context hermes|pi\nBinding: CETIRUN_MEMORY_ROOT (explicit canonical absolute path). Import sources: files under HOME.")
 		guide, err := assets.Files.ReadFile("skills/cetirun-memory/references/requests.md")
 		if err != nil {
 			return 8
@@ -71,7 +75,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if slices.Equal(args, []string{"mcp", "--stdio", "--owner-private"}) {
 		root := os.Getenv("CETIRUN_MEMORY_ROOT")
 		cwd, err := os.Getwd()
-		if err != nil || root != filepath.Join(os.Getenv("HOME"), ".cetirun/memory") {
+		if err != nil || !validMemoryRoot(root) {
 			return 4
 		}
 		id := rand.Text()
@@ -116,7 +120,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return 2
 	}
 	root := os.Getenv("CETIRUN_MEMORY_ROOT")
-	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root || filepath.Base(root) != "memory" || filepath.Base(filepath.Dir(root)) != ".cetirun" {
+	if !validMemoryRoot(root) {
 		fmt.Fprintln(errOut, "BindingUnavailable")
 		return 4
 	}

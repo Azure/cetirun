@@ -517,9 +517,12 @@ func credentialFile(rel string) bool {
 
 func (s *Store) importFile(name string) ([]byte, error) {
 	// Only individually selected files inside this instance's HOME are read.
-	home := filepath.Dir(filepath.Dir(s.Config.Root))
+	home := s.Config.Home
 	rel, err := filepath.Rel(home, name)
-	if err != nil || !filepath.IsAbs(name) || !relative(rel) || strings.HasPrefix(rel, ".cetirun/memory/") {
+	if err != nil || !filepath.IsAbs(name) || !relative(rel) {
+		return nil, problem(2, "InvalidPath")
+	}
+	if rootRelative, err := filepath.Rel(s.Config.Root, name); err != nil || relative(rootRelative) {
 		return nil, problem(2, "InvalidPath")
 	}
 	if credentialFile(rel) {
