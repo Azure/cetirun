@@ -187,13 +187,16 @@ teams/<team-uid>/releases/<id>/.cetirun-release.json
   that, it does not change the release. A release that is needed again, for
   example after a revert, is written again unless it is complete.
 - The worker keeps the current release and the two newest other releases. It
-  removes an older release ten minutes after it stopped being current, so an
-  Agent that started just before the change can still copy it.
-- When a Team leaves the list of policy-bound Teams, the worker removes its
-  releases one hour (`teamGCGrace`) after it finds the Team gone. A Team
+  removes an older release when it has not been current for ten minutes, so
+  an Agent that started just before the change can still copy it.
+- When a Team leaves the list of policy-bound Teams, the worker keeps its
+  releases for one hour (`teamGCGrace`) after it finds the Team gone. A Team
   leaves the list when you delete it, or when you remove its Agent Policy. A
   Team that comes back within the hour keeps its releases, and with them its
   retained skills. When the worker starts again, the hour starts again.
+- The worker removes releases during a full pass. It makes a full pass after
+  each new commit or change of a policy-bound Team, and every ten minutes.
+  Thus a removal can occur up to ten minutes after the times above.
 - The worker removes a release or the subtree of a Team by renaming it first.
   A removal that stops part way never leaves an incomplete release under its
   own name.
@@ -465,17 +468,16 @@ kubectl get configmap cetirun-skill-marketplace -n cetirun-system \
 ### Move to other storage
 
 To move the releases to another container or storage account, for example to
-one that only private endpoints reach, prepare it as in [Storage](#storage).
-Change the `storage` fields in the environment file, and run `make deploy`
-again. Then:
+one that only private endpoints reach, prepare an empty container as in
+[Storage](#storage). Change the `storage` fields in the environment file, and
+run `make deploy` again. Then:
 
 - The worker gets a volume and a claim of the new storage. Helm removes its
   earlier volume and claim. The earlier container keeps its data.
 - The worker publishes the release of each Team in the new container, from
   the repository. A [retained skill](#retained-and-missing-skills) exists only
-  in the earlier container, so it becomes missing. To keep the retained
-  skills, copy the `teams` directory of the earlier container to the new one
-  before the run.
+  in the earlier container, so it becomes missing. To keep such a skill, add
+  it to the repository again before the move.
 - The operator replaces the skills claim of each Agent of a policy-bound
   Team. Each running Agent stops and starts again one time, and then copies
   the release of its Team from the new container.
@@ -493,7 +495,9 @@ Remove the `skillMarketplace` block from the environment file, and run
   that it copied. The operator does not apply changes to the Agent until you
   remove the skills from the Team, or turn the Skill Marketplace on again.
 - When you add the block again and run `make deploy`, these Agents become
-  `Ready` again, without a restart.
+  `Ready` again. They restart only to apply changes that waited, for example
+  a new release that a `make deploy` run installed while the Skill
+  Marketplace was off.
 
 ## Select the skills of a Team
 
