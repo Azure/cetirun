@@ -254,6 +254,10 @@ func TestClaimWaitsWhileItsEarlierClaimIsDeleted(t *testing.T) {
 	if err := kube.Update(ctx, claim); err != nil {
 		t.Fatal(err)
 	}
+	claim.Status.Phase = corev1.ClaimBound
+	if err := kube.Status().Update(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
 	if err := kube.Delete(ctx, claim); err != nil {
 		t.Fatal(err)
 	}
