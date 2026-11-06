@@ -157,6 +157,12 @@ class CetiAdminStartupTests(unittest.TestCase):
         self.assertEqual(self.recorded()[1]["timezone"], "Etc/GMT+7")
         self.assertEqual(self.recorded()[1]["helm"], "unrelated-helm")
 
+    def test_startup_restores_native_python_without_container_env_entry(self):
+        self.env.pop("HERMES_PYTHON")
+        result = self.run_startup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([item["event"] for item in self.recorded()], ["runtime", "skills", "sync", "supervisor"])
+
     def test_native_sync_failure_stops_startup_without_exposing_output(self):
         result = self.run_startup(FIXTURE_SYNC_FAIL="true")
         self.assertNotEqual(result.returncode, 0)

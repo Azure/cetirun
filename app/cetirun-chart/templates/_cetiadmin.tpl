@@ -158,8 +158,6 @@ Licensed under the MIT License.
   value: {{ .Values.cetiadmin.agentUID | quote }}
 - name: KUBECONFIG
   value: /var/run/cetirun/kubernetes/config
-- name: HERMES_PYTHON
-  value: /usr/local/bin/hermes-python
 - name: HERMES_INSTALL_DIR
   value: /usr/local/lib/hermes-agent
 {{- with .Values.cetiadmin.monitor }}
