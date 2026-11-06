@@ -30,6 +30,18 @@ export interface SandboxUpsertRequest extends Omit<SandboxSpec, "type"> {
   resourceVersion?: string;
 }
 
+export type SandboxHomeAccessMode = SandboxSpec["storage"]["home"]["accessMode"];
+export interface SandboxStorageClassOption {
+  name: string;
+  provisioner: string;
+  allowVolumeExpansion: boolean;
+}
+export interface SandboxStorageOptions {
+  storageClasses: SandboxStorageClassOption[];
+  defaultStorageClassName: string;
+  homeAccessModes: Partial<Record<SandboxSpec["type"], SandboxHomeAccessMode[]>>;
+}
+
 async function request(path: string, method = "GET", body?: unknown): Promise<Response> {
   const response = await apiFetch(`/api/v1/admin/sandboxes${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
   if (!response.ok) {
@@ -51,4 +63,12 @@ export async function updateSandbox(name: string, body: SandboxUpsertRequest): P
 }
 export async function deleteSandbox(box: Pick<SandboxDTO, "name" | "uid" | "resourceVersion">): Promise<void> {
   await request(`/${encodeURIComponent(box.name)}`, "DELETE", { uid: box.uid, resourceVersion: box.resourceVersion });
+}
+
+export async function getSandboxStorageOptions(): Promise<SandboxStorageOptions> {
+  const response = await apiFetch("/api/v1/admin/sandbox-storage-options");
+  if (!response.ok) {
+    throw await adminResponseError(response, "Unable to load approved Sandbox StorageClasses");
+  }
+  return response.json();
 }

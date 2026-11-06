@@ -652,6 +652,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         portal = {
             "istio": {"host": "portal.example.com"},
             "aiGateway": {"catalogNamespace": namespace},
+            "sandboxStorage": {"platformNamespace": namespace, "platformConfigMapName": "sandbox-platform"},
         }
         values = {"istio": {"enabled": True}, "cetirun-operator": operator, "cetirun-portal": portal}
         for native in (False, True):
