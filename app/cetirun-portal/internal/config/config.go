@@ -14,7 +14,7 @@ import (
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 )
 
-var defaultAllowedAgentTypes = []string{"hermes", "openclaw"}
+var defaultAllowedAgentTypes = []string{"hermes", "openclaw", "custom"}
 
 // Config holds all runtime configuration for the portal.
 type Config struct {

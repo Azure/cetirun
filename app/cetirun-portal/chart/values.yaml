@@ -96,10 +96,11 @@ features:
   tailscaleEnabled: false
   # -- Maximum number of Agents a user may create. 0 = unlimited.
   maxInstancesPerUser: 1
-  # -- Agent types users can create. Add custom to enable Custom self-service.
+  # -- Agent types users can create. Remove custom to disable Custom self-service.
   allowedAgentTypes:
     - hermes
     - openclaw
+    - custom
   # -- Enable the Microsoft Entra Agent Identity lifecycle for new Agents.
   agentIdentityEnabled: false
   # -- Enable owner-scoped account connections and Agent tool grants.

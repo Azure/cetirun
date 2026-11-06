@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -148,10 +149,10 @@ func pendingHomeProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	if err := json.Unmarshal(raw, &defaults); err != nil {
 		t.Fatal(err)
 	}
-	if defaults.Enabled || defaults.StorageClass != "default" || defaults.StorageSize != "100Gi" || defaults.AccessMode != "ReadWriteOnce" {
+	if !defaults.Enabled || defaults.StorageClass != "default" || defaults.StorageSize != "100Gi" || defaults.AccessMode != "ReadWriteOnce" {
 		t.Fatalf("unexpected Custom HOME defaults: %+v", defaults)
 	}
-	defaults.Enabled, defaults.ApprovedImages = true, p.config.ApprovedImages
+	defaults.ApprovedImages = p.config.ApprovedImages
 	p = NewKubernetesCustomBindings(p.reconciler, defaults)
 	ctx := context.Background()
 	if _, err := p.Resolve(ctx, instance, nil); err == nil || !strings.Contains(err.Error(), "ownership recorded") {
@@ -527,10 +528,44 @@ func TestKubernetesCustomImageUpgradeRetainsHome(t *testing.T) {
 	}
 }
 
+func TestCustomRuntimeDefaultsRequireImageApproval(t *testing.T) {
+	chart, err := loader.Load("../../chart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(chart.Values["customRuntime"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseCustomRuntimeConfig(string(raw))
+	if err != nil || !cfg.Enabled || len(cfg.ApprovedImages) != 0 {
+		t.Fatalf("default Custom provider must start without image approvals: %v", err)
+	}
+	p, instance := providerFixture(t)
+	p = NewKubernetesCustomBindings(p.reconciler, cfg)
+	if _, err := p.Resolve(context.Background(), instance, nil); err == nil || !strings.Contains(err.Error(), "not approved") {
+		t.Fatalf("unapproved image was not rejected: %v", err)
+	}
+	if p.UsesAIGateway(instance) {
+		t.Fatal("default configuration authorized model access for an unapproved image")
+	}
+	namespaces := &corev1.NamespaceList{}
+	if err := p.reconciler.List(context.Background(), namespaces); err != nil || len(namespaces.Items) != 0 {
+		t.Fatalf("unapproved image created a namespace: %v", err)
+	}
+	cfg.Enabled = false
+	cfg.ApprovedImages = []string{*instance.Spec.Agent.Image}
+	p = NewKubernetesCustomBindings(p.reconciler, cfg)
+	if err := p.authorize(instance); err == nil || p.UsesAIGateway(instance) {
+		t.Fatal("explicitly disabled provider authorized an approved image")
+	}
+}
+
 func TestCustomRuntimeConfigRequiresExplicitApproval(t *testing.T) {
 	p, _ := providerFixture(t)
 	for _, edit := range []func(*CustomRuntimeConfig){
 		func(c *CustomRuntimeConfig) { c.ApprovedImages = []string{"registry.example.com/pi:latest"} },
+		func(c *CustomRuntimeConfig) { c.ApprovedImages = slices.Repeat(c.ApprovedImages, 65) },
 		func(c *CustomRuntimeConfig) { c.FSGroup = 0 },
 		func(c *CustomRuntimeConfig) { c.StorageSize = "0" },
 		func(c *CustomRuntimeConfig) { c.AccessMode = "ReadOnlyMany" },

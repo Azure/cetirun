@@ -57,8 +57,8 @@ func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
 	if !cfg.Enabled {
 		return cfg, nil
 	}
-	if len(cfg.ApprovedImages) == 0 || len(cfg.ApprovedImages) > 64 {
-		return cfg, fmt.Errorf("Custom provisioning requires approved image digests")
+	if len(cfg.ApprovedImages) > 64 {
+		return cfg, fmt.Errorf("Custom provisioning supports at most 64 approved images")
 	}
 	digest := regexp.MustCompile(`^[^[:space:]]+@sha256:[a-f0-9]{64}$`)
 	for _, image := range cfg.ApprovedImages {
