@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -82,6 +83,32 @@ class RuntimeChartLockTests(unittest.TestCase):
         self.assertIn(f"- {qualified}\n", locked)
         self.assertIn(f"- {REGISTRY}/openclaw-gateway@{OPENCLAW_DIGEST}\n", locked)
         self.assertEqual(tree_digest(self.source), self.source_digest)
+
+    def test_locked_package_excludes_stale_dependencies_and_python_caches(self):
+        stale = self.source / "charts/stale"
+        stale.mkdir(parents=True)
+        (stale / "Chart.yaml").write_text("apiVersion: v2\nname: stale\nversion: 0.1.0\n")
+        cache = self.source / "__pycache__"
+        cache.mkdir()
+        (cache / "stale.pyc").write_bytes(b"stale cache")
+        source_digest = tree_digest(self.source)
+
+        output = self.work / "locked"
+        result = self.lock(output)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((output / "charts").exists())
+        self.assertFalse((output / "__pycache__").exists())
+        self.assertEqual(tree_digest(self.source), source_digest)
+
+        result = subprocess.run(
+            ["helm", "package", str(output), "--destination", str(self.work)],
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with tarfile.open(next(self.work.glob("*.tgz"))) as archive:
+            names = archive.getnames()
+        self.assertIn("cetirun/values.yaml", names)
+        self.assertFalse(any("charts" in Path(name).parts or "__pycache__" in Path(name).parts for name in names))
 
     def test_rejects_invalid_or_replacing_lock_inputs_without_changing_source(self):
         cases = (

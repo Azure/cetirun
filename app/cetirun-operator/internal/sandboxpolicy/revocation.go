@@ -17,7 +17,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 )
 
@@ -170,17 +169,17 @@ func canonicalBindingReferences(values []BindingReference) []BindingReference {
 // for change/rebind revocation, including resources not currently listable.
 // Pass the manager's APIReader, not an eventually consistent cache.
 func OwnedBindingInventory(ctx context.Context, c client.Reader, agentName string, agentUID types.UID) ([]BindingReference, error) {
-	return ownedBindingInventory(ctx, c, client.ObjectKey{}, agentName, agentUID, false)
+	return ownedBindingInventory(ctx, c, nil, agentName, agentUID, false)
 }
 
-// OwnedBindingInventoryForCetiAdminSource recognizes the separate, strictly
-// validated CetiAdmin access contract. The source must come from deployment
-// configuration; callers must not derive it from a candidate binding.
-func OwnedBindingInventoryForCetiAdminSource(ctx context.Context, c client.Reader, source client.ObjectKey, agentName string, agentUID types.UID) ([]BindingReference, error) {
-	return ownedBindingInventory(ctx, c, source, agentName, agentUID, false)
+// OwnedBindingInventoryWithPlatformAccess recognizes a separate, strictly
+// validated platform access contract. The verifier must be bound to deployment
+// configuration; callers must not derive its authority from a candidate binding.
+func OwnedBindingInventoryWithPlatformAccess(ctx context.Context, c client.Reader, verify PlatformAccessVerifier, agentName string, agentUID types.UID) ([]BindingReference, error) {
+	return ownedBindingInventory(ctx, c, verify, agentName, agentUID, false)
 }
 
-func ownedBindingInventory(ctx context.Context, c client.Reader, source client.ObjectKey, agentName string, agentUID types.UID, clusterRolesOnly bool) ([]BindingReference, error) {
+func ownedBindingInventory(ctx context.Context, c client.Reader, verify PlatformAccessVerifier, agentName string, agentUID types.UID, clusterRolesOnly bool) ([]BindingReference, error) {
 	if c == nil || agentUID == "" || len(validation.IsDNS1123Subdomain(agentName)) != 0 {
 		return nil, fmt.Errorf("%w: an Agent identity and binding client are required", ErrOwnership)
 	}
@@ -204,10 +203,12 @@ func ownedBindingInventory(ctx context.Context, c client.Reader, source client.O
 		if !relevant {
 			return nil
 		}
-		if owned, err := cetiadmin.OwnedAccessBinding(ctx, c, source, object, agentName, agentUID); err != nil {
-			return fmt.Errorf("%w: CetiAdmin access binding is not confirmed: %w", ErrOwnership, err)
-		} else if owned {
-			return nil
+		if verify != nil {
+			if owned, err := verify(ctx, c, object, agentName, agentUID); err != nil {
+				return fmt.Errorf("%w: platform access binding is not confirmed: %w", ErrOwnership, err)
+			} else if owned {
+				return nil
+			}
 		}
 		if terminal, err := terminalpolicy.OwnedBinding(ctx, c, object, agentName, agentUID); err != nil {
 			return fmt.Errorf("%w: terminal access binding is not confirmed: %w", ErrOwnership, err)

@@ -46,7 +46,7 @@ func (s GrantJournalStore) verifyKubernetesBindings(ctx context.Context, agentNa
 	if !cm.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("%w: the grant journal is terminating", ErrUnavailable)
 	}
-	owned, err := ownedBindingInventory(ctx, s.APIReader, s.CetiAdminSource, agentName, agentUID, true)
+	owned, err := ownedBindingInventory(ctx, s.APIReader, s.PlatformAccessVerifier, agentName, agentUID, true)
 	if err != nil {
 		return err
 	}

@@ -49,7 +49,7 @@ func TestCetiAdminRuntimeAccessIsNotASandboxGrant(t *testing.T) {
 		if _, err := sandboxpolicy.OwnedBindingInventory(f.ctx, f.kube, agent.Name, agent.UID); !errors.Is(err, sandboxpolicy.ErrOwnership) {
 			t.Fatal("an unconfigured cleanup inventory accepted CetiAdmin access:", err)
 		}
-		inventory, err := sandboxpolicy.OwnedBindingInventoryForCetiAdminSource(f.ctx, f.kube, f.r.Source, agent.Name, agent.UID)
+		inventory, err := sandboxpolicy.OwnedBindingInventoryWithPlatformAccess(f.ctx, f.kube, cetiadmin.RuntimeAccessBindingVerifier(f.r.Source), agent.Name, agent.UID)
 		if err != nil {
 			t.Fatalf("valid CetiAdmin runtime access became an unconfirmed Sandbox grant: %v", err)
 		}
@@ -75,7 +75,7 @@ func TestCetiAdminRuntimeAccessIsNotASandboxGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if _, err := sandboxpolicy.OwnedBindingInventoryForCetiAdminSource(f.ctx, f.kube, f.r.Source, agent.Name, agent.UID); !errors.Is(err, sandboxpolicy.ErrOwnership) {
+		if _, err := sandboxpolicy.OwnedBindingInventoryWithPlatformAccess(f.ctx, f.kube, cetiadmin.RuntimeAccessBindingVerifier(f.r.Source), agent.Name, agent.UID); !errors.Is(err, sandboxpolicy.ErrOwnership) {
 			t.Fatal("tampered CetiAdmin runtime binding concealed an unconfirmed Sandbox grant:", err)
 		}
 	})
@@ -134,6 +134,54 @@ func TestCetiAdminSandboxInventoryRecognizesProtectedAndCustomRuntimeAccess(t *t
 		}
 		requireCetiAdminSandboxInventoryEmpty(t, f, agent)
 	})
+}
+
+func TestCetiAdminRuntimeAccessGrantJournalRequiresTrustedAuthority(t *testing.T) {
+	f := newCetiAdminFixture(t)
+	agent, _ := f.target("journal-target", "identity-lab", "hermes", true)
+	f.converge()
+	if err := f.r.ReconcileRuntimeAccess(f.ctx, agent.Name); err != nil {
+		t.Fatal(err)
+	}
+	journal := sandboxpolicy.GrantJournalStore{
+		Client: f.kube, APIReader: f.kube, Namespace: f.r.Source.Namespace,
+		PlatformAccessVerifier: cetiadmin.RuntimeAccessBindingVerifier(f.r.Source),
+	}
+	if err := journal.Record(f.ctx, agent.Name, agent.UID, nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, verify := range map[string]func(sandboxpolicy.GrantJournalStore) error{
+		"hold release": func(store sandboxpolicy.GrantJournalStore) error {
+			return store.VerifyKubernetesBindingIntents(f.ctx, agent.Name, agent.UID, nil)
+		},
+		"pod admission": func(store sandboxpolicy.GrantJournalStore) error {
+			return store.VerifyKubernetesBindings(f.ctx, agent.Name, agent.UID, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := verify(journal); err != nil {
+				t.Fatalf("valid platform access blocked an empty Sandbox grant journal: %v", err)
+			}
+			unconfigured := journal
+			unconfigured.PlatformAccessVerifier = nil
+			if err := verify(unconfigured); !errors.Is(err, sandboxpolicy.ErrOwnership) {
+				t.Fatalf("unconfigured verifier accepted platform access: %v", err)
+			}
+			binding := cetiAdminRuntimeBinding(t, f, agent)
+			original := binding.DeepCopy()
+			binding.Subjects[0].Name = "untrusted-service-account"
+			if err := f.kube.Update(f.ctx, binding); err != nil {
+				t.Fatal(err)
+			}
+			if err := verify(journal); !errors.Is(err, sandboxpolicy.ErrOwnership) {
+				t.Fatalf("tampered platform access escaped grant verification: %v", err)
+			}
+			binding.Subjects = original.Subjects
+			if err := f.kube.Update(f.ctx, binding); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func TestCetiAdminSandboxInventoryRejectsUnavailableAuthority(t *testing.T) {
@@ -239,7 +287,7 @@ func TestCetiAdminSandboxInventoryRejectsRuntimeAuthorityDrift(t *testing.T) {
 
 func requireCetiAdminSandboxInventoryEmpty(t *testing.T, f *cetiAdminFixture, agent *api.Agent) {
 	t.Helper()
-	inventory, err := sandboxpolicy.OwnedBindingInventoryForCetiAdminSource(f.ctx, f.kube, f.r.Source, agent.Name, agent.UID)
+	inventory, err := sandboxpolicy.OwnedBindingInventoryWithPlatformAccess(f.ctx, f.kube, cetiadmin.RuntimeAccessBindingVerifier(f.r.Source), agent.Name, agent.UID)
 	if err != nil || len(inventory) != 0 {
 		t.Fatalf("valid CetiAdmin access was not excluded from Sandbox inventory: inventory=%+v err=%v", inventory, err)
 	}
@@ -247,7 +295,7 @@ func requireCetiAdminSandboxInventoryEmpty(t *testing.T, f *cetiAdminFixture, ag
 
 func requireCetiAdminSandboxInventoryRejected(t *testing.T, f *cetiAdminFixture, agent *api.Agent) {
 	t.Helper()
-	if _, err := sandboxpolicy.OwnedBindingInventoryForCetiAdminSource(f.ctx, f.kube, f.r.Source, agent.Name, agent.UID); !errors.Is(err, sandboxpolicy.ErrOwnership) {
+	if _, err := sandboxpolicy.OwnedBindingInventoryWithPlatformAccess(f.ctx, f.kube, cetiadmin.RuntimeAccessBindingVerifier(f.r.Source), agent.Name, agent.UID); !errors.Is(err, sandboxpolicy.ErrOwnership) {
 		t.Fatal("drifted CetiAdmin access concealed an unconfirmed Sandbox grant:", err)
 	}
 }

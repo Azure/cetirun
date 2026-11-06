@@ -168,7 +168,9 @@ def lock_chart(source: Path, output: Path, registry: str, version: str,
             fail(f"{source_values}: refusing to replace existing {runtime}.image.digest")
         parse_qualified_images(source / "agents" / runtime / "profile.yaml")
 
-    shutil.copytree(source, output)
+    # Keep the same source boundary as ordinary release packaging. Stale
+    # dependency charts and Python caches are not inputs to a runtime lock.
+    shutil.copytree(source, output, ignore=shutil.ignore_patterns("charts", "__pycache__"))
     for runtime, digest in digests.items():
         lock_digest(output / "values.yaml", runtime, digest)
         write_profile(output / "agents" / runtime / "profile.yaml",

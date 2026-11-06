@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
@@ -86,7 +87,8 @@ func (h *PodHandler) validateReconciledKubernetesGrants(ctx context.Context, exp
 	if err != nil {
 		return podDenied("GrantInventoryInvalid", "current Kubernetes grant inventory is invalid")
 	}
-	journal := sandboxpolicy.GrantJournalStore{APIReader: h.reader, Namespace: h.config.StateNamespace, CetiAdminSource: h.config.CetiAdminSource}
+	journal := sandboxpolicy.GrantJournalStore{APIReader: h.reader, Namespace: h.config.StateNamespace,
+		PlatformAccessVerifier: cetiadmin.RuntimeAccessBindingVerifier(h.config.CetiAdminSource)}
 	verify := journal.VerifyKubernetesBindings
 	if !confirmed {
 		verify = journal.VerifyKubernetesBindingIntents

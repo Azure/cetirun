@@ -149,7 +149,7 @@ spec:
             - name: CONFIGURATION_COORDINATION_UID
               value: {{ .Values.configurationCoordination.uid | quote }}
             {{- end }}
-            {{- if or (default false ((.Values.features).agentIdentityEnabled)) (default false ((.Values.features).agentToolsEnabled)) }}
+            {{- if or .Values.istio.internalAuthMTLS (default false ((.Values.features).agentIdentityEnabled)) (default false ((.Values.features).agentToolsEnabled)) }}
             - name: ENTRA_TENANT_ID
               value: {{ required "agentIdentity.tenantId is required when verified Portal identity is enabled" .Values.agentIdentity.tenantId | quote }}
             - name: PORTAL_OIDC_CLIENT_ID

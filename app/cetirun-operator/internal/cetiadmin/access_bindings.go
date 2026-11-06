@@ -25,10 +25,8 @@ const (
 	AnnotationRuntimeGrantNamespace    = "cetirun.microsoft.com/cetiadmin-grant-namespace"
 	AnnotationRuntimeGrantNamespaceUID = "cetirun.microsoft.com/cetiadmin-grant-namespace-uid"
 
-	// These Sandbox markers are deliberately duplicated here rather than
-	// imported from sandboxpolicy: sandboxpolicy classifies this contract, so
-	// importing it would create a dependency cycle. Their stable wire names are
-	// part of the persisted Sandbox grant contract.
+	// Keep these stable Sandbox wire markers local to the access contract;
+	// the policy package receives its platform verifier from orchestration.
 	sandboxAgentUIDLabel       = "sandbox.cetirun.microsoft.com/agent-uid"
 	sandboxGrantRevisionMarker = "sandbox.cetirun.microsoft.com/grant-revision"
 )
@@ -62,6 +60,17 @@ func RuntimeReaderRules() []rbacv1.PolicyRule {
 		{APIGroups: []string{"security.istio.io"}, Resources: []string{"authorizationpolicies", "peerauthentications"}, Verbs: []string{"get"}},
 		{APIGroups: []string{"autoscaling"}, Resources: []string{"horizontalpodautoscalers"}, Verbs: []string{"get"}},
 		{APIGroups: []string{"policy"}, Resources: []string{"poddisruptionbudgets"}, Verbs: []string{"get"}},
+	}
+}
+
+// RuntimeAccessBindingVerifier binds classification to the configured source,
+// without making the Sandbox policy package depend on CetiAdmin orchestration.
+func RuntimeAccessBindingVerifier(source client.ObjectKey) func(context.Context, client.Reader, client.Object, string, types.UID) (bool, error) {
+	if source.Name == "" || source.Namespace == "" {
+		return nil
+	}
+	return func(ctx context.Context, reader client.Reader, object client.Object, agentName string, agentUID types.UID) (bool, error) {
+		return OwnedAccessBinding(ctx, reader, source, object, agentName, agentUID)
 	}
 }
 
