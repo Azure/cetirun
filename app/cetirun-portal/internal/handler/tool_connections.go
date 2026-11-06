@@ -355,8 +355,8 @@ func (h *ToolConnectionsHandler) instanceHeaders(w http.ResponseWriter, r *http.
 	}
 	readOnly := !h.runtimeSupported(instance)
 	if readOnly && !allowReadOnly {
-		if instance.Spec.SandboxRef != "" {
-			writeError(w, http.StatusBadRequest, "unsupported_sandbox", "CetiRun Connections MCP is not available to Sandbox Agents")
+		if sandboxRequested(instance) {
+			writeError(w, http.StatusBadRequest, "unsupported_sandbox", "This Sandbox runtime is not enabled for CetiRun Connections MCP in this deployment")
 		} else {
 			writeError(w, http.StatusBadRequest, "unsupported_agent_type", "CetiRun Connections MCP is not qualified for this runtime in this deployment")
 		}
@@ -379,7 +379,14 @@ func (h *ToolConnectionsHandler) runtimeSupported(instance *cetirunv1alpha1.Agen
 		}
 		return false
 	}
-	if instance.Spec.SandboxRef != "" || (instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeHermes && instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeOpenClaw) {
+	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeHermes && instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeOpenClaw {
+		return false
+	}
+	// Policy-managed native workloads receive Connections only through an
+	// explicit deployment allowlist. The Broker independently verifies their
+	// native workload identity before each mutation. Legacy native workloads
+	// retain the previous nil-allowlist compatibility behavior.
+	if sandboxRequested(instance) && h.RuntimeTypes == nil {
 		return false
 	}
 	if h.RuntimeTypes == nil {
@@ -387,6 +394,41 @@ func (h *ToolConnectionsHandler) runtimeSupported(instance *cetirunv1alpha1.Agen
 	}
 	for _, runtimeType := range h.RuntimeTypes {
 		if runtimeType == string(instance.Spec.Agent.Type) && (runtimeType == "hermes" || runtimeType == "openclaw") {
+			return true
+		}
+	}
+	return false
+}
+
+// sandboxRequested mirrors the persisted Agent signals the Broker uses to
+// classify a workload as policy-managed. SandboxRef alone is insufficient:
+// policy selection and recovery can leave durable status, finalizer, or
+// authorization signals after the requested reference is no longer present.
+func sandboxRequested(instance *cetirunv1alpha1.Agent) bool {
+	for _, key := range []string{
+		cetirunv1alpha1.AnnotationSandboxAuthorization,
+		cetirunv1alpha1.AnnotationSandboxReauthorize,
+	} {
+		if _, present := instance.Annotations[key]; present {
+			return true
+		}
+	}
+	for _, finalizer := range instance.Finalizers {
+		switch finalizer {
+		case cetirunv1alpha1.SandboxHoldFinalizer,
+			cetirunv1alpha1.SandboxPreparationFinalizer,
+			cetirunv1alpha1.SandboxBootstrapFinalizer:
+			return true
+		}
+	}
+	if instance.Spec.SandboxRef != "" ||
+		(instance.Spec.ModelAccess != nil && instance.Spec.ModelAccess.MonthlyBudgetUSD != "") ||
+		instance.Status.Policy != nil || instance.Status.Sandbox != nil ||
+		(instance.Status.AIGateway != nil && instance.Status.AIGateway.PolicyRevision != "") {
+		return true
+	}
+	for _, condition := range instance.Status.Conditions {
+		if condition.Type == cetirunv1alpha1.ConditionSandboxReady {
 			return true
 		}
 	}
