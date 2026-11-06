@@ -127,6 +127,7 @@ type Client struct {
 	operatorDomain              string
 	registryCredentialNamespace string
 	sandboxStateNamespace       string
+	skillMarketplaceCatalog     skillMarketplaceCatalogCache
 }
 
 // ConfigurationCoordination serializes writes protected by the optional

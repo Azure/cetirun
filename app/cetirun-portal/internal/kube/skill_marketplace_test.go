@@ -116,3 +116,68 @@ func TestGetSkillMarketplaceCatalogReportsReadFailures(t *testing.T) {
 		t.Fatalf("known=%v err=%v, want the read failure", known, err)
 	}
 }
+
+// Every Agent page polls the catalog. While the ConfigMap stays the same, a
+// read transfers only its metadata and returns the catalog decoded before; a
+// change of the ConfigMap is read at once.
+func TestGetSkillMarketplaceCatalogReadsTheCatalogOnlyAfterAChange(t *testing.T) {
+	valid, err := json.Marshal(exampleSkillMarketplaceCatalog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := newFakeClient(skillMarketplaceConfigMap("cetirun-system", map[string]string{cetirunv1alpha1.SkillMarketplaceCatalogKey: string(valid)}))
+	var full, metadata int
+	counting := interceptor.NewClient(storage.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			switch obj.(type) {
+			case *corev1.ConfigMap:
+				full++
+			case *metav1.PartialObjectMetadata:
+				metadata++
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	portal := NewClient(counting)
+	ctx := context.Background()
+	for range 5 {
+		catalog, known, err := portal.GetSkillMarketplaceCatalog(ctx, "cetirun-system")
+		if err != nil || !known || !reflect.DeepEqual(catalog, exampleSkillMarketplaceCatalog()) {
+			t.Fatalf("catalog %+v known=%v err=%v", catalog, known, err)
+		}
+	}
+	if full != 1 || metadata != 5 {
+		t.Fatalf("five polls read the whole catalog %d times and its metadata %d times, want once and five times", full, metadata)
+	}
+	changed := exampleSkillMarketplaceCatalog()
+	changed.Commit = strings.Repeat("c", 40)
+	raw, err := json.Marshal(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := &corev1.ConfigMap{}
+	if err := storage.Get(ctx, client.ObjectKey{Namespace: "cetirun-system", Name: cetirunv1alpha1.SkillMarketplaceCatalogConfigMap}, stored); err != nil {
+		t.Fatal(err)
+	}
+	stored.Data[cetirunv1alpha1.SkillMarketplaceCatalogKey] = string(raw)
+	if err := storage.Update(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	if catalog, _, err := portal.GetSkillMarketplaceCatalog(ctx, "cetirun-system"); err != nil || catalog.Commit != changed.Commit || full != 2 {
+		t.Fatalf("a changed catalog must be read at once: commit %q, %d full reads, %v", catalog.Commit, full, err)
+	}
+	// A catalog that the Portal cannot decode is not kept.
+	stored.Data[cetirunv1alpha1.SkillMarketplaceCatalogKey] = "{"
+	if err := storage.Update(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, known, err := portal.GetSkillMarketplaceCatalog(ctx, "cetirun-system"); err == nil || known {
+			t.Fatalf("a damaged catalog must be an error: known=%v err=%v", known, err)
+		}
+	}
+	// Another namespace is another catalog.
+	if _, known, err := portal.GetSkillMarketplaceCatalog(ctx, "other"); err != nil || known {
+		t.Fatalf("another namespace: known=%v err=%v", known, err)
+	}
+}

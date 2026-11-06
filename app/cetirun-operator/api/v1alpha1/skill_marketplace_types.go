@@ -124,7 +124,8 @@ type SkillMarketplaceCatalog struct {
 	SyncedAt string `json:"syncedAt,omitempty"`
 	// CheckedAt is when the repository was last checked.
 	CheckedAt string `json:"checkedAt,omitempty"`
-	// Error describes the last failed check or publication, without secrets.
+	// Error describes the last failed check of the repository, without
+	// secrets. A failed publication is the Error of its Team.
 	Error string `json:"error,omitempty"`
 	// Skills are the valid skills at Commit, sorted by name.
 	Skills []SkillMarketplaceSkill `json:"skills,omitempty"`
