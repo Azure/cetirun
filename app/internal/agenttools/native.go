@@ -36,14 +36,39 @@ type NativeObjectMeta struct {
 	Namespace         string            `json:"namespace"`
 	UID               string            `json:"uid"`
 	ResourceVersion   string            `json:"resourceVersion"`
+	Generation        int64             `json:"generation"`
 	DeletionTimestamp *time.Time        `json:"deletionTimestamp"`
 	Annotations       map[string]string `json:"annotations"`
 	Labels            map[string]string `json:"labels"`
 	Finalizers        []string          `json:"finalizers"`
 	OwnerReferences   []struct {
-		APIVersion, Kind, Name, UID string
-		Controller                  bool
+		APIVersion, Kind, Name, UID    string
+		Controller, BlockOwnerDeletion bool
 	} `json:"ownerReferences"`
+}
+
+// nativeAgentObservation contains the Agent fields that the native proof
+// authorizes. ResourceVersion deliberately remains metadata for the live-read
+// checks, but is not part of the final Agent fence: status reconciliation can
+// change it without changing this workload's authorization.
+type nativeAgentObservation struct {
+	Metadata NativeObjectMeta `json:"metadata"`
+	Spec     struct {
+		Suspended bool `json:"suspended"`
+	} `json:"spec"`
+	Status struct {
+		Namespace string `json:"namespace"`
+	} `json:"status"`
+}
+
+func sameNativeAgentObservation(before, after nativeAgentObservation) bool {
+	if before.Metadata.ResourceVersion == "" || after.Metadata.ResourceVersion == "" ||
+		before.Metadata.Generation <= 0 || after.Metadata.Generation <= 0 {
+		return false
+	}
+	before.Metadata.ResourceVersion = ""
+	after.Metadata.ResourceVersion = ""
+	return reflect.DeepEqual(before, after)
 }
 
 // NativePodIdentity is an observed identity, not an eligibility flag. A token
@@ -105,20 +130,12 @@ func (v NativeVerifier) Verify(ctx context.Context, identity NativePodIdentity) 
 		account.Metadata.Namespace != identity.Namespace || account.Metadata.DeletionTimestamp != nil {
 		return ErrNativeProofInvalid
 	}
-	var agent struct {
-		Metadata NativeObjectMeta `json:"metadata"`
-		Spec     struct {
-			Suspended bool `json:"suspended"`
-		} `json:"spec"`
-		Status struct {
-			Namespace string `json:"namespace"`
-		} `json:"status"`
-	}
+	var agent nativeAgentObservation
 	agentName := ns.OwnerReferences[0].Name
 	if len(agentName) > 253 || !nativeReferenceName.MatchString(agentName) || v.Get(ctx, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+agentName, &agent) != nil {
 		return ErrNativeUnavailable
 	}
-	if agent.Metadata.UID != identity.AgentUID || agent.Metadata.ResourceVersion == "" || agent.Metadata.Name != agentName ||
+	if agent.Metadata.UID != identity.AgentUID || agent.Metadata.ResourceVersion == "" || agent.Metadata.Generation <= 0 || agent.Metadata.Name != agentName ||
 		agent.Metadata.DeletionTimestamp != nil || agent.Spec.Suspended || agent.Status.Namespace != identity.Namespace {
 		return ErrNativeProofInvalid
 	}
@@ -217,9 +234,7 @@ func (v NativeVerifier) Verify(ctx context.Context, identity NativePodIdentity) 
 	var currentNamespace, currentAccount struct {
 		Metadata NativeObjectMeta `json:"metadata"`
 	}
-	var currentAgent struct {
-		Metadata NativeObjectMeta `json:"metadata"`
-	}
+	var currentAgent nativeAgentObservation
 	if v.Get(ctx, path, &currentPod) != nil || v.Get(ctx, key, &current) != nil ||
 		v.Get(ctx, namespacePath, &currentNamespace) != nil || v.Get(ctx, accountPath, &currentAccount) != nil ||
 		v.Get(ctx, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+agentName, &currentAgent) != nil {
@@ -232,7 +247,7 @@ func (v NativeVerifier) Verify(ctx context.Context, identity NativePodIdentity) 
 		before.Metadata.UID != after.Metadata.UID || before.Metadata.ResourceVersion != after.Metadata.ResourceVersion ||
 		!nativeProjectionMatches(currentPod, identity, v.Audience) ||
 		!reflect.DeepEqual(configuration, current) ||
-		!reflect.DeepEqual(agent.Metadata, currentAgent.Metadata) ||
+		!sameNativeAgentObservation(agent, currentAgent) ||
 		ns.UID != currentNamespace.Metadata.UID || ns.ResourceVersion != currentNamespace.Metadata.ResourceVersion ||
 		account.Metadata.UID != currentAccount.Metadata.UID || account.Metadata.ResourceVersion != currentAccount.Metadata.ResourceVersion {
 		return ErrNativeProofInvalid
