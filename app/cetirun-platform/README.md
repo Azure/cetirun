@@ -339,8 +339,10 @@ diagnostics for other platform namespaces, omit it or use `[]`.
 Native Custom Sandbox namespaces use their exact Agent owner reference and
 Agent UID/name protection markers. They do not require a legacy Custom
 ownership receipt. Legacy Custom namespaces still require their immutable
-receipt. Both paths reject foreign ownership, and native Sandbox namespace
-access does not grant a CetiAdmin exec exception.
+receipt. Both paths reject foreign ownership. Protected Sandbox namespace
+access does not grant a CetiAdmin exec exception or Secret reads or writes.
+Pod, log, and Event diagnostics remain available. Ordinary runtime namespace
+Secret permissions are unchanged.
 
 When Copilot is enabled, the configured Portal authoring identity can record
 the owner's Copilot model list, sign-in generation, and sign-in timestamp on

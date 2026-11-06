@@ -102,7 +102,10 @@ func TestCetiAdminNativeCustomAccessUsesNamespaceOwnership(t *testing.T) {
 			f := newCetiAdminFixture(t)
 			agent, namespace := f.target("native-custom", "engineering", api.AgentTypeCustom, true)
 			if retainedStatus {
-				agent.Status.Sandbox = &api.SandboxStatus{SandboxUID: "sandbox-uid"}
+				agent.Status.Sandbox = &api.SandboxStatus{
+					TeamUID: "historical-team", SandboxUID: "historical-sandbox", AgentPolicyUID: "historical-policy",
+					AppliedRevision: "historical-revision",
+				}
 				if err := f.kube.Status().Update(f.ctx, agent); err != nil {
 					t.Fatal(err)
 				}
@@ -129,6 +132,11 @@ func TestCetiAdminNativeCustomAccessUsesNamespaceOwnership(t *testing.T) {
 			if !controllerRulesAllow(role.Rules, "", "pods", "get", "") ||
 				controllerRulesAllow(role.Rules, "", "pods/exec", "create", "") {
 				t.Fatal("native Custom access is not protected namespace access")
+			}
+			for _, verb := range []string{"get", "list", "watch"} {
+				if controllerRulesAllow(role.Rules, "", "secrets", verb, "") {
+					t.Errorf("native Custom access grants Secret %s", verb)
+				}
 			}
 			receipt := &corev1.ConfigMap{}
 			if err := f.kube.Get(f.ctx, f.r.Runtime.ownershipKey(agent), receipt); !apierrors.IsNotFound(err) {
@@ -254,6 +262,11 @@ func TestCetiAdminAccessFollowsLiveAgentsAndExclusions(t *testing.T) {
 	role = f.targetRole(instanceNamespace("protected"))
 	if controllerRulesAllow(role.Rules, "", "pods/exec", "create", "pod") || controllerRulesAllow(role.Rules, "", "pods", "delete", "pod") {
 		t.Fatal("protected Sandbox acquired exec or Pod deletion")
+	}
+	for _, verb := range []string{"get", "list", "watch"} {
+		if controllerRulesAllow(role.Rules, "", "secrets", verb, "") {
+			t.Errorf("protected Sandbox acquired Secret %s", verb)
+		}
 	}
 	role = f.targetRole(platformNS.Name)
 	if _, _, err := cetiadmin.ResolveRuntimeTarget(f.ctx, f.kube, f.config, state.Record, "", platformNS.Name); err == nil {

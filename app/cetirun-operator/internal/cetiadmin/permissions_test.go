@@ -27,7 +27,7 @@ func TestCetiAdminPermissionCapabilitiesAndBoundaries(t *testing.T) {
 	for _, item := range []struct{ group, resource, verb, name string }{
 		{"cetirun.microsoft.com", "agents", "create", "new-agent"}, {"cetirun.microsoft.com", "agents", "patch", "ordinary"},
 		{"", "pods/log", "get", "pod"}, {"", "pods/exec", "create", "pod"}, {"", "pods", "delete", "pod"},
-		{"", "secrets", "get", "helm-revision"}, {"", "secrets", "list", ""}, {"", "secrets", "create", "helm-revision"},
+		{"", "secrets", "get", "helm-revision"}, {"", "secrets", "list", ""}, {"", "secrets", "watch", ""}, {"", "secrets", "create", "helm-revision"},
 		{"", "secrets", "patch", "native-auth"}, {"", "configmaps", "create", "runtime-config"},
 		{"apps", "statefulsets", "patch", "runtime"}, {"", "services", "patch", "runtime"},
 		{"", "persistentvolumeclaims", "patch", "home"}, {"", "events", "create", "audit"}, {"events.k8s.io", "events", "patch", "audit"},
@@ -61,6 +61,11 @@ func TestCetiAdminPermissionCapabilitiesAndBoundaries(t *testing.T) {
 	for _, resource := range []string{"pods/exec", "pods/attach", "pods/portforward", "pods", "configmaps", "secrets"} {
 		if rulesAllow(rules, "", resource, "create", "anything") || rulesAllow(rules, "", resource, "delete", "anything") {
 			t.Errorf("protected target gained direct write/exec: %s", resource)
+		}
+	}
+	for _, verb := range []string{"get", "list", "watch", "create", "update", "patch", "delete"} {
+		if rulesAllow(rules, "", "secrets", verb, "runtime-secret") {
+			t.Errorf("protected target gained Secret %s", verb)
 		}
 	}
 }

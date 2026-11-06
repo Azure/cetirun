@@ -104,13 +104,13 @@ func ClusterOperationRules() []rbacv1.PolicyRule {
 // objects, maintenance handoff, allowed fields and storage growth.
 func NamespaceOperationRules(protected bool) []rbacv1.PolicyRule {
 	rules := []rbacv1.PolicyRule{
-		ReadRule("", "secrets"),
 		{APIGroups: []string{""}, Resources: []string{"pods/log"}, Verbs: []string{"get"}},
 		{APIGroups: []string{""}, Resources: []string{"events"}, Verbs: []string{"create", "update", "patch"}},
 		{APIGroups: []string{"events.k8s.io"}, Resources: []string{"events"}, Verbs: []string{"create", "update", "patch"}},
 		{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"update", "patch"}},
 	}
 	if !protected {
+		rules = slices.Insert(rules, 0, ReadRule("", "secrets"))
 		rules = append(rules,
 			rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
 			rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
