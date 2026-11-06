@@ -13,7 +13,10 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -105,6 +108,12 @@ func ResolveRuntimeTarget(ctx context.Context, reader client.Reader, config Conf
 		}
 		return agent, target, nil
 	}
+	if agent.Spec.SandboxRef != "" || agent.Status.Sandbox != nil {
+		if !NativeSandboxNamespaceOwned(agent, ns) {
+			return nil, target, fmt.Errorf("%w: native Custom namespace ownership", ErrConflict)
+		}
+		return agent, target, nil
+	}
 	hash := sha256.Sum256([]byte(agent.UID))
 	record := &corev1.ConfigMap{}
 	key := client.ObjectKey{Namespace: self.Source.Namespace, Name: "custom-ownership-" + hex.EncodeToString(hash[:16])}
@@ -124,4 +133,17 @@ func ResolveRuntimeTarget(ctx context.Context, reader client.Reader, config Conf
 		return nil, target, fmt.Errorf("%w: Custom runtime ownership", ErrConflict)
 	}
 	return agent, target, nil
+}
+
+// Native Sandbox namespaces have exact Agent ownership and protection markers,
+// not the immutable receipt used by legacy Custom namespace adoption.
+func NativeSandboxNamespaceOwned(agent *api.Agent, namespace *corev1.Namespace) bool {
+	return agent != nil && namespace != nil && agent.UID != "" && agent.Namespace == "" &&
+		(agent.Spec.SandboxRef != "" || agent.Status.Sandbox != nil) &&
+		namespace.UID != "" && namespace.Namespace == "" && namespace.DeletionTimestamp == nil &&
+		namespace.Name == "cetirun-"+agent.Name &&
+		namespace.Labels[sandboxworkload.ProtectedNamespaceLabel] == "true" &&
+		namespace.Annotations[sandboxworkload.AgentUIDAnnotation] == string(agent.UID) &&
+		namespace.Annotations[sandboxworkload.AgentNameAnnotation] == agent.Name &&
+		equality.Semantic.DeepEqual(namespace.OwnerReferences, []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)})
 }

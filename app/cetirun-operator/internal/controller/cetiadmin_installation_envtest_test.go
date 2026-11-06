@@ -29,6 +29,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	"github.com/go-logr/logr"
 	"helm.sh/helm/v3/pkg/chart/loader"
@@ -696,20 +697,34 @@ func TestCetiAdminInstallationAPIServer(t *testing.T) {
 		h.reconcile(t)
 		h.runtimeProjection(t)
 	})
-	t.Run("protected-runtime-keeps-diagnostics-without-execution-or-secret-writes", func(t *testing.T) {
+	t.Run("protected-runtime-keeps-diagnostics-without-execution-or-secrets", func(t *testing.T) {
 		h := newCetiAdminInstallationAPI(t, true)
 		h.converge(t)
 		machine := h.machine(t)
 		original := h.runtimeProjection(t)
-		for _, protection := range []string{"team", "namespace"} {
+		for _, protection := range []string{"team", "namespace", "sandbox-reference", "retained-sandbox-status"} {
 			t.Run(protection, func(t *testing.T) {
-				agent, namespace := h.target(t, "protected-"+protection, "guarded-"+protection, api.AgentTypeHermes, true)
-				secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "diagnostic-secret", Namespace: namespace.Name}, Data: map[string][]byte{"fixture": []byte("read-only")}}
+				kind := api.AgentTypeHermes
+				if protection == "sandbox-reference" || protection == "retained-sandbox-status" {
+					kind = api.AgentTypeCustom
+				}
+				agent, namespace := h.target(t, "protected-"+protection, "guarded-"+protection, kind, true)
+				secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "runtime-secret", Namespace: namespace.Name}, Data: map[string][]byte{"fixture": []byte("synthetic")}}
 				h.create(t, secret)
-				h.runtimeAccess(t, agent.Name)
-				h.assertPermission(t, machine, "create", "", "pods", "exec", namespace.Name, "runtime-pod", true)
-				h.assertPermission(t, machine, "update", "", "secrets", "", namespace.Name, secret.Name, true)
-				if protection == "team" {
+				if kind != api.AgentTypeCustom {
+					h.runtimeAccess(t, agent.Name)
+					h.assertPermission(t, machine, "create", "", "pods", "exec", namespace.Name, "runtime-pod", true)
+					h.assertPermission(t, machine, "update", "", "secrets", "", namespace.Name, secret.Name, true)
+					for _, verb := range []string{"get", "list", "watch"} {
+						name := ""
+						if verb == "get" {
+							name = secret.Name
+						}
+						h.assertPermission(t, machine, verb, "", "secrets", "", namespace.Name, name, true)
+					}
+				}
+				switch protection {
+				case "team":
 					team := &api.Team{}
 					if err := h.operator.Get(h.ctx, client.ObjectKey{Name: agent.Spec.Team}, team); err != nil {
 						t.Fatal(err)
@@ -718,7 +733,7 @@ func TestCetiAdminInstallationAPIServer(t *testing.T) {
 					if err := h.admin.Update(h.ctx, team); err != nil {
 						t.Fatal(err)
 					}
-				} else {
+				case "namespace":
 					current := &corev1.Namespace{}
 					if err := h.operator.Get(h.ctx, client.ObjectKeyFromObject(namespace), current); err != nil {
 						t.Fatal(err)
@@ -728,16 +743,51 @@ func TestCetiAdminInstallationAPIServer(t *testing.T) {
 					if err := h.operator.Patch(h.ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 						t.Fatal(err)
 					}
+				case "sandbox-reference", "retained-sandbox-status":
+					if protection == "sandbox-reference" {
+						agent.Spec.SandboxRef = "native-sandbox"
+						if err := h.admin.Update(h.ctx, agent); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						agent.Status.Sandbox = &api.SandboxStatus{
+							TeamUID: "historical-team", SandboxUID: "historical-sandbox", AgentPolicyUID: "historical-policy",
+							AppliedRevision: "historical-revision",
+						}
+						if err := h.operator.Status().Update(h.ctx, agent); err != nil {
+							t.Fatal(err)
+						}
+					}
+					namespace.Labels = map[string]string{sandboxworkload.ProtectedNamespaceLabel: "true"}
+					namespace.Annotations = map[string]string{
+						sandboxworkload.AgentUIDAnnotation:  string(agent.UID),
+						sandboxworkload.AgentNameAnnotation: agent.Name,
+					}
+					namespace.OwnerReferences = []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)}
+					if err := h.admin.Update(h.ctx, namespace); err != nil {
+						t.Fatal(err)
+					}
 				}
 				h.runtimeAccess(t, agent.Name)
 				h.assertPermission(t, machine, "create", "", "pods", "exec", namespace.Name, "runtime-pod", false)
 				h.assertPermission(t, machine, "delete", "", "pods", "", namespace.Name, "runtime-pod", false)
 				h.assertPermission(t, machine, "update", "", "secrets", "", namespace.Name, secret.Name, false)
 				h.assertPermission(t, machine, "get", "", "pods", "log", namespace.Name, "runtime-pod", true)
-				stored := &corev1.Secret{}
-				if err := machine.Get(h.ctx, client.ObjectKeyFromObject(secret), stored); err != nil || !bytes.Equal(stored.Data["fixture"], secret.Data["fixture"]) {
-					t.Fatalf("protected runtime lost allowed Secret diagnostics: %v", err)
+				h.assertPermission(t, machine, "list", "", "pods", "", namespace.Name, "", true)
+				for _, verb := range []string{"get", "list", "watch"} {
+					name := ""
+					if verb == "get" {
+						name = secret.Name
+					}
+					h.assertPermission(t, machine, verb, "", "secrets", "", namespace.Name, name, false)
 				}
+				if err := machine.Get(h.ctx, client.ObjectKeyFromObject(secret), &corev1.Secret{}); !apierrors.IsForbidden(err) {
+					t.Fatalf("protected runtime accepted a Secret read: %v", err)
+				}
+				if err := machine.List(h.ctx, &corev1.SecretList{}, client.InNamespace(namespace.Name)); !apierrors.IsForbidden(err) {
+					t.Fatalf("protected runtime accepted a Secret list: %v", err)
+				}
+				stored := secret.DeepCopy()
 				stored.Data["fixture"] = []byte("forbidden-write")
 				if err := machine.Update(h.ctx, stored, client.DryRunAll); !apierrors.IsForbidden(err) {
 					t.Fatalf("protected runtime accepted a Secret write: %v", err)

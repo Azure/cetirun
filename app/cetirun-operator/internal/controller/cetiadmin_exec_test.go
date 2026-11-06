@@ -14,6 +14,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"github.com/google/cel-go/cel"
@@ -258,6 +259,44 @@ func (f *execFixture) state(edit func(*cetiadmin.Installation)) {
 func (f *execFixture) grant() error { return f.r.GrantExecAccess(f.ctx, f.binding, f.target) }
 func (f *execFixture) revoke() error {
 	return f.r.RevokeExecAccess(f.ctx, f.binding.Record(), f.target)
+}
+
+func TestCetiAdminNativeCustomExecWithdrawalKeepsProtection(t *testing.T) {
+	f := newExecFixture(t, api.AgentTypeCustom)
+	if err := f.grant(); err != nil {
+		t.Fatal(err)
+	}
+	validations := f.policy().DeepCopy().Spec.Validations
+	agent := f.agent()
+	agent.Spec.SandboxRef = "native-sandbox"
+	f.update(agent)
+	namespace := &corev1.Namespace{}
+	f.get(f.target.Namespace, namespace)
+	namespace.OwnerReferences = []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)}
+	namespace.Labels = map[string]string{sandboxworkload.ProtectedNamespaceLabel: "true"}
+	namespace.Annotations[sandboxworkload.AgentUIDAnnotation] = string(agent.UID)
+	namespace.Annotations[sandboxworkload.AgentNameAnnotation] = agent.Name
+	f.update(namespace)
+	receipt := &corev1.ConfigMap{}
+	if err := f.kube.Get(f.ctx, f.r.Runtime.ownershipKey(agent), receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Delete(f.ctx, receipt); err != nil {
+		t.Fatal(err)
+	}
+	f.target.Protected = true
+	if err := f.revoke(); err != nil {
+		t.Fatal("native exec withdrawal required a legacy Custom receipt:", err)
+	}
+	policy := f.policy()
+	if len(policy.Spec.MatchConditions) != 0 || policy.Annotations[cetiAdminExecReceipt] != "" ||
+		!reflect.DeepEqual(policy.Spec.Validations, validations) {
+		t.Fatal("native withdrawal changed the terminal guard or retained an Admin exception")
+	}
+	attempts := len(f.attempts)
+	if err := f.grant(); err == nil || len(f.attempts) != attempts {
+		t.Fatal("protected native Custom runtime received an exec exception")
+	}
 }
 
 func TestCetiAdminExecUsesCurrentObjectsWithoutInventory(t *testing.T) {

@@ -18,7 +18,7 @@ func rawMetadataOnly(request admission.Request) bool {
 	return rawChangesOnly(request, nil, []string{"finalizers", "managedFields"})
 }
 
-func rawChangesOnly(request admission.Request, specFields, metadataFields []string) bool {
+func rawChangesOnly(request admission.Request, specFields, metadataFields []string, annotationFields ...string) bool {
 	objects := [2]map[string]any{}
 	for i, raw := range [][]byte{request.Object.Raw, request.OldObject.Raw} {
 		if len(raw) == 0 || decodeJSON(raw, &objects[i], false) != nil || objects[i] == nil {
@@ -30,6 +30,20 @@ func rawChangesOnly(request admission.Request, specFields, metadataFields []stri
 		}
 		for _, field := range metadataFields {
 			delete(metadata, field)
+		}
+		if len(annotationFields) != 0 {
+			if raw, present := metadata["annotations"]; present {
+				annotations, ok := raw.(map[string]any)
+				if !ok {
+					return false
+				}
+				for _, field := range annotationFields {
+					delete(annotations, field)
+				}
+				if len(annotations) == 0 {
+					delete(metadata, "annotations")
+				}
+			}
 		}
 		if len(specFields) != 0 {
 			spec, ok := objects[i]["spec"].(map[string]any)
