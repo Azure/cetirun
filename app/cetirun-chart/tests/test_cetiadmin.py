@@ -133,6 +133,18 @@ class CetiAdminChartTests(unittest.TestCase):
         self.assertNotIn("cetiadmin-kubernetes", {item["name"] for item in pod["volumes"]})
         self.assertNotIn("command", pod["containers"][0])
 
+    def test_main_environment_has_unique_merge_keys(self):
+        for enabled in (False, True):
+            with self.subTest(cetiadmin=enabled):
+                values = prepared_values() if enabled else ordinary_values()
+                pod = statefulset(self.rendered(values))["spec"]["template"]["spec"]
+                main = next(item for item in pod["containers"] if item["name"] == "cetirun")
+                names = [item["name"] for item in main["env"]]
+                self.assertEqual(len(names), len(set(names)), "duplicate env names break Helm strategic merge patches")
+                self.assertEqual([item for item in main["env"] if item["name"] == "HERMES_PYTHON"], [
+                    {"name": "HERMES_PYTHON", "value": "/usr/local/bin/hermes-python"},
+                ])
+
     def test_export_init_is_unprivileged_and_has_only_bounded_assets(self):
         values = prepared_values()
         pod = statefulset(self.rendered(values))["spec"]["template"]["spec"]
