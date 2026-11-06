@@ -74,6 +74,16 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestSandboxStorageConfiguration(t *testing.T) {
+	t.Setenv("SANDBOX_STORAGE_PLATFORM_NAMESPACE", "operator-system")
+	t.Setenv("SANDBOX_STORAGE_PLATFORM_CONFIG_MAP_NAME", "sandbox-platform")
+	t.Setenv("SANDBOX_STORAGE_DEFAULT_CLASS_NAME", "example-csi")
+	cfg := Load()
+	if cfg.SandboxStoragePlatformNamespace != "operator-system" || cfg.SandboxStoragePlatformConfigMapName != "sandbox-platform" || cfg.SandboxStorageDefaultClassName != "example-csi" {
+		t.Fatal("Sandbox storage configuration did not load")
+	}
+}
+
 func TestLoad_Defaults(t *testing.T) {
 	os.Unsetenv("LISTEN_ADDR")
 	t.Setenv("ALLOWED_AGENT_TYPES", "")
@@ -83,7 +93,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ListenAddr != ":8080" {
 		t.Errorf("ListenAddr = %q, want default %q", cfg.ListenAddr, ":8080")
 	}
-	if !reflect.DeepEqual(cfg.AllowedAgentTypes, []string{"hermes", "openclaw"}) {
+	if !reflect.DeepEqual(cfg.AllowedAgentTypes, []string{"hermes", "openclaw", "custom"}) {
 		t.Errorf("AllowedAgentTypes = %v, want Hermes first", cfg.AllowedAgentTypes)
 	}
 }
@@ -131,7 +141,7 @@ func TestEnvOrDefaultAgentTypes(t *testing.T) {
 	}
 }
 
-func TestCustomTypeCanBeOptedIn(t *testing.T) {
+func TestCustomTypeAvailabilityKeepsAgentIdentitySeparate(t *testing.T) {
 	t.Setenv("ALLOWED_AGENT_TYPES", "hermes,custom")
 	t.Setenv("FEATURE_AGENT_IDENTITY_ENABLED", "false")
 	cfg := Load()
@@ -141,8 +151,12 @@ func TestCustomTypeCanBeOptedIn(t *testing.T) {
 	if cfg.AgentIdentityEnabled {
 		t.Fatal("Custom type availability enabled Agent Identity")
 	}
-	if (Config{}).AgentTypeAllowed("custom") || !(Config{}).AgentTypeAllowed("hermes") {
+	if !(Config{}).AgentTypeAllowed("custom") || !(Config{}).AgentTypeAllowed("hermes") {
 		t.Fatal("default type availability changed")
+	}
+	t.Setenv("ALLOWED_AGENT_TYPES", "hermes,openclaw")
+	if Load().AgentTypeAllowed("custom") {
+		t.Fatal("explicit type list did not disable Custom")
 	}
 }
 

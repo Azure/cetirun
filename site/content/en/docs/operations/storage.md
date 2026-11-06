@@ -10,7 +10,7 @@ volumes for shared skills.
 ## Two storage purposes
 
 An instance’s `/home/vibe` contains private workspace state. By default, the
-operator, the standalone runtime chart, and the opt-in Custom provider all use
+operator, the standalone runtime chart, and the Custom provider all use
 a `100Gi` `ReadWriteOnce` home claim with the StorageClass named `default`. On
 AKS, this class uses Azure Disk. If `persistence.storageClass` is empty,
 Kubernetes selects the cluster's default class instead. That class can have a
@@ -45,6 +45,24 @@ instances that already exist. Custom HOME must match the configured storage
 profile and the instance's recorded claim template. A separate approved
 migration or expansion is still necessary to change the storage class or size
 of a claim that already exists.
+
+## Sandbox HOME class selection
+
+When native Sandbox sources are configured, Portal administrators choose HOME
+StorageClasses from the platform's approved `platform.json` source rather than
+typing a cluster-specific name. The Portal verifies the referenced ConfigMap
+and each selected class's UID and provisioner before showing it. A configured
+default is only a form preference; it is not an approval.
+
+The Portal does not show a stale, missing, or replaced class as a choice. It
+keeps that value visible when editing an older Sandbox so that an administrator
+can make an explicit replacement. A failed source read or an empty approved
+set prevents a save. HOME access modes are declared by the selected runtime
+registration. They are not inferred from the storage driver.
+
+This UI behavior is not a CSI qualification. Sandbox admission and the
+controller continue to verify the selected class when configuration is saved
+and before execution.
 
 ## Provision shared Blob NFS
 

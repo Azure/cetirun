@@ -17,7 +17,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -384,8 +383,8 @@ func TestCetiAdminMaintenanceObserverCommonCustomBootstrap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := cetiadmin.ResolveRuntimeTarget(ctx, f.kube, f.state.Configuration, f.state.Record, common.Agent.Name, common.Namespace.Name); !apierrors.IsNotFound(err) {
-		t.Fatalf("expected the missing legacy Custom receipt to prevent Admin authorization: %v", err)
+	if _, target, err := cetiadmin.ResolveRuntimeTarget(ctx, f.kube, f.state.Configuration, f.state.Record, common.Agent.Name, common.Namespace.Name); err != nil || !target.Protected {
+		t.Fatalf("native ownership must resolve only as a protected target without a legacy receipt: %v", err)
 	}
 	for _, caller := range []string{testController, "system:serviceaccount:kube-system:statefulset-controller"} {
 		t.Run(caller, func(t *testing.T) {

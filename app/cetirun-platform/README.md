@@ -383,6 +383,21 @@ regardless of their Team. There is no Agent or Team allowlist. The optional
 select managed Agents and is not passed to the runtime. If you do not want
 diagnostics for other platform namespaces, omit it or use `[]`.
 
+Native Custom Sandbox namespaces use their exact Agent owner reference and
+Agent UID/name protection markers. They do not require a legacy Custom
+ownership receipt. Legacy Custom namespaces still require their immutable
+receipt. Both paths reject foreign ownership. Protected Sandbox namespace
+access does not grant a CetiAdmin exec exception or Secret reads or writes.
+Pod, log, and Event diagnostics remain available. Ordinary runtime namespace
+Secret permissions are unchanged.
+
+When Copilot is enabled, the configured Portal authoring identity can record
+the owner's Copilot model list, sign-in generation, and sign-in timestamp on
+the installed CetiAdmin Agent. This exception changes only those annotations.
+The installation configuration, owner bindings, other metadata, and the
+Agent specification remain protected. CetiAdmin cannot write its own sign-in
+metadata through this exception.
+
 New installation inputs and the deployment helper reject the removed `scope`
 field. A disabled installation that already exists has a separate, bounded
 upgrade path described below.
@@ -725,6 +740,41 @@ For standalone Portal releases, make sure that the Operator configuration
 matches before you enable the opt-in. For these releases, disable the opt-in
 before you disable native execution. These defaults do not authorize a runtime
 or change the selected AgentPolicy/Sandbox checks.
+
+### Sandbox HOME StorageClass choices
+
+The Portal's Sandbox form obtains HOME StorageClass choices from the exact
+operator-namespace ConfigMap selected by
+`cetirun-operator.sandboxSources.platformConfigMapName`. The platform deploy
+command wires this reference automatically when Sandbox sources are enabled.
+It also grants the Portal read access to that one ConfigMap and to individual
+StorageClasses; it does not grant list, watch, or storage mutation access.
+
+For a standalone Portal chart, configure the same source explicitly:
+
+```yaml
+sandboxStorage:
+  platformNamespace: cetirun-system
+  platformConfigMapName: sandbox-platform
+  # Optional UI preference. It must still be approved and current.
+  defaultStorageClassName: managed-csi
+```
+
+For a direct `cetirun-platform` Helm release, set the same values beneath
+`cetirun-portal.sandboxStorage` and keep them equal to the bundled Operator's
+namespace and `sandboxSources.platformConfigMapName`. The umbrella chart
+rejects a partial or mismatched reference. `make deploy` derives those two
+fields from the Operator source, so its environment file needs only an optional
+`defaultStorageClassName` preference.
+
+The form shows only classes whose current UID and provisioner still match the
+platform's approved pin. It shows a retryable error instead of accepting an
+unknown list when the source cannot be read. An existing Sandbox whose class is
+no longer selectable keeps its recorded value but requires an administrator to
+choose a current approved class before saving. HOME access-mode choices come
+from the selected runtime registration, not from assumptions about a CSI
+driver. This selection aid does not qualify CSI behavior or replace Sandbox
+admission and controller checks at save and execution time.
 
 When `cetirun-operator.sandboxAdmission` is enabled, the chart adds the Portal's
 service account, `system:serviceaccount:<release namespace>:cetirun-portal`, to

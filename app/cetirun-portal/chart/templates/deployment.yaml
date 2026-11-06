@@ -14,6 +14,29 @@
 {{- if and (hasKey $skillMarketplace "enabled") (not (kindIs "bool" $skillMarketplace.enabled)) -}}
 {{- fail "skillMarketplace.enabled must be a boolean" -}}
 {{- end -}}
+{{- $sandboxStorage := .Values.sandboxStorage | default dict -}}
+{{- if not (kindIs "map" $sandboxStorage) -}}
+{{- fail "sandboxStorage must be an object" -}}
+{{- end -}}
+{{- range $field := list "platformNamespace" "platformConfigMapName" "defaultStorageClassName" -}}
+{{- if not (kindIs "string" (get $sandboxStorage $field)) -}}
+{{- fail (printf "sandboxStorage.%s must be a string" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if ne (empty $sandboxStorage.platformNamespace) (empty $sandboxStorage.platformConfigMapName) -}}
+{{- fail "sandboxStorage.platformNamespace and sandboxStorage.platformConfigMapName must be configured together" -}}
+{{- end -}}
+{{- if $sandboxStorage.platformConfigMapName -}}
+{{- if or (gt (len $sandboxStorage.platformNamespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $sandboxStorage.platformNamespace)) -}}
+{{- fail "sandboxStorage.platformNamespace must be a valid namespace name" -}}
+{{- end -}}
+{{- if or (gt (len $sandboxStorage.platformConfigMapName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $sandboxStorage.platformConfigMapName)) -}}
+{{- fail "sandboxStorage.platformConfigMapName must be a valid ConfigMap name" -}}
+{{- end -}}
+{{- end -}}
+{{- if and $sandboxStorage.defaultStorageClassName (or (gt (len $sandboxStorage.defaultStorageClassName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $sandboxStorage.defaultStorageClassName))) -}}
+{{- fail "sandboxStorage.defaultStorageClassName must be a valid StorageClass name" -}}
+{{- end -}}
 {{- if $chatEnabled }}
 {{- $_ := required "chat.identityRealm is required for Custom Chat" $chatRealm -}}
 {{- $_ := required "istio.host is required for Custom Chat" .Values.istio.host -}}
@@ -70,6 +93,14 @@ spec:
               value: {{ default .Values.registryCredentials.namespace .Values.global.registryCredentialNamespace | quote }}
             - name: SANDBOX_STATE_NAMESPACE
               value: {{ default .Values.aiGateway.catalogNamespace .Values.chat.sandboxStateNamespace | quote }}
+            {{- if $sandboxStorage.platformConfigMapName }}
+            - name: SANDBOX_STORAGE_PLATFORM_NAMESPACE
+              value: {{ $sandboxStorage.platformNamespace | quote }}
+            - name: SANDBOX_STORAGE_PLATFORM_CONFIG_MAP_NAME
+              value: {{ $sandboxStorage.platformConfigMapName | quote }}
+            - name: SANDBOX_STORAGE_DEFAULT_CLASS_NAME
+              value: {{ $sandboxStorage.defaultStorageClassName | quote }}
+            {{- end }}
             {{- if .Values.istio.host }}
             - name: PORTAL_ORIGIN
               value: {{ printf "https://%s" .Values.istio.host | quote }}
@@ -83,7 +114,7 @@ spec:
             - name: MAX_INSTANCES_PER_USER
               value: {{ if hasKey ((.Values.features) | default dict) "maxInstancesPerUser" }}{{ .Values.features.maxInstancesPerUser | quote }}{{ else }}"1"{{ end }}
             - name: ALLOWED_AGENT_TYPES
-              value: {{ join "," (default (list "hermes" "openclaw") ((.Values.features).allowedAgentTypes)) | quote }}
+              value: {{ join "," (default (list "hermes" "openclaw" "custom") ((.Values.features).allowedAgentTypes)) | quote }}
             - name: SANDBOX_RUNTIME_PROFILES
               value: {{ .Values.sandboxRuntimeProfiles | toJson | quote }}
             {{- if .Values.sandboxRuntimeDefaultsFromController }}

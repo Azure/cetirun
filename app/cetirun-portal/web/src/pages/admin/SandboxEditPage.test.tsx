@@ -19,10 +19,16 @@ const box: api.SandboxDTO = { name: "example", uid: "sandbox-uid", resourceVersi
   resources: { agent: { requests: quantities, limits: quantities }, helpers: { requests: quantities, limits: quantities } },
   storage: { home: { storageClassName: "example-csi", size: "10Gi", accessMode: "ReadWriteOncePod" }, scratch: { sizeLimit: "1Gi" } },
 };
+const storageOptions: api.SandboxStorageOptions = {
+  storageClasses: [{ name: "example-csi", provisioner: "csi.example.com", allowVolumeExpansion: true }],
+  defaultStorageClassName: "example-csi",
+  homeAccessModes: { kata: ["ReadWriteOncePod", "ReadWriteOnce"], gvisor: ["ReadWriteOncePod", "ReadWriteOnce"], container: ["ReadWriteOncePod", "ReadWriteOnce"] },
+};
 beforeEach(() => {
   vi.resetAllMocks(); vi.mocked(api.getSandbox).mockResolvedValue(box); vi.mocked(api.listSandboxes).mockResolvedValue([box]);
   vi.mocked(teams.listTeams).mockResolvedValue([]);
   vi.mocked(api.createSandbox).mockResolvedValue(box); vi.mocked(api.updateSandbox).mockResolvedValue(box);
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValue(storageOptions);
 });
 function renderPage(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -47,7 +53,7 @@ it.each([
   }
   await user.type(screen.getByRole("textbox", { name: "Name" }), "example");
   await user.selectOptions(screen.getByRole("combobox", { name: "Runtime" }), "gvisor");
-  await user.type(screen.getByRole("textbox", { name: "HOME StorageClass" }), "example-csi");
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toHaveValue("example-csi"));
   await user.click(screen.getByRole("button", { name: "Create" }));
   await waitFor(() => expect(api.createSandbox).toHaveBeenCalled());
   const request = vi.mocked(api.createSandbox).mock.calls[0][0];
@@ -65,7 +71,7 @@ it("edits a Sandbox named new using its exact version and displays rejection det
   vi.mocked(api.updateSandbox).mockRejectedValue(new Error("Agent cpu request must not exceed its limit"));
   const user = userEvent.setup(); renderPage("/admin/sandboxes/new/edit");
   expect(await screen.findByRole("textbox", { name: "Name" })).toBeDisabled();
-  await waitFor(() => expect(screen.getByRole("textbox", { name: "HOME StorageClass" })).toHaveValue("example-csi"));
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toHaveValue("example-csi"));
   expect(screen.getByRole("textbox", { name: "Helper memory limit" })).toHaveValue("1Gi");
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText(/request must not exceed/)).toBeInTheDocument();
@@ -121,7 +127,7 @@ it.each(["ReadWriteOnce", "ReadWriteOncePod"] as const)("creates an explicit con
   expect(screen.getByText(/do not provide Kata VM isolation/)).toBeInTheDocument();
   expect(screen.getByText(/verified handler/)).toBeInTheDocument();
   await user.type(screen.getByRole("textbox", { name: "Name" }), "container-example");
-  await user.type(screen.getByRole("textbox", { name: "HOME StorageClass" }), "example-csi");
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toHaveValue("example-csi"));
   await user.selectOptions(screen.getByRole("combobox", { name: "HOME access mode" }), accessMode);
   await user.click(screen.getByRole("button", { name: "Create" }));
   await waitFor(() => expect(api.createSandbox).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
@@ -141,6 +147,108 @@ it("preserves an existing container runtime on edit without claiming runtime con
     type: "container", uid: box.uid, resourceVersion: box.resourceVersion,
     resources: box.resources, storage: box.storage,
   })));
+});
+
+it("selects the configured approved StorageClass for a new Sandbox", async () => {
+  renderPage("/admin/sandboxes/new");
+  const storageClass = await screen.findByRole("combobox", { name: "HOME StorageClass" });
+  await waitFor(() => expect(storageClass).toHaveValue("example-csi"));
+  expect(screen.getByRole("option", { name: /csi\.example\.com, expansion supported/ })).toBeInTheDocument();
+});
+
+it("requires a choice when several approved StorageClasses have no configured default", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValue({
+    ...storageOptions,
+    storageClasses: [storageOptions.storageClasses[0], { name: "premium-csi", provisioner: "premium.example.com", allowVolumeExpansion: false }],
+    defaultStorageClassName: "",
+  });
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
+  const storageClass = await screen.findByRole("combobox", { name: "HOME StorageClass" });
+  await waitFor(() => expect(screen.getByRole("option", { name: /premium\.example\.com/ })).toBeInTheDocument());
+  expect(storageClass).toHaveValue("");
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  await user.selectOptions(storageClass, "premium-csi");
+  expect(storageClass).toHaveValue("premium-csi");
+  expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
+});
+
+it("keeps an unavailable existing StorageClass visible until an administrator replaces it", async () => {
+  vi.mocked(api.getSandbox).mockResolvedValue({ ...box, storage: { ...box.storage, home: { ...box.storage.home, storageClassName: "retired-csi" } } });
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/example/edit");
+  const storageClass = await screen.findByRole("combobox", { name: "HOME StorageClass" });
+  await waitFor(() => expect(storageClass).toHaveValue("retired-csi"));
+  expect(await screen.findByText(/selected StorageClass is no longer available or approved/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  await user.selectOptions(storageClass, "example-csi");
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+});
+
+it("blocks saves until a failed StorageClass catalog is retried", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockRejectedValueOnce(new Error("Sandbox storage options are not configured. Configure the Portal to read the Operator's approved platform configuration."));
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
+  expect(await screen.findByText(/Failed to load approved StorageClasses/)).toBeInTheDocument();
+  expect(screen.getByText(/Sandbox storage options are not configured/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Retry StorageClasses" }));
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toBeEnabled());
+  expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toHaveValue("example-csi");
+});
+
+it("keeps StorageClass selection and saving disabled while approved choices load", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockImplementationOnce(() => new Promise<api.SandboxStorageOptions>(() => {}));
+  renderPage("/admin/sandboxes/new");
+  expect(await screen.findByText("Loading approved StorageClasses...")).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+});
+
+it("explains when no approved StorageClasses are available", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValue({ ...storageOptions, storageClasses: [], defaultStorageClassName: "" });
+  renderPage("/admin/sandboxes/new");
+  expect(await screen.findByText(/No approved StorageClasses are available/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+});
+
+it("does not replace a choice when it disappears after a refresh", async () => {
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
+  const storageClass = await screen.findByRole("combobox", { name: "HOME StorageClass" });
+  await waitFor(() => expect(storageClass).toHaveValue("example-csi"));
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValueOnce({
+    ...storageOptions,
+    storageClasses: [{ name: "replacement-csi", provisioner: "replacement.example.com", allowVolumeExpansion: false }],
+    defaultStorageClassName: "replacement-csi",
+  });
+  await user.click(screen.getByRole("button", { name: "Refresh StorageClasses" }));
+  expect(await screen.findByText(/selected StorageClass is no longer available or approved/)).toBeInTheDocument();
+  expect(storageClass).toHaveValue("example-csi");
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+});
+
+it("uses only access modes approved for the selected runtime", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValue({
+    ...storageOptions,
+    homeAccessModes: { kata: ["ReadWriteOncePod"], gvisor: ["ReadWriteOnce"], container: ["ReadWriteOncePod", "ReadWriteOnce"] },
+  });
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/new");
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toHaveValue("example-csi"));
+  await user.selectOptions(screen.getByRole("combobox", { name: "Runtime" }), "gvisor");
+  const accessMode = screen.getByRole("combobox", { name: "HOME access mode" });
+  await waitFor(() => expect(accessMode).toHaveValue("ReadWriteOnce"));
+  expect(screen.queryByRole("option", { name: "ReadWriteOncePod" })).not.toBeInTheDocument();
+});
+
+it("shows an unsupported existing access mode without silently changing it", async () => {
+  vi.mocked(api.getSandboxStorageOptions).mockResolvedValue({
+    ...storageOptions,
+    homeAccessModes: { kata: ["ReadWriteOnce"] },
+  });
+  const user = userEvent.setup(); renderPage("/admin/sandboxes/example/edit");
+  const accessMode = await screen.findByRole("combobox", { name: "HOME access mode" });
+  await waitFor(() => expect(accessMode).toHaveValue("ReadWriteOncePod"));
+  expect(await screen.findByText(/not supported by the kata runtime/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  await user.selectOptions(accessMode, "ReadWriteOnce");
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 });
 
 it("deletes the version selected for confirmation even if the list refreshes", async () => {

@@ -99,10 +99,11 @@ features:
   tailscaleEnabled: false
   # -- Maximum number of Agents a user may create. 0 = unlimited.
   maxInstancesPerUser: 1
-  # -- Agent types users can create. Add custom to enable Custom self-service.
+  # -- Agent types users can create. Remove custom to disable Custom self-service.
   allowedAgentTypes:
     - hermes
     - openclaw
+    - custom
   # -- Enable the Microsoft Entra Agent Identity lifecycle for new Agents.
   agentIdentityEnabled: false
   # -- Enable owner-scoped account connections and Agent tool grants.
@@ -127,6 +128,16 @@ sandboxRuntimeDefaultsFromController: false
 # the matching port (OpenClaw 18789 or Hermes 8642); invalid entries reject
 # creation before any Kubernetes write. Explicit requests remain unchanged.
 sandboxRuntimeProfiles: {}
+
+# -- Read-only source for approved Sandbox HOME StorageClasses. The Portal
+# offers only the currently verified classes pinned by this platform ConfigMap.
+# Configure platformNamespace and platformConfigMapName together; leave both
+# empty for an unconfigured standalone Portal. defaultStorageClassName is only
+# a UI preference and does not approve a StorageClass.
+sandboxStorage:
+  platformNamespace: ""
+  platformConfigMapName: ""
+  defaultStorageClassName: ""
 
 aiGateway:
   # -- Namespace where the operator publishes the shared-model catalog (the

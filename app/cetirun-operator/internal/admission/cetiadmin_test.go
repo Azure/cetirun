@@ -383,6 +383,108 @@ func TestCetiAdminSourceAndStopAuthority(t *testing.T) {
 	}
 }
 
+func TestCetiAdminCopilotMetadataAuthoring(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		want bool
+	}{
+		{"portal", true},
+		{"administrator", true},
+		{"self", false},
+		{"ordinary", false},
+		{"other-portal", false},
+		{"unauthenticated", false},
+		{"source-marker", false},
+		{"owner-binding", false},
+		{"exec-binding", false},
+		{"model", false},
+		{"suspension", false},
+		{"unknown-annotation", false},
+		{"labels", false},
+		{"replacement-uid", false},
+		{"other-agent", false},
+		{"future-spec", false},
+		{"bootstrap-pending", false},
+		{"not-bootstrapped", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newCetiAdminFixture(t)
+			old := &api.Agent{}
+			if err := f.kube.Get(context.Background(), client.ObjectKey{Name: f.state.Agent.Name}, old); err != nil {
+				t.Fatal(err)
+			}
+			next := old.DeepCopy()
+			next.Annotations[api.AnnotationCopilotModels] = `[{"id":"gpt-5.5"}]`
+			next.Annotations[api.AnnotationCopilotSignInGeneration] = "signin-generation"
+			next.Annotations[api.AnnotationCopilotSignedInAt] = "2026-01-01T00:00:00Z"
+			user := authenticationv1.UserInfo{Username: "system:serviceaccount:test:portal", UID: "portal-uid", Groups: []string{"system:authenticated"}}
+			switch test.name {
+			case "administrator":
+				user.Username = "administrator"
+			case "self":
+				user = f.actor
+			case "ordinary":
+				user.Username = "ordinary-writer"
+			case "other-portal":
+				user.Username = "system:serviceaccount:other:portal"
+			case "unauthenticated":
+				user.Groups = []string{"system:unauthenticated"}
+			case "source-marker":
+				next.Annotations[cetiadmin.AnnotationSourceUID] = "different-source"
+			case "owner-binding":
+				next.Annotations[api.AnnotationOwnerObjectID] = "different-owner"
+			case "exec-binding":
+				next.Annotations[registryauth.ExecAdminBindingAnnotation] = "{}"
+			case "model":
+				next.Spec.Model = "different-model"
+			case "suspension":
+				next.Spec.Suspended = true
+			case "unknown-annotation":
+				next.Annotations["example.com/unknown"] = "changed"
+			case "labels":
+				next.Labels = map[string]string{"example.com/unknown": "changed"}
+			case "replacement-uid":
+				next.UID = "replacement-agent"
+			case "other-agent":
+				next.Name, old.Name = "other-marked-agent", "other-marked-agent"
+			case "bootstrap-pending", "not-bootstrapped":
+				checkpoint := &corev1.ConfigMap{}
+				key := client.ObjectKey{Namespace: f.source.Namespace, Name: cetiadmin.InstallationName(f.source.Namespace, f.source.Name)}
+				if err := f.kube.Get(context.Background(), key, checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				state := f.state
+				if test.name == "bootstrap-pending" {
+					state.BootstrapReleasePending = true
+				} else {
+					state.Bootstrapped = false
+				}
+				checkpoint.Data[cetiadmin.BindingKey] = string(adminJSON(t, state))
+				if err := f.kube.Update(context.Background(), checkpoint); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request := adminRequest(t, admissionv1.Update, api.GroupVersion.Group, "Agent", "agents", next, old, user)
+			if test.name == "future-spec" {
+				var raw map[string]any
+				if err := json.Unmarshal(request.Object.Raw, &raw); err != nil {
+					t.Fatal(err)
+				}
+				spec, ok := raw["spec"].(map[string]any)
+				if !ok {
+					t.Fatal("fixture is missing its spec")
+				}
+				spec["futureAuthority"] = true
+				request.Object.Raw = adminJSON(t, raw)
+			}
+			response := f.guard.Validate(context.Background(), request)
+			if response.Allowed != test.want {
+				t.Fatalf("allowed=%v, want %v: %v", response.Allowed, test.want, response.Result)
+			}
+		})
+	}
+}
+
 func TestCetiAdminNativeAuthReceiptsCannotBeForgedByOrdinaryWriters(t *testing.T) {
 	f := newCetiAdminFixture(t)
 	old := f.target.DeepCopy()

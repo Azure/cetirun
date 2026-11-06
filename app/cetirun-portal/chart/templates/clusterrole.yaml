@@ -47,6 +47,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  {{- if (.Values.sandboxStorage).platformConfigMapName }}
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get"]
+  {{- end }}
   # The AI Gateway's shared-model catalog the operator publishes: model names
   # and limits only.
   - apiGroups: [""]

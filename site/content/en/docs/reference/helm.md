@@ -193,7 +193,7 @@ addition to the main agent. The default agent request alone is 4 CPU and 8 GiB.
 | `persistence.retainPolicy` | `Retain` |
 | `persistence.useStatefulSetVolumeClaim` | `true` |
 
-The operator and the opt-in Custom provider use the same home defaults:
+The operator and the Custom provider use the same home defaults:
 `default`, `ReadWriteOnce`, and `100Gi`. An empty `persistence.storageClass`
 selects the default class of the cluster, not the class with the name
 `default`. For shared skills and recovery, see [storage](../../operations/storage/).
@@ -725,7 +725,7 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `admins.aliases` | Explicit administrator aliases |
 | `features.tailscaleEnabled` | `false` |
 | `features.maxInstancesPerUser` | `1`. `0` means unlimited. |
-| `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`. It also accepts opt-in `custom`. The form and the backend both examine it. |
+| `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`, `custom`. Remove a type to disable its creation. The form and the backend both examine it. |
 | `sandboxRuntimeProfiles` | Approved chart/image/port pins for built-in Sandbox creation. If a profile is absent, creation is rejected, unless controller defaults are explicitly enabled. |
 | `sandboxRuntimeDefaultsFromController` | `false`. Allow absent profiles only after the Operator's common Sandbox executor is enabled. |
 | `skillMarketplace.enabled`, `skillMarketplace.catalogNamespace` | `false`, `cetirun-system`. When enabled, Team skills come from the Skill Marketplace catalog in the operator namespace. Team saves examine new skills against the catalog, Policy saves keep the skills that a Team still selects, and the Agent page shows the Team's skills. It also adds the **Skills** administration page and `get` access to the `cetirun-skill-marketplace` ConfigMap. Keep it equal to the operator's `skillMarketplace.enabled`. See [Skill Marketplace administration](../crds/#skill-marketplace-administration). |

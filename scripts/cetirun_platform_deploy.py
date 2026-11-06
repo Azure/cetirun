@@ -621,6 +621,31 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
     if not operator_enabled and (get_value(config, "platform.values.cetirun-operator.cetiadmin.enabled") is not False
             or get_value(config, "platform.values.global.portalChat.enabled") is not False):
         raise ValueError("Operator removal requires explicit cetiadmin.enabled=false and global.portalChat.enabled=false after retained shutdown")
+    # The Portal can offer only StorageClasses pinned by the same selected
+    # platform source as the Operator. Deployment input may choose a UI
+    # preference, but must not redirect that source or invent an approval.
+    portal_values = mapping(platform["cetirun-portal"], "cetirun-portal values")
+    storage_values = mapping(portal_values.get("sandboxStorage", {}), "cetirun-portal.sandboxStorage")
+    requested_portal = mapping(config["platform"].get("values", {}).get("cetirun-portal", {}),
+                               "platform.values.cetirun-portal")
+    requested_storage = requested_portal.get("sandboxStorage", {})
+    requested_storage = mapping(requested_storage, "platform.values.cetirun-portal.sandboxStorage")
+    sources = mapping(platform["cetirun-operator"].get("sandboxSources", {}), "cetirun-operator.sandboxSources")
+    if operator_enabled and sources.get("enabled") is True:
+        source_name = sources.get("platformConfigMapName")
+        if not isinstance(source_name, str) or not source_name:
+            raise ValueError("enabled cetirun-operator.sandboxSources requires platformConfigMapName")
+        for field, expected in (("platformNamespace", pns), ("platformConfigMapName", source_name)):
+            requested = requested_storage.get(field, "")
+            if requested not in ("", expected):
+                raise ValueError(f"platform.values.cetirun-portal.sandboxStorage.{field} conflicts with the selected Operator platform source")
+        portal_values["sandboxStorage"] = {
+            "platformNamespace": pns,
+            "platformConfigMapName": source_name,
+            "defaultStorageClassName": storage_values.get("defaultStorageClassName", ""),
+        }
+    elif requested_storage.get("platformNamespace") or requested_storage.get("platformConfigMapName"):
+        raise ValueError("cetirun-portal.sandboxStorage requires enabled cetirun-operator.sandboxSources")
     gateway = f"{config['istio']['ingressNamespace']}/cetirun-gateway"
     broker_http = f"http://cetirun-agent-broker.{bns}.svc.cluster.local:8080"
     assignments = {
@@ -1076,6 +1101,8 @@ class Deployment:
         admission = bootstrap["cetirun-operator"]["sandboxAdmission"]
         admission.update(enforce=False, coordinationConfigMapName="", coordinationConfigMapUID="")
         bootstrap["cetirun-portal"]["configurationCoordination"] = {"namespace": "", "name": "", "uid": ""}
+        bootstrap["cetirun-portal"]["sandboxStorage"] = {"platformNamespace": "", "platformConfigMapName": "",
+                                                             "defaultStorageClassName": ""}
         bootstrap["cetirun-operator"]["sandboxSources"].update(enabled=False, nativeExecution=False, plannedMigration=False,
             bootstrapOwnedPrerequisites=False, skillsCatalogConfigMapName="", placementConfigMapName="")
         bootstrap["cetirun-operator"]["connectionsMCP"]["nativeEnabled"] = False

@@ -474,16 +474,16 @@ applied, these conditions must be true:
 - The old StatefulSet is stopped.
 - No active Pod still refers to HOME.
 
-The configured binding provider coordinates this handoff. The opt-in
+The configured binding provider coordinates this handoff. The
 Kubernetes provider scales the old StatefulSet to zero and waits for its HOME
 consumers to exit. Then it allows the new image to be applied with one
 replica. It does not use the built-in orphan-delete hook or replace the HOME
 claim. Changes to the Model Key and to the context revision go through the
 same gate. The process environment does not refresh in place.
 
-The default installation does not enable Custom provisioning. The opt-in
-non-Sandbox provider reports `CustomBindingsPending` until its prerequisites are
-available. Governed Custom instead must have a current common-executor
+The Operator chart enables the Custom provider by default, with no approved
+images. The non-Sandbox provider reports `CustomBindingsPending` until its image
+approval and other prerequisites are available. Governed Custom instead must have a current common-executor
 registration and a Gateway-qualified image approval. Chat/headless instances
 have no public Agent UI URL. A declared Web UI uses its authenticated route.
 See [Agent Harness](../../reference/agent-harness/#custom-runtime) for the

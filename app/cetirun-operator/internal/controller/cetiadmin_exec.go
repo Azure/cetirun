@@ -185,12 +185,18 @@ func (r *CetiAdminReconciler) execObjects(ctx context.Context, record cetiadmin.
 		if r.Runtime == nil || (len(namespace.OwnerReferences) != 0 && !execAgentOwned(namespace, agent)) {
 			return nil, cetiadmin.ErrConflict
 		}
-		receipt, err := r.Runtime.readCustomOwnership(ctx, agent)
-		if err != nil {
-			return nil, err
-		}
-		if receipt.NamespaceUID != namespace.UID || receipt.Namespace != namespace.Name || receipt.Release != target.Release {
-			return nil, cetiadmin.ErrConflict
+		if agent.Spec.SandboxRef != "" || agent.Status.Sandbox != nil {
+			if !cetiadmin.NativeSandboxNamespaceOwned(agent, namespace) {
+				return nil, cetiadmin.ErrConflict
+			}
+		} else {
+			receipt, err := r.Runtime.readCustomOwnership(ctx, agent)
+			if err != nil {
+				return nil, err
+			}
+			if receipt.NamespaceUID != namespace.UID || receipt.Namespace != namespace.Name || receipt.Release != target.Release {
+				return nil, cetiadmin.ErrConflict
+			}
 		}
 	case api.AgentTypeHermes, api.AgentTypeOpenClaw:
 		if !execAgentOwned(namespace, agent) {

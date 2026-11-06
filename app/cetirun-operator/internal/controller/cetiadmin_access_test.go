@@ -13,6 +13,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -91,6 +92,110 @@ func (f *cetiAdminFixture) targetRole(namespace string) *rbacv1.Role {
 	return nil
 }
 
+func TestCetiAdminNativeCustomAccessUsesNamespaceOwnership(t *testing.T) {
+	for _, retainedStatus := range []bool{false, true} {
+		name := "sandbox-reference"
+		if retainedStatus {
+			name = "retained-sandbox-status"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newCetiAdminFixture(t)
+			agent, namespace := f.target("native-custom", "engineering", api.AgentTypeCustom, true)
+			if retainedStatus {
+				agent.Status.Sandbox = &api.SandboxStatus{
+					TeamUID: "historical-team", SandboxUID: "historical-sandbox", AgentPolicyUID: "historical-policy",
+					AppliedRevision: "historical-revision",
+				}
+				if err := f.kube.Status().Update(f.ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				agent.Spec.SandboxRef = "native-sandbox"
+				if err := f.kube.Update(f.ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			namespace.Labels[sandboxworkload.ProtectedNamespaceLabel] = "true"
+			namespace.OwnerReferences = []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)}
+			namespace.Annotations = map[string]string{
+				sandboxworkload.AgentUIDAnnotation:  string(agent.UID),
+				sandboxworkload.AgentNameAnnotation: agent.Name,
+			}
+			if err := f.kube.Update(f.ctx, namespace); err != nil {
+				t.Fatal(err)
+			}
+			f.converge()
+			if err := f.r.ReconcileRuntimeAccess(f.ctx, agent.Name); err != nil {
+				t.Fatal("native namespace required a legacy Custom receipt:", err)
+			}
+			role := f.targetRole(namespace.Name)
+			if !controllerRulesAllow(role.Rules, "", "pods", "get", "") ||
+				controllerRulesAllow(role.Rules, "", "pods/exec", "create", "") {
+				t.Fatal("native Custom access is not protected namespace access")
+			}
+			for _, verb := range []string{"get", "list", "watch"} {
+				if controllerRulesAllow(role.Rules, "", "secrets", verb, "") {
+					t.Errorf("native Custom access grants Secret %s", verb)
+				}
+			}
+			receipt := &corev1.ConfigMap{}
+			if err := f.kube.Get(f.ctx, f.r.Runtime.ownershipKey(agent), receipt); !apierrors.IsNotFound(err) {
+				t.Fatal("native access fabricated a legacy ownership receipt:", err)
+			}
+
+			for _, mutation := range []string{"owner", "owner-controller", "extra-owner", "agent-uid", "agent-name", "protection"} {
+				t.Run(mutation, func(t *testing.T) {
+					changed := namespace.DeepCopy()
+					if err := f.kube.Get(f.ctx, client.ObjectKeyFromObject(namespace), changed); err != nil {
+						t.Fatal(err)
+					}
+					switch mutation {
+					case "owner":
+						changed.OwnerReferences[0].UID = "foreign-agent"
+					case "owner-controller":
+						changed.OwnerReferences[0].Controller = ptr.To(false)
+					case "extra-owner":
+						changed.OwnerReferences = append(changed.OwnerReferences, metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "foreign", UID: "foreign"})
+					case "agent-uid":
+						changed.Annotations[sandboxworkload.AgentUIDAnnotation] = "foreign-agent"
+					case "agent-name":
+						changed.Annotations[sandboxworkload.AgentNameAnnotation] = "foreign-agent"
+					case "protection":
+						delete(changed.Labels, sandboxworkload.ProtectedNamespaceLabel)
+					}
+					if err := f.kube.Update(f.ctx, changed); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.r.ReconcileRuntimeAccess(f.ctx, agent.Name); err == nil {
+						t.Fatal("changed native ownership was accepted")
+					}
+					bindings := &rbacv1.RoleBindingList{}
+					if err := f.kube.List(f.ctx, bindings, client.InNamespace(namespace.Name)); err != nil {
+						t.Fatal(err)
+					}
+					for _, binding := range bindings.Items {
+						if binding.Annotations[cetiAdminGrantAgent] == agent.Name {
+							t.Fatal("changed ownership retained namespace access")
+						}
+					}
+					if err := f.kube.Get(f.ctx, client.ObjectKeyFromObject(namespace), changed); err != nil {
+						t.Fatal(err)
+					}
+					changed.OwnerReferences = namespace.DeepCopy().OwnerReferences
+					changed.Labels = namespace.DeepCopy().Labels
+					changed.Annotations = namespace.DeepCopy().Annotations
+					if err := f.kube.Update(f.ctx, changed); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.r.ReconcileRuntimeAccess(f.ctx, agent.Name); err != nil {
+						t.Fatal("restored native ownership did not recover access:", err)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestCetiAdminAccessFollowsLiveAgentsAndExclusions(t *testing.T) {
 	f := newCetiAdminFixture(t)
 	f.target("ordinary", "selected-team", api.AgentTypeOpenClaw, true)
@@ -157,6 +262,11 @@ func TestCetiAdminAccessFollowsLiveAgentsAndExclusions(t *testing.T) {
 	role = f.targetRole(instanceNamespace("protected"))
 	if controllerRulesAllow(role.Rules, "", "pods/exec", "create", "pod") || controllerRulesAllow(role.Rules, "", "pods", "delete", "pod") {
 		t.Fatal("protected Sandbox acquired exec or Pod deletion")
+	}
+	for _, verb := range []string{"get", "list", "watch"} {
+		if controllerRulesAllow(role.Rules, "", "secrets", verb, "") {
+			t.Errorf("protected Sandbox acquired Secret %s", verb)
+		}
 	}
 	role = f.targetRole(platformNS.Name)
 	if _, _, err := cetiadmin.ResolveRuntimeTarget(f.ctx, f.kube, f.config, state.Record, "", platformNS.Name); err == nil {

@@ -121,6 +121,12 @@ cetirun-portal:
     namespace: ""
     name: ""
     uid: ""
+  # The Portal reads approved HOME StorageClasses from this exact Operator
+  # platform source. make deploy fills both source fields when it is enabled.
+  sandboxStorage:
+    platformNamespace: ""
+    platformConfigMapName: ""
+    defaultStorageClassName: ""
 
 cetirun-ai-gateway:
   # -- Install the AI Gateway with the operator and Portal. Turn it off only

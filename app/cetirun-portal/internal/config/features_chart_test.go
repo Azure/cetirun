@@ -21,8 +21,7 @@ func TestCustomChartKeepsAgentIdentitySeparate(t *testing.T) {
 	if err != nil {
 		t.Skip("Helm is required for the Portal chart rendering check")
 	}
-	args := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com",
-		"--set-json", `features.allowedAgentTypes=["hermes","openclaw","custom"]`}
+	args := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com"}
 	output, err := exec.Command(helm, args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Custom chart render: %v\n%s", err, output)
@@ -33,6 +32,23 @@ func TestCustomChartKeepsAgentIdentitySeparate(t *testing.T) {
 	for _, absent := range []string{"name: AGENT_ADMISSION_RULES", "name: REQUIRE_VERIFIED_OWNER", "name: ENTRA_TENANT_ID", "name: PORTAL_OIDC_CLIENT_ID", "name: AGENT_TOOLS_BROKER_URL"} {
 		if strings.Contains(string(output), absent) {
 			t.Errorf("Custom enabled unrelated configuration: %s", absent)
+		}
+	}
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{`null`, "hermes,openclaw,custom"},
+		{`["hermes","openclaw"]`, "hermes,openclaw"},
+	} {
+		configured := append(append([]string{}, args...), "--set-json", "features.allowedAgentTypes="+tc.value)
+		output, err := exec.Command(helm, configured...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("type availability render: %v\n%s", err, output)
+		}
+		env, _ := renderedPortal(t, output)
+		if env["ALLOWED_AGENT_TYPES"] != tc.want {
+			t.Fatalf("type availability = %q, want %q", env["ALLOWED_AGENT_TYPES"], tc.want)
 		}
 	}
 	args = append(args, "--set", "features.agentIdentityEnabled=true")
