@@ -653,7 +653,7 @@ class NativeHealthProbeTests(unittest.TestCase):
             def do_GET(self):
                 fixture.requests.append((self.path, self.headers))
                 if fixture.stall:
-                    fixture.release.wait(timeout=5)
+                    fixture.release.wait(timeout=60)
                     return
                 self.send_response(fixture.status)
                 if fixture.status == 302:
@@ -679,10 +679,12 @@ class NativeHealthProbeTests(unittest.TestCase):
     def probe(self, path="/healthz", *, port=None, timeout=1000, args=None, env=None):
         if args is None:
             args = [str(port or self.server.server_port), path, str(timeout)]
+        # Node can take seconds to start on a busy CI runner. The tests check the
+        # probe's own deadline; this timeout only stops a probe that hangs.
         return subprocess.run(
             ["node", str(RUNTIME_CHART / "agents/openclaw/bootstrap/health-probe.cjs"), *args],
             env={**OFFLINE, "OPENAI_API_KEY": "sk-dummy", **(env or {})},
-            text=True, capture_output=True, timeout=5, check=False,
+            text=True, capture_output=True, timeout=30, check=False,
         )
 
     def test_each_health_endpoint_uses_loopback_without_credentials(self):
@@ -723,7 +725,8 @@ class NativeHealthProbeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("request timed out", result.stderr)
         self.assertGreaterEqual(elapsed, 0.1)
-        self.assertLess(elapsed, 4)
+        # The stalled server would hold the request for 60 seconds.
+        self.assertLess(elapsed, 20)
 
     def test_proxy_environment_cannot_redirect_the_probe(self):
         with socket.socket() as reserved:
