@@ -127,6 +127,8 @@ export function ServiceAccessWizard({ instance, connections, editing, canManage,
   };
   const title = step === "service" ? "Add identity" : step === "account" ? `${providerLabels[provider!]} account` : step === "access" ? (mode === "installation" ? "Repositories & permissions" : "Access settings") : "Review access";
   const nextAccountDisabled = disabled || signin.pending || appUnavailable || (needsInstallation ? installations.isError || installations.isFetching || !installed.some((item) => item.id === selectedInstallation) : !selectedAccount && !(provider === "azure" && mode === "agent"));
+  const actionError = error || selectInstallation.error?.message;
+  const saving = api.create.isPending || api.update.isPending;
 
   return <Dialog open onOpenChange={(_, data) => { if (!data.open) close(); }}><DialogSurface style={{ width: "min(680px, calc(100vw - 32px))", maxWidth: 680 }}><DialogBody ref={body}>
     <DialogTitle tabIndex={-1} data-step-heading>{title}</DialogTitle>
@@ -192,15 +194,20 @@ export function ServiceAccessWizard({ instance, connections, editing, canManage,
       </>}
       {signin.pending && <Spinner size="tiny" label="Waiting for sign-in..." />}
       {signin.message && <Text role="status" block>{signin.message}</Text>}
-      {(error || selectInstallation.error) && <Text role="alert" block>{error || selectInstallation.error?.message}</Text>}
       {!canManage && <Text role="alert" block>Access cannot be changed right now. Close this dialog and refresh the agent.</Text>}
     </DialogContent>
-    <DialogActions>
-      <Button disabled={busy} onClick={close}>Cancel</Button>
-      {step !== "service" && !(original && step === "access") && <Button disabled={busy} onClick={back}>Back</Button>}
-      {step === "account" && <Button appearance="primary" disabled={nextAccountDisabled} onClick={continueAccount}>Continue</Button>}
-      {step === "access" && <Button appearance="primary" disabled={disabled || !grantValid} onClick={() => { setError(""); setStep("review"); }}>Review access</Button>}
-      {step === "review" && <Button appearance="primary" disabled={disabled || !grantValid} onClick={save}>{original ? "Save access" : "Allow access"}</Button>}
+    <DialogActions fluid style={{ flexDirection: "column", alignItems: "stretch" }}>
+      {(actionError || saving) && <div role="group" aria-label="Access action feedback">
+        {actionError && <Text role="alert" aria-live="assertive" block>{actionError}</Text>}
+        {saving && <Text role="status" aria-live="polite" block>Saving access...</Text>}
+      </div>}
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8 }}>
+        <Button disabled={busy} onClick={close}>Cancel</Button>
+        {step !== "service" && !(original && step === "access") && <Button disabled={busy} onClick={back}>Back</Button>}
+        {step === "account" && <Button appearance="primary" disabled={nextAccountDisabled} onClick={continueAccount}>Continue</Button>}
+        {step === "access" && <Button appearance="primary" disabled={disabled || !grantValid} onClick={() => { setError(""); setStep("review"); }}>Review access</Button>}
+        {step === "review" && <Button appearance="primary" disabled={disabled || !grantValid} onClick={save}>{original ? "Save access" : "Allow access"}</Button>}
+      </div>
     </DialogActions>
   </DialogBody></DialogSurface></Dialog>;
 }
