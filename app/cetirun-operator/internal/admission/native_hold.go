@@ -61,6 +61,7 @@ func (h *Handler) validateNativeHoldRelease(ctx context.Context, request admissi
 		CoordinationConfigMapName: h.config.CoordinationConfigMapName,
 		CoordinationConfigMapUID:  h.config.CoordinationConfigMapUID,
 		RequestTimeout:            h.requestTimeout,
+		CetiAdminSource:           h.config.cetiAdminSource(),
 	})
 	if err != nil {
 		return dependencyError(ctx, err)

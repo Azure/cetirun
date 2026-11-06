@@ -115,6 +115,7 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 			StateNamespace: options.PodStateNamespace, RequestTimeout: options.PodRequestTimeout,
 			PlacementConfigMapName:    config.PlacementConfigMapName,
 			CoordinationConfigMapName: config.CoordinationConfigMapName, CoordinationConfigMapUID: config.CoordinationConfigMapUID,
+			CetiAdminSource: config.cetiAdminSource(),
 		})
 		if err != nil {
 			return err

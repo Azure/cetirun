@@ -25,7 +25,11 @@ import (
 )
 
 func (r *AgentReconciler) sandboxGrantJournal() *sandboxpolicy.GrantJournalStore {
-	return &sandboxpolicy.GrantJournalStore{Client: r.Client, APIReader: r.customReader(), Namespace: r.OperatorNamespace}
+	source := client.ObjectKey{}
+	if provider, ok := r.CetiAdmin.(interface{ CetiAdminSource() client.ObjectKey }); ok {
+		source = provider.CetiAdminSource()
+	}
+	return &sandboxpolicy.GrantJournalStore{Client: r.Client, APIReader: r.customReader(), Namespace: r.OperatorNamespace, CetiAdminSource: source}
 }
 
 func (r *AgentReconciler) sandboxPreparationStateNeeded(agent *api.Agent) bool {

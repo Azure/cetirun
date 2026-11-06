@@ -54,6 +54,10 @@ type GrantJournalStore struct {
 	Client    client.Client
 	APIReader client.Reader
 	Namespace string
+	// CetiAdminSource is the deployment-configured source that may own
+	// non-Sandbox runtime access bindings for an Agent. An empty value never
+	// authorizes an exemption.
+	CetiAdminSource client.ObjectKey
 }
 
 // GrantJournalSnapshot binds the validated inventory to one persisted journal.

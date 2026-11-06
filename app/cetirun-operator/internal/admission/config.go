@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -37,6 +38,13 @@ type Config struct {
 	CoordinationConfigMapName string           `json:"coordinationConfigMapName,omitempty"`
 	CoordinationConfigMapUID  string           `json:"coordinationConfigMapUID,omitempty"`
 	CetiAdmin                 *CetiAdminConfig `json:"cetiadmin,omitempty"`
+}
+
+func (c Config) cetiAdminSource() types.NamespacedName {
+	if c.CetiAdmin == nil {
+		return types.NamespacedName{}
+	}
+	return types.NamespacedName{Namespace: c.CetiAdmin.Namespace, Name: c.CetiAdmin.ConfigMapName}
 }
 
 // TeamAssignment is administrative creation context, not Agent/Portal input.

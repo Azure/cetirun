@@ -46,6 +46,10 @@ type CetiAdminReconciler struct {
 
 func (r *CetiAdminReconciler) OperatorImageReference() string { return r.OperatorImage }
 
+// CetiAdminSource exposes the deployment-configured source to components that
+// must distinguish CetiAdmin's runtime bindings from Sandbox grants.
+func (r *CetiAdminReconciler) CetiAdminSource() client.ObjectKey { return r.Source }
+
 func (r *CetiAdminReconciler) SetupWithManager(manager ctrl.Manager) error {
 	if r.Source.Name == "" || r.Source.Namespace == "" || r.Runtime == nil || r.OperatorImage == "" ||
 		r.AdmissionReady == nil || r.GrantAccess == nil || r.RevokeAccess == nil {

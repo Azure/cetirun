@@ -86,7 +86,7 @@ func (h *PodHandler) validateReconciledKubernetesGrants(ctx context.Context, exp
 	if err != nil {
 		return podDenied("GrantInventoryInvalid", "current Kubernetes grant inventory is invalid")
 	}
-	journal := sandboxpolicy.GrantJournalStore{APIReader: h.reader, Namespace: h.config.StateNamespace}
+	journal := sandboxpolicy.GrantJournalStore{APIReader: h.reader, Namespace: h.config.StateNamespace, CetiAdminSource: h.config.CetiAdminSource}
 	verify := journal.VerifyKubernetesBindings
 	if !confirmed {
 		verify = journal.VerifyKubernetesBindingIntents
@@ -334,7 +334,7 @@ func (h *Handler) reconciledHoldRelease(ctx context.Context, request admission.R
 	if !equality.Semantic.DeepEqual(expected, a) {
 		return admission.Response{}, false
 	}
-	handler, err := NewPodHandler(h.reader, PodConfig{StateNamespace: h.config.PlatformNamespace})
+	handler, err := NewPodHandler(h.reader, PodConfig{StateNamespace: h.config.PlatformNamespace, CetiAdminSource: h.config.cetiAdminSource()})
 	if err != nil {
 		return dependencyError(ctx, err), true
 	}
