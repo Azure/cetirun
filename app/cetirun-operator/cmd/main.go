@@ -185,7 +185,7 @@ func main() {
 			"hermes", chartRegistry+"/hermes-gateway",
 			"desktop", chartRegistry+"/cetirun-desktop")
 	} else {
-		setupLog.Info("Could not extract registry host from chart repo URL, using chart default image.repository")
+		setupLog.Info("Could not derive image registry from chart repo URL, using chart default image.repository")
 	}
 
 	if err := chartRef.Validate(); err != nil {
@@ -462,6 +462,9 @@ func setupSkillMarketplace(mgr ctrl.Manager, config controller.SkillMarketplaceC
 
 func runtimeRegistry(repoURL string) string {
 	registry := extractRegistryHost(repoURL)
+	if registry == "" {
+		return ""
+	}
 	// Published charts and images share the registry prefix, including staging
 	// paths. The hostname alone would select a different image repository.
 	if prefix, ok := strings.CutSuffix(strings.TrimPrefix(repoURL, "oci://"), "/helm/cetirun"); ok {

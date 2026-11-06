@@ -54,7 +54,13 @@ func enableNativeProofForServer(t *testing.T, server *Server, agent *agentDocume
 				t.Fatal("invalid fixture Agent")
 			}
 			response.Body.Close()
-			body["metadata"].(map[string]any)["resourceVersion"] = "current-agent-version"
+			metadata := body["metadata"].(map[string]any)
+			metadata["resourceVersion"] = "current-agent-version"
+			// The basic connection fixture omits fields unused by its reader.
+			// Native verification observes the API object's positive generation.
+			if _, exists := metadata["generation"]; !exists {
+				metadata["generation"] = 1
+			}
 			return securityJSONResponse(t, response.StatusCode, body), nil
 		}
 		return previous.RoundTrip(r)

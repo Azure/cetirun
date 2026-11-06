@@ -54,7 +54,16 @@ type GrantJournalStore struct {
 	Client    client.Client
 	APIReader client.Reader
 	Namespace string
+	// PlatformAccessVerifier confirms separately managed platform bindings.
+	// Callers bind it to trusted deployment configuration. Nil never exempts
+	// a binding from the Sandbox grant contract.
+	PlatformAccessVerifier PlatformAccessVerifier
 }
+
+// PlatformAccessVerifier keeps platform-specific ownership checks outside the
+// policy package. Errors reject the inventory; only a confirmed match excludes
+// a binding from Sandbox grant management.
+type PlatformAccessVerifier func(context.Context, client.Reader, client.Object, string, types.UID) (bool, error)
 
 // GrantJournalSnapshot binds the validated inventory to one persisted journal.
 // It is not an execution permit or a lock around later grant mutations.

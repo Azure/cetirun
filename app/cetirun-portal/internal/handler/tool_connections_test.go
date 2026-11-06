@@ -645,6 +645,189 @@ func TestToolRuntimeQualificationListsHistoryButBlocksManagement(t *testing.T) {
 	}
 }
 
+func TestNativeRuntimeAllowlistAndLegacyCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		runtime      cetirunv1alpha1.AgentType
+		sandboxed    bool
+		runtimeTypes []string
+		want         bool
+	}{
+		{name: "sandboxed Hermes explicitly allowed", runtime: cetirunv1alpha1.AgentTypeHermes, sandboxed: true, runtimeTypes: []string{"hermes"}, want: true},
+		{name: "sandboxed OpenClaw explicitly allowed", runtime: cetirunv1alpha1.AgentTypeOpenClaw, sandboxed: true, runtimeTypes: []string{"openclaw"}, want: true},
+		{name: "sandboxed Hermes has nil allowlist", runtime: cetirunv1alpha1.AgentTypeHermes, sandboxed: true, want: false},
+		{name: "sandboxed OpenClaw has empty allowlist", runtime: cetirunv1alpha1.AgentTypeOpenClaw, sandboxed: true, runtimeTypes: []string{}, want: false},
+		{name: "sandboxed Hermes has another runtime", runtime: cetirunv1alpha1.AgentTypeHermes, sandboxed: true, runtimeTypes: []string{"openclaw"}, want: false},
+		{name: "legacy Hermes keeps nil allowlist support", runtime: cetirunv1alpha1.AgentTypeHermes, want: true},
+		{name: "legacy OpenClaw keeps nil allowlist support", runtime: cetirunv1alpha1.AgentTypeOpenClaw, want: true},
+		{name: "legacy Hermes respects explicit allowlist", runtime: cetirunv1alpha1.AgentTypeHermes, runtimeTypes: []string{"openclaw"}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := toolInstance()
+			instance.Spec.Agent.Type = tc.runtime
+			if tc.sandboxed {
+				instance.Spec.SandboxRef = "restricted"
+			}
+			h := ToolConnectionsHandler{RuntimeTypes: tc.runtimeTypes}
+			if got := h.runtimeSupported(instance); got != tc.want {
+				t.Fatalf("runtimeSupported() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+
+	custom := toolInstance()
+	custom.Spec.Agent.Type = cetirunv1alpha1.AgentTypeCustom
+	custom.Spec.SandboxRef = "restricted"
+	customHandler := ToolConnectionsHandler{RuntimeTypes: []string{"custom"}}
+	if !customHandler.runtimeSupported(custom) {
+		t.Fatal("explicitly allowed governed Custom runtime was rejected")
+	}
+	custom.Spec.SandboxRef = ""
+	if customHandler.runtimeSupported(custom) {
+		t.Fatal("legacy Custom runtime was unexpectedly supported")
+	}
+}
+
+func TestNativeSandboxHistorySignalsRequireExplicitAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*cetirunv1alpha1.Agent)
+	}{
+		{name: "authorization annotation", mutate: func(agent *cetirunv1alpha1.Agent) {
+			agent.Annotations[cetirunv1alpha1.AnnotationSandboxAuthorization] = ""
+		}},
+		{name: "reauthorize annotation", mutate: func(agent *cetirunv1alpha1.Agent) {
+			agent.Annotations[cetirunv1alpha1.AnnotationSandboxReauthorize] = "current"
+		}},
+		{name: "hold finalizer", mutate: func(agent *cetirunv1alpha1.Agent) { agent.Finalizers = []string{cetirunv1alpha1.SandboxHoldFinalizer} }},
+		{name: "preparation finalizer", mutate: func(agent *cetirunv1alpha1.Agent) {
+			agent.Finalizers = []string{cetirunv1alpha1.SandboxPreparationFinalizer}
+		}},
+		{name: "bootstrap finalizer", mutate: func(agent *cetirunv1alpha1.Agent) {
+			agent.Finalizers = []string{cetirunv1alpha1.SandboxBootstrapFinalizer}
+		}},
+		{name: "monthly budget", mutate: func(agent *cetirunv1alpha1.Agent) {
+			agent.Spec.ModelAccess = &cetirunv1alpha1.ModelAccessSpec{MonthlyBudgetUSD: "1"}
+		}},
+		{name: "policy status", mutate: func(agent *cetirunv1alpha1.Agent) { agent.Status.Policy = &cetirunv1alpha1.PolicyStatus{} }},
+		{name: "sandbox status", mutate: func(agent *cetirunv1alpha1.Agent) { agent.Status.Sandbox = &cetirunv1alpha1.SandboxStatus{} }},
+		{name: "gateway policy revision", mutate: func(agent *cetirunv1alpha1.Agent) {
+			agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{PolicyRevision: "revision"}
+		}},
+		{name: "sandbox ready condition", mutate: func(agent *cetirunv1alpha1.Agent) {
+			agent.Status.Conditions = []metav1.Condition{{Type: cetirunv1alpha1.ConditionSandboxReady}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := toolInstance()
+			tc.mutate(instance)
+			if !sandboxRequested(instance) {
+				t.Fatal("sandbox history signal did not classify the Agent as policy-managed")
+			}
+			withoutAllowlist := ToolConnectionsHandler{}
+			if withoutAllowlist.runtimeSupported(instance) {
+				t.Fatal("policy-managed native Agent inherited nil-allowlist compatibility")
+			}
+			withAllowlist := ToolConnectionsHandler{RuntimeTypes: []string{"hermes"}}
+			if !withAllowlist.runtimeSupported(instance) {
+				t.Fatal("explicitly allowed policy-managed Hermes Agent was rejected")
+			}
+		})
+	}
+}
+
+func TestPolicyManagedNativeBindingsForwardPersonalConnectionsAndCleanup(t *testing.T) {
+	instance := toolInstance()
+	instance.Spec.SandboxRef = "restricted"
+	methods := make([]string, 0, 3)
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		if r.Header.Get("X-CetiRun-Instance-UID") != toolInstanceUID {
+			t.Fatalf("instance UID = %q", r.Header.Get("X-CetiRun-Instance-UID"))
+		}
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`[]`))
+		case http.MethodPost:
+			if r.URL.Path != "/v1/instances/alice-agent/connection-bindings" {
+				t.Fatalf("create path = %q", r.URL.Path)
+			}
+			var request connectionBindingRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.ConnectionID != "personal-github" || len(request.Services) != 1 || request.Services[0] != "github" {
+				t.Fatalf("personal binding = %#v, err = %v", request, err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"grant-1"}`))
+		case http.MethodDelete:
+			if r.URL.Path != "/v1/instances/alice-agent/connection-bindings/grant-1" || r.Header.Get("If-Match") != "7" {
+				t.Fatalf("delete path = %q, revision = %q", r.URL.Path, r.Header.Get("If-Match"))
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer broker.Close()
+	h := NewToolConnectionsHandler(kube.NewClient(newFakeClient(instance)), broker.URL, "https://portal.example.invalid")
+	h.HTTPClient = broker.Client()
+	h.RuntimeTypes = []string{"hermes"}
+
+	list := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/", nil))
+	list.SetPathValue("name", "alice-agent")
+	w := httptest.NewRecorder()
+	h.ListConnectionBindings(w, list)
+	if w.Code != http.StatusOK || w.Header().Get(connectionBindingsReadOnly) != "" {
+		t.Fatalf("list = %d, read-only = %q", w.Code, w.Header().Get(connectionBindingsReadOnly))
+	}
+
+	create := verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"connectionId":"personal-github","services":["github"],"enabled":true}`)))
+	create.Header.Set("Content-Type", "application/json")
+	create.Header.Set("Origin", "https://portal.example.invalid")
+	create.SetPathValue("name", "alice-agent")
+	w = httptest.NewRecorder()
+	h.CreateConnectionBinding(w, create)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create = %d %s", w.Code, w.Body.String())
+	}
+
+	deleteRequest := verifiedToolRequest(httptest.NewRequest(http.MethodDelete, "/", nil))
+	deleteRequest.Header.Set("Origin", "https://portal.example.invalid")
+	deleteRequest.Header.Set("If-Match", `"7"`)
+	deleteRequest.SetPathValue("name", "alice-agent")
+	deleteRequest.SetPathValue("id", "grant-1")
+	w = httptest.NewRecorder()
+	h.DeleteConnectionBinding(w, deleteRequest)
+	if w.Code != http.StatusNoContent || strings.Join(methods, ",") != "GET,POST,DELETE" {
+		t.Fatalf("delete = %d, methods = %v", w.Code, methods)
+	}
+}
+
+func TestPolicyManagedNativeBindingPreservesBrokerConflict(t *testing.T) {
+	instance := toolInstance()
+	instance.Spec.SandboxRef = "restricted"
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/instances/alice-agent/connection-bindings" {
+			t.Fatalf("unexpected Broker request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"identity_not_ready"}`))
+	}))
+	defer broker.Close()
+	h := NewToolConnectionsHandler(kube.NewClient(newFakeClient(instance)), broker.URL, "https://portal.example.invalid")
+	h.HTTPClient = broker.Client()
+	h.RuntimeTypes = []string{"hermes"}
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"connectionId":"personal-github","services":["github"],"enabled":true}`)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://portal.example.invalid")
+	request.SetPathValue("name", "alice-agent")
+	w := httptest.NewRecorder()
+
+	h.CreateConnectionBinding(w, request)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "identity_not_ready") {
+		t.Fatalf("response = %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestIndependentAuthorizationResponseAndUsageProxy(t *testing.T) {
 	for _, operation := range []string{"start", "authorization", "usage"} {
 		t.Run(operation, func(t *testing.T) {

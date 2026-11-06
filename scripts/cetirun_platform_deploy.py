@@ -652,7 +652,9 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
         "istio": {"domain": domain, "clientId": identity["portalClientId"], "tenantId": identity["tenantId"],
                   "gateway.namespace": config["istio"]["ingressNamespace"],
                   "egress.namespace": config["istio"]["controlPlaneNamespace"],
-                  "portalAuth.clusterHost": f"cetirun-portal.{pns}.svc.cluster.local"},
+                  "portalAuth.clusterHost": f"cetirun-portal.{pns}.svc.cluster.local",
+                  "portalAuth.mtls.enabled": True,
+                  "portalAuth.mtls.serverIdentity": f"spiffe://cluster.local/ns/{pns}/sa/{platform['cetirun-portal']['serviceAccount']['name']}"},
         "broker": {"image.repository": f"{registry}/cetirun-agent-broker", "image.tag": version,
                    "tls.enabled": True, "istio.sidecarInjection": True, "istio.revision": revision,
                    "portal.namespace": pns, "operator.namespace": pns, "toolService.namespace": pns,
@@ -676,6 +678,7 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
                      "cetirun-portal.istio.host": domain, "cetirun-portal.istio.gateway": gateway,
                      "cetirun-portal.istio.gatewayNamespace": config["istio"]["ingressNamespace"],
                      "cetirun-portal.istio.gatewayServiceAccount": config["istio"]["ingressServiceAccount"],
+                     "cetirun-portal.istio.internalAuthMTLS": True,
                      "cetirun-portal.aiGateway.catalogNamespace": pns,
                      "cetirun-portal.features.agentToolsEnabled": True, "cetirun-portal.features.agentIdentityEnabled": True,
                      "cetirun-portal.features.allowedAgentTypes": ["hermes", "openclaw", "custom"],
@@ -704,6 +707,10 @@ def configuration(path, *, domain=None, registry=None, version=None, coordinate_
             set_value(values[name], field, value)
 
     operator, portal, ai, mcp = (platform[f"cetirun-{name}"] for name in ("operator", "portal", "ai-gateway", "connections-mcp"))
+    runtime_values = mapping(operator["cetirun"]["helmValues"], "cetirun.helmValues")
+    for section in (runtime_values, runtime_values.get("hermes", {}), runtime_values.get("openclaw", {})):
+        if isinstance(section, dict) and "image" in section:
+            raise ValueError("Remove primary image overrides from cetirun.helmValues; publish trusted runtime chart image pins and use spec.agent.image or cetiadmin.runtime.image")
     for valueset, standard in ((values["broker"], "cetirun-agent-broker"), (ai, "cetirun-ai-gateway"), (mcp, "cetirun-connections-mcp")):
         if valueset.get("fullnameOverride") not in (None, "", standard):
             raise ValueError(f"The complete deployment requires the {standard} Service name")

@@ -18,6 +18,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "scripts/release-artifacts.json"
+RUNTIME_CHART_LOCK = ROOT / "scripts/cetirun-runtime-chart-lock.py"
+IMAGE_DIGEST = re.compile(r"sha256:[a-f0-9]{64}\Z")
 VERSION_SPEC = importlib.util.spec_from_file_location("cetirun_version", ROOT / "scripts/cetirun-version.py")
 VERSIONS = importlib.util.module_from_spec(VERSION_SPEC)
 VERSION_SPEC.loader.exec_module(VERSIONS)
@@ -72,6 +74,19 @@ def coordinates(args):
         raise ValueError("GIT_SHA must be the full source commit SHA")
     if args.chart_namespace != "helm":
         raise ValueError("CHART_NAMESPACE must be helm; use REGISTRY for a repository prefix")
+
+
+def runtime_chart_lock_inputs():
+    openclaw = os.environ.get("OPENCLAW_IMAGE_DIGEST", "")
+    hermes = os.environ.get("HERMES_IMAGE_DIGEST", "")
+    if bool(openclaw) != bool(hermes):
+        raise ValueError("OPENCLAW_IMAGE_DIGEST and HERMES_IMAGE_DIGEST must be supplied together")
+    if not openclaw:
+        return None
+    for runtime, digest in (("openclaw", openclaw), ("hermes", hermes)):
+        if not IMAGE_DIGEST.fullmatch(digest):
+            raise ValueError(f"{runtime} image digest must be sha256 followed by 64 lowercase hexadecimal characters")
+    return {"openclaw": openclaw, "hermes": hermes}
 
 
 def require_license(images):
@@ -154,14 +169,21 @@ def selected_charts(args, data):
     return [entry for entry in data["charts"] if not args.chart or entry["name"] == args.chart]
 
 
-def package_charts(args, data, destination, root=ROOT):
+def package_charts(args, data, destination, root=ROOT, runtime_lock=None):
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="cetirun-release-charts-") as temporary:
         source_root = Path(temporary)
         for entry in data["charts"]:
             source = args.chart_dir if args.chart_dir and entry["name"] == args.chart else root / entry["path"]
-            shutil.copytree(source, source_root / entry["path"],
-                            ignore=shutil.ignore_patterns("charts", "__pycache__"))
+            target = source_root / entry["path"]
+            if entry["name"] == "cetirun" and runtime_lock is not None:
+                run([sys.executable, "-B", str(RUNTIME_CHART_LOCK),
+                     "--source-chart", str(source), "--output-chart", str(target),
+                     "--registry", args.registry, "--version", args.version,
+                     "--openclaw-image-digest", runtime_lock["openclaw"],
+                     "--hermes-image-digest", runtime_lock["hermes"]])
+            else:
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns("charts", "__pycache__"))
         updates = VERSIONS.chart_updates(source_root, [entry["path"] for entry in data["charts"]],
                                          args.version, args.app_version)
         for path, content in updates.items():
@@ -254,6 +276,9 @@ def main(argv=None):
         args.registry = args.registry.rstrip("/")
         args.git_sha = args.git_sha or run(["git", "rev-parse", "HEAD"], capture=True).strip()
         coordinates(args)
+        runtime_lock = runtime_chart_lock_inputs()
+        if runtime_lock is not None and args.force and args.command in ("publish-charts", "publish"):
+            raise ValueError("Runtime Chart image locking requires a new immutable registry prefix; --force is not supported")
         if args.command.startswith("publish"):
             VERSIONS.validate_push_registry(args.registry)
         if args.app_version:
@@ -277,16 +302,16 @@ def main(argv=None):
         if args.command == "package-charts":
             if args.package_dir is None:
                 raise ValueError("package-charts requires --package-dir")
-            package_charts(args, data, args.package_dir.resolve())
+            package_charts(args, data, args.package_dir.resolve(), runtime_lock=runtime_lock)
         elif args.command in ("publish-charts", "publish"):
             with tempfile.TemporaryDirectory(prefix="cetirun-publish-") as temporary:
                 directory = Path(temporary)
                 if image_work:
                     with build_source(args.version, source_version) as root:
-                        package_charts(args, data, directory, root)
+                        package_charts(args, data, directory, root, runtime_lock)
                         build_images(args, data, push=True, root=root)
                 else:
-                    package_charts(args, data, directory)
+                    package_charts(args, data, directory, runtime_lock=runtime_lock)
                 publish_charts(args, data, directory)
         else:
             with build_source(args.version, source_version) as root:

@@ -101,6 +101,15 @@ helm pull oci://quay.io/jetstack/charts/cert-manager \
 The expected archive and image digests are recorded in
 [`infra/cert-manager/images.lock.json`]({{< repo "infra/cert-manager/images.lock.json" >}}).
 
+If the first controller installation fails before its startup hooks run, the
+installer can recover only its own recorded attempt with the same pinned
+archive, values, and rendered resources. It verifies retained resource ownership
+and contents before using `helm install --replace`, which reruns the original
+post-install checks. A successful recovery requires the stored Helm hook results
+and retained resource identities to match. An uncertain replacement is inspected
+without submitting another replacement; other failed releases require separate
+recovery.
+
 ## Deploy and verify
 
 Render the full configuration offline first:
@@ -165,6 +174,60 @@ When `publicTLS` is absent, CetiRun keeps the existing external-certificate
 path. Supply `cetirun-tls` out of band and keep `istio.tlsMode: external`; an
 existing Istio chart-owned certificate uses the documented `retain` mode.
 There is no automatic ownership migration.
+
+### Migrate an existing external-certificate deployment
+
+Use a reviewed migration procedure for an installed full platform. Do not run
+the certificate-only bootstrap against that release or remove the ownership
+checks to make it pass. A hostname change requires a short interruption and a
+new browser sign-in.
+
+1. Record the current full Helm revisions, rendered resources, ingress Service
+   UID and address, and TLS Secret UID/resource version. Save the certificate
+   and private key in restricted storage outside the repository. Preserve Agent
+   owners, HOME claims, identity realm, internal trust, and application images.
+2. Verify Gateway API v1 and an accepted `istio` GatewayClass. For an AKS
+   cluster without the CRDs, the supported `az aks update --enable-gateway-api`
+   option enables their managed installation. Supply the target subscription,
+   resource group, and cluster explicitly. Keep the existing Istio service mesh;
+   the ingress-only App Routing Istio option is a different configuration.
+3. Assign the DNS label to the existing Public IP, use Azure's returned FQDN,
+   and verify public DNS. Install the pinned cert-manager controller. Create
+   only the reviewed ACME resources for staging, with the intended platform
+   Helm ownership, and record their returned UIDs. Wait for staging issuance.
+4. Upgrade the **full** platform with the new `publicTLS.domain`, both
+   Certificates enabled, and `bootstrapOnly: false`. Initially set
+   `publicTLS.acme.productionSecretName` to a separate, unused Secret such as
+   `cetirun-tls-next`. Keep the old application hostname and certificate in
+   service. Compare the complete render: the TLS additions must not remove or
+   change unrelated application resources, CRDs, Secrets, or hooks. Verify the
+   new production certificate's chain, hostname, validity, and renewal schedule.
+5. Add the new callbacks to the existing Entra applications. During the
+   maintenance window, conditionally update the original `cetirun-tls` using
+   its recorded UID and resource version. Transfer the verified certificate
+   material and the relevant ownership metadata from the actual cert-manager
+   output Secret. Preserve the canonical Secret UID; do not invent Certificate
+   identities or add Helm ownership to its output Secret. Upgrade the full
+   platform to direct the production Certificate to `cetirun-tls`, then update
+   all application, ingress, callback, and runtime origin settings.
+6. Wait for the current Certificate generation and workloads to become Ready.
+   Verify that the Certificate is the only writer of the canonical Secret,
+   and that normal publicTLS ownership checks accept the complete release.
+   Resume the standard deployment and verification workflow. Let it create its
+   own state receipts; do not fabricate a completed preparation record.
+
+The umbrella TLS templates and retained component charts can have different
+source revisions during a focused migration. Record both sources and artifact
+hashes, and require an exact render comparison. Do not introduce unrelated
+controller or API changes merely to add certificate management.
+
+After an interrupted step, inspect the actual release revision, object UIDs,
+and certificate target before retrying. For rollback after cert-manager starts
+writing `cetirun-tls`, first use a full-release upgrade to move that Certificate
+back to the temporary Secret. Wait for the new generation to become Ready and
+confirm no Certificate still targets the canonical Secret. Then conditionally
+restore the old certificate metadata/material and application hostname. A
+Helm rollback alone does not restore certificate contents or external callbacks.
 
 Keep the ACME Gateway, HTTPRoute, Issuers, Certificates, and cert-manager
 controller while the hostname needs renewal. A later retirement needs a

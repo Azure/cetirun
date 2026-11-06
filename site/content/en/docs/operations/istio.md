@@ -511,10 +511,31 @@ filter converts it to a bearer credential only for the owned
 their legacy instance-subdomain forms). Transport headers are removed from
 unrelated routes.
 
-Portal port 8080 uses strict mTLS and gateway service-account identity. Port
-8081 deliberately disables mTLS for the Lua ownership call. It relies on the
-gateway-namespace NetworkPolicy restriction. Do not describe it as an
-mTLS-authenticated endpoint.
+Portal port 8080 uses strict mTLS and gateway service-account identity.
+Identity-bound Agent ownership also requires mTLS on port 8081. The Gateway's
+dedicated TLS cluster sends the signed Portal ID token to the internal
+ownership endpoint, where Portal checks the recorded tenant and object IDs.
+An owner's display alias or email can change without changing ownership.
+The token is never forwarded to the Agent.
+
+The complete deployment helper enables both sides. Standalone deployments
+must set `portalAuth.mtls.enabled: true` and an exact
+`portalAuth.mtls.serverIdentity`, such as
+`spiffe://cluster.local/ns/cetirun-portal/sa/cetirun-portal`, in the Istio chart,
+and `istio.internalAuthMTLS: true` in the Portal chart. Use the actual Portal
+namespace and service account. SDS supplies the mesh client certificate and
+CA; the TLS cluster verifies that exact Portal identity, and Portal permits
+only the configured Gateway service account. NetworkPolicy remains enforced.
+
+For an upgrade, enable Portal's strict internal policy first, then deploy the
+Istio TLS cluster, then update the Portal backend. Native Agent access can be
+briefly unavailable between these steps; Portal port 8080 remains available.
+The TLS cluster has a distinct name so partial xDS propagation fails closed.
+Preserve the TLS settings when rolling back the backend. Chart defaults keep
+the older plaintext alias-only transport for standalone compatibility; that
+mode never forwards ID tokens and cannot authorize identity-bound Agents with
+the updated backend. A configured Entra tenant and Portal client are required
+for bound ownership even when Agent Identity and Agent Tools are disabled.
 
 Sources: [ownership filter]({{< repo "infra/istio/templates/ingress/envoy-filter-alias.yaml" >}}),
 [portal peer authentication]({{< repo "app/cetirun-portal/chart/templates/peer-authentication.yaml" >}}),

@@ -53,6 +53,9 @@ type PodConfig struct {
 	// Same UID-pinned authority as configuration admission; never written here.
 	CoordinationConfigMapName string
 	CoordinationConfigMapUID  string
+	// CetiAdminSource is the deployment-configured source that can own
+	// separate runtime access bindings for a Sandbox Agent.
+	CetiAdminSource types.NamespacedName
 	// RequestTimeout covers all authoritative reads, not each individual GET.
 	// The chart reserves 20% of the webhook timeout for transport and response.
 	RequestTimeout time.Duration

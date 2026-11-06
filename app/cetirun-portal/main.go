@@ -82,11 +82,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Agent Identity lifecycle management and account connection management both
-	// require a signed Entra ID token from oauth2-proxy in addition to
-	// display-only identity headers.
+	// Features that manage owner-scoped resources require a signed Entra ID
+	// token from oauth2-proxy. A configured Entra identity also enables the
+	// internal ownership endpoint for already-bound Agents, independently of
+	// those feature flags. NewOIDCVerifier requires both IDs and therefore
+	// rejects an incomplete configured identity at startup.
 	var oidcVerifier *auth.OIDCVerifier
-	if cfg.AgentIdentityEnabled || cfg.AgentToolsEnabled {
+	if cfg.AgentIdentityEnabled || cfg.AgentToolsEnabled || cfg.EntraTenantID != "" || cfg.PortalClientID != "" {
 		oidcVerifier, err = auth.NewOIDCVerifier(cfg.EntraTenantID, cfg.PortalClientID)
 		if err != nil {
 			slog.Error("Invalid Portal OIDC configuration", "error", err)
@@ -113,6 +115,11 @@ func main() {
 	}
 	kubeClient.SetRegistryCredentialNamespace(cfg.RegistryCredentialNamespace)
 	instanceHandler := &handler.InstanceHandler{Kube: kubeClient, Config: cfg}
+	if oidcVerifier != nil {
+		// Reuse the public middleware verifier and its JWKS cache for the
+		// internal gateway ownership check.
+		instanceHandler.VerifyInternalIdentity = oidcVerifier.Verify
+	}
 	healthHandler := &handler.HealthHandler{KubeClient: k8sClient}
 	featuresHandler := &handler.FeaturesHandler{Config: cfg}
 	configHandler := &handler.ConfigHandler{NoticeBanner: cfg.NoticeBanner}

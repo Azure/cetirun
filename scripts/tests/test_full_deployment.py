@@ -115,9 +115,19 @@ class SyntheticCluster(DEPLOY.Deployment):
                         continue
                     ns = "" if doc["kind"] in DEPLOY.CLUSTER_KINDS else doc["metadata"].get("namespace", namespace)
                     resource_name = doc["metadata"]["name"]
+                    annotations = doc["metadata"].get("annotations", {})
+                    # Helm records hook manifests separately. A failed hook Job
+                    # remains in the cluster and only carries release ownership
+                    # when the chart explicitly renders it, so do not give hooks
+                    # the synthetic ownership annotations used for regular
+                    # release resources.
+                    owner_annotations = (copy.deepcopy(annotations) if "helm.sh/hook" in annotations else {
+                        "meta.helm.sh/release-name": release,
+                        "meta.helm.sh/release-namespace": namespace,
+                    })
                     self.objects[(doc["kind"].lower(), ns, resource_name)] = {
                         "name": resource_name, "uid": f"uid-{resource_name}",
-                        "annotations": {"meta.helm.sh/release-name": release, "meta.helm.sh/release-namespace": namespace},
+                        "annotations": owner_annotations,
                     }
                     self.live[(doc["kind"].lower(), ns, resource_name)] = copy.deepcopy(doc)
                     if doc["kind"] == "Secret":
@@ -445,6 +455,24 @@ class DeploymentInputTests(DeploymentFixture, unittest.TestCase):
         chart = yaml.safe_load((ROOT / "app/cetirun-operator/chart/values.yaml").read_text())["customRuntime"]
         self.assertLessEqual(set(chart), operator_custom_runtime_fields())
 
+    def test_primary_runtime_image_overrides_fail_before_external_commands(self):
+        for field in ("image", "hermes.image", "openclaw.image"):
+            for value in ({}, {"digest": "sha256:" + "a" * 64}):
+                with self.subTest(field=field, value=value):
+                    config = copy.deepcopy(self.config)
+                    DEPLOY.set_value(config["platform"]["values"]["cetirun-operator"], "cetirun.helmValues." + field, value)
+                    with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                        with self.assertRaisesRegex(ValueError, "Remove primary image overrides"):
+                            self.configure(config)
+
+    def test_helper_image_pins_remain_valid(self):
+        config = copy.deepcopy(self.config)
+        for field in ("desktop.image.digest", "ttyd.image.digest"):
+            DEPLOY.set_value(config["platform"]["values"]["cetirun-operator"], "cetirun.helmValues." + field, "sha256:" + "a" * 64)
+        _, values = self.configure(config)
+        for field in ("desktop.image.digest", "ttyd.image.digest"):
+            self.assertEqual(DEPLOY.get_value(values["platform"]["cetirun-operator"]["cetirun"]["helmValues"], field), "sha256:" + "a" * 64)
+
     def test_failed_command_names_the_step_without_output_files_or_context(self):
         config, values = self.configure(self.config)
         deployment = DEPLOY.Deployment(config, values, self.root)
@@ -726,6 +754,42 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
             deployment.execute()
         self.assertEqual(deployment.writes, [])
 
+    def cetiadmin_hook(self, deployment, mode="check"):
+        name = "cetirun-cetiadmin-" + mode
+        return next(doc for doc in deployment.documents["platform"]
+                    if doc["kind"] == "Job" and doc["metadata"]["name"] == name)
+
+    def test_retained_failed_cetiadmin_hook_with_exact_chart_ownership_retries(self):
+        deployment = self.deployment()
+        job = self.cetiadmin_hook(deployment)
+        namespace, name = job["metadata"]["namespace"], job["metadata"]["name"]
+        deployment.objects[("job", namespace, name)] = {
+            "name": name,
+            "uid": "retained-cetiadmin-check-uid",
+            "annotations": copy.deepcopy(job["metadata"]["annotations"]),
+            "status": {"failed": 1},
+        }
+        deployment.execute()
+        self.assertTrue(any(release == "platform" for release, _, _ in deployment.applied))
+        current = deployment.objects[("job", namespace, name)]
+        self.assertEqual(current["annotations"], job["metadata"]["annotations"])
+
+    def test_retained_cetiadmin_hook_from_another_release_or_namespace_stops_before_writes(self):
+        for field, value in (("meta.helm.sh/release-name", "another-release"),
+                             ("meta.helm.sh/release-namespace", "another-namespace")):
+            with self.subTest(field=field):
+                deployment = self.deployment(name=field.rsplit("/", 1)[-1])
+                job = self.cetiadmin_hook(deployment)
+                namespace, name = job["metadata"]["namespace"], job["metadata"]["name"]
+                annotations = copy.deepcopy(job["metadata"]["annotations"])
+                annotations[field] = value
+                deployment.objects[("job", namespace, name)] = {
+                    "name": name, "uid": "foreign-cetiadmin-check-uid", "annotations": annotations,
+                }
+                with self.assertRaisesRegex(ValueError, "Refusing to adopt Job"):
+                    deployment.execute()
+                self.assertEqual(deployment.writes, [])
+
     def test_failed_rollout_stops_later_releases(self):
         deployment = self.deployment()
         deployment.fail = "rollout status deployment/cetirun-agent-broker"
@@ -870,6 +934,30 @@ class FullDeploymentTests(DeploymentFixture, unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("helm"), "requires existing Helm")
 class DeploymentRevisionTests(DeploymentFixture, unittest.TestCase):
+    def test_internal_owner_auth_uses_actual_portal_mesh_identity(self):
+        config = copy.deepcopy(self.config)
+        config["platform"]["namespace"] = "dedicated-platform"
+        config["platform"]["values"].setdefault("cetirun-portal", {})["serviceAccount"] = {"name": "dedicated-portal"}
+        _, values = self.configure(config)
+        self.assertTrue(values["platform"]["cetirun-portal"]["istio"]["internalAuthMTLS"])
+        self.assertEqual(values["istio"]["portalAuth"]["mtls"], {
+            "enabled": True,
+            "serverIdentity": "spiffe://cluster.local/ns/dedicated-platform/sa/dedicated-portal",
+        })
+
+    def test_conflicting_internal_owner_transport_fails_before_tools(self):
+        for section, field, value in (
+            ("istio", "portalAuth.mtls.enabled", False),
+            ("istio", "portalAuth.mtls.serverIdentity", "spiffe://cluster.local/ns/other/sa/other"),
+            ("platform", "cetirun-portal.istio.internalAuthMTLS", False),
+        ):
+            with self.subTest(field=field):
+                config = copy.deepcopy(self.config)
+                DEPLOY.set_value(config[section]["values"], field, value)
+                with patch.object(DEPLOY.subprocess, "run", side_effect=AssertionError("External command before validation")):
+                    with self.assertRaisesRegex(ValueError, "conflicts with the complete deployment"):
+                        self.configure(config)
+
     def test_default_mcp_broker_storage_identity_matches_actual_release(self):
         for explicit_name in ("dedicated-broker", ""):
             with self.subTest(account=explicit_name):

@@ -32,13 +32,12 @@ spec:
         - source:
             principals:
               - cluster.local/ns/{{ .Values.istio.gatewayNamespace }}/sa/{{ .Values.istio.gatewayServiceAccount }}
-    # Port 8081 (internal auth for Lua httpCall): allow without source constraints.
-    # PeerAuthentication on port 8081 is DISABLE so Istio cannot verify the caller's
-    # mTLS principal or namespace. Security is provided by the NetworkPolicy
-    # (network-policy-internal-auth.yaml) which restricts access to the ingress
-    # gateway namespace only, and by the InternalAuth handler which ignores
-    # externally-controllable inputs (only trusts headers set by the Lua filter).
+    {{- if not .Values.istio.internalAuthMTLS }}
+    # Legacy alias-only callers use the namespace-restricted plaintext port.
+    # With internal mTLS enabled, the gateway principal rule above also governs
+    # port 8081; there is no unauthenticated port exception.
     - to:
         - operation:
             ports:
               - "8081"
+    {{- end }}

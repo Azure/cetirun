@@ -153,6 +153,13 @@ class SyntheticAPIIngress(INGRESS.Ingress):
         self.controller_extra_args = []
         self.controller_solver_image = self.lock["acmesolver"]["image"]
         self.cert_manager_status = "deployed"
+        self.cert_manager_revision = "1"
+        self.cert_manager_values = self.cm_values()
+        self.cert_manager_manifest = ""
+        self.cert_manager_hooks = ""
+        self.cert_manager_hook_phase = "Succeeded"
+        self.omit_first_cert_manager_hook_status = False
+        self.create_missing_cert_manager_resources = False
         self.account_secret_name = None
         self.http_calls = []
         self.platform_release = "absent"
@@ -165,6 +172,9 @@ class SyntheticAPIIngress(INGRESS.Ingress):
 
     def render(self, domain=None):
         return super().render(domain)
+
+    def cm_expected_resource(self, doc, existing):
+        return copy.deepcopy(doc)
 
     def _live_document(self, document):
         result = copy.deepcopy(document)
@@ -280,18 +290,54 @@ class SyntheticAPIIngress(INGRESS.Ingress):
         if args[0] == "list":
             release = args[args.index("--filter") + 1].strip("^").rstrip("$").replace("\\", "")
             if release == self.config["certManager"]["release"]:
-                return json.dumps([{"status": self.cert_manager_status, "chart": "cert-manager-" + self.lock["chart"]["version"]}])
+                return json.dumps([{"status": self.cert_manager_status, "revision": self.cert_manager_revision,
+                                    "chart": "cert-manager-" + self.lock["chart"]["version"]}])
             if release == self.config["ingress"]["release"] and self.platform_release != "absent":
                 status = {"failed-full": "failed", "pending": "pending-install"}.get(self.platform_release, "deployed")
                 return json.dumps([{"status": status,
                                     "revision": "1", "chart": "cetirun-platform-" + yaml.safe_load((self.chart / "Chart.yaml").read_text())["version"]}])
             return json.dumps([])
         if args[:2] == ("get", "values"):
+            if args[2] == self.config["certManager"]["release"]:
+                return json.dumps(self.cert_manager_values)
             return json.dumps(self.platform_values)
         if args[:2] == ("get", "manifest"):
+            if args[2] == self.config["certManager"]["release"]:
+                return self.cert_manager_manifest
             return self.platform_manifest
         if args[:2] == ("get", "hooks"):
+            if args[2] == self.config["certManager"]["release"]:
+                return self.cert_manager_hooks
             return self.platform_hooks
+        if args[0] == "status" and args[1] == self.config["certManager"]["release"]:
+            hooks = []
+            for index, hook in enumerate(yaml.safe_load_all(self.cert_manager_hooks)):
+                if hook:
+                    if self.omit_first_cert_manager_hook_status and index == 0:
+                        continue
+                    hooks.append({"kind": hook["kind"], "name": hook["metadata"]["name"],
+                                  "events": hook["metadata"].get("annotations", {}).get("helm.sh/hook", "").split(","),
+                                  "last_run": {"phase": self.cert_manager_hook_phase}})
+            return json.dumps({"hooks": hooks})
+        if args[:2] == ("install", "--replace"):
+            if self.create_missing_cert_manager_resources:
+                for document in self.cm_documents:
+                    if self.cm_hook(document):
+                        continue
+                    group = document["apiVersion"].split("/", 1)[0] if "/" in document["apiVersion"] else ""
+                    kind = document["kind"].lower() + ("." + group if group else "")
+                    namespace = None if document["kind"] in INGRESS.CLUSTER_KINDS else document["metadata"].get("namespace", self.config["certManager"]["namespace"])
+                    key = self._key(kind, document["metadata"]["name"], namespace)
+                    if key not in self.live:
+                        created = copy.deepcopy(document)
+                        created["metadata"].update({"uid": document["metadata"]["name"] + "-replacement-uid", "annotations": {
+                            "meta.helm.sh/release-name": self.config["certManager"]["release"],
+                            "meta.helm.sh/release-namespace": self.config["certManager"]["namespace"],
+                        }})
+                        self.live[key] = created
+            self.cert_manager_status = "deployed"
+            self.cert_manager_revision = "2"
+            return ""
         if args[:2] == ("upgrade", "--install"):
             release = args[2]
             if release == self.config["ingress"]["release"]:
@@ -367,11 +413,35 @@ class PublicIngressTests(unittest.TestCase):
 
     def failed_cert_manager_recovery(self, scratch):
         ingress = SyntheticAPIIngress(self.normalized(cert_manager="install"), scratch)
+        ingress.load_state(write=True)
         archive = self.pinned_cert_manager_archive(ingress)
-        ingress.state = {
+        resource = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {
+            "name": "cert-manager-recovery-test", "namespace": "cert-manager",
+            "labels": {"app.kubernetes.io/managed-by": "Helm"},
+        }, "data": {"expected": "value"}}
+        hook = {"apiVersion": "batch/v1", "kind": "Job", "metadata": {
+            "name": "cert-manager-startupapicheck", "namespace": "cert-manager",
+            "annotations": {"helm.sh/hook": "post-install", "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"},
+        }, "spec": {"template": {"spec": {"restartPolicy": "Never"}}}}
+        ingress.cm_documents = [resource, hook]
+        live = copy.deepcopy(resource)
+        live["metadata"].update({"uid": "cert-manager-recovery-test-uid", "annotations": {
+            "meta.helm.sh/release-name": "cert-manager",
+            "meta.helm.sh/release-namespace": "cert-manager",
+        }, "labels": {"app.kubernetes.io/managed-by": "Helm"}})
+        ingress.live[ingress._key("configmap", resource["metadata"]["name"], "cert-manager")] = live
+        ingress.cert_manager_manifest = yaml.safe_dump_all([resource])
+        ingress.cert_manager_hooks = yaml.safe_dump_all([hook])
+        ingress.state.update({
             "steps": [{"name": "cert-manager-install", "status": "uncertain"}],
             "certManagerArchiveSHA256": ingress.lock["chart"]["archiveSHA256"],
-        }
+            "certManagerInstall": {
+                "archiveSHA256": ingress.lock["chart"]["archiveSHA256"],
+                "chartVersion": ingress.lock["chart"]["version"],
+                "valuesSHA256": INGRESS.document_digest(ingress.cm_values()),
+                "renderSHA256": INGRESS.document_digest(ingress.cm_documents),
+            },
+        })
         ingress.cert_manager_status = "failed"
         return ingress, archive
 
@@ -753,6 +823,21 @@ class PublicIngressTests(unittest.TestCase):
                     ingress.run(["helm", "template"])
         self.assertNotIn("private", str(failure.exception))
 
+    def test_commands_disable_client_go_http2_explicitly(self):
+        value = self.normalized()
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress = INGRESS.Ingress(value, scratch)
+            environments = []
+
+            def run(*args, **kwargs):
+                environments.append(kwargs["env"])
+                return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+            with patch.object(subprocess, "run", side_effect=run):
+                ingress.run(["kubectl", "version"])
+        self.assertEqual(environments[0]["GODEBUG"], "http2client=0")
+        self.assertEqual(environments[0]["DISABLE_HTTP2"], "1")
+
     def test_custom_domain_prepare_and_rerun_preserve_the_production_certificate(self):
         value = self.normalized()
         with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
@@ -883,32 +968,278 @@ class PublicIngressTests(unittest.TestCase):
         self.assertTrue(ingress.cm_recovery)
         self.assertTrue(ingress.cm_needs_install)
 
+    def test_failed_first_install_replays_the_post_install_hook_with_install_replace(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.cert_manager_check()
+            ingress.install_cert_manager()
+        commands = [entry[1] for entry in ingress.api_calls if entry[0] == "helm"]
+        replace = [args for args in commands if args[:2] == ("install", "--replace")]
+        self.assertEqual(len(replace), 1)
+        self.assertNotIn("--force", replace[0])
+        self.assertNotIn("--take-ownership", replace[0])
+        self.assertEqual(ingress.cert_manager_revision, "2")
+        retained = ingress.live[ingress._key("configmap", "cert-manager-recovery-test", "cert-manager")]
+        self.assertEqual(retained["metadata"]["uid"], "cert-manager-recovery-test-uid")
+        self.assertEqual(ingress.state["certManagerRecovery"]["resourceUIDs"], {
+            "v1:ConfigMap:cert-manager/cert-manager-recovery-test": "cert-manager-recovery-test-uid",
+        })
+
+    def test_failed_cert_manager_recovery_rejects_a_newer_revision(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.cert_manager_revision = "2"
+            with self.assertRaisesRegex(INGRESS.IngressError, "not the first revision"):
+                ingress.cert_manager_check()
+
+    def test_failed_cert_manager_recovery_rejects_mismatched_values_or_render(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.cert_manager_values["prometheus"] = {"enabled": True}
+            with self.assertRaisesRegex(INGRESS.IngressError, "values differ"):
+                ingress.cert_manager_check()
+
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.cert_manager_manifest = yaml.safe_dump_all([{**ingress.cm_documents[0], "data": {"unexpected": "change"}}])
+            with self.assertRaisesRegex(INGRESS.IngressError, "render differs"):
+                ingress.cert_manager_check()
+
+    def test_failed_cert_manager_recovery_rejects_a_changed_retained_resource(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            resource = ingress.live[ingress._key("configmap", "cert-manager-recovery-test", "cert-manager")]
+            resource["data"]["expected"] = "changed"
+            with self.assertRaisesRegex(INGRESS.IngressError, "retained resource differs"):
+                ingress.cert_manager_check()
+
+    def test_failed_cert_manager_recovery_rechecks_before_install_replace(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.cert_manager_check()
+            original_check = ingress.cert_manager_check
+            checks = 0
+
+            def recheck_with_drift():
+                nonlocal checks
+                checks += 1
+                if checks == 1:
+                    ingress.live[ingress._key("configmap", "cert-manager-recovery-test", "cert-manager")]["data"]["expected"] = "changed"
+                original_check()
+
+            ingress.cert_manager_check = recheck_with_drift
+            with self.assertRaisesRegex(INGRESS.IngressError, "retained resource differs"):
+                ingress.install_cert_manager()
+        self.assertFalse(any(entry[0] == "helm" and entry[1][:2] == ("install", "--replace") for entry in ingress.api_calls))
+
+    def test_failed_cert_manager_recovery_does_not_repeat_an_uncertain_replace(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.cert_manager_check()
+            ingress.state["steps"].append({"name": "cert-manager-install-replace", "status": "uncertain"})
+            with self.assertRaisesRegex(INGRESS.IngressError, "replacement outcome is unknown"):
+                ingress.install_cert_manager()
+        self.assertFalse(any(entry[0] == "helm" and entry[1][:2] == ("install", "--replace") for entry in ingress.api_calls))
+
+    def test_uncertain_cert_manager_replace_reenters_through_read_only_acceptance(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.state["steps"].append({"name": "cert-manager-install-replace", "status": "uncertain"})
+            ingress.state["certManagerRecovery"] = {"resourceUIDs": {
+                "v1:ConfigMap:cert-manager/cert-manager-recovery-test": "cert-manager-recovery-test-uid",
+            }}
+            ingress.cert_manager_status = "deployed"
+            ingress.cert_manager_revision = "2"
+            ingress.api_groups = set(INGRESS.CERT_CRDS)
+            ingress.cert_manager_check()
+        self.assertEqual(ingress.state["certManagerRecovery"]["acceptedRevision"], 2)
+        self.assertFalse(any(entry[0] == "helm" and entry[1][:2] == ("install", "--replace") for entry in ingress.api_calls))
+
+    def test_started_cert_manager_replace_reenters_through_read_only_acceptance(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.state["steps"].append({"name": "cert-manager-install-replace", "status": "started"})
+            ingress.state["certManagerRecovery"] = {"resourceUIDs": {
+                "v1:ConfigMap:cert-manager/cert-manager-recovery-test": "cert-manager-recovery-test-uid",
+            }}
+            ingress.cert_manager_status = "deployed"
+            ingress.cert_manager_revision = "2"
+            ingress.api_groups = set(INGRESS.CERT_CRDS)
+            ingress.cert_manager_check()
+        self.assertEqual(ingress.state["certManagerRecovery"]["acceptedRevision"], 2)
+
+    def test_cert_manager_replacement_rechecks_live_resources_after_helm_returns(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.cert_manager_check()
+            original_helm = ingress.helm
+
+            def helm_with_drift(*args, **kwargs):
+                result = original_helm(*args, **kwargs)
+                if args[:2] == ("install", "--replace"):
+                    ingress.live[ingress._key("configmap", "cert-manager-recovery-test", "cert-manager")]["data"]["expected"] = "changed"
+                return result
+
+            ingress.helm = helm_with_drift
+            with self.assertRaisesRegex(INGRESS.IngressError, "retained resource differs"):
+                ingress.install_cert_manager()
+
+    def test_cert_manager_replacement_creates_and_validates_a_missing_resource(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            del ingress.live[ingress._key("configmap", "cert-manager-recovery-test", "cert-manager")]
+            ingress.create_missing_cert_manager_resources = True
+            ingress.cert_manager_check()
+            ingress.install_cert_manager()
+        self.assertIn(ingress._key("configmap", "cert-manager-recovery-test", "cert-manager"), ingress.live)
+        self.assertEqual(ingress.state["certManagerRecovery"]["acceptedRevision"], 2)
+
+    def test_cert_manager_replacement_rejects_a_resource_still_missing_after_helm(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            del ingress.live[ingress._key("configmap", "cert-manager-recovery-test", "cert-manager")]
+            ingress.cert_manager_check()
+            with self.assertRaisesRegex(INGRESS.IngressError, "did not retain managed resource ownership"):
+                ingress.install_cert_manager()
+
+    def test_cert_manager_recovery_rejects_a_failed_stored_post_install_hook(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.state["steps"].append({"name": "cert-manager-install-replace", "status": "uncertain"})
+            ingress.state["certManagerRecovery"] = {"resourceUIDs": {
+                "v1:ConfigMap:cert-manager/cert-manager-recovery-test": "cert-manager-recovery-test-uid",
+            }}
+            ingress.cert_manager_status = "deployed"
+            ingress.cert_manager_revision = "2"
+            ingress.cert_manager_hook_phase = "Failed"
+            ingress.api_groups = set(INGRESS.CERT_CRDS)
+            with self.assertRaisesRegex(INGRESS.IngressError, "post-install startup check did not succeed"):
+                ingress.cert_manager_check()
+
+    def test_cert_manager_recovery_rejects_a_missing_stored_post_install_hook(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress, _ = self.failed_cert_manager_recovery(scratch)
+            ingress.state["steps"].append({"name": "cert-manager-install-replace", "status": "uncertain"})
+            ingress.state["certManagerRecovery"] = {"resourceUIDs": {
+                "v1:ConfigMap:cert-manager/cert-manager-recovery-test": "cert-manager-recovery-test-uid",
+            }}
+            ingress.cert_manager_status = "deployed"
+            ingress.cert_manager_revision = "2"
+            ingress.omit_first_cert_manager_hook_status = True
+            ingress.api_groups = set(INGRESS.CERT_CRDS)
+            with self.assertRaisesRegex(INGRESS.IngressError, "post-install startup check did not succeed"):
+                ingress.cert_manager_check()
+
+    def test_cert_manager_dry_run_retains_only_assigned_service_identity_fields(self):
+        with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
+            ingress = INGRESS.Ingress(self.normalized(cert_manager="install"), scratch)
+            document = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "cert-manager", "namespace": "cert-manager"},
+                        "spec": {"ports": [{"port": 443}]}}
+            existing = {"metadata": {"resourceVersion": "7"}, "spec": {
+                "clusterIP": "10.0.0.10", "clusterIPs": ["10.0.0.10"], "ipFamilies": ["IPv4"],
+                "ipFamilyPolicy": "SingleStack", "ports": [{"port": 443}],
+            }}
+
+            def kube(*args, **kwargs):
+                self.assertEqual(args[:2], ("replace", "--dry-run=server"))
+                desired = yaml.safe_load(kwargs["input_text"])
+                self.assertEqual(desired["metadata"]["resourceVersion"], "7")
+                for field in ("clusterIP", "clusterIPs", "ipFamilies", "ipFamilyPolicy"):
+                    self.assertEqual(desired["spec"][field], existing["spec"][field])
+                return json.dumps(desired)
+
+            ingress.kube = kube
+            self.assertEqual(ingress.cm_expected_resource(document, existing)["spec"]["clusterIP"], "10.0.0.10")
+
+    def test_cert_manager_recovery_allows_only_the_exact_aks_webhook_defaults(self):
+        ingress = SyntheticAPIIngress(self.normalized(cert_manager="install"), self.directory)
+        webhook = {"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingWebhookConfiguration", "metadata": {
+            "name": "cert-manager-webhook",
+        }, "webhooks": [{"name": "webhook.cert-manager.io", "namespaceSelector": {
+            "matchExpressions": [{"key": "cert-manager.io/disable-validation", "operator": "NotIn", "values": ["true"]}],
+        }}]}
+        actual = copy.deepcopy(webhook)
+        actual["webhooks"][0]["namespaceSelector"]["matchExpressions"] += [
+            {"key": "control-plane", "operator": "NotIn", "values": ["true"]},
+            {"key": "kubernetes.azure.com/managedby", "operator": "NotIn", "values": ["aks"]},
+        ]
+        self.assertTrue(ingress.cm_resource_matches(webhook, actual))
+        actual["webhooks"][0]["namespaceSelector"]["matchExpressions"].append(
+            {"key": "unexpected", "operator": "Exists"})
+        self.assertFalse(ingress.cm_resource_matches(webhook, actual))
+        actual = copy.deepcopy(webhook)
+        actual["webhooks"][0]["namespaceSelector"]["matchExpressions"].append(
+            {"key": "control-plane", "operator": "NotIn", "values": ["true"]})
+        self.assertFalse(ingress.cm_resource_matches(webhook, actual))
+        actual["webhooks"][0]["namespaceSelector"]["matchExpressions"] += [
+            {"key": "control-plane", "operator": "NotIn", "values": ["true"]},
+            {"key": "kubernetes.azure.com/managedby", "operator": "NotIn", "values": ["aks"]},
+        ]
+        self.assertFalse(ingress.cm_resource_matches(webhook, actual))
+
+    def test_cert_manager_recovery_requires_nonempty_controller_injected_ca_bundles(self):
+        ingress = SyntheticAPIIngress(self.normalized(cert_manager="install"), self.directory)
+        webhook = {"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingWebhookConfiguration", "metadata": {
+            "name": "cert-manager-webhook", "annotations": {"cert-manager.io/inject-ca-from-secret": "cert-manager/cert"},
+        }, "webhooks": [{"name": "webhook.cert-manager.io", "clientConfig": {"service": {"name": "webhook"}}}]}
+        actual = copy.deepcopy(webhook)
+        actual["webhooks"][0]["clientConfig"]["caBundle"] = "Y2E="
+        self.assertTrue(ingress.cm_resource_matches(webhook, actual))
+        actual["webhooks"][0]["clientConfig"]["caBundle"] = ""
+        with self.assertRaisesRegex(INGRESS.IngressError, "no injected CA bundle"):
+            ingress.cm_resource_matches(webhook, actual)
+
+    def test_cert_manager_recovery_keeps_template_crds_in_release_manifest_comparison(self):
+        ingress = SyntheticAPIIngress(self.normalized(cert_manager="install"), self.directory)
+        crd = {"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition", "metadata": {
+            "name": "certificates.cert-manager.io",
+        }, "spec": {"group": "cert-manager.io"}}
+        hook = {"apiVersion": "batch/v1", "kind": "Job", "metadata": {
+            "name": "startup", "annotations": {"helm.sh/hook": "post-install"},
+        }}
+        ingress.cm_documents = [crd, hook]
+        self.assertEqual(ingress.cm_manifest_documents(), [crd])
+
+    def test_cert_manager_recovery_accepts_only_the_dynamic_deployment_revision_annotation(self):
+        ingress = SyntheticAPIIngress(self.normalized(cert_manager="install"), self.directory)
+        deployment = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {
+            "name": "cert-manager", "labels": {"app.kubernetes.io/managed-by": "Helm"},
+        }}
+        live = copy.deepcopy(deployment)
+        live["metadata"].update({"annotations": {
+            "meta.helm.sh/release-name": "cert-manager", "meta.helm.sh/release-namespace": "cert-manager",
+            "deployment.kubernetes.io/revision": "2",
+        }})
+        self.assertTrue(ingress.cm_resource_metadata_matches(deployment, live, "cert-manager", "cert-manager"))
+        live["metadata"]["annotations"]["unexpected"] = "value"
+        self.assertFalse(ingress.cm_resource_metadata_matches(deployment, live, "cert-manager", "cert-manager"))
+
     def test_failed_cert_manager_recovery_refuses_an_unmanaged_surviving_resource(self):
         with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
             ingress, _ = self.failed_cert_manager_recovery(scratch)
             document = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {
                 "name": "cert-manager", "namespace": "cert-manager"}, "spec": {"replicas": 1}}
             ingress.cm_documents = [document]
+            ingress.cert_manager_manifest = yaml.safe_dump_all([document])
+            ingress.cert_manager_hooks = ""
+            ingress.state["certManagerInstall"]["renderSHA256"] = INGRESS.document_digest(ingress.cm_documents)
             ingress.get = lambda *args, **kwargs: {"metadata": {"name": "cert-manager", "annotations": {}, "labels": {}}}
             with self.assertRaisesRegex(INGRESS.IngressError, "ownership conflict"):
                 ingress.cert_manager_check()
 
-    def test_failed_cert_manager_recovery_allows_only_the_matching_unowned_post_install_hook(self):
+    def test_failed_cert_manager_recovery_refuses_an_existing_post_install_hook(self):
         hook = {"apiVersion": "batch/v1", "kind": "Job", "metadata": {
             "name": "cert-manager-startupapicheck", "namespace": "cert-manager",
             "labels": {"app": "startupapicheck"}, "annotations": {"helm.sh/hook": "post-install"},
         }, "spec": {"template": {"spec": {"restartPolicy": "Never"}}}}
         with tempfile.TemporaryDirectory(prefix="cetirun-public-ingress-scratch-") as scratch:
             ingress, _ = self.failed_cert_manager_recovery(scratch)
-            ingress.cm_documents = [hook]
-            ingress.get = lambda *args, **kwargs: copy.deepcopy(hook)
-            ingress.cert_manager_check()
-            self.assertTrue(ingress.cm_recovery)
-
-            foreign = copy.deepcopy(hook)
-            foreign["spec"]["template"]["spec"]["restartPolicy"] = "OnFailure"
-            ingress.get = lambda *args, **kwargs: copy.deepcopy(foreign)
-            with self.assertRaisesRegex(INGRESS.IngressError, "ownership conflict"):
+            ingress.cm_documents = [ingress.cm_documents[0], hook]
+            ingress.cert_manager_manifest = yaml.safe_dump_all([ingress.cm_documents[0]])
+            ingress.cert_manager_hooks = yaml.safe_dump_all([hook])
+            ingress.state["certManagerInstall"]["renderSHA256"] = INGRESS.document_digest(ingress.cm_documents)
+            original_get = ingress.get
+            ingress.get = lambda kind, name, *args, **kwargs: copy.deepcopy(hook) if name == hook["metadata"]["name"] else original_get(kind, name, *args, **kwargs)
+            with self.assertRaisesRegex(INGRESS.IngressError, "post-install hook still exists"):
                 ingress.cert_manager_check()
 
     def test_cert_manager_install_journals_before_helm_and_uses_verified_archive_snapshot(self):
@@ -929,6 +1260,7 @@ class PublicIngressTests(unittest.TestCase):
             archive_snapshot_exists = ingress.cm_archive.is_file()
 
         self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ("upgrade", "--install"))
         self.assertEqual(Path(calls[0][3]), ingress.cm_archive)
         self.assertNotEqual(ingress.cm_archive, source_archive)
         self.assertTrue(archive_snapshot_exists)

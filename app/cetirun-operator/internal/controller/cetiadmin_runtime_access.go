@@ -26,12 +26,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+// Keep controller-local names while the strict cross-package contract is
+// owned by cetiadmin. Diagnostics and legacy focused tests use these helpers.
 const (
-	cetiAdminGrantAgent        = "cetirun.microsoft.com/cetiadmin-grant-agent"
-	cetiAdminGrantAgentUID     = "cetirun.microsoft.com/cetiadmin-grant-agent-uid"
-	cetiAdminGrantNamespace    = "cetirun.microsoft.com/cetiadmin-grant-namespace"
-	cetiAdminGrantNamespaceUID = "cetirun.microsoft.com/cetiadmin-grant-namespace-uid"
+	cetiAdminGrantAgent        = cetiadmin.AnnotationRuntimeGrantAgent
+	cetiAdminGrantAgentUID     = cetiadmin.AnnotationRuntimeGrantAgentUID
+	cetiAdminGrantNamespace    = cetiadmin.AnnotationRuntimeGrantNamespace
+	cetiAdminGrantNamespaceUID = cetiadmin.AnnotationRuntimeGrantNamespaceUID
 )
+
+func cetiAdminAccessName(state *cetiadmin.Installation) string {
+	return cetiadmin.AccessName(state.RecordUID)
+}
 
 func (r *CetiAdminReconciler) EnqueueRuntimeAccess(ctx context.Context, object client.Object) []reconcile.Request {
 	key := client.ObjectKeyFromObject(object)
@@ -134,11 +140,11 @@ func (r *CetiAdminReconciler) runtimeTarget(ctx context.Context, config cetiadmi
 }
 
 func (r *CetiAdminReconciler) runtimeAccessObjects(state *cetiadmin.Installation, agent *api.Agent, target cetiadmin.TargetIdentity) []client.Object {
-	name := cetiAdminAccessName(state)
+	name := cetiadmin.AccessName(state.RecordUID)
 	metadata := func(namespace, name string) metav1.ObjectMeta {
 		return metav1.ObjectMeta{Name: name, Namespace: namespace, OwnerReferences: []metav1.OwnerReference{registryauth.Owner(agent)}, Annotations: map[string]string{
 			cetiadmin.AnnotationSourceUID: string(state.Source.UID), cetiadmin.AnnotationInstallationUID: string(state.RecordUID),
-			cetiAdminGrantAgent: agent.Name, cetiAdminGrantAgentUID: string(agent.UID), cetiAdminGrantNamespace: target.Namespace.Name, cetiAdminGrantNamespaceUID: string(target.Namespace.UID),
+			cetiadmin.AnnotationRuntimeGrantAgent: agent.Name, cetiadmin.AnnotationRuntimeGrantAgentUID: string(agent.UID), cetiadmin.AnnotationRuntimeGrantNamespace: target.Namespace.Name, cetiadmin.AnnotationRuntimeGrantNamespaceUID: string(target.Namespace.UID),
 		}}
 	}
 	capability := "runtime"
@@ -257,15 +263,15 @@ func (r *CetiAdminReconciler) revokeRuntimeNamespace(ctx context.Context, state 
 	}
 	for _, object := range objects {
 		annotations := object.GetAnnotations()
-		if annotations[cetiadmin.AnnotationInstallationUID] != string(state.RecordUID) || annotations[cetiAdminGrantAgent] == "" ||
-			(agentName != "" && annotations[cetiAdminGrantAgent] != agentName) {
+		if annotations[cetiadmin.AnnotationInstallationUID] != string(state.RecordUID) || annotations[cetiadmin.AnnotationRuntimeGrantAgent] == "" ||
+			(agentName != "" && annotations[cetiadmin.AnnotationRuntimeGrantAgent] != agentName) {
 			continue
 		}
 		owners := object.GetOwnerReferences()
-		if annotations[cetiadmin.AnnotationSourceUID] != string(state.Source.UID) || annotations[cetiAdminGrantNamespaceUID] == "" ||
-			annotations[cetiAdminGrantNamespace] == "" || annotations[cetiadmin.AnnotationCreationID] == "" || len(owners) != 1 ||
-			owners[0].APIVersion != api.GroupVersion.String() || owners[0].Kind != "Agent" || owners[0].Name != annotations[cetiAdminGrantAgent] ||
-			string(owners[0].UID) != annotations[cetiAdminGrantAgentUID] || owners[0].UID == "" {
+		if annotations[cetiadmin.AnnotationSourceUID] != string(state.Source.UID) || annotations[cetiadmin.AnnotationRuntimeGrantNamespaceUID] == "" ||
+			annotations[cetiadmin.AnnotationRuntimeGrantNamespace] == "" || annotations[cetiadmin.AnnotationCreationID] == "" || len(owners) != 1 ||
+			owners[0].APIVersion != api.GroupVersion.String() || owners[0].Kind != "Agent" || owners[0].Name != annotations[cetiadmin.AnnotationRuntimeGrantAgent] ||
+			string(owners[0].UID) != annotations[cetiadmin.AnnotationRuntimeGrantAgentUID] || owners[0].UID == "" {
 			failures = append(failures, cetiadmin.ErrConflict)
 			continue
 		}

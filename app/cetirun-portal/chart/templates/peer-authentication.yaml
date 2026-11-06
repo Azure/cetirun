@@ -5,11 +5,13 @@ Required for the AuthorizationPolicy principal matching to work — without
 STRICT mTLS, Istio cannot verify the caller's service account identity
 and the gateway-only restriction would be ineffective.
 
-Port 8081 (internal auth endpoint) uses DISABLE mTLS because the Envoy Lua
-httpCall API does not support mTLS. Security for this port is provided by
-the NetworkPolicy (network-policy-internal-auth.yaml) which restricts access
-to the ingress gateway namespace only.
+The legacy alias-only internal endpoint permits plaintext on port 8081.
+Identity-bound ownership uses the Gateway's TLS cluster transport and requires
+STRICT mTLS on this port as well as the existing NetworkPolicy.
 */ -}}
+{{- if not (kindIs "bool" .Values.istio.internalAuthMTLS) -}}
+{{- fail "istio.internalAuthMTLS must be a boolean" -}}
+{{- end -}}
 apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
@@ -23,6 +25,8 @@ spec:
       {{- include "cetirun-portal.selectorLabels" . | nindent 6 }}
   mtls:
     mode: STRICT
+  {{- if not .Values.istio.internalAuthMTLS }}
   portLevelMtls:
     8081:
       mode: DISABLE
+  {{- end }}

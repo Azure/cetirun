@@ -42,7 +42,7 @@ func NewNative(t testing.TB) *Native {
 		PodName: "openclaw-agent-cetirun-0", PodUID: "pod-uid", ServiceAccountName: "default", ServiceAccountUID: "service-account-uid",
 	}}
 	meta := func(name, namespace, uid string) map[string]any {
-		return map[string]any{"name": name, "namespace": namespace, "uid": uid, "resourceVersion": "1"}
+		return map[string]any{"name": name, "namespace": namespace, "uid": uid, "resourceVersion": "1", "generation": int64(1)}
 	}
 	namespace := meta("agents", "", "namespace-uid")
 	namespace["labels"] = map[string]string{"cetirun.microsoft.com/sandbox-protected": "true"}
@@ -70,8 +70,13 @@ func NewNative(t testing.TB) *Native {
 			}}}}},
 		},
 	}
+	agent := meta("agent", "", f.Identity.AgentUID)
+	agent["ownerReferences"] = []any{map[string]any{
+		"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Team", "name": "team",
+		"uid": "team-uid", "controller": true, "blockOwnerDeletion": true,
+	}}
 	f.Objects["/apis/cetirun.microsoft.com/v1alpha1/agents/agent"] = map[string]any{
-		"metadata": meta("agent", "", f.Identity.AgentUID), "spec": map[string]any{},
+		"metadata": agent, "spec": map[string]any{},
 		"status": map[string]any{"namespace": "agents", "phase": "Ready"},
 	}
 	f.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -49,6 +49,13 @@ type jwk struct {
 	E   string `json:"e"`
 }
 
+type jwksRefresh struct {
+	done chan struct{}
+	err  error
+}
+
+const jwksRefreshTimeout = 10 * time.Second
+
 // OIDCVerifier validates the ID token that ingress moves from the oauth2-proxy
 // response into a Portal-only header. Keys are cached and refreshed on an
 // unknown key ID.
@@ -61,6 +68,11 @@ type OIDCVerifier struct {
 	mu       sync.RWMutex
 	keys     map[string]*rsa.PublicKey
 	fetched  time.Time
+	// refreshMu serializes a JWKS refresh. Keeping it separate from mu means
+	// cached-key verification never waits on network I/O.
+	refreshMu         sync.Mutex
+	refreshFlight     *jwksRefresh
+	refreshGeneration uint64
 }
 
 func NewOIDCVerifier(tenantID, clientID string) (*OIDCVerifier, error) {
@@ -182,11 +194,12 @@ func (v *OIDCVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey, err
 	v.mu.RLock()
 	key, ok := v.keys[kid]
 	fresh := time.Since(v.fetched) < time.Hour
+	generation := v.refreshGeneration
 	v.mu.RUnlock()
 	if ok && fresh {
 		return key, nil
 	}
-	if err := v.refresh(ctx); err != nil {
+	if err := v.refreshOnce(ctx, generation); err != nil {
 		return nil, err
 	}
 	v.mu.RLock()
@@ -196,6 +209,55 @@ func (v *OIDCVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey, err
 		return nil, errors.New("identity token signing key is unknown")
 	}
 	return key, nil
+}
+
+// refreshOnce coalesces concurrent cache refreshes. The shared fetch has a
+// bounded lifetime independent of its callers, while every caller waits with
+// its own request context. Therefore one canceled request cannot abort a
+// refresh that other live requests are waiting for.
+func (v *OIDCVerifier) refreshOnce(ctx context.Context, generation uint64) error {
+	v.refreshMu.Lock()
+	v.mu.RLock()
+	refreshed := v.refreshGeneration != generation
+	v.mu.RUnlock()
+	if refreshed {
+		v.refreshMu.Unlock()
+		return nil
+	}
+
+	if flight := v.refreshFlight; flight != nil {
+		v.refreshMu.Unlock()
+		return waitForJWKSRefresh(ctx, flight)
+	}
+
+	flight := &jwksRefresh{done: make(chan struct{})}
+	v.refreshFlight = flight
+	v.refreshMu.Unlock()
+	go v.runJWKSRefresh(flight)
+	return waitForJWKSRefresh(ctx, flight)
+}
+
+func waitForJWKSRefresh(ctx context.Context, flight *jwksRefresh) error {
+	select {
+	case <-flight.done:
+		return flight.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (v *OIDCVerifier) runJWKSRefresh(flight *jwksRefresh) {
+	ctx, cancel := context.WithTimeout(context.Background(), jwksRefreshTimeout)
+	defer cancel()
+	err := v.refresh(ctx)
+
+	v.refreshMu.Lock()
+	flight.err = err
+	close(flight.done)
+	if v.refreshFlight == flight {
+		v.refreshFlight = nil
+	}
+	v.refreshMu.Unlock()
 }
 
 func (v *OIDCVerifier) refresh(ctx context.Context) error {
@@ -249,6 +311,7 @@ func (v *OIDCVerifier) refresh(ctx context.Context) error {
 	v.mu.Lock()
 	v.keys = keys
 	v.fetched = time.Now()
+	v.refreshGeneration++
 	v.mu.Unlock()
 	return nil
 }

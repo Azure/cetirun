@@ -192,6 +192,12 @@ def contains(expected, actual):
     return expected == actual
 
 
+def document_digest(documents):
+    """Return a stable identity for rendered, non-secret Helm documents."""
+    encoded = json.dumps(documents, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def option(args, name):
     matches = []
     for index, arg in enumerate(args):
@@ -287,11 +293,13 @@ class Ingress:
         self.cm_exists = False
         self.cm_needs_install = False
         self.cm_recovery = False
+        self.cm_recovery_uids = {}
+        self.cm_replacing = False
         self.public_ip = None
 
     def run(self, command, *, offline=False, input_text=None, timeout=60):
         env = {**os.environ, "KUBECONFIG": os.devnull if offline else self.config["target"]["kubeconfig"],
-               "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no", "GODEBUG": "http2client=0", "HELM_DRIVER": "secret"}
+               "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no", "GODEBUG": "http2client=0", "DISABLE_HTTP2": "1", "HELM_DRIVER": "secret"}
         if offline:
             env.update(HELM_REGISTRY_CONFIG=os.devnull, HELM_REPOSITORY_CONFIG=os.devnull)
         try:
@@ -484,43 +492,263 @@ class Ingress:
         if existing:
             owned = metadata_owned(existing, release, namespace)
             cm = self.config["certManager"]
-            if (not owned and self.cm_recovery and release == cm["release"] and namespace == cm["namespace"]
-                    and doc["metadata"].get("annotations", {}).get("helm.sh/hook") == "post-install"):
-                # Helm hook objects do not receive release ownership annotations.
-                # Recognize only the pinned hooks of our own failed installation;
-                # this never admits ordinary resources or another release's hook.
-                metadata = existing.get("metadata", {})
-                annotations = metadata.get("annotations", {})
-                owned = (not annotations.get("meta.helm.sh/release-name") and not metadata.get("ownerReferences")
-                         and contains(doc["metadata"].get("labels", {}), metadata.get("labels", {}))
-                         and contains(doc["metadata"]["annotations"], annotations)
-                         and contains({k: v for k, v in doc.items() if k != "metadata"}, existing))
             require(owned, "Resource ownership conflict: " + doc["kind"] + "/" + doc["metadata"]["name"])
         return existing
+
+    def cm_values(self):
+        return load_yaml(self.support / "cert-manager-values.yaml")
+
+    def cm_hook(self, doc):
+        return "helm.sh/hook" in doc.get("metadata", {}).get("annotations", {})
+
+    def cm_post_install_hook(self, doc):
+        annotations = doc.get("metadata", {}).get("annotations", {})
+        return "post-install" in annotations.get("helm.sh/hook", "").split(",")
+
+    def cm_manifest_documents(self):
+        return [doc for doc in self.cm_documents if not self.cm_hook(doc)]
+
+    def cm_hook_documents(self):
+        return [doc for doc in self.cm_documents if self.cm_hook(doc)]
+
+    def cm_resource_id(self, doc, namespace):
+        ns = "" if doc["kind"] in CLUSTER_KINDS else doc["metadata"].get("namespace", namespace)
+        return doc["apiVersion"] + ":" + doc["kind"] + ":" + ns + "/" + doc["metadata"]["name"]
+
+    def cm_resource_metadata_matches(self, doc, existing, release, namespace):
+        expected = doc.get("metadata", {})
+        actual = existing.get("metadata", {})
+        annotations = dict(expected.get("annotations", {}))
+        annotations.update({
+            "meta.helm.sh/release-name": release,
+            "meta.helm.sh/release-namespace": namespace,
+        })
+        actual_annotations = dict(actual.get("annotations", {}))
+        if doc["kind"] == "Deployment" and "deployment.kubernetes.io/revision" in actual_annotations:
+            require(bool(re.fullmatch(r"[1-9][0-9]*", actual_annotations["deployment.kubernetes.io/revision"])),
+                    "cert-manager Deployment revision annotation is invalid; recover it separately")
+            del actual_annotations["deployment.kubernetes.io/revision"]
+        return (actual.get("labels", {}) == expected.get("labels", {})
+                and actual_annotations == annotations
+                and not actual.get("ownerReferences") and not actual.get("finalizers"))
+
+    def cm_expected_resource(self, doc, existing):
+        """Return the server-admitted object for a no-persistence replacement."""
+        desired = copy.deepcopy(doc)
+        desired.setdefault("metadata", {})["resourceVersion"] = existing["metadata"].get("resourceVersion")
+        require(desired["metadata"]["resourceVersion"],
+                "Failed cert-manager retained resource has no resource version; recover it separately")
+        if desired["kind"] == "Service":
+            # ClusterIP allocation fields are immutable and omitted by Helm's
+            # render. Preserve exactly the API-assigned values for a dry-run
+            # replacement; all other Service fields remain chart-controlled.
+            actual_spec = existing.get("spec", {})
+            target_spec = desired.setdefault("spec", {})
+            for name in ("clusterIP", "clusterIPs", "ipFamilies", "ipFamilyPolicy", "healthCheckNodePort"):
+                if name in actual_spec:
+                    target_spec[name] = actual_spec[name]
+        try:
+            raw = self.kube("replace", "--dry-run=server", "-f", "-", "-o", "json",
+                            input_text=yaml.safe_dump(desired))
+            return json.loads(raw)
+        except (ValueError, KeyError):
+            raise IngressError("Cannot dry-run the cert-manager retained resource; recover it separately") from None
+
+    def cm_resource_matches(self, expected, existing):
+        """Require the server-admitted Helm object, except documented injectors.
+
+        cert-manager's cainjector is the sole exception: it writes CA bundles
+        into annotated webhook/APIService objects after Helm creates them.
+        """
+        doc = expected
+        expected = copy.deepcopy({key: value for key, value in expected.items() if key not in ("metadata", "status")})
+        actual = copy.deepcopy({key: value for key, value in existing.items() if key not in ("metadata", "status")})
+        annotations = doc.get("metadata", {}).get("annotations", {})
+        injected = ("cert-manager.io/inject-ca-from-secret" in annotations
+                    or "cert-manager.io/inject-ca-from" in annotations)
+        if injected and doc["kind"] in ("MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"):
+            for webhook in actual.get("webhooks", []):
+                bundle = webhook.get("clientConfig", {}).get("caBundle")
+                require(isinstance(bundle, str) and bool(bundle),
+                        "cert-manager webhook has no injected CA bundle; recover it separately")
+                webhook["clientConfig"].pop("caBundle")
+        if injected and doc["kind"] == "APIService":
+            bundle = actual.get("spec", {}).get("caBundle")
+            require(isinstance(bundle, str) and bool(bundle),
+                    "cert-manager APIService has no injected CA bundle; recover it separately")
+            actual["spec"].pop("caBundle")
+        if doc["kind"] == "ValidatingWebhookConfiguration":
+            # AKS admission appends exactly these exclusions to cert-manager's
+            # webhook namespace selectors. They are platform defaults, not
+            # chart drift. Do not relax any other selector expression.
+            aks_defaults = (
+                {"key": "control-plane", "operator": "NotIn", "values": ["true"]},
+                {"key": "kubernetes.azure.com/managedby", "operator": "NotIn", "values": ["aks"]},
+            )
+            expected_webhooks = expected.get("webhooks", [])
+            for index, webhook in enumerate(actual.get("webhooks", [])):
+                selector = webhook.get("namespaceSelector", {})
+                expressions = selector.get("matchExpressions")
+                if isinstance(expressions, list):
+                    expected_selector = expected_webhooks[index].get("namespaceSelector", {}) if index < len(expected_webhooks) else {}
+                    expected_expressions = expected_selector.get("matchExpressions")
+                    if expressions == expected_expressions:
+                        continue
+                    if not isinstance(expected_expressions, list):
+                        return False
+                    if expressions != expected_expressions + list(aks_defaults):
+                        return False
+                    selector["matchExpressions"] = expected_expressions
+        return expected == actual
+
+    def cm_release_documents(self, command):
+        raw = self.helm(*command)
+        try:
+            return [doc for doc in yaml.safe_load_all(raw) if doc]
+        except yaml.YAMLError:
+            raise IngressError("Cannot parse cert-manager Helm release metadata; recover it separately") from None
+
+    def cm_release_matches_render(self, cm):
+        try:
+            values = json.loads(self.helm("get", "values", cm["release"], "--namespace", cm["namespace"], "-o", "json"))
+        except ValueError:
+            raise IngressError("Cannot parse cert-manager Helm values; recover it separately") from None
+        require(values == self.cm_values(), "Failed cert-manager release values differ; recover it separately")
+        manifest = self.cm_release_documents(("get", "manifest", cm["release"], "--namespace", cm["namespace"]))
+        hooks = self.cm_release_documents(("get", "hooks", cm["release"], "--namespace", cm["namespace"]))
+        require(document_digest(manifest) == document_digest(self.cm_manifest_documents()),
+                "Failed cert-manager release render differs; recover it separately")
+        require(document_digest(hooks) == document_digest(self.cm_hook_documents()),
+                "Failed cert-manager release hooks differ; recover it separately")
+
+    def cm_recovery_check(self, existing):
+        """Authorize only a retry of the recorded, failed first installation."""
+        cm = self.config["certManager"]
+        receipt = self.state.get("certManagerInstall")
+        expected = {
+            "archiveSHA256": self.lock["chart"]["archiveSHA256"],
+            "chartVersion": self.lock["chart"]["version"],
+            "valuesSHA256": document_digest(self.cm_values()),
+            "renderSHA256": document_digest(self.cm_documents),
+        }
+        steps = [step for step in self.state.get("steps", []) if step.get("name") == "cert-manager-install"]
+        replace_steps = [step for step in self.state.get("steps", []) if step.get("name") == "cert-manager-install-replace"]
+        require(len(steps) == 1 and steps[0].get("status") in ("completed", "uncertain"),
+                "Failed cert-manager release was not installed by this preparation; recover it separately")
+        require(not replace_steps or (self.cm_replacing and len(replace_steps) == 1
+                                     and replace_steps[0].get("status") == "started"),
+                "cert-manager replacement outcome is unknown; inspect before retrying")
+        require(receipt == expected and self.state.get("certManagerArchiveSHA256") == expected["archiveSHA256"],
+                "Failed cert-manager release receipt does not match the pinned render; recover it separately")
+        try:
+            revision = int(existing.get("revision"))
+        except (TypeError, ValueError):
+            revision = 0
+        require(existing.get("status") == "failed" and revision == 1,
+                "Failed cert-manager release is not the first revision; recover it separately")
+        self.cm_release_matches_render(cm)
+        uids = {}
+        for doc in self.cm_documents:
+            ns = None if doc["kind"] in CLUSTER_KINDS else doc["metadata"].get("namespace", cm["namespace"])
+            current = self.get(doc["kind"].lower() + ("." + doc["apiVersion"].split("/")[0] if "/" in doc["apiVersion"] else ""),
+                               doc["metadata"]["name"], ns, metadata_only=doc["kind"] == "Secret")
+            if self.cm_post_install_hook(doc):
+                require(current is None, "Failed cert-manager post-install hook still exists; recover it separately")
+                continue
+            if current:
+                require(metadata_owned(current, cm["release"], cm["namespace"]),
+                        "Resource ownership conflict: " + doc["kind"] + "/" + doc["metadata"]["name"])
+                require(self.cm_resource_metadata_matches(doc, current, cm["release"], cm["namespace"]),
+                        "Failed cert-manager retained resource metadata differs; recover it separately")
+                if doc["kind"] != "Secret":
+                    require(self.cm_resource_matches(self.cm_expected_resource(doc, current), current),
+                            "Failed cert-manager retained resource differs; recover it separately")
+                uid = current.get("metadata", {}).get("uid")
+                require(uid, "Failed cert-manager retained resource has no UID; recover it separately")
+                uids[self.cm_resource_id(doc, cm["namespace"])] = uid
+        self.cm_recovery_uids = uids
+
+    def cm_replace_uncertain(self):
+        steps = [step for step in self.state.get("steps", []) if step.get("name") == "cert-manager-install-replace"]
+        return (len(steps) == 1 and steps[0].get("status") in ("started", "completed", "uncertain")
+                and self.state.get("certManagerRecovery", {}).get("acceptedRevision") != 2)
+
+    def cm_post_install_success(self, cm, revision):
+        try:
+            status = json.loads(self.helm("status", cm["release"], "--namespace", cm["namespace"],
+                                          "--revision", str(revision), "-o", "json"))
+        except ValueError:
+            raise IngressError("Cannot parse cert-manager Helm hook status; inspect before retrying") from None
+        expected = {(doc["kind"], doc["metadata"]["name"])
+                    for doc in self.cm_hook_documents() if self.cm_post_install_hook(doc)}
+        succeeded = {(hook.get("kind"), hook.get("name")) for hook in status.get("hooks", [])
+                     if "post-install" in hook.get("events", [])
+                     and hook.get("last_run", {}).get("phase") == "Succeeded"}
+        require(expected and expected.issubset(succeeded),
+                "cert-manager post-install startup check did not succeed")
+
+    def cm_recovery_acceptance(self, existing):
+        """Verify a completed or uncertain replacement without replaying it."""
+        cm = self.config["certManager"]
+        try:
+            revision = int(existing.get("revision"))
+        except (TypeError, ValueError):
+            revision = 0
+        require(existing.get("status") == "deployed" and revision == 2,
+                "cert-manager replacement did not create deployed revision 2; inspect before retrying")
+        self.cm_release_matches_render(cm)
+        self.cm_post_install_success(cm, revision)
+        baseline = self.state.get("certManagerRecovery", {}).get("resourceUIDs")
+        require(isinstance(baseline, dict), "cert-manager replacement has no retained-resource baseline; inspect before retrying")
+        for doc in self.cm_documents:
+            if self.cm_post_install_hook(doc):
+                continue
+            ns = None if doc["kind"] in CLUSTER_KINDS else doc["metadata"].get("namespace", cm["namespace"])
+            current = self.get(doc["kind"].lower() + ("." + doc["apiVersion"].split("/")[0] if "/" in doc["apiVersion"] else ""),
+                               doc["metadata"]["name"], ns, metadata_only=doc["kind"] == "Secret")
+            require(current and metadata_owned(current, cm["release"], cm["namespace"]),
+                    "cert-manager replacement did not retain managed resource ownership; inspect before retrying")
+            require(self.cm_resource_metadata_matches(doc, current, cm["release"], cm["namespace"]),
+                    "cert-manager replacement retained resource metadata differs; inspect before retrying")
+            if doc["kind"] != "Secret":
+                require(self.cm_resource_matches(self.cm_expected_resource(doc, current), current),
+                        "cert-manager replacement retained resource differs; inspect before retrying")
+            resource_id = self.cm_resource_id(doc, cm["namespace"])
+            if resource_id in baseline:
+                require(current.get("metadata", {}).get("uid") == baseline[resource_id],
+                        "cert-manager replacement changed a retained resource UID; inspect before retrying")
+        self.check_controller()
+        self.state["certManagerRecovery"]["acceptedRevision"] = 2
+        self.save()
 
     def cert_manager_check(self):
         self.cm_needs_install = False
         cm = self.config["certManager"]
         existing = self.release_status(cm["release"], cm["namespace"])
         self.cm_exists = bool(existing)
-        attempted = any(step.get("name") == "cert-manager-install" for step in self.state.get("steps", []))
-        recovery = (cm["mode"] == "install" and attempted
-                    and self.state.get("certManagerArchiveSHA256") == self.lock["chart"]["archiveSHA256"])
-        self.cm_recovery = recovery and bool(existing and existing["status"] == "failed")
+        self.cm_recovery = False
+        self.cm_recovery_uids = {}
         if cm["mode"] == "existing":
             require(existing and existing["status"] == "deployed", "Existing mode requires the named ready cert-manager Helm release")
         if existing:
             require(existing.get("chart") == "cert-manager-" + self.lock["chart"]["version"], "Existing cert-manager is not the supported pinned version; no automatic upgrade")
             if existing["status"] == "failed":
-                require(recovery, "Failed cert-manager release was not installed by this preparation; recover it separately")
+                require(cm["mode"] == "install", "Failed cert-manager release must be recovered separately")
+                self.cm_recovery_check(existing)
+                self.cm_recovery = True
                 self.cm_needs_install = True
             else:
-                self.check_controller()
+                if cm["mode"] == "install" and self.cm_replace_uncertain():
+                    self.cm_recovery_acceptance(existing)
+                else:
+                    self.check_controller()
         else:
-            require(not self.api_groups or recovery, "cert-manager resources already exist without the configured release; explicit existing ownership is required")
+            require(not self.api_groups, "cert-manager resources already exist without the configured release; explicit existing ownership is required")
             self.cm_needs_install = True
         if cm["mode"] == "install":
             for doc in self.cm_documents:
+                if self.cm_recovery and self.cm_post_install_hook(doc):
+                    continue
                 self.resource_check(doc, cm["release"], cm["namespace"])
 
     def check_controller(self):
@@ -728,9 +956,41 @@ class Ingress:
         require(cm["mode"] == "install", "Existing cert-manager was not found")
         self.archive_check()
         self.state["certManagerArchiveSHA256"] = self.lock["chart"]["archiveSHA256"]
-        self.mutate("cert-manager-install", lambda: self.helm("upgrade", "--install", cm["release"], str(self.cm_archive),
-                    "--namespace", cm["namespace"], "--create-namespace", "--values", str(self.support / "cert-manager-values.yaml"),
-                    "--wait", "--timeout", str(self.config["timeoutSeconds"]) + "s", timeout=self.config["timeoutSeconds"] + 60))
+        if self.cm_recovery:
+            # Retain this baseline in the private journal before a mutation.
+            # A second check in the action closes the read/modify gap.
+            self.state["certManagerRecovery"] = {"resourceUIDs": self.cm_recovery_uids}
+            self.save()
+
+            def replace_failed_first_install():
+                self.cm_replacing = True
+                try:
+                    self.cert_manager_check()
+                    require(self.cm_recovery, "Failed cert-manager release changed before recovery; recover it separately")
+                    require(self.state.get("certManagerRecovery", {}).get("resourceUIDs") == self.cm_recovery_uids,
+                            "Failed cert-manager retained resources changed before recovery; recover it separately")
+                    return self.helm("install", "--replace", cm["release"], str(self.cm_archive), "--namespace", cm["namespace"],
+                                     "--create-namespace", "--values", str(self.support / "cert-manager-values.yaml"),
+                                     "--wait", "--timeout", str(self.config["timeoutSeconds"]) + "s",
+                                     timeout=self.config["timeoutSeconds"] + 60)
+                finally:
+                    self.cm_replacing = False
+
+            self.mutate("cert-manager-install-replace", replace_failed_first_install)
+            self.api_groups = {name for name in CERT_CRDS if self.get("customresourcedefinition", name)}
+            released = self.release_status(cm["release"], cm["namespace"])
+            self.cm_recovery_acceptance(released or {})
+            self.cm_recovery = False
+        else:
+            self.state["certManagerInstall"] = {
+                "archiveSHA256": self.lock["chart"]["archiveSHA256"],
+                "chartVersion": self.lock["chart"]["version"],
+                "valuesSHA256": document_digest(self.cm_values()),
+                "renderSHA256": document_digest(self.cm_documents),
+            }
+            self.mutate("cert-manager-install", lambda: self.helm("upgrade", "--install", cm["release"], str(self.cm_archive),
+                        "--namespace", cm["namespace"], "--create-namespace", "--values", str(self.support / "cert-manager-values.yaml"),
+                        "--wait", "--timeout", str(self.config["timeoutSeconds"]) + "s", timeout=self.config["timeoutSeconds"] + 60))
         self.api_groups = {name for name in CERT_CRDS if self.get("customresourcedefinition", name)}
         self.check_controller()
 

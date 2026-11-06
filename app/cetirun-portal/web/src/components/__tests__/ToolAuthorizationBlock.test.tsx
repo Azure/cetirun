@@ -37,6 +37,12 @@ async function review(user: User) {
   await waitFor(() => expect(screen.getByRole("button", { name: "Review access" })).toBeEnabled());
   await user.click(screen.getByRole("button", { name: "Review access" }));
 }
+async function reviewApp(user: User) {
+  await open(user);
+  await user.click(screen.getByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("checkbox", { name: "example-org/allowed", exact: true }));
+  await review(user);
+}
 async function remove(user: User) {
   await user.click(await screen.findByRole("button", { name: /More actions for/ }));
   await user.click(await screen.findByRole("menuitem", { name: "Remove access" }));
@@ -98,6 +104,31 @@ describe("Agent identities", () => {
     expect(api.createConnectionBinding).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Allow access" }));
     await waitFor(() => expect(api.createConnectionBinding).toHaveBeenCalledWith("agent-a", { connectionId: app.id, services: ["github"], enabled: true, github: { repositoryIds: [1], permissions: { contents: "read", pull_requests: "write" } } }));
+  });
+
+  it("keeps a rejected access grant visible beside the dialog actions", async () => {
+    api.createConnectionBinding.mockRejectedValueOnce(new Error("GitHub denied the selected access"));
+    const user = userEvent.setup(); renderUI(); await reviewApp(user);
+    await user.click(screen.getByRole("button", { name: "Allow access" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("GitHub denied the selected access");
+    expect(screen.getByRole("group", { name: "Access action feedback" })).toContainElement(alert);
+    expect(alert.closest(".fui-DialogContent")).toBeNull();
+    expect(screen.getByRole("button", { name: "Allow access" })).toBeEnabled();
+  });
+
+  it("shows saving feedback and closes after an access grant succeeds", async () => {
+    let finish!: (value: ConnectionBinding) => void;
+    api.createConnectionBinding.mockImplementationOnce(() => new Promise<ConnectionBinding>((resolve) => { finish = resolve; }));
+    const user = userEvent.setup(); renderUI(); await reviewApp(user);
+    await user.click(screen.getByRole("button", { name: "Allow access" }));
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("Saving access...");
+    expect(screen.getByRole("group", { name: "Access action feedback" })).toContainElement(status);
+    expect(status.closest(".fui-DialogContent")).toBeNull();
+    expect(screen.getByRole("button", { name: "Allow access" })).toBeDisabled();
+    finish(appBinding);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("keeps personal access secondary and describes its actual scope at review", async () => {

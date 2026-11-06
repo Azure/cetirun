@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/cetiadmin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/ingressmtls"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -25,7 +26,12 @@ import (
 )
 
 func (r *AgentReconciler) sandboxGrantJournal() *sandboxpolicy.GrantJournalStore {
-	return &sandboxpolicy.GrantJournalStore{Client: r.Client, APIReader: r.customReader(), Namespace: r.OperatorNamespace}
+	source := client.ObjectKey{}
+	if provider, ok := r.CetiAdmin.(interface{ CetiAdminSource() client.ObjectKey }); ok {
+		source = provider.CetiAdminSource()
+	}
+	return &sandboxpolicy.GrantJournalStore{Client: r.Client, APIReader: r.customReader(), Namespace: r.OperatorNamespace,
+		PlatformAccessVerifier: cetiadmin.RuntimeAccessBindingVerifier(source)}
 }
 
 func (r *AgentReconciler) sandboxPreparationStateNeeded(agent *api.Agent) bool {

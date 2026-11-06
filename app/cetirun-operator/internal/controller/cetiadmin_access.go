@@ -5,8 +5,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -190,7 +188,7 @@ func (r *CetiAdminReconciler) planInstallationAccess(binding cetiadmin.Binding, 
 		return nil, err
 	}
 	clusterRules = append(clusterRules, cetiadmin.ClusterOperationRules()...)
-	name := cetiAdminAccessName(state)
+	name := cetiadmin.AccessName(state.RecordUID)
 	ownerAgent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: state.Agent.Name, UID: state.Agent.UID}}
 	metadata := func(namespace, objectName string) metav1.ObjectMeta {
 		return metav1.ObjectMeta{Name: objectName, Namespace: namespace, OwnerReferences: []metav1.OwnerReference{registryauth.Owner(ownerAgent)},
@@ -208,17 +206,7 @@ func (r *CetiAdminReconciler) planInstallationAccess(binding cetiadmin.Binding, 
 		rules := append(slices.Clone(namespaceRules), cetiadmin.NamespaceOperationRules(capability.protected)...)
 		objects = append(objects, &rbacv1.ClusterRole{TypeMeta: metav1.TypeMeta{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole"}, ObjectMeta: metadata("", name+"-"+capability.suffix), Rules: rules})
 	}
-	objects = append(objects, &rbacv1.ClusterRole{TypeMeta: metav1.TypeMeta{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole"}, ObjectMeta: metadata("", name+"-reader"), Rules: []rbacv1.PolicyRule{
-		{APIGroups: []string{""}, Resources: []string{"secrets", "configmaps", "services", "serviceaccounts", "persistentvolumeclaims"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"apps"}, Resources: []string{"statefulsets", "deployments"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"batch"}, Resources: []string{"jobs"}, Verbs: []string{"get"}},
-		{APIGroups: []string{rbacv1.GroupName}, Resources: []string{"roles", "rolebindings"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies", "ingresses"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"networking.istio.io"}, Resources: []string{"sidecars"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"security.istio.io"}, Resources: []string{"authorizationpolicies", "peerauthentications"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"autoscaling"}, Resources: []string{"horizontalpodautoscalers"}, Verbs: []string{"get"}},
-		{APIGroups: []string{"policy"}, Resources: []string{"poddisruptionbudgets"}, Verbs: []string{"get"}},
-	}})
+	objects = append(objects, &rbacv1.ClusterRole{TypeMeta: metav1.TypeMeta{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole"}, ObjectMeta: metadata("", name+"-reader"), Rules: cetiadmin.RuntimeReaderRules()})
 	objects = append(objects, &rbacv1.ClusterRole{TypeMeta: metav1.TypeMeta{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole"}, ObjectMeta: metadata("", name+"-diagnostics"), Rules: namespaceRules})
 	readerName := name + "-admission"
 	objects = append(objects, &rbacv1.ClusterRole{TypeMeta: metav1.TypeMeta{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole"}, ObjectMeta: metadata("", readerName), Rules: []rbacv1.PolicyRule{
@@ -230,11 +218,6 @@ func (r *CetiAdminReconciler) planInstallationAccess(binding cetiadmin.Binding, 
 		Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: "cetirun-sandbox-admission", Namespace: state.Source.Namespace}},
 		RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: readerName}})
 	return append(objects, bindings...), nil
-}
-
-func cetiAdminAccessName(state *cetiadmin.Installation) string {
-	sum := sha256.Sum256([]byte(state.RecordUID))
-	return "cetiadmin-" + hex.EncodeToString(sum[:12])
 }
 
 func (r *CetiAdminReconciler) diagnosticRules() ([]rbacv1.PolicyRule, []rbacv1.PolicyRule, error) {

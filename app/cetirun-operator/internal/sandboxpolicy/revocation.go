@@ -169,10 +169,17 @@ func canonicalBindingReferences(values []BindingReference) []BindingReference {
 // for change/rebind revocation, including resources not currently listable.
 // Pass the manager's APIReader, not an eventually consistent cache.
 func OwnedBindingInventory(ctx context.Context, c client.Reader, agentName string, agentUID types.UID) ([]BindingReference, error) {
-	return ownedBindingInventory(ctx, c, agentName, agentUID, false)
+	return ownedBindingInventory(ctx, c, nil, agentName, agentUID, false)
 }
 
-func ownedBindingInventory(ctx context.Context, c client.Reader, agentName string, agentUID types.UID, clusterRolesOnly bool) ([]BindingReference, error) {
+// OwnedBindingInventoryWithPlatformAccess recognizes a separate, strictly
+// validated platform access contract. The verifier must be bound to deployment
+// configuration; callers must not derive its authority from a candidate binding.
+func OwnedBindingInventoryWithPlatformAccess(ctx context.Context, c client.Reader, verify PlatformAccessVerifier, agentName string, agentUID types.UID) ([]BindingReference, error) {
+	return ownedBindingInventory(ctx, c, verify, agentName, agentUID, false)
+}
+
+func ownedBindingInventory(ctx context.Context, c client.Reader, verify PlatformAccessVerifier, agentName string, agentUID types.UID, clusterRolesOnly bool) ([]BindingReference, error) {
 	if c == nil || agentUID == "" || len(validation.IsDNS1123Subdomain(agentName)) != 0 {
 		return nil, fmt.Errorf("%w: an Agent identity and binding client are required", ErrOwnership)
 	}
@@ -195,6 +202,13 @@ func ownedBindingInventory(ctx context.Context, c client.Reader, agentName strin
 		}
 		if !relevant {
 			return nil
+		}
+		if verify != nil {
+			if owned, err := verify(ctx, c, object, agentName, agentUID); err != nil {
+				return fmt.Errorf("%w: platform access binding is not confirmed: %w", ErrOwnership, err)
+			} else if owned {
+				return nil
+			}
 		}
 		if terminal, err := terminalpolicy.OwnedBinding(ctx, c, object, agentName, agentUID); err != nil {
 			return fmt.Errorf("%w: terminal access binding is not confirmed: %w", ErrOwnership, err)

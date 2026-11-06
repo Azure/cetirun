@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -65,18 +66,24 @@ type tokenReview struct {
 }
 
 type ownerReference struct {
-	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	Name       string `json:"name"`
-	UID        string `json:"uid"`
+	APIVersion         string `json:"apiVersion"`
+	Kind               string `json:"kind"`
+	Name               string `json:"name"`
+	UID                string `json:"uid"`
+	Controller         bool   `json:"controller"`
+	BlockOwnerDeletion bool   `json:"blockOwnerDeletion"`
 }
 type objectMeta struct {
-	OwnerReferences   []ownerReference `json:"ownerReferences"`
-	Name              string           `json:"name"`
-	Namespace         string           `json:"namespace"`
-	UID               string           `json:"uid"`
-	ResourceVersion   string           `json:"resourceVersion"`
-	DeletionTimestamp *time.Time       `json:"deletionTimestamp"`
+	OwnerReferences   []ownerReference  `json:"ownerReferences"`
+	Annotations       map[string]string `json:"annotations"`
+	Labels            map[string]string `json:"labels"`
+	Finalizers        []string          `json:"finalizers"`
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace"`
+	UID               string            `json:"uid"`
+	ResourceVersion   string            `json:"resourceVersion"`
+	Generation        int64             `json:"generation"`
+	DeletionTimestamp *time.Time        `json:"deletionTimestamp"`
 }
 
 type pod struct {
@@ -107,8 +114,61 @@ type agent struct {
 			CredentialPolicyRevision string `json:"credentialPolicyRevision"`
 			Phase                    string `json:"phase"`
 			ClientID                 string `json:"clientId"`
+			ObjectID                 string `json:"objectId"`
+			DisplayName              string `json:"displayName"`
+			CreationAttempted        bool   `json:"creationAttempted"`
+			ObservedGeneration       int64  `json:"observedGeneration"`
+			Reason                   string `json:"reason"`
 		} `json:"agentIdentity"`
 	} `json:"status"`
+}
+
+// nativeAgentAuthorization is the Agent state that may grant native workload
+// access. ResourceVersion intentionally is not included: Operator status
+// heartbeats update it without changing authorization. Generation and all
+// modeled metadata are retained, so spec/owner/finalizer lifecycle changes
+// remain a fail-closed change between the admission verification and caller
+// construction.
+type nativeAgentAuthorization struct {
+	Metadata              objectMeta
+	Suspended             bool
+	Policy                string
+	Phase                 string
+	Namespace             string
+	AgentIdentityPresent  bool
+	CredentialPolicy      string
+	AgentIdentityPhase    string
+	AgentIdentityClientID string
+	AgentIdentityObjectID string
+	AgentIdentityName     string
+	AgentIdentityCreated  bool
+	AgentIdentityObserved int64
+	AgentIdentityReason   string
+}
+
+func nativeAgentAuthorizationState(item agent) nativeAgentAuthorization {
+	metadata := item.Metadata
+	metadata.ResourceVersion = ""
+	policy := ""
+	if item.Status.Policy != nil {
+		policy = string(*item.Status.Policy)
+	}
+	state := nativeAgentAuthorization{
+		Metadata: metadata, Suspended: item.Spec.Suspended, Policy: policy,
+		Phase: item.Status.Phase, Namespace: item.Status.Namespace,
+	}
+	if item.Status.AgentIdentity != nil {
+		state.AgentIdentityPresent = true
+		state.CredentialPolicy = item.Status.AgentIdentity.CredentialPolicyRevision
+		state.AgentIdentityPhase = item.Status.AgentIdentity.Phase
+		state.AgentIdentityClientID = item.Status.AgentIdentity.ClientID
+		state.AgentIdentityObjectID = item.Status.AgentIdentity.ObjectID
+		state.AgentIdentityName = item.Status.AgentIdentity.DisplayName
+		state.AgentIdentityCreated = item.Status.AgentIdentity.CreationAttempted
+		state.AgentIdentityObserved = item.Status.AgentIdentity.ObservedGeneration
+		state.AgentIdentityReason = item.Status.AgentIdentity.Reason
+	}
+	return state
 }
 
 func NewKubernetes(cfg config.Config) (*Kubernetes, error) {
@@ -211,6 +271,9 @@ func (k *Kubernetes) Authenticate(ctx context.Context, bearer string) (Caller, e
 		return Caller{}, ErrUnauthenticated
 	}
 	if item.Status.Policy != nil {
+		if item.Metadata.ResourceVersion == "" || item.Metadata.Generation <= 0 {
+			return Caller{}, ErrUnauthenticated
+		}
 		ready := false
 		for _, condition := range currentPod.Status.Conditions {
 			ready = ready || condition.Type == "Ready" && condition.Status == "True"
@@ -234,7 +297,8 @@ func (k *Kubernetes) Authenticate(ctx context.Context, bearer string) (Caller, e
 		if err := k.getWorkload(ctx, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+owner.Name, &current); err != nil {
 			return Caller{}, err
 		}
-		if current.Metadata.UID != item.Metadata.UID || current.Metadata.ResourceVersion != item.Metadata.ResourceVersion {
+		if current.Metadata.ResourceVersion == "" || current.Metadata.Generation <= 0 ||
+			!reflect.DeepEqual(nativeAgentAuthorizationState(item), nativeAgentAuthorizationState(current)) {
 			return Caller{}, ErrUnauthenticated
 		}
 	}

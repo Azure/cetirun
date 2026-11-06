@@ -127,3 +127,117 @@ func TestNativeVerifierRejectsChangesDuringAuthorityReadback(t *testing.T) {
 		t.Fatalf("concurrent SA replacement = %v", err)
 	}
 }
+
+func TestNativeVerifierFencesAgentAuthorizationChangesNotStatusResourceVersions(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		change func(map[string]any)
+		valid  bool
+	}{
+		{
+			name: "status-resource-version",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["resourceVersion"] = "2"
+			},
+			valid: true,
+		},
+		{
+			name: "generation",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["generation"] = int64(2)
+			},
+		},
+		{
+			name: "missing-resource-version",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["resourceVersion"] = ""
+			},
+		},
+		{
+			name: "missing-generation",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["generation"] = int64(0)
+			},
+		},
+		{
+			name: "agent-identity",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["uid"] = "replacement-agent"
+			},
+		},
+		{
+			name: "deletion",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["deletionTimestamp"] = "2026-11-06T00:00:00Z"
+			},
+		},
+		{
+			name: "hold",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["finalizers"] = []string{"cetirun.microsoft.com/sandbox-hold"}
+			},
+		},
+		{
+			name: "metadata-owner",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["ownerReferences"] = []any{map[string]any{"uid": "replacement-owner"}}
+			},
+		},
+		{
+			name: "block-owner-deletion",
+			change: func(agent map[string]any) {
+				agent["metadata"].(map[string]any)["ownerReferences"].([]any)[0].(map[string]any)["blockOwnerDeletion"] = false
+			},
+		},
+		{
+			name: "suspended",
+			change: func(agent map[string]any) {
+				agent["spec"].(map[string]any)["suspended"] = true
+			},
+		},
+		{
+			name: "namespace",
+			change: func(agent map[string]any) {
+				agent["status"].(map[string]any)["namespace"] = "another-agent"
+			},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := testfixture.NewNative(t)
+			verifier := agenttools.NativeVerifier{Get: f.Get, OperatorNamespace: "operator", Audience: "cetirun-connections-mcp"}
+			verifier.Transport = nativeRoundTrip(func(request *http.Request) (*http.Response, error) {
+				response, err := f.Transport.RoundTrip(request)
+				scenario.change(f.Objects["/apis/cetirun.microsoft.com/v1alpha1/agents/agent"].(map[string]any))
+				return response, err
+			})
+			err := verifier.Verify(context.Background(), f.Identity)
+			if scenario.valid {
+				if err != nil {
+					t.Fatalf("status-only resourceVersion change rejected native proof: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, agenttools.ErrNativeProofInvalid) {
+				t.Fatalf("Agent authorization change = %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeVerifierRequiresInitialAgentVersionedObservation(t *testing.T) {
+	for _, field := range []string{"resourceVersion", "generation"} {
+		t.Run(field, func(t *testing.T) {
+			f := testfixture.NewNative(t)
+			metadata := f.Objects["/apis/cetirun.microsoft.com/v1alpha1/agents/agent"].(map[string]any)["metadata"].(map[string]any)
+			if field == "generation" {
+				metadata[field] = int64(0)
+			} else {
+				metadata[field] = ""
+			}
+			verifier := agenttools.NativeVerifier{Get: f.Get, OperatorNamespace: "operator", Audience: "cetirun-connections-mcp", Transport: f.Transport}
+			if err := verifier.Verify(context.Background(), f.Identity); !errors.Is(err, agenttools.ErrNativeProofInvalid) {
+				t.Fatalf("initial Agent without %s = %v", field, err)
+			}
+		})
+	}
+}
