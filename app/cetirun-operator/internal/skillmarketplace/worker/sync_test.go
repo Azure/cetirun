@@ -4,6 +4,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +24,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/gitsync"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/skillmarketplace/skills"
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-logr/logr/funcr"
 )
@@ -70,6 +73,11 @@ func commitFiles(t *testing.T, dir string, files map[string]string) string {
 // http-backend. It counts the fetches, the upload-pack requests, and refuses
 // them while failFetch is set, as a server that is not available.
 func gitServer(t *testing.T, root string) (url string, fetches *atomic.Int32, failFetch *atomic.Bool) {
+	return gitServerWith(t, root, nil)
+}
+
+// gitServerWith is gitServer, with refs changing the ref advertisement.
+func gitServerWith(t *testing.T, root string, refs func([]byte) []byte) (url string, fetches *atomic.Int32, failFetch *atomic.Bool) {
 	t.Helper()
 	out, err := exec.Command("git", "--exec-path").Output()
 	if err != nil {
@@ -89,10 +97,87 @@ func gitServer(t *testing.T, root string) (url string, fetches *atomic.Int32, fa
 				return
 			}
 		}
+		if refs != nil && strings.HasSuffix(r.URL.Path, "/info/refs") {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, r)
+			for key, values := range recorder.Header() {
+				w.Header()[key] = values
+			}
+			body := refs(recorder.Body.Bytes())
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(recorder.Code)
+			_, _ = w.Write(body)
+			return
+		}
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(server.Close)
 	return server.URL, fetches, failFetch
+}
+
+// withoutPeeledRefs drops the "^{}" lines from a ref advertisement, as a Git
+// server that does not advertise the commits of annotated tags.
+func withoutPeeledRefs(body []byte) []byte {
+	var out []byte
+	for len(body) >= 4 {
+		size, err := strconv.ParseUint(string(body[:4]), 16, 16)
+		if err != nil || int(size) > len(body) {
+			break
+		}
+		if size == 0 {
+			out, body = append(out, body[:4]...), body[4:]
+			continue
+		}
+		line := body[:size]
+		body = body[size:]
+		if !bytes.Contains(line[4:], []byte("^{}")) {
+			out = append(out, line...)
+		}
+	}
+	return append(out, body...)
+}
+
+// With an annotated tag as the ref, a check of an unchanged tag reads nothing,
+// also when the server does not advertise the commit of the tag.
+func TestAnAnnotatedTagIsReadOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		refs func([]byte) []byte
+	}{{"server advertises the tag's commit", nil}, {"server advertises only the tag object", withoutPeeledRefs}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "skills")
+			commit := commitFiles(t, dir, map[string]string{"skills/pdf-tools/SKILL.md": "---\nname: pdf-tools\ndescription: PDF\n---\n"})
+			repo, err := git.PlainOpen(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.CreateTag("approved", plumbing.NewHash(commit), &git.CreateTagOptions{
+				Message: "approved skills", Tagger: &object.Signature{Name: "test", Email: "test@example.invalid", When: time.Now()}}); err != nil {
+				t.Fatal(err)
+			}
+			url, fetches, _ := gitServerWith(t, root, tc.refs)
+			kube := newClient(t)
+			s := &Syncer{
+				Source: gitsync.Source{URL: url + "/skills", Ref: "approved", Auth: gitsync.AuthNone, AllowInsecureHTTP: true},
+				Path:   "skills", Limits: skills.DefaultLimits, Fetch: gitsync.Limits{MaxBytes: 1 << 20, MaxObjects: 100, TempDir: t.TempDir()},
+				Store: &Store{}, Catalog: NewCatalog(kube, kube, namespace, api.SkillMarketplaceRepository{URL: url + "/skills"}),
+			}
+			changed := make(chan struct{}, 4)
+			s.Changed = changed
+			for range 3 {
+				if err := s.SyncOnce(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if loaded, _ := s.Store.Snapshot(); loaded != commit {
+				t.Fatalf("loaded %q, want the tag's commit %q", loaded, commit)
+			}
+			if fetches.Load() != 1 || len(changed) != 1 {
+				t.Fatalf("an unchanged tag was read %d times and published %d times, want once", fetches.Load(), len(changed))
+			}
+		})
+	}
 }
 
 // A commit that cannot be loaded because of its own content is read once:

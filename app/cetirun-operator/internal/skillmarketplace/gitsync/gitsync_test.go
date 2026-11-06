@@ -107,16 +107,64 @@ func TestValidateAndRedact(t *testing.T) {
 		{Source{URL: "ssh://git@github.com/org/skills.git", Auth: AuthSSH}, true},
 		{Source{URL: "https://git.example.invalid/skills.git", Auth: "basic"}, false},
 		{Source{URL: "https://git.example.invalid/skills.git", Auth: AuthNone, Ref: "a..b"}, false},
+		// The worker logs the URL and the catalog shows it: no query or fragment.
+		{Source{URL: "https://git.example.invalid/skills.git?token=synthetic", Auth: AuthToken}, false},
+		{Source{URL: "https://git.example.invalid/skills.git?", Auth: AuthNone}, false},
+		{Source{URL: "https://git.example.invalid/skills.git#synthetic", Auth: AuthNone}, false},
+		{Source{URL: "https://git.example.invalid/skills.git#", Auth: AuthNone}, false},
+		{Source{URL: "ssh://git@github.com/org/skills.git?x=1", Auth: AuthSSH}, false},
 	} {
 		if err := tc.source.Validate(); (err == nil) != tc.ok {
 			t.Errorf("%+v: %v", tc.source, err)
 		}
 	}
-	if got := Redacted("https://user:pass@git.example.invalid/x.git"); got != "https://git.example.invalid/x.git" {
-		t.Fatalf("redacted %q", got)
+	for raw, want := range map[string]string{
+		"https://user:pass@git.example.invalid/x.git":         "https://git.example.invalid/x.git",
+		"git@github.com:org/skills.git":                       "github.com:org/skills.git",
+		"https://git.example.invalid/x.git?token=synthetic":   "https://git.example.invalid/x.git",
+		"https://git.example.invalid/x.git#synthetic":         "https://git.example.invalid/x.git",
+		"https://u:p@git.example.invalid/x.git?a=b#synthetic": "https://git.example.invalid/x.git",
+	} {
+		if got := Redacted(raw); got != want {
+			t.Errorf("Redacted(%q) = %q, want %q", raw, got, want)
+		}
 	}
-	if got := Redacted("git@github.com:org/skills.git"); got != "github.com:org/skills.git" {
-		t.Fatalf("redacted %q", got)
+}
+
+// The remote advertises an annotated tag as the tag object, and its commit
+// under the tag's name with "^{}". Resolve returns the commit, which the
+// worker compares with the commit that it read.
+func TestResolveReturnsTheCommitOfAnAnnotatedTag(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "skills")
+	commit := commitFiles(t, dir, map[string]string{"skills/pdf-tools/SKILL.md": "---\nname: pdf-tools\ndescription: PDF\n---\n"})
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag, err := repo.CreateTag("approved", plumbing.NewHash(commit), &git.CreateTagOptions{
+		Message: "approved skills", Tagger: &object.Signature{Name: "test", Email: "test@example.invalid", When: time.Now()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag.Hash().String() == commit {
+		t.Fatal("test setup: the tag must be an annotated tag object")
+	}
+	if _, err := repo.CreateTag("light", plumbing.NewHash(commit), nil); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := gitHTTPServer(t, root, false)
+	ctx := context.Background()
+	for _, ref := range []string{"approved", "refs/tags/approved", "light"} {
+		source := Source{URL: server.URL + "/skills", Ref: ref, Auth: AuthNone, AllowInsecureHTTP: true}
+		name, hash, err := source.Resolve(ctx)
+		if err != nil || hash.String() != commit {
+			t.Fatalf("%s: resolved %s %s %v, want the commit %s", ref, name, hash, err, commit)
+		}
+		snapshot, err := source.Fetch(ctx, name, testLimits)
+		if err != nil || snapshot.Commit != commit {
+			t.Fatalf("%s: fetch: %v", ref, err)
+		}
 	}
 }
 

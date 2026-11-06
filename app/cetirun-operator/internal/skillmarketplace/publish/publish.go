@@ -251,16 +251,16 @@ func (p *Publisher) Publish(team TeamRef, selectionDigest string, content []Skil
 	if err := os.MkdirAll(releases, 0o755); err != nil {
 		return api.SkillMarketplaceRelease{}, false, err
 	}
-	if current, release, err := p.ReadCurrent(team.UID); err == nil && current == id && release != nil &&
-		selectionMatches(filepath.Join(releases, id), selectionDigest) {
-		return *release, false, nil
+	current, currentRelease, err := p.ReadCurrent(team.UID)
+	if err == nil && current == id && currentRelease != nil && selectionMatches(filepath.Join(releases, id), selectionDigest) {
+		return *currentRelease, false, nil
 	}
 	release := api.SkillMarketplaceRelease{
 		Version: api.SkillMarketplaceCatalogVersion, ID: id, TeamName: team.Name, TeamUID: team.UID,
 		SelectionDigest: selectionDigest, Commit: commit, CreatedAt: p.now().UTC().Format(time.RFC3339), Skills: skills,
 	}
 	final := filepath.Join(releases, id)
-	if !selectionMatches(final, selectionDigest) {
+	if !selectionMatches(final, selectionDigest) || !releaseComplete(final, content) {
 		if err := p.writeRelease(releases, id, release, content); err != nil {
 			return api.SkillMarketplaceRelease{}, false, err
 		}
@@ -273,7 +273,50 @@ func (p *Publisher) Publish(team TeamRef, selectionDigest string, content []Skil
 	if err := writeFileAtomic(filepath.Join(dir, api.SkillMarketplaceCurrentFile), []byte(id+"\n")); err != nil {
 		return api.SkillMarketplaceRelease{}, false, err
 	}
+	if current != "" && current != id {
+		// An Agent that started just before the switch can still copy the
+		// replaced release: GC counts its minimum age from now.
+		now := p.now()
+		_ = os.Chtimes(filepath.Join(releases, current), now, now)
+	}
 	return release, true, nil
+}
+
+// releaseComplete reports whether a release directory has its manifest and
+// every file of the content. An interrupted removal can leave the selection
+// file of a release without all of its skills.
+func releaseComplete(release string, content []SkillContent) bool {
+	if info, err := os.Lstat(filepath.Join(release, api.SkillMarketplaceReleaseManifest)); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	for _, skill := range content {
+		for _, file := range skill.Files {
+			info, err := os.Lstat(filepath.Join(release, skill.Name, filepath.FromSlash(file.RelPath)))
+			if err != nil || !info.Mode().IsRegular() {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// removeDir moves a release or Team directory to a temporary name next to it,
+// and then deletes it. A removal that stops part way leaves only a temporary
+// entry, which a later pass removes, and never an incomplete release under
+// its own name.
+func removeDir(parent, name string) error {
+	suffix, err := randomHex()
+	if err != nil {
+		return err
+	}
+	trash := filepath.Join(parent, tmpPrefix+"removed-"+name+"-"+suffix)
+	if err := os.Rename(filepath.Join(parent, name), trash); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return os.RemoveAll(trash)
 }
 
 func (p *Publisher) writeRelease(releases, id string, release api.SkillMarketplaceRelease, content []SkillContent) error {
@@ -328,8 +371,10 @@ func (p *Publisher) writeRelease(releases, id string, release api.SkillMarketpla
 }
 
 func writeSkillFile(skillDir string, file File) error {
+	// Validation refuses "." and ".." as names; a name that only starts with
+	// dots, such as "..notes.md", stays in the skill directory.
 	rel := filepath.FromSlash(file.RelPath)
-	if rel == "" || filepath.IsAbs(rel) || strings.HasPrefix(filepath.Clean(rel), "..") {
+	if !filepath.IsLocal(rel) {
 		return fmt.Errorf("unsafe path")
 	}
 	target := filepath.Join(skillDir, rel)
@@ -378,7 +423,8 @@ func selectionMatches(release, digest string) bool {
 
 // GC keeps the CURRENT release and the keep most recent others, and removes
 // older releases after minAge and abandoned temporary entries after an hour.
-// It removes nothing while CURRENT cannot be read.
+// A release's age counts from when it stopped being CURRENT. GC removes
+// nothing while CURRENT cannot be read.
 func (p *Publisher) GC(uid string, keep int, minAge time.Duration) error {
 	dir, err := p.teamDir(uid)
 	if err != nil {
@@ -434,7 +480,7 @@ func (p *Publisher) GC(uid string, keep int, minAge time.Duration) error {
 		if i < keep || now.Sub(other.mod) < minAge {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(releases, other.name)); err != nil {
+		if err := removeDir(releases, other.name); err != nil {
 			return err
 		}
 	}
@@ -460,26 +506,21 @@ func (p *Publisher) ListTeams() ([]string, error) {
 	return uids, nil
 }
 
-// TeamModTime returns when a Team's directory last changed.
-func (p *Publisher) TeamModTime(uid string) (time.Time, error) {
-	dir, err := p.teamDir(uid)
-	if err != nil {
-		return time.Time{}, err
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return info.ModTime(), nil
-}
-
-// RemoveTeam deletes a Team's releases.
+// RemoveTeam deletes a Team's releases. It also removes what an earlier
+// interrupted removal of a Team left.
 func (p *Publisher) RemoveTeam(uid string) error {
-	dir, err := p.teamDir(uid)
-	if err != nil {
+	if _, err := p.teamDir(uid); err != nil {
 		return err
 	}
-	return os.RemoveAll(dir)
+	teams := filepath.Join(p.Root, api.SkillMarketplaceTeamsDir)
+	if entries, err := os.ReadDir(teams); err == nil {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), tmpPrefix) {
+				_ = os.RemoveAll(filepath.Join(teams, entry.Name()))
+			}
+		}
+	}
+	return removeDir(teams, uid)
 }
 
 func readRegular(name string, limit int64) ([]byte, error) {

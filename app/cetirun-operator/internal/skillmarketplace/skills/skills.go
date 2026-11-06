@@ -275,6 +275,9 @@ func validate(tree Tree, entries []Entry, dir string, limits Limits, reserved []
 			if unsafeName(segment) {
 				return Skill{}, fmt.Sprintf("the file name %q is not allowed", rel)
 			}
+			if len(segment) > maxNameBytes {
+				return Skill{}, fmt.Sprintf("a file or directory name in %q is longer than %d bytes", rel, maxNameBytes)
+			}
 		}
 		if strings.Count(rel, "/")+1 > limits.MaxDepth {
 			return Skill{}, fmt.Sprintf("%s is nested deeper than %d levels", rel, limits.MaxDepth)
@@ -325,6 +328,11 @@ func validate(tree Tree, entries []Entry, dir string, limits Limits, reserved []
 	sort.Slice(skill.Files, func(i, j int) bool { return skill.Files[i].RelPath < skill.Files[j].RelPath })
 	return skill, ""
 }
+
+// maxNameBytes is the longest file or directory name that the release
+// storage and the Agents' file systems take (NAME_MAX). Git allows longer
+// names, which the worker could not publish.
+const maxNameBytes = 255
 
 // unsafeName reports whether a file or directory name of a skill must not be
 // published: it is empty, a dot name, not valid UTF-8, contains a control

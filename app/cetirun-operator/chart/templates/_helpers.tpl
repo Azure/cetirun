@@ -201,6 +201,9 @@ worker's values.
 {{- if and (hasPrefix "https://" $repository.url) (contains "@" (trimPrefix "https://" $repository.url | splitList "/" | first)) -}}
 {{- fail "skillMarketplace.repository.url must not contain credentials; use skillMarketplace.repository.existingSecret" -}}
 {{- end -}}
+{{- if or (contains "?" $repository.url) (contains "#" $repository.url) -}}
+{{- fail "skillMarketplace.repository.url must not contain a query or a fragment: the worker logs the URL and the catalog shows it; keep credentials in skillMarketplace.repository.existingSecret" -}}
+{{- end -}}
 {{- if and (hasPrefix "http://" $repository.url) (not $repository.allowInsecureHTTP) -}}
 {{- fail "skillMarketplace.repository.url must use https://" -}}
 {{- end -}}

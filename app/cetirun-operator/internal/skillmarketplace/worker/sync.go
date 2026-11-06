@@ -56,11 +56,14 @@ type Syncer struct {
 	// Changed receives one signal after each new commit, to publish again.
 	Changed chan<- struct{}
 
-	// refused is the last commit that could not be loaded because of its own
-	// content, and refusal is its error. Such a commit stays refused, so
-	// later checks report the error without reading the commit again.
+	// refused is the hash, as Resolve returned it, of the last commit that
+	// could not be loaded because of its own content, and refusal is its
+	// error. Such a commit stays refused, so later checks report the error
+	// without reading the commit again.
 	refused string
 	refusal error
+	// loaded is the hash, as Resolve returned it, of the commit in Store.
+	loaded string
 }
 
 // NeedLeaderElection reports that the synchronizer runs once per worker.
@@ -131,6 +134,11 @@ func minDuration(a, b time.Duration) time.Duration {
 // SyncOnce checks the remote and loads a new commit. A commit that cannot be
 // loaded because of its own content, such as a commit over the limits, is
 // read once: while the remote names it, a check reports its error again.
+//
+// The remote names a commit by the hash that Resolve returns. For an annotated
+// tag, a remote that does not advertise the tag's commit gives the hash of the
+// tag object, which differs from the loaded commit: the hash that loaded the
+// commit counts as that commit too.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -138,12 +146,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	resolved := hash.String()
 	current, _ := s.Store.Snapshot()
-	if current == hash.String() {
+	if current == resolved || (current != "" && s.loaded == resolved) {
 		s.Catalog.SetChecked()
 		return nil
 	}
-	if hash.String() == s.refused {
+	if resolved == s.refused {
 		return s.refusal
 	}
 	snapshot, err := s.Source.Fetch(ctx, ref, s.Fetch)
@@ -151,14 +160,14 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		// A limit belongs to the commit. Another error, such as a failed
 		// connection, can pass, so the next check reads the commit again.
 		if errors.Is(err, gitsync.ErrLimit) {
-			s.refused, s.refusal = hash.String(), err
+			s.refused, s.refusal = resolved, err
 		}
 		return err
 	}
 	valid, problems, err := skills.Discover(snapshot, s.Path, s.Limits, s.Reserved)
 	if err != nil {
 		// Discover reads only the commit, so its result does not change.
-		s.refused, s.refusal = snapshot.Commit, err
+		s.refused, s.refusal = resolved, err
 		return err
 	}
 	entries := make([]api.SkillMarketplaceSkill, 0, len(valid))
@@ -169,6 +178,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		})
 	}
 	s.Store.set(snapshot.Commit, valid)
+	s.loaded = resolved
 	s.Catalog.SetSync(snapshot.Commit, entries, problems)
 	log.FromContext(ctx).Info("synchronized the skills repository", "commit", snapshot.Commit, "skills", len(valid), "rejected", len(problems))
 	signal(s.Changed)
