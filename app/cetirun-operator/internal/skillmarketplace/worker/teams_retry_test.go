@@ -94,6 +94,38 @@ func TestARepeatedPublicationFailureIsLoggedOnceAndTriedLessOften(t *testing.T) 
 	try(time.Hour, false)
 }
 
+// The error of a failed write names the random temporary file of its attempt,
+// for example when CURRENT cannot be replaced. Such failures are the same
+// failure: the log has the error once.
+func TestAFailureThatNamesATemporaryFileIsStillTheSameFailure(t *testing.T) {
+	const uid = "00000000-0000-4000-8000-000000000001"
+	f := newFixture(t, selection("research", uid, "pdf-tools"))
+	clock := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
+	f.worker.Now = func() time.Time { return clock }
+	var lines []string
+	ctx := log.IntoContext(context.Background(), funcr.New(func(_, args string) { lines = append(lines, args) }, funcr.Options{}))
+	f.store.set("c1", []skills.Skill{repoSkill("pdf-tools", "0123456789ab", "pdf")})
+	// CURRENT is a directory: each attempt fails to rename its temporary file onto it.
+	current := filepath.Join(f.publisher.Root, "teams", uid, "CURRENT")
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.worker.PublishAll(ctx)
+	for range 3 {
+		clock = clock.Add(maxRetryInterval)
+		f.worker.publishPending(ctx)
+	}
+	errorsLogged := 0
+	for _, line := range lines {
+		if strings.Contains(line, `"msg"="publish Team skills"`) {
+			errorsLogged++
+		}
+	}
+	if len(lines) != 4 || errorsLogged != 1 || !strings.Contains(lines[0], "CURRENT.tmp-") {
+		t.Fatalf("the failure must be logged once, and then with short lines: %q", lines)
+	}
+}
+
 // The grace period of a Team that left the Teams document starts when the
 // worker finds it gone. A Team that comes back within it keeps its releases,
 // and with them a retained skill that the repository no longer has.

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sync"
 	"time"
@@ -303,7 +304,7 @@ func (p *TeamPublisher) publishOne(ctx context.Context, logger logr.Logger, team
 		}
 		return
 	}
-	failure := &teamFailure{input: input, message: err.Error(), failed: 1}
+	failure := &teamFailure{input: input, message: sameFailure(err), failed: 1}
 	attempts := 1
 	if previous != nil {
 		failure.failed = previous.failed + 1
@@ -323,6 +324,17 @@ func (p *TeamPublisher) publishOne(ctx context.Context, logger logr.Logger, team
 	}
 	failure.next = p.now().Add(min(wait, maxRetryInterval))
 	p.failures[team.UID] = failure
+}
+
+// temporaryName matches the temporary file or directory names that the
+// publisher writes next to a file or release (".tmp-" and a random suffix).
+var temporaryName = regexp.MustCompile(`\.tmp-[^/\s:]+`)
+
+// sameFailure is the message that tells whether two failed publications
+// failed the same way: the error without the random temporary names that
+// each attempt uses.
+func sameFailure(err error) string {
+	return temporaryName.ReplaceAllString(err.Error(), ".tmp-*")
 }
 
 // forget drops the retry state of the Teams that left the document.
