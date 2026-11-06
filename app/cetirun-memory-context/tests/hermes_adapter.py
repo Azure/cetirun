@@ -7,9 +7,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import types
+from unittest.mock import patch
 
 root = Path(os.environ["MEMORY_TEST_ASSETS"])
 workspace = os.environ["MEMORY_TEST_WORKSPACE"]
@@ -28,6 +30,10 @@ owner_identity = types.ModuleType("gateway.owner_identity")
 owner_identity.host_owner_subject = lambda: "uid:1024"
 owner_identity.same_owner = lambda stored, subject: stored == subject
 sys.modules["gateway.owner_identity"] = owner_identity
+version_info = types.ModuleType("hermes_cli.version_info")
+version_info.get_version_info = lambda: types.SimpleNamespace(base_version="0.22.7")
+sys.modules["hermes_cli"] = types.ModuleType("hermes_cli")
+sys.modules["hermes_cli.version_info"] = version_info
 spec = importlib.util.spec_from_file_location("memory_plugin", root / "adapters/hermes/__init__.py")
 plugin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plugin)
@@ -96,16 +102,24 @@ real_popen = subprocess.Popen
 
 class CountingPopen(real_popen):
     started = 0
+    commands, requests = [], []
 
     def __init__(self, *args, **kwargs):
         CountingPopen.started += 1
+        CountingPopen.commands.append(args[0])
         super().__init__(*args, **kwargs)
+
+    def communicate(self, input=None, **kwargs):
+        if input:
+            CountingPopen.requests.append(json.loads(input))
+        return super().communicate(input, **kwargs)
 
 
 def count_helpers(enabled):
     # The adapter and this test share the subprocess module.
     subprocess.Popen = CountingPopen if enabled else real_popen
     CountingPopen.started = 0
+    CountingPopen.commands, CountingPopen.requests = [], []
 
 
 # The further model requests of a turn's tool loop reuse its context and record
@@ -157,4 +171,53 @@ count_helpers(False)
 host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="cli", turn_id="turn-4", user_message="Fixture", model="model")
 host.hooks["on_session_end"](session_id="hermes-fixture", completed=True)
 assert json.loads(tool({"command": "query", "payload": {"queryTerms": ["Hermes private fixture"]}}))["reason"] == "Cancelled"
+
+# Load the shipped plugin entrypoint with local paths, including a helper outside
+# the asset package. No platform context file or .cetirun data directory is needed.
+local_home = Path.home() / ".hermes"
+binary = local_home / "bin/memory-helper"
+binary.parent.mkdir(parents=True)
+shutil.copy2(root / "bin/cetirun-memory", binary)
+data_root = local_home / "memories/memory"
+context_file = root / "AGENTS.md"
+(Path.home() / ".agents/AGENTS.md").unlink()
+loader_spec = importlib.util.spec_from_file_location("local_memory_plugin", os.environ["MEMORY_TEST_PLUGIN"])
+loader = importlib.util.module_from_spec(loader_spec)
+loader_spec.loader.exec_module(loader)
+with patch.dict(os.environ, CETIRUN_MEMORY_ROOT=str(data_root), CETIRUN_MEMORY_ASSETS=str(root),
+                CETIRUN_MEMORY_BINARY=str(binary), CETIRUN_MEMORY_CONTEXT=str(context_file)):
+    version_info.get_version_info = lambda: types.SimpleNamespace(base_version="0.22.8")
+    local_host = Host()
+    loader.register(local_host)
+    assert local_host.sections["cetirun-memory-context"] == context_file.read_text()
+    local_host.hooks["pre_llm_call"](session_id="local-fixture", platform="cli", turn_id="local-turn", model="model")
+    local_tool = local_host.tools["cetirun_memory"]["handler"]
+    count_helpers(True)
+    try:
+        saved = json.loads(local_tool({"command": "capture", "payload": {"note": note}},
+                                      session_id="local-fixture", tool_call_id="local-write"))
+        assert saved["ok"], saved
+        found = json.loads(local_tool({"command": "query", "payload": {"queryTerms": [note["title"]]}},
+                                      session_id="local-fixture", tool_call_id="local-query"))
+        assert found["data"]["hits"][0]["note"]["body"] == note["body"], found
+        assert data_root.is_dir()
+        assert CountingPopen.commands and all(command == [str(binary), "native-event"] for command in CountingPopen.commands)
+        assert all(request["binding"]["nativeVersion"] == "0.22.8" for request in CountingPopen.requests)
+    finally:
+        count_helpers(False)
+
+    # An explicitly selected missing context must fail rather than fall back to
+    # another instruction file; absence of the assets binding still disables it.
+    with patch.dict(os.environ, CETIRUN_MEMORY_CONTEXT=str(local_home / "missing.md")):
+        try:
+            loader.register(Host())
+        except ValueError as error:
+            assert str(error) == "AgentContextUnavailable", error
+        else:
+            raise AssertionError("missing configured context was accepted")
+    with patch.dict(os.environ, CETIRUN_MEMORY_ASSETS=""):
+        disabled = Host()
+        loader.register(disabled)
+        assert not disabled.tools and not disabled.hooks
+
 print("Hermes native adapter checks passed")

@@ -1,7 +1,7 @@
 ## CetiRun private memory
 
 This Agent keeps a private memory that persists across conversations. It belongs to this Agent, not to a
-team or to other Agents of the same owner. Read `/opt/cetirun-memory/skills/cetirun-memory/SKILL.md` to look up
+team or to other Agents of the same owner. Read the installed `cetirun-memory` skill to look up
 what earlier conversations established before answering, and to save what is worth keeping when capture is allowed.
 Reads, writes and bounded learning are enabled by default. Respect this request's noCapture/noMemory
 restrictions and scope, and query only what the task needs.

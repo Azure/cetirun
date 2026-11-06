@@ -10,8 +10,10 @@ owner-configured MCP clients expose it as the `cetirun_memory` tool. Send only `
 the adapter adds the session, audience and project scope, so do not supply those yourself. Read
 `references/requests.md` for payloads before your first call.
 
-If the tool is missing, a qualified Custom entrypoint can run `/opt/cetirun-memory/bin/cetirun-memory`
-with the request envelope described in the reference. Running as the owner's user does not qualify a
+If the tool is missing, a qualified Custom entrypoint can run the owner's configured helper binary
+with the request envelope described in the reference. The Hermes adapter uses `CETIRUN_MEMORY_BINARY`
+when set, otherwise `$CETIRUN_MEMORY_ASSETS/bin/cetirun-memory` (normally `/opt/cetirun-memory/bin/cetirun-memory`).
+Running as the owner's user does not qualify a
 process. Keep JSON on stdin, never in arguments. Do not pick another root, scan HOME or write
 store files yourself, and do not use a shell to get around a tool denial.
 

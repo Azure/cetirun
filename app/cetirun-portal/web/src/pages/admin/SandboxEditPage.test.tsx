@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { SandboxEditPage } from "./SandboxEditPage";
@@ -154,6 +155,27 @@ it("selects the configured approved StorageClass for a new Sandbox", async () =>
   const storageClass = await screen.findByRole("combobox", { name: "HOME StorageClass" });
   await waitFor(() => expect(storageClass).toHaveValue("example-csi"));
   expect(screen.getByRole("option", { name: /csi\.example\.com, expansion supported/ })).toBeInTheDocument();
+});
+
+it("keeps the approved StorageClass when a form edit arrives with the catalog", async () => {
+  let resolveStorage!: (value: api.SandboxStorageOptions) => void;
+  vi.mocked(api.getSandboxStorageOptions).mockImplementationOnce(() => new Promise(resolve => { resolveStorage = resolve; }));
+  function EditOnCatalogArrival() {
+    const catalog = useQuery({ queryKey: ["admin", "sandbox-storage-options"], queryFn: api.getSandboxStorageOptions });
+    useEffect(() => {
+      // The child's catalog effect and this edit share a batch, before the
+      // queued default StorageClass update has committed to the form.
+      if (catalog.data) fireEvent.change(screen.getByRole("combobox", { name: "Runtime" }), { target: { value: "container" } });
+    }, [catalog.data]);
+    return <SandboxEditPage />;
+  }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/admin/sandboxes/new"]}>
+    <Routes><Route path="/admin/sandboxes/new" element={<EditOnCatalogArrival />} /></Routes>
+  </MemoryRouter></QueryClientProvider>);
+  await act(async () => { resolveStorage(storageOptions); });
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Runtime" })).toHaveValue("container"));
+  expect(screen.getByRole("combobox", { name: "HOME StorageClass" })).toHaveValue("example-csi");
 });
 
 it("requires a choice when several approved StorageClasses have no configured default", async () => {

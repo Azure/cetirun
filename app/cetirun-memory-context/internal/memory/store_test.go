@@ -27,7 +27,7 @@ func (s *Store) open() (*snapshot, error) {
 func newFixture(t *testing.T) fixture {
 	t.Helper()
 	home := t.TempDir()
-	s := New(Config{Root: filepath.Join(home, ".cetirun", "memory")})
+	s := New(Config{Root: filepath.Join(home, ".cetirun", "memory"), Home: home})
 	s.now = func() time.Time { return time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC) }
 	f := fixture{s, home}
 	r := f.request(t, struct{}{})
@@ -422,5 +422,64 @@ func TestImportDoesNotInheritNativeAuthority(t *testing.T) {
 	}
 	if response, code := f.store.Execute(context.Background(), "import-plan", f.request(t, importInput{Files: []string{"/etc/passwd"}})); code != 2 {
 		t.Fatal(response)
+	}
+}
+
+func TestImportUsesHomeBoundaryWithCustomMemoryRoot(t *testing.T) {
+	for _, relativeRoot := range []string{".cetirun/memory", ".hermes/memories/memory", "saved-knowledge"} {
+		t.Run(relativeRoot, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			root := filepath.Join(home, relativeRoot)
+			f := fixture{store: New(Config{Root: root}), home: home}
+			f.call(t, "init", struct{}{})
+			write := func(name string) string {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(name, []byte("Synthetic note: the owner prefers green tea."), 0600); err != nil {
+					t.Fatal(err)
+				}
+				return name
+			}
+			// These notes can live outside the memory root's parent directory.
+			files := []string{write(filepath.Join(home, "notes", "preferences.md")), write(root + "-archive.md")}
+			plan := f.call(t, "import-plan", importInput{Files: files}).Data.(ImportPlan)
+			if refs := f.call(t, "import-apply", importApplyInput{Plan: plan}).Data.(writeResult).Refs; len(refs) != len(files) {
+				t.Fatalf("imported %d of %d files", len(refs), len(files))
+			}
+			for _, denied := range []struct{ path, reason string }{
+				{root, "InvalidPath"},
+				{filepath.Join(root, "meta.json"), "InvalidPath"},
+				{filepath.Join(root, "index.md"), "InvalidPath"},
+				{write(filepath.Join(t.TempDir(), "outside-home.md")), "InvalidPath"},
+				{write(filepath.Join(home, ".hermes", "config.yaml")), "SensitiveContent"},
+			} {
+				response, code := f.store.Execute(context.Background(), "import-plan", f.request(t, importInput{Files: []string{denied.path}}))
+				if code != 2 || response.Reason != denied.reason {
+					t.Errorf("%s: code %d, reason %s; want %s", denied.path, code, response.Reason, denied.reason)
+				}
+			}
+			link := filepath.Join(home, "linked-note.md")
+			if err := os.Symlink(files[0], link); err != nil {
+				t.Fatal(err)
+			}
+			if response, code := f.store.Execute(context.Background(), "import-plan", f.request(t, importInput{Files: []string{link}})); code == 0 {
+				t.Fatalf("import followed a symlink: %+v", response)
+			}
+			// Apply must also reject the store itself, even in a validly hashed plan.
+			plan.Files[0].Path = filepath.Join(root, "meta.json")
+			plan.Digest = plan.hash()
+			request := f.request(t, importApplyInput{Plan: plan})
+			before := *request.ExpectedGeneration
+			response, code := f.store.Execute(context.Background(), "import-apply", request)
+			if code != 2 || response.Reason != "InvalidPath" {
+				t.Fatalf("apply imported memory itself: code %d, %+v", code, response)
+			}
+			if after := *f.request(t, struct{}{}).ExpectedGeneration; after != before {
+				t.Fatalf("refused import changed generation: %d -> %d", before, after)
+			}
+		})
 	}
 }

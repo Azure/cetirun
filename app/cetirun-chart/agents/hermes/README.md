@@ -206,6 +206,72 @@ When Memory is enabled, native prompt construction reads skill metadata from the
 files and does not read or write persisted skill snapshots. Disabling Memory
 restores native snapshot behavior without replacing an existing snapshot.
 
+## Configure Memory paths for Hermes
+
+The plugin declares `requires_hermes: ">=0.22.7"`. CetiRun's image and native
+qualification host remain pinned to `0.22.7`; accepting installation on a newer
+Hermes release does not mean that release has been qualified.
+
+The Hermes plugin accepts these absolute paths:
+
+| Environment variable | Purpose and default |
+| --- | --- |
+| `CETIRUN_MEMORY_ROOT` | Memory data directory. No required directory name or suffix; unset leaves Memory unbound. |
+| `CETIRUN_MEMORY_ASSETS` | Installed asset directory. Unset disables plugin registration. |
+| `CETIRUN_MEMORY_BINARY` | Helper executable; defaults to `$CETIRUN_MEMORY_ASSETS/bin/cetirun-memory`. |
+| `CETIRUN_MEMORY_CONTEXT` | Instruction file; defaults to `$HOME/.agents/AGENTS.md`. |
+
+The managed platform still supplies `$HOME/.cetirun/memory` and
+`/opt/cetirun-memory` for the data and assets. For a local installation, use a
+normalized absolute data path with real directories, not symlinks, and keep the
+assets outside that data directory. For example, from the repository root:
+
+```bash
+export CETIRUN_MEMORY_ROOT="$HOME/.local/share/cetirun-memory"
+export CETIRUN_MEMORY_ASSETS="$HOME/.local/lib/cetirun-memory"
+export CETIRUN_MEMORY_BINARY="$CETIRUN_MEMORY_ASSETS/bin/cetirun-memory"
+export CETIRUN_MEMORY_CONTEXT="$CETIRUN_MEMORY_ASSETS/AGENTS.md"
+
+make -C app/cetirun-memory-context build
+mkdir -p "$CETIRUN_MEMORY_ROOT" "$CETIRUN_MEMORY_ASSETS" "$HOME/.hermes/plugins"
+app/cetirun-memory-context/bin/cetirun-memory install-assets "$CETIRUN_MEMORY_ASSETS"
+cp -R app/cetirun-chart/agents/hermes/plugins/cetirun-memory-context \
+  "$HOME/.hermes/plugins/"
+```
+
+The build requires the repository's Go version and cached Go dependencies.
+`install-assets` requires an existing target directory and refuses to overwrite
+assets from a different build. For an update, install into a new asset directory
+and update the configured paths together. A separately located helper can be
+selected with `CETIRUN_MEMORY_BINARY`; use a binary built from the same source as
+the installed assets.
+
+Append the plugin and skill directory to the existing lists in
+`~/.hermes/config.yaml`. Preserve the other entries. Replace `/home/example`
+below with your actual home directory; YAML values do not expand `$HOME`:
+
+```yaml
+plugins:
+  enabled:
+    - cetirun-memory-context
+skills:
+  external_dirs:
+    - /home/example/.local/lib/cetirun-memory/skills
+```
+
+For persistent configuration, add the four variables to the Hermes profile's
+`.env` file (`~/.hermes/.env` for the default profile), using absolute paths and
+`NAME=value` entries. Hermes loads that file when the CLI or gateway starts.
+Restart the gateway and start a new private session after changing the paths;
+exports in a CLI shell do not update a gateway that is already running. This
+setup does not migrate existing data.
+
+Private Memory remains available only to CLI, TUI, API Server and authenticated
+owner Webapp sessions. Message-channel and subagent sessions do not gain access.
+The standalone CLI and stdio MCP accept the same custom data root. Explicit
+imports still select files from the process's `HOME` and reject files inside
+the active Memory data directory.
+
 ## Validation and upgrades
 
 Update the release, commit and checksum together, then check the new PM lock,

@@ -19,6 +19,7 @@ import (
 
 type Config struct {
 	Root string
+	Home string // Import source boundary; defaults to the process user's home.
 }
 type Store struct {
 	Config Config
@@ -26,7 +27,12 @@ type Store struct {
 	fault  func(string) error
 }
 
-func New(config Config) *Store { return &Store{Config: config, now: time.Now} }
+func New(config Config) *Store {
+	if config.Home == "" {
+		config.Home, _ = os.UserHomeDir()
+	}
+	return &Store{Config: config, now: time.Now}
+}
 
 type meta struct {
 	SchemaVersion string `json:"schemaVersion"`

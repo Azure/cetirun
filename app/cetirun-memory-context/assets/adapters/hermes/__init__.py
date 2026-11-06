@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Pinned Hermes plugin: request-only context, scoped tools, and minimal events."""
+"""Hermes plugin: request-only context, scoped tools, and minimal events."""
 
 import asyncio
 from contextvars import ContextVar
@@ -15,7 +15,6 @@ import time
 import uuid
 
 ADAPTER = "memory-adapter/v1"
-NATIVE_VERSION = "0.22.7"
 COMMANDS = ("status", "query", "capture", "prepare", "commit", "propose", "check", "advance",
             "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source", "evaluate")
 MEMORY_OFF = "CetiRun Memory is off for this conversation. Do not read or save private memory, or claim to have done so."
@@ -88,6 +87,9 @@ def load_assets(root):
 class MemorySession:
     def __init__(self, root, binding):
         self.root, self.binding = root, binding
+        self.binary = Path(os.environ.get("CETIRUN_MEMORY_BINARY") or root / "bin/cetirun-memory")
+        if not self.binary.is_absolute():
+            raise ValueError("MemoryBindingInvalid")
         self.cancelled = threading.Event()
         self.checks, self.injected = [], []
         self.loop = self.task = None
@@ -115,7 +117,7 @@ class MemorySession:
             return {"ok": False, "reason": "LimitReached"}
         process = None
         try:
-            process = subprocess.Popen([str(self.root / "bin/cetirun-memory"), "native-event"],
+            process = subprocess.Popen([str(self.binary), "native-event"],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             deadline = time.monotonic() + 5
             first = raw
@@ -170,7 +172,7 @@ class MemorySession:
         if command == "propose" and payload.get("procedure", {}).get("kind") == "playbook":
             payload = json.loads(json.dumps(payload))
             payload["procedure"]["compatibility"] = {"helperABI": "1", "adapter": ADAPTER,
-                                                    "nativeVersion": NATIVE_VERSION, "model": self.binding["model"]}
+                                                    "nativeVersion": self.binding["nativeVersion"], "model": self.binding["model"]}
             if self.binding.get("modelRevision"):
                 payload["procedure"]["compatibility"]["modelRevision"] = self.binding["modelRevision"]
         result = self.call("tool", payload, command, call_id)
@@ -255,18 +257,24 @@ def bounded_completion(ticket, session):
 
 def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_completion):
     selected = os.environ.get("CETIRUN_MEMORY_ASSETS")
-    if root is None and selected != "/opt/cetirun-memory":
+    if root is None and not selected:
         return
-    root = root or Path(selected)
+    root = Path(root or selected)
+    if not root.is_absolute():
+        raise ValueError("MemoryBindingInvalid")
     memory_contract = load_assets(root)
     payload_schema = json.loads((root / "adapters/common/payload-schema.json").read_text())
-    context_dir = Path.home() / ".agents"
-    context_file = context_dir / "AGENTS.md"
+    context_file = Path(os.environ.get("CETIRUN_MEMORY_CONTEXT") or Path.home() / ".agents/AGENTS.md")
+    if not context_file.is_absolute():
+        raise ValueError("MemoryBindingInvalid")
+    context_dir = context_file.parent
     if context_dir.is_symlink() or context_file.is_symlink() or not context_file.is_file() or context_file.stat().st_size > 32768 or context_file.stat().st_nlink != 1:
         raise ValueError("AgentContextUnavailable")
     canonical = context_file.read_text()
     if len(canonical) > 4000:
         raise ValueError("AgentContextTooLarge")
+    from hermes_cli.version_info import get_version_info
+    native_version = get_version_info().base_version
     sessions, guard = {}, threading.RLock()
     tool_identity = ContextVar("cetirun_memory_tool_identity", default=None)
 
@@ -303,7 +311,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
             controls["noMemory"] |= kwargs.get("noMemory") is True
             provider = kwargs.get("provider", "")
             # The effective route is resolved by native request middleware.
-            binding = {"adapter": ADAPTER, "entrypoint": "hermes", "nativeVersion": NATIVE_VERSION,
+            binding = {"adapter": ADAPTER, "entrypoint": "hermes", "nativeVersion": native_version,
                        "sessionId": session_id, "opportunityId": turn_id or str(uuid.uuid4()),
                        "cwd": str(resolve_agent_cwd()), "audience": "owner-private" if private else "unknown",
                        "destination": {"kind": "owner-private" if private else "unknown"},
